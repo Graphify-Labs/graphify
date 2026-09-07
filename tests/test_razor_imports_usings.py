@@ -85,6 +85,26 @@ def test_sibling_directory_imports_razor_does_not_apply(tmp_path, monkeypatch):
     )
 
 
+def test_cshtml_files_do_not_inherit_imports_razor(tmp_path, monkeypatch):
+    """_Imports.razor governs `.razor` components only: `.cshtml` views/pages
+    are governed by the separate `_ViewImports.cshtml` mechanism, so a bare
+    `@inject` in a `.cshtml` must not resolve through _Imports.razor."""
+    monkeypatch.chdir(tmp_path)
+    r = _extract(tmp_path, {
+        "Services/WidgetService.cs": SERVICE_CS,
+        "Pages/AlphaView.cshtml": ALPHA_RAZOR,
+        "Pages/_Imports.razor": "@using Demo.Services\n",
+    })
+    cshtml_targets = {
+        e["target"] for e in r["edges"]
+        if e.get("relation") == "references"
+        and str(e.get("source_file", "")).endswith(".cshtml")
+    }
+    assert _canonical_id(r) not in cshtml_targets, (
+        "a .cshtml file must not inherit _Imports.razor usings"
+    )
+
+
 def test_cs_files_do_not_inherit_imports_razor(tmp_path, monkeypatch):
     """The Razor compiler's rule is Razor-only: a .cs file in the same
     directory must not gain the _Imports.razor usings."""

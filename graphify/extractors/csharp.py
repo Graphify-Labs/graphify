@@ -257,12 +257,13 @@ class CsharpNameResolver:
                         bucket.append(entry)
 
         # Blazor ``_Imports.razor`` (#3187): the Razor compiler applies its
-        # ``@using``/alias directives to every Razor file in the same directory
-        # and below, and the standard Blazor template keeps the app's
-        # namespaces there — so without this a bare ``@inject WidgetService``
-        # in a page dangles even though the canonical definition is in the
-        # graph. Index each _Imports.razor's directives by the directory they
-        # govern; razor-family lookups fold them in.
+        # ``@using``/alias directives to every ``.razor`` component in the same
+        # directory and below (and only to ``.razor`` — ``.cshtml`` views/pages
+        # use ``_ViewImports.cshtml`` instead), and the standard Blazor template
+        # keeps the app's namespaces there — so without this a bare
+        # ``@inject WidgetService`` in a page dangles even though the canonical
+        # definition is in the graph. Index each _Imports.razor's directives by
+        # the directory they govern; ``.razor`` lookups fold them in.
         self._razor_dir_usings: list[tuple[str, list[tuple[str, str, str | None]]]] = []
         self._razor_dir_aliases: list[
             tuple[str, dict[str, list[tuple[str, str, str | None]]]]
@@ -293,15 +294,17 @@ class CsharpNameResolver:
         return scope_id is not None and scope_id in self._scope_chain(source_node)
 
     @staticmethod
-    def _is_razor_family(source_file: str) -> bool:
-        return isinstance(source_file, str) and source_file.lower().endswith(
-            (".razor", ".cshtml")
-        )
+    def _inherits_imports_razor(source_file: str) -> bool:
+        # `.razor` components only: the Razor compiler applies _Imports.razor
+        # directives to Razor component files, while `.cshtml` views/pages are
+        # governed by the separate `_ViewImports.cshtml` mechanism and must not
+        # inherit from _Imports.razor.
+        return isinstance(source_file, str) and source_file.lower().endswith(".razor")
 
     def _inherited_razor_usings(
         self, source_file: str
     ) -> list[tuple[str, str, str | None]]:
-        if not self._razor_dir_usings or not self._is_razor_family(source_file):
+        if not self._razor_dir_usings or not self._inherits_imports_razor(source_file):
             return []
         out: list[tuple[str, str, str | None]] = []
         for d, entries in self._razor_dir_usings:
@@ -315,7 +318,7 @@ class CsharpNameResolver:
         self, source_file: str
     ) -> dict[str, list[tuple[str, str, str | None]]]:
         own = self.aliases_by_file.get(source_file, {})
-        if not self._razor_dir_aliases or not self._is_razor_family(source_file):
+        if not self._razor_dir_aliases or not self._inherits_imports_razor(source_file):
             return own
         inherited = [
             alias_map for d, alias_map in self._razor_dir_aliases
