@@ -5607,7 +5607,22 @@ def _extract_generic(
                         # Try reading the node directly (e.g. Java name field is the callee)
                         callee_name = _read_text(func_node, source)
 
-            if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
+            # _LANGUAGE_BUILTIN_GLOBALS is one union across every language, right for
+            # a BARE call (String(x) really would become a god node) but wrong for a
+            # MEMBER call: `open` is a Python builtin and `Set` a JavaScript one, so
+            # session.open() in Swift or _server.Set() in C# named after another
+            # language's builtin was silently discarded outright -- no same-file
+            # edge, but also no raw_calls entry, so cross-file resolution never even
+            # got a chance to try (#3381). A member call carries a receiver, so it
+            # is not the ambiguous case the union guards against; letting it through
+            # here while forcing tgt_nid = None below (same as the existing
+            # receiver-typed defers just past this comment) means it can only ever
+            # reach an edge through a guarded, receiver-typed resolver, never the
+            # unguarded bare-name path a real god node would need.
+            _builtin_member_call = is_member_call and callee_name in _LANGUAGE_BUILTIN_GLOBALS
+            if callee_name and (
+                callee_name not in _LANGUAGE_BUILTIN_GLOBALS or _builtin_member_call
+            ):
                 # Python member calls defer to receiver-based resolution unless the
                 # receiver is known to stay in the current class. Falling back to a
                 # bare method name for an unresolved/lowercase receiver (`d.get()` or
@@ -5636,7 +5651,7 @@ def _extract_generic(
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
-                if _python_defer or _java_defer or (
+                if _python_defer or _java_defer or _builtin_member_call or (
                     is_member_call
                     and member_receiver
                     and (

@@ -1329,6 +1329,64 @@ def test_python_qualified_class_method_call_resolves_extracted(tmp_path):
     assert call_edges[0]["confidence"] == "EXTRACTED"
 
 
+def test_builtin_named_member_call_still_resolves_cross_file(tmp_path):
+    """#3381: _LANGUAGE_BUILTIN_GLOBALS is one union across every language, right
+    for a BARE call (String(x) really would become a god node) but wrong for a
+    MEMBER call -- `open` is a Python builtin, so Session.open() used to be
+    silently discarded outright: no same-file edge, but also no raw_calls entry,
+    so cross-file resolution never got a chance to try it. A member call carries
+    a receiver, so it isn't the ambiguous case the union guards against."""
+    session = tmp_path / "session.py"
+    user = tmp_path / "user.py"
+    session.write_text(
+        "class Session:\n"
+        "    @staticmethod\n"
+        "    def open():\n"
+        "        return 'opened'\n"
+    )
+    user.write_text(
+        "from session import Session\n\n"
+        "def start():\n"
+        "    Session.open()\n"
+    )
+    result = extract([user, session], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    call_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "start" in nodes[e["source"]]["label"]
+        and "open" in nodes[e["target"]]["label"]
+        and "session.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(call_edges) == 1, f"expected one start->open edge, got {call_edges}"
+    assert call_edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_builtin_named_member_call_does_not_bind_to_unrelated_bare_function(tmp_path):
+    """#3381 follow-up: the god-node guard the builtin filter exists for must
+    still hold. A member call named after a builtin must never fall back to an
+    unrelated same-file bare function sharing that name -- it may only ever
+    resolve through a guarded, receiver-typed path (or not resolve at all)."""
+    p = tmp_path / "sample.py"
+    p.write_text(
+        "def open():\n"
+        "    return 'unrelated top-level function also named open'\n"
+        "\n"
+        "class Session:\n"
+        "    def start(self, other):\n"
+        "        other.open()\n"
+        "        f = open('file.txt')\n"
+    )
+    result = extract([p], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    open_fn = next(n for n in result["nodes"] if n["label"] == "open()")
+    bad_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls" and e["target"] == open_fn["id"]
+    ]
+    assert bad_edges == [], f"member/bare builtin-named calls bound to unrelated open(): {bad_edges}"
+
+
 def test_degenerate_symbol_name_does_not_leak_absolute_id(tmp_path):
     """#1899 variant B: a symbol whose name normalizes to nothing (a minified `$`
     function, a JSONC `"//"` key) must not be minted — `_make_id(stem, "")`
