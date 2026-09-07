@@ -159,3 +159,28 @@ def test_a_same_file_method_call_keeps_its_extracted_edge(tmp_path):
     edges = [e for (src, tgt), e in calls.items() if src == "Run()" and tgt == ".Greet()"]
     assert len(edges) == 1, calls
     assert edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_a_type_from_another_language_never_answers_a_go_receiver(tmp_path):
+    # The declaration index is corpus-wide, so a same-named Java class would both answer
+    # the receiver and hide that no Go file declares it — the call belongs to the merge.
+    calls, result = _calls(tmp_path, {
+        "svc/app.go": "package svc\n\nfunc Run(g *Greeter) { g.Greet() }\n",
+        "java/Greeter.java": "public class Greeter { public void Greet() {} }\n",
+    })
+    assert _greet_edge(calls) is None, calls
+    parked = [(n.get("metadata") or {}).get("unresolved_calls")
+              for n in result["nodes"] if n["label"] == "Run()"]
+    assert parked == [[{"callee": "Greet", "receiver_type": "Greeter",
+                        "lang": "go", "line": "L3"}]], parked
+
+
+def test_the_methods_own_receiver_outranks_an_earlier_binding_of_the_name(tmp_path):
+    # `s` is bound to `Server` earlier in the file, but inside `Get` it is the method's own
+    # receiver: a `Store` with no `Save` must stay unresolved rather than reach Server's.
+    calls, _ = _calls(tmp_path, {
+        "svc/a.go": "package svc\n\nfunc Run(s *Server) {}\n\n"
+                    "type Store struct{}\n\nfunc (s *Store) Get() { s.Save() }\n",
+        "svc/b.go": "package svc\n\ntype Server struct{}\n\nfunc (s *Server) Save() {}\n",
+    })
+    assert (".Get()", ".Save()") not in calls, calls
