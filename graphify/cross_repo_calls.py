@@ -44,8 +44,10 @@ _LANG_SUFFIXES: dict[str, frozenset[str]] = {
     "java": frozenset({".java"}),
     "swift": frozenset({".swift"}),
     # TS and JS share one key: a TS class legitimately answers a JS call site, so
-    # splitting them would drop every TS<->JS cross-repo call.
-    "typescript": frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"}),
+    # splitting them would drop every TS<->JS cross-repo call. An SFC script block is
+    # TS/JS too, so a class exported from `.vue` answers as well.
+    "typescript": frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
+                             ".vue", ".svelte", ".astro"}),
 }
 
 # A declaration owns its members through a `method` edge, except in C++, where an
