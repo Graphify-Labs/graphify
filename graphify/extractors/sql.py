@@ -299,23 +299,33 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
     identifier starts a name, so it is preceded by whitespace, `.`, `,`, `(`,
     or the start of the file; an array marker is preceded by the identifier
     or keyword it subscripts (ARRAY[, col[, the closing `)` of a type's
-    precision/scale list), with no separating punctuation. Content that is
-    empty or purely numeric is also excluded, since neither is a legal bare
-    T-SQL identifier, and content holding a comment opener (`--`, `/*`) is
+    precision/scale list), with no separating punctuation -- except the
+    ARRAY keyword itself, which PostgreSQL also allows a space before its
+    bracket (ARRAY [1, 2, 3]); that specific case is checked for past a run
+    of spaces or tabs so it is not mistaken for the start of a quoted name.
+    Content that is empty or purely numeric is also excluded, since neither
+    is a legal bare T-SQL identifier, and content holding a comment opener
+    (`--`, `/*`) is
     distrusted the same way _scan_sql treats it: a genuine identifier never
     contains one, so a bracket that appears to swallow one is more likely an
     unrelated stray `[` racing ahead to some later statement's real closing
     `]`. Rewriting it anyway would erase the comment before _scan_sql's own
     line-scoped distrust handling ever sees it.
 
-    Content holding a literal `.` is excluded too, but for a different
-    reason: tree_sitter_sql's own grammar splits on a dot even inside a
-    backtick span, so a bracket name like [My.Table] would still come out
-    mangled after rewriting to `My.Table` (the grammar reads it as `My`,
-    a bare `.` qualifier, `Table`, and a dangling stray backtick). No amount
-    of escaping on this end can round-trip that; leaving it as a plain,
-    un-rewritten bracket is the fallback that existed before this function
-    did.
+    Content holding a literal `.` or a literal backtick is excluded too,
+    but for a different reason: tree_sitter_sql's own grammar cannot
+    correctly parse either one inside a backtick span. A dot splits the
+    token regardless of quoting, so [My.Table] would still come out mangled
+    after rewriting to `My.Table` (the grammar reads it as `My`, a bare `.`
+    qualifier, `Table`, and a dangling stray backtick). A literal backtick
+    is escaped by doubling it when this function writes a rewritten span
+    ([Foo`Bar] -> `Foo``Bar`, matching MySQL's own escaping convention),
+    but the grammar treats the first backtick of that doubled pair as the
+    closing delimiter instead of an escape, truncating the identifier to
+    `Foo` and leaving `Bar` behind as an unrelated ERROR node. No amount of
+    escaping on this end can round-trip either shape; leaving the span as a
+    plain, un-rewritten bracket is the fallback that existed before this
+    function did.
 
     A single or double quoted string is scanned to its real closing quote
     even across embedded newlines, matching how the engines actually read
@@ -421,6 +431,25 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
             subscript_like = prev is not None and (
                 chr(prev).isalnum() or chr(prev) in "_$)]"
             )
+            if not subscript_like and prev in (0x20, 0x09):
+                # PostgreSQL allows whitespace between the ARRAY keyword and
+                # its bracket constructor (ARRAY [1, 2, 3]), so a plain
+                # "preceding char" check misses it: the char right before
+                # '[' is a space, not the identifier/keyword the marker
+                # actually subscripts. Look back past the run of spaces or
+                # tabs for a bare ARRAY word instead.
+                k = i - 1
+                while k > 0 and source[k - 1] in (0x20, 0x09):
+                    k -= 1
+                word_start = k - 5
+                if word_start >= 0 and source[word_start:k].upper() == b"ARRAY" and (
+                    word_start == 0
+                    or not (
+                        chr(source[word_start - 1]).isalnum()
+                        or source[word_start - 1] in (0x5F, 0x24)
+                    )
+                ):
+                    subscript_like = True
             j = i + 1
             closed = False
             while j < n and source[j] != ord("\n"):
@@ -441,6 +470,7 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
                 and b"--" not in content
                 and b"/*" not in content
                 and b"." not in content
+                and b"`" not in content
             )
             if looks_like_ident:
                 escaped = content.replace(b"]]", b"]").replace(b"`", b"``")
