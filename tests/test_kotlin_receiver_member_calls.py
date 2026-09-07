@@ -165,3 +165,33 @@ def test_a_qualified_call_still_reaches_the_package_resolver(tmp_path):
     edge = _greet_edge(calls)
     assert edge is not None, calls
     assert edge["confidence"] == "EXTRACTED"
+
+
+def test_a_java_class_answers_a_kotlin_receiver(tmp_path):
+    # Kotlin and Java compile to one classpath, so a receiver typed to a Java class is
+    # ordinary interop — the dominant shape in an Android codebase mid-migration.
+    calls, _ = _calls(tmp_path, {
+        "Greeter.java": "public class Greeter {\n    public void greet() {}\n}\n",
+        "App.kt": "class App(private val greeter: Greeter) {\n"
+                  "    fun run() { greeter.greet() }\n"
+                  "}\n",
+    })
+    edge = _greet_edge(calls)
+    assert edge is not None, calls
+    assert edge["confidence"] == "INFERRED"
+
+
+def test_a_class_from_an_unrelated_language_never_answers_a_kotlin_receiver(tmp_path):
+    # The declaration index is corpus-wide, so a same-named PHP class would both answer
+    # the receiver and hide that nothing on the classpath declares it.
+    calls, result = _calls(tmp_path, {
+        "Greeter.php": "<?php\nclass Greeter {\n    public function greet(): void {}\n}\n",
+        "App.kt": "class App(private val greeter: Greeter) {\n"
+                  "    fun run() { greeter.greet() }\n"
+                  "}\n",
+    })
+    assert _greet_edge(calls) is None, calls
+    parked = [(n.get("metadata") or {}).get("unresolved_calls") for n in result["nodes"]
+              if "run" in str(n["label"]) and n.get("metadata")]
+    assert parked == [[{"callee": "greet", "receiver_type": "Greeter",
+                        "lang": "kotlin", "line": "L2"}]], parked
