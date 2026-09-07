@@ -277,6 +277,10 @@ def _norm_ident(name: str) -> str:
     return ".".join(parts)
 
 
+# PostgreSQL dollar-quoted string/body delimiter: $$ or $tag$, tag optional.
+_DOLLAR_QUOTE_TAG_RX = re.compile(rb"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
+
+
 def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
     """Rewrite T-SQL bracket quoted identifiers to backtick quoted ones.
 
@@ -323,6 +327,12 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
     this way, which only means nothing past it gets debracketed -- the same
     fallback behavior as before this function existed.
 
+    A PostgreSQL dollar-quoted span ($$ ... $$ or $tag$ ... $tag$, as used
+    for a PL/pgSQL function body) is skipped the same way: its content is
+    opaque body text, not SQL to debracket, and bracket-like text inside it
+    (an array subscript expression, say) must not be rewritten just because
+    it happens to sit between a stray pair of square brackets.
+
     Returns the rewritten source plus the byte-range spans, in the rewritten
     source's own coordinates, of every backtick pair this function inserted.
     A downstream reader uses those spans to un-rewrite ONLY the identifiers
@@ -357,6 +367,12 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
                     j += 1
                     break
                 j += 1
+            out += source[i:j]
+            i = j
+        elif c == ord("$") and (m := _DOLLAR_QUOTE_TAG_RX.match(source, i)):
+            tag = m.group(0)
+            close = source.find(tag, m.end())
+            j = close + len(tag) if close != -1 else n
             out += source[i:j]
             i = j
         elif c == ord("-") and i + 1 < n and source[i + 1] == ord("-"):

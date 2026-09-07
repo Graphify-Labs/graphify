@@ -1384,6 +1384,34 @@ def test_sql_tsql_debracket_does_not_corrupt_multiline_string(tmp_path):
     assert new_src == src, f"string content was rewritten: {new_src!r}"
     assert not spans
 
+def test_sql_tsql_debracket_does_not_corrupt_dollar_quoted_body(tmp_path):
+    """A PostgreSQL dollar-quoted PL/pgSQL body ($$ ... $$ or $tag$ ... $tag$)
+    is opaque function body text, not SQL to debracket. _debracket_tsql had
+    no handling for it at all, so bracket-like text anywhere inside a
+    dollar-quoted body was mistaken for a real bracket identifier and
+    rewritten to backtick form, corrupting the body's content."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = (
+        b"CREATE FUNCTION foo() RETURNS void AS $$\n"
+        b"BEGIN\n"
+        b"    SELECT [NotReallyBracketIdent];\n"
+        b"END;\n"
+        b"$$ LANGUAGE plpgsql;\n"
+    )
+    new_src, spans = _debracket_tsql(src)
+    assert new_src == src, f"dollar-quoted body was rewritten: {new_src!r}"
+    assert not spans
+
+    tagged = (
+        b"CREATE FUNCTION foo() RETURNS void AS $body$\n"
+        b"    SELECT [NotAnIdentifier];\n"
+        b"$body$ LANGUAGE plpgsql;\n"
+    )
+    new_tagged, tagged_spans = _debracket_tsql(tagged)
+    assert new_tagged == tagged, f"tagged dollar-quoted body was rewritten: {new_tagged!r}"
+    assert not tagged_spans
+
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""
