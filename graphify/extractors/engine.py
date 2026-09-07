@@ -830,16 +830,14 @@ def _kotlin_constructor_type(property_node, source: bytes) -> str | None:
     A constructor invocation is spelled exactly like a function call in this grammar, so
     the capitalized head is the only evidence that `val c = Client()` binds a Client.
     """
-    for child in property_node.children:
-        if child.type != "call_expression":
-            continue
-        head = child.children[0] if child.children else None
-        if head is not None and head.type in ("simple_identifier", "identifier"):
-            text = _read_text(head, source)
-            if (text and text[:1].isupper() and text not in _KOTLIN_BUILTIN_TYPES
-                    and text not in _JAVA_BUILTIN_TYPES):
-                return text
+    call = next((c for c in property_node.children if c.type == "call_expression"), None)
+    head = call.children[0] if call is not None and call.children else None
+    if head is None or head.type not in ("simple_identifier", "identifier"):
         return None
+    text = _read_text(head, source)
+    if (text and text[:1].isupper() and text not in _KOTLIN_BUILTIN_TYPES
+            and text not in _JAVA_BUILTIN_TYPES):
+        return text
     return None
 
 def _kotlin_binding_type(node, source: bytes) -> str | None:

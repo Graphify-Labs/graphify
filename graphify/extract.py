@@ -4601,6 +4601,11 @@ def _resolve_csharp_qualified_calls(
         })
 
 
+# Where a Kotlin receiver's type may be declared. Kotlin and Java compile to one
+# classpath, so a `.java` declaration answers a Kotlin receiver.
+_KOTLIN_DECL_SUFFIXES = (".kt", ".kts", ".java")
+
+
 def _resolve_kotlin_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -4639,12 +4644,15 @@ def _resolve_kotlin_member_calls(
 
     # A genuine declaration is the target of a `contains` edge from its file node; a bare
     # type reference mints a same-label stub that would otherwise make a real name ambiguous.
+    # `.java` counts: a Kotlin receiver typed to a Java class is interop, not a collision,
+    # while a same-named class in an unrelated language is one.
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (str(n.get("source_file", "")).endswith(_KOTLIN_DECL_SUFFIXES)
+                and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
@@ -4693,7 +4701,9 @@ def _resolve_kotlin_member_calls(
             "relation": "calls",
             "context": "call",
             "confidence": "EXTRACTED" if type_qualified else "INFERRED",
-            "confidence_score": 1.0 if type_qualified else 0.8,
+            # The rubric's discrete INFERRED scale (references/extraction-spec.md):
+            # a single-definition type-table hit is the high-confidence rung.
+            "confidence_score": 1.0 if type_qualified else 0.85,
             "source_file": rc.get("source_file", ""),
             "source_location": rc.get("source_location"),
             "weight": 1.0,
