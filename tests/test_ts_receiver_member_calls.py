@@ -155,3 +155,14 @@ def test_same_file_type_still_resolves(tmp_path):
                      "export function runLocal(): void { r.save(); }\n"),
     })
     assert any("runLocal" in s and "save" in t for s, t in calls)
+
+
+def test_a_pure_esm_corpus_still_activates_the_resolver(tmp_path):
+    # `.mjs` and `.cjs` route to extract_js like `.js` does, so a repo that uses
+    # only those must not be the one shape where the resolver never runs.
+    calls, _ = _calls(tmp_path, {
+        "svc.mjs": "export class Svc {\n  doThing() { return 1; }\n}\n",
+        "app.mjs": ('import { Svc } from "./svc.mjs";\nconst s = new Svc();\n'
+                    "export function usesDirect() { return s.doThing(); }\n"),
+    })
+    assert any("usesDirect" in s and "doThing" in t for s, t in calls)
