@@ -4542,6 +4542,9 @@ def _resolve_go_member_calls(
     Names are matched case-sensitively, unlike the sibling resolvers. Go exports by
     capitalisation, so `Run` and `run` on one type are two different methods with two
     different visibilities, and folding them would pick whichever came last.
+
+    A receiver typed to a type this corpus declares nowhere is parked on the caller for
+    a merged graph to finish (#3152).
     """
     raw = [
         rc
@@ -4587,7 +4590,13 @@ def _resolve_go_member_calls(
         if not type_name or type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
         type_defs = type_def_nids.get(_key(type_name), [])
-        if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
+        if not type_defs:
+            # Declared nowhere here — usually "in a repo this build does not contain",
+            # so park it for the merge (#3152). The extractor's language tag already
+            # says who is asking, so no suffix sniff is needed.
+            _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "go", rc)
+            continue
+        if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
             continue
         targets = method_index.get((type_defs[0], _key(callee)), [])
         if len(targets) != 1:
