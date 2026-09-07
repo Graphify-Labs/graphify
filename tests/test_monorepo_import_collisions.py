@@ -221,20 +221,28 @@ def test_shared_dependency_joins_manifests_through_one_module_node(tmp_path, mon
     ref = ref_nodes[0]
     assert G.nodes[ref].get("type") == "module"
 
-    entry_nodes = {
+    # Both manifests reach the shared node (the dep edge is sourced at the
+    # manifest file since the #1764 self-loop fix)...
+    manifest_files = {
+        n for n, a in G.nodes(data=True)
+        if str(a.get("source_file", "")).endswith("package.json")
+        and a.get("label") == "package.json"
+    }
+    wired = {m for m in manifest_files if G.has_edge(m, ref)}
+    assert wired == manifest_files, (
+        f"manifests not wired to the shared node: {manifest_files - wired}"
+    )
+    # ...and no edge joins the two projects' typescript nodes directly.
+    ts_nodes = {
         n for n, a in G.nodes(data=True)
         if a.get("label") == "typescript" and n != ref
     }
-    # Both manifests' entries reach the shared node...
-    for entry in entry_nodes:
-        assert G.has_edge(entry, ref), f"{entry} not wired to the shared node"
-    # ...and no edge joins the two projects' entries directly.
     proj_of = {
-        n: str(G.nodes[n].get("source_file", "")).split("/")[0] for n in entry_nodes
+        n: str(G.nodes[n].get("source_file", "")).split("/")[0] for n in ts_nodes
     }
     direct = [
         (u, v) for u, v in G.edges()
-        if u in entry_nodes and v in entry_nodes and proj_of[u] != proj_of[v]
+        if u in ts_nodes and v in ts_nodes and proj_of[u] != proj_of[v]
     ]
     assert direct == [], f"projects still joined directly: {direct}"
 
