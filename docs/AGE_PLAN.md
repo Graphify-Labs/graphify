@@ -11,8 +11,10 @@ explicitly deferred -- see Phase 6). A pre-existing edge-direction bug
 affecting all three graph-DB exporters and `graph_diff()` was found and
 fixed while validating Phase 5's queries (see Phase 5's checklist).
 `bytes_used` remains an unpopulated reserved column (see Open questions);
-`extraction_config_hash` is now plumbed through and enforced wherever it's
-given, but nothing yet computes a non-None value for it.
+`extraction_config_hash` is plumbed through, populated by the CLI
+(`age_registry.extraction_config_hash()`), and enforced; its inputs
+(`--full-props` + an optional caller fingerprint) are still coarser than a
+full extraction-settings hash (see Open questions).
 
 **Post-review corrections (v15)**: an external review of the branch was
 not ready-to-merge, citing several correctness gaps. All were fixed:
@@ -819,12 +821,17 @@ the ones specific to AGE that aren't automatically obvious from those docs.
 - [x] Branch name from `git rev-parse --abbrev-ref HEAD`; commit SHA via
       the existing `graphify.watch._git_head` helper (already
       cwd-anchored per #2316) — reused rather than reimplemented.
-- [ ] **Deferred, not built**: `graphify_version`/`schema_version` are
-      available (`age_registry.graphify_package_version()`,
-      `age_registry.SCHEMA_VERSION`) but not yet threaded into an actual
-      write of `graphify_snapshots` — no code creates snapshot rows yet,
-      since that's Phase 3's job. `extraction_config_hash` remains an
-      unpopulated reserved column (see the new Open Questions entry).
+- [x] **Closed by Phase 3 + the v15 review fixes** (was deferred here):
+      `graphify_snapshots` rows now persist
+      `graphify_version`/`schema_version`/`extraction_config_hash` on every
+      write (`age_snapshots.record_snapshot`/`record_historical_checkpoint`),
+      and `extraction_config_hash` is a real value —
+      `age_registry.extraction_config_hash(full_props=..., extra=...)`, a
+      deterministic hash of `--full-props` plus an optional
+      `--extraction-config` / `GRAPHIFY_EXTRACTION_CONFIG_HASH` fingerprint,
+      threaded through the CLI into `push_branch`/`record_snapshot`/
+      `latest_snapshot_graph`/`snapshot_graph_by_id`. Reconstruction and
+      base-snapshot resolution filter by all three fields.
 - [x] **Global cross-repo AGE graph needs no new code**: it was already
       possible with the existing CLI. `graphify export age --graph
       ~/.graphify/global-graph.json --push ... --graph-name
@@ -1087,8 +1094,8 @@ the ones specific to AGE that aren't automatically obvious from those docs.
       opening the PR once later phases land.
 - [x] `postgres`/`age` extra overlap decision recorded once (Phase 1
       commit), not re-litigated per phase.
-- [ ] CONTRIBUTING note (or README addition) documenting the fork → branch
-      → PR-to-upstream flow, once the AGE PR is up.
+- [x] README "Contributing → Git workflow" now documents the fork → branch
+      → PR-to-upstream flow and the one-branch/one-PR-per-feature rule.
 - [ ] The PR description states that the tier-3 live suite was run locally
       against the pinned image tag, and the result (the accepted-risk
       mitigation in Testing strategy).
@@ -1120,16 +1127,16 @@ the ones specific to AGE that aren't automatically obvious from those docs.
 - Whether to later add a non-blocking scheduled CI workflow with an AGE
   service container to run the tier-3 suite automatically (not required by
   this plan; would need upstream buy-in since CI config is upstream's).
-- **`extraction_config_hash` is not yet a real extraction-settings
-  fingerprint.** Phase 2's `register_repository()`/`ensure_schema()` only
-  define the column; nothing computes a meaningful hash yet, because doing
-  so requires threading the actual extraction config (LLM backend/model,
-  confidence thresholds, extractor flags) through from `graphify extract`
-  down to the `export age --push` call, which doesn't happen today. Phase
-  3's `record_snapshot()` accepts `extraction_config_hash` as an explicit
-  keyword (defaulting to `None`) so the plumbing point exists, but the CLI
-  still doesn't compute or pass a real value -- still reserved/nullable in
-  practice. Remains open for whichever phase first needs to *detect*
-  incompatible graphs via this field (materialization in Phase 4 is the
-  most likely forcing function) on what to hash and how to pass it
-  through.
+- **`extraction_config_hash` is populated and enforced, but its inputs are
+  still coarse.** As of the v15 review fixes the CLI computes and threads a
+  real value (`age_registry.extraction_config_hash()`) into
+  `push_branch`/`record_snapshot`/`latest_snapshot_graph`/
+  `snapshot_graph_by_id`, and Phase 4 materialization / base-snapshot
+  resolution / snapshot reconstruction all filter by it, so an incompatible
+  checkpoint or delta can no longer be spliced into a replay. What it hashes
+  today is `--full-props` plus an optional caller-supplied
+  `--extraction-config` / `GRAPHIFY_EXTRACTION_CONFIG_HASH` fingerprint --
+  it does **not** yet automatically fold in the actual extraction settings
+  (LLM backend/model, confidence thresholds, extractor flags), because those
+  aren't threaded from `graphify extract` down to `export age --push`.
+  Open: make that fingerprint automatic rather than opt-in.
