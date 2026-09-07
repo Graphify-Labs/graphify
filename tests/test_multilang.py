@@ -1433,6 +1433,42 @@ def test_sql_tsql_debracket_does_not_corrupt_backtick_identifier(tmp_path):
     assert new_escaped == escaped, f"escaped backtick corrupted: {new_escaped!r}"
     assert not escaped_spans
 
+def test_sql_tsql_debracket_leaves_bracket_content_with_backtick_alone(tmp_path):
+    """A T-SQL bracket identifier containing a literal backtick ([Foo`Bar],
+    a legal T-SQL name since only ] needs escaping inside a bracket) cannot
+    be represented by rewriting to backtick form: the grammar treats the
+    first backtick of the doubled escape this function would write
+    (`Foo``Bar`) as the closing delimiter rather than an escape, truncating
+    the identifier to Foo and leaving `Bar` as a stray ERROR node. Must be
+    left as a plain, un-rewritten bracket instead."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = b"CREATE TABLE [Foo`Bar] (Id INT);\n"
+    new_src, spans = _debracket_tsql(src)
+    assert new_src == src, f"bracket with backtick content was rewritten: {new_src!r}"
+    assert not spans
+
+def test_sql_tsql_debracket_does_not_rewrite_array_constructor_with_space(tmp_path):
+    """PostgreSQL allows whitespace between the ARRAY keyword and its
+    bracket constructor (ARRAY [1, 2, 3]). The preceding-character check
+    that tells an array marker apart from a bracket-quoted identifier only
+    looked at the single character right before '[', which is a space in
+    this shape rather than the keyword -- so the array literal was
+    mistaken for an identifier and rewritten to `1, 2, 3`."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = b"SELECT ARRAY [1, 2, 3];\n"
+    new_src, spans = _debracket_tsql(src)
+    assert new_src == src, f"array constructor was rewritten: {new_src!r}"
+    assert not spans
+
+    # A bracket identifier preceded by ordinary whitespace (not ARRAY) must
+    # still be rewritten -- this is the common, unaffected case.
+    ident = b"CREATE TABLE [Foo] (Id INT);\n"
+    new_ident, ident_spans = _debracket_tsql(ident)
+    assert new_ident == b"CREATE TABLE `Foo` (Id INT);\n", new_ident
+    assert ident_spans
+
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""
