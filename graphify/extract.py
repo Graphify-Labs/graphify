@@ -3419,6 +3419,10 @@ def _resolve_typescript_member_calls(
     defined in the caller's own file, a named import of the caller's file, or
     contained in a module the caller's file imports. Otherwise EMIT NOTHING —
     a false call edge is worse than a missing one (the C++ resolver's bar).
+
+    A receiver typed to a class this corpus declares nowhere is parked on the caller
+    for a merged graph to finish (#3152); the gate above never sees it, since it only
+    vets a name that did match locally.
     """
     type_table_by_file: dict[str, dict[str, str]] = {}
     for result in per_file:
@@ -3501,6 +3505,15 @@ def _resolve_typescript_member_calls(
         if type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
         type_defs = type_def_nids.get(_key(type_name), [])
+        if not type_defs:
+            # Table-typed only: an uppercase receiver also matches namespace aliases and
+            # default imports, and node_modules is unscanned, so those are npm names.
+            # The suffix stands in for the `lang` tag TS raw_calls do not carry.
+            if not type_qualified and str(rc.get("source_file", "")).endswith(_JS_TS_SUFFIXES):
+                _park_unresolved_member_call(
+                    node_by_id.get(caller), callee, type_name, "typescript", rc,
+                )
+            continue
         if len(type_defs) != 1:
             continue
         type_nid = type_defs[0]
