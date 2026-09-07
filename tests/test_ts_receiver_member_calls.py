@@ -166,3 +166,46 @@ def test_a_pure_esm_corpus_still_activates_the_resolver(tmp_path):
                     "export function usesDirect() { return s.doThing(); }\n"),
     })
     assert any("usesDirect" in s and "doThing" in t for s, t in calls)
+
+
+def _parked(r) -> list[dict]:
+    return [entry for n in r["nodes"]
+            if isinstance(n.get("metadata"), dict)
+            for entry in n["metadata"].get("unresolved_calls", [])]
+
+
+def test_an_annotated_type_declared_nowhere_is_parked_for_the_merge(tmp_path):
+    _, r = _calls(tmp_path, {
+        "app.ts": ("import { Greeter } from 'greeter-pkg';\n"
+                   "export class App {\n"
+                   "  constructor(private greeter: Greeter) {}\n"
+                   "  run(): void { this.greeter.greet(); }\n"
+                   "}\n"),
+    })
+    assert _parked(r) == [{"callee": "greet", "receiver_type": "Greeter",
+                           "lang": "typescript", "line": "L4"}]
+
+
+def test_a_namespace_style_receiver_is_not_parked(tmp_path):
+    # An uppercase receiver types the type by spelling alone, which a namespace
+    # alias, a default import or a plain const object satisfies just as well.
+    _, r = _calls(tmp_path, {
+        "app.ts": ("import * as React from 'react';\n"
+                   "const s = new Svc();\n"
+                   "export function render(): void { React.createElement(); }\n"),
+    })
+    assert _parked(r) == []
+
+
+def test_a_type_the_origin_gate_rejected_is_not_parked(tmp_path):
+    # A local declaration exists and the gate refused it, so parking would ask the
+    # merge to accept a remote match on evidence the gate just judged weaker.
+    _, r = _calls(tmp_path, {
+        "fileb.ts": _LOCAL_REPO,
+        "filea.ts": ("import type { Repo } from 'external-pkg';\n"
+                     "export class ReportService {\n"
+                     "  constructor(private repo: Repo) {}\n"
+                     "  run(): void { this.repo.save(); }\n"
+                     "}\n"),
+    })
+    assert _parked(r) == []
