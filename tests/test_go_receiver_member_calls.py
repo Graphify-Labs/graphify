@@ -130,25 +130,6 @@ def test_two_packages_declaring_the_same_type_resolve_to_neither(tmp_path):
     assert _greet_edge(calls) is None, calls
 
 
-def test_the_first_binding_of_a_name_wins(tmp_path):
-    # The table is flat per file, so a parameter named like an earlier one has to lose:
-    # otherwise `other`'s signature would redirect the first function's calls.
-    calls, result = _calls(tmp_path, {
-        "svc/greeter.go": GREETER,
-        "svc/other.go": "package svc\n\ntype Other struct{}\n\nfunc (o *Other) Greet() {}\n",
-        "svc/app.go": "package svc\n\nfunc Run(g *Greeter) { g.Greet() }\n\n"
-                      "func Also(g *Other) { g.Greet() }\n",
-    })
-    source_of = {n["id"]: str(n.get("source_file") or "") for n in result["nodes"]}
-    label_of = {n["id"]: n["label"] for n in result["nodes"]}
-    run_targets = {source_of[e["target"]] for e in result["edges"]
-                   if e["relation"] == "calls"
-                   and label_of.get(e["source"]) == "Run()"
-                   and label_of.get(e["target"]) == ".Greet()"}
-    assert len(run_targets) == 1, run_targets
-    assert run_targets.pop().endswith("greeter.go")
-
-
 def test_a_same_file_method_call_keeps_its_extracted_edge(tmp_path):
     # In-file resolution still happens by bare label before this pass, so the edge must
     # stay EXTRACTED and must not be doubled.
@@ -189,12 +170,17 @@ def test_the_methods_own_receiver_outranks_an_earlier_binding_of_the_name(tmp_pa
 def test_a_parameter_binds_only_inside_its_own_function(tmp_path):
     # `s`, `c`, `w`, `r` get reused as parameter names by every function in a Go file, so a
     # table flat over the file answers one function's receiver with another's type.
-    calls, _ = _calls(tmp_path, {
-        "greeter.go": GREETER,
-        "shouter.go": "package svc\n\ntype Shouter struct{}\n\nfunc (s *Shouter) Greet() {}\n",
-        "use.go": ("package svc\n\nfunc First(g *Greeter) {}\n\n"
-                   "func Second(g *Shouter) {\n\tg.Greet()\n}\n"),
+    calls, result = _calls(tmp_path, {
+        "svc/greeter.go": GREETER,
+        "svc/other.go": "package svc\n\ntype Other struct{}\n\nfunc (o *Other) Greet() {}\n",
+        "svc/app.go": "package svc\n\nfunc Run(g *Greeter) { g.Greet() }\n\n"
+                      "func Also(g *Other) { g.Greet() }\n",
     })
-    hits = [e for (src, tgt), e in calls.items() if src == "Second()" and tgt == ".Greet()"]
-    assert len(hits) == 1, calls
-    assert "shouter" in hits[0]["target"].lower(), hits[0]["target"]
+    source_of = {n["id"]: str(n.get("source_file") or "") for n in result["nodes"]}
+    label_of = {n["id"]: n["label"] for n in result["nodes"]}
+    targets = {}
+    for e in result["edges"]:
+        if e["relation"] == "calls" and label_of.get(e["target"]) == ".Greet()":
+            targets.setdefault(label_of.get(e["source"]), set()).add(source_of[e["target"]])
+    assert len(targets["Run()"]) == 1 and targets["Run()"].pop().endswith("greeter.go"), targets
+    assert len(targets["Also()"]) == 1 and targets["Also()"].pop().endswith("other.go"), targets
