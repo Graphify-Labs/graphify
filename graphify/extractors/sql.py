@@ -304,6 +304,25 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
     `]`. Rewriting it anyway would erase the comment before _scan_sql's own
     line-scoped distrust handling ever sees it.
 
+    Content holding a literal `.` is excluded too, but for a different
+    reason: tree_sitter_sql's own grammar splits on a dot even inside a
+    backtick span, so a bracket name like [My.Table] would still come out
+    mangled after rewriting to `My.Table` (the grammar reads it as `My`,
+    a bare `.` qualifier, `Table`, and a dangling stray backtick). No amount
+    of escaping on this end can round-trip that; leaving it as a plain,
+    un-rewritten bracket is the fallback that existed before this function
+    did.
+
+    A single or double quoted string is scanned to its real closing quote
+    even across embedded newlines, matching how the engines actually read
+    one: stopping at the first line break would leave the remainder of a
+    still-open multi-line string scanned as ordinary source, so bracket-like
+    text inside it (dynamic SQL split across lines, say) would be mistaken
+    for a real identifier and rewritten, corrupting the string's content.
+    A string that in fact never closes just consumes the rest of the file
+    this way, which only means nothing past it gets debracketed -- the same
+    fallback behavior as before this function existed.
+
     Returns the rewritten source plus the byte-range spans, in the rewritten
     source's own coordinates, of every backtick pair this function inserted.
     A downstream reader uses those spans to un-rewrite ONLY the identifiers
@@ -318,7 +337,7 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
         c = source[i]
         if c == ord("'"):
             j = i + 1
-            while j < n and source[j] != ord("\n"):
+            while j < n:
                 if source[j] == ord("'"):
                     if j + 1 < n and source[j + 1] == ord("'"):
                         j += 2
@@ -330,7 +349,7 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
             i = j
         elif c == ord('"'):
             j = i + 1
-            while j < n and source[j] != ord("\n"):
+            while j < n:
                 if source[j] == ord('"'):
                     if j + 1 < n and source[j + 1] == ord('"'):
                         j += 2
@@ -383,6 +402,7 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
                 and not content.strip().isdigit()
                 and b"--" not in content
                 and b"/*" not in content
+                and b"." not in content
             )
             if looks_like_ident:
                 escaped = content.replace(b"]]", b"]").replace(b"`", b"``")

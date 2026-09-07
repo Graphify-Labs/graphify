@@ -1354,6 +1354,36 @@ def test_sql_tsql_bracket_does_not_strip_unrelated_mysql_backticks(tmp_path):
         f"T-SQL bracket span elsewhere: {labels}"
     )
 
+def test_sql_tsql_bracket_with_dot_is_left_unrewritten(tmp_path):
+    """tree_sitter_sql's grammar splits on a literal `.` even inside a
+    backtick span, so a bracket name like [My.Table] cannot be represented
+    by rewriting it to a backtick pair -- the grammar would still mangle it
+    into `My` + a bare `.` + `Table` + a stray dangling backtick. Debracketing
+    must refuse to rewrite such a span and leave it as plain bracket text
+    instead of producing a corrupted label."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "dotted.sql"
+    p.write_text("CREATE TABLE [My.Table] (Id INT);\n")
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "My.Table" in labels, f"got {labels}"
+    for l in labels:
+        assert "`" not in l, f"a synthetic backtick leaked into a label: {labels}"
+
+def test_sql_tsql_debracket_does_not_corrupt_multiline_string(tmp_path):
+    """_debracket_tsql used to stop scanning a single quoted string at the
+    first newline regardless of whether it was actually closed there, so
+    bracket-like text on a later line of a still-open multi-line string
+    (dynamic SQL split across lines, say) was mistaken for a real bracket
+    identifier and rewritten to backtick form, corrupting the string's
+    content. The scan must follow the string to its real closing quote."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = b"SET @sql = 'first line\n[NotAnIdentifier] second line';\n"
+    new_src, spans = _debracket_tsql(src)
+    assert new_src == src, f"string content was rewritten: {new_src!r}"
+    assert not spans
+
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""
