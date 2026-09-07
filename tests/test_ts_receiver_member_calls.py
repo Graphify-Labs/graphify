@@ -209,3 +209,33 @@ def test_a_type_the_origin_gate_rejected_is_not_parked(tmp_path):
                      "}\n"),
     })
     assert _parked(r) == []
+
+
+def test_a_class_from_another_language_neither_answers_nor_blocks_parking(tmp_path):
+    # The declaration index is corpus-wide, so a same-named PHP class used to make the
+    # receiver look locally declared and the call was dropped instead of parked.
+    _, r = _calls(tmp_path, {
+        "app.ts": ("import { Greeter } from 'greeter-pkg';\n"
+                   "export class App {\n"
+                   "  constructor(private greeter: Greeter) {}\n"
+                   "  run(): void { this.greeter.greet(); }\n"
+                   "}\n"),
+        "Greeter.php": "<?php\nclass Greeter {\n    public function greet(): void {}\n}\n",
+    })
+    assert _parked(r) == [{"callee": "greet", "receiver_type": "Greeter",
+                           "lang": "typescript", "line": "L4"}]
+
+
+def test_a_class_declared_in_an_sfc_script_block_still_answers(tmp_path):
+    # An SFC script block is TS, so its declarations belong to the same interop family
+    # as the caller's and must keep resolving.
+    calls, _ = _calls(tmp_path, {
+        "app.ts": ("import { Greeter } from './Greeter.vue';\n"
+                   "export class App {\n"
+                   "  constructor(private greeter: Greeter) {}\n"
+                   "  run(): void { this.greeter.greet(); }\n"
+                   "}\n"),
+        "Greeter.vue": ("<script lang=\"ts\">\nexport class Greeter {\n"
+                        "  greet(): void {}\n}\n</script>\n"),
+    })
+    assert any("run" in str(s) and "greet" in str(t) for s, t in calls), calls
