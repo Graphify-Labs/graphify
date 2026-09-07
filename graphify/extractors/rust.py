@@ -182,6 +182,26 @@ def extract_rust(path: Path) -> dict:
                     function_bodies.append((func_nid, body))
             return
 
+        if t == "function_signature_item":
+            # A bodyless method declaration (`fn foo(&self);`), the shape a
+            # trait method takes when it has no default implementation. Same
+            # name/parameters/return_type fields as function_item, just no
+            # body field to walk (#3366).
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                func_name = _read_text(name_node, source)
+                line = node.start_point[0] + 1
+                if parent_impl_nid:
+                    func_nid = _make_id(parent_impl_nid, func_name)
+                    add_node(func_nid, f".{func_name}()", line)
+                    add_edge(parent_impl_nid, func_nid, "method", line)
+                else:
+                    func_nid = _make_id(stem, func_name)
+                    add_node(func_nid, f"{func_name}()", line)
+                    add_edge(file_nid, func_nid, "contains", line)
+                emit_param_return_refs(node, func_nid, line)
+            return
+
         if t in ("struct_item", "enum_item", "trait_item"):
             name_node = node.child_by_field_name("name")
             if name_node:
@@ -209,6 +229,21 @@ def extract_rust(path: Path) -> dict:
                                 else:
                                     add_edge(item_nid, tgt, "references", line,
                                              context="generic_arg")
+                    # A trait's own declaration_list was never walked, so every
+                    # method it declares was invisible: a default-bodied one
+                    # (function_item) only got a node if some impl in the same
+                    # file happened to define a same-named method, anchored at
+                    # the impl's line rather than the trait's; a signature-only
+                    # one (function_signature_item, the grammar's node type for
+                    # a bodyless `fn foo(&self);`) had no extraction path at
+                    # all (#3366). Walking with parent_impl_nid=item_nid routes
+                    # a default-bodied method through the same member-call
+                    # handling impl_item already uses for its own methods.
+                    for c in node.children:
+                        if c.type != "declaration_list":
+                            continue
+                        for member in c.children:
+                            walk(member, parent_impl_nid=item_nid)
                 if t == "struct_item":
                     for c in node.children:
                         if c.type != "field_declaration_list":
