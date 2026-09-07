@@ -1384,7 +1384,7 @@ def test_shell_safe_out_name_rejects_metacharacters(monkeypatch):
     string is evaluated). A value with any such character must fall back to
     the packaged default instead of reaching either template unescaped."""
     import graphify.install as install
-    for bad in ('evil"; rm -rf /', "evil`whoami`", "evil$(whoami)", "a b", "a;b", "a|b"):
+    for bad in ('evil"; rm -rf /', "evil`whoami`", "evil$(whoami)", "a;b", "a|b"):
         monkeypatch.setattr(install, "_GRAPHIFY_OUT", bad)
         assert install._shell_safe_out_name() == "graphify-out", bad
     for good in ("graphify-out", "my_custom-out.dir", "sub/dir", "/abs/path"):
@@ -1413,6 +1413,19 @@ def test_shell_safe_out_name_handles_windows_absolute_paths(monkeypatch):
     # value a shell would actually see matches the original path.
     recovered = escaped.encode().decode("unicode_escape")
     assert recovered == win_path, recovered
+
+
+def test_shell_safe_out_name_allows_spaces(monkeypatch):
+    """A custom output directory with a space (My Output Dir, or an absolute
+    path through a directory with one) used to fall back to the packaged
+    default too, even though a space is a common, entirely plausible path
+    character needing no escaping in either the JS string literal or the
+    surrounding double-quoted shell echo -- double quotes preserve a space
+    verbatim in both bash and PowerShell, so it cannot start a new word."""
+    import graphify.install as install
+    for good in ("My Output Dir", "/Users/john doe/graphify out"):
+        monkeypatch.setattr(install, "_GRAPHIFY_OUT", good)
+        assert install._shell_safe_out_name() == good
 
 
 def test_kilo_and_opencode_reminder_text_never_embeds_raw_graphify_out_value(monkeypatch):
