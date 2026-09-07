@@ -163,3 +163,18 @@ def test_a_static_call_keeps_its_own_path(tmp_path):
                    "    public function run(): void { Helper::format(); }\n}\n",
     })
     assert any(src and "run" in src and tgt == "Helper" for src, tgt in calls), calls
+
+
+def test_a_class_from_another_language_never_answers_a_php_receiver(tmp_path):
+    # The declaration index is corpus-wide, so a same-named Java class would both answer
+    # the receiver and hide that no PHP file declares it — the call belongs to the merge.
+    calls, result = _calls(tmp_path, {
+        "App.php": "<?php\nclass App {\n    private Greeter $greeter;\n"
+                   "    public function run(): void { $this->greeter->greet(); }\n}\n",
+        "Greeter.java": "public class Greeter { public void greet() {} }\n",
+    })
+    assert _greet_edge(calls) is None, calls
+    parked = [(n.get("metadata") or {}).get("unresolved_calls") for n in result["nodes"]
+              if "run" in str(n["label"]) and n.get("metadata")]
+    assert parked == [[{"callee": "greet", "receiver_type": "Greeter",
+                        "lang": "php", "line": "L4"}]], parked
