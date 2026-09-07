@@ -88,12 +88,27 @@ def _shell_safe_out_name() -> str:
     evaluated, since JS-escaping and shell-escaping are separate concerns
     the same characters do not satisfy at once. Rather than try to
     correctly double-escape for both, this allowlists characters that need
-    no escaping in either; anything else falls back to the packaged
-    default name, since a value needing more than this is not a plausible
-    real directory name in the first place (#2571 follow-up).
+    no escaping in either once passed through _js_string_escape; anything
+    else falls back to the packaged default name, since a value needing
+    more than this is not a plausible real directory name in the first
+    place (#2571 follow-up).
+
+    A colon and backslash are allowed alongside the original set so a
+    Windows absolute path (C:\\Users\\me\\out) is not silently discarded —
+    the plugin's own comment already documents Windows PowerShell as a
+    real target (#1646). Neither is safe to splice in raw, though: a bare
+    backslash in JS source is not an escape unless followed by a
+    recognized escape character, so an unescaped path backslash is just
+    dropped by the JS parser, corrupting the path before the shell ever
+    sees it (confirmed via `eval("'C:\\\\Users'")` -> "C:Users"). Routing
+    the allowlisted value through _js_string_escape doubles each backslash
+    in the generated source so the JS runtime reduces it back to one at
+    evaluation time; none of the other allowlisted characters need any
+    escaping, so this is a no-op for every value this function used to
+    return unescaped.
     """
-    if re.fullmatch(r"[A-Za-z0-9._/-]+", _GRAPHIFY_OUT):
-        return _GRAPHIFY_OUT
+    if re.fullmatch(r"[A-Za-z0-9._/:\\-]+", _GRAPHIFY_OUT):
+        return _js_string_escape(_GRAPHIFY_OUT)
     return "graphify-out"
 
 
