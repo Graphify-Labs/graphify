@@ -4601,11 +4601,6 @@ def _resolve_csharp_qualified_calls(
         })
 
 
-# Every suffix the PHP extractor claims. The member-call resolver both activates on and
-# indexes declarations by this set, so an included `.phtml` class is not left out.
-_PHP_SUFFIXES = (".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps")
-
-
 def _resolve_php_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -4644,14 +4639,14 @@ def _resolve_php_member_calls(
 
     # A genuine declaration is the target of a `contains` edge from its file node; a bare
     # type reference mints a same-label stub that would otherwise make a real name ambiguous.
-    # Only PHP files count: the index is corpus-wide, so a same-named Java class would both
-    # answer the receiver and hide that nothing local declares its type.
+    # Only PHP declarations count: the index is corpus-wide, so a same-named Java class
+    # would both answer the receiver and hide that nothing local declares its type.
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if (str(n.get("source_file", "")).endswith(_PHP_SUFFIXES)
+        if (_lang_family(n.get("source_file")) == "php"
                 and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
@@ -4897,7 +4892,7 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "php_member_calls",
-        frozenset(_PHP_SUFFIXES),
+        frozenset({".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps"}),
         _resolve_php_member_calls,
     )
 )
