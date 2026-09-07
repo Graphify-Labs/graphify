@@ -1362,13 +1362,14 @@ def _ts_type_argument_ranges(root: Any, *, call_only: bool) -> list[tuple[int, i
 
 
 # Sorted type-argument ranges prepared for lookup: (starts, spans, prefix_max_end).
-# See _ts_build_range_index.
-_TsRangeIndex = "tuple[list[int], list[tuple[int, int]], list[int]]"
+# See _ts_build_range_index. A real alias, not a string: quoting the right-hand
+# side would make this a `str` value, which type checkers reject as a type.
+_TsRangeIndex = tuple[list[int], list[tuple[int, int]], list[int]]
 
 
 def _ts_ranges_containing(
-    ranges: "_TsRangeIndex", offset: int
-) -> "list[tuple[int, int]]":
+    ranges: _TsRangeIndex, offset: int
+) -> list[tuple[int, int]]:
     """Return the ranges in ``ranges`` that contain ``offset``.
 
     Scanning the full range list for every match made
@@ -1396,7 +1397,7 @@ def _ts_ranges_containing(
     return hits
 
 
-def _ts_build_range_index(root: Any, *, call_only: bool) -> "_TsRangeIndex":
+def _ts_build_range_index(root: Any, *, call_only: bool) -> _TsRangeIndex:
     """Index :func:`_ts_type_argument_ranges` for :func:`_ts_ranges_containing`.
 
     Returns the ranges sorted by start, split into a bare ``starts`` list for
