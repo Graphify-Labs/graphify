@@ -28,8 +28,10 @@ def test_callback_local_method_preserved_named_function_local_omitted(tmp_path):
     edges = triples(g)
     assert ("local_visible_method", "base_result", "references") in edges
     assert ("local_visible", "base_base", "inherits") in edges
+    assert ("local_make_hidden", "local_make_hidden_method", "method") in edges
     assert not any(e["source"] not in ids for e in g["edges"])
-    assert not any("hidden" in e["source"] for e in g["edges"])
+    assert not any(e["target"] not in ids for e in g["edges"])
+    assert not any(r in ("inherits", "references", "implements") for s, _, r in edges if "hidden" in s)
 
 
 def test_same_basename_sources_do_not_suppress_other_callers(tmp_path):

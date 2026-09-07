@@ -115,6 +115,23 @@ class _SymbolUseFact:
     context: str
     line: int
 
+@dataclass(frozen=True)
+class _JSClassFactoryFact:
+    file_path: str
+    factory_name: str
+    factory_nid: str
+    returned_class_nid: str
+    base_param_index: int
+    line: int
+
+@dataclass(frozen=True)
+class _JSFactoryApplicationFact:
+    file_path: str
+    target_nid: str
+    factory_name: str
+    arg_names: tuple[str, ...]
+    line: int
+
 @dataclass
 class _SymbolResolutionFacts:
     declarations: list[_SymbolDeclarationFact] = field(default_factory=list)
@@ -129,3 +146,5 @@ class _SymbolResolutionFacts:
     # is the binding introduced in the importing file: the alias when `from pkg
     # import submod as alias` is used, otherwise the submodule's own name (#2082).
     module_imports: list[tuple[Path, Path, int, str]] = field(default_factory=list)
+    class_factories: list[_JSClassFactoryFact] = field(default_factory=list)
+    factory_applications: list[_JSFactoryApplicationFact] = field(default_factory=list)
