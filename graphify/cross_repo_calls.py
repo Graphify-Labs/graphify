@@ -43,6 +43,9 @@ _LANG_SUFFIXES: dict[str, frozenset[str]] = {
     "csharp": frozenset({".cs"}),
     "java": frozenset({".java"}),
     "swift": frozenset({".swift"}),
+    # TS and JS share one key: a TS class legitimately answers a JS call site, so
+    # splitting them would drop every TS<->JS cross-repo call.
+    "typescript": frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"}),
 }
 
 # A declaration owns its members through a `method` edge, except in C++, where an
