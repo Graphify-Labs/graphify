@@ -134,7 +134,7 @@ fi
 # double-quote, $, backtick or backslash characters: it is carried inside a
 # shell double-quoted `-c "..."` argument (see _detached_launch).
 _REBUILD_BODY_COMMIT = """\
-import os, signal, sys, threading
+import os, signal, sys, threading, multiprocessing
 from pathlib import Path
 
 changed_raw = os.environ.get('GRAPHIFY_CHANGED', '')
@@ -156,6 +156,8 @@ try:
         else:
             def _bail():
                 print(f'[graphify hook] graphify rebuild exceeded {_timeout}s', flush=True)
+                for _child in multiprocessing.active_children():
+                    _child.kill()
                 os._exit(1)
             _watchdog = threading.Timer(_timeout, _bail)
             _watchdog.daemon = True
@@ -191,7 +193,7 @@ except Exception as exc:
 _REBUILD_BODY_CHECKOUT = """\
 from graphify.watch import _rebuild_code, _apply_resource_limits
 from pathlib import Path
-import os, signal, sys, threading
+import os, signal, sys, threading, multiprocessing
 try:
     _apply_resource_limits()
     _timeout = int(os.environ.get('GRAPHIFY_REBUILD_TIMEOUT', '600'))
@@ -202,6 +204,8 @@ try:
         else:
             def _bail():
                 print(f'[graphify] graphify rebuild exceeded {_timeout}s', flush=True)
+                for _child in multiprocessing.active_children():
+                    _child.kill()
                 os._exit(1)
             _watchdog = threading.Timer(_timeout, _bail)
             _watchdog.daemon = True

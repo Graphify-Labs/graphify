@@ -357,6 +357,61 @@ def test_rebuild_bodies_arm_a_timeout_without_sigalrm(name, body):
     assert len(prefixes) == 1, f"{name} mixes log prefixes {sorted(prefixes)} (#2148)"
 
 
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_kill_children_before_os_exit(name, body):
+    """os._exit() terminates only the rebuild process itself, not any
+    ProcessPoolExecutor worker it spawned for a large corpus -- os._exit skips
+    every cleanup path, including the pool's own context-manager shutdown, so a
+    worker mid-task at the moment the watchdog fires is orphaned (reparented to
+    PID 1 on POSIX) and keeps running, unsupervised, for as long as whatever it
+    was doing takes. A worker stuck in catastrophic regex backtracking (the
+    exact shape #3341 fixed) has been observed surviving 2.5 days that way. The
+    watchdog owns no reference to the pool object (it fires on a separate timer
+    thread, unrelated to whichever stack frame currently holds the pool), but
+    multiprocessing.active_children() enumerates every live worker process
+    regardless of which thread asks, so the fallback kills them by SIGKILL
+    (not terminate/SIGTERM, which a process stuck in a C-level call like
+    regex backtracking never gets a chance to act on) before exiting itself."""
+    fallbacks = [
+        node.orelse
+        for node in ast.walk(ast.parse(body))
+        if isinstance(node, ast.If) and "'SIGALRM'" in ast.dump(node.test) and node.orelse
+    ]
+    assert fallbacks, f"{name} has no else-branch for the missing-SIGALRM case"
+    dumped = "".join(ast.dump(stmt) for stmt in fallbacks[0])
+    assert "attr='active_children'" in dumped, (
+        f"{name} fallback does not enumerate live workers before exiting (#3341 follow-up)"
+    )
+    assert "attr='kill'" in dumped, (
+        f"{name} fallback does not SIGKILL orphaned workers before exiting (#3341 follow-up)"
+    )
+    # The kill loop must run BEFORE os._exit, not after (dead code) or replacing
+    # it (the rebuild process itself still has to exit on timeout). _bail's body
+    # is a straight-line statement list (no branching), so statement POSITION is
+    # execution order -- unlike ast.walk's traversal, which is breadth-first and
+    # would visit os._exit's Call node (a direct child of a top-level Expr)
+    # before a Call nested one level deeper inside the for loop's body, even
+    # though the for loop is written, and runs, first.
+    bail_def = next(
+        n for n in ast.walk(ast.parse(body))
+        if isinstance(n, ast.FunctionDef) and n.name == "_bail"
+    )
+    def _stmt_index_calling(attr: str) -> int:
+        for i, stmt in enumerate(bail_def.body):
+            if any(
+                isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == attr
+                for n in ast.walk(stmt)
+            ):
+                return i
+        raise AssertionError(f"{name}: no statement in _bail calls .{attr}(...)")
+    assert _stmt_index_calling("active_children") < _stmt_index_calling("_exit"), (
+        f"{name} kills workers after os._exit instead of before"
+    )
+
+
 def test_detached_launch_targets_graphify_python():
     """The launcher must run via the resolved $GRAPHIFY_PYTHON, not a bare
     `python`, so it uses the same interpreter the detection block selected."""
