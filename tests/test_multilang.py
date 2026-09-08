@@ -1806,6 +1806,23 @@ def test_sql_view_table_recovery_handles_if_not_exists(tmp_path):
     assert "Bar" in labels, f"got {labels}"
     assert "IF" not in labels, f"phantom 'IF' node fabricated: {labels}"
 
+def test_sql_view_table_recovery_accepts_or_alter(tmp_path):
+    """_VIEW_TABLE_RECOVERY_RX only accepted OR REPLACE, matching Postgres,
+    but not OR ALTER -- T-SQL's own re-creation syntax (it has no OR
+    REPLACE at all; _ROUTINE_RECOVERY_RX already accepts both for the same
+    reason). A swallowed "CREATE OR ALTER VIEW"/"CREATE OR ALTER TABLE"
+    could never be recovered by this regex before."""
+    from graphify.extractors.sql import _VIEW_TABLE_RECOVERY_RX
+
+    m = _VIEW_TABLE_RECOVERY_RX.search("CREATE OR ALTER VIEW dbo.Foo AS SELECT 1;")
+    assert m is not None, "CREATE OR ALTER VIEW did not match"
+    assert m.group(1) == "dbo.Foo"
+
+    # OR REPLACE must still match too -- this is additive, not a swap.
+    m2 = _VIEW_TABLE_RECOVERY_RX.search("CREATE OR REPLACE VIEW dbo.Foo AS SELECT 1;")
+    assert m2 is not None, "CREATE OR REPLACE VIEW regressed"
+    assert m2.group(1) == "dbo.Foo"
+
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""
