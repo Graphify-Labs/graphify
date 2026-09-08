@@ -719,6 +719,56 @@ def test_detect_enumerates_git_submodules(tmp_path, monkeypatch):
     ), f"os.walk descended into submodule: {walked}"
 
 
+def test_detect_git_pathspec_is_literal_not_glob(tmp_path):
+    """Scanning ``app`` must not pick up ``app-test`` via a glob pathspec."""
+    app = tmp_path / "app"
+    sibling = tmp_path / "app-test"
+    app.mkdir()
+    sibling.mkdir()
+    (app / "keep.py").write_text("keep = 1\n", encoding="utf-8")
+    (sibling / "extra.py").write_text("extra = 1\n", encoding="utf-8")
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "add", "app/keep.py", "app-test/extra.py")
+    result = detect(app)
+    names = {Path(p).name for p in result["files"]["code"]}
+    assert names == {"keep.py"}
+
+
+def test_detect_ignores_gitmodules_path_outside_superproject(tmp_path):
+    """A ``path = ../secret`` gitmodules entry must not pull files from outside."""
+    repo = tmp_path / "repo"
+    secret = tmp_path / "secret"
+    repo.mkdir()
+    secret.mkdir()
+    (repo / "app.py").write_text("app = 1\n", encoding="utf-8")
+    (secret / "leak.py").write_text("leak = 1\n", encoding="utf-8")
+    (repo / ".gitmodules").write_text(
+        '[submodule "escape"]\n\tpath = ../secret\n\turl = ./secret\n',
+        encoding="utf-8",
+    )
+    _git(repo, "init", "-q")
+    _git(repo, "add", "app.py", ".gitmodules")
+    result = detect(repo)
+    names = {Path(p).name for p in result["files"]["code"]}
+    assert names == {"app.py"}
+
+
+def test_detect_sibling_graphifyignore_does_not_ignore_other_tree(tmp_path, monkeypatch):
+    """A nested ignore in pkgA must not drop a same-named file in pkgB."""
+    monkeypatch.setenv("GRAPHIFY_NO_GIT_ENUM", "1")
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "4")
+    a = tmp_path / "pkgA"
+    b = tmp_path / "pkgB"
+    a.mkdir()
+    b.mkdir()
+    (a / "a.py").write_text("a = 1\n", encoding="utf-8")
+    (a / ".graphifyignore").write_text("kept.py\n", encoding="utf-8")
+    (b / "kept.py").write_text("keep = 1\n", encoding="utf-8")
+    result = detect(tmp_path)
+    names = {Path(p).name for p in result["files"]["code"]}
+    assert names == {"a.py", "kept.py"}
+
+
 def test_detect_finds_nested_git_dirs_without_repo_or_submodules(tmp_path, monkeypatch):
     """A directory of checkouts with no root .git and no .repo is enumerated per .git."""
     a = tmp_path / "alpha"

@@ -1127,6 +1127,37 @@ def _path_identity(path: Path) -> str:
 _GIT_LS_TIMEOUT = 300
 
 
+def _git_literal_pathspec(rel: str) -> str:
+    """Pathspec that matches *rel* as a literal prefix, not a glob.
+
+    ``git ls-files -- src*`` treats ``*`` as a glob and can list sibling
+    trees. ``:(literal)`` keeps wildcards and ``:(magic)`` as filename text.
+    """
+    rel = rel.replace("\\", "/").strip("/")
+    return f":(literal){rel}"
+
+
+def _safe_relpath_under(rel: str, base: Path) -> str | None:
+    """Normalize *rel* if it stays under *base*; otherwise return None."""
+    rel = rel.replace("\\", "/").strip()
+    if not rel or rel.startswith("#") or rel.startswith("~"):
+        return None
+    if os.path.isabs(rel) or rel.startswith("/"):
+        return None
+    if len(rel) >= 2 and rel[1] == ":":
+        return None
+    parts = [p for p in rel.split("/") if p and p != "."]
+    if not parts or any(p == ".." for p in parts):
+        return None
+    joined = "/".join(parts)
+    try:
+        resolved = (base / joined).resolve()
+        resolved.relative_to(base.resolve())
+    except (ValueError, OSError):
+        return None
+    return joined
+
+
 def _git_ls_z(
     vcs_root: Path,
     extra_args: list[str],
@@ -1247,7 +1278,7 @@ def _git_enumerate_single_repo(
         rel = root.resolve().relative_to(vcs_root.resolve()).as_posix()
     except ValueError:
         return None
-    pathspec = None if rel in (".", "") else rel
+    pathspec = None if rel in (".", "") else _git_literal_pathspec(rel)
     vprint(
         f"listing files with git ls-files "
         f"({pathspec or '.'}) ..."
@@ -1326,20 +1357,25 @@ def _gitmodules_paths(super_root: Path) -> list[str]:
                 continue
             parts = line.split()
             if len(parts) >= 2:
-                paths.append(parts[1].replace("\\", "/"))
+                rel = _safe_relpath_under(parts[1].replace("\\", "/"), super_root)
+                if rel:
+                    paths.append(rel)
     if not paths:
-        paths = _parse_gitmodules_paths(gitmodules)
+        for rel in _parse_gitmodules_paths(gitmodules):
+            rel = _safe_relpath_under(rel, super_root)
+            if rel:
+                paths.append(rel)
         nested: list[str] = []
         for rel in paths:
-            nested.extend(
-                f"{rel}/{p}"
-                for p in _parse_gitmodules_paths(super_root / rel / ".gitmodules")
-            )
+            for p in _parse_gitmodules_paths(super_root / rel / ".gitmodules"):
+                full = _safe_relpath_under(f"{rel}/{p}", super_root)
+                if full:
+                    nested.append(full)
         paths.extend(nested)
     seen: set[str] = set()
     ordered: list[str] = []
     for rel in paths:
-        rel = rel.strip("/")
+        rel = _safe_relpath_under(rel, super_root)
         if not rel or rel in seen:
             continue
         seen.add(rel)
@@ -2299,6 +2335,10 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         explicit_cache: dict[Path, bool] = {}
         bucket = _WalkBucket()
         local_seen: set[Path] = set()
+        # Per-walk memo. Sharing the outer ignored_dirs across sibling thread
+        # walks would let a True result from one nested-ignore set skip
+        # re-evaluation under a sibling's different patterns.
+        walk_ignored: set[Path] = set()
 
         def _ignored_local(path: Path) -> bool:
             # Nested .gitignore/.graphifyignore is loaded onto *patterns* as
@@ -2307,7 +2347,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             # MUST use this local copy or a sibling project's ignore file
             # is applied too late (file-level drop instead of a recorded
             # ignored subtree, #1922).
-            if path in ignored_dirs:
+            if path in walk_ignored:
                 return True
             val = _is_scan_ignored(
                 path, root, patterns, explicit,
@@ -2315,7 +2355,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 cache=cache, explicit_cache=explicit_cache,
             )
             if val:
-                ignored_dirs.add(path)
+                walk_ignored.add(path)
             return val
 
         def _on_err(err: OSError) -> None:
@@ -2527,6 +2567,9 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
 
     out_base = Path(cache_root).resolve() if cache_root is not None else root
     converted_dir = out_base / GRAPHIFY_OUT / "converted"
+    # Conversions mkdir/write the same converted/ tree; ignore memos mutate
+    # shared dicts. Parallel admit is then only the stat/classify work.
+    _admit_lock = threading.Lock()
 
     def _admit(p: Path) -> tuple:
         """Classify one walked path. Return a tagged result tuple."""
@@ -2535,8 +2578,10 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         if not in_memory:
             if str(p).startswith(str(converted_dir)):
                 return ("skip",)
-        if not in_memory and _ignored_for_scan(p):
-            return ("ignored", str(p))
+        if not in_memory:
+            with _admit_lock:
+                if _ignored_for_scan(p):
+                    return ("ignored", str(p))
         # Any path whose resolve() sits outside root — symlink file, or a
         # regular file reached by following a symlink directory. v8 checked
         # this for every candidate; gating on islink() admitted the latter.
@@ -2572,24 +2617,27 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     + " [Google Workspace shortcut skipped - pass --google-workspace "
                     "or set GRAPHIFY_GOOGLE_WORKSPACE=1]",
                 )
+            md_path = None
             try:
-                md_path = convert_google_workspace_file(
-                    p, converted_dir, xlsx_to_markdown=xlsx_to_markdown, root=root,
-                )
+                with _admit_lock:
+                    md_path = convert_google_workspace_file(
+                        p, converted_dir, xlsx_to_markdown=xlsx_to_markdown, root=root,
+                    )
+                    if md_path and _ignored_for_scan(md_path):
+                        return ("skip",)
             except Exception as exc:
                 return ("sensitive", str(p) + f" [Google Workspace export failed: {exc}]")
             if md_path:
-                if _ignored_for_scan(md_path):
-                    return ("skip",)
                 return ("file", ftype, str(md_path), md_path)
             return ("sensitive", str(p) + " [Google Workspace export produced no readable text]")
         if p.suffix.lower() in OFFICE_EXTENSIONS:
             if code_only:
                 return ("file", ftype, str(p), None)
-            md_path = convert_office_file(p, converted_dir, root=root)
-            if md_path:
-                if _ignored_for_scan(md_path):
+            with _admit_lock:
+                md_path = convert_office_file(p, converted_dir, root=root)
+                if md_path and _ignored_for_scan(md_path):
                     return ("skip",)
+            if md_path:
                 return ("file", ftype, str(md_path), md_path)
             return (
                 "sensitive",
