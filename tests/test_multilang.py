@@ -1433,6 +1433,23 @@ def test_sql_tsql_debracket_does_not_corrupt_backtick_identifier(tmp_path):
     assert new_escaped == escaped, f"escaped backtick corrupted: {new_escaped!r}"
     assert not escaped_spans
 
+def test_sql_tsql_debracket_backtick_scan_is_line_scoped(tmp_path):
+    """Unlike a string or dollar-quoted span, a backtick span must be
+    line-scoped: a name does not span lines in practice, so scanning past
+    a newline for a closing backtick would let one stray, unmatched
+    backtick anywhere in the file (a typo, a mark in a comment) silently
+    swallow everything after it as "still inside a span," disabling
+    debracketing for a real bracket identifier on a later line."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = (
+        b"-- a stray backtick here: `\n"
+        b"CREATE TABLE [dbo].[Orders] (Id INT);\n"
+    )
+    new_src, spans = _debracket_tsql(src)
+    assert spans, "the stray backtick swallowed the rest of the file"
+    assert b"`dbo`.`Orders`" in new_src, new_src
+
 def test_sql_tsql_debracket_leaves_bracket_content_with_backtick_alone(tmp_path):
     """A T-SQL bracket identifier containing a literal backtick ([Foo`Bar],
     a legal T-SQL name since only ] needs escaping inside a bracket) cannot

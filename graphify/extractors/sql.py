@@ -353,6 +353,14 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
     doubled backtick inside the span is honored as an escaped literal
     backtick, the same escaping convention this function itself uses when
     it writes a rewritten span, so the scan does not stop early on one.
+    Unlike a string or dollar-quoted span, this one IS line-scoped: a name
+    does not span lines in practice, so an unclosed backtick is far more
+    likely a stray character (a typo, a mark in a comment) than a genuine
+    multi-line identifier, and scanning past a newline for one would let
+    that stray backtick silently swallow the rest of the file as "still
+    inside a span." A backtick that does not close on its own line is left
+    as an ordinary character instead, matching how _scan_sql itself treats
+    an unterminated delimited identifier.
 
     Returns the rewritten source plus the byte-range spans, in the rewritten
     source's own coordinates, of every backtick pair this function inserted.
@@ -391,15 +399,32 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
             out += source[i:j]
             i = j
         elif c == ord("`"):
+            # Line-scoped, unlike the string/dollar-quote spans above: a
+            # genuine backtick-quoted identifier is a name, and names do
+            # not span lines in practice, so there is no real-world case
+            # this would need to close on a later line the way a multi-line
+            # dynamic-SQL string or a PL/pgSQL body does. Scanning past a
+            # newline here would let one accidental, unmatched backtick
+            # anywhere in the file (a stray character in prose, a typo)
+            # swallow everything after it as "still inside a backtick span"
+            # -- silently disabling debracketing for the rest of the file.
+            # If it does not close on this line it is not treated as a
+            # span at all: the single backtick is ordinary text, and
+            # scanning resumes right after it, matching how _scan_sql
+            # itself treats an unterminated delimited identifier.
             j = i + 1
-            while j < n:
+            closed = False
+            while j < n and source[j] != ord("\n"):
                 if source[j] == ord("`"):
                     if j + 1 < n and source[j + 1] == ord("`"):
                         j += 2
                         continue
                     j += 1
+                    closed = True
                     break
                 j += 1
+            if not closed:
+                j = i + 1
             out += source[i:j]
             i = j
         elif c == ord("$") and (m := _DOLLAR_QUOTE_TAG_RX.match(source, i)):
