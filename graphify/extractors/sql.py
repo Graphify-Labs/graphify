@@ -280,6 +280,15 @@ def _norm_ident(name: str) -> str:
 # PostgreSQL dollar-quoted string/body delimiter: $$ or $tag$, tag optional.
 _DOLLAR_QUOTE_TAG_RX = re.compile(rb"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
 
+# A lone surrogate (U+D800-U+DFFF) is what errors="surrogateescape" leaves
+# behind for an invalid source byte; str.encode(errors="replace") does turn
+# one into a placeholder rather than raising, but that placeholder is a
+# bare "?", not the U+FFFD every OTHER invalid-byte path in this module
+# produces (bytes.decode(errors="replace") on a malformed sequence, as
+# _read still uses). Replacing it explicitly keeps a name's placeholder
+# character consistent with the rest of the extractor.
+_LONE_SURROGATE_RX = re.compile("[\ud800-\udfff]")
+
 
 def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
     """Rewrite T-SQL bracket quoted identifiers to backtick quoted ones.
@@ -948,12 +957,12 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         it.
         """
         if not debracket_spans:
-            return text.encode("utf-8", errors="replace").decode("utf-8")
+            return _LONE_SURROGATE_RX.sub("�", text)
         byte_start = len(src_text[:char_start].encode("utf-8", errors="surrogateescape"))
         byte_end = len(src_text[:char_end].encode("utf-8", errors="surrogateescape"))
         if not _overlaps_debracketed_span(byte_start, byte_end):
-            return text.encode("utf-8", errors="replace").decode("utf-8")
-        return _strip_backtick_parts(text).encode("utf-8", errors="replace").decode("utf-8")
+            return _LONE_SURROGATE_RX.sub("�", text)
+        return _LONE_SURROGATE_RX.sub("�", _strip_backtick_parts(text))
     for m in re.finditer(r"CREATE\s+TABLE\s+([\w$]+)\s*\(", src_text, re.IGNORECASE):
         tbl_name = m.group(1)
         tbl_nid = table_nids.get(_norm_ident(tbl_name))

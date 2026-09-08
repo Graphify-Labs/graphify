@@ -1532,6 +1532,30 @@ def test_sql_regex_recovery_survives_invalid_utf8_bytes_earlier_in_file(tmp_path
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"]]
     assert "dbo.GetCustomer()" in labels, f"got {labels}"
+
+def test_sql_regex_recovery_name_uses_replacement_char_not_question_mark(tmp_path):
+    """A regex-recovered name whose OWN content carries one of src_text's
+    surrogate-escaped invalid bytes was sanitized via
+    text.encode(errors="replace").decode(), but that specific error
+    handler turns a lone surrogate into a bare "?", not the U+FFFD every
+    other invalid-byte path in this module produces (bytes.decode
+    (errors="replace") on a malformed sequence, as _read still uses) --
+    an inconsistent placeholder character for the same underlying
+    condition."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_bytes(
+        b"CREATE PROCEDURE [dbo].[Wei\xffrd] @Id INT\n"
+        b"AS\n"
+        b"BEGIN\n"
+        b"    SELECT 1;\n"
+        b"END\n"
+        b"GO\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.Wei�rd()" in labels, f"got {labels}"
+    assert not any("?" in l for l in labels), f"got {labels}"
     assert not any("`" in l for l in labels), f"backtick leaked into a label: {labels}"
 
 def test_sql_plpgsql_functions_survive_parse_errors():
