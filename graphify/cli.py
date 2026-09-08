@@ -2780,7 +2780,7 @@ def dispatch_command(cmd: str) -> None:
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd not in ("html", "callflow-html", "obsidian", "wiki", "svg", "graphml", "neo4j", "falkordb"):
             print("Usage: graphify export <format>", file=sys.stderr)
-            print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]", file=sys.stderr)
+            print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz] [--output PATH]", file=sys.stderr)
             print("  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]", file=sys.stderr)
             print("            [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N]", file=sys.stderr)
             print("  obsidian  [--graph PATH] [--labels PATH] [--dir PATH]", file=sys.stderr)
@@ -3002,19 +3002,25 @@ def dispatch_command(cmd: str) -> None:
 
         if subcmd == "html":
             from graphify.export import to_html as _to_html
+            # --output overrides the default graph.html target (the same shared
+            # --output flag already parsed above for callflow-html), so callers
+            # that don't want a generic filename - e.g. a content+date name like
+            # graphify-out/{slug}-{date}.html - can ask for one explicitly instead
+            # of post-renaming the file themselves. Omit --output and behavior is
+            # byte-for-byte the same as before this flag existed.
+            html_target = callflow_output if callflow_output is not None else (out_dir / "graph.html")
             if no_viz:
-                html_target = out_dir / "graph.html"
                 if html_target.exists():
                     html_target.unlink()
-                print("--no-viz: skipped graph.html")
+                print(f"--no-viz: skipped {html_target.name}")
             else:
                 # Over-cap fallback (#1019): force the community-aggregation
                 # path so the oversized graph still renders a usable artifact.
                 _effective_node_limit = 5000 if _over_cap else node_limit
-                _to_html(G, communities, str(out_dir / "graph.html"),
+                _to_html(G, communities, str(html_target),
                          community_labels=labels or None, node_limit=_effective_node_limit)
                 if G.number_of_nodes() <= _effective_node_limit:
-                    print(f"graph.html written - open in any browser, no server needed")
+                    print(f"{html_target.name} written - open in any browser, no server needed")
                 if _over_cap:
                     sys.exit(0)
 

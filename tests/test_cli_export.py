@@ -106,6 +106,28 @@ def test_export_html_no_viz_removes_file(tmp_path):
     assert not (out / "graph.html").exists()
 
 
+def test_export_html_output_flag_writes_to_custom_path(tmp_path):
+    """--output lets callers avoid the generic graph.html name (e.g. a
+    content+date filename) without post-renaming the file themselves. Default
+    behavior (no --output) must stay byte-for-byte the same as before."""
+    out = _make_graph(tmp_path)
+    custom = out / "my-project-2026-01-01.html"
+    r = _run(["export", "html", "--output", str(custom)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert custom.exists()
+    assert custom.stat().st_size > 0
+    assert not (out / "graph.html").exists()
+
+
+def test_export_html_no_viz_removes_file_at_output_path(tmp_path):
+    out = _make_graph(tmp_path)
+    custom = out / "my-project-2026-01-01.html"
+    custom.write_text("<html/>")
+    r = _run(["export", "html", "--no-viz", "--output", str(custom)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert not custom.exists()
+
+
 def test_export_html_error_without_graph(tmp_path):
     r = _run(["export", "html"], tmp_path)
     assert r.returncode != 0

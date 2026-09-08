@@ -5,7 +5,7 @@ description: "Use for any question about a codebase, its architecture, file rela
 
 # /graphify
 
-Turn any folder of files into a navigable knowledge graph with community detection, an honest audit trail, and three outputs: interactive HTML, GraphRAG-ready JSON, and a plain-language GRAPH_REPORT.md.
+Turn any folder of files into a navigable knowledge graph with community detection, an honest audit trail, and three outputs: interactive HTML, GraphRAG-ready JSON, and a plain-language markdown report. The markdown report and HTML are always named `{corpus-slug}-{YYYY-MM-DD}` - see Step 2.6.
 
 ## Usage
 
@@ -142,11 +142,47 @@ Then act on it:
   - For each file, strip the `scan_root` prefix and take the first path component. Files directly in `scan_root` with no subdirectory count as `(root)`.
   - If all files are in `(root)` with no subdirectories, do not ask to narrow — no subfolders exist. Instead suggest `--no-cluster` to skip the expensive clustering step and proceed.
   - Otherwise rank by count, show the top 5 with file counts, then ask which subfolder to run on. Wait for the user's answer before proceeding.
-- Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 3 if not.
+- Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 2.6 if not.
 
 ### Step 2.5 - Video and audio (only if video files detected)
 
-Skip this step entirely if `detect` returned zero `video` files. When the corpus has video or audio, see `references/transcribe.md` to transcribe them to text first, then treat the transcripts as doc files in Step 3.
+Skip this step entirely if `detect` returned zero `video` files. When the corpus has video or audio, see `references/transcribe.md` to transcribe them to text first, then treat the transcripts as doc files in Step 3 (after computing the output basename in Step 2.6 below).
+
+### Step 2.6 - Compute the output basename
+
+The markdown report is always named `{corpus-slug}-{YYYY-MM-DD}-report.md`, never the
+generic `GRAPH_REPORT.md` — never leave a report sitting in `graphify-out/` with a name
+that doesn't say what's in it or when it was generated. Compute the basename once and reuse
+it for the rest of this run:
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import re
+from datetime import date
+from pathlib import Path
+
+target = Path('INPUT_PATH').resolve()
+slug = re.sub(r'[^a-z0-9]+', '-', target.name.lower()).strip('-') or 'graph'
+base = f'{slug}-{date.today().isoformat()}'
+Path('graphify-out/.graphify_output_base').write_text(base, encoding=\"utf-8\")
+print(f'Output basename: {base}')
+"
+```
+
+Replace INPUT_PATH with the same path used in Step 2. Later steps read this back with
+`Path('graphify-out/.graphify_output_base').read_text(encoding=\"utf-8\").strip()` - do not
+recompute it mid-run, the date must stay the same for every file this run produces.
+
+`graphify-out/graph.json` is the one exception - it keeps its fixed name on purpose,
+because `--update`, `--cluster-only`, `query`, `path`, `explain`, `--neo4j-push`,
+`--falkordb-push`, `--mcp`, and the benchmark step all read it back in by that exact path
+across sessions. Renaming it per run would break "ask questions weeks later."
+
+**Known scope gap:** `--cluster-only`/`label` and `--watch`/the git commit hook still write
+the fixed `GRAPH_REPORT.md` and `graph.html` names directly from `graphify/cli.py` (not from
+this skill file), because those paths carry their own stale-marker and shrink-guard state
+keyed to those literal filenames (see `graph.html stale marker` handling in `cli.py`). Giving
+those paths dated names too is a larger, separate change - out of scope here.
 
 ### Step 3 - Extract entities and relationships
 
@@ -436,7 +472,8 @@ if not wrote:
     print('If this shrink is intentional (you deleted files), re-run a full build with --force.')
     raise SystemExit(1)
 report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)
-Path('graphify-out/GRAPH_REPORT.md').write_text(report, encoding=\"utf-8\")
+output_base = Path('graphify-out/.graphify_output_base').read_text(encoding=\"utf-8\").strip()
+Path(f'graphify-out/{output_base}-report.md').write_text(report, encoding=\"utf-8\")
 analysis = {
     'communities': {str(k): v for k, v in communities.items()},
     'cohesion': {str(k): v for k, v in cohesion.items()},
@@ -512,7 +549,8 @@ labels = LABELS_DICT
 questions = suggest_questions(G, communities, labels)
 
 report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, 'INPUT_PATH', suggested_questions=questions)
-Path('graphify-out/GRAPH_REPORT.md').write_text(report, encoding=\"utf-8\")
+output_base = Path('graphify-out/.graphify_output_base').read_text(encoding=\"utf-8\").strip()
+Path(f'graphify-out/{output_base}-report.md').write_text(report, encoding=\"utf-8\")
 Path('graphify-out/.graphify_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding=\"utf-8\")
 # Re-export so graph.json nodes carry the curated community_name (#2490).
 # Same extraction as Step 4, so the #479 shrink-guard passes on node count;
@@ -541,11 +579,13 @@ graphify export obsidian
 # or with custom dir: graphify export obsidian --dir ~/vaults/my-project
 ```
 
-Generate the HTML graph (always, unless `--no-viz`):
+Generate the HTML graph (always, unless `--no-viz`). Pass `--output` with the basename from
+Step 2.6 so the file is named `{corpus-slug}-{date}.html` instead of the generic `graph.html`:
 
 ```bash
-graphify export html  # auto-aggregates to community view if graph > 5000 nodes
-# or: graphify export html --no-viz
+OUTPUT_BASE=$(cat graphify-out/.graphify_output_base)
+graphify export html --output "graphify-out/${OUTPUT_BASE}.html"  # auto-aggregates to community view if graph > 5000 nodes
+# or: graphify export html --no-viz --output "graphify-out/${OUTPUT_BASE}.html"
 ```
 
 ### Steps 6b-8 - Wiki, Neo4j, FalkorDB, SVG, GraphML, MCP, benchmark (only on their flags)
@@ -618,28 +658,30 @@ cost_path.write_text(json.dumps(cost, indent=2, ensure_ascii=False), encoding=\"
 print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
 print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
 "
-rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json graphify-out/.graphify_ast.json graphify-out/.graphify_semantic.json graphify-out/.graphify_analysis.json
+rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json graphify-out/.graphify_ast.json graphify-out/.graphify_semantic.json graphify-out/.graphify_analysis.json graphify-out/.graphify_output_base
 find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
 rm -f graphify-out/.needs_update 2>/dev/null || true
 ```
 
 Replace INPUT_PATH with the actual path (same value used in Steps 4-5) so the manifest is relativized to the scan root.
 
-Tell the user (omit the obsidian line unless --obsidian was given):
+Before running the cleanup above, read `graphify-out/.graphify_output_base` (call its contents `OUTPUT_BASE`) so you can compose the message below - it deletes that file.
+
+Tell the user (substitute OUTPUT_BASE with the value you just read; omit the obsidian line unless --obsidian was given):
 ```
 Graph complete. Outputs in PATH_TO_DIR/graphify-out/
 
-  graph.html            - interactive graph, open in browser
-  GRAPH_REPORT.md       - audit report
-  graph.json            - raw graph data
-  obsidian/             - Obsidian vault (only if --obsidian was given)
+  OUTPUT_BASE.html            - interactive graph, open in browser
+  OUTPUT_BASE-report.md       - audit report
+  graph.json                  - raw graph data (fixed name - persists across --update/query/path/explain runs)
+  obsidian/                   - Obsidian vault (only if --obsidian was given)
 ```
 
 If graphify saved you time, consider supporting it: https://github.com/sponsors/safishamsi
 
 Replace PATH_TO_DIR with the actual absolute path of the directory that was processed.
 
-Then paste these sections from GRAPH_REPORT.md directly into the chat:
+Then paste these sections from the `OUTPUT_BASE-report.md` file directly into the chat:
 - God Nodes
 - Surprising Connections
 - Suggested Questions
