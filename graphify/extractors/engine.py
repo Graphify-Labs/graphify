@@ -2218,6 +2218,80 @@ def _js_member_assignment_target(left, source: bytes):
                 return ("prototype", inner_obj_name, member_name)
     return None
 
+def _js_scan_member_assignments(
+    body, this_owner_nid: str, source: bytes, *,
+    this_as_method: bool, add_node_fn, add_edge_fn, function_bodies: list,
+) -> None:
+    """Materialize callable members assigned in ``body`` (#1322/#3408).
+
+    ``this.X = fn`` members attach to ``this_owner_nid`` — as ``method`` edges
+    with a ``.X()`` label when the owner is a named function or class
+    (``this_as_method``), and as ``contains`` edges with an ``X()`` label when
+    the owner is the file node (the enclosing function is anonymous: an IIFE
+    or a callback argument, e.g. an AngularJS ``.service(...)`` body).
+    ``api.X = fn`` members attach to the object-literal binding declared in
+    the same body, exactly as before — the scope proof that keeps the #1077
+    phantom-god-node guard intact.
+    """
+    object_bindings: dict[str, object] = {}
+    for stmt in body.children:
+        if stmt.type not in ("lexical_declaration", "variable_declaration"):
+            continue
+        for declarator in stmt.children:
+            if declarator.type != "variable_declarator":
+                continue
+            name = declarator.child_by_field_name("name")
+            value = declarator.child_by_field_name("value")
+            if name is not None and name.type == "identifier" \
+                    and value is not None and value.type == "object":
+                object_bindings[_read_text(name, source)] = declarator
+    # A factory object gets one owner node and one `contains` edge no
+    # matter how many methods hang off it. add_node dedups on id, but
+    # add_edge does not, so without this guard N assigned methods would
+    # emit N identical `contains` edges (the flood #1077 warns against).
+    contained_owners: set[str] = set()
+    for stmt in body.children:
+        if stmt.type != "expression_statement":
+            continue
+        assign = next((c for c in stmt.children
+                       if c.type == "assignment_expression"), None)
+        if assign is None:
+            continue
+        val = assign.child_by_field_name("right")
+        if val is None or val.type not in _JS_FUNCTION_VALUE_TYPES:
+            continue
+        tgt = _js_member_assignment_target(
+            assign.child_by_field_name("left"), source)
+        if tgt is None:
+            continue
+        as_method = True
+        if tgt[0] == "this":
+            owner_nid = this_owner_nid
+            as_method = this_as_method
+        elif tgt[0] == "object" and tgt[1] in object_bindings:
+            object_name = tgt[1]
+            owner_nid = _make_id(this_owner_nid, object_name)
+            owner_line = object_bindings[object_name].start_point[0] + 1
+            add_node_fn(owner_nid, object_name, owner_line)
+            if owner_nid not in contained_owners:
+                contained_owners.add(owner_nid)
+                add_edge_fn(this_owner_nid, owner_nid, "contains", owner_line)
+        else:
+            continue
+        m_name = tgt[2]
+        m_line = stmt.start_point[0] + 1
+        m_nid = _make_id(owner_nid, m_name)
+        if as_method:
+            add_node_fn(m_nid, f".{m_name}()", m_line)
+            add_edge_fn(owner_nid, m_nid, "method", m_line)
+        else:
+            add_node_fn(m_nid, f"{m_name}()", m_line)
+            add_edge_fn(owner_nid, m_nid, "contains", m_line)
+        m_body = val.child_by_field_name("body")
+        if m_body:
+            function_bodies.append((m_nid, m_body))
+
+
 def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
                    parent_class_nid: str | None, add_node_fn, add_edge_fn,
@@ -2233,6 +2307,27 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
     # (`this.X = fn` lives inside a function body, which is not recursed here;
     #  it is captured at the enclosing function — see the function branch.)
     if node.type == "expression_statement":
+        # #3408: a module-level call statement whose argument (or IIFE callee)
+        # is a closure — `callIt(function(){ this.X = fn })`, the AngularJS
+        # `.service('name', function(){ this.X = fn })` registration shape,
+        # `(function(){ this.X = fn })()` — never reaches the function branch,
+        # so its `this.X` members vanished. Scan each TOPMOST closure body;
+        # the members attach to the file node (the enclosing function is
+        # anonymous, so there is no named owner), keeping ids file-qualified
+        # (the #1077 guard's requirement).
+        call_stmt = next((c for c in node.children
+                          if c.type in ("call_expression", "new_expression")), None)
+        if call_stmt is not None:
+            _stmt_closures: list = []
+            _js_topmost_closures(call_stmt, _stmt_closures)
+            for closure in _stmt_closures:
+                closure_body = closure.child_by_field_name("body")
+                if closure_body is not None:
+                    _js_scan_member_assignments(
+                        closure_body, file_nid, source, this_as_method=False,
+                        add_node_fn=add_node_fn, add_edge_fn=add_edge_fn,
+                        function_bodies=function_bodies,
+                    )
         assign = next((c for c in node.children
                        if c.type == "assignment_expression"), None)
         if assign is not None:
@@ -2378,6 +2473,15 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                                     add_node=add_node_fn, add_edge=add_edge_fn,
                                     callable_def_nids=callable_def_nids,
                                     local_bound_names=local_bound_names,
+                                    function_bodies=function_bodies,
+                                )
+                                # #3408: `this.X = fn` members were captured only
+                                # when the enclosing function was a DECLARATION;
+                                # `const F = function(){ this.X = fn }` (and the
+                                # arrow form) silently dropped them.
+                                _js_scan_member_assignments(
+                                    body, func_nid, source, this_as_method=True,
+                                    add_node_fn=add_node_fn, add_edge_fn=add_edge_fn,
                                     function_bodies=function_bodies,
                                 )
                             arrow_found = True
@@ -4666,57 +4770,11 @@ def _extract_generic(
                 "tree_sitter_javascript", "tree_sitter_typescript"
             ):
                 function_owner_nid = parent_class_nid if parent_class_nid else func_nid
-                object_bindings: dict[str, object] = {}
-                for stmt in body.children:
-                    if stmt.type not in ("lexical_declaration", "variable_declaration"):
-                        continue
-                    for declarator in stmt.children:
-                        if declarator.type != "variable_declarator":
-                            continue
-                        name = declarator.child_by_field_name("name")
-                        value = declarator.child_by_field_name("value")
-                        if name is not None and name.type == "identifier" \
-                                and value is not None and value.type == "object":
-                            object_bindings[_read_text(name, source)] = declarator
-                # A factory object gets one owner node and one `contains` edge no
-                # matter how many methods hang off it. add_node dedups on id, but
-                # add_edge does not, so without this guard N assigned methods would
-                # emit N identical `contains` edges (the flood #1077 warns against).
-                contained_owners: set[str] = set()
-                for stmt in body.children:
-                    if stmt.type != "expression_statement":
-                        continue
-                    assign = next((c for c in stmt.children
-                                   if c.type == "assignment_expression"), None)
-                    if assign is None:
-                        continue
-                    val = assign.child_by_field_name("right")
-                    if val is None or val.type not in _JS_FUNCTION_VALUE_TYPES:
-                        continue
-                    tgt = _js_member_assignment_target(
-                        assign.child_by_field_name("left"), source)
-                    if tgt is None:
-                        continue
-                    if tgt[0] == "this":
-                        owner_nid = function_owner_nid
-                    elif tgt[0] == "object" and tgt[1] in object_bindings:
-                        object_name = tgt[1]
-                        owner_nid = _make_id(function_owner_nid, object_name)
-                        owner_line = object_bindings[object_name].start_point[0] + 1
-                        add_node(owner_nid, object_name, owner_line)
-                        if owner_nid not in contained_owners:
-                            contained_owners.add(owner_nid)
-                            add_edge(function_owner_nid, owner_nid, "contains", owner_line)
-                    else:
-                        continue
-                    m_name = tgt[2]
-                    m_line = stmt.start_point[0] + 1
-                    m_nid = _make_id(owner_nid, m_name)
-                    add_node(m_nid, f".{m_name}()", m_line)
-                    add_edge(owner_nid, m_nid, "method", m_line)
-                    m_body = val.child_by_field_name("body")
-                    if m_body:
-                        function_bodies.append((m_nid, m_body))
+                _js_scan_member_assignments(
+                    body, function_owner_nid, source, this_as_method=True,
+                    add_node_fn=add_node, add_edge_fn=add_edge,
+                    function_bodies=function_bodies,
+                )
             if body:
                 if config.ts_module == "tree_sitter_java" and parent_class_nid:
                     java_method_scopes[id(body)] = (node, parent_class_nid)
