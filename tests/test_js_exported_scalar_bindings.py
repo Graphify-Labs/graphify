@@ -299,3 +299,17 @@ def test_literal_require_specifier_is_still_suppressed(tmp_path):
     source = tmp_path / "lit.js"
     source.write_text("const { doWork } = require('./lib');\n", encoding="utf-8")
     assert "doWork" not in {n["label"] for n in extract_js(source)["nodes"]}
+
+
+def test_string_in_a_non_specifier_argument_is_not_a_require_import(tmp_path):
+    """Only the FIRST argument is the module specifier.
+
+    `require(name, 'label')` names no module the import pass can resolve, so
+    accepting a string anywhere in the list suppressed a local binding that
+    nothing replaced.
+    """
+    source = tmp_path / "odd.js"
+    source.write_text(
+        "export const { doWork } = require(name, 'label');\n", encoding="utf-8"
+    )
+    assert "doWork" in {n["label"] for n in extract_js(source)["nodes"]}

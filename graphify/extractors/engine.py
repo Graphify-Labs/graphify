@@ -1939,7 +1939,11 @@ def _is_require_initializer(value_node, source: bytes) -> bool:
     args = call.child_by_field_name("arguments")
     if args is None:
         return False
-    return any(arg.type == "string" for arg in args.children)
+    # The FIRST argument, not any of them: `require(name, 'label')` names no
+    # module the import pass can resolve, so a string anywhere in the list
+    # would suppress a local binding nothing replaces.
+    first = next((arg for arg in args.children if arg.is_named), None)
+    return first is not None and first.type == "string"
 
 
 def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges: list, str_path: str) -> bool:
