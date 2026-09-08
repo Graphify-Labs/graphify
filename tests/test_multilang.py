@@ -1354,6 +1354,24 @@ def test_sql_tsql_bracket_does_not_strip_unrelated_mysql_backticks(tmp_path):
         f"T-SQL bracket span elsewhere: {labels}"
     )
 
+def test_sql_tsql_bracket_does_not_strip_unrelated_backtick_part_of_same_name(tmp_path):
+    """#2721 follow-up, finer grained than the sibling test above: a name's
+    own byte range can overlap a debracketed span even when only ONE of
+    its dotted parts was actually touched ([dbo].`Foo`, a T-SQL schema
+    debracketed alongside a genuinely backtick-quoted table name in the
+    same reference). Un-rewriting must check each dotted part's own byte
+    range, not just whether the whole name overlaps a span somewhere --
+    otherwise the untouched part's backticks get stripped too."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "mixed.sql"
+    p.write_text("CREATE TABLE [dbo].`Foo` (Id INT);\n")
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.`Foo`" in labels, (
+        f"genuine backtick part stripped because the OTHER dotted part "
+        f"overlapped a debracketed span: {labels}"
+    )
+
 def test_sql_tsql_bracket_with_dot_is_left_unrewritten(tmp_path):
     """tree_sitter_sql's grammar splits on a literal `.` even inside a
     backtick span, so a bracket name like [My.Table] cannot be represented

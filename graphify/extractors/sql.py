@@ -524,21 +524,41 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
     return bytes(out), spans
 
 
-def _strip_backtick_parts(name: str) -> str:
-    """Undo _debracket_tsql's rewrite for display labels and recovered names.
+def _strip_backtick_parts(raw: bytes, base_byte: int, overlaps) -> bytes:
+    """Undo _debracket_tsql's rewrite for display labels and recovered
+    names, per dotted part.
 
-    The caller is responsible for only invoking this on a name it has
-    confirmed overlaps a span _debracket_tsql actually rewrote (see
-    _clean_name) -- called unconditionally, this would also strip a
-    genuinely backtick-quoted MySQL name sitting anywhere else in the file.
+    Checks each dotted part's OWN byte range against a debracketed span
+    independently, not the whole name's range: a genuinely backtick-quoted
+    part sitting next to a debracketed one ([dbo].`Foo`, a T-SQL schema
+    debracketed alongside a native MySQL table name, say) must keep its
+    own backticks. The caller having confirmed the WHOLE name overlaps
+    SOME span is not enough to strip every part -- that can be true even
+    when only one of several dotted parts was actually touched (#2721
+    follow-up).
+
+    raw is the exact bytes of the (already-debracketed) name as it reads
+    in source, and base_byte is raw's own starting offset in source, so
+    each part's absolute byte range can be computed and checked.
     """
-    parts = []
-    for part in name.split("."):
-        p = part.strip()
-        if len(p) >= 2 and p[0] == "`" and p[-1] == "`":
-            p = p[1:-1].replace("``", "`")
-        parts.append(p)
-    return ".".join(parts)
+    out_parts = []
+    pos = 0
+    for part in raw.split(b"."):
+        part_start = base_byte + pos
+        pos += len(part) + 1
+        stripped = part.strip()
+        lead_ws = len(part) - len(part.lstrip())
+        s_start = part_start + lead_ws
+        s_end = s_start + len(stripped)
+        if (
+            len(stripped) >= 2
+            and stripped[:1] == b"`"
+            and stripped[-1:] == b"`"
+            and overlaps(s_start, s_end)
+        ):
+            stripped = stripped[1:-1].replace(b"``", b"`")
+        out_parts.append(stripped)
+    return b".".join(out_parts)
 
 
 def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
@@ -596,12 +616,19 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         exactly as read -- in particular, a genuinely backtick-quoted MySQL
         name elsewhere in a file that also needed T-SQL debracketing is left
         with its own backticks intact, not stripped just because the file as
-        a whole went through the rewrite (#2721 follow-up).
+        a whole went through the rewrite (#2721 follow-up). The overlap
+        check here is a fast-path only: it decides whether to bother with
+        _strip_backtick_parts at all, which does the real, per-dotted-part
+        check on n.start_byte..n.end_byte overlapping SOMEWHERE is not the
+        same as every part of a dotted name having been touched.
         """
         text = _read(n)
         if not debracket_spans or not _overlaps_debracketed_span(n.start_byte, n.end_byte):
             return text
-        return _strip_backtick_parts(text)
+        raw = source[n.start_byte:n.end_byte]
+        return _strip_backtick_parts(raw, n.start_byte, _overlaps_debracketed_span).decode(
+            "utf-8", errors="replace"
+        )
 
     def _obj_name(n) -> str | None:
         for c in n.children:
@@ -971,7 +998,9 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         byte_end = len(src_text[:char_end].encode("utf-8", errors="surrogateescape"))
         if not _overlaps_debracketed_span(byte_start, byte_end):
             return _LONE_SURROGATE_RX.sub("�", text)
-        return _LONE_SURROGATE_RX.sub("�", _strip_backtick_parts(text))
+        raw = text.encode("utf-8", errors="surrogateescape")
+        stripped = _strip_backtick_parts(raw, byte_start, _overlaps_debracketed_span)
+        return _LONE_SURROGATE_RX.sub("�", stripped.decode("utf-8", errors="surrogateescape"))
     for m in re.finditer(r"CREATE\s+TABLE\s+([\w$]+)\s*\(", masked_src, re.IGNORECASE):
         if any(s <= m.start() < e for s, e in ident_spans):
             continue
