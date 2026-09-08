@@ -835,6 +835,11 @@ def _score_query(
 # than absent (#RANK1). These helpers surface it.
 
 _ANSWER_BLOCK_MAX = 5
+# How many nodes that matched none of the query's terms may follow the matched
+# set. Traversal context is worth showing — it says what the answer connects to —
+# but it must not be what a raised budget buys. Measured at `--budget 20000`:
+# 122 matched nodes and 266 with rel=0.
+_CONTEXT_TAIL_MAX = 15
 # Longest source line worth echoing. A minified bundle or a generated data file
 # has "lines" of tens of kilobytes, and one of them would swamp the whole answer.
 _SNIPPET_MAX_LINE = 200
@@ -1384,23 +1389,29 @@ def _subgraph_to_text(
     seeds: list[str] | None = None,
     relevance: dict[str, float] | None = None,
     pinned: list[str] | None = None,
+    context_cap: int = _CONTEXT_TAIL_MAX,
 ) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
     seeds: exact-match nodes rendered first before the degree-sorted expansion,
     so the queried symbol always appears at the top of the output.
 
-    relevance: query score per node, from `_score_query`. Used as the sort key
-    WITHIN a hop layer and printed on each NODE line as a share of the best hit,
-    so the budget cuts the least relevant material in a layer rather than
-    whatever the traversal reached last. Omitted (or empty) restores the previous
-    purely topological order, which is what non-query callers still want.
+    relevance: query score per node, from `_score_query`. It is the PRIMARY sort
+    key — a reader scanning top-down should meet the nodes that answer the
+    question first, wherever the traversal reached them — with hop distance
+    demoted to the tie-break that keeps a seed's own neighbourhood together
+    among equally-relevant nodes. Printed on each NODE line as a share of the
+    best hit. Omitted (or empty) restores the previous purely topological order,
+    which is what non-query callers still want.
 
-    Hop distance stays the primary key, preserving #BUG2's intent that the answer
-    keeps its immediate neighbourhood: the relevance-first view a reader needs is
-    served by the ANSWER block above, which is ordered by score alone and is
-    exempt from the budget. This is the same ordering PR #3284 proposes, adopted
-    here deliberately so the two changes compose instead of competing.
+    #BUG2's guarantee (the queried symbol is always in the answer) is preserved
+    by `pinned` and `seeds` below rather than by hop order.
+
+    context_cap: how many nodes that matched NOTHING may follow the matched set.
+    The budget used to buy filler — at `--budget 20000` on the measured graph one
+    query rendered 122 matched nodes and **266** with `rel=0`, which is the
+    "more noise, same problem" a bigger budget produced. Capping the tail makes a
+    raised budget buy more ANSWER instead.
 
     pinned: nodes that must survive the budget cut whatever their score —
     the entries the ANSWER block already named. Rendered before `seeds`.
@@ -1445,8 +1456,27 @@ def _subgraph_to_text(
     head_set = set(head)
     ordered = head + sorted(
         nodes - head_set,
-        key=lambda n: (dist.get(n, 1 << 30), -rel.get(n, 0.0), -G.degree(n), str(n)),
+        key=lambda n: (-rel.get(n, 0.0), dist.get(n, 1 << 30), -G.degree(n), str(n)),
     )
+    # Trim the unmatched tail (see `context_cap`). Only when there is a ranking to
+    # trim by: with no relevance map every node is "unmatched" and the cap would
+    # silently truncate a non-query caller's subgraph.
+    context_dropped = 0
+    if rel:
+        kept: list[str] = []
+        context_kept = 0
+        for n in ordered:
+            if n in head_set or rel.get(n, 0.0) > 0:
+                kept.append(n)
+            elif context_kept < context_cap:
+                kept.append(n)
+                context_kept += 1
+            else:
+                context_dropped += 1
+        ordered = kept
+    # Edges are rendered only between nodes that survived, so a trimmed node
+    # cannot leave a dangling half-edge in the output.
+    nodes = set(ordered)
     top_rel = max(rel.values(), default=0.0) or 1.0
     for nid in ordered:
         d = G.nodes[nid]
@@ -1469,7 +1499,14 @@ def _subgraph_to_text(
         # output byte-identical.
         rel_suffix = ""
         if rel:
-            rel_suffix = f" rel={round(100.0 * rel.get(nid, 0.0) / top_rel)}"
+            _score = rel.get(nid, 0.0)
+            _pct = 100.0 * _score / top_rel
+            # Floor a real match at 1 so `rel=0` means exactly one thing: this
+            # node matched none of your terms. Rounding a weak-but-real match down
+            # to 0 made it indistinguishable from pure traversal context, and
+            # contradicted the trimming note, which says rel=0 nodes are the ones
+            # dropped.
+            rel_suffix = f" rel={max(1, round(_pct)) if _score > 0 else 0}"
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
@@ -1513,6 +1550,14 @@ def _subgraph_to_text(
                 f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
             )
             lines.append(line)
+    # Never drop nodes silently: a reader who cannot see that context was trimmed
+    # reads a short answer as a small neighbourhood. Stated on its own line so it
+    # survives the budget cut below, which only ever trims the END of `output`.
+    context_note = (
+        f"\n[i] {context_dropped} further node(s) matched none of your query terms "
+        f"and are not shown (context cap {context_cap}; raise --budget for more "
+        f"ANSWER, not more context)." if context_dropped else ""
+    )
     output = "\n".join(lines)
     if len(output) > char_budget:
         cut_at = output[:char_budget].rfind("\n")
@@ -1555,7 +1600,7 @@ def _subgraph_to_text(
                 f"answer — raising --budget further will not shrink it. Narrow "
                 f"with context_filter=['call'] or use get_node for a specific "
                 f"symbol to reduce size instead.\n\n"
-            ) + output
+            ) + output + context_note
         # Prominent notice at the TOP so a truncated answer can never be mistaken
         # for a complete one — silence used to read as absence (#BUG2). The
         # notice + end marker sit OUTSIDE char_budget by design (two bounded
@@ -1600,7 +1645,8 @@ def _subgraph_to_text(
                 f" specific symbol)"
             )
         output = head_notice + "\n\n" + output[:cut_at] + tail_notice
-    return output
+        return output + context_note
+    return output + context_note
 
 
 def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) -> str:
