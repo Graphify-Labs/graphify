@@ -850,6 +850,8 @@ def deduplicate_entities(
         n["id"]: (i, n) for i, n in enumerate(unique_nodes)
     }
 
+    # Survivors enriched with their losers' fields, substituted at the end.
+    enriched_by_id: dict[str, dict] = {}
     for root, members in components.items():
         if len(members) == 1:
             continue
@@ -861,6 +863,17 @@ def deduplicate_entities(
         ]
         winner = _pick_winner(group_nodes) if group_nodes else {"id": root}
         winner_id = winner["id"]
+        # Even with the right survivor, dropping the losers wholesale loses
+        # whatever fields only they carried. Fill the survivor's absent
+        # fields from each loser — the same never-override merge the
+        # same-source collision path already applies (#2091/#3372); loser
+        # order follows unique_nodes order, so the fill is deterministic.
+        merged = winner
+        for node in group_nodes:
+            if node["id"] != winner_id:
+                merged = _merge_missing_attributes(merged, node)
+        if merged != winner:
+            enriched_by_id[winner_id] = merged
         for member in members:
             if member != winner_id:
                 remap[member] = winner_id
@@ -892,7 +905,9 @@ def deduplicate_entities(
     if hyperedges:
         _remap_hyperedge_members(hyperedges, remap)
 
-    deduped_nodes = [n for n in unique_nodes if n["id"] not in remap]
+    deduped_nodes = [
+        enriched_by_id.get(n["id"], n) for n in unique_nodes if n["id"] not in remap
+    ]
     deduped_edges = []
     for edge in edges:
         e = dict(edge)
@@ -916,14 +931,53 @@ def deduplicate_entities(
     return deduped_nodes, deduped_edges
 
 
+# Keys every node carries (or that describe placement rather than content).
+# They say nothing about which duplicate is the better-established record, so
+# the richness score below ignores them.
+_RICHNESS_IGNORED_KEYS = frozenset({
+    "id", "label", "norm_label", "file_type", "source_file", "source_location",
+})
+
+
+def _content_richness(n: dict) -> int:
+    """How much actual content a node carries, for survivor selection (#3372).
+
+    Counts populated fields beyond the identity/placement baseline, weighting
+    ``attributes`` by entry count and ``_merged_from`` by its history length —
+    a node that already absorbed prior merges is the established record.
+    """
+    score = 0
+    for key, value in n.items():
+        if key in _RICHNESS_IGNORED_KEYS:
+            continue
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        score += 1
+        if key == "attributes" and isinstance(value, dict):
+            score += len(value)
+        elif key == "_merged_from" and isinstance(value, list):
+            score += len(value)
+    return score
+
+
 def _pick_winner(nodes: list[dict]) -> dict:
-    """Pick the canonical survivor: prefer no chunk suffix, then shorter ID."""
+    """Pick the canonical survivor: no chunk suffix, then richer content,
+    then shorter ID.
+
+    ID length used to be the primary signal after the chunk-suffix check,
+    which made a passing one-line mention on a shallow page (short id, one
+    fewer path segment) beat the dedicated, enriched page for the same entity
+    — every time the pattern occurred, the established node's content was
+    discarded (#3372). Content richness now decides first; ID shape only
+    breaks ties between equally-rich candidates, preserving the old
+    deterministic ordering there.
+    """
     if not nodes:
         raise ValueError("Cannot pick winner from empty list")
 
-    def _score(n: dict) -> tuple[int, int]:
+    def _score(n: dict) -> tuple[int, int, int]:
         has_suffix = bool(_CHUNK_SUFFIX.search(n["id"]))
-        return (1 if has_suffix else 0, len(n["id"]))
+        return (1 if has_suffix else 0, -_content_richness(n), len(n["id"]))
 
     return min(nodes, key=_score)
 
