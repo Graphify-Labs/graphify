@@ -1469,6 +1469,24 @@ def test_sql_tsql_debracket_does_not_rewrite_array_constructor_with_space(tmp_pa
     assert new_ident == b"CREATE TABLE `Foo` (Id INT);\n", new_ident
     assert ident_spans
 
+def test_sql_tsql_debracket_does_not_rewrite_array_constructor_after_newline(tmp_path):
+    """Same ARRAY-keyword gap as the space case above, but with a newline
+    (or a mix of whitespace kinds) between ARRAY and its bracket -- SQL
+    treats all whitespace between tokens the same way, so ARRAY\\n[1, 2, 3]
+    is just as valid as ARRAY [1, 2, 3], and the lookback must skip a
+    newline too, not just spaces and tabs."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = b"SELECT ARRAY\n[1, 2, 3];\n"
+    new_src, spans = _debracket_tsql(src)
+    assert new_src == src, f"array constructor was rewritten: {new_src!r}"
+    assert not spans
+
+    mixed = b"SELECT ARRAY \t\n [1, 2, 3];\n"
+    new_mixed, mixed_spans = _debracket_tsql(mixed)
+    assert new_mixed == mixed, f"array constructor was rewritten: {new_mixed!r}"
+    assert not mixed_spans
+
 def test_sql_regex_recovery_survives_invalid_utf8_bytes_earlier_in_file(tmp_path):
     """_clean_regex_name reconstructs a byte offset by re-encoding a
     src_text slice, which only works if the original decode was lossless.

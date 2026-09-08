@@ -300,9 +300,10 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
     or the start of the file; an array marker is preceded by the identifier
     or keyword it subscripts (ARRAY[, col[, the closing `)` of a type's
     precision/scale list), with no separating punctuation -- except the
-    ARRAY keyword itself, which PostgreSQL also allows a space before its
-    bracket (ARRAY [1, 2, 3]); that specific case is checked for past a run
-    of spaces or tabs so it is not mistaken for the start of a quoted name.
+    ARRAY keyword itself, which PostgreSQL also allows any whitespace
+    (including a newline) before its bracket (ARRAY [1, 2, 3], or
+    ARRAY\n[1, 2, 3]); that specific case is checked for past a run of
+    whitespace so it is not mistaken for the start of a quoted name.
     Content that is empty or purely numeric is also excluded, since neither
     is a legal bare T-SQL identifier, and content holding a comment opener
     (`--`, `/*`) is
@@ -431,15 +432,17 @@ def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
             subscript_like = prev is not None and (
                 chr(prev).isalnum() or chr(prev) in "_$)]"
             )
-            if not subscript_like and prev in (0x20, 0x09):
-                # PostgreSQL allows whitespace between the ARRAY keyword and
-                # its bracket constructor (ARRAY [1, 2, 3]), so a plain
+            if not subscript_like and prev in (0x20, 0x09, 0x0A, 0x0D):
+                # PostgreSQL allows whitespace -- including a newline, since
+                # SQL treats all whitespace between tokens the same way --
+                # between the ARRAY keyword and its bracket constructor
+                # (ARRAY [1, 2, 3], or ARRAY\n[1, 2, 3]), so a plain
                 # "preceding char" check misses it: the char right before
-                # '[' is a space, not the identifier/keyword the marker
-                # actually subscripts. Look back past the run of spaces or
-                # tabs for a bare ARRAY word instead.
+                # '[' is whitespace, not the identifier/keyword the marker
+                # actually subscripts. Look back past the run of whitespace
+                # for a bare ARRAY word instead.
                 k = i - 1
-                while k > 0 and source[k - 1] in (0x20, 0x09):
+                while k > 0 and source[k - 1] in (0x20, 0x09, 0x0A, 0x0D):
                     k -= 1
                 word_start = k - 5
                 if word_start >= 0 and source[word_start:k].upper() == b"ARRAY" and (
