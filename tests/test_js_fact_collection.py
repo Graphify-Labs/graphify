@@ -39,38 +39,15 @@ def sources(root: Path) -> list[Path]:
     return [root / name for name in texts]
 
 
-@pytest.mark.parametrize("duplicates", [False, True])
-def test_ordered_facts_match_batch(tmp_path: Path, duplicates: bool) -> None:
-    paths = sources(tmp_path)
-    if duplicates:
-        paths += [paths[1]]
-    before = _SymbolUseFact(paths[0], "existing", "existing", "references", "type", 1)
-    expected = _SymbolResolutionFacts(uses=[before])
-    actual = _SymbolResolutionFacts(uses=[before])
-    resolution._collect_js_symbol_resolution_facts_batch(paths, expected)
-    resolution._collect_js_symbol_resolution_facts(paths, actual)
-    assert actual == expected
-    assert actual.uses[0] == before
-    assert actual.aliases and actual.star_exports and actual.namespace_exports
-    assert any(item.type_only for item in actual.exports)
-    relations = [item.relation for item in actual.uses[1:]]
-    last_call = max(i for i, relation in enumerate(relations) if relation == "calls")
-    assert all(relation == "calls" for relation in relations[:last_call + 1])
-    assert "inherits" in relations and "references" in relations
-
-
-@pytest.mark.parametrize("collector", [
-    resolution._collect_js_symbol_resolution_facts,
-    resolution._collect_js_symbol_resolution_facts_batch,
-])
-def test_exact_facts_preserve_original_collector_contract(tmp_path: Path, collector) -> None:
+def test_exact_facts_preserve_original_collector_contract(tmp_path: Path) -> None:
+    collector = resolution._collect_js_symbol_resolution_facts
     base, first, second = sources(tmp_path)
     target = base.resolve()
     caller = _make_id(_file_stem(first), "caller")
     first_class = _make_id(_file_stem(first), "First")
     method = _make_id(_file_stem(second), "Second.method")
     # Explicit expected facts checked against 937e59a. Do not calculate this
-    # oracle with either collector: both share the syntax-index implementation.
+    # oracle with the collector or its group helper: they share syntax indexing.
     expected = _SymbolResolutionFacts(
         declarations=[
             _SymbolDeclarationFact(base, "Base", 1),
@@ -209,3 +186,134 @@ def test_previous_native_tree_released_before_next_parse(tmp_path: Path, monkeyp
     resolution._collect_js_symbol_resolution_facts(paths, _SymbolResolutionFacts())
     assert parsed_count == len(paths)
     release_previous_tree()
+
+
+@pytest.mark.skipif(sys.implementation.name != "cpython", reason="uses CPython reference counts")
+def test_duplicate_group_releases_native_trees_before_unrelated_file(
+    tmp_path: Path, requires_symlinks, monkeypatch,
+) -> None:
+    import tree_sitter
+
+    source, unrelated = tmp_path / "source.ts", tmp_path / "unrelated.ts"
+    source.write_text("export interface Shape {}\nexport function run() {}\n")
+    unrelated.write_text("export function independent() {}\n")
+    alias = tmp_path / "alias.js"
+    alias.symlink_to(source)
+    parser_type = tree_sitter.Parser
+    retained = []
+    parsed_count = 0
+    unrelated_references = []
+
+    def release_group():
+        # This intentionally depends on CPython and tree-sitter's ownership
+        # contract. An extra reference can be a leaked Node; do not tolerate it.
+        references = [sys.getrefcount(tree) for tree in retained]
+        assert all(count == 3 for count in references)  # list, loop local, argument
+        retained.clear()
+
+    class TrackedParser:
+        def __init__(self, *args, **kwargs):
+            self.parser = parser_type(*args, **kwargs)
+
+        def parse(self, source_bytes, *args, **kwargs):
+            nonlocal parsed_count
+            if source_bytes == unrelated.read_bytes():
+                unrelated_references.extend(sys.getrefcount(tree) for tree in retained)
+                retained.clear()
+            tree = self.parser.parse(source_bytes, *args, **kwargs)
+            retained.append(tree)
+            parsed_count += 1
+            return tree
+
+    monkeypatch.setattr(tree_sitter, "Parser", TrackedParser)
+    resolution._collect_js_symbol_resolution_facts(
+        [source, unrelated, alias, source], _SymbolResolutionFacts(),
+    )
+    assert parsed_count == 4
+    assert unrelated_references and all(count == 3 for count in unrelated_references)
+    release_group()
+
+
+@pytest.mark.parametrize("last_grammar", ["js", "ts", "duplicate"])
+def test_interleaved_groups_preserve_every_fact_category(
+    tmp_path: Path, requires_symlinks, last_grammar: str,
+) -> None:
+    source, other, target = [tmp_path / name for name in ("source.ts", "other.ts", "target.ts")]
+    target.write_text("export function run() {}\n")
+    text = ('export interface Shape {}\n'
+            'import {run} from "./target.ts";\n'
+            'const alias = run; export {alias};\n'
+            'export * from "./target.ts"; export * as ns from "./target.ts";\n'
+            'function caller() { alias(); }\n'
+            'class Child extends Parent { field: Shape; }\n')
+    source.write_text(text)
+    other.write_text(text)
+    link = tmp_path / "alias.js"
+    link.symlink_to(source)
+    ignored = tmp_path / "ignored.py"
+    paths = {"js": [source, ignored, other, link, other],
+             "ts": [link, ignored, other, source, other],
+             "duplicate": [source, ignored, other, source, other]}[last_grammar]
+    # Each category follows input occurrence order, even across two interleaved
+    # groups. First-pass declarations use the input grammar, while exports use
+    # the last successful grammar for that resolved file.
+    expected = _SymbolResolutionFacts()
+    class_uses = []
+    for path in paths:
+        if path == ignored:
+            continue
+        if path.suffix == ".ts":
+            expected.declarations.append(_SymbolDeclarationFact(path, "Shape", 1))
+        expected.imports.append(_SymbolImportFact(path, "run", target.resolve(), "run", 2))
+        expected.aliases.append(_SymbolAliasFact(path, "alias", "run", 3))
+        if path == other or last_grammar != "js":
+            expected.exports.append(_SymbolExportFact(path, "Shape", 1, local_name="Shape"))
+        expected.exports.append(_SymbolExportFact(path, "alias", 3, local_name="alias"))
+        expected.star_exports.append(_StarExportFact(path, target.resolve(), 4))
+        expected.namespace_exports.append(_NamespaceExportFact(path, "ns", target.resolve(), 4))
+        expected.uses.append(_SymbolUseFact(
+            path, _make_id(_file_stem(path), "caller"), "alias", "calls", "call", 5,
+        ))
+        class_id = _make_id(_file_stem(path), "Child")
+        class_uses.append(_SymbolUseFact(path, class_id, "Parent", "inherits", "type", 6))
+        if path == other or last_grammar != "js":
+            class_uses.append(_SymbolUseFact(path, class_id, "Shape", "references", "field", 6))
+    expected.uses.extend(class_uses)
+    actual = _SymbolResolutionFacts()
+    resolution._collect_js_symbol_resolution_facts(paths, actual)
+    assert actual == expected
+
+
+@pytest.mark.parametrize("failed", ["first", "last", "all"])
+def test_group_reuses_last_successful_parse_after_failures(
+    tmp_path: Path, requires_symlinks, monkeypatch, failed: str,
+) -> None:
+    source, other = tmp_path / "source.ts", tmp_path / "other.ts"
+    source.write_text("export interface Shape {}\nexport function run() {}\n")
+    other.write_text("export function independent() {}\n")
+    alias = tmp_path / "alias.js"
+    alias.symlink_to(source)
+    paths = [source, other, alias]
+    failed_paths = {"first": {source}, "last": {alias}, "all": {source, alias}}[failed]
+    parse = resolution._parse_js_tree
+    monkeypatch.setattr(resolution, "_parse_js_tree",
+                        lambda path: None if path in failed_paths else parse(path))
+    expected = _SymbolResolutionFacts()
+    for path in paths:
+        if path == other:
+            expected.declarations.append(_SymbolDeclarationFact(path, "independent", 1))
+            expected.exports.append(_SymbolExportFact(path, "independent", 1,
+                                                       local_name="independent"))
+            continue
+        if path not in failed_paths:
+            if path == source:
+                expected.declarations.append(_SymbolDeclarationFact(path, "Shape", 1))
+            expected.declarations.append(_SymbolDeclarationFact(path, "run", 2))
+        if failed == "all":
+            continue
+        if failed == "last":
+            expected.exports.append(_SymbolExportFact(path, "Shape", 1, local_name="Shape"))
+        expected.exports.append(_SymbolExportFact(path, "run", 2, local_name="run"))
+    actual = _SymbolResolutionFacts()
+    resolution._collect_js_symbol_resolution_facts(paths, actual)
+    assert actual == expected
