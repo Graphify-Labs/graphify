@@ -122,30 +122,16 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     G = _load_global_graph()
     removed = prune_repo_from_graph(G, repo_tag)
 
-    # Merge external-library nodes (no source_file) by label to avoid duplication
-    external_labels = {
-        d.get("label", ""): n
-        for n, d in G.nodes(data=True)
-        if not d.get("source_file") and d.get("label")
-    }
-    # Map each deduplicated external onto the existing global node so that
-    # edges incident to it can be rewired instead of dropped.
-    remap = {}
+    # Each unit keeps its own external-library stubs (no source_file). Merging
+    # them by label makes stub ownership a function of merge order: the survivor
+    # carries the first-merged repo's tag, fabricating cross-repo edges and
+    # letting prune_repo_from_graph delete other repos' real edges with it.
     for node, data in prefixed.nodes(data=True):
-        if not data.get("source_file") and data.get("label") in external_labels:
-            remap[node] = external_labels[data["label"]]
-
-    # Compose: add prefixed nodes (except deduplicated externals) into global graph
-    for node, data in prefixed.nodes(data=True):
-        if node not in remap:
-            G.add_node(node, **data)
+        G.add_node(node, **data)
     for u, v, data in prefixed.edges(data=True):
-        u = remap.get(u, u)
-        v = remap.get(v, v)
-        if u != v:  # don't introduce self-loops via remapping
-            G.add_edge(u, v, **data)
+        G.add_edge(u, v, **data)
 
-    added = prefixed.number_of_nodes() - len(remap)
+    added = prefixed.number_of_nodes()
     # A member call parked on a caller node (#3152) may be answered by a repo
     # already in the global graph, or by this one for a repo added earlier. The
     # pass recomputes its own output, so adding repos one at a time lands where a
