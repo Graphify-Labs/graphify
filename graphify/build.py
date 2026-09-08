@@ -763,6 +763,49 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
     return False
 
 
+def legacy_id_collisions(nodes: list, root: str | Path | None = None) -> int:
+    """How many pre-#1504 node IDs are AMBIGUOUS — one id claimed by more than one
+    source file. This is the harm the new scheme exists to prevent; a legacy id
+    that no other file claims resolves to exactly the node it always did.
+
+    `graph_has_legacy_ids` answers "was this graph built by the old extractor",
+    which is true of any graph predating the change and stays true no matter how
+    harmless the old ids turn out to be. Read-only consumers were printing a
+    rebuild nudge on that answer alone, on every single query. Measured on a
+    51k-node graph: 591 file nodes carried legacy ids and **none** of them
+    collided, so every query paid a warning for a hazard that had not occurred and
+    recommended a full re-extraction that would have changed nothing (#RANK1).
+
+    Callers should nudge on THIS being non-zero and stay quiet otherwise.
+    """
+    from graphify.extractors.base import _file_stem
+    _r = str(root) if root is not None else None
+    claims: dict[str, set[str]] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("source_location") or "") != "L1":
+            continue
+        if _has_global_id(node):
+            continue
+        nid = node.get("id")
+        sf = node.get("source_file")
+        if not nid or not isinstance(nid, str) or not sf:
+            continue
+        sf_norm = _norm_source_file(str(sf), _r) or str(sf)
+        rel = Path(sf_norm)
+        if _is_abs(sf_norm) or not rel.name:
+            continue
+        new_stem = make_id(_file_stem(rel))
+        if not new_stem:
+            continue
+        norm = _normalize_id(nid)
+        if norm == new_stem or norm.startswith(new_stem + "_"):
+            continue  # already path-qualified
+        claims.setdefault(norm, set()).add(str(sf))
+    return sum(1 for files in claims.values() if len(files) > 1)
+
+
 def _doc_twin_remap(nodes: list) -> dict[str, str]:
     """Map a markdown quick-scan's bare doc node ``<slug>`` to the semantic
     ``<slug>_doc`` node for the SAME file (#1799).

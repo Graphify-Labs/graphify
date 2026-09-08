@@ -7,14 +7,14 @@ import re
 import sys
 from array import array
 from collections import OrderedDict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import threading
 from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
 from graphify.security import sanitize_label, check_graph_file_size_cap
 from graphify.build import edge_data, edge_datas
-from graphify.paths import default_graph_json as _default_graph_json
+from graphify.paths import default_graph_json as _default_graph_json, _is_test_path
 
 try:
     import jieba as _jieba  # type: ignore[import-untyped]
@@ -51,11 +51,14 @@ def _load_graph(graph_path: str) -> nx.Graph:
         _logical_directed = bool(data.get("directed", False))
         data = {**data, "directed": True}
         try:
-            from graphify.build import graph_has_legacy_ids as _legacy
-            if _legacy(data.get("nodes", [])):
+            from graphify.build import legacy_id_collisions as _legacy_collisions
+            _collisions = _legacy_collisions(data.get("nodes", []))
+            if _collisions:
                 print(
-                    "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
-                    "rebuild with `graphify extract --force` for path-qualified IDs.",
+                    f"[graphify] note: {_collisions} node ID(s) in this graph are "
+                    "claimed by more than one file (pre-#1504 scheme); those nodes "
+                    "may answer for the wrong file. Rebuild with "
+                    "`graphify extract --force` for path-qualified IDs.",
                     file=sys.stderr,
                 )
         except Exception:
@@ -193,6 +196,60 @@ def _search_tokens(text: str) -> list[str]:
     return re.findall(r"[^\W_]+", _strip_diacritics(str(text)).lower())
 
 
+# Identifier sub-word splitter. `_search_tokens` splits on punctuation and `_`,
+# which leaves `handleTeamConfigWrite` as ONE token — so a natural-language query
+# saying "team config write" could only ever reach it through the substring tier,
+# worth 1/1000th of an exact match. Measured on a 51k-node TypeScript graph, a
+# node matching four of six query terms scored 15 while a bare `worker` variable
+# matching one term scored 126 (#RANK1). camelCase, PascalCase and SCREAMING_SNAKE
+# are the dominant identifier conventions in most of the languages graphify
+# extracts, so an identifier's parts have to be matchable as words.
+#
+#   [A-Z]+(?![a-z])  a run of capitals not starting a capitalised word (HTTP in
+#                    HTTPServer, and the whole of SCREAMING_SNAKE parts)
+#   [A-Z][a-z0-9]*   a capitalised word (Team, Config)
+#   [a-z0-9]+        a lowercase run (handle, lang)
+_CAMEL_SPLIT_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+
+
+def _subword_tokens(text: str) -> list[str]:
+    """Lower-cased identifier parts of `text`, splitting camelCase and PascalCase
+    as well as the punctuation/underscore boundaries `_search_tokens` handles.
+
+    `handleTeamConfigWrite` -> [handle, team, config, write];
+    `PLATFORM_SOURCE_LANG`  -> [platform, source, lang];
+    `HTTPServer`            -> [http, server].
+
+    Case-sensitive by necessity, so it takes the RAW text — passing an already
+    lower-cased `norm_label` would silently yield one token per punctuation run
+    and quietly restore the behaviour this exists to fix.
+    """
+    out: list[str] = []
+    for chunk in re.split(r"[^0-9A-Za-z]+", _strip_diacritics(str(text))):
+        if not chunk:
+            continue
+        out.extend(m.group(0).lower() for m in _CAMEL_SPLIT_RE.finditer(chunk))
+    return out
+
+
+def _fold_plural(token: str) -> str:
+    """Fold a trailing plural `s` so query and label agree on number.
+
+    A question is written in prose ("which route validates team config writes")
+    and an identifier is written in the singular (`validate`, `write`), so without
+    this the two never meet and the node loses a tier it earned.
+
+    Deliberately a fold, not a stemmer: it is applied to BOTH sides, so its job is
+    to be consistent rather than linguistically right. `status` -> `statu` is
+    wrong as English and harmless here, because the label folds to `statu` too.
+    Words ending `ss` (class, address) and short words (its, has) are left alone,
+    where dropping the `s` would collide with unrelated terms.
+    """
+    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
 def _has_chinese(text: str) -> bool:
     return any("一" <= ch <= "鿿" for ch in text)
 
@@ -295,6 +352,14 @@ _EXACT_MATCH_BONUS = 1000.0
 _PREFIX_MATCH_BONUS = 100.0
 _SUBSTRING_MATCH_BONUS = 1.0
 _SOURCE_MATCH_BONUS = 0.5
+# A query term that equals a whole PART of an identifier (`team` in
+# `handleTeamConfigWrite`). Sits between the prefix and substring tiers: the node
+# genuinely names the concept, which a bare substring hit ("cat" in "catalogue")
+# does not, but it names only part of itself, which a prefix match does. Like the
+# exact and prefix tiers it counts toward term coverage, so a node explaining
+# three of a question's six words is ranked as explaining half the question
+# (#RANK1).
+_SUBWORD_MATCH_BONUS = 60.0
 # The extraction spec stores the WHY of a concept as a `rationale` attribute
 # on the node, not as a node of its own, so for a "why does X …" question that
 # prose is often the only place the question's words occur (#2293). Score it
@@ -303,6 +368,70 @@ _SOURCE_MATCH_BONUS = 0.5
 # toward term coverage, so a long rationale adds recall without winning back
 # an exact-label tier it did not earn.
 _RATIONALE_MATCH_BONUS = 0.75
+
+# --- Relevance shaping: a support file never outranks what it supports --------
+#
+# The scorer's tiers rank a node by how well its text matches the query, and a
+# test file is often the *better* lexical match: `LanguagesCard.test.tsx` holds a
+# bare `LANGUAGES` constant that exact-matches a query term, while the component
+# it exercises spells the same idea as `SectionLanguagesCard()` and only
+# prefix-matches. Ranked on text alone the test wins, and an agent reading the
+# answer top-down opens the test instead of the implementation (#RANK1).
+#
+# The weights are multiplicative on the final score rather than a hard filter,
+# so a test stays findable when it is genuinely the answer ("which test covers
+# X") — it just cannot outrank a source file that matched as well.
+_TEST_RELEVANCE_WEIGHT = 0.30
+_SUPPORT_RELEVANCE_WEIGHT = 0.50
+
+# Whole path segments marking generated, vendored or fixture material. Matched
+# segment-wise (never as a raw substring) for the same reason `_is_test_path`
+# is: "distribution/" must not match on "dist".
+_SUPPORT_DIR_SEGMENTS = frozenset({
+    "fixtures", "fixture", "mocks", "__mocks__", "testdata", "test-data",
+    "snapshots", "__snapshots__", "node_modules", "vendor", "third_party",
+    "dist", "build", "generated", "__generated__", "coverage", ".next",
+    # Archived material describes what WAS decided. A superseded proposal is
+    # prose, so it matches more of a question's words than the code it describes
+    # ever will, and on the graph measured for #RANK1 five archived specs
+    # outranked the live route the question was about.
+    "archive", "archived",
+})
+
+# Configuration / manifest / lockfile suffixes. These describe a project rather
+# than implement it, so they answer "how is X configured" and almost never
+# "where is X implemented" — which is what a natural-language query asks.
+_SUPPORT_SUFFIXES = frozenset({
+    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".lock",
+    ".snap", ".properties", ".editorconfig",
+})
+
+
+def _relevance_weight(source_file: str) -> float:
+    """Multiplier applied to a node's query score, from the kind of file it is in.
+
+    1.0 for ordinary source, `_TEST_RELEVANCE_WEIGHT` for a test/spec file,
+    `_SUPPORT_RELEVANCE_WEIGHT` for fixtures, generated output, vendored code and
+    configuration manifests. Test classification reuses `paths._is_test_path` so
+    extraction, call resolution and ranking agree on what a test is rather than
+    keeping three drifting definitions.
+
+    An empty path scores 1.0: an unknown file is not evidence of a support file,
+    and penalising it would demote every node an extractor left unattributed.
+    """
+    if not source_file:
+        return 1.0
+    norm = str(source_file).replace("\\", "/")
+    if _is_test_path(norm):
+        return _TEST_RELEVANCE_WEIGHT
+    pure = PurePosixPath(norm)
+    for segment in pure.parts:
+        if segment.lower() in _SUPPORT_DIR_SEGMENTS:
+            return _SUPPORT_RELEVANCE_WEIGHT
+    if pure.suffix.lower() in _SUPPORT_SUFFIXES:
+        return _SUPPORT_RELEVANCE_WEIGHT
+    return 1.0
+
 
 
 def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
@@ -543,7 +672,16 @@ def _score_query(
     # back to the whole graph when the index isn't selective. The result is
     # identical either way — the per-node scoring below is unchanged and a
     # non-candidate node always scores 0. (IDF above stays a whole-graph statistic.)
-    candidate_ids = _trigram_candidates(G, norm_terms + ([joined] if joined else []))
+    # Folded (singular) form of each query term, for the sub-word tier. Both the
+    # query side and the label side fold, so they meet in the middle.
+    folded_terms = [_fold_plural(t) for t in norm_terms]
+    # The folded forms join the trigram needles: without them a node whose label
+    # contains `write` is not even a candidate for the query term `writes`, and
+    # the sub-word tier could never fire on it.
+    _needles = list(dict.fromkeys(
+        norm_terms + folded_terms + ([joined] if joined else [])
+    ))
+    candidate_ids = _trigram_candidates(G, _needles)
     node_iter = (
         G.nodes(data=True) if candidate_ids is None
         else ((nid, G.nodes[nid]) for nid in candidate_ids)
@@ -567,7 +705,14 @@ def _score_query(
         # sides makes "uoce: dehumidifier driver" match query "uoce dehumidifier
         # driver".
         label_tokens = " ".join(_search_tokens(data.get("label") or ""))
+        # Identifier parts of the RAW label (case matters to the camelCase split),
+        # folded to singular so `writes` reaches `...Write`.
+        subwords = {_fold_plural(w) for w in _subword_tokens(data.get("label") or "")}
         source = (data.get("source_file") or "").lower()
+        # Kind-of-file multiplier (#RANK1), applied to the finished score below
+        # and to the per-term singleton so a test file cannot win a guaranteed
+        # seed slot away from the source file it exercises.
+        weight = _relevance_weight(source)
         rationale = _node_rationale_text(data)
         # `nid_lower` is needed both by the full-query tier (`if joined`) and by
         # the per-token singleton tier (joined-singlet exact-match check). When
@@ -621,6 +766,9 @@ def _score_query(
             elif norm_label.startswith(t) or bare_label.startswith(t):
                 tier_value = _PREFIX_MATCH_BONUS * w
                 matched += 1
+            elif _fold_plural(t) in subwords:
+                tier_value = _SUBWORD_MATCH_BONUS * w
+                matched += 1
             elif t in norm_label:
                 substr_value = _SUBSTRING_MATCH_BONUS * w
                 score += substr_value
@@ -652,7 +800,8 @@ def _score_query(
                     singleton = _PREFIX_MATCH_BONUS * 10 * w
                 else:
                     singleton = 0.0
-                singleton += tier_value + substr_value + source_value + rationale_value
+                singleton = (singleton + tier_value + substr_value
+                             + source_value + rationale_value) * weight
                 if singleton > 0:
                     # Tie-break key mirrors the legacy sort+max(degree):
                     # (-singleton, -degree, label_len, nid) — the minimum
@@ -664,6 +813,7 @@ def _score_query(
                         best_by_term[t] = (key, nid)
         if tiered:
             score += tiered * (matched / n_terms) ** 2
+        score *= weight
         if score > 0:
             scored.append((score, nid))
     # Sort by score desc; break ties toward the shorter label so a concise exact
@@ -673,6 +823,206 @@ def _score_query(
     if collect_per_term_seeds and best_by_term:
         best_seed_by_term = {t: nid for t, (_key, nid) in best_by_term.items()}
     return _QueryScores(ranked=scored, best_seed_by_term=best_seed_by_term)
+
+
+# --- The answer block: why a node matched, and what is on that line ----------
+#
+# `_score_query` has always ranked nodes, but only `_pick_seeds` ever read the
+# ranking: the renderer ordered by graph topology (seeds, then hop distance, then
+# degree) and printed no score at all. Every line therefore carried identical
+# apparent weight, so a reader could not tell the node that answered the question
+# from the neighbourhood it was found in, and the ranking was invisible rather
+# than absent (#RANK1). These helpers surface it.
+
+_ANSWER_BLOCK_MAX = 5
+# Longest source line worth echoing. A minified bundle or a generated data file
+# has "lines" of tens of kilobytes, and one of them would swamp the whole answer.
+_SNIPPET_MAX_LINE = 200
+_SNIPPET_MAX_BYTES = 256 * 1024
+
+
+def _matched_terms(data: dict, norm_terms: list[str]) -> set[str]:
+    """The query terms this node matched at any tier, label or path or rationale.
+
+    Shares its predicates with `_match_reason` through the same helper walk, so
+    the confidence line and the per-node explanation can never disagree.
+    """
+    return {t for t, _tier in _term_tiers(data, norm_terms)}
+
+
+def _term_tiers(data: dict, norm_terms: list[str]) -> list[tuple[str, str]]:
+    """(term, tier) for every query term this node matches, strongest tier only.
+
+    Tier names mirror `_score_query`'s precedence exactly — exact, prefix,
+    subword, substring, path, rationale — so an explanation can never claim a
+    match the score did not credit.
+    """
+    norm_label = data.get("norm_label") or _strip_diacritics(data.get("label") or "").lower()
+    bare_label = norm_label.rstrip("()")
+    label_tokens = " ".join(_search_tokens(data.get("label") or ""))
+    subwords = {_fold_plural(w) for w in _subword_tokens(data.get("label") or "")}
+    source = (data.get("source_file") or "").lower()
+    rationale = _node_rationale_text(data)
+    out: list[tuple[str, str]] = []
+    for t in norm_terms:
+        if t in (norm_label, bare_label, label_tokens):
+            out.append((t, "exact"))
+        elif norm_label.startswith(t) or bare_label.startswith(t) or label_tokens.startswith(t):
+            out.append((t, "prefix"))
+        elif _fold_plural(t) in subwords:
+            out.append((t, "subword"))
+        elif t in norm_label:
+            out.append((t, "substring"))
+        elif t in source:
+            out.append((t, "path"))
+        elif rationale and t in rationale:
+            out.append((t, "rationale"))
+    return out
+
+
+def _match_reason(data: dict, nid: str, norm_terms: list[str]) -> str:
+    """One short phrase saying WHY this node is in the answer.
+
+    Reports the strongest tier each query term reached, in the same precedence
+    `_score_query` scores them by, so the explanation cannot claim a match the
+    score did not credit. Terms that matched nothing are omitted rather than
+    listed as misses — the reader wants the evidence for the hit, and a five-term
+    query would otherwise spend most of the line on absences. The confidence line
+    above the block reports the misses once, for the answer as a whole.
+    """
+    phrasing = {
+        "exact": "name is",
+        "prefix": "name starts with",
+        "subword": "name has part",
+        "substring": "name contains",
+        "path": "path has",
+        "rationale": "rationale mentions",
+    }
+    grouped: dict[str, list[str]] = {}
+    for term, tier in _term_tiers(data, norm_terms):
+        grouped.setdefault(tier, []).append(term)
+    parts = [f"{phrasing[tier]} " + ", ".join(grouped[tier])
+             for tier in ("exact", "prefix", "subword", "substring", "path", "rationale")
+             if tier in grouped]
+    if not parts:
+        # Reached only for a node pulled in by traversal rather than by text —
+        # it has no query match of its own, and saying so is the honest answer.
+        return "reached by traversal from a matching node"
+    return "; ".join(parts)
+
+
+def _source_snippet(source_file: str, source_location: str, root: Path | None = None) -> str:
+    """The single source line a node points at, trimmed — or "" when unavailable.
+
+    The reader's next move after any query result is to open the file at the
+    line, so putting that line in the answer removes a round trip. Best-effort
+    by design: a query may run anywhere, against a graph built elsewhere, so a
+    missing, unreadable, binary or moved file yields "" and the answer renders
+    exactly as it did before. It never raises, and it never becomes the reason a
+    query fails.
+
+    Reads only up to the target line, and refuses a file over
+    `_SNIPPET_MAX_BYTES`, so a query cannot be made slow by a large file.
+    """
+    if not source_file or not source_location:
+        return ""
+    m = re.match(r"^L(\d+)", str(source_location).strip())
+    if not m:
+        return ""
+    want = int(m.group(1))
+    if want < 1:
+        return ""
+    try:
+        path = (root or Path.cwd()) / str(source_file)
+        if not path.is_file() or path.stat().st_size > _SNIPPET_MAX_BYTES:
+            return ""
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh, 1):
+                if i == want:
+                    text = line.strip()
+                    if len(text) > _SNIPPET_MAX_LINE:
+                        text = text[:_SNIPPET_MAX_LINE - 1] + "\u2026"
+                    return text
+                if i > want:
+                    break
+    except (OSError, ValueError, UnicodeError):
+        return ""
+    return ""
+
+
+def _answer_block(
+    G: nx.Graph,
+    ranked_in_view: list[tuple[float, str]],
+    norm_terms: list[str],
+    *,
+    limit: int = _ANSWER_BLOCK_MAX,
+    root: Path | None = None,
+) -> tuple[str, list[str]]:
+    """Render the leading ANSWER section and return it with the ids it named.
+
+    `ranked_in_view` is the query ranking restricted to nodes the traversal
+    actually returned, best first. Scores are shown relative to the top hit
+    (100 = best): the raw score is an IDF-weighted tier sum whose magnitude means
+    nothing across two different queries, while "this one scored 12 against a
+    best of 100" is directly actionable — it is the difference between an answer
+    and a near-miss.
+
+    Returns ("", []) when nothing matched the query text, so a pure-traversal
+    result keeps its old shape instead of growing an empty heading.
+    """
+    if not ranked_in_view:
+        return "", []
+    top = ranked_in_view[0][0] or 1.0
+    shown = ranked_in_view[:limit]
+    lines = [
+        f"ANSWER \u2014 top {len(shown)} of "
+        f"{len(ranked_in_view)} nodes that matched your query, best first:"
+    ]
+    # Confidence, stated rather than implied. A lexical graph can only find a node
+    # whose text shares words with the question; when the question's vocabulary and
+    # the corpus's do not overlap, the ranking still produces a confidently-ordered
+    # list of near-misses, and the reader cannot tell that from a hit. Measured on
+    # the #RANK1 corpus: "where does the chrome string fallback chain terminate"
+    # returns a plausible five-node answer in which no node matches more than one
+    # of the five query terms, and the file that actually answers it shares NO word
+    # with the question. Naming the terms nothing matched is the actionable part —
+    # it says which way the vocabulary gap runs, and tells a caller to search by
+    # another route rather than trust the top line.
+    if len(norm_terms) >= 3:
+        best_cover = max(
+            (len(_matched_terms(G.nodes[nid], norm_terms)) for _sc, nid in shown),
+            default=0,
+        )
+        if best_cover * 2 < len(norm_terms):
+            covered = set()
+            for _sc, nid in shown:
+                covered |= _matched_terms(G.nodes[nid], norm_terms)
+            missed = [t for t in norm_terms if t not in covered]
+            miss_note = (
+                f"; nothing in this graph matched {', '.join(repr(t) for t in missed)}"
+                if missed else ""
+            )
+            lines.append(
+                f"  [LOW CONFIDENCE: the best node matches only {best_cover} of your "
+                f"{len(norm_terms)} query terms{miss_note}. These are leads, not an "
+                f"answer \u2014 if none is right, the wording of the question and the "
+                f"wording in the code may simply not overlap.]"
+            )
+    chosen: list[str] = []
+    for rank, (score, nid) in enumerate(shown, 1):
+        d = G.nodes[nid]
+        label = sanitize_label(str(d.get("label", nid)))
+        src = sanitize_label(str(d.get("source_file", "")))
+        loc = sanitize_label(str(d.get("source_location", "")))
+        rel = round(100.0 * score / top)
+        where = f"{src}:{loc}" if src and loc else (src or "?")
+        lines.append(f"  {rank}. {label}  [rel={rel}]  {where}")
+        lines.append(f"     why: {sanitize_label(_match_reason(d, nid, norm_terms))}")
+        snippet = _source_snippet(str(d.get("source_file", "")), str(d.get("source_location", "")), root)
+        if snippet:
+            lines.append(f"     line: {sanitize_label(snippet)}")
+        chosen.append(nid)
+    return "\n".join(lines) + "\n\n", chosen
 
 
 def _pick_scored_endpoint(G: nx.Graph, scored: list[tuple[float, str]], query: str) -> str:
@@ -1025,11 +1375,35 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
+def _subgraph_to_text(
+    G: nx.Graph,
+    nodes: set[str],
+    edges: list[tuple],
+    token_budget: int = 2000,
+    *,
+    seeds: list[str] | None = None,
+    relevance: dict[str, float] | None = None,
+    pinned: list[str] | None = None,
+) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
     seeds: exact-match nodes rendered first before the degree-sorted expansion,
     so the queried symbol always appears at the top of the output.
+
+    relevance: query score per node, from `_score_query`. Used as the sort key
+    WITHIN a hop layer and printed on each NODE line as a share of the best hit,
+    so the budget cuts the least relevant material in a layer rather than
+    whatever the traversal reached last. Omitted (or empty) restores the previous
+    purely topological order, which is what non-query callers still want.
+
+    Hop distance stays the primary key, preserving #BUG2's intent that the answer
+    keeps its immediate neighbourhood: the relevance-first view a reader needs is
+    served by the ANSWER block above, which is ordered by score alone and is
+    exempt from the budget. This is the same ordering PR #3284 proposes, adopted
+    here deliberately so the two changes compose instead of competing.
+
+    pinned: nodes that must survive the budget cut whatever their score —
+    the entries the ANSWER block already named. Rendered before `seeds`.
     """
     char_budget = token_budget * 3
     lines = []
@@ -1061,10 +1435,19 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                     dist[nb] = hop
                     nxt.append(nb)
         frontier = nxt
-    ordered = seed_hits + sorted(
-        nodes - seed_set,
-        key=lambda n: (dist.get(n, 1 << 30), -G.degree(n), str(n)),
+    # Query relevance first, then the hop/degree tie-breaks. With no relevance
+    # map every key starts at the same 0.0 and the order is exactly the previous
+    # topological one, so non-query callers are unaffected.
+    rel = relevance or {}
+    head = list(dict.fromkeys(
+        [n for n in (pinned or []) if n in nodes] + seed_hits
+    ))
+    head_set = set(head)
+    ordered = head + sorted(
+        nodes - head_set,
+        key=lambda n: (dist.get(n, 1 << 30), -rel.get(n, 0.0), -G.degree(n), str(n)),
     )
+    top_rel = max(rel.values(), default=0.0) or 1.0
     for nid in ordered:
         d = G.nodes[nid]
         # Every LLM-derived field passes through sanitize_label before being
@@ -1080,12 +1463,19 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             status = sanitize_label(str(entry.get("status", "")))
             if status:
                 learning_suffix = f" learning={status}{':stale' if entry.get('stale') else ''}"
+        # `rel=` is the node's query score as a percentage of the best hit, so a
+        # reader can see where the signal stops without counting lines. Absent
+        # when there is no ranking to report (a non-query caller), keeping that
+        # output byte-identical.
+        rel_suffix = ""
+        if rel:
+            rel_suffix = f" rel={round(100.0 * rel.get(nid, 0.0) / top_rel)}"
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
             f"loc={sanitize_label(str(d.get('source_location', '')))} "
             f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
-            f"{learning_suffix}]"
+            f"{rel_suffix}{learning_suffix}]"
         )
         lines.append(line)
     for u, v in edges:
@@ -1131,9 +1521,9 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         # inside the seed block, extend the cut to cover it. The symbol the
         # question named must always be in the answer (#BUG2). Seeds are bounded
         # (_pick_seeds max_k + one per term), so the overshoot is a few lines.
-        if seed_hits:
-            seed_block_end = sum(len(lines[i]) + 1 for i in range(len(seed_hits))) - 1
-            cut_at = max(cut_at, min(seed_block_end, len(output)))
+        if head:
+            head_block_end = sum(len(lines[i]) + 1 for i in range(len(head))) - 1
+            cut_at = max(cut_at, min(head_block_end, len(output)))
         total_nodes = sum(1 for l in lines if l.startswith("NODE "))
         shown_nodes = output[:cut_at].count("\nNODE ") + (1 if output.startswith("NODE ") else 0)
         cut_count = total_nodes - shown_nodes
@@ -1170,16 +1560,46 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         # for a complete one — silence used to read as absence (#BUG2). The
         # notice + end marker sit OUTSIDE char_budget by design (two bounded
         # wrapper lines, like the existing end marker).
-        output = (
-            f"[!] TRUNCATED: showing {shown_nodes} of {total_nodes} nodes "
-            f"(~{token_budget}-token budget). The answer may be among the "
-            f"{cut_count} cut nodes — raise the token budget (CLI: --budget) or "
-            f"narrow the query (e.g. context_filter=['call'], or get_node for a "
-            f"specific symbol).\n\n"
-            + output[:cut_at]
-            + f"\n... (truncated — {cut_count} more nodes cut by ~{token_budget}-token budget."
-            f" Narrow with context_filter=['call'] or use get_node for a specific symbol)"
-        )
+        # Say whether the cut could have taken the answer, instead of asserting
+        # that it might have (#RANK1). Nodes are now ordered by query relevance,
+        # so the cut falls on the tail: when every cut node scored zero against
+        # the query, the visible part IS the complete set of matches and the old
+        # unconditional "the answer may be among the cut nodes" was false. It
+        # cost a reader a --budget retry that could only return more of the same
+        # unmatched traversal context.
+        cut_ids = ordered[shown_nodes:] if shown_nodes <= len(ordered) else []
+        matched_cut = [n for n in cut_ids if rel.get(n, 0.0) > 0]
+        if rel and not matched_cut:
+            head_notice = (
+                f"[i] Showing {shown_nodes} of {total_nodes} nodes "
+                f"(~{token_budget}-token budget). Every node that matched your "
+                f"query is shown above, best first; the {cut_count} cut nodes are "
+                f"traversal context that matched none of your terms (rel=0). "
+                f"Raising --budget returns more context, not a better answer."
+            )
+            tail_notice = (
+                f"\n... ({cut_count} more traversal-context nodes cut, none matching "
+                f"the query)"
+            )
+        else:
+            best_cut = max((rel.get(n, 0.0) for n in matched_cut), default=0.0)
+            top_line = (
+                f" Best cut node scores rel={round(100.0 * best_cut / top_rel)}"
+                f" against the top hit." if matched_cut else ""
+            )
+            head_notice = (
+                f"[!] TRUNCATED: showing {shown_nodes} of {total_nodes} nodes "
+                f"(~{token_budget}-token budget). {len(matched_cut) or cut_count} of "
+                f"the {cut_count} cut nodes matched your query.{top_line} Raise the "
+                f"token budget (CLI: --budget) or narrow the query (e.g. "
+                f"context_filter=['call'], or get_node for a specific symbol)."
+            )
+            tail_notice = (
+                f"\n... (truncated — {cut_count} more nodes cut by ~{token_budget}-token"
+                f" budget. Narrow with context_filter=['call'] or use get_node for a"
+                f" specific symbol)"
+            )
+        output = head_notice + "\n\n" + output[:cut_at] + tail_notice
     return output
 
 
@@ -1329,10 +1749,31 @@ def _query_graph_text(
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
+    # The ranking `_score_query` already produced, restricted to what the
+    # traversal returned. Until #RANK1 this was computed, used to pick seeds, and
+    # then discarded — the renderer ordered by graph topology and printed no
+    # score, so every line looked equally relevant and the reader had no way to
+    # separate the answer from its neighbourhood.
+    relevance = {nid: sc for sc, nid in qs.ranked if nid in nodes}
+    ranked_in_view = sorted(
+        ((sc, nid) for nid, sc in relevance.items()),
+        key=lambda pair: (-pair[0], len(G.nodes[pair[1]].get("label") or pair[1]), pair[1]),
+    )
+    norm_terms = list(dict.fromkeys(tok for t in terms for tok in _search_tokens(t)))
+    # Root for snippet reads: the graph lives in `<root>/graphify-out/graph.json`,
+    # so its grandparent is the tree the `source_file` paths are relative to.
+    # Falling back to the CWD matches how every other relative path here resolves.
+    snippet_root = Path(graph_path).resolve().parent.parent if graph_path else None
+    answer, pinned = _answer_block(
+        G, ranked_in_view, norm_terms, root=snippet_root
+    )
     # Pass the seeds so the queried symbol renders first and survives truncation
     # (#BUG2): a branch merge had silently dropped this argument, leaving the
     # seed-first ordering as dead code.
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
+    return header + answer + _subgraph_to_text(
+        traversal_graph, nodes, edges, token_budget,
+        seeds=start_nodes, relevance=relevance, pinned=pinned,
+    )
 
 
 def _find_node_tiers(
