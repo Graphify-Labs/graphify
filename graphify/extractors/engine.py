@@ -2161,6 +2161,75 @@ def _scan_js_nested_function_declarations(
             )
 
 
+def _scan_python_nested_function_declarations(
+    container_node, parent_nid: str, *, source: bytes, config,
+    add_node, add_edge, callable_def_nids: set | None,
+    local_bound_names: dict | None, function_bodies: list,
+    scope_parents: dict[str, str] | None = None,
+    lexical_nids_by_scope: dict[str, dict[str, str]] | None = None,
+) -> None:
+    """Emit a node + `contains` edge for every function lexically nested inside
+    *container_node*, scoped under *parent_nid*, track its body, and record lexical
+    scope hierarchy so calls resolve to local definitions instead of falling through
+    to corpus-wide resolution (#3405).
+
+    Recurses through Python statements (including blocks, if/while/for/try/with),
+    unwrapping `decorated_definition` when it wraps a `function_definition`.
+    """
+    if container_node is None:
+        return
+    for child in container_node.children:
+        target = child
+        if target.type == "decorated_definition":
+            inner = target.child_by_field_name("definition")
+            if inner is not None:
+                target = inner
+        if target.type == "function_definition":
+            name_node = target.child_by_field_name(config.name_field)
+            if name_node is None:
+                for c in target.children:
+                    if c.type in config.name_fallback_child_types:
+                        name_node = c
+                        break
+            func_name = _read_text(name_node, source) if name_node else None
+            if func_name and normalize_id(func_name):
+                line = target.start_point[0] + 1
+                nested_nid = _make_id(parent_nid, func_name)
+                add_node(nested_nid, f"{func_name}()", line)
+                add_edge(parent_nid, nested_nid, "contains", line)
+                if callable_def_nids is not None:
+                    callable_def_nids.add(nested_nid)
+                if local_bound_names is not None:
+                    local_bound_names[nested_nid] = _python_local_bound_names(target, source)
+                if scope_parents is not None:
+                    scope_parents[nested_nid] = parent_nid
+                if lexical_nids_by_scope is not None:
+                    lexical_nids_by_scope.setdefault(parent_nid, {})[func_name] = nested_nid
+                    lexical_nids_by_scope.setdefault(nested_nid, {})[func_name] = nested_nid
+                nested_body = _find_body(target, config)
+                if nested_body:
+                    function_bodies.append((nested_nid, nested_body))
+                    _scan_python_nested_function_declarations(
+                        nested_body, nested_nid, source=source, config=config,
+                        add_node=add_node, add_edge=add_edge,
+                        callable_def_nids=callable_def_nids,
+                        local_bound_names=local_bound_names,
+                        function_bodies=function_bodies,
+                        scope_parents=scope_parents,
+                        lexical_nids_by_scope=lexical_nids_by_scope,
+                    )
+        else:
+            _scan_python_nested_function_declarations(
+                child, parent_nid, source=source, config=config,
+                add_node=add_node, add_edge=add_edge,
+                callable_def_nids=callable_def_nids,
+                local_bound_names=local_bound_names,
+                function_bodies=function_bodies,
+                scope_parents=scope_parents,
+                lexical_nids_by_scope=lexical_nids_by_scope,
+            )
+
+
 def _js_topmost_closures(node, out: list) -> None:
     """Collect the TOPMOST closure nodes (arrow / function expressions) under
     ``node``, without descending into a found closure — its nested closures
@@ -3031,6 +3100,10 @@ def _extract_generic(
     # guard skips any call-argument identifier in the enclosing function's set,
     # so a param/local that shadows a module function name yields no edge.
     local_bound_names: dict[str, set[str]] = {}
+    # Python nested-function lexical scope tracking (#3405): maps child_nid -> parent_scope_nid
+    scope_parents: dict[str, str] = {}
+    # maps scope_nid -> {bare_func_name -> nested_func_nid}
+    lexical_nids_by_scope: dict[str, dict[str, str]] = {}
     # JS/TS only (#2568): per-BODY locals for sibling closures tracked under a
     # single const nid by the #2552 branch (`const h = wrapper(cb1, cb2)`).
     # Keyed by id(body) — like receiver_types_by_body — and fed to the per-body
@@ -4733,6 +4806,16 @@ def _extract_generic(
                         local_bound_names=local_bound_names,
                         function_bodies=function_bodies,
                     )
+                if config.ts_module == "tree_sitter_python":
+                    _scan_python_nested_function_declarations(
+                        body, func_nid, source=source, config=config,
+                        add_node=add_node, add_edge=add_edge,
+                        callable_def_nids=callable_def_nids,
+                        local_bound_names=local_bound_names,
+                        function_bodies=function_bodies,
+                        scope_parents=scope_parents,
+                        lexical_nids_by_scope=lexical_nids_by_scope,
+                    )
                 if config.ts_module == "tree_sitter_kotlin":
                     # #2347: Kotlin anonymous objects (`object : Foo { … }`,
                     # node type `object_literal`). The function branch never
@@ -4967,8 +5050,14 @@ def _extract_generic(
             continue
         raw = n["label"]
         normalised = raw.strip("()").lstrip(".")
-        label_to_nid[normalised] = n["id"]
-        label_to_nid_ci[normalised.lower()] = n["id"]
+        # For languages with lexical nesting (Python), nested functions should not overwrite
+        # module-level definitions in the module/file-level label_to_nid map (#3405).
+        if n["id"] not in scope_parents:
+            label_to_nid[normalised] = n["id"]
+            label_to_nid_ci[normalised.lower()] = n["id"]
+        else:
+            label_to_nid.setdefault(normalised, n["id"])
+            label_to_nid_ci.setdefault(normalised.lower(), n["id"])
 
     seen_call_pairs: set[tuple[str, str]] = set()
     seen_indirect_pairs: set[tuple[str, str]] = set()  # Python indirect_call dedup
@@ -5662,7 +5751,18 @@ def _extract_generic(
                 ):
                     tgt_nid = None
                 else:
-                    tgt_nid = label_to_nid.get(callee_name)
+                    if config.ts_module == "tree_sitter_python" and not is_member_call:
+                        curr_scope = caller_nid
+                        tgt_nid = None
+                        while curr_scope:
+                            if curr_scope in lexical_nids_by_scope and callee_name in lexical_nids_by_scope[curr_scope]:
+                                tgt_nid = lexical_nids_by_scope[curr_scope][callee_name]
+                                break
+                            curr_scope = scope_parents.get(curr_scope)
+                        if not tgt_nid:
+                            tgt_nid = label_to_nid.get(callee_name)
+                    else:
+                        tgt_nid = label_to_nid.get(callee_name)
                     # A qualified `new A.B.Foo()` whose bare name matches only a
                     # sourceless stub in this file would bind the call to the stub
                     # and never reach _resolve_csharp_qualified_calls, the one pass
@@ -5673,7 +5773,7 @@ def _extract_generic(
                         and not nid_to_sf.get(tgt_nid)
                     ):
                         tgt_nid = None
-                if tgt_nid and tgt_nid != caller_nid:
+                if tgt_nid:
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:
                         seen_call_pairs.add(pair)
@@ -5689,53 +5789,61 @@ def _extract_generic(
                             "weight": 1.0,
                         })
                 elif callee_name and not tgt_nid:
-                    # Callee not in this file — save for cross-file resolution in extract()
-                    rc_entry = {
-                        "caller_nid": caller_nid,
-                        "callee": callee_name,
-                        "is_member_call": is_member_call,
-                        "source_file": str_path,
-                        "source_location": f"L{node.start_point[0] + 1}",
-                        "receiver": swift_receiver or member_receiver,
-                    }
-                    # Ruby: attach the receiver's inferred type from the method's
-                    # local `var = Const.new` bindings, when unambiguously known.
-                    if member_receiver and config.ts_module == "tree_sitter_ruby":
-                        rc_entry["receiver_type"] = ruby_var_types.get(
-                            caller_nid, {}
-                        ).get(member_receiver)
-                    # Tag the C++ raw_call's language so the cross-file C++ resolver
-                    # claims it unambiguously: a `.h` file routes to extract_cpp or
-                    # extract_objc by content, and both resolvers see `.h` in their
-                    # suffix sets, so a source_file suffix alone can't separate them.
-                    if config.ts_module == "tree_sitter_cpp":
-                        rc_entry["lang"] = "cpp"
-                    # C#: tag the raw_call so _resolve_csharp_member_calls claims
-                    # it, and stamp the receiver's type from the method's SCOPED
-                    # bindings by the call's byte offset (#1609, per-method since
-                    # #2299, position-aware since #2472). `this.field.M()` is
-                    # covered too: member_receiver is the bare field name, and
-                    # class fields/properties are the base scope.
-                    if config.ts_module == "tree_sitter_c_sharp":
-                        rc_entry["lang"] = "csharp"
-                        if csharp_qualified_prefix:
-                            rc_entry["qualified_prefix"] = csharp_qualified_prefix
-                        receiver_type = _csharp_scoped_receiver_type(
-                            receiver_types, member_receiver, node.start_byte
-                        )
-                        if receiver_type:
-                            rc_entry["receiver_type"] = receiver_type
-                    if config.ts_module == "tree_sitter_java":
-                        rc_entry["lang"] = "java"
-                        receiver_type = (receiver_types or {}).get(member_receiver or "")
-                        if receiver_type:
-                            rc_entry["receiver_type"] = receiver_type
-                    # Kotlin fully-qualified call (#2550): the dotted prefix +
-                    # lang tag let _resolve_kotlin_qualified_calls claim it.
-                    if kotlin_qualified_prefix:
-                        rc_entry["lang"] = "kotlin"
-                        rc_entry["qualified_prefix"] = kotlin_qualified_prefix
-                    raw_calls.append(rc_entry)
+                    # In Python, if an unqualified call names a local non-callable variable or parameter,
+                    # do NOT append it to raw_calls (#3405 Part 3/4).
+                    is_py_local_data = (
+                        config.ts_module == "tree_sitter_python"
+                        and not is_member_call
+                        and callee_name in (local_bound_names.get(caller_nid, frozenset()) | extra_locals)
+                    )
+                    if not is_py_local_data:
+                        # Callee not in this file — save for cross-file resolution in extract()
+                        rc_entry = {
+                            "caller_nid": caller_nid,
+                            "callee": callee_name,
+                            "is_member_call": is_member_call,
+                            "source_file": str_path,
+                            "source_location": f"L{node.start_point[0] + 1}",
+                            "receiver": swift_receiver or member_receiver,
+                        }
+                        # Ruby: attach the receiver's inferred type from the method's
+                        # local `var = Const.new` bindings, when unambiguously known.
+                        if member_receiver and config.ts_module == "tree_sitter_ruby":
+                            rc_entry["receiver_type"] = ruby_var_types.get(
+                                caller_nid, {}
+                            ).get(member_receiver)
+                        # Tag the C++ raw_call's language so the cross-file C++ resolver
+                        # claims it unambiguously: a `.h` file routes to extract_cpp or
+                        # extract_objc by content, and both resolvers see `.h` in their
+                        # suffix sets, so a source_file suffix alone can't separate them.
+                        if config.ts_module == "tree_sitter_cpp":
+                            rc_entry["lang"] = "cpp"
+                        # C#: tag the raw_call so _resolve_csharp_member_calls claims
+                        # it, and stamp the receiver's type from the method's SCOPED
+                        # bindings by the call's byte offset (#1609, per-method since
+                        # #2299, position-aware since #2472). `this.field.M()` is
+                        # covered too: member_receiver is the bare field name, and
+                        # class fields/properties are the base scope.
+                        if config.ts_module == "tree_sitter_c_sharp":
+                            rc_entry["lang"] = "csharp"
+                            if csharp_qualified_prefix:
+                                rc_entry["qualified_prefix"] = csharp_qualified_prefix
+                            receiver_type = _csharp_scoped_receiver_type(
+                                receiver_types, member_receiver, node.start_byte
+                            )
+                            if receiver_type:
+                                rc_entry["receiver_type"] = receiver_type
+                        if config.ts_module == "tree_sitter_java":
+                            rc_entry["lang"] = "java"
+                            receiver_type = (receiver_types or {}).get(member_receiver or "")
+                            if receiver_type:
+                                rc_entry["receiver_type"] = receiver_type
+                        # Kotlin fully-qualified call (#2550): the dotted prefix +
+                        # lang tag let _resolve_kotlin_qualified_calls claim it.
+                        if kotlin_qualified_prefix:
+                            rc_entry["lang"] = "kotlin"
+                            rc_entry["qualified_prefix"] = kotlin_qualified_prefix
+                        raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
             # (executor.submit(fn), Thread(target=fn), map(fn, xs)) is a real dependency
