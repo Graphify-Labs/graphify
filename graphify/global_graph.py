@@ -159,32 +159,16 @@ def global_add_many(sources: Sequence[tuple[Path, str]]) -> dict:
         prefixed = prefix_graph_for_global(src_G, repo_tag)
         removed = prune_repo_from_graph(G, repo_tag)
 
-        # Merge external-library nodes (no source_file) by label to avoid duplication.
-        # Read off the current G, so a unit can merge onto a stub an earlier unit in the
-        # batch composed; collecting these once up front would compose a different graph.
-        external_labels = {
-            d.get("label", ""): n
-            for n, d in G.nodes(data=True)
-            if not d.get("source_file") and d.get("label")
-        }
-        # Map each deduplicated external onto the existing global node so that
-        # edges incident to it can be rewired instead of dropped.
-        remap = {}
+        # Each unit keeps its own external-library stubs (no source_file). Merging
+        # them by label makes stub ownership a function of merge order: the survivor
+        # carries the first-merged repo's tag, fabricating cross-repo edges and
+        # letting prune_repo_from_graph delete other repos' real edges with it.
         for node, node_data in prefixed.nodes(data=True):
-            if not node_data.get("source_file") and node_data.get("label") in external_labels:
-                remap[node] = external_labels[node_data["label"]]
-
-        # Compose: add prefixed nodes (except deduplicated externals) into global graph
-        for node, node_data in prefixed.nodes(data=True):
-            if node not in remap:
-                G.add_node(node, **node_data)
+            G.add_node(node, **node_data)
         for u, v, edge_data in prefixed.edges(data=True):
-            u = remap.get(u, u)
-            v = remap.get(v, v)
-            if u != v:  # don't introduce self-loops via remapping
-                G.add_edge(u, v, **edge_data)
+            G.add_edge(u, v, **edge_data)
 
-        added = prefixed.number_of_nodes() - len(remap)
+        added = prefixed.number_of_nodes()
         results[index]["nodes_added"] = added
         results[index]["nodes_removed"] = removed
         manifest["repos"][repo_tag] = {
@@ -194,7 +178,6 @@ def global_add_many(sources: Sequence[tuple[Path, str]]) -> dict:
             "edge_count": prefixed.number_of_edges(),
             "source_hash": src_hash,
         }
-
     # A member call parked on a caller node (#3152) may be answered by a repo
     # already in the global graph, or by this one for a repo added earlier. The
     # pass recomputes its own output, so one run over the composed batch lands
