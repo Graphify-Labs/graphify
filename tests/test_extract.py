@@ -2614,6 +2614,110 @@ def test_extract_bash_attributes_script_invocation_to_function(tmp_path):
     assert invocation["source"] == deploy["id"]
 
 
+@pytest.mark.parametrize("invocation", [
+    '"$script_dir/helpers.sh"',
+    '"${script_dir}/helpers.sh"',
+    '"$script_dir/helpers.sh" --flag value',
+    '$script_dir/helpers.sh',
+])
+def test_extract_bash_script_invocation_via_variable_built_path(tmp_path, invocation):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        f"{invocation}\n",
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+    invocations = [
+        edge for edge in result["edges"]
+        if edge.get("relation") == "calls" and edge.get("context") == "script_invocation"
+    ]
+
+    assert invocations == [{
+        "source": _make_id(str(script)) + "__entry",
+        "target": _make_id(str(helpers.resolve())) + "__entry",
+        "relation": "calls",
+        "confidence": "EXTRACTED",
+        "source_file": str(script),
+        "source_location": "L3",
+        "weight": 1.0,
+        "context": "script_invocation",
+        # Transient canonicalization hint (#2243); popped before persist.
+        "target_file": str(helpers.resolve()),
+    }]
+
+
+def test_extract_bash_variable_built_invocation_with_dynamic_stem_emits_no_edge(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        '"$script_dir/$name.sh"\n',
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+
+    assert not any(edge.get("context") == "script_invocation" for edge in result["edges"])
+
+
+def test_extract_bash_variable_built_invocation_no_on_disk_match_emits_no_edge(tmp_path):
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        '"$script_dir/missing.sh"\n',
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+
+    assert not any(edge.get("context") == "script_invocation" for edge in result["edges"])
+
+
+def test_extract_bash_variable_built_invocation_targets_existing_entrypoint(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        '"$script_dir/helpers.sh"\n',
+        encoding="utf-8",
+    )
+
+    result = extract([script, helpers], cache_root=tmp_path, parallel=False)
+    node_ids = {node["id"] for node in result["nodes"]}
+    invocation = next(edge for edge in result["edges"] if edge.get("context") == "script_invocation")
+
+    assert invocation["source"] in node_ids
+    assert invocation["target"] in node_ids
+
+
+def test_extract_bash_attributes_variable_built_invocation_to_function(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'deploy() { "$script_dir/helpers.sh"; }\n',
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+    deploy = next(node for node in result["nodes"] if node["label"] == "deploy()")
+    invocation = next(edge for edge in result["edges"] if edge.get("context") == "script_invocation")
+
+    assert invocation["source"] == deploy["id"]
+
+
 def test_extract_bash_no_self_loops():
     result = extract_bash(FIXTURES / "sample.sh")
     for e in result["edges"]:
