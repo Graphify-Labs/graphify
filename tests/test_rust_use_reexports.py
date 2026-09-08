@@ -18,7 +18,6 @@ from pathlib import Path
 from graphify.extract import extract
 from graphify.extractors.rust import (
     _resolve_rust_use_path,
-    _rust_package_edition,
     extract_rust,
     _rust_module_dirs,
     _rust_use_leaves,
@@ -992,108 +991,64 @@ def test_use_list_self_alongside_a_name_edges_both(tmp_path):
     assert ("prelude.rs", "risk.rs") in imports_from
 
 
-def _edition_crate(tmp_path: Path, edition: str | None) -> Path:
-    (tmp_path / "src").mkdir(parents=True)
-    manifest = '[package]\nname = "d"\n'
-    if edition is not None:
-        manifest += f'edition = "{edition}"\n'
-    (tmp_path / "Cargo.toml").write_text(manifest, encoding="utf-8")
-    (tmp_path / "src" / "lib.rs").write_text("pub mod anyhow;\n", encoding="utf-8")
-    # A local module sharing an external dependency's name.
-    (tmp_path / "src" / "anyhow.rs").write_text("pub struct Result;\n", encoding="utf-8")
+def test_bare_path_resolves_to_a_local_module_in_every_edition(tmp_path):
+    """A bare `use foo::Bar` may name a module of THIS crate, not only a crate.
+
+    2015 by its path rules, 2018+ through uniform paths (stable since 1.32),
+    where a `use` path resolves in the current module scope like any other.
+    Verified against rustc 1.96: with `pub mod models;` at the crate root,
+    `use models::Risk;` compiles under edition 2021.
+    """
+    (tmp_path / "src" / "models").mkdir(parents=True)
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname = "d"\nedition = "2021"\n', encoding="utf-8"
+    )
+    (tmp_path / "src" / "lib.rs").write_text("pub mod models;\n", encoding="utf-8")
+    (tmp_path / "src" / "models" / "mod.rs").write_text(
+        "pub struct Risk;\n", encoding="utf-8"
+    )
     (tmp_path / "src" / "service.rs").write_text("pub fn run() {}\n", encoding="utf-8")
-    return tmp_path
 
-
-@pytest.mark.parametrize("edition", ["2018", "2021", "2024"])
-def test_bare_path_is_a_crate_from_the_2018_edition(tmp_path, edition):
-    """`use anyhow::Result` names the CRATE, never a local module.
-
-    From 2018 a local module needs `crate::`/`self::`/`super::`, so resolving
-    a bare path locally lets a same-named module shadow the dependency — the
-    false-hub failure this resolver exists to avoid.
-    """
-    root = _edition_crate(tmp_path, edition)
-    assert _resolve_rust_use_path(("anyhow", "Result"), root / "src" / "service.rs") is None
-
-
-@pytest.mark.parametrize("edition", ["2015", None])
-def test_bare_path_stays_crate_relative_in_the_2015_edition(tmp_path, edition):
-    """2015 paths ARE crate-relative, and an absent `edition` means 2015."""
-    root = _edition_crate(tmp_path, edition)
-    resolved = _resolve_rust_use_path(("anyhow", "Result"), root / "src" / "service.rs")
+    resolved = _resolve_rust_use_path(("models", "Risk"), tmp_path / "src" / "service.rs")
     assert resolved is not None
     module_file, symbol = resolved
-    assert (str(module_file.relative_to(root)), symbol) == ("src/anyhow.rs", "Result")
+    assert (str(module_file.relative_to(tmp_path)), symbol) == ("src/models/mod.rs", "Risk")
 
 
-def test_explicit_crate_prefix_still_resolves_under_2021(tmp_path):
-    """The edition rule constrains BARE paths only."""
-    root = _edition_crate(tmp_path, "2021")
-    resolved = _resolve_rust_use_path(
-        ("crate", "anyhow", "Result"), root / "src" / "service.rs"
+def test_bare_path_to_an_external_crate_still_resolves_to_nothing(tmp_path):
+    """No local module of that name means no on-disk answer, in any edition."""
+    (tmp_path / "src").mkdir(parents=True)
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname = "d"\nedition = "2021"\n', encoding="utf-8"
     )
-    assert resolved is not None
-    module_file, symbol = resolved
-    assert (str(module_file.relative_to(root)), symbol) == ("src/anyhow.rs", "Result")
+    (tmp_path / "src" / "lib.rs").write_text("", encoding="utf-8")
+    (tmp_path / "src" / "service.rs").write_text("pub fn run() {}\n", encoding="utf-8")
+
+    assert _resolve_rust_use_path(
+        ("sea_orm", "entity", "prelude"), tmp_path / "src" / "service.rs"
+    ) is None
 
 
-def _workspace(tmp_path: Path, member_manifest: str, *, workspace: bool = True) -> Path:
-    """A workspace member with a local module named after a dependency."""
-    if workspace:
-        (tmp_path / "Cargo.toml").write_text(
-            '[workspace]\nmembers = ["backend"]\n\n'
-            '[workspace.package]\nedition = "2021"\n',
-            encoding="utf-8",
-        )
-    (tmp_path / "backend" / "src").mkdir(parents=True)
-    (tmp_path / "backend" / "Cargo.toml").write_text(member_manifest, encoding="utf-8")
-    (tmp_path / "backend" / "src" / "lib.rs").write_text(
-        "pub mod anyhow;\n", encoding="utf-8"
-    )
-    (tmp_path / "backend" / "src" / "anyhow.rs").write_text(
-        "pub struct Result;\n", encoding="utf-8"
-    )
-    (tmp_path / "backend" / "src" / "service.rs").write_text(
-        "pub fn run() {}\n", encoding="utf-8"
-    )
-    return tmp_path / "backend" / "src" / "service.rs"
+def test_use_declarations_still_emit_imports_from(tmp_path):
+    """The file-level `imports_from` is emitted for every leaf, as before.
 
-
-@pytest.mark.parametrize(
-    "manifest",
-    [
-        '[package]\nname = "b"\nedition.workspace = true\n',
-        '[package]\nname = "b"\nedition = { workspace = true }\n',
-    ],
-)
-def test_workspace_member_inherits_the_edition(tmp_path, manifest):
-    """`edition.workspace = true` is the normal shape in a monorepo.
-
-    Reading it as 2015 puts the crate-relative fallback back in play for
-    exactly the crates the edition rule exists to protect.
+    The symbol-level `imports`/`re_exports` edge is ADDITIONAL, mirroring how
+    the JS side already splits file-level and symbol-level import edges.
     """
-    service = _workspace(tmp_path, manifest)
-    assert _rust_package_edition(service) == 2021
-    assert _resolve_rust_use_path(("anyhow", "Result"), service) is None
-
-
-def test_member_edition_overrides_the_workspace(tmp_path):
-    service = _workspace(tmp_path, '[package]\nname = "b"\nedition = "2015"\n')
-    assert _rust_package_edition(service) == 2015
-    assert _resolve_rust_use_path(("anyhow", "Result"), service) is not None
-
-
-def test_inheriting_without_a_workspace_falls_back_to_2015(tmp_path):
-    """Cargo's default when no edition is declared anywhere."""
-    service = _workspace(
-        tmp_path, '[package]\nname = "b"\nedition.workspace = true\n', workspace=False
+    (tmp_path / "src" / "models").mkdir(parents=True)
+    (tmp_path / "Cargo.toml").write_text('[package]\nname = "d"\n', encoding="utf-8")
+    (tmp_path / "src" / "lib.rs").write_text("pub mod models;\n", encoding="utf-8")
+    (tmp_path / "src" / "models" / "mod.rs").write_text("pub mod risk;\n", encoding="utf-8")
+    (tmp_path / "src" / "models" / "risk.rs").write_text(
+        "pub struct Entity;\n", encoding="utf-8"
     )
-    assert _rust_package_edition(service) == 2015
-
-
-def test_package_edition_always_returns_an_int(tmp_path):
-    """Every path returns an int, so the `>= 2018` comparison cannot raise."""
-    service = _workspace(tmp_path, '[package]\nname = "b"\n')
-    for probe in (service, service.parent, tmp_path, Path("/nonexistent/x.rs")):
-        assert isinstance(_rust_package_edition(probe), int)
+    service = tmp_path / "src" / "models" / "service.rs"
+    service.write_text(
+        "use crate::models::risk::Entity;\n"
+        "pub use crate::models::risk::Entity as E2;\n",
+        encoding="utf-8",
+    )
+    relations = [e["relation"] for e in extract_rust(service)["edges"]]
+    assert relations.count("imports_from") == 2
+    assert "imports" in relations
+    assert "re_exports" in relations

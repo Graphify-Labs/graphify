@@ -184,70 +184,6 @@ def _rust_crate_src_root(path: Path) -> Path | None:
         probe = probe.parent
 
 
-_RUST_EDITION_RE = re.compile(r"^\s*edition\s*=\s*[\"'](\d{4})[\"']", re.MULTILINE)
-# `edition.workspace = true` / `edition = { workspace = true }`: the package
-# inherits whatever `[workspace.package]` declares in an ancestor manifest.
-_RUST_EDITION_INHERIT_RE = re.compile(
-    r"^\s*edition(?:\.workspace\s*=\s*true|\s*=\s*\{[^}]*workspace\s*=\s*true[^}]*\})",
-    re.MULTILINE,
-)
-_RUST_WORKSPACE_PACKAGE_RE = re.compile(
-    r"^\s*\[workspace\.package\]\s*$(.*?)(?=^\s*\[|\Z)",
-    re.MULTILINE | re.DOTALL,
-)
-
-# Cargo's default when no `edition` is declared anywhere.
-_RUST_DEFAULT_EDITION = 2015
-
-
-def _rust_read_manifest(manifest: Path) -> str | None:
-    try:
-        return manifest.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-
-
-def _rust_package_edition(path: Path) -> int:
-    """The Rust edition of the package owning ``path``.
-
-    Cargo's default when ``edition`` is absent is 2015, which is the edition
-    whose path rules the bare-path fallback models. A workspace member may
-    instead write ``edition.workspace = true`` and inherit the edition from an
-    ancestor's ``[workspace.package]`` — the normal shape in a monorepo, and
-    reading it as 2015 would put the crate-relative fallback back in play for
-    exactly the crates this rule exists to protect.
-    """
-    probe = path.parent
-    while True:
-        text = _rust_read_manifest(probe / "Cargo.toml")
-        if text is not None:
-            match = _RUST_EDITION_RE.search(text)
-            if match:
-                return int(match.group(1))
-            if _RUST_EDITION_INHERIT_RE.search(text):
-                return _rust_workspace_edition(probe.parent)
-            return _RUST_DEFAULT_EDITION
-        if probe.parent == probe:
-            return _RUST_DEFAULT_EDITION
-        probe = probe.parent
-
-
-def _rust_workspace_edition(start: Path) -> int:
-    """The ``[workspace.package] edition`` of the nearest ancestor workspace."""
-    probe = start
-    while True:
-        text = _rust_read_manifest(probe / "Cargo.toml")
-        if text is not None:
-            section = _RUST_WORKSPACE_PACKAGE_RE.search(text)
-            if section:
-                match = _RUST_EDITION_RE.search(section.group(1))
-                if match:
-                    return int(match.group(1))
-        if probe.parent == probe:
-            return _RUST_DEFAULT_EDITION
-        probe = probe.parent
-
-
 def _rust_is_auto_target_dir(directory: Path, src: Path, package: Path) -> bool:
     """True when ``directory`` is one of Cargo's auto-discovered target dirs.
 
@@ -376,16 +312,12 @@ def _resolve_rust_use_path(
         if anchor is None or src_root not in (anchor, *anchor.parents):
             return None
     if anchor is None and first not in ("crate", "self", "super"):
-        if _rust_package_edition(path) >= 2018:
-            # From 2018 a bare `use foo::…` names a CRATE, never a module of
-            # this one — a local module requires `crate::`/`self::`/`super::`.
-            # Resolving it locally lets a same-named module shadow the
-            # dependency (`use anyhow::Result` landing on `src/anyhow.rs`),
-            # which is the false-hub failure this resolver exists to avoid.
-            return None
-        # 2015-edition paths are crate-relative without a `crate` prefix; try
-        # the crate root, then the current module. An external crate simply
-        # resolves to nothing at either.
+        # A bare path may be crate-relative in EVERY edition: 2015 by its path
+        # rules, and 2018+ through uniform paths (stable since 1.32), where a
+        # `use` path resolves in the current module scope like any other. A
+        # local module even shadows a dependency of the same name, verified
+        # against rustc rather than assumed. So try the crate root, then the
+        # current module; an external crate resolves to nothing at either.
         for candidate_anchor in (src_root, search_dir):
             if candidate_anchor is None:
                 continue
