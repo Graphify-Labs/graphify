@@ -341,6 +341,31 @@ def test_rust_trait_impl_emits_implements():
     assert ("DataProcessor", "Processor") in _edge_labels(r, "implements")
 
 
+def test_rust_trait_method_declarations_are_captured():
+    # #3366: signature-only trait method declarations (and default-bodied ones)
+    # were dropped because trait bodies were never walked. Both `Processor.run`
+    # and `Logger.log` are declaration-only trait methods in the fixture.
+    r = extract_rust(FIXTURES / "sample.rs")
+    method_pairs = _edge_labels(r, "method")
+    assert ("Processor", "run") in method_pairs
+    assert ("Logger", "log") in method_pairs
+
+
+def test_rust_trait_decl_method_is_distinct_from_impl_method():
+    # #3366: the trait-declared `Processor.run` must be its own node, not collide
+    # onto the impl `DataProcessor.run` — the crux of the fix.
+    r = extract_rust(FIXTURES / "sample.rs")
+    by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    run_targets = {
+        e["target"]
+        for e in r["edges"]
+        if e["relation"] == "method"
+        and _normalize_symbol_label(by_id.get(e["target"], "")) == "run"
+    }
+    # one `run()` declared in `trait Processor`, one defined in the impl — two ids
+    assert len(run_targets) >= 2
+
+
 def test_rust_supertrait_emits_inherits():
     r = extract_rust(FIXTURES / "sample.rs")
     assert ("Logger", "Processor") in _edge_labels(r, "inherits")

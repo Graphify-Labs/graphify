@@ -1230,6 +1230,49 @@ def _display_graph_path(graph_path: str) -> str:
         return str(graph_path)
 
 
+def _traversal_view(G: nx.Graph) -> nx.Graph:
+    """Undirected copy of `G` for BFS/DFS, with true direction kept per edge.
+
+    `_load_graph` forces `directed: True` so renderers can recover stored arc
+    order (#2309), and on a DiGraph `G.neighbors()` yields successors only. The
+    query traversals rely on `neighbors()`, so a seed with no outgoing edges — a
+    leaf function that is only ever called, imported and contained — expanded
+    to nothing: `query_graph` over MCP answered with the seed alone while the
+    CLI `query`, which loads the same file undirected, returned the callers,
+    the test and the neighbouring modules. Every other MCP tool was unaffected:
+    `get_neighbors` walks successors and predecessors explicitly, and
+    `shortest_path` builds its own graph from `_src`/`_tgt`.
+
+    Mirrors the CLI loader: traverse undirected, stash `_src`/`_tgt` on each
+    edge so `_subgraph_to_text` still renders caller->callee regardless of the
+    side the traversal reached the edge from. Markers already present on an
+    edge win, for the same reason as in the CLI (#2309). An undirected input is
+    returned as-is, so the CLI path is unchanged.
+
+    Mutual arcs `u->v` and `v->u` (mutual recursion, a circular import) fold
+    into one undirected edge on a plain `DiGraph` input, the later one winning
+    — the same fold the CLI loader performs when `json_graph.node_link_graph`
+    reads the undirected on-disk graph into an `nx.Graph`, which is what keeps
+    the two surfaces' output identical. The renderer shows one edge per pair
+    in any case. On a `MultiDiGraph` input the copy is a `MultiGraph` and the
+    stored keys are not carried over: a key is unique per unordered pair on an
+    undirected multigraph, so mutual arcs that happen to share a key would
+    fold there too; letting networkx assign the keys keeps both, and nothing
+    downstream reads the key.
+
+    A fresh copy per query rather than a cached one: `_filter_graph_by_context`
+    already copies per query when a filter applies, and the copy shares node
+    data dicts with `G`, so only the edge dicts are duplicated.
+    """
+    if not G.is_directed():
+        return G
+    H = nx.MultiGraph() if G.is_multigraph() else nx.Graph()
+    H.graph.update(G.graph)
+    H.add_nodes_from(G.nodes(data=True))
+    for u, v, d in G.edges(data=True):
+        H.add_edge(u, v, **{**d, "_src": d.get("_src", u), "_tgt": d.get("_tgt", v)})
+    return H
+
 def _query_graph_text(
     G: nx.Graph,
     question: str,
@@ -1265,7 +1308,7 @@ def _query_graph_text(
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
-    traversal_graph = _filter_graph_by_context(G, resolved_filters)
+    traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
     nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",

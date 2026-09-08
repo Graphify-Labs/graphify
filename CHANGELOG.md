@@ -2,11 +2,21 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## Unreleased
+## 0.9.56 (unreleased)
 
 - Feat: Jupyter notebooks (`.ipynb`) are indexed via markdown sidecars (#1497). Cell sources become fenced code (kernel language from notebook metadata, falling back to `code`) and verbatim markdown; outputs are stripped. Sidecar names use the scan-root-relative path (#2059); re-runs that only change outputs do not bump the sidecar or trigger re-extraction. No extra install.
+- Fix: Rust trait method declarations (signature-only, and default-bodied) are now extracted as nodes — trait bodies were never walked, so both were silently dropped; a trait-declared method stays a distinct node from its impl definition (#3366, thanks @santoshpy).
+- Fix: the atomic-write temp filename is now bounded, so exporting to a path near the Windows MAX_PATH / 255-char component limit no longer fails with a temp-file `FileNotFoundError` (#3351, thanks @hopstreax).
+- Fix: when graphify's git hook decides to skip (no graph, rebase/merge/worktree, `GRAPHIFY_SKIP_HOOK`), it no longer terminates the whole hook — the block runs in a subshell so chained hooks and later steps still execute (#2986, thanks @abhay-codes07).
+- Fix: JS/TS `@/` project-root alias imports now resolve when no tsconfig `paths` mapping exists — an explicit mapping still wins, `@scope/pkg` packages are untouched, and only existing files are linked (#3357, thanks @hopstreax).
+- Fix: an MCP `query_graph` seeded on a node with only incoming edges (e.g. a leaf function that is called but calls nothing) now traverses undirected, so it reaches that node's callers — matching the CLI's behavior (#3373, thanks @kuchtgpt-svg).
+- Fix: a member call whose method name collides with a language builtin (e.g. `.open`, `.get`, `.map`) is now handed to cross-file resolution instead of being short-circuited, so a genuine user-defined method with that name links — without fabricating an edge to an actual builtin (#3381, thanks @ayushcodes10).
+- Fix: when the rebuild watchdog times out, spawned extraction workers are now killed before it exits (both the SIGALRM and the `os._exit` fallback paths) instead of being orphaned (#3396, thanks @ayushcodes10).
+- Fix: Node subpath imports (`#services/foo` via a `package.json` `imports` map, including `*` wildcards and condition objects) now resolve to the mapped file — previously every `#`-specifier resolved to nothing (#3382, thanks @julien-e).
+- Fix: TS import-type normalization no longer scans every type-argument range per match (an O(matches × ranges) blowup that pinned extraction at 100% CPU on large mixed files); the filter is now a sorted-index lookup with byte-identical output (#3359, thanks @Sagexd08).
+- Fix: Dart extraction now stamps `source_location` (1-based `L{line}`) on nodes and edges, matching every other extractor, instead of leaving it null (#3365, thanks @ayushcodes10).
 
-## 0.9.55 (unreleased)
+## 0.9.55 (2026-09-05)
 
 - Fix: a module docstring preceded by a leading comment (shebang, `# -*- coding -*-`, or a license header) is now extracted instead of silently dropped — comments are skipped when locating the first statement, across module/class/function bodies (#3312, thanks @ayushcodes10).
 - Fix: two Python definitions whose ids differ only by leading underscores (e.g. `_get_connection` and `get_connection`) no longer collide and silently drop one — private/dunder members are salted while a unique public member keeps its plain id, so existing graphs are unaffected (#3302, thanks @ayushcodes10).

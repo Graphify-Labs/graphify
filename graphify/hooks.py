@@ -134,7 +134,7 @@ fi
 # double-quote, $, backtick or backslash characters: it is carried inside a
 # shell double-quoted `-c "..."` argument (see _detached_launch).
 _REBUILD_BODY_COMMIT = """\
-import os, signal, sys, threading
+import os, signal, sys, threading, multiprocessing
 from pathlib import Path
 
 changed_raw = os.environ.get('GRAPHIFY_CHANGED', '')
@@ -151,11 +151,24 @@ try:
     _timeout = int(os.environ.get('GRAPHIFY_REBUILD_TIMEOUT', '600'))
     if _timeout > 0:
         if hasattr(signal, 'SIGALRM'):
-            signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
+            def _sigalrm_bail(*_a):
+                # Killing here, before the exception unwinds, matters: once
+                # TimeoutError starts propagating it passes straight through
+                # the ProcessPoolExecutor with-block's own __exit__, which
+                # calls shutdown(wait=True) and blocks until every worker
+                # exits -- forever, for a worker stuck the way #3341 was,
+                # since the alarm firing never actually stops it. Killing the
+                # workers first means shutdown has nothing left to wait for.
+                for _child in multiprocessing.active_children():
+                    _child.kill()
+                raise TimeoutError(f'graphify rebuild exceeded {_timeout}s')
+            signal.signal(signal.SIGALRM, _sigalrm_bail)
             signal.alarm(_timeout)
         else:
             def _bail():
                 print(f'[graphify hook] graphify rebuild exceeded {_timeout}s', flush=True)
+                for _child in multiprocessing.active_children():
+                    _child.kill()
                 os._exit(1)
             _watchdog = threading.Timer(_timeout, _bail)
             _watchdog.daemon = True
@@ -191,17 +204,30 @@ except Exception as exc:
 _REBUILD_BODY_CHECKOUT = """\
 from graphify.watch import _rebuild_code, _apply_resource_limits
 from pathlib import Path
-import os, signal, sys, threading
+import os, signal, sys, threading, multiprocessing
 try:
     _apply_resource_limits()
     _timeout = int(os.environ.get('GRAPHIFY_REBUILD_TIMEOUT', '600'))
     if _timeout > 0:
         if hasattr(signal, 'SIGALRM'):
-            signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'graphify rebuild exceeded {_timeout}s')))
+            def _sigalrm_bail(*_a):
+                # Killing here, before the exception unwinds, matters: once
+                # TimeoutError starts propagating it passes straight through
+                # the ProcessPoolExecutor with-block's own __exit__, which
+                # calls shutdown(wait=True) and blocks until every worker
+                # exits -- forever, for a worker stuck the way #3341 was,
+                # since the alarm firing never actually stops it. Killing the
+                # workers first means shutdown has nothing left to wait for.
+                for _child in multiprocessing.active_children():
+                    _child.kill()
+                raise TimeoutError(f'graphify rebuild exceeded {_timeout}s')
+            signal.signal(signal.SIGALRM, _sigalrm_bail)
             signal.alarm(_timeout)
         else:
             def _bail():
                 print(f'[graphify] graphify rebuild exceeded {_timeout}s', flush=True)
+                for _child in multiprocessing.active_children():
+                    _child.kill()
                 os._exit(1)
             _watchdog = threading.Timer(_timeout, _bail)
             _watchdog.daemon = True
@@ -311,10 +337,20 @@ fi
 """
 
 
+# Both hook bodies run inside a subshell `( ... )`. The generated block is
+# appended to whatever post-commit / post-checkout already exists, and other
+# tools chain their own logic after it; every skip condition in the block is a
+# bare `exit 0`, which in a flat script ends the WHOLE hook, silently dropping
+# anything after graphify's end marker - on every root commit (HEAD~1 does
+# not exist), every rebase/merge, every linked worktree, every
+# GRAPHIFY_SKIP_HOOK=1 (#2986). Inside the subshell an `exit` ends only
+# graphify's section; the detached rebuild launch is unaffected, and the
+# hook's own exit status stays 0 as before.
 _HOOK_SCRIPT = """\
 # graphify-hook-start
 # Auto-rebuilds the knowledge graph after each commit (code files only, no LLM needed).
 # Installed by: graphify hook install
+(
 
 # Deterministic clustering: networkx louvain iterates string-keyed sets whose
 # order is randomized per-process by PYTHONHASHSEED, so community assignments
@@ -362,7 +398,8 @@ _GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
 echo "[graphify hook] launching background rebuild (log: $_GRAPHIFY_LOG)"
-""" + _detached_launch(_REBUILD_BODY_COMMIT) + """# graphify-hook-end
+""" + _detached_launch(_REBUILD_BODY_COMMIT) + """)
+# graphify-hook-end
 """
 
 
@@ -370,6 +407,7 @@ _CHECKOUT_SCRIPT = """\
 # graphify-checkout-hook-start
 # Auto-rebuilds the knowledge graph (code only) when switching branches.
 # Installed by: graphify hook install
+(
 
 # Deterministic clustering: networkx louvain iterates string-keyed sets whose
 # order is randomized per-process by PYTHONHASHSEED, so community assignments
@@ -419,7 +457,8 @@ _GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
 mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
 export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
 echo "[graphify] Branch switched - launching background rebuild (log: $_GRAPHIFY_LOG)"
-""" + _detached_launch(_REBUILD_BODY_CHECKOUT) + """# graphify-checkout-hook-end
+""" + _detached_launch(_REBUILD_BODY_CHECKOUT) + """)
+# graphify-checkout-hook-end
 """
 
 

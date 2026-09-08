@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import textwrap
+from bisect import bisect_right
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
@@ -71,6 +72,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _JS_INDEX_FILES,
     _JS_PRIMITIVE_TYPES,
     _JS_RESOLVE_EXTS,
+    _PACKAGE_IMPORTS_CACHE,
     _TSCONFIG_ALIAS_CACHE,
     _TSCONFIG_BASEURL_CACHE,
     _VUE_SCRIPT_LANG_RE,
@@ -1360,6 +1362,59 @@ def _ts_type_argument_ranges(root: Any, *, call_only: bool) -> list[tuple[int, i
     return ranges
 
 
+# Sorted type-argument ranges prepared for lookup: (starts, spans, prefix_max_end).
+# See _ts_build_range_index. A real alias, not a string: quoting the right-hand
+# side would make this a `str` value, which type checkers reject as a type.
+_TsRangeIndex = tuple[list[int], list[tuple[int, int]], list[int]]
+
+
+def _ts_ranges_containing(
+    ranges: _TsRangeIndex, offset: int
+) -> list[tuple[int, int]]:
+    """Return the ranges in ``ranges`` that contain ``offset``.
+
+    Scanning the full range list for every match made
+    :func:`_normalize_ts_import_types` O(matches x ranges); on a large monorepo
+    file with thousands of generic calls and thousands of ``import(...)`` types
+    that quadratic blowup pinned a worker at 100% CPU with no output and no file
+    I/O, so extraction never finished (#3359).
+
+    Every range containing ``offset`` must start at or before it, so binary-search
+    to the last such start and walk left. A range that ends before ``offset`` is
+    not itself a hit but must not stop the walk -- a closed sibling can sit inside
+    an enclosing range that does contain ``offset``. The index's running maximum of
+    ends (``prefix_max_end``) gives the correct stop: once no range at or before
+    this position reaches past ``offset``, none of the remaining ones can.
+    """
+    starts, spans, prefix_max_end = ranges
+    hits: list[tuple[int, int]] = []
+    index = bisect_right(starts, offset) - 1
+    while index >= 0 and prefix_max_end[index] > offset:
+        start, end = spans[index]
+        if end > offset:
+            hits.append((start, end))
+        index -= 1
+    hits.reverse()
+    return hits
+
+
+def _ts_build_range_index(root: Any, *, call_only: bool) -> _TsRangeIndex:
+    """Index :func:`_ts_type_argument_ranges` for :func:`_ts_ranges_containing`.
+
+    Returns the ranges sorted by start, split into a bare ``starts`` list for
+    :func:`bisect_right`, plus a prefix-maximum of ``end`` values so a lookup can
+    tell when no earlier range can still reach a given offset.
+    """
+    spans = sorted(_ts_type_argument_ranges(root, call_only=call_only))
+    starts = [start for start, _ in spans]
+    prefix_max_end: list[int] = []
+    running = -1
+    for _, end in spans:
+        running = max(running, end)
+        prefix_max_end.append(running)
+    return starts, spans, prefix_max_end
+
+
 def _ts_error_nodes(root: Any) -> list[Any]:
     """Return parser error nodes without depending on a grammar's error name."""
     errors: list[Any] = []
@@ -1450,10 +1505,10 @@ def _normalize_ts_import_types(source: bytes, *, tsx: bool = False) -> bytes | N
     # its syntax is parseable as written. This includes the grammar's deliberate
     # comparison-vs-generic ambiguity (`a < b, import("...") > (d)`); retaining
     # that source is essential because it is a runtime expression, not a type.
-    original_type_ranges = _ts_type_argument_ranges(original_root, call_only=False)
+    original_type_ranges = _ts_build_range_index(original_root, call_only=False)
     matches = [
         match for match in matches
-        if not any(start <= match.start() < end for start, end in original_type_ranges)
+        if not _ts_ranges_containing(original_type_ranges, match.start())
     ]
     if not matches:
         return None
@@ -1475,19 +1530,18 @@ def _normalize_ts_import_types(source: bytes, *, tsx: bool = False) -> bytes | N
     # type annotations already parse ``import(...)`` correctly and should keep
     # their native AST shape. A range from an outer call's type_arguments also
     # covers nested generic arguments.
-    type_argument_ranges = _ts_type_argument_ranges(root, call_only=True)
+    type_argument_ranges = _ts_build_range_index(root, call_only=True)
     errors = _ts_error_nodes(original_root)
 
-    if not type_argument_ranges:
+    # `type_argument_ranges` is an index tuple, so test the spans it holds --
+    # the tuple itself is always truthy.
+    if not type_argument_ranges[1]:
         return None
 
     norm = bytearray(source)
     changed = False
     for match in matches:
-        containing_ranges = [
-            candidate for candidate in type_argument_ranges
-            if candidate[0] <= match.start() < candidate[1]
-        ]
+        containing_ranges = _ts_ranges_containing(type_argument_ranges, match.start())
         if containing_ranges and any(
             _ts_mask_candidate_is_malformed(original_root, candidate, errors)
             for candidate in containing_ranges
@@ -1782,6 +1836,11 @@ def _resolve_rescued_specifier(
         resolved_file = (resolved_alias if resolved_alias is not None
                          and resolved_alias.is_file() else None)
         return _make_id(str(resolved_alias)), str(resolved_alias), resolved_file
+    # Unmapped `@/` project-root convention fallback (#3357).
+    if raw.startswith("@/"):
+        resolved_unmapped = _resolve_js_module_path(raw, path.parent)
+        if resolved_unmapped is not None and resolved_unmapped.is_file():
+            return _make_id(str(resolved_unmapped)), str(resolved_unmapped), resolved_unmapped
     # Bare/scoped import (node_modules) - use last segment;
     # build_from_json drops as external if no matching node exists.
     module_name = raw.split("/")[-1]
@@ -6198,6 +6257,7 @@ def extract(
     # Clearing per run, not per file, leaves within-run caching intact.
     _TSCONFIG_ALIAS_CACHE.clear()
     _TSCONFIG_BASEURL_CACHE.clear()
+    _PACKAGE_IMPORTS_CACHE.clear()
     _XAML_CSHARP_CLASS_CACHE.clear()
     _MD_LINK_INDEX_CACHE.clear()
 
