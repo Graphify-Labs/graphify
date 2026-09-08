@@ -2775,6 +2775,20 @@ def _has_multiline_error(root) -> bool:
     return False
 
 
+def _csharp_bare_call_name(name_node, source: bytes) -> str:
+    """The callee identifier of a C# call-site name node.
+
+    A plain `identifier` reads as-is; a `generic_name` (`Get<int>`) reads its
+    identifier child so the type-argument list never leaks into the callee
+    name (#3406). Falls back to raw text for anything else.
+    """
+    if name_node.type == "generic_name":
+        for child in name_node.children:
+            if child.type == "identifier":
+                return _read_text(child, source)
+    return _read_text(name_node, source)
+
+
 def _read_csharp_type_name(node, source: bytes) -> tuple[str, bool, str] | None:
     """Resolve a C# type name, whether it was qualified, and its qualifier prefix."""
     if node is None:
@@ -5362,7 +5376,11 @@ def _extract_generic(
                     mname = fn_node.child_by_field_name("name")
                     recv = fn_node.child_by_field_name("expression")
                     if mname is not None:
-                        callee_name = _read_text(mname, source)
+                        # `recv.Get<int>(...)`: the name field is a
+                        # generic_name; its raw text carries the type-argument
+                        # list, which is not part of the method's identity
+                        # (#3406) — read the bare identifier instead.
+                        callee_name = _csharp_bare_call_name(mname, source)
                         is_member_call = True
                         if recv is not None and recv.type == "identifier":
                             member_receiver = _read_text(recv, source)
@@ -5388,6 +5406,13 @@ def _extract_generic(
                                 member_receiver = _read_text(fname, source)
                 elif fn_node is not None and fn_node.type == "identifier":
                     callee_name = _read_text(fn_node, source)
+                elif fn_node is not None and fn_node.type == "generic_name":
+                    # Unqualified generic call `Get<int>(...)` / `Make<T>()`:
+                    # without this arm the raw-text fallback captured
+                    # `Get<int>` verbatim, so the call never matched the
+                    # `.Get()` member and the edge was silently dropped —
+                    # while the non-generic spelling resolved fine (#3406).
+                    callee_name = _csharp_bare_call_name(fn_node, source)
                 else:
                     # Fallback: original name-field / first-named-child scan.
                     name_node = node.child_by_field_name("name")
