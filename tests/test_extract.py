@@ -1769,6 +1769,95 @@ def test_python_relative_from_import_alias_module_call_resolves(tmp_path):
     assert edges[0]["confidence"] == "EXTRACTED"
 
 
+def test_python_namespace_package_submodule_imports_resolve_member_calls(tmp_path):
+    """A PEP 420 namespace package -- a directory with no __init__.py, which
+    `python -m pkg.mod` runs without complaint -- must resolve `from . import
+    brain, ledger` to its sibling module files and then `brain.think()` /
+    `ledger.write()` through the #1883 module arm, exactly as a regular package
+    does. Before this fix the module path resolved to nothing (no __init__.py to
+    probe), the whole statement was skipped, and the most-called functions in
+    such a repo carried in-degree 0 in the graph."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "brain.py").write_text("def think(q):\n    return q\n")
+    (pkg / "ledger.py").write_text("def write(e):\n    return e\n")
+    caller = pkg / "agent.py"
+    caller.write_text(
+        "from . import brain, ledger\n\n"
+        "def cycle(q):\n"
+        "    ledger.write(q)\n"
+        "    return brain.think(q)\n"
+    )
+    result = extract(
+        [caller, pkg / "brain.py", pkg / "ledger.py"], cache_root=tmp_path, root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+
+    def calls(callee: str, in_file: str) -> list[dict]:
+        return [
+            e for e in result["edges"]
+            if e["relation"] == "calls"
+            and "cycle" in nodes[e["source"]]["label"]
+            and callee in nodes[e["target"]]["label"]
+            and in_file in (nodes[e["target"]].get("source_file") or "")
+        ]
+
+    think, write = calls("think", "brain.py"), calls("write", "ledger.py")
+    assert len(think) == 1 and think[0]["confidence"] == "EXTRACTED", think
+    assert len(write) == 1 and write[0]["confidence"] == "EXTRACTED", write
+    imported = {
+        nodes[e["target"]]["label"] for e in result["edges"]
+        if e["relation"] == "imports_from"
+        and nodes.get(e["source"], {}).get("label") == "agent.py"
+        and e["target"] in nodes
+    }
+    assert {"brain.py", "ledger.py"} <= imported, imported
+
+
+def test_python_namespace_package_absolute_and_parent_relative_forms(tmp_path):
+    """The same gap in its other spellings: `from pkg import brain` (absolute,
+    with the scan root as the namespace package's parent) and `from .. import
+    brain` from a nested namespace subpackage."""
+    pkg = tmp_path / "pkg"
+    sub = pkg / "sub"
+    sub.mkdir(parents=True)
+    (pkg / "brain.py").write_text("def think(q):\n    return q\n")
+    absolute = pkg / "abs_caller.py"
+    absolute.write_text("from pkg import brain\n\ndef use_abs(q):\n    return brain.think(q)\n")
+    nested = sub / "deep_caller.py"
+    nested.write_text("from .. import brain\n\ndef use_deep(q):\n    return brain.think(q)\n")
+    result = extract([absolute, nested, pkg / "brain.py"], cache_root=tmp_path, root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    callers = [
+        nodes[e["source"]]["label"] for e in result["edges"]
+        if e["relation"] == "calls" and "think" in nodes[e["target"]]["label"]
+        and e["confidence"] == "EXTRACTED"
+    ]
+    assert any("use_abs" in c for c in callers), callers
+    assert any("use_deep" in c for c in callers), callers
+
+
+def test_python_namespace_package_import_of_non_module_fabricates_nothing(tmp_path):
+    """A namespace-package import whose name is not a module file on disk -- a
+    data directory, or a name that does not exist -- must add no resolved edge
+    and must not raise. A namespace package owns no symbols of its own to bind,
+    so there is nothing to fall back to."""
+    pkg = tmp_path / "pkg"
+    (pkg / "data").mkdir(parents=True)
+    (pkg / "data" / "rows.csv").write_text("a,b\n")
+    caller = pkg / "loader.py"
+    caller.write_text("from . import data, missing\n\ndef load():\n    return data.read()\n")
+    result = extract([caller], cache_root=tmp_path, root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    fabricated = [
+        e for e in result["edges"]
+        if e["relation"] in ("calls", "imports_from")
+        and nodes.get(e["source"], {}).get("label") in ("loader.py", "load()")
+        and e["target"] in nodes
+    ]
+    assert fabricated == [], fabricated
+
+
 def test_python_external_aliased_import_fabricates_no_call_edge(tmp_path):
     """#2082 must not over-resolve: an aliased import of an EXTERNAL/uncorpus
     module (`import numpy as np; np.array()`) has no in-corpus callee, so it must
