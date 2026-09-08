@@ -118,3 +118,37 @@ def test_own_flags_still_parsed_after_pre_pass(monkeypatch, tmp_path, capsys):
     )
     out = capsys.readouterr().out
     assert "AlphaFn" in out
+
+
+@pytest.mark.parametrize("command", sorted(_COMMANDS))
+def test_graph_followed_by_flag_errors(command, monkeypatch, tmp_path, capsys):
+    """`--graph --dfs`: the token after --graph is a flag, not a path. It used
+    to be taken as the path, selecting a graph literally named "--dfs" and
+    swallowing the flag, and surfaced later as "graph file not found". Reject
+    it at parse time like a valueless --graph."""
+    _write_graph(tmp_path)
+    with pytest.raises(SystemExit) as excinfo:
+        _run(monkeypatch, tmp_path, [*_COMMANDS[command], "--graph", "--dfs"])
+    assert excinfo.value.code == 2
+    assert "--graph requires a path" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "argv, flag",
+    [
+        (["query", "AlphaFn", "--budget"], "--budget"),
+        (["query", "AlphaFn", "--context"], "--context"),
+        (["affected", "BetaFn", "--depth"], "--depth"),
+        (["affected", "BetaFn", "--relation"], "--relation"),
+    ],
+)
+def test_value_flag_left_trailing_by_pre_pass_errors(argv, flag, monkeypatch, tmp_path, capsys):
+    """Stripping --graph out of argv can leave a value-taking flag trailing:
+    `--budget --graph=PATH` used to fail on int("--graph"); after the pre-pass
+    the flag had nothing to consume and was silently ignored, quietly running
+    with the default. A missing value is a usage error either way."""
+    graph_path = _write_graph(tmp_path)
+    with pytest.raises(SystemExit) as excinfo:
+        _run(monkeypatch, tmp_path, [*argv, f"--graph={graph_path}"])
+    assert excinfo.value.code == 2
+    assert f"{flag} requires" in capsys.readouterr().err

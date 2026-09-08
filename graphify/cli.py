@@ -104,6 +104,14 @@ def _parse_graph_option(args: list[str]) -> "tuple[str, bool, list[str]]":
 
     ``graph_given`` is unused by the callers today but is part of the contract:
     a later ``--cluster`` option needs it for its mutual-exclusion check.
+
+    A token that starts with ``--`` is never accepted as the value: ``--graph
+    --budget 5`` would otherwise select a graph literally named ``--budget``
+    and swallow the flag, surfacing later as a confusing "graph file not
+    found". Because this pre-pass removes the ``--graph`` tokens before each
+    command's own loop runs, that loop can now see a value-taking flag with
+    nothing after it (``--budget --graph=PATH``); those loops reject the
+    missing value rather than silently running with the default.
     """
     graph_path = _default_graph_path()
     graph_given = False
@@ -125,7 +133,7 @@ def _parse_graph_option(args: list[str]) -> "tuple[str, bool, list[str]]":
             remaining.append(arg)
             i += 1
             continue
-        if not value:
+        if not value or value.startswith("--"):
             print("error: --graph requires a path", file=sys.stderr)
             sys.exit(2)
         graph_path = value
@@ -1304,7 +1312,10 @@ def dispatch_command(cmd: str) -> None:
         graph_path, _graph_given, args = _parse_graph_option(sys.argv[3:])
         i = 0
         while i < len(args):
-            if args[i] == "--budget" and i + 1 < len(args):
+            if args[i] == "--budget":
+                if i + 1 >= len(args):
+                    print("error: --budget requires an integer", file=sys.stderr)
+                    sys.exit(2)
                 try:
                     budget = int(args[i + 1])
                 except ValueError:
@@ -1318,7 +1329,10 @@ def dispatch_command(cmd: str) -> None:
                     print(f"error: --budget must be an integer", file=sys.stderr)
                     sys.exit(1)
                 i += 1
-            elif args[i] == "--context" and i + 1 < len(args):
+            elif args[i] == "--context":
+                if i + 1 >= len(args):
+                    print("error: --context requires a value", file=sys.stderr)
+                    sys.exit(2)
                 context_filters.append(args[i + 1])
                 i += 2
             elif args[i].startswith("--context="):
@@ -1416,7 +1430,10 @@ def dispatch_command(cmd: str) -> None:
         graph_path, _graph_given, args = _parse_graph_option(sys.argv[3:])
         i = 0
         while i < len(args):
-            if args[i] == "--depth" and i + 1 < len(args):
+            if args[i] == "--depth":
+                if i + 1 >= len(args):
+                    print("error: --depth requires an integer", file=sys.stderr)
+                    sys.exit(2)
                 try:
                     depth = int(args[i + 1])
                 except ValueError:
@@ -1430,7 +1447,10 @@ def dispatch_command(cmd: str) -> None:
                     print("error: --depth must be an integer", file=sys.stderr)
                     sys.exit(1)
                 i += 1
-            elif args[i] == "--relation" and i + 1 < len(args):
+            elif args[i] == "--relation":
+                if i + 1 >= len(args):
+                    print("error: --relation requires a value", file=sys.stderr)
+                    sys.exit(2)
                 relations.append(args[i + 1])
                 i += 2
             elif args[i].startswith("--relation="):
