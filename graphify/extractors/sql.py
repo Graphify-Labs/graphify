@@ -54,9 +54,11 @@ _ROUTINE_RECOVERY_RX = re.compile(
 # _ROUTINE_RECOVERY_RX's delimited name alternatives and the same whole
 # file masked scan, gated the same way (root.has_error), and dedupes
 # against table_nids so a statement that DID parse cleanly is never
-# registered twice.
+# registered twice. Also accepts OR ALTER alongside OR REPLACE, matching
+# _ROUTINE_RECOVERY_RX: T-SQL views are re-created with OR ALTER, not OR
+# REPLACE, so a swallowed "CREATE OR ALTER VIEW" could never match before.
 _VIEW_TABLE_RECOVERY_RX = re.compile(
-    r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:VIEW|TABLE)\s+"
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:VIEW|TABLE)\s+"
     r"(?:IF\s+NOT\s+EXISTS\s+)?"
     r"((?:\"(?:[^\"\n]|\"\")+\"|`(?:[^`\n]|``)+`|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
     r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|`(?:[^`\n]|``)+`|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
