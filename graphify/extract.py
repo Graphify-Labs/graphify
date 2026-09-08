@@ -7627,6 +7627,10 @@ def extract(
         # manifest does not freeze them as processed (#2543). Callers that
         # only read nodes/edges ignore this key.
         "failed_sources": _failed_sources,
+        # Surfaces the actual dispatched source paths so build_merge /
+        # merge_raw_extraction know which files were genuinely re-extracted
+        # rather than guessing ownership from node["source_file"] (#3411).
+        "extracted_sources": [str(p) for p in paths],
     }
 
 

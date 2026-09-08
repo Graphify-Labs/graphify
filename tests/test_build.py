@@ -1713,3 +1713,273 @@ def test_derive_prune_root_recovers_root_from_posix_absolute_prune_sources():
     assert _derive_prune_root(
         ["/home/ci/build/repo/docs/a.md"], stored
     ) == "/home/ci/build/repo"
+
+
+# ── #3411: Cross-file stub nodes must not pollute AST replacement set ────────
+
+
+def test_build_merge_sln_stub_does_not_replace_referenced_csproj(tmp_path):
+    """#3411: Re-extracting a .sln must replace only the .sln's AST contribution.
+    Cross-file project stubs (source_file='A/A.csproj') in the .sln chunk must not
+    cause A/A.csproj's PackageReference/TargetFramework nodes and edges to be wiped."""
+    import networkx as nx
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+
+    # Initial full extraction:
+    # 1) A.csproj with framework, package reference, and internal edges
+    # 2) A.sln containing A.csproj
+    c_proj = {
+        "nodes": [
+            {"id": "a_a_csproj", "label": "A.csproj", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "framework_net8_0", "label": "net8.0", "file_type": "concept",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "nuget_newtonsoft_json", "label": "Newtonsoft.Json (13.0.3)",
+             "file_type": "code", "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_a_csproj", "target": "framework_net8_0", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "A/A.csproj", "weight": 1.0, "_origin": "ast"},
+            {"source": "a_a_csproj", "target": "nuget_newtonsoft_json", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "A/A.csproj", "weight": 1.0, "_origin": "ast"},
+        ],
+        "extracted_sources": [str(root / "A" / "A.csproj")],
+    }
+    sln_initial = {
+        "nodes": [
+            {"id": "a_sln", "label": "A.sln", "file_type": "code",
+             "source_file": "A.sln", "source_location": None, "_origin": "ast"},
+            {"id": "a_a_csproj", "label": "A", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_sln", "target": "a_a_csproj", "relation": "contains",
+             "confidence": "EXTRACTED", "source_file": "A.sln", "weight": 1.0, "_origin": "ast"},
+        ],
+        "extracted_sources": [str(root / "A.sln")],
+    }
+    G0 = build([c_proj, sln_initial], dedup=False, root=root)
+    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+
+    # Incremental update: ONLY A.sln is modified and re-extracted.
+    # extract_sln produces the solution node AND a cross-file stub for A/A.csproj.
+    sln_reextracted = {
+        "nodes": [
+            {"id": "a_sln", "label": "A.sln", "file_type": "code",
+             "source_file": "A.sln", "source_location": None, "_origin": "ast"},
+            {"id": "a_a_csproj", "label": "A", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_sln", "target": "a_a_csproj", "relation": "contains",
+             "confidence": "EXTRACTED", "source_file": "A.sln", "weight": 1.0, "_origin": "ast"},
+        ],
+        # Explicit provenance: only A.sln was actually extracted
+        "extracted_sources": [str(root / "A.sln")],
+    }
+
+    G1 = build_merge([sln_reextracted], graph_path, dedup=False, root=root)
+
+    node_ids = set(G1.nodes())
+    # 1. Solution node and project stub node are present
+    assert "a_sln" in node_ids, "Solution node must be present"
+    assert "a_a_csproj" in node_ids, "Project node must be present"
+    # 2. PackageReference and TargetFramework nodes of A.csproj must SURVIVE
+    assert "framework_net8_0" in node_ids, (
+        "#3411 regression: TargetFramework node of referenced .csproj was wiped by .sln re-extraction"
+    )
+    assert "nuget_newtonsoft_json" in node_ids, (
+        "#3411 regression: PackageReference node of referenced .csproj was wiped by .sln re-extraction"
+    )
+    # 3. Edges must SURVIVE
+    assert G1.has_edge("a_sln", "a_a_csproj"), "sln contains edge must be present"
+    assert G1.has_edge("a_a_csproj", "framework_net8_0"), (
+        "#3411 regression: references edge to TargetFramework was wiped"
+    )
+    assert G1.has_edge("a_a_csproj", "nuget_newtonsoft_json"), (
+        "#3411 regression: imports edge to PackageReference was wiped"
+    )
+
+
+def test_build_merge_project_reference_stub_does_not_replace_referenced_project(tmp_path):
+    """#3411: Re-extracting B.csproj (which has a ProjectReference to A.csproj) must
+    replace only B.csproj's AST contribution. A.csproj's PackageReference and
+    TargetFramework nodes must remain intact."""
+    import networkx as nx
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+
+    # Initial graph: A.csproj with package & framework; B.csproj referencing A.csproj
+    c_proj_a = {
+        "nodes": [
+            {"id": "a_csproj", "label": "A.csproj", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "framework_net8_0", "label": "net8.0", "file_type": "concept",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "nuget_pkg_a", "label": "PackageA (1.0.0)", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_csproj", "target": "framework_net8_0", "relation": "references",
+             "confidence": "EXTRACTED", "source_file": "A/A.csproj", "weight": 1.0, "_origin": "ast"},
+            {"source": "a_csproj", "target": "nuget_pkg_a", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "A/A.csproj", "weight": 1.0, "_origin": "ast"},
+        ],
+        "extracted_sources": [str(root / "A" / "A.csproj")],
+    }
+    c_proj_b = {
+        "nodes": [
+            {"id": "b_csproj", "label": "B.csproj", "file_type": "code",
+             "source_file": "B/B.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "b_old_symbol", "label": "old_fn", "file_type": "code",
+             "source_file": "B/B.csproj", "source_location": "L10", "_origin": "ast"},
+            {"id": "a_csproj", "label": "A.csproj", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "b_csproj", "target": "b_old_symbol", "relation": "contains",
+             "confidence": "EXTRACTED", "source_file": "B/B.csproj", "weight": 1.0, "_origin": "ast"},
+            {"source": "b_csproj", "target": "a_csproj", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "B/B.csproj", "weight": 1.0, "_origin": "ast"},
+        ],
+        "extracted_sources": [str(root / "B" / "B.csproj")],
+    }
+    G0 = build([c_proj_a, c_proj_b], dedup=False, root=root)
+    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+
+    # Re-extract ONLY B.csproj (b_old_symbol replaced by b_new_symbol; ProjectReference stub to A.csproj emitted)
+    c_proj_b_reextracted = {
+        "nodes": [
+            {"id": "b_csproj", "label": "B.csproj", "file_type": "code",
+             "source_file": "B/B.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "b_new_symbol", "label": "new_fn", "file_type": "code",
+             "source_file": "B/B.csproj", "source_location": "L12", "_origin": "ast"},
+            {"id": "a_csproj", "label": "A.csproj", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "b_csproj", "target": "b_new_symbol", "relation": "contains",
+             "confidence": "EXTRACTED", "source_file": "B/B.csproj", "weight": 1.0, "_origin": "ast"},
+            {"source": "b_csproj", "target": "a_csproj", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "B/B.csproj", "weight": 1.0, "_origin": "ast"},
+        ],
+        "extracted_sources": [str(root / "B" / "B.csproj")],
+    }
+
+    G1 = build_merge([c_proj_b_reextracted], graph_path, dedup=False, root=root)
+
+    node_ids = set(G1.nodes())
+    # 1. B.csproj was replaced properly
+    assert "b_new_symbol" in node_ids, "New symbol in B.csproj must be present"
+    assert "b_old_symbol" not in node_ids, "Stale symbol in B.csproj must be dropped"
+    # 2. A.csproj package & framework nodes must NOT be dropped
+    assert "nuget_pkg_a" in node_ids, (
+        "#3411 regression: PackageReference in referenced A.csproj was wiped when B.csproj was re-extracted"
+    )
+    assert "framework_net8_0" in node_ids, (
+        "#3411 regression: TargetFramework in referenced A.csproj was wiped when B.csproj was re-extracted"
+    )
+    # 3. All edges survive
+    assert G1.has_edge("a_csproj", "nuget_pkg_a")
+    assert G1.has_edge("a_csproj", "framework_net8_0")
+    assert G1.has_edge("b_csproj", "a_csproj")
+
+
+def test_merge_raw_extraction_cross_file_stub_parity(tmp_path):
+    """#3411: merge_raw_extraction shares the same explicit extraction provenance
+    scoping as build_merge."""
+    import networkx as nx
+    from graphify.build import merge_raw_extraction
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+
+    # Initial graph on disk
+    c_proj = {
+        "nodes": [
+            {"id": "a_csproj", "label": "A.csproj", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+            {"id": "nuget_pkg", "label": "PackageA", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_csproj", "target": "nuget_pkg", "relation": "imports",
+             "confidence": "EXTRACTED", "source_file": "A/A.csproj", "weight": 1.0, "_origin": "ast"},
+        ],
+    }
+    G0 = build([c_proj], dedup=False, root=root)
+    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+
+    # Re-extract A.sln with cross-file stub for A.csproj
+    sln_reextracted = {
+        "nodes": [
+            {"id": "a_sln", "label": "A.sln", "file_type": "code",
+             "source_file": "A.sln", "source_location": None, "_origin": "ast"},
+            {"id": "a_csproj", "label": "A", "file_type": "code",
+             "source_file": "A/A.csproj", "source_location": None, "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_sln", "target": "a_csproj", "relation": "contains",
+             "confidence": "EXTRACTED", "source_file": "A.sln", "weight": 1.0, "_origin": "ast"},
+        ],
+        "extracted_sources": ["A.sln"],
+    }
+
+    merged = merge_raw_extraction(sln_reextracted, graph_path=graph_path, root=root)
+    merged_node_ids = {n["id"] for n in merged["nodes"]}
+
+    assert "nuget_pkg" in merged_node_ids, (
+        "#3411: raw incremental path wiped PackageReference from referenced .csproj"
+    )
+    assert any(
+        e.get("source") == "a_csproj" and e.get("target") == "nuget_pkg"
+        for e in merged["edges"]
+    ), "#3411: raw incremental path wiped imports edge to PackageReference"
+
+
+def test_build_merge_explicit_ast_sources_argument(tmp_path):
+    """#3411: build_merge honors ast_sources argument when passed explicitly."""
+    import networkx as nx
+
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = tmp_path / "graph.json"
+
+    c_proj = {
+        "nodes": [
+            {"id": "a_csproj", "label": "A.csproj", "file_type": "code",
+             "source_file": "A/A.csproj", "_origin": "ast"},
+            {"id": "nuget_pkg", "label": "PackageA", "file_type": "code",
+             "source_file": "A/A.csproj", "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_csproj", "target": "nuget_pkg", "relation": "imports",
+             "source_file": "A/A.csproj", "_origin": "ast"},
+        ],
+    }
+    G0 = build([c_proj], dedup=False, root=root)
+    graph_path.write_text(json.dumps(nx.node_link_data(G0, edges="edges")), encoding="utf-8")
+
+    # Chunk has nodes without 'extracted_sources' attached to chunk,
+    # but ast_sources is provided explicitly to build_merge
+    sln_chunk = {
+        "nodes": [
+            {"id": "a_sln", "label": "A.sln", "file_type": "code",
+             "source_file": "A.sln", "_origin": "ast"},
+            {"id": "a_csproj", "label": "A", "file_type": "code",
+             "source_file": "A/A.csproj", "_origin": "ast"},
+        ],
+        "edges": [
+            {"source": "a_sln", "target": "a_csproj", "relation": "contains",
+             "source_file": "A.sln", "_origin": "ast"},
+        ],
+    }
+
+    G1 = build_merge([sln_chunk], graph_path, dedup=False, root=root, ast_sources=["A.sln"])
+    assert "nuget_pkg" in G1, "ast_sources explicit arg must protect undispatched A.csproj"

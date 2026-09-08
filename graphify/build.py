@@ -1559,11 +1559,79 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     )
 
 
+def _tier_replacement_sources(
+    chunks: "Iterable[dict]",
+    root: "str | Path | None" = None,
+    ast_sources: "Iterable[str | Path] | None" = None,
+) -> tuple[set[str], set[str]]:
+    """Compute (new_ast_sources, new_sem_sources) for tier-scoped replacement.
+
+    #3411: AST replacement ownership is derived from explicit extraction
+    provenance (ast_sources or chunk-level "extracted_sources"), so cross-file
+    stub nodes emitted by extractors (e.g. .sln project stubs or ProjectReference
+    stubs) do not pollute the replacement set and wipe the target project's
+    nodes/edges. Falls back to AST node source_file only when no provenance is
+    provided.
+    """
+    explicit_ast_sources: set[str] = set()
+    if ast_sources is not None:
+        for s in ast_sources:
+            if s:
+                explicit_ast_sources.add(str(s))
+    for ch in chunks:
+        if isinstance(ch, dict):
+            for s in (ch.get("extracted_sources") or []):
+                if s:
+                    explicit_ast_sources.add(str(s))
+
+    new_ast_sources: set[str] = set()
+    new_sem_sources: set[str] = set()
+
+    if explicit_ast_sources:
+        for sf in explicit_ast_sources:
+            new_ast_sources.add(sf)
+            norm = _norm_source_file(sf, root)
+            if norm:
+                new_ast_sources.add(norm)
+    else:
+        for ch in chunks:
+            if not isinstance(ch, dict):
+                continue
+            for n in ch.get("nodes", []):
+                if not isinstance(n, dict):
+                    continue
+                sf = n.get("source_file")
+                if not sf or not _is_ast_tier(n):
+                    continue
+                new_ast_sources.add(sf)
+                norm = _norm_source_file(sf, root)
+                if norm:
+                    new_ast_sources.add(norm)
+
+    for ch in chunks:
+        if not isinstance(ch, dict):
+            continue
+        for n in ch.get("nodes", []):
+            if not isinstance(n, dict):
+                continue
+            sf = n.get("source_file")
+            if not sf or _is_ast_tier(n):
+                continue
+            new_sem_sources.add(sf)
+            norm = _norm_source_file(sf, root)
+            if norm:
+                new_sem_sources.add(norm)
+
+    return new_ast_sources, new_sem_sources
+
+
 def merge_raw_extraction(
     new: dict,
     graph_path: str | Path,
     prune_sources: "list[str] | None" = None,
     root: "str | Path | None" = None,
+    *,
+    ast_sources: "Iterable[str | Path] | None" = None,
 ) -> dict:
     """Merge the existing raw graph.json forward into a fresh raw extraction
     (the ``extract --no-cluster`` incremental path, #2169).
@@ -1572,10 +1640,13 @@ def merge_raw_extraction(
     clustered incremental paths can't drift:
 
     - sources re-extracted this run REPLACE their prior contribution PER TIER
-      (#2333/#2336): existing nodes/edges/hyperedges owned by them are dropped
+      (#2333/#2336, #3411): existing nodes/edges/hyperedges owned by them are dropped
       only when the new extraction contains the same tier (AST vs semantic,
       per :func:`_is_ast_tier`) for that source, matched in both raw and
-      :func:`_norm_source_file` form (#1007);
+      :func:`_norm_source_file` form (#1007). AST replacement ownership is derived
+      from explicit extraction provenance (``ast_sources`` or chunk-level
+      ``extracted_sources``), falling back to AST node source_file only when no
+      provenance is provided (#3411);
     - ``prune_sources`` (deleted / excluded / graph-stale files) are dropped,
       with the ``_abs_identity`` third-form fallback (#2012), and "replace" wins
       over a contradictory "delete" of a re-extracted source (#1796);
@@ -1602,23 +1673,15 @@ def merge_raw_extraction(
         else _infer_merge_root(graph_path)
     )
 
-    # Tier-scoped replace, mirroring build_merge (#2333/#2336, COEXIST): a
+    # Tier-scoped replace, mirroring build_merge (#2333/#2336, COEXIST, #3411): a
     # source re-extracted this run replaces only the tier(s) actually present
     # in the new extraction, so an AST-only re-extract keeps the file's
-    # semantic layer and vice versa.
-    new_ast_sources: set[str] = set()
-    new_sem_sources: set[str] = set()
-    for n in new.get("nodes", []):
-        if not isinstance(n, dict):
-            continue
-        sf = n.get("source_file")
-        if not sf:
-            continue
-        tier_sources = new_ast_sources if _is_ast_tier(n) else new_sem_sources
-        tier_sources.add(sf)
-        norm = _norm_source_file(sf, _eff_root)
-        if norm:
-            tier_sources.add(norm)
+    # semantic layer and vice versa. AST replacement ownership is derived from
+    # explicit extraction provenance (ast_sources or "extracted_sources"),
+    # falling back to AST node source_files only when no provenance is provided.
+    new_ast_sources, new_sem_sources = _tier_replacement_sources(
+        [new], root=_eff_root, ast_sources=ast_sources
+    )
     new_sources: set[str] = new_ast_sources | new_sem_sources
 
     # "Replace" wins over a contradictory "delete" of the same source (#1796),
@@ -1715,6 +1778,7 @@ def build_merge(
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
+    ast_sources: "Iterable[str | Path] | None" = None,
 ) -> nx.Graph:
     """Load existing graph.json and return it merged with ``new_chunks``.
 
@@ -1722,13 +1786,16 @@ def build_merge(
     ``export.to_json(G, communities, graph_path, force=True)`` after
     clustering. ``graph_path`` is read-only here.
 
-    Re-extracted files REPLACE their prior contribution per tier (#2333/#2336):
+    Re-extracted files REPLACE their prior contribution per tier (#2333/#2336, #3411):
     a source_file present in new_chunks has its existing nodes/edges dropped
     for each tier (AST vs semantic, per :func:`_is_ast_tier`) the new chunks
     actually contain, so a changed file's stale nodes/edges don't accumulate
-    while a one-tier re-extract keeps the other tier's layer intact. Files
-    absent from new_chunks are preserved unchanged; deleted files are removed
-    via prune_sources (tier-blind). Safe to call repeatedly.
+    while a one-tier re-extract keeps the other tier's layer intact. AST replacement
+    ownership is derived from explicit extraction provenance (``ast_sources`` or
+    chunk-level ``extracted_sources``), falling back to AST node source_file only
+    when no provenance is provided (#3411). Files absent from new_chunks are
+    preserved unchanged; deleted files are removed via prune_sources (tier-blind).
+    Safe to call repeatedly.
     root: if given, absolute source_file paths in new_chunks are made relative (#932).
     directed: if None (default), honor the on-disk graph's own ``directed`` flag
     when one exists, so an incremental merge can't silently flip a directed
@@ -1781,19 +1848,17 @@ def build_merge(
     # chunk used to delete the file's AST headings). Which tier a NEW chunk
     # item belongs to is read via _is_ast_tier (existing items were stamped by
     # _load_existing_graph above).
+    #
+    # #3411: AST replacement ownership is derived from explicit extraction
+    # provenance (ast_sources or chunk-level "extracted_sources"), so cross-file
+    # stub nodes emitted by extractors (e.g. .sln project stubs or ProjectReference
+    # stubs) do not pollute the replacement set and wipe the target project's
+    # nodes/edges. Falls back to AST node source_file only when no provenance is
+    # provided.
     _replace_root = _eff_root
-    new_ast_sources: set[str] = set()
-    new_sem_sources: set[str] = set()
-    for ch in new_chunks:
-        for n in ch.get("nodes", []):
-            sf = n.get("source_file")
-            if not sf:
-                continue
-            tier_sources = new_ast_sources if _is_ast_tier(n) else new_sem_sources
-            tier_sources.add(sf)
-            norm = _norm_source_file(sf, _replace_root)
-            if norm:
-                tier_sources.add(norm)
+    new_ast_sources, new_sem_sources = _tier_replacement_sources(
+        new_chunks, root=_replace_root, ast_sources=ast_sources
+    )
     new_sources: set[str] = new_ast_sources | new_sem_sources
     # True on-disk baseline for the #479 shrink accounting at the end (#2497):
     # the rebind below removes the re-extracted sources' old nodes from

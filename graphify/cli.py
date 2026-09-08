@@ -4091,6 +4091,7 @@ def dispatch_command(cmd: str) -> None:
             "hyperedges": list(sem_result.get("hyperedges", [])),
             "input_tokens": ast_result.get("input_tokens", 0) + sem_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
+            "extracted_sources": list(ast_result.get("extracted_sources", [])),
         }
 
         graph_json_path = graphify_out / "graph.json"
