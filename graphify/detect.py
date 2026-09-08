@@ -933,11 +933,21 @@ def _has_build_output_markers(d: "Path") -> bool:
                     return True
                 if entry.is_dir():
                     subdirs.append(entry.path)
-        for sub in subdirs[:20]:  # bounded: probe one more level, cheaply
+        # Probe one more level across EVERY subdirectory (a wide TS outDir may
+        # keep its compiled files only under later-sorted module dirs), bounded
+        # by total entries scanned rather than by subdirectory count so a
+        # pathological tree still costs O(1)-ish.
+        budget = 4000
+        for sub in subdirs:
+            if budget <= 0:
+                break
             with os.scandir(sub) as it:
                 for entry in it:
+                    budget -= 1
                     if entry.is_file() and entry.name.lower().endswith(_BUILD_OUTPUT_SUFFIXES):
                         return True
+                    if budget <= 0:
+                        break
     except OSError:
         pass
     return False

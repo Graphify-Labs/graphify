@@ -81,6 +81,25 @@ def test_compiled_artifacts_one_level_down_prune_out(tmp_path, monkeypatch):
     assert not any("out/lib" in f for f in files), files
 
 
+def test_wide_out_dir_markers_beyond_twenty_subdirs_still_prune(tmp_path, monkeypatch):
+    """A wide outDir whose compiled files sit only under a late-sorted
+    subdirectory is still recognized as build output."""
+    monkeypatch.chdir(tmp_path)
+    for i in range(30):
+        sub = tmp_path / f"out/mod{i:02d}"
+        sub.mkdir(parents=True)
+        (sub / "notes.txt").write_text("no artifacts here\n", encoding="utf-8")
+    late = tmp_path / "out/zz-final"
+    late.mkdir()
+    (late / "index.js.map").write_text("{}", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/index.ts").write_text("export const x = 1;\n", encoding="utf-8")
+
+    files = _scanned(tmp_path)
+    assert any("src/index.ts" in f for f in files), files
+    assert not any("/out/" in f for f in files), files
+
+
 def test_other_skip_dirs_stay_unconditional(tmp_path, monkeypatch):
     """The gate is scoped to `out`: build/, dist/, target/ prune by name."""
     monkeypatch.chdir(tmp_path)
