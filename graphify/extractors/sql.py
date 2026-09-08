@@ -937,6 +937,15 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # codepoint and back losslessly, so encode(decode(source)) == source
     # exactly and every offset stays correct.
     src_text = source.decode("utf-8", errors="surrogateescape")
+    # Computed unconditionally, not just under the has_error gate below: the
+    # Firebird CREATE TABLE/REFERENCES fallback right after this runs on
+    # every file, clean or not, and needs the same masking its sibling
+    # recovery loops already get -- scanning raw src_text let a
+    # CREATE TABLE ... REFERENCES ... shaped string LITERAL (dynamic SQL
+    # text, never executed as DDL) fabricate a real edge between two
+    # genuinely unrelated tables that merely share names with the string's
+    # content (#2724 follow-up).
+    masked_src, ident_spans = _scan_sql(src_text)
 
     def _clean_regex_name(text: str, char_start: int, char_end: int) -> str:
         """_clean_name's counterpart for a name captured by a regex match
@@ -963,13 +972,15 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         if not _overlaps_debracketed_span(byte_start, byte_end):
             return _LONE_SURROGATE_RX.sub("�", text)
         return _LONE_SURROGATE_RX.sub("�", _strip_backtick_parts(text))
-    for m in re.finditer(r"CREATE\s+TABLE\s+([\w$]+)\s*\(", src_text, re.IGNORECASE):
+    for m in re.finditer(r"CREATE\s+TABLE\s+([\w$]+)\s*\(", masked_src, re.IGNORECASE):
+        if any(s <= m.start() < e for s, e in ident_spans):
+            continue
         tbl_name = m.group(1)
         tbl_nid = table_nids.get(_norm_ident(tbl_name))
         if tbl_nid is None:
             continue
         tbl_line = src_text[: m.start()].count("\n") + 1
-        tail = src_text[m.start():]
+        tail = masked_src[m.start():]
         end = re.search(r"(?:^|\n)(?:CREATE|SET\s+TERM|ALTER)\s", tail[1:], re.IGNORECASE)
         block = tail[: end.start() + 1] if end else tail
         for rm in re.finditer(r"\bREFERENCES\s+([\w$]+)", block, re.IGNORECASE):
@@ -1009,8 +1020,9 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         # CREATE keyword STARTS inside one is identifier data, not DDL
         # ('SELECT 1 AS [CREATE PROCEDURE x pending]') and is skipped — the
         # name a genuine statement captures is allowed to be a delimited
-        # identifier; its CREATE never is.
-        masked_src, ident_spans = _scan_sql(src_text)
+        # identifier; its CREATE never is. masked_src/ident_spans were
+        # already computed above, unconditionally, for the Firebird
+        # REFERENCES fallback.
         for m in _ROUTINE_RECOVERY_RX.finditer(masked_src):
             if any(s <= m.start() < e for s, e in ident_spans):
                 continue

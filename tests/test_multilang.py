@@ -1558,6 +1558,48 @@ def test_sql_regex_recovery_name_uses_replacement_char_not_question_mark(tmp_pat
     assert not any("?" in l for l in labels), f"got {labels}"
     assert not any("`" in l for l in labels), f"backtick leaked into a label: {labels}"
 
+def test_sql_firebird_reference_recovery_ignores_string_literal_content(tmp_path):
+    """The Firebird CREATE TABLE/REFERENCES fallback used to scan raw
+    src_text directly, unlike its sibling routine/view recovery loops
+    which scan _scan_sql's masked output -- so a CREATE TABLE ...
+    REFERENCES ... shape sitting inside a single-quoted string literal
+    (dynamic SQL text, never executed as DDL) fabricated a real edge
+    between two genuinely unrelated tables that merely share names with
+    the string's content. This ran unconditionally, not just on
+    error-bearing files, so a completely clean file could fabricate an
+    edge too."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "THIS IS NOT VALID SQL AT ALL %%%;\n"
+        "CREATE TABLE Foo (Id INT);\n"
+        "CREATE TABLE Bar (Id INT);\n"
+        "SET @sql = 'CREATE TABLE Foo (Id INT REFERENCES Bar(Id))';\n"
+    )
+    r = extract_sql(p)
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+    assert (nid["Foo"], nid["Bar"]) not in refs, (
+        f"fabricated edge from string literal content: {refs}"
+    )
+
+def test_sql_firebird_reference_recovery_still_works_on_real_ddl(tmp_path):
+    """The masking fix above must not break the genuine recovery case it
+    exists for: a REFERENCES clause pushed out of the tree by an
+    unrelated ERROR node (Firebird COMPUTED BY columns, e.g.) still needs
+    to recover a real cross-table edge."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "THIS IS NOT VALID SQL AT ALL %%%;\n"
+        "CREATE TABLE Parent (Id INT NOT NULL PRIMARY KEY);\n"
+        "CREATE TABLE Child (Id INT, ParentId INT REFERENCES Parent(Id));\n"
+    )
+    r = extract_sql(p)
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+    assert (nid["Child"], nid["Parent"]) in refs, f"got {refs}"
+
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
     must still be extracted (#1910), without cascading into later statements."""
