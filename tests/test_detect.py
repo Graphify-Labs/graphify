@@ -991,6 +991,93 @@ def test_is_noise_dir_coverage_is_evidence_gated(tmp_path):
     assert detect_mod._is_noise_dir("lcov-report") is True
 
 
+def test_is_noise_dir_out_is_evidence_gated(tmp_path):
+    """`out` is ambiguous: a build dir OR the outbound layer of a hexagonal
+    codebase. Prune on evidence only; keep it when unverifiable (#3347)."""
+    # Hexagonal Java: adapter/out/ holds sources, no artifacts, no build file.
+    adapter = tmp_path / "src" / "main" / "java" / "com" / "acme" / "adapter"
+    (adapter / "out").mkdir(parents=True)
+    (adapter / "out" / "OrderEntity.java").write_text("class OrderEntity {}")
+    assert detect_mod._is_noise_dir("out", adapter) is False
+
+    # A Go package literally named out is source too.
+    (tmp_path / "internal" / "out").mkdir(parents=True)
+    (tmp_path / "internal" / "out" / "handler.go").write_text("package out")
+    assert detect_mod._is_noise_dir("out", tmp_path / "internal") is False
+
+    # Unverifiable (no parent) keeps a possibly-real code dir.
+    assert detect_mod._is_noise_dir("out") is False
+
+
+def test_is_noise_dir_out_pruned_on_build_evidence(tmp_path):
+    """The two evidence kinds: compiled artifacts inside, or a build manifest
+    beside it (#3347)."""
+    # tsc: emitted .js/.d.ts/.js.map inside out/.
+    tsc = tmp_path / "tsc"
+    (tsc / "out").mkdir(parents=True)
+    (tsc / "out" / "index.js").write_text("exports.a=1;")
+    (tsc / "out" / "index.d.ts").write_text("export declare const a: number;")
+    (tsc / "out" / "index.js.map").write_text("{}")
+    assert detect_mod._is_noise_dir("out", tsc) is True
+
+    # IntelliJ: artifacts are nested a few levels down, not at the top.
+    idea = tmp_path / "idea"
+    deep = idea / "out" / "production" / "classes" / "com" / "acme"
+    deep.mkdir(parents=True)
+    (deep / "App.class").write_text("x")
+    assert detect_mod._is_noise_dir("out", idea) is True
+
+    # A build manifest beside out/ is enough on its own.
+    gradle = tmp_path / "gradle"
+    (gradle / "out").mkdir(parents=True)
+    (gradle / "out" / "notes.txt").write_text("hi")
+    (gradle / "build.gradle.kts").write_text("plugins {}")
+    assert detect_mod._is_noise_dir("out", gradle) is True
+
+
+def test_detect_keeps_hexagonal_outbound_layer(tmp_path):
+    """End to end: the outbound layer of a ports-and-adapters repo must be
+    scanned, not silently dropped (#3347)."""
+    (tmp_path / "pom.xml").write_text("<project/>")
+    base = tmp_path / "src" / "main" / "java" / "com" / "acme"
+    for rel, body in (
+        ("adapter/in/OrderController.java", "class OrderController {}"),
+        ("adapter/out/OrderEntity.java", "class OrderEntity {}"),
+        ("adapter/out/PaymentEntity.java", "class PaymentEntity {}"),
+        ("port/out/OrderRepository.java", "interface OrderRepository {}"),
+    ):
+        p = base / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+
+    result = detect(tmp_path)
+    scanned = {Path(p).name for p in result["files"]["code"]}
+    assert {"OrderEntity.java", "PaymentEntity.java", "OrderRepository.java"} <= scanned, (
+        "adapter/out/ and port/out/ are source, not build output (#3347)"
+    )
+    assert result["pruned_noise_dirs"] == []
+
+
+def test_detect_still_prunes_build_out_dir(tmp_path):
+    """The regression guard for the other direction: a real tsc/IntelliJ out/
+    stays pruned (#3347)."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "tsconfig.json").write_text("{}")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "index.ts").write_text("export const a = 1;")
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "index.js").write_text("exports.a=1;")
+    (out / "index.d.ts").write_text("export declare const a: number;")
+    (out / "GENERATED.md").write_text("# generated")
+
+    result = detect(tmp_path)
+    assert any(p.rstrip("/").endswith("out") for p in result["pruned_noise_dirs"])
+    names = {Path(p).name for p in result["files"]["code"] + result["files"]["document"]}
+    assert "index.ts" in names
+    assert not {"index.js", "index.d.ts", "GENERATED.md"} & names
+
+
 def test_detect_skips_visual_tests_dir(tmp_path):
     """visual-tests/ bundles and snapshots are noise — must be excluded (#869)."""
     vt = tmp_path / "visual-tests"

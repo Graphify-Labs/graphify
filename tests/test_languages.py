@@ -2981,6 +2981,44 @@ def test_markdown_wikilink_sibling_still_wins(tmp_path):
         f"sibling must shadow the vault-wide match, got {targets}")
 
 
+def test_markdown_wikilink_fallback_respects_evidence_gated_dirs(tmp_path):
+    """The vault index prunes through _is_noise_dir, not the raw _SKIP_DIRS set,
+    so an evidence-gated name is judged the same way the scanner judges it: a
+    generated out/ is skipped, a hexagonal out/ full of notes is indexed (#3347)."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    # Generated: artifacts inside prove it is build output, so its copy of the
+    # note must not win the bare-name lookup.
+    (vault / "out").mkdir()
+    (vault / "out" / "hub.md").write_text("# Generated copy\n")
+    (vault / "out" / "bundle.js.map").write_text("{}")
+    (vault / "docs").mkdir()
+    (vault / "docs" / "hub.md").write_text("# Real hub\n")
+    (vault / "log" / "entry.md").write_text("See [[hub]].\n")
+    _, refs, page_id = _vault_extract(
+        vault, [vault / "docs" / "hub.md", vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    targets = {e["target"] for e in refs if e["source"] == entry_id}
+    assert targets == {page_id(vault / "docs" / "hub.md")}, (
+        f"a generated out/ must stay out of the vault index, got {targets}")
+
+    from graphify.extractors.markdown import _MD_LINK_INDEX_CACHE
+    _MD_LINK_INDEX_CACHE.clear()
+
+    # Source: no artifacts, no build file beside it — an outbound-layer doc is
+    # part of the corpus and must be reachable.
+    hexa = tmp_path / "hexa"
+    (hexa / "adapter" / "out").mkdir(parents=True)
+    (hexa / "adapter" / "out" / "persistence.md").write_text("# Persistence\n")
+    (hexa / "notes.md").write_text("See [[persistence]].\n")
+    _, refs, page_id = _vault_extract(
+        hexa, [hexa / "adapter" / "out" / "persistence.md", hexa / "notes.md"])
+    targets = {e["target"] for e in refs
+               if e["source"] == page_id(hexa / "notes.md")}
+    assert targets == {page_id(hexa / "adapter" / "out" / "persistence.md")}, (
+        f"a source out/ must be indexed, got {targets}")
+
+
 def test_markdown_inline_link_keeps_relative_semantics(tmp_path):
     """Inline [text](missing.md) links get no vault fallback: a missing
     relative target stays dangling exactly as before."""
