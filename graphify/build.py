@@ -27,6 +27,7 @@ import os
 import re
 import sys
 import unicodedata
+from collections.abc import Iterable
 from pathlib import Path
 import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
@@ -2010,6 +2011,20 @@ def build_merge(
             if he.get("id") and he.get("id") in _new_hyperedge_ids:
                 continue  # the new chunks re-emitted it — theirs wins
             carried.append(he)
+
+    # Remove replaced deleted-source records before entity dedup can choose their stale
+    # provenance over a freshly emitted node with the same ID. A Terraform
+    # directory anchor, for example, survives deletion of its first .tf file
+    # with a new source_file; pruning only AFTER build would delete the live
+    # anchor too if dedup selected the old record.
+    if prune_sources:
+        fresh_ids = {n.get("id") for chunk in new_chunks for n in chunk.get("nodes", [])}
+        existing_nodes = [
+            n for n in existing_nodes
+            if not (n.get("id") in fresh_ids and _prune_match(n.get("source_file")))
+        ]
+        # Other deleted records and edges stay until the normal prune below:
+        # it needs their connectivity to identify newly orphaned import stubs.
 
     base = (
         [{"nodes": existing_nodes, "edges": existing_edges, "hyperedges": carried_hyperedges}]

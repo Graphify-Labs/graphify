@@ -355,6 +355,21 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | Video / Audio | `.mp4 .mov .mp3 .wav` and more (requires `uv tool install graphifyy[video]`) |
 | YouTube / URLs | any video URL (requires `uv tool install graphifyy[video]`) |
 
+Terraform module calls with a literal local `source` (`./...` or `../...`) link
+to a directory module node through an `EXTRACTED` `module_source` edge. Each
+directory node contains its scanned `.tf` files, so nested calls expose paths
+such as environment → application → base → resource. Scan the common repository
+root to include both callers and implementations. Paths resolve relative to the
+calling module, and excluded or out-of-root files are never loaded implicitly.
+
+Remote sources and source expressions are not resolved; `.tfvars`, generic
+`.hcl`, and `.tf.json` files do not define module-source targets. References to
+`module.app.output` still target the module call rather than its implementation's
+output. The graph represents source configuration, not evaluated Terraform
+instances. Incremental Terraform changes reconcile the scanned `.tf` corpus,
+reusing cached syntax for unchanged files. After upgrading an existing graph,
+run `graphify update .` once to regenerate Terraform IDs and topology.
+
 Code is extracted **locally with no API calls** (AST via tree-sitter). Everything else goes through your AI assistant's model API.
 
 Google Drive for desktop `.gdoc`, `.gsheet`, and `.gslides` files are shortcut

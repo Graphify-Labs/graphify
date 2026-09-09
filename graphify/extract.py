@@ -57,7 +57,7 @@ from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
-from graphify.extractors.terraform import extract_terraform  # noqa: F401
+from graphify.extractors.terraform import extract_terraform, prepare_terraform, resolve_terraform_modules  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
@@ -4599,6 +4599,9 @@ _KOTLIN_IMPORT_TARGET_RESOLVER = LanguageResolver(
 # by adding one register() call below — no edits to extract()'s body. Order
 # preserved from the prior inlined wiring: Swift (#1356) before Python (#1446).
 register_language_resolver(
+    LanguageResolver("terraform_modules", frozenset({".tf"}), resolve_terraform_modules)
+)
+register_language_resolver(
     LanguageResolver("swift_member_calls", frozenset({".swift"}), _resolve_swift_member_calls)
 )
 register_language_resolver(
@@ -6502,6 +6505,10 @@ def extract(
             f"may be partially extracted: {_shown}{_more}",
             file=sys.stderr, flush=True,
         )
+
+    for path, result in zip(paths, per_file):
+        if path.suffix in (".tf", ".tfvars", ".hcl"):
+            prepare_terraform(result, path, root)
 
     all_nodes: list[dict] = []
     all_edges: list[dict] = []

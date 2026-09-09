@@ -3731,6 +3731,13 @@ def dispatch_command(cmd: str) -> None:
         if detection.get("walk_errors"):
             _extraction_incomplete = True
 
+        if incremental_mode:
+            from graphify.extractors.terraform import refresh_terraform_paths
+            code_files = refresh_terraform_paths(
+                code_files, [Path(p) for p in files_by_type.get("code", [])],
+                [Path(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]],
+            )
+
         # AST extraction on code files. Empty code list (docs-only corpus) is
         # the issue #698 case — skip cleanly instead of crashing inside extract().
         ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
@@ -3787,6 +3794,7 @@ def dispatch_command(cmd: str) -> None:
                         for f in _flist
                     }
                     _ctx_live.discard(None)
+                    _ctx_live.difference_update(_ctx_identity(p) for p in code_files)
                     for _node in _ctx_graph.get("nodes", []):
                         if not _node.get("id") or not _ctx_is_ast_tier(_node):
                             continue
