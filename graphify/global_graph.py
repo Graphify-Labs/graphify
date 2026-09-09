@@ -135,10 +135,27 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         if not data.get("source_file") and data.get("label") in external_labels:
             remap[node] = external_labels[data["label"]]
 
-    # Compose: add prefixed nodes (except deduplicated externals) into global graph
+    # Compose: add prefixed nodes (except deduplicated externals) into global graph.
+    # A deduplicated external node keeps living under whichever repo_tag first
+    # created it (its "repo" attribute), but other repos can depend on it too.
+    # "ref_repos" tracks every repo currently referencing it so
+    # prune_repo_from_graph can drop one repo's reference without deleting a
+    # node other repos still depend on.
     for node, data in prefixed.nodes(data=True):
         if node not in remap:
+            if not data.get("source_file"):
+                data = dict(data)
+                data["ref_repos"] = [repo_tag]
             G.add_node(node, **data)
+        else:
+            target_data = G.nodes[remap[node]]
+            ref_repos = target_data.get("ref_repos")
+            if ref_repos is None:
+                owner = target_data.get("repo")
+                ref_repos = [owner] if owner else []
+            if repo_tag not in ref_repos:
+                ref_repos.append(repo_tag)
+            target_data["ref_repos"] = ref_repos
     for u, v, data in prefixed.edges(data=True):
         u = remap.get(u, u)
         v = remap.get(v, v)
