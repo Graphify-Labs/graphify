@@ -991,6 +991,59 @@ def test_is_noise_dir_coverage_is_evidence_gated(tmp_path):
     assert detect_mod._is_noise_dir("lcov-report") is True
 
 
+def test_detect_skips_htmlcov_dir(tmp_path):
+    """htmlcov/ is coverage.py's `coverage html` output — the Python counterpart
+    of lcov-report/, and generated the same way.
+
+    It was not in _SKIP_DIRS and the "coverage" gate does not reach it (that gate
+    only fires on a dir literally named ``coverage``), so the tree was walked in
+    full. Modern coverage.py drops a ``.gitignore`` inside htmlcov/ that hides it
+    from detect's ignore pass, but that is incidental cover: it is absent under
+    --no-gitignore, and collect_files does not consult it at all (see
+    test_collect_files_skips_htmlcov_dir).
+    """
+    cov = tmp_path / "htmlcov"
+    cov.mkdir()
+    (cov / "index.html").write_text("<html>coverage report</html>")
+    (cov / "z_1a2b_app_py.html").write_text("<html>file coverage</html>")
+    (cov / "style_cb_9ff733b0.css").write_text("body{}")
+    (tmp_path / "main.py").write_text("def hello(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any(f.startswith(str(cov)) for f in all_files)
+    assert any("main.py" in f for f in all_files)
+    assert any(p.rstrip(os.sep).endswith("htmlcov") for p in result["pruned_noise_dirs"])
+
+
+def test_collect_files_skips_htmlcov_dir(tmp_path):
+    """The extract path is where htmlcov actually cost tokens.
+
+    collect_files does not read the ``.gitignore`` coverage.py writes inside
+    htmlcov/, so before this it returned the generated bundle and status file --
+    a minified JS blob and a generated JSON, parsed as if they were source.
+    """
+    from graphify.extract import collect_files
+
+    cov = tmp_path / "htmlcov"
+    cov.mkdir()
+    (cov / ".gitignore").write_text("# Created by coverage.py\n*\n")
+    (cov / "coverage_html_cb_dd2e7eb5.js").write_text("var x=1;")
+    (cov / "status.json") .write_text('{"format":5,"files":{}}')
+    (cov / "index.html").write_text("<html>coverage report</html>")
+    (tmp_path / "app.py").write_text("def f(): pass\n")
+
+    walked = {str(p.relative_to(tmp_path)) for p in collect_files(tmp_path)}
+    assert walked == {"app.py"}, f"htmlcov leaked into extraction: {walked}"
+
+
+def test_is_noise_dir_htmlcov_is_unconditional(tmp_path):
+    """htmlcov needs no evidence gate: unlike "coverage" it is not a plausible
+    package name (no PyPI package, no language convention), only coverage.py's
+    default HTML output dir — same contract as lcov-report."""
+    assert detect_mod._is_noise_dir("htmlcov") is True
+    assert detect_mod._is_noise_dir("htmlcov", tmp_path) is True
+
+
 def test_detect_skips_visual_tests_dir(tmp_path):
     """visual-tests/ bundles and snapshots are noise — must be excluded (#869)."""
     vt = tmp_path / "visual-tests"

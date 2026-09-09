@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.57 (unreleased)
 
+- Fix: `htmlcov/` — coverage.py's `coverage html` output dir, the Python counterpart of the already-skipped `lcov-report/` — is now pruned as a noise dir. It was reaching `collect_files`, which does not read the `.gitignore` coverage.py writes inside it, so the generated bundle and `status.json` were extracted as source.
 - Fix: an incremental rebuild no longer wipes cross-file project AST nodes — re-extracting one `.csproj`/`.sln` was dropping package/framework nodes of a *referenced* project (whose stub carried the referenced file's `source_file`); the AST-replacement set is now derived from the files actually extracted (#3411, thanks @hopstreax).
 - Fix: when duplicate nodes merge, the richer (more complete) node is now kept as the survivor and the losers' non-empty fields are folded in, instead of a shorter-id passing mention winning and dropping content (#3372, thanks @abhay-codes07).
 - Fix: a C# generic call site with explicit type arguments — `Get<int>(...)`, unqualified or through `this` — now resolves to the method definition instead of capturing `Get<int>` as the callee and failing to match (#3406, thanks @abhay-codes07).
