@@ -214,8 +214,24 @@ function showInfo(nodeId) {{
   `;
 }}
 
-function focusNode(nodeId) {{
-  network.focus(nodeId, {{ scale: 1.4, animation: true }});
+function focusNode(nodeId, scale = 1.4) {{
+  // The community filter HIDES nodes rather than removing them, and vis has no
+  // rendered position for a hidden node — so focus() and selectNodes() were
+  // silent no-ops and only the panel updated. Clicking a neighbor (or a search
+  // hit) whose community was filtered out read as a dead click: the canvas did
+  // not move, nothing was selected, and nothing said why (#3378).
+  //
+  // Reveal the target's community first by firing the legend checkbox's own
+  // change handler rather than duplicating its body — hiddenCommunities, the
+  // dimmed styling, nodesDS and the Select-All tri-state then stay consistent
+  // through one code path. Only the target's community is revealed, so the rest
+  // of the filter the user set up survives the click.
+  const n = nodesDS.get(nodeId);
+  if (n && hiddenCommunities.has(n._community)) {{
+    const cb = CB_BY_CID.get(n._community);
+    if (cb) {{ cb.checked = true; cb.dispatchEvent(new Event('change')); }}
+  }}
+  network.focus(nodeId, {{ scale: scale, animation: true }});
   network.selectNodes([nodeId]);
   showInfo(nodeId);
 }}
@@ -273,9 +289,10 @@ searchInput.addEventListener('input', () => {{
     el.style.borderLeft = `3px solid ${{n.color.background}}`;
     el.style.paddingLeft = '8px';
     el.onclick = () => {{
-      network.focus(n.id, {{ scale: 1.5, animation: true }});
-      network.selectNodes([n.id]);
-      showInfo(n.id);
+      // Through focusNode, not a copy of its body: search can reach a node in a
+      // filtered-out community just as a neighbor link can, and that click was
+      // just as inert (#3378). The 1.5 scale search has always used is kept.
+      focusNode(n.id, 1.5);
       searchResults.style.display = 'none';
       searchInput.value = '';
     }};
@@ -313,6 +330,10 @@ function toggleAllCommunities(hide) {{
   updateSelectAllState();
 }}
 
+// Legend checkbox per community id, so focusNode can reveal a filtered-out
+// community by dispatching that checkbox's own change event (#3378).
+const CB_BY_CID = new Map();
+
 const legendEl = document.getElementById('legend');
 LEGEND.forEach(c => {{
   const item = document.createElement('div');
@@ -321,6 +342,7 @@ LEGEND.forEach(c => {{
   cb.type = 'checkbox';
   cb.className = 'legend-cb';
   cb.checked = true;
+  CB_BY_CID.set(c.cid, cb);
   cb.addEventListener('change', (e) => {{
     e.stopPropagation();
     if (cb.checked) {{
