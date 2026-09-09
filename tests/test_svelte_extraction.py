@@ -625,3 +625,42 @@ def test_unreadable_vue_component_reports_an_error(tmp_path, monkeypatch):
     result = extract_vue(component)
 
     assert "Permission denied" in result.get("error", "")
+
+
+def test_plain_js_component_matches_the_js_grammar_output(tmp_path):
+    """A component with no `lang` defaults to the TS grammar.
+
+    TS is a superset of JS, so the default costs nothing: the same component
+    parsed with `_JS_CONFIG` yields identical nodes, including the shapes a
+    naive superset claim would trip on — a regex containing `<`, chained
+    comparisons, and an async generator. `tree-sitter-typescript` is a hard
+    dependency of the package, so this adds no optional requirement.
+    """
+    import graphify.extract as extract_module
+
+    _write(tmp_path / "format.js", "export const fmt = (s) => s\n")
+    body = (
+        "<script>\n"
+        "  import { fmt } from './format'\n"
+        "  export let count = 0\n"
+        "  const items = [1, 2, 3].map(n => n * 2)\n"
+        "  export function bump() { count += 1; return fmt(String(count)) }\n"
+        "  const re = /a<b/g\n"
+        "  const cmp = 1 < 2 && 3 > 2\n"
+        "  async function* gen() { yield* [1, 2] }\n"
+        "</script>\n"
+        "<span>{count}</span>\n"
+    )
+    component = _write(tmp_path / "Plain.svelte", body)
+
+    ts_result = extract_svelte(component)
+    masked, lang = _sfc_mask_non_script(body)
+    assert lang is None, "no lang attribute declared"
+    js_result = extract_module._extract_generic(
+        component, extract_module._JS_CONFIG, source_override=masked.encode("utf-8")
+    )
+
+    assert not ts_result.get("parse_errors")
+    assert {n["label"] for n in ts_result["nodes"]} == {
+        n["label"] for n in js_result["nodes"]
+    }
