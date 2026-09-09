@@ -1030,3 +1030,50 @@ def test_global_add_many_snapshot_taken_when_replacing(tmp_path):
             gg.global_add_many([(a2, "repoA")])
 
     assert spy.call_count == 1
+
+
+# ── review follow-ups (#3440) ────────────────────────────────────────────────
+
+def test_global_add_many_checks_size_cap_before_hashing(monkeypatch, tmp_path):
+    """The cap exists so an oversized graph is never read into memory. Hashing
+    reads the whole file, so it must not happen before the cap is enforced."""
+    import graphify.global_graph as gg
+
+    src = _write_repo_graph(tmp_path, "a")
+    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 8)
+
+    global_dir = tmp_path / ".graphify"
+    with _patch_global(global_dir):
+        with patch.object(gg, "_file_hash", wraps=gg._file_hash) as hashed:
+            with pytest.raises(ValueError, match="exceeds"):
+                gg.global_add_many([(src, "repoA")])
+
+    assert hashed.call_count == 0
+
+
+def test_global_add_many_result_always_carries_an_error_key(tmp_path):
+    """Documented return shape: `error` is present on every result, None unless
+    that unit failed."""
+    g1 = _write_repo_graph(tmp_path, "a")
+    bad = _write_bad_graph(tmp_path)
+
+    global_dir = tmp_path / ".graphify"
+    with _patch_global(global_dir):
+        from graphify.global_graph import global_add_many
+        batch = global_add_many([(g1, "repoA"), (bad, "repoBad")], on_error="skip")
+
+    assert all("error" in r for r in batch["results"])
+    assert batch["results"][0]["error"] is None
+    assert batch["results"][1]["error"]
+
+
+def test_global_add_delegating_result_has_no_error_key(tmp_path):
+    """The single-repo shape is unchanged from before batching: no stray `error`."""
+    g1 = _write_repo_graph(tmp_path, "a")
+    global_dir = tmp_path / ".graphify"
+    with _patch_global(global_dir):
+        from graphify.global_graph import global_add
+        result = global_add(g1, "repoA")
+
+    assert set(result) == {"repo_tag", "nodes_added", "nodes_removed", "skipped",
+                           "cross_repo_calls"}

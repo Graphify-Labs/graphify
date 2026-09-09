@@ -204,8 +204,8 @@ def global_add_many(sources, on_error: str = "abort") -> dict:
 
     Returns ``{"results": [...], "cross_repo_calls": int, "saved": bool}``, with one
     result per input in input order carrying repo_tag / nodes_added / nodes_removed
-    / skipped, plus ``error`` (a string) on any unit that failed under
-    ``on_error="skip"``.
+    / skipped / error. ``error`` is None unless that unit failed under
+    ``on_error="skip"``, in which case it is the failure as a string.
 
     Registering K repos one at a time costs O(K^2): every call re-reads,
     re-resolves and re-serializes a global graph that grows with each unit, so the
@@ -263,6 +263,18 @@ def global_add_many(sources, on_error: str = "abort") -> dict:
     results: list[dict] = []
     pending: list[tuple[int, Path, str, str]] = []
     for source_path, repo_tag in sources:
+        # The cap is enforced before the file is read. _file_hash reads the whole
+        # file, so hashing first would pull an oversized graph into memory to
+        # compute a hash for a unit that is about to be rejected for its size --
+        # defeating the point of having a cap (thanks @copilot).
+        try:
+            check_graph_file_size_cap(source_path)
+        except Exception as exc:
+            if on_error == "abort":
+                raise
+            results.append({"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0,
+                            "skipped": False, "error": f"{type(exc).__name__}: {exc}"})
+            continue
         src_hash = _file_hash(source_path)
         existing = manifest["repos"].get(repo_tag, {})
         existing_path = existing.get("source_path", "")
@@ -277,16 +289,6 @@ def global_add_many(sources, on_error: str = "abort") -> dict:
         results.append({"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0,
                         "skipped": skipped, "error": None})
         if not skipped:
-            # Cheap enough to check up front (it stats the file), so an oversized
-            # graph fails the batch before any unit is composed rather than after
-            # the units ahead of it have already been merged.
-            try:
-                check_graph_file_size_cap(source_path)
-            except Exception as exc:
-                if on_error == "abort":
-                    raise
-                results[-1]["error"] = f"{type(exc).__name__}: {exc}"
-                continue
             pending.append((len(results) - 1, source_path, repo_tag, src_hash))
 
     # Nothing changed: the global graph is never read or rewritten. Loading it only

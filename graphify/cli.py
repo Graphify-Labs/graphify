@@ -3143,14 +3143,20 @@ def dispatch_command(cmd: str) -> None:
             args = sys.argv[3:]
             sources: list = []
             on_error = "abort"
+            pending_tag: "str | None" = None
             i = 0
             while i < len(args):
                 if args[i] == "--as" and i + 1 < len(args):
-                    if not sources:
-                        print(_USAGE, file=sys.stderr); sys.exit(1)
                     # --as tags the graph it follows, so every graph in a batch can
-                    # be named: `global add a/graph.json --as a b/graph.json --as b`
-                    sources[-1] = (sources[-1][0], args[i + 1]); i += 2
+                    # be named: `global add a/graph.json --as a b/graph.json --as b`.
+                    # Before a path it tags the next one instead, which is the
+                    # single-graph form `global add --as tag graph.json` that
+                    # worked before batching and still has to.
+                    if sources:
+                        sources[-1] = (sources[-1][0], args[i + 1])
+                    else:
+                        pending_tag = args[i + 1]
+                    i += 2
                 elif args[i] == "--keep-going":
                     # Restores the partial-success a loop of single adds gave for
                     # free: one unreadable graph costs you that repo, not the batch.
@@ -3159,9 +3165,16 @@ def dispatch_command(cmd: str) -> None:
                     print(f"error: unknown option {args[i]!r}\n{_USAGE}", file=sys.stderr)
                     sys.exit(1)
                 else:
-                    sources.append((Path(args[i]), None)); i += 1
+                    sources.append((Path(args[i]), pending_tag)); pending_tag = None; i += 1
             if not sources:
                 print(_USAGE, file=sys.stderr); sys.exit(1)
+            if pending_tag is not None:
+                # `--as tag` with no graph after it would otherwise be dropped in
+                # silence, tagging nothing.
+                print(f"error: --as {pending_tag!r} does not precede a graph file",
+                      file=sys.stderr)
+                print(_USAGE, file=sys.stderr)
+                sys.exit(1)
             pairs = [(src, tag or _infer_repo_tag(src)) for src, tag in sources]
             try:
                 batch = _global_add_many(pairs, on_error=on_error)
@@ -3174,7 +3187,9 @@ def dispatch_command(cmd: str) -> None:
                     failed += 1
                     print(f"error: '{tag}' skipped: {result['error']}", file=sys.stderr)
                 elif result["skipped"]:
-                    print(f"'{tag}' unchanged since last add - global graph not modified.")
+                    # Scoped to this repo on purpose: other units in the same
+                    # batch may well have changed the global graph.
+                    print(f"'{tag}' unchanged since last add - not re-added.")
                 else:
                     print(f"Added '{tag}' to global graph: +{result['nodes_added']} nodes, "
                           f"-{result['nodes_removed']} pruned.")
