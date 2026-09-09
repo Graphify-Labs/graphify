@@ -90,6 +90,24 @@ def _read_source_graph(source_path: Path) -> nx.Graph:
         return _jg.node_link_graph(data)
 
 
+def _scan_graph(G: nx.Graph) -> tuple[dict, set]:
+    """One pass over G returning (external label index, tags with nodes present).
+
+    Both are needed per batch and both are whole-graph scans, so they share a pass:
+    the point of the batch API is that a whole-graph cost is paid once, and adding
+    a second scan to support rollback would chip away at exactly that.
+    """
+    external_labels: dict = {}
+    repo_tags: set = set()
+    for node, data in G.nodes(data=True):
+        if not data.get("source_file") and data.get("label"):
+            external_labels.setdefault(data["label"], node)
+        repo = data.get("repo")
+        if repo:
+            repo_tags.add(repo)
+    return external_labels, repo_tags
+
+
 def _external_label_index(G: nx.Graph) -> dict:
     """Map label -> node id for every external (source_file-less) node in G.
 
@@ -104,6 +122,30 @@ def _external_label_index(G: nx.Graph) -> dict:
         for n, d in G.nodes(data=True)
         if not d.get("source_file") and d.get("label")
     }
+
+
+def _snapshot_repo(G: nx.Graph, repo_tag: str) -> tuple[list, list]:
+    """Capture repo_tag's nodes and their incident edges, for rollback.
+
+    Attribute dicts are copied: the originals are handed to `add_node`/`add_edge`
+    on restore and would otherwise stay shared with the live graph.
+    """
+    nodes = [(n, dict(d)) for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]
+    if not nodes:
+        return [], []
+    ids = [n for n, _ in nodes]
+    edges = [(u, v, dict(d)) for u, v, d in G.edges(ids, data=True)]
+    return nodes, edges
+
+
+def _restore_repo(G: nx.Graph, repo_tag: str, snapshot: tuple[list, list]) -> None:
+    """Put repo_tag back as it was at `snapshot`, dropping whatever replaced it."""
+    nodes, edges = snapshot
+    G.remove_nodes_from(
+        [n for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]
+    )
+    G.add_nodes_from(nodes)
+    G.add_edges_from(edges)
 
 
 def _merge_one(G: nx.Graph, prefixed: nx.Graph, external_labels: dict) -> int:
@@ -255,32 +297,52 @@ def global_add_many(sources, on_error: str = "abort") -> dict:
 
     # Load once.
     G = _load_global_graph()
-    external_labels = _external_label_index(G)
+    external_labels, known_tags = _scan_graph(G)
 
     composed = 0
     for index, source_path, repo_tag, src_hash in pending:
+        # The whole unit is guarded, not just the read. A unit prunes before it
+        # merges, so a failure after that point leaves the repo removed but not
+        # replaced -- and under "skip" the batch would go on to save that. The
+        # unit is restored to its pre-prune state before the next one runs.
+        # (Rollback approach from @ROHIT8759's work on the same issue.)
+        snapshot: tuple[list, list] | None = None
         try:
             src_G = _read_source_graph(source_path)
+
+            # Prefix IDs for cross-project isolation, then drop this repo's stale nodes
+            prefixed = prefix_graph_for_global(src_G, repo_tag)
+            # Only a repo already in the store can be half-pruned, and the manifest
+            # says which those are -- so the common add-a-new-repo path pays no
+            # scan at all, and the snapshot cost falls only on replacements.
+            snapshot = _snapshot_repo(G, repo_tag) if repo_tag in known_tags else ([], [])
+            removed = prune_repo_from_graph(G, repo_tag)
+            if removed:
+                # Pruning can delete external stubs the previous revision of this
+                # repo owned, and a stale index would remap a later unit's edge
+                # onto a node no longer in the graph. Only a prune that removed
+                # something can invalidate it, so this is not paid on the common
+                # add-new-repo path.
+                external_labels = _external_label_index(G)
+
+            results[index]["nodes_added"] = _merge_one(G, prefixed, external_labels)
+            results[index]["nodes_removed"] = removed
         except Exception as exc:
+            if snapshot is not None:
+                # Undo this unit's prune/merge so the graph carries the repo's
+                # previous revision rather than a half-applied one.
+                _restore_repo(G, repo_tag, snapshot)
+                external_labels = _external_label_index(G)
             if on_error == "abort":
-                # Nothing has been saved yet, so returning here leaves the store
-                # untouched -- the whole batch is off.
+                # Nothing is saved on this path, so the store is untouched
+                # regardless -- the rollback keeps the in-memory graph honest for
+                # any caller that catches this and carries on.
                 raise
             results[index]["error"] = f"{type(exc).__name__}: {exc}"
+            results[index]["nodes_added"] = 0
+            results[index]["nodes_removed"] = 0
             continue
 
-        # Prefix IDs for cross-project isolation, then drop this repo's stale nodes
-        prefixed = prefix_graph_for_global(src_G, repo_tag)
-        removed = prune_repo_from_graph(G, repo_tag)
-        if removed:
-            # Pruning can delete external stubs the previous revision of this repo
-            # owned, and a stale index would remap a later unit's edge onto a node
-            # no longer in the graph. Only a prune that removed something can
-            # invalidate it, so this is not paid on the common add-new-repo path.
-            external_labels = _external_label_index(G)
-
-        results[index]["nodes_added"] = _merge_one(G, prefixed, external_labels)
-        results[index]["nodes_removed"] = removed
         composed += 1
         manifest["repos"][repo_tag] = {
             "added_at": datetime.now(timezone.utc).isoformat(),

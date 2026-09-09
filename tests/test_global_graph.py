@@ -805,13 +805,15 @@ def test_global_add_many_scans_for_externals_once_per_batch(tmp_path):
 
     global_dir = tmp_path / ".graphify"
     with _patch_global(global_dir):
-        with patch.object(gg, "_external_label_index",
-                          wraps=gg._external_label_index) as spy:
+        with patch.object(gg, "_scan_graph", wraps=gg._scan_graph) as initial,              patch.object(gg, "_external_label_index",
+                          wraps=gg._external_label_index) as rebuild:
             gg.global_add_many(graphs)
 
-    # One scan for the batch. No unit prunes anything here (all four are new), so
-    # nothing may invalidate the index mid-loop.
-    assert spy.call_count == 1
+    # One whole-graph scan for the batch, whichever helper performs it. No unit
+    # prunes anything here (all four are new), so nothing may invalidate the index
+    # mid-loop and force a rebuild.
+    assert initial.call_count == 1
+    assert rebuild.call_count == 0
 
 
 def test_global_add_many_rebuilds_index_after_a_prune_removes_externals(tmp_path):
@@ -927,3 +929,104 @@ def test_global_add_many_skip_policy_survives_an_oversized_source(monkeypatch, t
     assert batch["results"][1]["error"] is None
     assert "repoA::amod" in G.nodes
     assert not any(n.startswith("repoBig::") for n in G.nodes)
+
+
+# ── per-unit rollback on a mid-merge failure ─────────────────────────────────
+
+def test_global_add_many_skip_restores_a_repo_whose_merge_failed(tmp_path):
+    """A unit prunes before it merges. If the merge fails, `skip` must leave that
+    repo at its previous revision rather than committing it half-removed."""
+    import graphify.global_graph as gg
+
+    a1 = _write_repo_graph(tmp_path, "a", external="requests")
+    b = _write_repo_graph(tmp_path, "b")
+    global_dir = tmp_path / ".graphify"
+
+    with _patch_global(global_dir):
+        gg.global_add_many([(a1, "repoA")])
+
+        a2 = tmp_path / "a2.json"
+        _graph_to_json(
+            _make_graph([{"id": "amod2", "label": "AMod2", "source_file": "src/a2.py"}]), a2
+        )
+        # Fail only repoA's merge, so the healthy unit in the same batch is a real
+        # control rather than another casualty of a blanket mock.
+        real_merge = gg._merge_one
+
+        def merge_but_fail_repo_a(G_, prefixed, labels):
+            if any(n.startswith("repoA::") for n in prefixed.nodes):
+                raise RuntimeError("merge blew up")
+            return real_merge(G_, prefixed, labels)
+
+        with patch.object(gg, "_merge_one", side_effect=merge_but_fail_repo_a):
+            batch = gg.global_add_many([(a2, "repoA"), (b, "repoB")], on_error="skip")
+        G = gg._load_global_graph()
+
+    # repoA failed, so it keeps the revision it already had -- nodes and edges.
+    assert "RuntimeError" in batch["results"][0]["error"]
+    assert batch["results"][0]["nodes_removed"] == 0
+    assert "repoA::amod" in G.nodes
+    assert "repoA::requests" in G.nodes
+    assert G.has_edge("repoA::amod", "repoA::requests")
+    assert "repoA::amod2" not in G.nodes
+    # ...and the healthy unit in the same batch still landed.
+    assert "repoB::bmod" in G.nodes
+    # No edge may reference a node the rollback failed to restore.
+    assert all(u in G.nodes and v in G.nodes for u, v in G.edges())
+
+
+def test_global_add_many_abort_rolls_back_before_propagating(tmp_path):
+    """Under `abort` nothing is saved, so the store is safe either way -- but the
+    in-memory graph must still be left coherent for a caller that catches."""
+    import graphify.global_graph as gg
+
+    a1 = _write_repo_graph(tmp_path, "a", external="requests")
+    global_dir = tmp_path / ".graphify"
+
+    with _patch_global(global_dir):
+        gg.global_add_many([(a1, "repoA")])
+        before = (global_dir / "global-graph.json").read_bytes()
+
+        a2 = tmp_path / "a2.json"
+        _graph_to_json(
+            _make_graph([{"id": "amod2", "label": "AMod2", "source_file": "src/a2.py"}]), a2
+        )
+        with patch.object(gg, "_merge_one", side_effect=RuntimeError("merge blew up")):
+            with pytest.raises(RuntimeError, match="merge blew up"):
+                gg.global_add_many([(a2, "repoA")], on_error="abort")
+
+    assert (global_dir / "global-graph.json").read_bytes() == before
+
+
+def test_global_add_many_snapshot_only_for_repos_already_present(tmp_path):
+    """Rollback must not reintroduce a per-unit whole-graph scan: a brand-new repo
+    has nothing to snapshot, so it pays nothing."""
+    import graphify.global_graph as gg
+
+    graphs = [(_write_repo_graph(tmp_path, name), f"repo{name.upper()}")
+              for name in ("a", "b", "c")]
+    global_dir = tmp_path / ".graphify"
+
+    with _patch_global(global_dir):
+        with patch.object(gg, "_snapshot_repo", wraps=gg._snapshot_repo) as spy:
+            gg.global_add_many(graphs)
+
+    assert spy.call_count == 0
+
+
+def test_global_add_many_snapshot_taken_when_replacing(tmp_path):
+    import graphify.global_graph as gg
+
+    a1 = _write_repo_graph(tmp_path, "a")
+    global_dir = tmp_path / ".graphify"
+
+    with _patch_global(global_dir):
+        gg.global_add_many([(a1, "repoA")])
+        a2 = tmp_path / "a2.json"
+        _graph_to_json(
+            _make_graph([{"id": "amod2", "label": "AMod2", "source_file": "src/a2.py"}]), a2
+        )
+        with patch.object(gg, "_snapshot_repo", wraps=gg._snapshot_repo) as spy:
+            gg.global_add_many([(a2, "repoA")])
+
+    assert spy.call_count == 1
