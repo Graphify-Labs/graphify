@@ -1356,3 +1356,162 @@ def test_sql_quoted_plpgsql_file_stays_clean():
     contains_targets = {e["target"] for e in r["edges"] if e["relation"] == "contains"}
     fn_ids = {n["id"] for n in r["nodes"] if n["label"].endswith("()")}
     assert fn_ids <= contains_targets
+
+
+# ── SQL: row-level-security policies (#3401) ──────────────────────────────────
+
+def _policy_pairs(r):
+    """{(policy label, table label)} for every references edge in a result."""
+    labels = {n["id"]: n["label"] for n in r["nodes"]}
+    return {
+        (labels[e["source"]], labels[e["target"]])
+        for e in r["edges"]
+        if e["relation"] == "references"
+    }
+
+
+def test_sql_create_policy_becomes_a_node_attached_to_its_table(tmp_path):
+    """#3401: CREATE POLICY has no rule in tree-sitter-sql, so the statement
+    shredded into loose tokens plus an ERROR node and nothing dispatched on it —
+    every policy in an RLS schema was dropped silently. On the reported project
+    that was 59 statements / 45 distinct policy names, and the graph showed the
+    tables with no indication of who may read a row."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "rls.sql"
+    p.write_text(
+        "CREATE TABLE public.employees (id INT, tenant_id INT);\n"
+        "ALTER TABLE public.employees ENABLE ROW LEVEL SECURITY;\n"
+        "CREATE POLICY employees_select ON public.employees\n"
+        "    FOR SELECT USING (tenant_id = current_setting('app.tenant')::int);\n"
+        "CREATE POLICY employees_update ON public.employees\n"
+        "    FOR UPDATE USING (tenant_id = current_setting('app.tenant')::int);\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"] if n["label"] != "rls.sql"]
+    assert "employees_select" in labels, labels
+    assert "employees_update" in labels, labels
+    # Each policy points at the table it guards.
+    assert _policy_pairs(r) == {
+        ("employees_select", "public.employees"),
+        ("employees_update", "public.employees"),
+    }
+    # And both are reachable from the file node like any other object.
+    contains = {e["target"] for e in r["edges"] if e["relation"] == "contains"}
+    pol_ids = {n["id"] for n in r["nodes"] if n["label"].startswith("employees_")}
+    assert pol_ids <= contains
+    for e in r["edges"]:
+        assert e["source"] in {n["id"] for n in r["nodes"]}
+
+
+def test_sql_policy_name_is_qualified_by_its_table(tmp_path):
+    """A policy name is unique per TABLE, not per schema: `tenant_isolation` on
+    two tables is ordinary SQL, and two policies named alike on one table is
+    illegal. Keying the node on the bare name would dedupe the second policy
+    onto the first and lose it exactly as before the fix."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "rls.sql"
+    p.write_text(
+        "CREATE TABLE public.employees (id INT);\n"
+        "CREATE TABLE public.invoices (id INT);\n"
+        "CREATE POLICY tenant_isolation ON public.employees FOR ALL USING (true);\n"
+        "CREATE POLICY tenant_isolation ON public.invoices FOR ALL USING (true);\n"
+    )
+    r = extract_sql(p)
+    policies = [n for n in r["nodes"] if n["label"] == "tenant_isolation"]
+    assert len(policies) == 2, f"same-named policies collapsed: {policies}"
+    assert len({n["id"] for n in policies}) == 2
+    assert _policy_pairs(r) == {
+        ("tenant_isolation", "public.employees"),
+        ("tenant_isolation", "public.invoices"),
+    }
+
+
+def test_sql_policy_recovery_accepts_delimited_identifiers(tmp_path):
+    """Generated PostgreSQL DDL quotes every identifier, and the policy pattern
+    shares its name grammar with the routine pattern, so a quoted policy on a
+    quoted table must recover exactly like a bare one (#2180's lesson)."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "rls.sql"
+    p.write_text(
+        'CREATE TABLE "public"."Employee" ("id" INT);\n'
+        'CREATE POLICY "Employee select own" ON "public"."Employee"\n'
+        '    FOR SELECT USING (true);\n'
+    )
+    r = extract_sql(p)
+    assert _policy_pairs(r) == {('"Employee select own"', '"public"."Employee"')}
+
+
+def test_sql_policy_on_a_table_defined_in_another_file(tmp_path):
+    """Policies and the tables they guard routinely live in different migration
+    files, so the table reference has to go through the sourceless-stub rewire
+    and land on the real definition instead of dangling (#2324's path)."""
+    pytest.importorskip("tree_sitter_sql")
+    (tmp_path / "001_tables.sql").write_text(
+        'CREATE TABLE "Tenant" (id TEXT NOT NULL);\n'
+    )
+    (tmp_path / "002_policies.sql").write_text(
+        'CREATE POLICY tenant_isolation ON "Tenant" FOR ALL USING (true);\n'
+    )
+    r = extract(
+        [tmp_path / "001_tables.sql", tmp_path / "002_policies.sql"], root=tmp_path
+    )
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"dangling source: {e['source']}"
+        assert e["target"] in node_ids, f"dangling target: {e['target']}"
+    tenant_ids = [i for i in node_ids if i.endswith("001_tables_tenant")]
+    assert len(tenant_ids) == 1, f"expected one real Tenant node, got {tenant_ids}"
+    assert tenant_ids[0] in {
+        e["target"] for e in r["edges"] if e["relation"] == "references"
+    }, "cross-file policy did not rewire onto the real table"
+
+
+def test_sql_policy_ddl_that_does_not_create_a_policy_is_not_fabricated(tmp_path):
+    """The scan must not invent policies from DDL that only mentions them: a
+    DROP/ALTER, a commented-out CREATE POLICY, or one buried in dynamic SQL. The
+    masked scan is what makes the last two impossible."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "rls.sql"
+    p.write_text(
+        "CREATE TABLE public.employees (id INT);\n"
+        "DROP POLICY old_policy ON public.employees;\n"
+        "ALTER POLICY renamed_policy ON public.employees RENAME TO x;\n"
+        "-- CREATE POLICY line_comment_policy ON public.employees FOR ALL USING (true);\n"
+        "/*\nCREATE POLICY block_comment_policy ON public.employees FOR ALL USING (true);\n*/\n"
+        "EXECUTE 'CREATE POLICY dynamic_policy ON public.employees FOR ALL USING (true)';\n"
+        "CREATE POLICY real_policy ON public.employees FOR ALL USING (true);\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "real_policy" in labels, labels
+    for phantom in (
+        "old_policy",
+        "renamed_policy",
+        "line_comment_policy",
+        "block_comment_policy",
+        "dynamic_policy",
+    ):
+        assert phantom not in labels, f"fabricated a policy node: {phantom}"
+
+
+def test_sql_policy_pattern_shares_the_routine_name_grammar():
+    """Unit pin: the two recovery patterns accept the same identifier forms, so
+    a hand-copied alternation cannot drift on one side and leave policies on
+    bracketed/quoted tables unrecoverable."""
+    pytest.importorskip("tree_sitter_sql")
+    from graphify.extractors.sql import _POLICY_RECOVERY_RX
+
+    for src, name, table in (
+        ("CREATE POLICY p ON t", "p", "t"),
+        ('create policy "P 1" on "s"."T"', '"P 1"', '"s"."T"'),
+        ("CREATE POLICY [p] ON [dbo].[T]", "[p]", "[dbo].[T]"),
+        ('CREATE POLICY "a""b" ON "s" . "t"', '"a""b"', '"s" . "t"'),
+        ("CREATE\tPOLICY\n  p\n  ON\n  s.t", "p", "s.t"),
+    ):
+        m = _POLICY_RECOVERY_RX.search(src)
+        assert m, src
+        assert (m.group(1), m.group(2)) == (name, table), src
+    # A policy is not a routine and vice versa — the patterns do not overlap.
+    from graphify.extractors.sql import _ROUTINE_RECOVERY_RX
+    assert not _ROUTINE_RECOVERY_RX.search("CREATE POLICY p ON t")
+    assert not _POLICY_RECOVERY_RX.search("CREATE PROCEDURE dbo.p AS BEGIN END")
