@@ -169,18 +169,27 @@ After writing the answer, save it back into the graph so it improves future quer
 
 The question and answer are free text you do not control the content of - a
 quote, backtick, or `$()` embedded in either one corrupts or escapes a
-command it's substituted into. Using your file-write tool, write the
-user's verbatim question to one file and your full answer text (containing
-the expanded-token trace) to another, then pass only those files' paths -
-not their content - on the command line:
+command it's substituted into. Reserve two unique file paths first - a
+fixed, shared filename risks a concurrent graphify session overwriting or
+reading a stale value:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question-file /tmp/graphify_question.txt --answer-file /tmp/graphify_answer.txt --type query --nodes NODE1 NODE2
+mktemp /tmp/graphify_question.XXXXXX
+mktemp /tmp/graphify_answer.XXXXXX
 ```
 
-Replace `NODE1 NODE2` with the list of node labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
+Using your file-write tool, write the user's verbatim question to the path
+the first command printed and your full answer text (containing the
+expanded-token trace) to the path the second one printed, then pass those
+exact paths - not their content - on the command line:
 
-**Work memory (self-improving loop).** Add an `--outcome` so future sessions learn from this one — append `--outcome useful|dead_end|corrected` to the `save-result` command (and, when correcting, write what was right to a file and pass `--correction-file <path>` the same way):
+```bash
+$(cat graphify-out/.graphify_python) -m graphify save-result --question-file QUESTION_PATH --answer-file ANSWER_PATH --type query --nodes NODE1 NODE2
+```
+
+Replace `QUESTION_PATH`/`ANSWER_PATH` with the paths `mktemp` printed and `NODE1 NODE2` with the list of node labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
+
+**Work memory (self-improving loop).** Add an `--outcome` so future sessions learn from this one — append `--outcome useful|dead_end|corrected` to the `save-result` command (and, when correcting, reserve one more unique path with `mktemp`, write what was right to it, and pass `--correction-file CORRECTION_PATH` the same way):
 
 - `useful` — the cited nodes answered the question well (they become *preferred sources*).
 - `dead_end` — the question/path led nowhere; don't re-derive it next time.
@@ -251,12 +260,14 @@ except nx.NodeNotFound as e:
 Replace `NODE_A` and `NODE_B` with the actual concept names from the user. Then explain the path in plain language - what each hop means, why it's significant.
 
 After writing the explanation, save it back. The explanation is free text
-you do not control the content of - write it to a file with your file-write
-tool and pass only that file's path, the same way as for `/graphify query`
-above:
+you do not control the content of - reserve a unique file path with
+`mktemp /tmp/graphify_answer.XXXXXX` (a fixed, shared filename risks a
+concurrent graphify session overwriting or reading a stale value), write
+it there with your file-write tool, then pass only that path, the same way
+as for `/graphify query` above:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer-file /tmp/graphify_answer.txt --type path_query --nodes NODE_A NODE_B
+$(cat graphify-out/.graphify_python) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer-file ANSWER_PATH --type path_query --nodes NODE_A NODE_B
 ```
 
 ---
@@ -315,10 +326,12 @@ for neighbor in G.neighbors(nid):
 Replace `NODE_NAME` with the concept the user asked about. Then write a 3-5 sentence explanation of what this node is, what it connects to, and why those connections are significant. Use the source locations as citations.
 
 After writing the explanation, save it back. The explanation is free text
-you do not control the content of - write it to a file with your file-write
-tool and pass only that file's path, the same way as for `/graphify query`
-above:
+you do not control the content of - reserve a unique file path with
+`mktemp /tmp/graphify_answer.XXXXXX` (a fixed, shared filename risks a
+concurrent graphify session overwriting or reading a stale value), write
+it there with your file-write tool, then pass only that path, the same way
+as for `/graphify query` above:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Explain NODE_NAME" --answer-file /tmp/graphify_answer.txt --type explain --nodes NODE_NAME
+$(cat graphify-out/.graphify_python) -m graphify save-result --question "Explain NODE_NAME" --answer-file ANSWER_PATH --type explain --nodes NODE_NAME
 ```
