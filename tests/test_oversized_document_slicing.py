@@ -104,7 +104,7 @@ def test_slices_stay_within_the_cap(tmp_path):
 # End to end through the prompt builder
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("ext", [".qmd", ".html", ".yaml", ".yml", ".skill"])
+@pytest.mark.parametrize("ext", [".qmd", ".html", ".yaml", ".yml", ".skill", ".j2"])
 def test_the_tail_of_a_big_document_reaches_the_prompt(tmp_path, ext):
     """The symptom a user would notice: content past 20k was invisible to the
     semantic pass, so nothing in the tail could ever become a node."""

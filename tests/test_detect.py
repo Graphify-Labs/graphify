@@ -49,6 +49,16 @@ def test_classify_skill():
     # #1901: .skill agent files (Markdown with YAML frontmatter) were dropped as unclassified.
     assert classify_file(Path("10_Orchestrator.skill")) == FileType.DOCUMENT
 
+def test_classify_jinja_template():
+    # #3427: .j2/.jinja/.jinja2 were unclassified, so a codegen repo's graph
+    # described only the generated files that must NOT be edited.
+    assert classify_file(Path("templates/module.py.j2")) == FileType.DOCUMENT
+    assert classify_file(Path("templates/base.jinja")) == FileType.DOCUMENT
+    assert classify_file(Path("templates/base.jinja2")) == FileType.DOCUMENT
+    # The outer suffix classifies, whatever the target language underneath.
+    for inner in ("py", "ts", "yaml", "conf", "sql", "tf"):
+        assert classify_file(Path(f"t/app.{inner}.j2")) == FileType.DOCUMENT
+
 def test_classify_pdf():
     assert classify_file(Path("paper.pdf")) == FileType.PAPER
 
@@ -95,6 +105,27 @@ def test_detect_skips_noise_dot_dirs():
             # well-known framework caches are always skipped
             for noise in ("/.next/", "/.nuxt/", "/.turbo/", "/.angular/"):
                 assert noise not in f
+
+
+def test_detect_finds_jinja_templates_beside_generated_code(tmp_path):
+    """The reported shape: a codegen repo where the generated module is graphed
+    and the template it comes from is invisible (#3427)."""
+    (tmp_path / "templates").mkdir()
+    (tmp_path / "templates" / "module.py.j2").write_text(
+        "# generated from module.py.j2 — DO NOT EDIT MANUALLY\n"
+        "class {{ name }}:\n    pass\n"
+    )
+    (tmp_path / "templates" / "config.yaml.jinja2").write_text("name: {{ name }}\n")
+    (tmp_path / "module.py").write_text("class Generated:\n    pass\n")
+
+    result = detect(tmp_path)
+
+    assert str(tmp_path / "module.py") in result["files"]["code"]
+    assert set(result["files"]["document"]) == {
+        str(tmp_path / "templates" / "module.py.j2"),
+        str(tmp_path / "templates" / "config.yaml.jinja2"),
+    }
+    assert result["unclassified"] == []
 
 
 def test_detect_skips_obsidian_vault_metadata_dirs(tmp_path):

@@ -8,6 +8,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: when duplicate nodes merge, the richer (more complete) node is now kept as the survivor and the losers' non-empty fields are folded in, instead of a shorter-id passing mention winning and dropping content (#3372, thanks @abhay-codes07).
 - Fix: a C# generic call site with explicit type arguments — `Get<int>(...)`, unqualified or through `this` — now resolves to the method definition instead of capturing `Get<int>` as the callee and failing to match (#3406, thanks @abhay-codes07).
 - Fix: `this.X = function` / `this.X = () => …` members are now captured in every enclosing-function form (function expressions, arrows, IIFEs, callbacks), not just function declarations (#3408, thanks @abhay-codes07).
+- Fix: Jinja templates (`.j2`, `.jinja`, `.jinja2`) are now classified as documents instead of being silently unclassified — a codegen repo's graph described only the generated files marked `DO NOT EDIT` and none of the templates they come from; oversized templates are sliced like every other text document (#3427, thanks @AmberProof).
 
 ## 0.9.56 (2026-09-07)
 
