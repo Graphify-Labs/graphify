@@ -76,58 +76,43 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
-def global_add(source_path: Path, repo_tag: str) -> dict:
-    """Add or update a project graph in the global graph.
-
-    Returns a summary dict with keys: repo_tag, nodes_added, nodes_removed, skipped,
-    cross_repo_calls.
-    Skipped=True means the source graph hasn't changed since last add.
-    """
-    from graphify.build import prefix_graph_for_global, prune_repo_from_graph
-
-    if not source_path.exists():
-        raise FileNotFoundError(f"graph not found: {source_path}")
-
-    manifest = _load_manifest()
-    src_hash = _file_hash(source_path)
-
-    existing = manifest["repos"].get(repo_tag, {})
-    existing_path = existing.get("source_path", "")
-    if existing_path and existing_path != str(source_path.resolve()):
-        print(
-            f"[graphify global] warning: repo tag '{repo_tag}' previously pointed to "
-            f"{existing_path!r}, now updating to {str(source_path.resolve())!r}. "
-            f"Use --as <tag> to give it a different name.",
-            file=sys.stderr,
-        )
-    if existing.get("source_hash") == src_hash:
-        return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
-                "cross_repo_calls": 0}
-
-    # Load source graph
+def _read_source_graph(source_path: Path) -> nx.Graph:
+    """Load a project graph.json from disk, size-capped."""
     from graphify.security import check_graph_file_size_cap
+
     check_graph_file_size_cap(source_path)
     data = json.loads(source_path.read_text(encoding="utf-8"))
     if "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     try:
-        src_G = _jg.node_link_graph(data, edges="links")
+        return _jg.node_link_graph(data, edges="links")
     except TypeError:
-        src_G = _jg.node_link_graph(data)
+        return _jg.node_link_graph(data)
 
-    # Prefix IDs for cross-project isolation
-    prefixed = prefix_graph_for_global(src_G, repo_tag)
 
-    # Load global graph and prune stale nodes for this repo
-    G = _load_global_graph()
-    removed = prune_repo_from_graph(G, repo_tag)
+def _external_label_index(G: nx.Graph) -> dict:
+    """Map label -> node id for every external (source_file-less) node in G.
 
-    # Merge external-library nodes (no source_file) by label to avoid duplication
-    external_labels = {
+    External library nodes are deduplicated by label so that `requests` imported
+    by five repos is one node, not five. Built once per batch and kept current as
+    each repo merges, so a repo can dedup against an external contributed by an
+    earlier repo in the same batch exactly as it would if that repo had been
+    added by its own `global add` call.
+    """
+    return {
         d.get("label", ""): n
         for n, d in G.nodes(data=True)
         if not d.get("source_file") and d.get("label")
     }
+
+
+def _merge_one(G: nx.Graph, prefixed: nx.Graph, external_labels: dict) -> int:
+    """Compose one prefixed repo graph into G. Returns nodes added.
+
+    `external_labels` is read and updated in place: externals this repo
+    introduces become dedup targets for repos merged after it, which is what
+    keeps a batched merge identical to the same repos added one at a time.
+    """
     # Map each deduplicated external onto the existing global node so that
     # edges incident to it can be rewired instead of dropped.
     remap = {}
@@ -135,37 +120,198 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         if not data.get("source_file") and data.get("label") in external_labels:
             remap[node] = external_labels[data["label"]]
 
-    # Compose: add prefixed nodes (except deduplicated externals) into global graph
+    # Compose: add prefixed nodes (except deduplicated externals) into G
     for node, data in prefixed.nodes(data=True):
         if node not in remap:
             G.add_node(node, **data)
+            if not data.get("source_file") and data.get("label"):
+                external_labels.setdefault(data["label"], node)
     for u, v, data in prefixed.edges(data=True):
         u = remap.get(u, u)
         v = remap.get(v, v)
         if u != v:  # don't introduce self-loops via remapping
             G.add_edge(u, v, **data)
 
-    added = prefixed.number_of_nodes() - len(remap)
+    return prefixed.number_of_nodes() - len(remap)
+
+
+def global_add(source_path: Path, repo_tag: str) -> dict:
+    """Add or update a project graph in the global graph.
+
+    Returns a summary dict with keys: repo_tag, nodes_added, nodes_removed, skipped,
+    cross_repo_calls.
+    Skipped=True means the source graph hasn't changed since last add.
+
+    A thin wrapper over :func:`global_add_many` so the one-repo and many-repo
+    paths cannot drift apart: a change to the merge semantics cannot land in one
+    and miss the other.
+    """
+    batch = global_add_many([(source_path, repo_tag)])
+    result = dict(batch["results"][0])
+    result["cross_repo_calls"] = batch["cross_repo_calls"]
+    if result.get("error") is None:
+        result.pop("error", None)
+    return result
+
+
+def global_add_many(sources, on_error: str = "abort") -> dict:
+    """Add or update several project graphs in one pass over the global graph (#3438).
+
+    ``sources`` is an ordered sequence of ``(source_path, repo_tag)``, composed in
+    the order given.
+
+    Returns ``{"results": [...], "cross_repo_calls": int, "saved": bool}``, with one
+    result per input in input order carrying repo_tag / nodes_added / nodes_removed
+    / skipped, plus ``error`` (a string) on any unit that failed under
+    ``on_error="skip"``.
+
+    Registering K repos one at a time costs O(K^2): every call re-reads,
+    re-resolves and re-serializes a global graph that grows with each unit, so the
+    K-th call pays for the K-1 already in it. Only composing a unit needs the graph
+    in the state that unit arrives at -- the read, the cross-repo pass and the write
+    depend on the batch as a whole, so a batch pays each of them once.
+
+    The result is the graph the same sequence of :func:`global_add` calls produces.
+    Two things make that true and are easy to break:
+
+    * External stubs dedup by label against what is *already composed*, so a later
+      unit must see the stubs earlier units in the same batch contributed. The
+      index is threaded through the loop rather than rebuilt per unit -- rebuilding
+      it is correct but rescans the whole graph K times, reintroducing a quadratic
+      term in the very function that exists to remove one.
+    * The cross-repo call pass recomputes its own output from scratch, so running
+      it once over the finished batch lands where running it per unit would.
+
+    ``on_error`` selects what a unit that fails to load does to the rest:
+
+    ``"abort"`` (default)
+        Nothing is written. The store is left exactly as it was, so a batch either
+        applies whole or not at all.
+    ``"skip"``
+        The failing unit is recorded with an ``error`` and every other unit is
+        committed -- the partial-success behaviour of running ``global add`` once
+        per repo, which a batch otherwise silently gives up.
+    """
+    from graphify.build import prefix_graph_for_global, prune_repo_from_graph
+    from graphify.security import check_graph_file_size_cap
+
+    if on_error not in ("abort", "skip"):
+        raise ValueError(f"on_error must be 'abort' or 'skip', got {on_error!r}")
+
+    sources = [(Path(source_path), repo_tag) for source_path, repo_tag in sources]
+
+    # Whatever can be rejected from the inputs alone is rejected before anything is
+    # composed, so a doomed batch does not do half its work first.
+    tag_sources: dict[str, Path] = {}
+    for source_path, repo_tag in sources:
+        if not source_path.exists():
+            raise FileNotFoundError(f"graph not found: {source_path}")
+        if repo_tag in tag_sources:
+            # The second would prune the first, reporting nodes for a repo whose
+            # graph is not the one in the store. Refuse rather than compose a lie.
+            raise ValueError(
+                f"repo tag '{repo_tag}' names two sources in one batch "
+                f"({tag_sources[repo_tag]} and {source_path}); the second prunes the "
+                f"first. Give one of them a different tag."
+            )
+        tag_sources[repo_tag] = source_path
+
+    manifest = _load_manifest()
+
+    results: list[dict] = []
+    pending: list[tuple[int, Path, str, str]] = []
+    for source_path, repo_tag in sources:
+        src_hash = _file_hash(source_path)
+        existing = manifest["repos"].get(repo_tag, {})
+        existing_path = existing.get("source_path", "")
+        if existing_path and existing_path != str(source_path.resolve()):
+            print(
+                f"[graphify global] warning: repo tag '{repo_tag}' previously pointed to "
+                f"{existing_path!r}, now updating to {str(source_path.resolve())!r}. "
+                f"Use --as <tag> to give it a different name.",
+                file=sys.stderr,
+            )
+        skipped = existing.get("source_hash") == src_hash
+        results.append({"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0,
+                        "skipped": skipped, "error": None})
+        if not skipped:
+            # Cheap enough to check up front (it stats the file), so an oversized
+            # graph fails the batch before any unit is composed rather than after
+            # the units ahead of it have already been merged.
+            try:
+                check_graph_file_size_cap(source_path)
+            except Exception as exc:
+                if on_error == "abort":
+                    raise
+                results[-1]["error"] = f"{type(exc).__name__}: {exc}"
+                continue
+            pending.append((len(results) - 1, source_path, repo_tag, src_hash))
+
+    # Nothing changed: the global graph is never read or rewritten. Loading it only
+    # to discover there is nothing to do costs a full deserialize and a full write
+    # of identical bytes.
+    if not pending:
+        return {"results": results, "cross_repo_calls": 0, "saved": False}
+
+    # Load once.
+    G = _load_global_graph()
+    external_labels = _external_label_index(G)
+
+    composed = 0
+    for index, source_path, repo_tag, src_hash in pending:
+        try:
+            src_G = _read_source_graph(source_path)
+        except Exception as exc:
+            if on_error == "abort":
+                # Nothing has been saved yet, so returning here leaves the store
+                # untouched -- the whole batch is off.
+                raise
+            results[index]["error"] = f"{type(exc).__name__}: {exc}"
+            continue
+
+        # Prefix IDs for cross-project isolation, then drop this repo's stale nodes
+        prefixed = prefix_graph_for_global(src_G, repo_tag)
+        removed = prune_repo_from_graph(G, repo_tag)
+        if removed:
+            # Pruning can delete external stubs the previous revision of this repo
+            # owned, and a stale index would remap a later unit's edge onto a node
+            # no longer in the graph. Only a prune that removed something can
+            # invalidate it, so this is not paid on the common add-new-repo path.
+            external_labels = _external_label_index(G)
+
+        results[index]["nodes_added"] = _merge_one(G, prefixed, external_labels)
+        results[index]["nodes_removed"] = removed
+        composed += 1
+        manifest["repos"][repo_tag] = {
+            "added_at": datetime.now(timezone.utc).isoformat(),
+            "source_path": str(source_path.resolve()),
+            "node_count": results[index]["nodes_added"],
+            "edge_count": prefixed.number_of_edges(),
+            "source_hash": src_hash,
+        }
+
+    if not composed:
+        # Every pending unit failed under on_error="skip". There is nothing to
+        # write, and rewriting the store with an unchanged graph would only risk
+        # turning a read failure into a write failure.
+        return {"results": results, "cross_repo_calls": 0, "saved": False}
+
     # A member call parked on a caller node (#3152) may be answered by a repo
-    # already in the global graph, or by this one for a repo added earlier. The
-    # pass recomputes its own output, so adding repos one at a time lands where a
-    # single merge-graphs of the same inputs would.
+    # already in the global graph, or by one composed in this same batch. The pass
+    # recomputes its own output, so one run over the composed batch lands where a
+    # run per unit -- or a single merge-graphs of the same inputs -- would.
     from graphify.cross_repo_calls import link_cross_repo_member_calls
 
     cross_repo_calls = link_cross_repo_member_calls(G)
-    _save_global_graph(G)
 
-    manifest["repos"][repo_tag] = {
-        "added_at": datetime.now(timezone.utc).isoformat(),
-        "source_path": str(source_path.resolve()),
-        "node_count": added,
-        "edge_count": prefixed.number_of_edges(),
-        "source_hash": src_hash,
-    }
+    # Save once. The graph goes first: a crash between the two writes then leaves
+    # nodes the manifest does not list, which the next add heals by pruning the tag
+    # and recomposing it. The reverse order strands a recorded hash whose nodes are
+    # absent, and every later add skips the repo -- a silent permanent hole.
+    _save_global_graph(G)
     _save_manifest(manifest)
 
-    return {"repo_tag": repo_tag, "nodes_added": added, "nodes_removed": removed,
-            "skipped": False, "cross_repo_calls": cross_repo_calls}
+    return {"results": results, "cross_repo_calls": cross_repo_calls, "saved": True}
 
 
 def global_remove(repo_tag: str) -> int:
