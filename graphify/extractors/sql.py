@@ -623,12 +623,34 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         same as every part of a dotted name having been touched.
         """
         text = _read(n)
-        if not debracket_spans or not _overlaps_debracketed_span(n.start_byte, n.end_byte):
-            return text
-        raw = source[n.start_byte:n.end_byte]
-        return _strip_backtick_parts(raw, n.start_byte, _overlaps_debracketed_span).decode(
-            "utf-8", errors="replace"
-        )
+        if debracket_spans and _overlaps_debracketed_span(n.start_byte, n.end_byte):
+            raw = source[n.start_byte:n.end_byte]
+            text = _strip_backtick_parts(raw, n.start_byte, _overlaps_debracketed_span).decode(
+                "utf-8", errors="replace"
+            )
+        # A bracket-quoted identifier containing a literal dot cannot be
+        # represented via backtick rewriting (the grammar splits on the dot
+        # regardless of quoting) and is left as a plain bracket -- but this
+        # is a tree_sitter_sql grammar limitation independent of any
+        # rewriting: confirmed by feeding a raw, un-debracketed multi-part
+        # bracket reference straight to the parser with none of this
+        # module's code involved at all. The grammar's own error recovery
+        # for a plain bracket span containing a dot sometimes groups the
+        # opening '[' into THIS object_reference node while its matching
+        # ']' lands in a separate, later sibling ERROR node this function
+        # never visits, leaking a stray, unmatched '[' into the name.
+        # Stripped unconditionally, not just when debracket_spans overlap,
+        # since two dot-containing bracket parts joined by '.' produce this
+        # leak even when neither one was ever debracketed. An excess ']'
+        # can leak the same way when the STRAY OPENER lands in the
+        # PREVIOUS sibling instead. Neither carries information the rest
+        # of the text does not already have without it.
+        extra_open = text.count("[") - text.count("]")
+        if extra_open > 0:
+            text = text.replace("[", "", extra_open)
+        elif extra_open < 0:
+            text = text.replace("]", "", -extra_open)
+        return text
 
     def _obj_name(n) -> str | None:
         for c in n.children:
