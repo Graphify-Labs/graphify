@@ -85,6 +85,24 @@ against this graph:
   only the *map-as-a-whole* assignment is restricted.
 - **`UNWIND $ids AS row` yields the scalar itself as `row`**, not a
   single-key map — `row`, not `row.id`, when `$ids` is a plain list.
+- **Property lookups need indexes AGE does not create.** AGE only indexes
+  its own internal columns: a btree on each vertex label's hidden `id`
+  (not the property `id`), and btree on every edge label's `start_id` /
+  `end_id` (so relationship traversal in either direction is already
+  fast). Nothing on the `properties` agtype. `push_to_age()` adds, per
+  vertex label:
+  - `USING gin (properties)` — serves `MATCH (n {id: ...})` /
+    `MERGE (n:L {id: ...})`, which AGE compiles to `properties @>
+    '{"id": ...}'::agtype`.
+  - `USING btree (agtype_access_operator(VARIADIC ARRAY[properties,
+    '"id"'::agtype]))` and the same for `'"source_file"'` — serve
+    `WHERE n.id = ...`, `WHERE n.id IN [...]`, `WHERE n.source_file =
+    ...`, which compile to the access-operator form the GIN index does
+    **not** serve.
+
+  A client hitting a graph pushed before this change should create the
+  same indexes itself (`CREATE INDEX IF NOT EXISTS ... ON <graph>."<Label>"
+  ...`).
 
 ## Agent contract (docs/AGE_PLAN.md Phase 5)
 
@@ -144,7 +162,10 @@ top-level object: `{"id": ..., "label": "Code", "properties": {...}}::vertex`,
 `{...}::edge`, or a `path` whose whole array carries `::path`. `json.loads`
 on the raw string fails on the `::vertex`/`::edge`/`::path` suffixes, and a
 naive non-greedy regex (`\{.*?\}::`) breaks on the nested `"properties":
-{...}` object inside each vertex/edge. Depth-aware splitting handles it --
+{...}` object inside each vertex/edge. Depth-aware, string-aware splitting
+handles it (a `{`/`}` inside a string value -- e.g. a `label` property
+holding `{ "intra": ... }` or a JS `${x}` template literal -- must not
+move the nesting depth) --
 `graphify.age_backend.parse_agtype_objects` is the pinned Python
 implementation (used by `fetch_graph_from_age()`, docs/AGE_PLAN.md Phase
 6, and by `tests/test_age_agent_queries_integration.py`; kept here for
@@ -156,10 +177,22 @@ import json
 def parse_agtype_objects(raw: str) -> list[tuple[dict, str | None]]:
     """[(parsed_object, 'vertex' | 'edge' | None), ...] in order."""
     results, depth, start = [], 0, None
+    in_str, escaped = False, False
     i, n = 0, len(raw)
     while i < n:
         c = raw[i]
-        if c == "{":
+        if in_str:
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
             if depth == 0:
                 start = i
             depth += 1

@@ -1083,6 +1083,92 @@ the ones specific to AGE that aren't automatically obvious from those docs.
       non-live; live AGE + registry + snapshot + branch + agent-query +
       backend suites all passed against PostgreSQL 18.1 / AGE 1.7.0).
 
+### Post-implementation dogfooding pass (graphify on its own repo)
+
+Ran the full pipeline on this repo (code-only AST: 12,784 nodes / 26,727
+edges), pushed to a live AGE instance, and diffed `graphify
+query`/`path`/`explain` output between the `graph.json` and `--age`
+backends across ~54 invocations. The tier-3 fixture
+(`tests/fixtures/extraction.json`) is too small to exercise any of the
+following; all three were only visible at real-repo scale, and all are
+fixed:
+
+1. **`age_backend.parse_agtype_objects` crashed the AGE backend on 9
+   nodes.** The "depth-aware" agtype parser (also `docs/AGE_SCHEMA.md`'s
+   pinned reference impl) tracked brace nesting but not string state, so a
+   `label` property containing literal `{`/`}` (a docstring fragment, a JS
+   `${...}` template literal) corrupted the parse and returned nothing ->
+   `not enough values to unpack`. Now string-aware; regression test in
+   `tests/test_age_backend_unit.py`.
+2. **`graphify export {age,neo4j,falkordb}` pushed ~79% of edges
+   reversed.** The CLI loaded `graph.json` (written `directed: false`,
+   direction carried only in `source`/`target` arc order, no `_src`/`_tgt`
+   markers) as an *undirected* graph, which canonicalizes endpoint order
+   and flips every edge whose target node was inserted first -- so the
+   pushed graph disagreed with `graphify path`/`explain`, which force a
+   directed load. This is a **separate** bug from the earlier
+   `_src`/`_tgt`-canonicalization edge-direction fix (Phase 5): that one
+   was in `graph_diff()`/the exporters' arc handling; this one is the CLI
+   loader never giving them a directed graph to begin with. Fixed by
+   forcing `directed=True, multigraph=True` for the graph-DB sinks in
+   `cli.py`; regression test in `tests/test_cli_export.py`
+   (`test_export_graphdb_preserves_edge_direction_from_undirected_graph_json`).
+3. **`query`/`path`/`explain` traversal was edge-insertion-order
+   dependent.** `_bfs`/`_dfs`/`_subgraph_to_text` walked neighbours and
+   rendered edges in insertion order, and `explain` broke degree-sort ties
+   the same way -- so identical topology from `graph.json` (JSON link
+   order) vs. AGE (DB row-scan order) produced different budget-truncated
+   answers. Neighbour iteration and edge rendering are now sorted by node
+   id, and `explain`'s connection sort has an `str(id)` tie-break;
+   regression tests in `tests/test_serve.py`. After the fix, all
+   query/path/explain output is backend-identical (modulo the intentional
+   `Graph: ...` header line).
+
+Note: byte-identical parity between the two backends still requires
+`--full-props` on the push -- the lean property set omits `file_type` and
+per-edge `source_file`/`source_location`, which `explain` renders.
+
+4. **`push_to_age()` was ~6.6x slower than necessary.** Every
+   `MATCH (a {id: ...})` / `MERGE (n:Label {id: ...})` compiles to a
+   `properties @> '{"id": ...}'::agtype` filter; with no index on
+   `properties` that is a sequential scan of the whole label table *per
+   UNWIND row*, so a full push of the ~13k-node / ~27k-edge self-graph
+   took **9m36s**. Fixes, no behaviour change:
+   - `_ensure_age_property_indexes()` -- `create_vlabel` each incoming
+     vertex label up front (so its table exists), then index its
+     `properties` before any MATCH/MERGE. AGE indexes only its own
+     internal `id`/`start_id`/`end_id` columns (so edge-traversal indexes
+     are free); nothing on the user-facing agtype. **Three** index kinds
+     per vertex label, because AGE compiles the idioms differently:
+     * **GIN on `properties`** -- serves the `properties @> '{"id": ...}'`
+       filter that `push_to_age`'s own `MATCH/MERGE (n {id: ...})`
+       compiles to. This alone: 9m36s -> **2m47s**.
+     * **btree on `agtype_access_operator(properties, '"id"')`** and one
+       on `'"source_file"'` -- serve idiomatic agent Cypher (`WHERE n.id
+       = ...` / `WHERE n.id IN [...]` / `WHERE n.source_file = ...`, and
+       docs/AGE_SCHEMA.md's pinned queries), which compile to the
+       access-operator form GIN does *not* serve. The plan always called
+       for "indexes on what agents filter by (id, source_file)"; they
+       were never actually created until now.
+   - Edge upsert now sub-groups each relation's rows by the AGE labels of
+     its endpoints and emits `MATCH (a:SrcLabel {id: ...}), (b:TgtLabel
+     {id: ...})` -- a labelled match probes one label table's index
+     instead of all of them. -> **~1m30s**.
+   Larger UNWIND batches (>500 rows/statement) were measured and are
+   *worse*, not better -- AGE re-plans per row, so the cost is superlinear
+   in batch size; `batch_size=500` stays the default. Beyond this, AGE's
+   Cypher write path is the floor (~250 elements/s); a materially faster
+   load would need AGE's `COPY`-based bulk loader, which bypasses the
+   Cypher-facing schema contract and is out of scope. A further ~4x on the
+   edge phase is available by switching `push_to_age`'s own matches from
+   the `{id: ...}` map form to `WHERE a.id = ...` (btree, not GIN) and
+   dropping the GIN entirely -- deferred: it needs the MERGE-based node
+   upsert reworked into explicit CREATE-vs-SET, a bigger change than this
+   pass warranted. Covered by `tests/test_age_exporter_unit.py`
+   (`_age_index_name`, `_AGE_INDEXED_NODE_PROPS`) and the live
+   `tests/test_age_integration.py` matrix
+   (`test_push_to_age_creates_property_indexes`).
+
 ### Cross-cutting / process
 - [x] `v8` synced to `origin/v8` before cutting `apache-age-backend`
       (single branch for the whole feature — see Delivery section).
