@@ -206,6 +206,26 @@ def test_age_edge_rows_falls_back_to_tuple_order_without_src_tgt():
     assert row["src"] == "a" and row["tgt"] == "b"
 
 
+def test_age_index_names_short_label():
+    assert graphdb._age_gin_index_name("Code") == "Code_props_gin"
+    assert graphdb._age_index_name("Code", "id_idx") == "Code_id_idx"
+    assert graphdb._age_index_name("Code", "source_file_idx") == "Code_source_file_idx"
+
+
+@pytest.mark.parametrize("suffix", ["props_gin", "id_idx", "source_file_idx"])
+def test_age_index_name_long_label_stays_within_63_bytes(suffix):
+    long = "A" * 80
+    name = graphdb._age_index_name(long, suffix)
+    assert len(name) <= 63
+    assert name.endswith(suffix)
+    assert name == graphdb._age_index_name(long, suffix)  # deterministic
+
+
+def test_age_indexed_node_props_covers_agent_filter_fields():
+    # docs/AGE_SCHEMA.md's agent contract: agents filter/join on id + source_file.
+    assert graphdb._AGE_INDEXED_NODE_PROPS == ("id", "source_file")
+
+
 def test_age_batches_chunks_correctly():
     rows = [{"id": i} for i in range(1201)]
     batches = list(graphdb._age_batches(rows, size=500))
@@ -399,8 +419,12 @@ def test_push_to_age_diff_mode_skips_live_state_read(monkeypatch):
         def as_string(self, ctx):
             return repr(self.v)
 
-    class _Identifier(_Literal):
-        pass
+    class _Identifier:
+        def __init__(self, *parts):
+            self.v = ".".join(parts)
+
+        def as_string(self, ctx):
+            return '"' + '"."'.join(self.v.split(".")) + '"'
 
     class _SQL:
         def __init__(self, s):

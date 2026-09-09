@@ -326,6 +326,44 @@ def test_push_to_age_creates_expected_graph(conn):
     assert int(edge_count) == G.number_of_edges()
 
 
+def test_push_to_age_creates_property_indexes(conn):
+    """push_to_age() must index every vertex label's ``properties`` -- a GIN
+    index (for the ``@>`` matches it emits itself) plus a btree expression
+    index per agent-filtered property (``id``, ``source_file``). Without
+    these a push is O(nodes x edges) and agent ``WHERE n.id = ...`` queries
+    seq-scan. See docs/AGE_PLAN.md dogfooding pass + docs/AGE_SCHEMA.md.
+    """
+    try:
+        from graphify.exporters.graphdb import push_to_age
+    except ImportError:
+        pytest.skip("push_to_age() not implemented yet (Phase 1)")
+    from graphify.build import build_from_json
+
+    G = build_from_json(json.loads((FIXTURES / "extraction.json").read_text()))
+    push_to_age(G, conninfo=_conninfo(), graph_name=GRAPH_NAME)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM ag_catalog.ag_label l "
+            "JOIN ag_catalog.ag_graph g ON g.graphid = l.graph "
+            "WHERE g.name = %s AND l.kind = 'v' "
+            "AND l.name <> '_ag_label_vertex';",  # AGE's base label, never written
+            (GRAPH_NAME,),
+        )
+        (vlabel_count,) = cur.fetchone()
+        cur.execute(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname = %s;", (GRAPH_NAME,)
+        )
+        defs = [d for (d,) in cur.fetchall()]
+
+    gin = [d for d in defs if "USING gin (properties)" in d]
+    id_btree = [d for d in defs if '"id"' in d and "USING btree" in d and "agtype_access_operator" in d]
+    sf_btree = [d for d in defs if '"source_file"' in d and "USING btree" in d]
+    assert len(gin) == vlabel_count, f"expected one GIN index per vertex label:\n{defs}"
+    assert len(id_btree) == vlabel_count, f"expected one id btree per vertex label:\n{defs}"
+    assert len(sf_btree) == vlabel_count, f"expected one source_file btree per vertex label:\n{defs}"
+
+
 # ---------------------------------------------------------------------------
 # push_to_age() reconcile matrix (docs/AGE_PLAN.md Phase 1 checklist):
 # fresh push, idempotent re-push, node/edge deletion, property change,

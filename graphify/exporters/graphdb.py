@@ -305,6 +305,90 @@ def _age_batches(rows: list[dict], size: int = 500):
         yield rows[i:i + size]
 
 
+# Vertex properties an agent filters or joins on (docs/AGE_SCHEMA.md "Agent
+# contract"). Each gets its own btree expression index -- see
+# _ensure_age_property_indexes for why btree *and* GIN are both needed.
+_AGE_INDEXED_NODE_PROPS = ("id", "source_file")
+
+
+def _age_index_name(label: str, suffix: str) -> str:
+    """Index name for a vertex label, kept within Postgres's 63-byte identifier
+    limit (hash-suffixed when the label is long). Pure, DB-free -- tier-1
+    testable."""
+    base = f"{label}_{suffix}"
+    if len(base) <= 63:
+        return base
+    import hashlib
+
+    return f"{label[:32]}_{hashlib.sha1(label.encode()).hexdigest()[:12]}_{suffix}"
+
+
+def _age_gin_index_name(label: str) -> str:
+    """Back-compat alias: the ``properties`` GIN index's name."""
+    return _age_index_name(label, "props_gin")
+
+
+def _ensure_age_property_indexes(cur, sql, graph_name: str, labels) -> None:
+    """Create the property indexes every vertex label needs. AGE indexes only
+    its own internal ``id``/``start_id``/``end_id`` columns -- nothing on the
+    user-facing ``properties`` agtype -- so both graphify's writes and agents'
+    reads seq-scan the whole label table without these.
+
+    Two index kinds are needed because AGE compiles the two idioms differently:
+
+    * ``MATCH (n {{id: ...}})`` / ``MERGE (n:L {{id: ...}})`` (what
+      ``push_to_age`` emits) -> ``properties @> '{{"id": ...}}'`` -> needs a
+      **GIN** index on ``properties``. Without it a full push is O(nodes x
+      edges) -- ~9 min for a ~13k-node / ~27k-edge graph, seconds with it.
+    * ``WHERE n.id = ...`` / ``WHERE n.id IN [...]`` / ``WHERE n.source_file
+      = ...`` (idiomatic agent Cypher, and docs/AGE_SCHEMA.md's pinned
+      queries) -> ``agtype_access_operator(properties, '"id"') = ...`` -> a
+      GIN index does NOT serve this; needs a **btree expression** index on
+      that access-operator, one per filtered property (``id``,
+      ``source_file``).
+
+    AGE creates label tables lazily on first write, so ``create_vlabel`` them
+    first (idempotent via ``ag_label``) so the indexes -- and every subsequent
+    MERGE -- exist from row one. All validated live (Phase 0 spike + the
+    dogfooding pass, docs/AGE_PLAN.md).
+    """
+    access = (
+        "ag_catalog.agtype_access_operator("
+        "VARIADIC ARRAY[properties, {key}::agtype])"
+    )
+    for label in labels:
+        cur.execute(
+            "SELECT count(*) FROM ag_catalog.ag_label l "
+            "JOIN ag_catalog.ag_graph g ON g.graphid = l.graph "
+            "WHERE g.name = %s AND l.name = %s;",
+            (graph_name, label),
+        )
+        if not cur.fetchone()[0]:
+            cur.execute(
+                sql.SQL("SELECT create_vlabel({graph}, {label});").format(
+                    graph=sql.Literal(graph_name), label=sql.Literal(label)
+                )
+            )
+        tbl = sql.Identifier(graph_name, label)
+        cur.execute(
+            sql.SQL(
+                "CREATE INDEX IF NOT EXISTS {idx} ON {tbl} USING gin (properties);"
+            ).format(idx=sql.Identifier(_age_gin_index_name(label)), tbl=tbl)
+        )
+        for prop in _AGE_INDEXED_NODE_PROPS:
+            cur.execute(
+                sql.SQL(
+                    "CREATE INDEX IF NOT EXISTS {idx} ON {tbl} USING btree ("
+                    + access
+                    + ");"
+                ).format(
+                    idx=sql.Identifier(_age_index_name(label, f"{prop}_idx")),
+                    tbl=tbl,
+                    key=sql.Literal(f'"{prop}"'),
+                )
+            )
+
+
 def _age_diff_filter(
     node_groups: dict[str, list[dict]],
     edge_groups: dict[str, list[dict]],
@@ -479,6 +563,10 @@ def push_to_age(
             if not cur.fetchone()[0]:
                 cur.execute("SELECT create_graph(%s);", (graph_name,))
 
+            # Index properties->id before any MATCH/MERGE: without it every
+            # id lookup is a per-row seq scan and a full push takes minutes.
+            _ensure_age_property_indexes(cur, sql, graph_name, node_groups.keys())
+
             if diff_stale_by_label is not None:
                 stale_by_label = diff_stale_by_label
             else:
@@ -583,29 +671,48 @@ def push_to_age(
                     _execute_prepared(cur, stmt_name, {"rows": batch})
                     cur.execute(sql.SQL("DEALLOCATE {name};").format(name=sql.Identifier(stmt_name)))
 
-            # --- Upsert edges, grouped by relation type.
+            # --- Upsert edges. Sub-group each relation's rows by the AGE
+            # labels of its endpoints so the endpoint MATCH can name them
+            # (`MATCH (a:Code {id: ...})`): a labelled match hits one label
+            # table's GIN index instead of probing all of them, ~2.5x faster
+            # on a large push. Endpoint label comes from the same rule
+            # `_age_node_rows` uses; unknown ids (shouldn't happen) fall back
+            # to a labelless match.
+            node_label_by_id = {
+                nid: _safe_label(data.get("file_type", "Entity").capitalize())
+                for nid, data in G.nodes(data=True)
+            }
+            set_clause = ", ".join(f"r.{f} = row.{f}" for f in edge_field_names)
             for rel, rows in edge_groups.items():
-                set_clause = ", ".join(f"r.{f} = row.{f}" for f in edge_field_names)
-                stmt_name = "graphify_upsert_edge"
-                cur.execute(
-                    sql.SQL(
-                        "PREPARE {name}(agtype) AS "
-                        "SELECT * FROM cypher({graph}, $$ "
-                        "  UNWIND $rows AS row "
-                        "  MATCH (a {{id: row.src}}), (b {{id: row.tgt}}) "
-                        "  MERGE (a)-[r:{rel}]->(b) "
-                        "  SET {set_clause} "
-                        "$$, $1) AS (result agtype);"
-                    ).format(
-                        name=sql.Identifier(stmt_name),
-                        graph=graph_lit,
-                        rel=sql.SQL(rel),
-                        set_clause=sql.SQL(set_clause),
+                by_endpoint_labels: dict[tuple[str | None, str | None], list[dict]] = {}
+                for row in rows:
+                    key = (node_label_by_id.get(row["src"]), node_label_by_id.get(row["tgt"]))
+                    by_endpoint_labels.setdefault(key, []).append(row)
+                for (src_label, tgt_label), sub_rows in by_endpoint_labels.items():
+                    a_pat = f"a:{src_label}" if src_label else "a"
+                    b_pat = f"b:{tgt_label}" if tgt_label else "b"
+                    stmt_name = "graphify_upsert_edge"
+                    cur.execute(
+                        sql.SQL(
+                            "PREPARE {name}(agtype) AS "
+                            "SELECT * FROM cypher({graph}, $$ "
+                            "  UNWIND $rows AS row "
+                            "  MATCH ({a_pat} {{id: row.src}}), ({b_pat} {{id: row.tgt}}) "
+                            "  MERGE (a)-[r:{rel}]->(b) "
+                            "  SET {set_clause} "
+                            "$$, $1) AS (result agtype);"
+                        ).format(
+                            name=sql.Identifier(stmt_name),
+                            graph=graph_lit,
+                            a_pat=sql.SQL(a_pat),
+                            b_pat=sql.SQL(b_pat),
+                            rel=sql.SQL(rel),
+                            set_clause=sql.SQL(set_clause),
+                        )
                     )
-                )
-                for batch in _age_batches(rows, batch_size):
-                    _execute_prepared(cur, stmt_name, {"rows": batch})
-                cur.execute(sql.SQL("DEALLOCATE {name};").format(name=sql.Identifier(stmt_name)))
+                    for batch in _age_batches(sub_rows, batch_size):
+                        _execute_prepared(cur, stmt_name, {"rows": batch})
+                    cur.execute(sql.SQL("DEALLOCATE {name};").format(name=sql.Identifier(stmt_name)))
 
         if owns_conn:
             conn.commit()
