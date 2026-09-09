@@ -2555,7 +2555,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".ex": "elixir", ".exs": "elixir",
     ".jl": "julia",
     ".dart": "dart",
-    ".sh": "shell", ".bash": "shell",
+    ".sh": "shell", ".bash": "shell", ".bats": "shell",
     ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell",
 }
 
@@ -5768,6 +5768,7 @@ _DISPATCH: dict[str, Any] = {
     ".lpk": extract_lazarus_package,
     ".sh": extract_bash,
     ".bash": extract_bash,
+    ".bats": extract_bash,
     ".json": extract_json,
     ".tf": extract_terraform,
     ".tfvars": extract_terraform,
@@ -7057,7 +7058,7 @@ def extract(
 
     sh_pairs = [
         (r, p) for r, p in zip(per_file, paths)
-        if p.suffix in (".sh", ".bash") or _looks_like_bash(r)
+        if p.suffix in (".sh", ".bash", ".bats") or _looks_like_bash(r)
     ]
     if sh_pairs:
         sh_results = [r for r, _ in sh_pairs]
