@@ -182,3 +182,50 @@ def test_cli_add_still_accepts_positional_url_and_flags(tmp_path, monkeypatch):
     assert captured["url"] == "https://example.com/x"
     assert captured["author"] == "Jane"
     assert captured["contributor"] == "Jo"
+
+
+def test_cli_add_from_file_without_a_path_is_a_clean_error(capsys, monkeypatch):
+    """`--from-file` with no path operand used to fall through to the
+    positional-url branch and treat the literal string "--from-file" itself
+    as the URL (a confusing "Blocked URL scheme" error instead of pointing
+    at the actual mistake)."""
+    import sys
+    from graphify.cli import dispatch_command
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "add", "--from-file"])
+    with pytest.raises(SystemExit) as exc_info:
+        dispatch_command("add")
+    assert exc_info.value.code != 0
+    assert "--from-file" in capsys.readouterr().err
+
+
+def test_cli_add_from_file_missing_url_key_is_a_clean_error(tmp_path, capsys, monkeypatch):
+    """A payload missing the required "url" key used to raise a raw,
+    unhandled KeyError instead of the same clean "error: ..." message
+    every other failure in this command produces."""
+    import json
+    import sys
+    from graphify.cli import dispatch_command
+
+    payload = tmp_path / "payload.json"
+    payload.write_text(json.dumps({"author": "Jane"}), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["graphify", "add", "--from-file", str(payload)])
+    with pytest.raises(SystemExit) as exc_info:
+        dispatch_command("add")
+    assert exc_info.value.code != 0
+    assert "url" in capsys.readouterr().err
+
+
+def test_cli_add_from_file_malformed_json_is_a_clean_error(tmp_path, capsys, monkeypatch):
+    """Malformed JSON or a missing file must also produce a clean error,
+    not a raw traceback."""
+    import sys
+    from graphify.cli import dispatch_command
+
+    payload = tmp_path / "payload.json"
+    payload.write_text("not json", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["graphify", "add", "--from-file", str(payload)])
+    with pytest.raises(SystemExit) as exc_info:
+        dispatch_command("add")
+    assert exc_info.value.code != 0
+    assert "error:" in capsys.readouterr().err

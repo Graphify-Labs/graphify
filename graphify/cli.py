@@ -1970,13 +1970,26 @@ def dispatch_command(cmd: str) -> None:
         # argument.
         args = sys.argv[2:]
         from_file = None
+        from_file_requested = False
         for i, a in enumerate(args):
-            if a == "--from-file" and i + 1 < len(args):
-                from_file = args[i + 1]
+            if a == "--from-file":
+                from_file_requested = True
+                if i + 1 < len(args):
+                    from_file = args[i + 1]
                 break
+        if from_file_requested and not from_file:
+            print("error: --from-file requires a path argument", file=sys.stderr)
+            sys.exit(1)
         if from_file:
-            payload = json.loads(Path(from_file).read_text(encoding="utf-8"))
-            url = payload["url"]
+            try:
+                payload = json.loads(Path(from_file).read_text(encoding="utf-8"))
+                url = payload["url"]
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"error: could not read --from-file payload: {exc}", file=sys.stderr)
+                sys.exit(1)
+            except KeyError:
+                print("error: --from-file payload is missing required key 'url'", file=sys.stderr)
+                sys.exit(1)
             author = payload.get("author")
             contributor = payload.get("contributor")
             target_dir = Path(payload.get("dir") or "raw")
