@@ -1388,6 +1388,30 @@ def test_sql_tsql_bracket_with_dot_is_left_unrewritten(tmp_path):
     for l in labels:
         assert "`" not in l, f"a synthetic backtick leaked into a label: {labels}"
 
+def test_sql_tsql_bracket_with_dot_adjacent_to_debracketed_part(tmp_path):
+    """A dot-containing bracket span left un-rewritten by _debracket_tsql is
+    not the only thing that can corrupt a label: tree_sitter_sql's own
+    grammar recovery for such a span sometimes groups the opening '[' into
+    the object_reference node while its matching ']' lands in a separate,
+    later sibling ERROR node -- confirmed even with none of this module's
+    rewriting involved, by feeding a raw bracket reference straight to the
+    parser. This leaks a stray, unmatched bracket into the read name,
+    whichever side of a '.' the dot-containing part sits on."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "dotted.sql"
+    p.write_text(
+        "CREATE TABLE [dbo].[My.Table] (Id INT);\n"
+        "CREATE TABLE [My.Schema].[Orders] (Id INT);\n"
+        "CREATE TABLE [dbo].[Later] (Id INT);\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.My.Table" in labels, f"got {labels}"
+    assert "My.Schema.Orders" in labels, f"got {labels}"
+    assert "dbo.Later" in labels, f"later statement swallowed or mislabeled: {labels}"
+    for l in labels:
+        assert "[" not in l and "]" not in l, f"a stray bracket leaked into a label: {labels}"
+
 def test_sql_tsql_debracket_does_not_corrupt_multiline_string(tmp_path):
     """_debracket_tsql used to stop scanning a single quoted string at the
     first newline regardless of whether it was actually closed there, so
