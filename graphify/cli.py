@@ -1799,7 +1799,12 @@ def dispatch_command(cmd: str) -> None:
             except Exception as exc:
                 print(f"error: could not fetch graph '{age_graph_name}' from AGE: {exc}", file=sys.stderr)
                 sys.exit(1)
-            G = _nx.MultiDiGraph()
+            # DiGraph, not MultiDiGraph: the file backend below loads
+            # graph.json with directed=True but NOT multigraph, so same-pair
+            # parallel edges collapse there. Match that or the neighbour lists
+            # (and the truncated "N connections" tallies) diverge between the
+            # two backends. (#dogfood-age-direction)
+            G = _nx.DiGraph()
             G.add_nodes_from(_undirected.nodes(data=True))
             for u, v, data in _undirected.edges(data=True):
                 G.add_edge(data.get("_src", u), data.get("_tgt", v), **data)
@@ -1882,7 +1887,12 @@ def dispatch_command(cmd: str) -> None:
             )
         if connections:
             print(f"\nConnections ({len(connections)}):")
-            connections.sort(key=lambda c: G.degree(c[1]), reverse=True)
+            # Tie-break by neighbour id so the order -- and thus which
+            # connections fall past the top-20 cut -- is byte-stable for a
+            # given graph regardless of edge-insertion order (graph.json load
+            # order vs. AGE row-scan order would otherwise diverge). Same
+            # reasoning as the `by_file` grouping's stable sort below.
+            connections.sort(key=lambda c: (-G.degree(c[1]), str(c[1])))
             for direction, nb, edata in connections[:20]:
                 rel = edata.get("relation", "")
                 conf = edata.get("confidence", "")
@@ -3067,6 +3077,15 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(graph_path.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
+        # Graph-database sinks must preserve the extracted caller->callee arc
+        # direction. Modern graph.json is written `directed: false` and stores
+        # true direction only in the `source`/`target` arc order (no `_src`/`_tgt`
+        # markers) -- loading it undirected canonicalizes endpoint order and
+        # silently reverses any edge whose target node was inserted first, so the
+        # pushed graph disagrees with `graphify path`/`explain` (which force this
+        # same directed+multigraph load). Match them here. (#dogfood-age-direction)
+        if subcmd in ("neo4j", "falkordb", "age"):
+            _raw = {**_raw, "directed": True, "multigraph": True}
         try:
             G = _jg.node_link_graph(_raw, edges="links")
         except TypeError:

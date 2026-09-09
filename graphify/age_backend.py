@@ -29,13 +29,31 @@ def parse_agtype_objects(raw: str) -> list[tuple[dict, str | None]]:
 
     Returns ``[(parsed_object, 'vertex' | 'edge' | None), ...]`` in the
     order objects appear in ``raw``.
+
+    The brace scanner is string-aware: a ``{`` or ``}`` inside a JSON
+    string value (e.g. a ``label`` property holding ``{ "intra": ... }``
+    or a JS template literal ``${x}``) must not move the nesting depth,
+    or the top-level object boundaries are misdetected and the parse
+    collapses to nothing.
     """
     results: list[tuple[dict, str | None]] = []
     depth, start = 0, None
+    in_str, escaped = False, False
     i, n = 0, len(raw)
     while i < n:
         c = raw[i]
-        if c == "{":
+        if in_str:
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "{":
             if depth == 0:
                 start = i
             depth += 1

@@ -195,6 +195,36 @@ def test_export_falkordb_creates_cypher(tmp_path):
     assert "MERGE" in content or "CREATE" in content
 
 
+@pytest.mark.parametrize("sink", ["neo4j", "falkordb"])
+def test_export_graphdb_preserves_edge_direction_from_undirected_graph_json(tmp_path, sink):
+    """Regression (found dogfooding graphify onto AGE): modern graph.json is
+    written `directed: false` and stores caller->callee direction only in the
+    `source`/`target` arc order (no `_src`/`_tgt` markers). The graph-DB
+    export path used to load it undirected, which canonicalizes endpoint
+    order and reversed every edge whose target node was inserted first — so
+    the pushed graph disagreed with `graphify path`/`explain`. Here `callee`
+    is listed before `caller`, so an undirected load yields the edge as
+    `(callee, caller)`; the emitted Cypher must still be caller -> callee."""
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / "graph.json").write_text(json.dumps({
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [{"id": "callee", "label": "callee()", "file_type": "code",
+                   "source_file": "m.py"},
+                  {"id": "caller", "label": "caller()", "file_type": "code",
+                   "source_file": "m.py"}],
+        "links": [{"source": "caller", "target": "callee", "relation": "calls",
+                   "confidence": "EXTRACTED"}],
+    }))
+    r = _run(["export", sink], tmp_path)
+    assert r.returncode == 0, r.stderr
+    content = (out / "cypher.txt").read_text()
+    edge_line = next(l for l in content.splitlines() if "MERGE (a)" in l)
+    # a = source, b = target; the arrow must run caller -> callee.
+    assert "a {id: 'caller'}" in edge_line and "b {id: 'callee'}" in edge_line, \
+        f"edge emitted reversed:\n{edge_line}"
+
+
 # ── graphify query ───────────────────────────────────────────────────────────
 
 def test_query_returns_output(tmp_path):

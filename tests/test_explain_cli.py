@@ -196,9 +196,14 @@ def test_explain_groups_cut_callers_by_file_instead_of_dropping_them(monkeypatch
     )
     out = _run(monkeypatch, p, "hub", capsys)
     assert "Grouped by file:" in out
-    assert "<-- lib/workers/queue.py: 4 connections" in out
-    assert "<-- app/handlers/email.py: 3 connections" in out
+    # Which 10 of the 30 equal-degree callers fall past the top-20 cut is now
+    # decided by a canonical id tie-break (str(node_id)), not edge-insertion
+    # order — so the connections backend (graph.json vs AGE) can't change it.
+    # Lexical id order keeps caller_{27,28,29,3..9}; round-robin over the 3
+    # files puts 4 in email.py and 3 each in the other two.
+    assert "<-- app/handlers/email.py: 4 connections" in out
     assert "<-- app/jobs/retry.py: 3 connections" in out
+    assert "<-- lib/workers/queue.py: 3 connections" in out
     # No silent loss: the aggregated counts must sum to the announced cut.
     grouped_lines = [
         l for l in out.splitlines() if l.strip().startswith(("<--", "-->")) and "connection" in l

@@ -49,6 +49,22 @@ def test_parse_agtype_objects_handles_nested_properties_object():
     assert obj["properties"] == {"id": "n1", "community": 2, "is_god_node": True}
 
 
+def test_parse_agtype_objects_handles_braces_inside_string_values():
+    """Regression (found dogfooding graphify on itself): a property string
+    value containing literal braces -- a `label` holding `{ "intra": ... }`,
+    a JS `${x}` template literal -- must not move the brace-nesting depth,
+    or the top-level object boundary is misdetected and the parse returns
+    nothing."""
+    import json
+
+    label = 'Classify edges. Returns: { "intra": x } and `${sect}` too'
+    raw = json.dumps({"id": 1, "label": "Rationale",
+                      "properties": {"id": "n1", "label": label}}) + "::vertex"
+    (obj, kind), = ab.parse_agtype_objects(raw)
+    assert kind == "vertex"
+    assert obj["properties"]["label"] == label
+
+
 def test_parse_agtype_objects_no_type_suffix():
     raw = '{"id": "n1", "label": "N1"}'
     (obj, kind), = ab.parse_agtype_objects(raw)

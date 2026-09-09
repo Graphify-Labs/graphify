@@ -580,6 +580,44 @@ def test_dfs_full_chain():
     assert {"n1", "n2", "n3", "n4"}.issubset(visited)
 
 
+def _hub_graph(edge_order):
+    """A star: `hub` connected to leaf_0..leaf_9, edges inserted in the given
+    order. Topology is fixed; only insertion order varies."""
+    G = nx.Graph()
+    G.add_node("hub", label="hub()", file_type="code", community=0)
+    for i in range(10):
+        G.add_node(f"leaf_{i}", label=f"leaf_{i}()", file_type="code", community=0)
+    for i in edge_order:
+        G.add_edge("hub", f"leaf_{i}", relation="calls", confidence="EXTRACTED")
+    return G
+
+
+@pytest.mark.parametrize("traverse", [_bfs, _dfs])
+def test_traversal_order_is_independent_of_edge_insertion_order(traverse):
+    """Regression (found dogfooding graphify onto AGE): traversal walked
+    neighbours in edge-insertion order, so the graph.json backend (JSON link
+    order) and the AGE backend (DB row-scan order) produced different
+    `edges_seen` sequences -> different budget-truncated answers for the same
+    graph. Neighbour iteration is now sorted, so order depends only on
+    topology."""
+    forward = _hub_graph(range(10))
+    shuffled = _hub_graph([3, 7, 1, 9, 0, 5, 2, 8, 4, 6])
+    v1, e1 = traverse(forward, ["hub"], depth=2)
+    v2, e2 = traverse(shuffled, ["hub"], depth=2)
+    assert v1 == v2
+    assert e1 == e2
+
+
+def test_subgraph_to_text_edge_order_is_independent_of_edge_insertion_order():
+    forward = _hub_graph(range(10))
+    shuffled = _hub_graph([3, 7, 1, 9, 0, 5, 2, 8, 4, 6])
+    nodes = {"hub", *(f"leaf_{i}" for i in range(10))}
+    edges_f = [("hub", f"leaf_{i}") for i in range(10)]
+    edges_s = [("hub", f"leaf_{i}") for i in (3, 7, 1, 9, 0, 5, 2, 8, 4, 6)]
+    assert (_subgraph_to_text(forward, nodes, edges_f)
+            == _subgraph_to_text(shuffled, nodes, edges_s))
+
+
 # --- _subgraph_to_text ---
 
 def test_subgraph_to_text_contains_labels():
