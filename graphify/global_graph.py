@@ -4,6 +4,7 @@ import hashlib
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Sequence
 import networkx as nx
 from networkx.readwrite import json_graph as _jg
 
@@ -76,6 +77,123 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
+def global_add_many(sources: Sequence[tuple[Path, str]]) -> list[dict]:
+    """Add or update multiple project graphs in the global graph.
+
+    Returns a list of summary dicts with keys: repo_tag, nodes_added, nodes_removed, skipped,
+    cross_repo_calls.
+    Skipped=True means the source graph hasn't changed since last add.
+    cross_repo_calls is the batch total.
+    """
+    from graphify.build import prefix_graph_for_global, prune_repo_from_graph
+    from graphify.security import check_graph_file_size_cap
+    from graphify.cross_repo_calls import link_cross_repo_member_calls
+
+    if not sources:
+        return []
+
+    seen_tags = set()
+    for source_path, repo_tag in sources:
+        if not source_path.exists():
+            raise FileNotFoundError(f"graph not found: {source_path}")
+        if repo_tag in seen_tags:
+            raise ValueError(f"duplicate repo tag in batch: {repo_tag}")
+        seen_tags.add(repo_tag)
+
+    manifest = _load_manifest()
+
+    changed_sources = []
+    results = []
+
+    for source_path, repo_tag in sources:
+        src_hash = _file_hash(source_path)
+        existing = manifest["repos"].get(repo_tag, {})
+        existing_path = existing.get("source_path", "")
+
+        if existing_path and existing_path != str(source_path.resolve()):
+            print(
+                f"[graphify global] warning: repo tag '{repo_tag}' previously pointed to "
+                f"{existing_path!r}, now updating to {str(source_path.resolve())!r}. "
+                f"Use --as <tag> to give it a different name.",
+                file=sys.stderr,
+            )
+
+        if existing.get("source_hash") == src_hash:
+            results.append({
+                "repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
+                "cross_repo_calls": 0, "_source_path": source_path
+            })
+        else:
+            changed_sources.append((source_path, repo_tag, src_hash))
+
+    if not changed_sources:
+        return [{k: v for k, v in r.items() if k != "_source_path"} for r in results]
+
+    G = _load_global_graph()
+
+    for source_path, repo_tag, src_hash in changed_sources:
+        check_graph_file_size_cap(source_path)
+        data = json.loads(source_path.read_text(encoding="utf-8"))
+        if "links" not in data and "edges" in data:
+            data = dict(data, links=data["edges"])
+        try:
+            src_G = _jg.node_link_graph(data, edges="links")
+        except TypeError:
+            src_G = _jg.node_link_graph(data)
+
+        prefixed = prefix_graph_for_global(src_G, repo_tag)
+        removed = prune_repo_from_graph(G, repo_tag)
+
+        external_labels = {
+            d.get("label", ""): n
+            for n, d in G.nodes(data=True)
+            if not d.get("source_file") and d.get("label")
+        }
+
+        remap = {}
+        for node, data in prefixed.nodes(data=True):
+            if not data.get("source_file") and data.get("label") in external_labels:
+                remap[node] = external_labels[data["label"]]
+
+        for node, data in prefixed.nodes(data=True):
+            if node not in remap:
+                G.add_node(node, **data)
+        for u, v, data in prefixed.edges(data=True):
+            u = remap.get(u, u)
+            v = remap.get(v, v)
+            if u != v:
+                G.add_edge(u, v, **data)
+
+        added = prefixed.number_of_nodes() - len(remap)
+
+        manifest["repos"][repo_tag] = {
+            "added_at": datetime.now(timezone.utc).isoformat(),
+            "source_path": str(source_path.resolve()),
+            "node_count": added,
+            "edge_count": prefixed.number_of_edges(),
+            "source_hash": src_hash,
+        }
+
+        results.append({
+            "repo_tag": repo_tag, "nodes_added": added, "nodes_removed": removed,
+            "skipped": False, "cross_repo_calls": 0, "_source_path": source_path
+        })
+
+    cross_repo_calls = link_cross_repo_member_calls(G)
+
+    _save_global_graph(G)
+    _save_manifest(manifest)
+
+    final_results = []
+    results_by_tag = {r["repo_tag"]: r for r in results}
+    for _, repo_tag in sources:
+        r = results_by_tag[repo_tag]
+        r["cross_repo_calls"] = cross_repo_calls
+        final_results.append({k: v for k, v in r.items() if k != "_source_path"})
+
+    return final_results
+
+
 def global_add(source_path: Path, repo_tag: str) -> dict:
     """Add or update a project graph in the global graph.
 
@@ -83,89 +201,7 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     cross_repo_calls.
     Skipped=True means the source graph hasn't changed since last add.
     """
-    from graphify.build import prefix_graph_for_global, prune_repo_from_graph
-
-    if not source_path.exists():
-        raise FileNotFoundError(f"graph not found: {source_path}")
-
-    manifest = _load_manifest()
-    src_hash = _file_hash(source_path)
-
-    existing = manifest["repos"].get(repo_tag, {})
-    existing_path = existing.get("source_path", "")
-    if existing_path and existing_path != str(source_path.resolve()):
-        print(
-            f"[graphify global] warning: repo tag '{repo_tag}' previously pointed to "
-            f"{existing_path!r}, now updating to {str(source_path.resolve())!r}. "
-            f"Use --as <tag> to give it a different name.",
-            file=sys.stderr,
-        )
-    if existing.get("source_hash") == src_hash:
-        return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
-                "cross_repo_calls": 0}
-
-    # Load source graph
-    from graphify.security import check_graph_file_size_cap
-    check_graph_file_size_cap(source_path)
-    data = json.loads(source_path.read_text(encoding="utf-8"))
-    if "links" not in data and "edges" in data:
-        data = dict(data, links=data["edges"])
-    try:
-        src_G = _jg.node_link_graph(data, edges="links")
-    except TypeError:
-        src_G = _jg.node_link_graph(data)
-
-    # Prefix IDs for cross-project isolation
-    prefixed = prefix_graph_for_global(src_G, repo_tag)
-
-    # Load global graph and prune stale nodes for this repo
-    G = _load_global_graph()
-    removed = prune_repo_from_graph(G, repo_tag)
-
-    # Merge external-library nodes (no source_file) by label to avoid duplication
-    external_labels = {
-        d.get("label", ""): n
-        for n, d in G.nodes(data=True)
-        if not d.get("source_file") and d.get("label")
-    }
-    # Map each deduplicated external onto the existing global node so that
-    # edges incident to it can be rewired instead of dropped.
-    remap = {}
-    for node, data in prefixed.nodes(data=True):
-        if not data.get("source_file") and data.get("label") in external_labels:
-            remap[node] = external_labels[data["label"]]
-
-    # Compose: add prefixed nodes (except deduplicated externals) into global graph
-    for node, data in prefixed.nodes(data=True):
-        if node not in remap:
-            G.add_node(node, **data)
-    for u, v, data in prefixed.edges(data=True):
-        u = remap.get(u, u)
-        v = remap.get(v, v)
-        if u != v:  # don't introduce self-loops via remapping
-            G.add_edge(u, v, **data)
-
-    added = prefixed.number_of_nodes() - len(remap)
-    # A member call parked on a caller node (#3152) may be answered by a repo
-    # already in the global graph, or by this one for a repo added earlier. The
-    # pass recomputes its own output, so adding repos one at a time lands where a
-    # single merge-graphs of the same inputs would.
-    from graphify.cross_repo_calls import link_cross_repo_member_calls
-
-    cross_repo_calls = link_cross_repo_member_calls(G)
-    _save_global_graph(G)
-
-    manifest["repos"][repo_tag] = {
-        "added_at": datetime.now(timezone.utc).isoformat(),
-        "source_path": str(source_path.resolve()),
-        "node_count": added,
-        "edge_count": prefixed.number_of_edges(),
-        "source_hash": src_hash,
-    }
-    _save_manifest(manifest)
-
-    return {"repo_tag": repo_tag, "nodes_added": added, "nodes_removed": removed,
-            "skipped": False, "cross_repo_calls": cross_repo_calls}
+    return global_add_many([(source_path, repo_tag)])[0]
 
 
 def global_remove(repo_tag: str) -> int:

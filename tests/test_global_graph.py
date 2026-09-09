@@ -385,3 +385,168 @@ def test_global_add_rejects_oversized_source_graph(monkeypatch, tmp_path):
         from graphify.global_graph import global_add
         with pytest.raises(ValueError, match="exceeds"):
             global_add(src_graph, "repoA")
+
+
+# ── global_add_many tests ─────────────────────────────────────────────────────
+
+def test_global_add_many_equivalence(tmp_path):
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+    G1 = _make_graph([{"id": "userservice", "label": "UserService", "source_file": "src/user.py"}])
+    G2 = _make_graph([{"id": "authservice", "label": "AuthService", "source_file": "src/auth.py"}])
+    _graph_to_json(G1, g1)
+    _graph_to_json(G2, g2)
+
+    global_dir_seq = tmp_path / ".graphify_seq"
+    global_dir_batch = tmp_path / ".graphify_batch"
+
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir_seq), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir_seq / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir_seq / "global-manifest.json"):
+        from graphify.global_graph import global_add, _load_global_graph as _load_global_graph_seq
+        global_add(g1, "repoA")
+        global_add(g2, "repoB")
+        G_seq = _load_global_graph_seq()
+
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir_batch), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir_batch / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir_batch / "global-manifest.json"):
+        from graphify.global_graph import global_add_many, _load_global_graph as _load_global_graph_batch
+        global_add_many([(g1, "repoA"), (g2, "repoB")])
+        G_batch = _load_global_graph_batch()
+
+    assert set(G_seq.nodes) == set(G_batch.nodes)
+    assert set(G_seq.edges) == set(G_batch.edges)
+    for n in G_seq.nodes:
+        assert G_seq.nodes[n] == G_batch.nodes[n]
+    for e in G_seq.edges:
+        assert G_seq.edges[e] == G_batch.edges[e]
+
+
+def test_global_add_many_single_load_save(tmp_path):
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+    G1 = _make_graph([{"id": "x", "label": "X"}])
+    G2 = _make_graph([{"id": "y", "label": "Y"}])
+    _graph_to_json(G1, g1)
+    _graph_to_json(G2, g2)
+
+    global_dir = tmp_path / ".graphify"
+    import graphify.global_graph
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"), \
+         patch("graphify.global_graph._load_global_graph", wraps=graphify.global_graph._load_global_graph) as mock_load, \
+         patch("graphify.global_graph._save_global_graph", wraps=graphify.global_graph._save_global_graph) as mock_save:
+        from graphify.global_graph import global_add_many
+        global_add_many([(g1, "repoA"), (g2, "repoB")])
+
+        assert mock_load.call_count == 1
+        assert mock_save.call_count == 1
+
+
+def test_global_add_many_empty_batch(tmp_path):
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"), \
+         patch("graphify.global_graph._load_global_graph") as mock_load, \
+         patch("graphify.global_graph._save_global_graph") as mock_save:
+        from graphify.global_graph import global_add_many
+        res = global_add_many([])
+        assert res == []
+        mock_load.assert_not_called()
+        mock_save.assert_not_called()
+
+
+def test_global_add_many_unchanged_behavior(tmp_path):
+    g1 = tmp_path / "graph1.json"
+    G1 = _make_graph([{"id": "x", "label": "X"}])
+    _graph_to_json(G1, g1)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add_many
+
+        # First add
+        res1 = global_add_many([(g1, "repoA")])
+        assert not res1[0]["skipped"]
+
+        with patch("graphify.global_graph._load_global_graph") as mock_load, \
+             patch("graphify.global_graph._save_global_graph") as mock_save:
+            # Second add (unchanged)
+            res2 = global_add_many([(g1, "repoA")])
+            assert res2[0]["skipped"]
+            mock_load.assert_not_called()
+            mock_save.assert_not_called()
+
+
+def test_global_add_many_duplicate_tags(tmp_path):
+    g1 = tmp_path / "graph1.json"
+    G1 = _make_graph([{"id": "x", "label": "X"}])
+    _graph_to_json(G1, g1)
+
+    from graphify.global_graph import global_add_many
+    with pytest.raises(ValueError, match="duplicate repo tag"):
+        global_add_many([(g1, "repoA"), (g1, "repoA")])
+
+
+def test_global_add_many_mixed_changed_unchanged(tmp_path):
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+    g3 = tmp_path / "graph3.json"
+    G = _make_graph([{"id": "x", "label": "X"}])
+    _graph_to_json(G, g1)
+    _graph_to_json(G, g2)
+    _graph_to_json(G, g3)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add_many
+
+        # Add repoB first so it will be unchanged in the next batch
+        global_add_many([(g2, "repoB")])
+
+        # Now batch: changed A, unchanged B, changed C
+        res = global_add_many([(g1, "repoA"), (g2, "repoB"), (g3, "repoC")])
+
+        assert len(res) == 3
+        assert res[0]["repo_tag"] == "repoA"
+        assert not res[0]["skipped"]
+
+        assert res[1]["repo_tag"] == "repoB"
+        assert res[1]["skipped"]
+
+        assert res[2]["repo_tag"] == "repoC"
+        assert not res[2]["skipped"]
+
+        # Verify manifest has all three
+        from graphify.global_graph import _load_manifest
+        man = _load_manifest()
+        assert "repoA" in man["repos"]
+        assert "repoB" in man["repos"]
+        assert "repoC" in man["repos"]
+
+
+def test_global_add_many_manifest_updated_once(tmp_path):
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+    G1 = _make_graph([{"id": "x", "label": "X"}])
+    _graph_to_json(G1, g1)
+    _graph_to_json(G1, g2)
+
+    global_dir = tmp_path / ".graphify"
+    import graphify.global_graph
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"), \
+         patch("graphify.global_graph._save_manifest", wraps=graphify.global_graph._save_manifest) as mock_save_man:
+        from graphify.global_graph import global_add_many
+
+        global_add_many([(g1, "repoA"), (g2, "repoB")])
+
+        assert mock_save_man.call_count == 1
