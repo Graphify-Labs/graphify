@@ -1046,27 +1046,57 @@ _PHP_CONFIG = LanguageConfig(
 )
 
 
+def _lua_bare_require_module(node, source: bytes) -> str:
+    """Return the module name of a bare Lua ``require`` call, or ``""``.
+
+    A `require("m")` statement with no assignment is a plain `function_call`, not
+    a `variable_declaration` — the idiom every Neovim `init.lua` is written in
+    (#3320). Matching on the call's own callee (rather than regex-scanning the
+    node text) keeps a nested form like `require("a").setup(require("b"))` from
+    reporting the inner module twice: the outer call's callee is an index
+    expression, so only the two genuine `require` calls match, each once.
+    """
+    callee = node.child_by_field_name("name")
+    if callee is None or callee.type != "identifier":
+        return ""
+    if _read_text(callee, source) != "require":
+        return ""
+    args = node.child_by_field_name("arguments")
+    if args is None:
+        return ""
+    # `require("m")`, `require "m"` and `require [[m]]` all reach the module name
+    # through a string node; read its content child so quotes stay out of the id.
+    for child in args.children if args.type == "arguments" else ():
+        if child.type == "string":
+            for part in child.children:
+                if part.type == "string_content":
+                    return _read_text(part, source).strip()
+            return _read_text(child, source).strip("\"'[] ")
+    return ""
+
+
 def _import_lua(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
-    """Extract require('module') from Lua variable_declaration nodes."""
-    text = _read_text(node, source)
-    import re
-    m = re.search(r"""require\s*[\('"]\s*['"]?([^'")\s]+)""", text)
-    if m:
-        raw_module = m.group(1)
-        if raw_module:
-            tgt_nid = _resolve_lua_import_target(raw_module, str_path)
-            if tgt_nid:
-                edges.append({
-                    "source": file_nid,
-                    "target": tgt_nid,
-                    "relation": "imports",
-                    "context": "import",
-                    "confidence": "EXTRACTED",
-                    "confidence_score": 1.0,
-                    "source_file": str_path,
-                    "source_location": str(node.start_point[0] + 1),
-                    "weight": 1.0,
-                })
+    """Extract require('module') from Lua variable_declaration / bare-call nodes."""
+    if node.type == "function_call":
+        raw_module = _lua_bare_require_module(node, source)
+    else:
+        import re
+        m = re.search(r"""require\s*[\('"]\s*['"]?([^'")\s]+)""", _read_text(node, source))
+        raw_module = m.group(1) if m else ""
+    if raw_module:
+        tgt_nid = _resolve_lua_import_target(raw_module, str_path)
+        if tgt_nid:
+            edges.append({
+                "source": file_nid,
+                "target": tgt_nid,
+                "relation": "imports",
+                "context": "import",
+                "confidence": "EXTRACTED",
+                "confidence_score": 1.0,
+                "source_file": str_path,
+                "source_location": str(node.start_point[0] + 1),
+                "weight": 1.0,
+            })
 
 
 _LUA_CONFIG = LanguageConfig(
@@ -1075,6 +1105,10 @@ _LUA_CONFIG = LanguageConfig(
     class_types=frozenset(),
     function_types=frozenset({"function_declaration"}),
     import_types=frozenset({"variable_declaration"}),
+    # A bare `require("m")` statement carries an import but is also an ordinary
+    # call node, so it goes through import_call_types (no early return) rather
+    # than import_types (#3320).
+    import_call_types=frozenset({"function_call"}),
     call_types=frozenset({"function_call"}),
     call_function_field="name",
     call_accessor_node_types=frozenset({"method_index_expression"}),
