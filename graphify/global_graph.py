@@ -77,14 +77,21 @@ def _file_hash(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
-def global_add_many(sources: Sequence[tuple[Path, str]]) -> list[dict]:
+def global_add_many(
+    sources: Sequence[tuple[Path, str]],
+    *,
+    on_error: str = "abort"
+) -> list[dict]:
     """Add or update multiple project graphs in the global graph.
 
     Returns a list of summary dicts with keys: repo_tag, nodes_added, nodes_removed, skipped,
-    cross_repo_calls.
+    cross_repo_calls, error (optional).
     Skipped=True means the source graph hasn't changed since last add.
     cross_repo_calls is the batch total.
     """
+    if on_error not in {"abort", "skip"}:
+        raise ValueError("on_error must be 'abort' or 'skip'")
+
     from graphify.build import prefix_graph_for_global, prune_repo_from_graph
     from graphify.security import check_graph_file_size_cap
     from graphify.cross_repo_calls import link_cross_repo_member_calls
@@ -131,53 +138,71 @@ def global_add_many(sources: Sequence[tuple[Path, str]]) -> list[dict]:
 
     G = _load_global_graph()
 
+    external_labels = {
+        d.get("label", ""): n
+        for n, d in G.nodes(data=True)
+        if not d.get("source_file") and d.get("label")
+    }
+
     for source_path, repo_tag, src_hash in changed_sources:
-        check_graph_file_size_cap(source_path)
-        data = json.loads(source_path.read_text(encoding="utf-8"))
-        if "links" not in data and "edges" in data:
-            data = dict(data, links=data["edges"])
         try:
-            src_G = _jg.node_link_graph(data, edges="links")
-        except TypeError:
-            src_G = _jg.node_link_graph(data)
+            check_graph_file_size_cap(source_path)
+            data = json.loads(source_path.read_text(encoding="utf-8"))
+            if "links" not in data and "edges" in data:
+                data = dict(data, links=data["edges"])
+            try:
+                src_G = _jg.node_link_graph(data, edges="links")
+            except TypeError:
+                src_G = _jg.node_link_graph(data)
 
-        prefixed = prefix_graph_for_global(src_G, repo_tag)
-        removed = prune_repo_from_graph(G, repo_tag)
+            prefixed = prefix_graph_for_global(src_G, repo_tag)
+            removed = prune_repo_from_graph(G, repo_tag)
 
-        external_labels = {
-            d.get("label", ""): n
-            for n, d in G.nodes(data=True)
-            if not d.get("source_file") and d.get("label")
-        }
+            external_labels = {
+                label: node_id
+                for label, node_id in external_labels.items()
+                if node_id in G
+            }
 
-        remap = {}
-        for node, data in prefixed.nodes(data=True):
-            if not data.get("source_file") and data.get("label") in external_labels:
-                remap[node] = external_labels[data["label"]]
+            remap = {}
+            for node, data in prefixed.nodes(data=True):
+                if not data.get("source_file") and data.get("label") in external_labels:
+                    remap[node] = external_labels[data["label"]]
 
-        for node, data in prefixed.nodes(data=True):
-            if node not in remap:
-                G.add_node(node, **data)
-        for u, v, data in prefixed.edges(data=True):
-            u = remap.get(u, u)
-            v = remap.get(v, v)
-            if u != v:
-                G.add_edge(u, v, **data)
+            for node, data in prefixed.nodes(data=True):
+                if node not in remap:
+                    G.add_node(node, **data)
+                    if not data.get("source_file") and data.get("label"):
+                        external_labels[data["label"]] = node
+            for u, v, data in prefixed.edges(data=True):
+                u = remap.get(u, u)
+                v = remap.get(v, v)
+                if u != v:
+                    G.add_edge(u, v, **data)
 
-        added = prefixed.number_of_nodes() - len(remap)
+            added = prefixed.number_of_nodes() - len(remap)
 
-        manifest["repos"][repo_tag] = {
-            "added_at": datetime.now(timezone.utc).isoformat(),
-            "source_path": str(source_path.resolve()),
-            "node_count": added,
-            "edge_count": prefixed.number_of_edges(),
-            "source_hash": src_hash,
-        }
+            manifest["repos"][repo_tag] = {
+                "added_at": datetime.now(timezone.utc).isoformat(),
+                "source_path": str(source_path.resolve()),
+                "node_count": added,
+                "edge_count": prefixed.number_of_edges(),
+                "source_hash": src_hash,
+            }
 
-        results.append({
-            "repo_tag": repo_tag, "nodes_added": added, "nodes_removed": removed,
-            "skipped": False, "cross_repo_calls": 0, "_source_path": source_path
-        })
+            results.append({
+                "repo_tag": repo_tag, "nodes_added": added, "nodes_removed": removed,
+                "skipped": False, "cross_repo_calls": 0, "_source_path": source_path
+            })
+        except Exception as e:
+            if on_error == "abort":
+                raise
+            else:
+                print(f"[graphify global] error: failed to add '{repo_tag}': {e}", file=sys.stderr)
+                results.append({
+                    "repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0,
+                    "skipped": False, "cross_repo_calls": 0, "error": str(e), "_source_path": source_path
+                })
 
     cross_repo_calls = link_cross_repo_member_calls(G)
 

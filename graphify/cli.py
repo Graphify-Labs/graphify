@@ -3112,31 +3112,45 @@ def dispatch_command(cmd: str) -> None:
             global_path as _global_path,
         )
         if subcmd == "add":
-            # graphify global add <graph.json> [<graph2.json> ...] [--as <tag>]
+            # graphify global add <graph.json> [<graph2.json> ...] [--as <tag>] [--keep-going]
             args = sys.argv[3:]
             sources = []
             tag = None
+            keep_going = False
             i = 0
             while i < len(args):
                 if args[i] == "--as" and i + 1 < len(args):
                     tag = args[i + 1]
                     i += 2
+                elif args[i] == "--keep-going":
+                    keep_going = True
+                    i += 1
                 else:
                     sources.append(Path(args[i]))
                     i += 1
             if not sources:
-                print("Usage: graphify global add <graph.json> [<graph2.json> ...] [--as <repo-tag>]", file=sys.stderr)
+                print("Usage: graphify global add <graph.json> [<graph2.json> ...] [--as <repo-tag>] [--keep-going]", file=sys.stderr)
                 sys.exit(1)
             if tag and len(sources) > 1:
                 print("error: --as can only be used with a single graph path", file=sys.stderr)
                 sys.exit(1)
 
-            batch_sources = [(s, tag or s.parent.parent.name) for s in sources]
+            batch_sources = []
+            for s in sources:
+                inferred_tag = tag or s.parent.parent.name
+                if not inferred_tag:
+                    print(f"error: could not infer repository tag for {s}. Please specify it explicitly using --as <tag>.", file=sys.stderr)
+                    sys.exit(1)
+                batch_sources.append((s, inferred_tag))
+
+            on_error_policy = "skip" if keep_going else "abort"
             try:
-                results = _global_add_many(batch_sources)
+                results = _global_add_many(batch_sources, on_error=on_error_policy)
                 for result in results:
                     _tag = result["repo_tag"]
-                    if result["skipped"]:
+                    if result.get("error"):
+                        pass
+                    elif result["skipped"]:
                         print(f"'{_tag}' unchanged since last add - global graph not modified.")
                     else:
                         print(f"Added '{_tag}' to global graph: +{result['nodes_added']} nodes, "
