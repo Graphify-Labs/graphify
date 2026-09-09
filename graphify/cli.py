@@ -1056,6 +1056,27 @@ def _clone_repo(
     return dest
 
 
+def _infer_repo_tag(source: "Path") -> str:
+    """Best-effort repo tag for `global add <graph.json>` without an explicit --as.
+
+    The conventional layout is ``<repo>/graphify-out/graph.json``, so the
+    grandparent directory names the repo. That heuristic degrades badly off the
+    convention: for ``/tmp/bad.json`` the grandparent is the filesystem root and
+    contributes an *empty* tag, which would then prune by "" and register the repo
+    under a name no later add can address. Walk outwards to the first directory
+    that actually names something, and fall back to the file's own stem.
+    """
+    # "graphify-out" is the output directory itself, never the project's name, so
+    # a generic parent hands the question to the grandparent -- and only then.
+    generic = {"", ".", "..", "graphify-out", "graphify_out", "out", "dist", "build"}
+    parent = source.parent.name
+    order = (source.parent.parent.name, source.stem) if parent in generic else (parent,)
+    for candidate in order:
+        if candidate not in generic:
+            return candidate
+    return source.stem or "repo"
+
+
 def _reenter_main() -> None:
     from graphify.__main__ import main
     main()
@@ -3105,40 +3126,82 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "global":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         from graphify.global_graph import (
-            global_add as _global_add,
+            global_add_many as _global_add_many,
             global_remove as _global_remove,
             global_list as _global_list,
             global_path as _global_path,
         )
         if subcmd == "add":
-            # graphify global add <graph.json> [--as <tag>]
+            # graphify global add <graph.json> [--as <tag>] [<graph.json> [--as <tag>]]...
+            #                     [--keep-going]
+            # Several graphs in one invocation share a single load, cross-repo
+            # resolve and save of the global graph (#3438). Adding them one command
+            # at a time reruns that whole cycle per repo against a graph that grows
+            # with each one, which is where the quadratic cost comes from.
+            _USAGE = ("Usage: graphify global add <graph.json> [--as <repo-tag>] "
+                      "[<graph.json> [--as <repo-tag>]]... [--keep-going]")
             args = sys.argv[3:]
-            source = None
-            tag = None
+            sources: list = []
+            on_error = "abort"
+            pending_tag: "str | None" = None
             i = 0
             while i < len(args):
                 if args[i] == "--as" and i + 1 < len(args):
-                    tag = args[i + 1]; i += 2
-                elif not source:
-                    source = Path(args[i]); i += 1
+                    # --as tags the graph it follows, so every graph in a batch can
+                    # be named: `global add a/graph.json --as a b/graph.json --as b`.
+                    # Before a path it tags the next one instead, which is the
+                    # single-graph form `global add --as tag graph.json` that
+                    # worked before batching and still has to.
+                    if sources:
+                        sources[-1] = (sources[-1][0], args[i + 1])
+                    else:
+                        pending_tag = args[i + 1]
+                    i += 2
+                elif args[i] == "--keep-going":
+                    # Restores the partial-success a loop of single adds gave for
+                    # free: one unreadable graph costs you that repo, not the batch.
+                    on_error = "skip"; i += 1
+                elif args[i].startswith("--"):
+                    print(f"error: unknown option {args[i]!r}\n{_USAGE}", file=sys.stderr)
+                    sys.exit(1)
                 else:
-                    i += 1
-            if not source:
-                print("Usage: graphify global add <graph.json> [--as <repo-tag>]", file=sys.stderr)
+                    sources.append((Path(args[i]), pending_tag)); pending_tag = None; i += 1
+            if not sources:
+                print(_USAGE, file=sys.stderr); sys.exit(1)
+            if pending_tag is not None:
+                # `--as tag` with no graph after it would otherwise be dropped in
+                # silence, tagging nothing.
+                print(f"error: --as {pending_tag!r} does not precede a graph file",
+                      file=sys.stderr)
+                print(_USAGE, file=sys.stderr)
                 sys.exit(1)
-            tag = tag or source.parent.parent.name
+            pairs = [(src, tag or _infer_repo_tag(src)) for src, tag in sources]
             try:
-                result = _global_add(source, tag)
-                if result["skipped"]:
-                    print(f"'{tag}' unchanged since last add - global graph not modified.")
-                else:
-                    print(f"Added '{tag}' to global graph: +{result['nodes_added']} nodes, "
-                          f"-{result['nodes_removed']} pruned. Global: {_global_path()}")
-                    if result.get("cross_repo_calls"):
-                        print(f"  resolved {result['cross_repo_calls']} "
-                              f"member call(s) across repos")
+                batch = _global_add_many(pairs, on_error=on_error)
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr); sys.exit(1)
+            failed = 0
+            for result in batch["results"]:
+                tag = result["repo_tag"]
+                if result.get("error"):
+                    failed += 1
+                    print(f"error: '{tag}' skipped: {result['error']}", file=sys.stderr)
+                elif result["skipped"]:
+                    # Scoped to this repo on purpose: other units in the same
+                    # batch may well have changed the global graph.
+                    print(f"'{tag}' unchanged since last add - not re-added.")
+                else:
+                    print(f"Added '{tag}' to global graph: +{result['nodes_added']} nodes, "
+                          f"-{result['nodes_removed']} pruned.")
+            if batch["saved"]:
+                print(f"Global: {_global_path()}")
+                if batch["cross_repo_calls"]:
+                    print(f"  resolved {batch['cross_repo_calls']} "
+                          f"member call(s) across repos")
+            if failed:
+                # Some repos are genuinely not in the graph; a zero exit would tell
+                # a CI job the whole batch landed.
+                sys.exit(1)
         elif subcmd == "remove":
             tag = sys.argv[3] if len(sys.argv) > 3 else ""
             if not tag:

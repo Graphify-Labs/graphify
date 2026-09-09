@@ -786,6 +786,9 @@ graphify export callflow-html --output docs/arch.html
 graphify export callflow-html ./some-repo/graphify-out
 
 graphify global add graphify-out/graph.json --as myrepo   # register a project graph into ~/.graphify/global-graph.json
+graphify global add a/graphify-out/graph.json b/graphify-out/graph.json   # add several at once: one load/resolve/save for the batch
+graphify global add a/graph.json --as a b/graph.json --as b   # --as tags the graph it follows
+graphify global add a/graph.json b/graph.json --keep-going    # commit the readable graphs instead of failing the whole batch
 graphify global remove myrepo                         # remove a project from the global graph
 graphify global list                                  # show all registered repos + node/edge counts
 graphify global path                                  # print path to the global graph file
