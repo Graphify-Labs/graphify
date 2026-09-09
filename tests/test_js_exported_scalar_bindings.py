@@ -269,14 +269,69 @@ def test_pattern_binding_nothing_mints_no_node(tmp_path):
         assert labels == {f"{name}.ts"}, name
 
 
-def test_exported_destructured_require_is_still_suppressed(tmp_path):
-    """Binding exported patterns must not undo the CJS-import exclusion."""
+def test_exported_destructured_require_mints_no_local_node(tmp_path):
+    """A local node would shadow the real definition, so the name is recorded
+    as a re-export instead — see the barrel tests below."""
     source = tmp_path / "barrel.js"
     source.write_text(
         "export const { doWork } = require('./lib');\n", encoding="utf-8"
     )
     labels = {n["label"] for n in extract_js(source)["nodes"]}
     assert "doWork" not in labels
+
+
+def _cjs_barrel(tmp_path, barrel_body: str):
+    (tmp_path / "lib.js").write_text(
+        "function doWork(){ return 1 }\nmodule.exports = { doWork };\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "barrel.js").write_text(barrel_body, encoding="utf-8")
+    result = extract(sorted(tmp_path.glob("*.js")), cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    return result, nodes
+
+
+def test_exported_cjs_require_emits_re_exports(tmp_path):
+    """An exported require destructuring is a CJS barrel.
+
+    The name is both imported here and republished under this module's path.
+    Minting a local node would shadow the definition, so the republication is
+    recorded as `re_exports` — the relation the barrel collapse follows, and
+    the same treatment `pub use` gets on the Rust side. Both the file-level
+    and symbol-level edges are emitted, matching what an ESM
+    `export { x } from './lib'` produces.
+    """
+    result, nodes = _cjs_barrel(
+        tmp_path, "export const { doWork } = require('./lib');\n"
+    )
+    re_exports = {
+        (nodes.get(e["source"], {}).get("label"), nodes.get(e["target"], {}).get("label"))
+        for e in result["edges"] if e["relation"] == "re_exports"
+    }
+    assert ("barrel.js", "lib.js") in re_exports
+    assert ("barrel.js", "doWork()") in re_exports
+
+
+def test_unexported_cjs_require_emits_no_re_exports(tmp_path):
+    """A plain `const { x } = require(...)` republishes nothing."""
+    result, _nodes = _cjs_barrel(
+        tmp_path, "const { doWork } = require('./lib');\nfunction run(){ return doWork() }\n"
+    )
+    assert not [e for e in result["edges"] if e["relation"] == "re_exports"]
+
+
+def test_unexported_cjs_require_still_resolves_the_call(tmp_path):
+    """The suppression this PR added must keep working."""
+    result, nodes = _cjs_barrel(
+        tmp_path, "const { doWork } = require('./lib');\nfunction run(){ return doWork() }\n"
+    )
+    calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and nodes.get(e["source"], {}).get("label") == "run()"
+    ]
+    assert len(calls) == 1
+    assert nodes[calls[0]["target"]]["source_file"].endswith("lib.js")
 
 
 def test_computed_require_specifier_still_binds_locally(tmp_path):

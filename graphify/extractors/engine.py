@@ -2019,11 +2019,28 @@ def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges
             prop = value.child_by_field_name("property")
             if prop is not None:
                 sym_names.append(_read_text(prop, source))
+        # An EXPORTED require destructuring is a CJS barrel: the name is both
+        # imported here and republished under this module's path. Minting a
+        # local node for it would shadow the real definition (the bug
+        # `_is_require_initializer` suppresses), so record the republication as
+        # `re_exports` instead — the relation the corpus-level barrel collapse
+        # follows to reach the defining symbol, exactly as `pub use` does on
+        # the Rust side. Without it a consumer of the barrel resolved nothing.
+        is_reexport = node.parent is not None and node.parent.type == "export_statement"
+        if is_reexport:
+            # The file-level republication, mirroring what an ESM
+            # `export { x } from './lib'` emits. The collapse needs BOTH this
+            # and the symbol edge below to follow a consumer through.
+            file_reexport = dict(edge)
+            file_reexport["relation"] = "re_exports"
+            file_reexport.pop("context", None)
+            edges.append(file_reexport)
         if target_stem is not None:
             for sym in sym_names:
+                sym_nid = _make_id(target_stem, sym)
                 edges.append({
                     "source": importer_nid,
-                    "target": _make_id(target_stem, sym),
+                    "target": sym_nid,
                     "relation": "imports",
                     "context": "import",
                     "confidence": "EXTRACTED",
@@ -2031,6 +2048,16 @@ def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges
                     "source_location": f"L{line}",
                     "weight": 1.0,
                 })
+                if is_reexport:
+                    edges.append({
+                        "source": importer_nid,
+                        "target": sym_nid,
+                        "relation": "re_exports",
+                        "confidence": "EXTRACTED",
+                        "source_file": str_path,
+                        "source_location": f"L{line}",
+                        "weight": 1.0,
+                    })
     return found
 
 _JS_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "function", "generator_function"})
