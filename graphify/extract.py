@@ -728,23 +728,46 @@ def _import_scala(node, source: bytes, file_nid: str, stem: str, edges: list, st
 
 
 def _import_php(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
+    # `node` is a namespace_use_clause: `Client` or `Client as HttpClient`,
+    # whose children are the qualified/bare name, then (if present) `as`
+    # and the alias name, in that order. An aliased clause used to always
+    # target the bare imported name ("Client"), ignoring the alias
+    # entirely -- so two files importing the SAME external class under
+    # DIFFERENT local aliases (a real pattern: disambiguating two
+    # same-named classes from different namespaces) produced two
+    # DIFFERENT stub targets for one class, and _resolve_php_type_references
+    # (which resolves a stub via the file's own alias -> FQN map, keyed by
+    # the alias when the import has one) could never find this one under
+    # its bare-name-derived key, leaving the edge stuck on an unresolved,
+    # never-repointed stub (#3421). The alias, when present, is also what
+    # the rest of the file actually references (a parameter typed
+    # `HttpClient`, not `Client`), so preferring it here keeps this edge's
+    # target consistent with those reference edges too.
+    saw_as = False
+    module_name = None
     for child in node.children:
+        if child.type == "as":
+            saw_as = True
+            continue
         if child.type in ("qualified_name", "name", "identifier"):
-            raw = _read_text(child, source)
-            module_name = raw.split("\\")[-1].strip()
-            if module_name:
-                tgt_nid = _make_id(module_name)
-                edges.append({
-                    "source": file_nid,
-                    "target": tgt_nid,
-                    "relation": "imports",
-                    "context": "import",
-                    "confidence": "EXTRACTED",
-                    "source_file": str_path,
-                    "source_location": f"L{node.start_point[0] + 1}",
-                    "weight": 1.0,
-                })
-            break
+            bare = _read_text(child, source).split("\\")[-1].strip()
+            if saw_as:
+                module_name = bare
+                break  # the alias name always comes last; nothing more to see
+            if module_name is None:
+                module_name = bare
+    if module_name:
+        tgt_nid = _make_id(module_name)
+        edges.append({
+            "source": file_nid,
+            "target": tgt_nid,
+            "relation": "imports",
+            "context": "import",
+            "confidence": "EXTRACTED",
+            "source_file": str_path,
+            "source_location": f"L{node.start_point[0] + 1}",
+            "weight": 1.0,
+        })
 
 
 # ── C/C++ function name helpers ───────────────────────────────────────────────
