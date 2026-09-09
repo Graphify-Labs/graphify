@@ -9,23 +9,30 @@ Fetch a URL and add it to the corpus, then update the graph.
 The URL and any author/contributor name are free text you do not control the
 content of - do not build a command or inline script by substituting them
 into a string; an embedded quote or shell character corrupts or escapes it.
-Using your file-write tool (not a shell heredoc, which has the same quoting
-problem one level down), write a JSON file with those values, then pass only
-that file's path - not its content - to `graphify add`:
+Reserve a unique file path first - a fixed, shared filename risks a
+concurrent graphify session overwriting or reading a stale payload:
+
+```bash
+mktemp /tmp/graphify_add_payload.XXXXXX.json
+```
+
+Using your file-write tool (not a shell heredoc, which has the same
+quoting problem one level down), write a JSON file with those values to
+the path that command printed, then pass only that path - not its content
+- to `graphify add`:
 
 ```json
 {"url": "URL", "author": "AUTHOR", "contributor": "CONTRIBUTOR", "dir": "./raw"}
 ```
 
-Save that as e.g. `/tmp/graphify_add_payload.json`, with `URL` replaced by
-the actual URL, `AUTHOR` by the user's name if provided (omit the key
-entirely if not), `CONTRIBUTOR` likewise, then run:
+Replace `URL` with the actual URL, `AUTHOR` with the user's name if
+provided (omit the key entirely if not), `CONTRIBUTOR` likewise, then run:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify add --from-file /tmp/graphify_add_payload.json
+$(cat graphify-out/.graphify_python) -m graphify add --from-file PAYLOAD_PATH
 ```
 
-If the command exits with an error, tell the user what went wrong - do not
+Replace `PAYLOAD_PATH` with the path `mktemp` printed. If the command exits with an error, tell the user what went wrong - do not
 silently continue. After a successful save, automatically run the `--update`
 pipeline on `./raw` to merge the new file into the existing graph.
 
