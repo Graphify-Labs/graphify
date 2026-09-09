@@ -224,7 +224,9 @@ def global_add_many(sources, on_error: str = "abort") -> dict:
     * The cross-repo call pass recomputes its own output from scratch, so running
       it once over the finished batch lands where running it per unit would.
 
-    ``on_error`` selects what a unit that fails to load does to the rest:
+    ``on_error`` selects what a failing unit does to the rest. A unit fails if its
+    source is missing, oversized, unreadable, duplicates an earlier unit's tag, or
+    raises while composing:
 
     ``"abort"`` (default)
         Nothing is written. The store is left exactly as it was, so a batch either
@@ -244,25 +246,48 @@ def global_add_many(sources, on_error: str = "abort") -> dict:
 
     # Whatever can be rejected from the inputs alone is rejected before anything is
     # composed, so a doomed batch does not do half its work first.
+    #
+    # Both rejections here honour on_error like every other per-unit failure. They
+    # used to raise unconditionally, which made "skip" a promise the batch broke on
+    # its two most likely inputs: a mistyped path -- exactly what --keep-going
+    # exists for -- took down the whole batch, and one duplicated tag in twenty
+    # repos lost the other nineteen. A unit rejected here is recorded and the rest
+    # of the batch proceeds.
+    rejected: dict[int, str] = {}
     tag_sources: dict[str, Path] = {}
-    for source_path, repo_tag in sources:
+    for index, (source_path, repo_tag) in enumerate(sources):
         if not source_path.exists():
-            raise FileNotFoundError(f"graph not found: {source_path}")
+            exc = FileNotFoundError(f"graph not found: {source_path}")
+            if on_error == "abort":
+                raise exc
+            rejected[index] = f"{type(exc).__name__}: {exc}"
+            continue
         if repo_tag in tag_sources:
             # The second would prune the first, reporting nodes for a repo whose
             # graph is not the one in the store. Refuse rather than compose a lie.
-            raise ValueError(
+            exc = ValueError(
                 f"repo tag '{repo_tag}' names two sources in one batch "
                 f"({tag_sources[repo_tag]} and {source_path}); the second prunes the "
                 f"first. Give one of them a different tag."
             )
+            if on_error == "abort":
+                raise exc
+            # Reject the *second*: it is the one that would prune the first, so
+            # keeping the earlier unit leaves the store holding the revision the
+            # caller listed first rather than an arbitrary one of the two.
+            rejected[index] = f"{type(exc).__name__}: {exc}"
+            continue
         tag_sources[repo_tag] = source_path
 
     manifest = _load_manifest()
 
     results: list[dict] = []
     pending: list[tuple[int, Path, str, str]] = []
-    for source_path, repo_tag in sources:
+    for index, (source_path, repo_tag) in enumerate(sources):
+        if index in rejected:
+            results.append({"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0,
+                            "skipped": False, "error": rejected[index]})
+            continue
         # The cap is enforced before the file is read. _file_hash reads the whole
         # file, so hashing first would pull an oversized graph into memory to
         # compute a hash for a unit that is about to be rejected for its size --

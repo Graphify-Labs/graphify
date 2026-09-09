@@ -153,3 +153,54 @@ def test_cli_rejects_unknown_option(home, tmp_path):
 
     assert proc.returncode == 1
     assert "unknown option" in proc.stderr
+
+
+def test_cli_keep_going_survives_a_missing_graph(home, tmp_path):
+    """The end-to-end shape of the fix: a mistyped path costs that repo, and the
+    readable ones still land."""
+    a = _write_graph(tmp_path / "alpha" / "graphify-out" / "graph.json", "amod")
+    b = _write_graph(tmp_path / "beta" / "graphify-out" / "graph.json", "bmod")
+    missing = tmp_path / "gamma" / "graphify-out" / "graph.json"
+
+    proc = _run(home, "add", str(a), str(missing), str(b), "--keep-going")
+
+    # Nonzero because a repo the caller asked for is genuinely not in the graph.
+    assert proc.returncode == 1
+    assert "Added 'alpha'" in proc.stdout
+    assert "Added 'beta'" in proc.stdout
+    assert "skipped" in proc.stderr and "gamma" in proc.stderr
+
+    listed = _run(home, "list")
+    assert "alpha" in listed.stdout
+    assert "beta" in listed.stdout
+    assert "gamma" not in listed.stdout
+
+
+def test_cli_missing_graph_without_keep_going_adds_nothing(home, tmp_path):
+    a = _write_graph(tmp_path / "alpha" / "graphify-out" / "graph.json", "amod")
+    missing = tmp_path / "gamma" / "graphify-out" / "graph.json"
+
+    proc = _run(home, "add", str(a), str(missing))
+
+    assert proc.returncode == 1
+    assert "error:" in proc.stderr
+    listed = _run(home, "list")
+    assert "alpha" not in listed.stdout
+
+
+def test_cli_keep_going_survives_a_duplicate_tag(home, tmp_path):
+    a = _write_graph(tmp_path / "alpha" / "graphify-out" / "graph.json", "amod")
+    b = _write_graph(tmp_path / "beta" / "graphify-out" / "graph.json", "bmod")
+    c = _write_graph(tmp_path / "gamma" / "graphify-out" / "graph.json", "cmod")
+
+    proc = _run(home, "add", str(a), "--as", "same", str(b), "--as", "same",
+                str(c), "--keep-going")
+
+    assert proc.returncode == 1
+    assert "Added 'same'" in proc.stdout
+    assert "Added 'gamma'" in proc.stdout
+    assert "names two sources in one batch" in proc.stderr
+
+    listed = _run(home, "list")
+    assert "same" in listed.stdout
+    assert "gamma" in listed.stdout

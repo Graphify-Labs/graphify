@@ -1077,3 +1077,107 @@ def test_global_add_delegating_result_has_no_error_key(tmp_path):
 
     assert set(result) == {"repo_tag", "nodes_added", "nodes_removed", "skipped",
                            "cross_repo_calls"}
+
+
+def test_global_add_many_skip_policy_survives_a_missing_source(tmp_path):
+    """A mistyped path is the failure --keep-going most exists for. It used to raise
+    out of the batch from the pre-flight check, taking every readable repo with it."""
+    g1 = _write_repo_graph(tmp_path, "a")
+    g2 = _write_repo_graph(tmp_path, "b")
+    missing = tmp_path / "does-not-exist.json"
+
+    global_dir = tmp_path / ".graphify"
+    with _patch_global(global_dir):
+        from graphify.global_graph import global_add_many, _load_global_graph
+        batch = global_add_many(
+            [(g1, "repoA"), (missing, "repoGone"), (g2, "repoC")], on_error="skip"
+        )
+        G = _load_global_graph()
+
+    assert batch["saved"] is True
+    assert batch["results"][0]["error"] is None
+    assert "FileNotFoundError" in batch["results"][1]["error"]
+    assert batch["results"][2]["error"] is None
+    assert "repoA::amod" in G.nodes
+    assert "repoC::bmod" in G.nodes
+    manifest = json.loads((global_dir / "global-manifest.json").read_text())
+    assert "repoGone" not in manifest["repos"]
+
+
+def test_global_add_many_missing_source_still_aborts_under_abort(tmp_path):
+    """The default stays all-or-nothing: nothing is written, not even the unit that
+    was readable and listed first."""
+    g1 = _write_repo_graph(tmp_path, "a")
+    missing = tmp_path / "does-not-exist.json"
+
+    global_dir = tmp_path / ".graphify"
+    with _patch_global(global_dir):
+        from graphify.global_graph import global_add_many
+        with pytest.raises(FileNotFoundError):
+            global_add_many([(g1, "repoA"), (missing, "repoGone")])
+        assert not (global_dir / "global-graph.json").exists()
+
+
+def test_global_add_many_skip_policy_survives_a_duplicate_tag(tmp_path):
+    """One duplicated tag used to cost the whole batch. It now costs the second
+    unit -- the one that would have pruned the first."""
+    g1 = _write_repo_graph(tmp_path, "a")
+    g2 = _write_repo_graph(tmp_path, "b")
+    g3 = _write_repo_graph(tmp_path, "c")
+
+    global_dir = tmp_path / ".graphify"
+    with _patch_global(global_dir):
+        from graphify.global_graph import global_add_many, _load_global_graph
+        batch = global_add_many(
+            [(g1, "dup"), (g2, "dup"), (g3, "repoC")], on_error="skip"
+        )
+        G = _load_global_graph()
+
+    assert batch["saved"] is True
+    assert batch["results"][0]["error"] is None
+    assert "ValueError" in batch["results"][1]["error"]
+    assert batch["results"][2]["error"] is None
+    # The first of the pair is the one that survives, so the store holds the
+    # revision the caller listed first rather than an arbitrary one of the two.
+    assert "dup::amod" in G.nodes
+    assert not any(n.startswith("dup::bmod") for n in G.nodes)
+    assert "repoC::cmod" in G.nodes
+
+
+def test_global_add_many_duplicate_tag_still_aborts_under_abort(tmp_path):
+    g1 = _write_repo_graph(tmp_path, "a")
+    g2 = _write_repo_graph(tmp_path, "b")
+
+    global_dir = tmp_path / ".graphify"
+    with _patch_global(global_dir):
+        from graphify.global_graph import global_add_many
+        with pytest.raises(ValueError, match="names two sources in one batch"):
+            global_add_many([(g1, "dup"), (g2, "dup")])
+        assert not (global_dir / "global-graph.json").exists()
+
+
+def test_global_add_many_missing_source_matches_sequential_partial_success(tmp_path):
+    """The skip policy's contract is equivalence with a per-repo loop, and a loop
+    survives a missing path the same way it survives an unreadable one."""
+    seq_dir = tmp_path / "seq"
+    batch_dir = tmp_path / "batch"
+    g1 = _write_repo_graph(tmp_path, "a")
+    g2 = _write_repo_graph(tmp_path, "b")
+    missing = tmp_path / "does-not-exist.json"
+    units = [(g1, "repoA"), (missing, "repoGone"), (g2, "repoC")]
+
+    with _patch_global(seq_dir):
+        from graphify.global_graph import global_add, _load_global_graph
+        for src, tag in units:
+            try:
+                global_add(src, tag)
+            except FileNotFoundError:
+                pass
+        sequential = _load_global_graph()
+
+    with _patch_global(batch_dir):
+        from graphify.global_graph import global_add_many, _load_global_graph
+        global_add_many(units, on_error="skip")
+        batched = _load_global_graph()
+
+    assert _graph_fingerprint(batched) == _graph_fingerprint(sequential)
