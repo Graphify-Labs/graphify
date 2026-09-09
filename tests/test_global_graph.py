@@ -753,8 +753,48 @@ def test_global_add_many_cross_repo_calls(tmp_path):
 
         G = _load_global_graph()
 
-        assert G.has_edge("repoA::caller", "repoB::greet_method")
-        assert G.edges["repoA::caller", "repoB::greet_method"]["relation"] == "calls"
+        caller_node = next(n for n, d in G.nodes(data=True) if d.get("local_id") == "caller" and d.get("repo") == "repoA")
+        target_node = next(n for n, d in G.nodes(data=True) if d.get("local_id") == "greet_method" and d.get("repo") == "repoB")
+
+        assert G.has_edge(caller_node, target_node)
+        assert G.edges[caller_node, target_node]["relation"] == "calls"
+
+def test_global_add_many_no_redundant_graph_scans_batch(tmp_path):
+    from unittest.mock import patch
+    from graphify.global_graph import global_add_many, _load_global_graph
+    import networkx as nx
+
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+
+    _graph_to_json(_make_graph([{"id": "a1", "label": "A1"}]), g1)
+    _graph_to_json(_make_graph([{"id": "b1", "label": "B1"}]), g2)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+
+        global_add_many([(g1, "repoA")]) # Seed graph
+        G = _load_global_graph()
+
+        # Intercept calls to G.nodes(data=True)
+        original_nodes = G.nodes
+        scan_count = 0
+        def tracking_nodes(*args, **kwargs):
+            nonlocal scan_count
+            if kwargs.get('data') is True:
+                scan_count += 1
+            return original_nodes(*args, **kwargs)
+
+        # We need to wrap the graph so that whenever `nodes` is accessed, it returns our tracking version
+        with patch("graphify.global_graph._load_global_graph", return_value=G):
+            with patch.object(G, 'nodes', side_effect=tracking_nodes) as mock_nodes:
+                global_add_many([(g2, "repoB"), (g1, "repoA")])
+
+                # Should exactly be 2 scans (1 for our upfront index, 1 for cross_repo_calls pass)!
+                # It does not scale with the number of repositories.
+                assert scan_count == 2
 
 def test_global_add_many_replacement_failure_preserves_original(tmp_path):
     import json

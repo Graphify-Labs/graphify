@@ -92,7 +92,7 @@ def global_add_many(
     if on_error not in {"abort", "skip"}:
         raise ValueError("on_error must be 'abort' or 'skip'")
 
-    from graphify.build import prefix_graph_for_global, prune_repo_from_graph
+    from graphify.build import prefix_graph_for_global
     from graphify.security import check_graph_file_size_cap
     from graphify.cross_repo_calls import link_cross_repo_member_calls
 
@@ -138,11 +138,15 @@ def global_add_many(
 
     G = _load_global_graph()
 
-    external_labels = {
-        d.get("label", ""): n
-        for n, d in G.nodes(data=True)
-        if not d.get("source_file") and d.get("label")
-    }
+    from collections import defaultdict
+    external_labels = {}
+    repo_nodes = defaultdict(list)
+    for n, d in G.nodes(data=True):
+        if not d.get("source_file") and d.get("label"):
+            external_labels[d["label"]] = n
+        r = d.get("repo")
+        if r:
+            repo_nodes[r].append((n, d))
 
     for source_path, repo_tag, src_hash in changed_sources:
         try:
@@ -159,10 +163,14 @@ def global_add_many(
             prefixed = prefix_graph_for_global(src_G, repo_tag)
 
             # --- MUTATE / PRUNE ---
-            to_remove_nodes = [(n, d.copy()) for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]
-            to_remove_edges = [(u, v, d.copy()) for u, v, d in G.edges([n for n, _ in to_remove_nodes], data=True)]
+            to_remove_nodes = [(n, d.copy()) for n, d in repo_nodes.get(repo_tag, [])]
+            if to_remove_nodes:
+                to_remove_edges = [(u, v, d.copy()) for u, v, d in G.edges([n for n, _ in to_remove_nodes], data=True)]
+                G.remove_nodes_from([n for n, _ in to_remove_nodes])
+            else:
+                to_remove_edges = []
 
-            removed = prune_repo_from_graph(G, repo_tag)
+            removed = len(to_remove_nodes)
 
             old_external_labels = external_labels.copy()
             external_labels = {
@@ -196,7 +204,7 @@ def global_add_many(
                     G.add_edge(u, v, **data)
 
             except Exception as apply_error:
-                prune_repo_from_graph(G, repo_tag)
+                G.remove_nodes_from([n for n, d in G.nodes(data=True) if d.get("repo") == repo_tag])
                 G.add_nodes_from(to_remove_nodes)
                 G.add_edges_from(to_remove_edges)
                 external_labels.clear()
