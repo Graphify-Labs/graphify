@@ -155,41 +155,53 @@ def global_add_many(
             except TypeError:
                 src_G = _jg.node_link_graph(data)
 
+            # --- PREPARE SOURCE ---
             prefixed = prefix_graph_for_global(src_G, repo_tag)
 
-            # --- PREPARE ---
-            remap = {}
-            for node, data in prefixed.nodes(data=True):
-                if not data.get("source_file") and data.get("label") in external_labels:
-                    mapped_node = external_labels[data["label"]]
-                    # Do not remap to a node that is about to be pruned
-                    if mapped_node in G and G.nodes[mapped_node].get("repo") != repo_tag:
-                        remap[node] = mapped_node
+            # --- MUTATE / PRUNE ---
+            to_remove_nodes = [(n, d.copy()) for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]
+            to_remove_edges = [(u, v, d.copy()) for u, v, d in G.edges([n for n, _ in to_remove_nodes], data=True)]
 
-            nodes_to_add = [(n, d) for n, d in prefixed.nodes(data=True) if n not in remap]
-            edges_to_add = []
-            for u, v, data in prefixed.edges(data=True):
-                u = remap.get(u, u)
-                v = remap.get(v, v)
-                if u != v:
-                    edges_to_add.append((u, v, data))
-
-            # --- MUTATE ---
             removed = prune_repo_from_graph(G, repo_tag)
 
+            old_external_labels = external_labels.copy()
             external_labels = {
                 label: node_id
                 for label, node_id in external_labels.items()
                 if node_id in G
             }
 
-            for node, data in nodes_to_add:
-                G.add_node(node, **data)
-                if not data.get("source_file") and data.get("label"):
-                    external_labels[data["label"]] = node
+            try:
+                # --- PREPARE AGAINST LIVE GRAPH ---
+                remap = {}
+                for node, data in prefixed.nodes(data=True):
+                    if not data.get("source_file") and data.get("label") in external_labels:
+                        remap[node] = external_labels[data["label"]]
 
-            for u, v, data in edges_to_add:
-                G.add_edge(u, v, **data)
+                nodes_to_add = [(n, d) for n, d in prefixed.nodes(data=True) if n not in remap]
+                edges_to_add = []
+                for u, v, data in prefixed.edges(data=True):
+                    u = remap.get(u, u)
+                    v = remap.get(v, v)
+                    if u != v:
+                        edges_to_add.append((u, v, data))
+
+                # --- APPLY ---
+                for node, data in nodes_to_add:
+                    G.add_node(node, **data)
+                    if not data.get("source_file") and data.get("label"):
+                        external_labels[data["label"]] = node
+
+                for u, v, data in edges_to_add:
+                    G.add_edge(u, v, **data)
+
+            except Exception as apply_error:
+                prune_repo_from_graph(G, repo_tag)
+                G.add_nodes_from(to_remove_nodes)
+                G.add_edges_from(to_remove_edges)
+                external_labels.clear()
+                external_labels.update(old_external_labels)
+                raise apply_error
 
             added = prefixed.number_of_nodes() - len(remap)
 

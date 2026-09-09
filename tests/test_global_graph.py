@@ -719,14 +719,26 @@ def test_global_add_many_cross_repo_calls(tmp_path):
 
     # Caller in repo A calling Greeter.greet()
     G1 = _make_graph([
-        {"id": "caller", "label": "Caller", "source_file": "a.py"},
-        {"id": "ext_greet", "label": "Greeter.greet()"} # external node
-    ], [{"source": "caller", "target": "ext_greet", "relation": "calls"}])
+        {
+            "id": "caller", "label": "Caller", "source_file": "a.java",
+            "metadata": {
+                "unresolved_calls": [
+                    {
+                        "lang": "java",
+                        "receiver_type": "Greeter",
+                        "callee": "greet",
+                        "line": 42
+                    }
+                ]
+            }
+        }
+    ])
 
     # Greeter.greet() implemented in repo B
     G2 = _make_graph([
-        {"id": "greeter", "label": "Greeter.greet()", "source_file": "b.py"}
-    ])
+        {"id": "greeter_class", "label": "Greeter", "source_file": "b.java", "_callable_class": True},
+        {"id": "greet_method", "label": ".greet()", "source_file": "b.java"}
+    ], [{"source": "greeter_class", "target": "greet_method", "relation": "method"}])
 
     _graph_to_json(G1, g1)
     _graph_to_json(G2, g2)
@@ -741,46 +753,60 @@ def test_global_add_many_cross_repo_calls(tmp_path):
 
         G = _load_global_graph()
 
-        # We don't want to enforce exact node schema since that depends on the parser.
-        # Just verifying it didn't throw and ran successfully is enough for this regression test.
-        # A more strict test would check actual linkage if we set up the AST exactly.
-        assert len(G.nodes) > 0
+        assert G.has_edge("repoA::caller", "repoB::greet_method")
+        assert G.edges["repoA::caller", "repoB::greet_method"]["relation"] == "calls"
 
 def test_global_add_many_replacement_failure_preserves_original(tmp_path):
     import json
     from unittest.mock import patch
     from graphify.global_graph import global_add, global_add_many, _load_global_graph
-    
+
     g1 = tmp_path / "graph1.json"
     g2 = tmp_path / "graph2.json"
-    
+    g3 = tmp_path / "graph3.json"
+
     G1 = _make_graph([{"id": "a1", "label": "A1"}])
     _graph_to_json(G1, g1)
-    
-    # g2 is invalid json
+
+    # g2 is invalid json (parser failure)
     g2.write_text("invalid json", encoding="utf-8")
-    
+
+    # g3 is valid json, but we will mock G.add_node to fail
+    G3 = _make_graph([{"id": "a3", "label": "A3"}])
+    _graph_to_json(G3, g3)
+
     global_dir = tmp_path / ".graphify"
     with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
          patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
          patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
-        
+
         # 1. Add repoA successfully
         global_add(g1, "repoA")
-        
+
         G_before = _load_global_graph()
         assert any(d.get("label") == "A1" for _, d in G_before.nodes(data=True))
-        
-        # 2. Try to replace repoA with corrupt graph, should fail but keep going
+
+        # 2. Try to replace repoA with corrupt graph (fails in PREPARE phase)
         res = global_add_many([(g2, "repoA")], on_error="skip")
-        
         assert res[0]["failed"] is True
-        
+
+        # 3. Try to replace repoA with valid graph, but fail during MUTATE phase
+        original_add_node = nx.Graph.add_node
+        def mock_add_node(self, node_for_adding, **attr):
+            if "a3" in str(node_for_adding):
+                raise ValueError("Simulated unexpected exception during mutation")
+            original_add_node(self, node_for_adding, **attr)
+
+        with patch.object(nx.Graph, 'add_node', mock_add_node):
+            res3 = global_add_many([(g3, "repoA")], on_error="skip")
+            assert res3[0]["failed"] is True
+
         G_after = _load_global_graph()
-        # Original nodes should still be there!
+        # Original nodes from g1 should still be there! Neither failure should have wiped them.
         assert any(d.get("label") == "A1" for _, d in G_after.nodes(data=True))
-        
-        # Manifest should still show old hash/node count
+        # The new nodes from g3 should not be in the graph
+        assert not any(d.get("label") == "A3" for _, d in G_after.nodes(data=True))
+
         from graphify.global_graph import _load_manifest
         man = _load_manifest()
         assert man["repos"]["repoA"]["node_count"] == 1
