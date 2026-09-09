@@ -203,6 +203,63 @@ def test_search_out_path_error_is_swallowed(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# soft nudge bounds (#3435): fresh query stamp suppresses, per-session cap
+# --------------------------------------------------------------------------- #
+def _read_payload(sid="s1"):
+    return {"session_id": sid, "tool_name": "Read", "tool_input": {"file_path": "src/app.py"}}
+
+
+def _search_payload(sid="s1"):
+    return {"session_id": sid, "tool_input": {"command": "grep -rn foo ."}}
+
+
+def test_read_nudge_skipped_while_query_stamp_fresh(tmp_path, monkeypatch):
+    import time
+    stamp = tmp_path / "graphify-out" / "cache" / "last_query_stamp"
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(str(time.time()), encoding="utf-8")
+    assert _invoke("read", _read_payload(), tmp_path, monkeypatch) == ""
+    assert _invoke("search", _search_payload(), tmp_path, monkeypatch) == ""
+
+
+def test_nudges_capped_per_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "3")
+    outs = [_invoke("read", _read_payload("cap"), tmp_path, monkeypatch) for _ in range(3)]
+    assert all("MANDATORY" in o for o in outs)
+    assert _invoke("read", _read_payload("cap"), tmp_path, monkeypatch) == ""
+    assert _invoke("search", _search_payload("cap"), tmp_path, monkeypatch) == ""
+    # Another session has its own budget.
+    assert "MANDATORY" in _invoke("read", _read_payload("other"), tmp_path, monkeypatch)
+
+
+def test_read_and_search_nudges_share_the_session_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "2")
+    assert "MANDATORY" in _invoke("search", _search_payload("mix"), tmp_path, monkeypatch)
+    assert "MANDATORY" in _invoke("read", _read_payload("mix"), tmp_path, monkeypatch)
+    assert _invoke("search", _search_payload("mix"), tmp_path, monkeypatch) == ""
+
+
+def test_nudge_cap_default_is_five(tmp_path, monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_HOOK_NUDGE_CAP", raising=False)
+    outs = [_invoke("read", _read_payload("d"), tmp_path, monkeypatch) for _ in range(6)]
+    assert [bool(o) for o in outs] == [True] * 5 + [False]
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "not-a-number"])
+def test_nudge_cap_disabled(value, tmp_path, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", value)
+    outs = [_invoke("read", _read_payload("nocap"), tmp_path, monkeypatch) for _ in range(8)]
+    assert all("MANDATORY" in o for o in outs)
+
+
+def test_nudges_without_session_id_are_not_counted(tmp_path, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "1")
+    payload = {"tool_name": "Read", "tool_input": {"file_path": "src/app.py"}}
+    outs = [_invoke("read", payload, tmp_path, monkeypatch) for _ in range(3)]
+    assert all("MANDATORY" in o for o in outs)
+
+
+# --------------------------------------------------------------------------- #
 # gemini: BeforeTool contract (always allow; nudge only when a graph exists)
 # --------------------------------------------------------------------------- #
 def test_gemini_allow_with_nudge(tmp_path, monkeypatch):
