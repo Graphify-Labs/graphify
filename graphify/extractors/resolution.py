@@ -2143,6 +2143,42 @@ def _augment_symbol_resolution_edges(
     _collect_python_symbol_resolution_facts(paths, root, facts)
     _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 
+
+def _nearest_stem(candidates, importer_stem: str) -> str | None:
+    """Pick the candidate module sharing the longest leading path with the importer.
+
+    Two files with the same basename in different packages (``service/app/config.py``
+    and ``service-sonos/app/config.py``) are both plausible targets for an absolute
+    ``from app.config import Settings``. Python itself resolves this by sys.path,
+    which is rooted at the importing file's own package, so the candidate sharing
+    the most leading directory segments with the importer is the right one.
+
+    A tie means the import is genuinely ambiguous: return None and emit no edge.
+    The previous behaviour fell through to a bare-stem index whose first writer
+    won, which silently bound every importer in one package to a same-named class
+    in another - a phantom cross-package edge scoring 0.95 INFERRED.
+    """
+    candidates = list(candidates)
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    imp_dirs = importer_stem.split("/")[:-1]
+    scored = []
+    for fq in candidates:
+        segs = fq.split("/")[:-1]
+        shared = 0
+        for a, b in zip(imp_dirs, segs):
+            if a != b:
+                break
+            shared += 1
+        scored.append((shared, fq))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    if scored[0][0] == scored[1][0]:
+        return None
+    return scored[0][1]
+
+
 def _resolve_cross_file_imports(
     per_file: list[dict],
     paths: list[Path],
@@ -2176,9 +2212,11 @@ def _resolve_cross_file_imports(
     # Keyed by directory-qualified stem (e.g. "auth_models") to avoid collisions
     # when multiple files share the same filename in different directories.
     # A secondary bare-stem index handles absolute imports where only the module
-    # name is known — first writer wins when names collide (inherently ambiguous).
+    # name is known. It keeps EVERY qualified stem per bare stem, so a basename
+    # shared across packages is disambiguated by proximity to the importer
+    # (_nearest_stem) rather than resolved first-writer-wins.
     stem_to_entities: dict[str, dict[str, str]] = {}
-    bare_to_qualified: dict[str, str] = {}
+    bare_to_candidates: dict[str, set[str]] = {}
     for file_result in per_file:
         for node in file_result.get("nodes", []):
             src = node.get("source_file", "")
@@ -2200,8 +2238,7 @@ def _resolve_cross_file_imports(
                 and node.get("file_type") != "rationale"
             ):
                 stem_to_entities.setdefault(fq_stem, {})[label] = nid
-                if src_path.stem not in bare_to_qualified:
-                    bare_to_qualified[src_path.stem] = fq_stem
+                bare_to_candidates.setdefault(src_path.stem, set()).add(fq_stem)
 
     # Pass 2: for each file, find `from .X import A, B, C`, then attribute the
     # `uses` edge to the specific local symbol (class OR function) whose body
@@ -2252,6 +2289,8 @@ def _resolve_cross_file_imports(
         def _text(n) -> str:
             return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
 
+        importer_stem = _file_stem(path)
+
         def resolve_import(node) -> None:
             # Find the module name - handles both absolute and relative imports.
             # Relative: `from .models import X` → relative_import → dotted_name
@@ -2292,9 +2331,15 @@ def _resolve_cross_file_imports(
                         ]
                         if len(suffix_matches) == 1:
                             target_fq = suffix_matches[0]
+                        elif suffix_matches:
+                            # Several packages expose this module path; pick the
+                            # one nearest the importer, or none on a tie.
+                            target_fq = _nearest_stem(suffix_matches, importer_stem)
                         else:
                             bare = dotted_name.split(".")[-1]
-                            target_fq = bare_to_qualified.get(bare)
+                            target_fq = _nearest_stem(
+                                bare_to_candidates.get(bare, ()), importer_stem
+                            )
 
             if not target_fq or target_fq not in stem_to_entities:
                 return
