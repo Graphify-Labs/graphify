@@ -599,6 +599,7 @@ def test_global_add_many_error_skip(tmp_path):
         assert "error" not in res[0]
 
         assert res[1]["repo_tag"] == "repoB"
+        assert res[1].get("failed") is True
         assert "error" in res[1]
 
         assert res[2]["repo_tag"] == "repoC"

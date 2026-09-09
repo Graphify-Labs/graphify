@@ -3148,8 +3148,8 @@ def dispatch_command(cmd: str) -> None:
                 results = _global_add_many(batch_sources, on_error=on_error_policy)
                 for result in results:
                     _tag = result["repo_tag"]
-                    if result.get("error"):
-                        pass
+                    if result.get("failed"):
+                        print(f"[graphify global] error: failed to add '{_tag}': {result.get('error')}", file=sys.stderr)
                     elif result["skipped"]:
                         print(f"'{_tag}' unchanged since last add - global graph not modified.")
                     else:

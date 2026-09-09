@@ -198,10 +198,9 @@ def global_add_many(
             if on_error == "abort":
                 raise
             else:
-                print(f"[graphify global] error: failed to add '{repo_tag}': {e}", file=sys.stderr)
                 results.append({
                     "repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0,
-                    "skipped": False, "cross_repo_calls": 0, "error": str(e), "_source_path": source_path
+                    "skipped": False, "failed": True, "cross_repo_calls": 0, "error": str(e), "_source_path": source_path
                 })
 
     cross_repo_calls = link_cross_repo_member_calls(G)
