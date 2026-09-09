@@ -110,3 +110,75 @@ def test_concurrent_saves_of_the_same_question_do_not_overwrite(tmp_path):
         paths = list(ex.map(lambda _: save_query_result("how does auth work", "a", mem), range(20)))
     assert len({p.name for p in paths}) == 20
     assert len(list(mem.glob("*.md"))) == 20
+
+
+def test_cli_add_from_file_passes_payload_through_unexecuted(tmp_path, monkeypatch):
+    """#3439: the skill instructions for `graphify add` used to have the
+    agent substitute a URL and free-text author/contributor names directly
+    into a `python -c "..."` heredoc calling ingest(...) as Python source --
+    an embedded quote breaks it, and crafted input executes arbitrary
+    Python. --from-file reads the same values from a JSON payload instead,
+    which has no such injection surface: only the file's own path (agent-
+    controlled, not user content) becomes a shell argument. Mocks ingest
+    itself so this never touches the network; the point here is that the
+    adversarial author/contributor text reaches ingest() as plain string
+    values, verbatim, never as code."""
+    import json
+    import sys
+    from pathlib import Path
+    from graphify.cli import dispatch_command
+
+    captured = {}
+
+    def fake_ingest(url, target_dir, author=None, contributor=None):
+        captured["url"] = url
+        captured["target_dir"] = target_dir
+        captured["author"] = author
+        captured["contributor"] = contributor
+        return Path(target_dir) / "page.md"
+
+    monkeypatch.setattr("graphify.ingest.ingest", fake_ingest)
+
+    payload = tmp_path / "payload.json"
+    payload.write_text(json.dumps({
+        "url": "https://example.com/page",
+        "author": "O'Brien",
+        "contributor": "test`whoami`; rm -rf / #",
+        "dir": str(tmp_path / "raw"),
+    }), encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["graphify", "add", "--from-file", str(payload)])
+    dispatch_command("add")
+
+    assert captured["url"] == "https://example.com/page"
+    assert captured["author"] == "O'Brien"
+    assert captured["contributor"] == "test`whoami`; rm -rf / #"
+    assert captured["target_dir"] == Path(str(tmp_path / "raw"))
+
+
+def test_cli_add_still_accepts_positional_url_and_flags(tmp_path, monkeypatch):
+    """--from-file is additive: the original `graphify add <url> --author X
+    --contributor Y` form (a human typing the command directly, not a skill
+    substituting untrusted text into it) must keep working unchanged."""
+    import sys
+    from pathlib import Path
+    from graphify.cli import dispatch_command
+
+    captured = {}
+
+    def fake_ingest(url, target_dir, author=None, contributor=None):
+        captured["url"] = url
+        captured["author"] = author
+        captured["contributor"] = contributor
+        return Path(target_dir) / "page.md"
+
+    monkeypatch.setattr("graphify.ingest.ingest", fake_ingest)
+    monkeypatch.setattr(sys, "argv", [
+        "graphify", "add", "https://example.com/x",
+        "--author", "Jane", "--contributor", "Jo",
+    ])
+    dispatch_command("add")
+
+    assert captured["url"] == "https://example.com/x"
+    assert captured["author"] == "Jane"
+    assert captured["contributor"] == "Jo"
