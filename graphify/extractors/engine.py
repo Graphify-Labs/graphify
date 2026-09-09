@@ -4415,7 +4415,10 @@ def _extract_generic(
                 func_name = _read_text(name_node, source) if name_node else None
 
             if not func_name:
-                return
+                if t in ("anonymous_function_creation_expression", "arrow_function"):
+                    func_name = f"{{closure@{node.start_point[0] + 1}}}"
+                else:
+                    return
             sanitized_name = (
                 config.sanitize_symbol_name_fn(func_name)
                 if config.sanitize_symbol_name_fn is not None
