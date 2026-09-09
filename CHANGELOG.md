@@ -8,6 +8,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: when duplicate nodes merge, the richer (more complete) node is now kept as the survivor and the losers' non-empty fields are folded in, instead of a shorter-id passing mention winning and dropping content (#3372, thanks @abhay-codes07).
 - Fix: a C# generic call site with explicit type arguments — `Get<int>(...)`, unqualified or through `this` — now resolves to the method definition instead of capturing `Get<int>` as the callee and failing to match (#3406, thanks @abhay-codes07).
 - Fix: `this.X = function` / `this.X = () => …` members are now captured in every enclosing-function form (function expressions, arrows, IIFEs, callbacks), not just function declarations (#3408, thanks @abhay-codes07).
+- Fix: an Obsidian same-page heading anchor — `[[#Heading]]`, or the long-hand `[[ThisPage#Heading]]` — now resolves to that heading's node, attributed to the section the link sits in; the wikilink regex could not match the form at all and discarded the `#Heading` fragment of every anchored link (#3333, thanks @tourko).
 
 ## 0.9.56 (2026-09-07)
 

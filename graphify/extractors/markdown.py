@@ -14,7 +14,13 @@ _MD_INLINE_LINK_RE = re.compile(r'(?<!\!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[^)]
 
 _MD_REF_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?')
 
-_MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]')
+# group(1) page name — EMPTY for a same-page anchor `[[#Heading]]`, which the
+# older `[^\]|#]+` could not match at all because it demanded a character before
+# the `#`; group(2) the heading fragment, which the older non-capturing
+# `(?:[#|][^\]]*)?` swallowed together with the alias. Both halves are needed to
+# resolve `[[Page#Heading]]` to the heading rather than only to the page (#3333).
+_MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]*)(?:#([^\]|]*))?(?:\|[^\]]*)?\]\]')
+
 
 _MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
 
@@ -348,6 +354,19 @@ def extract_markdown(path: Path) -> dict:
             pass
         add_edge(file_nid, tgt_nid, "references", line, target_file=target_file)
 
+    def is_same_page(page: str) -> bool:
+        """Does *page* name this very file? An empty page name always does."""
+        if not page.strip():
+            return True
+        resolved = _resolve_markdown_link(page, source_dir, wikilink=True)
+        return resolved is not None and _make_id(str(resolved)) == file_nid
+
+    # Same-page heading anchors, resolved after the walk: the heading a
+    # `[[#Setup]]` points at may be declared further down the file, so its node
+    # does not exist yet at the line the link is read on. Each entry is
+    # (heading text, line, id of the section the link was written in).
+    pending_anchors: list[tuple[str, int, str]] = []
+
     # Track heading stack for nesting: [(level, nid), ...]
     heading_stack: list[tuple[int, str]] = []
     in_code_block = False
@@ -371,7 +390,21 @@ def extract_markdown(path: Path) -> dict:
         for m in _MD_INLINE_LINK_RE.finditer(line_text):
             add_link(m.group(1), line_num)
         for m in _MD_WIKILINK_RE.finditer(line_text):
-            add_link(m.group(1), line_num, wikilink=True)
+            page, anchor = m.group(1) or "", (m.group(2) or "").strip()
+            if not page.strip() and not anchor:
+                continue  # `[[]]` / `[[|alias]]`: names nothing
+            # A heading anchor into this same file — `[[#Setup]]`, or the
+            # long-hand `[[ThisPage#Setup]]` — resolves to the heading's own
+            # node, not to the page. Deferred: the heading may be below this
+            # line. Attributed to the section the link sits in, matching how
+            # heading nesting picks its parent (#3333).
+            if anchor and is_same_page(page):
+                pending_anchors.append((
+                    anchor, line_num,
+                    heading_stack[-1][1] if heading_stack else file_nid,
+                ))
+                continue
+            add_link(page, line_num, wikilink=True)
         ref_def = _MD_REF_DEF_RE.match(line_text)
         if ref_def:
             add_link(ref_def.group(1), line_num)
@@ -404,5 +437,20 @@ def extract_markdown(path: Path) -> dict:
 
             heading_stack.append((level, h_nid))
             continue
+
+    # Every heading node is known now, so same-page anchors can be resolved.
+    # Existence-gated, like the document links above: an anchor naming no
+    # heading in this file stays edge-free rather than fabricating a target.
+    # A duplicate heading title keeps the plain id on its FIRST occurrence,
+    # which is also the one Obsidian's own anchor resolution picks.
+    seen_anchor_pairs: set[tuple[str, str]] = set()
+    for anchor, line, src_nid in pending_anchors:
+        h_nid = _make_id(stem, anchor)
+        if h_nid not in seen_ids or h_nid == src_nid:
+            continue
+        if (src_nid, h_nid) in seen_anchor_pairs:
+            continue
+        seen_anchor_pairs.add((src_nid, h_nid))
+        add_edge(src_nid, h_nid, "references", line)
 
     return {"nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0}
