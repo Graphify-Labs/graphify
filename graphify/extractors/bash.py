@@ -16,6 +16,40 @@ from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _
 _BASH_LEADING_EXPANSION = re.compile(
     r"^(?:(?:\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*)/?)+"
 )
+_BASH_TEST_COMMENT_RE = re.compile(r"^#\s*@test(\s.*)?$")
+
+
+def _is_bats_comment_annotated_function(node, source: bytes) -> bool:
+    """True when a function definition is marked as a Bats test via #@test.
+
+    Scoped strictly to actual comment tokens associated with the function:
+    1. Preceding sibling comment (e.g. `#@test\nfunction foo { ... }`).
+    2. Comment token at the opening of the compound_statement body
+       (e.g. `function foo { #@test\n ... }`).
+    Does not match #@test inside strings, heredocs, echo commands, or
+    unrelated comments (#3361, #3460).
+    """
+    prev = node.prev_sibling
+    while prev and prev.type in ("\n", " "):
+        prev = prev.prev_sibling
+    if prev and prev.type == "comment":
+        txt = _read_text(prev, source).strip()
+        if _BASH_TEST_COMMENT_RE.match(txt):
+            return True
+
+    for child in node.children:
+        if child.type == "compound_statement":
+            for stmt in child.children:
+                if stmt.type == "{":
+                    continue
+                if stmt.type == "comment":
+                    txt = _read_text(stmt, source).strip()
+                    if _BASH_TEST_COMMENT_RE.match(txt):
+                        return True
+                else:
+                    break
+    return False
+
 
 
 def _bash_source_suffix(raw: str, allow_dotdot: bool = False) -> str | None:
@@ -239,14 +273,34 @@ def extract_bash(path: Path) -> dict:
                 return literal(child)
         return None
 
+    bats_native_nodes: set = set()
+
+    def _is_native_bats_test(cmd_node) -> tuple[bool, str]:
+        if cmd_node.type != "command" or is_inside_expansion(cmd_node):
+            return False, ""
+        name_node = cmd_node.child_by_field_name("name") or (cmd_node.children[0] if cmd_node.children else None)
+        if name_node and literal(name_node) == "@test":
+            args = [c for c in cmd_node.children
+                    if c.type in ("word", "string", "concatenation")
+                    and c != name_node]
+            desc = _read_text(args[0], source).strip().strip("'\"") if args else ""
+            return True, desc
+        return False, ""
+
     def walk_calls(body_node, func_nid: str, seen_calls: set) -> None:
         if body_node is None:
             return
-        for child in body_node.children:
+        children = body_node if isinstance(body_node, (list, tuple)) else body_node.children
+        for child in children:
             if child.type == "function_definition":
                 # Skip nested function definitions — their bodies are walked
                 # separately, so we don't attribute their calls to the
                 # enclosing scope.
+                continue
+            if func_nid == entry_nid and child in bats_native_nodes:
+                # Skip native Bats test blocks and their sibling body statements
+                # when walking top-level script for entrypoint calls, so their calls
+                # attribute to the test node, not to the entrypoint (#3361, #3460).
                 continue
             if child.type == "command" and _bash_call_in_command_allowed(child):
                 cmd_name_node = child.child_by_field_name("name")
@@ -290,17 +344,21 @@ def extract_bash(path: Path) -> dict:
         if t == "function_definition":
             name = _bash_func_name(node)
             if name:
-                fn_nid = _make_id(stem, name)
-                line = node.start_point[0] + 1
-                add_node(fn_nid, f"{name}()", line, kind="bash_function")
-                add_edge(parent_nid, fn_nid, "defines", line)
-                defined_functions.add(name)
                 # find the compound_statement body
                 body = None
                 for child in node.children:
                     if child.type == "compound_statement":
                         body = child
                         break
+
+                kind = "bash_test" if (body is not None and _is_bats_comment_annotated_function(node, source)) else "bash_function"
+
+                fn_nid = _make_id(stem, name)
+                line = node.start_point[0] + 1
+                add_node(fn_nid, f"{name}()", line, kind=kind)
+                add_edge(parent_nid, fn_nid, "defines", line)
+                defined_functions.add(name)
+
                 function_bodies.append((fn_nid, body))
                 # Recurse into the body so nested function definitions are discovered
                 # and added to function_bodies for the second-pass walk_calls.
@@ -576,8 +634,52 @@ def extract_bash(path: Path) -> dict:
                                 add_edge(file_nid, var_nid, "defines", line)
             return
 
-        for child in node.children:
+        i = 0
+        children = list(node.children)
+        while i < len(children):
+            child = children[i]
+            is_bats, desc = _is_native_bats_test(child)
+            if is_bats and desc:
+                test_nid = _make_id(stem, desc)
+                line = child.start_point[0] + 1
+                add_node(test_nid, desc, line, kind="bash_test")
+                add_edge(parent_nid, test_nid, "defines", line)
+                bats_native_nodes.add(child)
+                body_stmts = []
+                # tree-sitter-bash parses `@test "desc" {` as a command with `{` as
+                # its last token. The test body statements and closing `}` become
+                # sibling commands in the parent container. We capture these sibling
+                # statements into body_stmts so calls inside the test body attribute
+                # to test_nid rather than leaking into the script entrypoint (#3361, #3460).
+                if i + 1 < len(children) and children[i + 1].type == "compound_statement":
+                    comp = children[i + 1]
+                    bats_native_nodes.add(comp)
+                    for stmt in comp.children:
+                        if stmt.type not in ("{", "}"):
+                            body_stmts.append(stmt)
+                    i += 1
+                else:
+                    i += 1
+                    while i < len(children):
+                        sc = children[i]
+                        bats_native_nodes.add(sc)
+                        if sc.type == "command" and _read_text(sc, source).strip() == "}":
+                            break
+                        sc_is_bats, _ = _is_native_bats_test(sc)
+                        if sc_is_bats:
+                            i -= 1
+                            break
+                        body_stmts.append(sc)
+                        i += 1
+
+                function_bodies.append((test_nid, body_stmts))
+                for stmt in body_stmts:
+                    walk(stmt, test_nid)
+                i += 1
+                continue
+
             walk(child, parent_nid)
+            i += 1
 
     # Pre-pass: collect all defined function names so the source-command handler
     # in walk() can detect user-defined functions that shadow 'source' / '.'
