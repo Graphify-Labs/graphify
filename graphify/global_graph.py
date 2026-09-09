@@ -156,6 +156,25 @@ def global_add_many(
                 src_G = _jg.node_link_graph(data)
 
             prefixed = prefix_graph_for_global(src_G, repo_tag)
+
+            # --- PREPARE ---
+            remap = {}
+            for node, data in prefixed.nodes(data=True):
+                if not data.get("source_file") and data.get("label") in external_labels:
+                    mapped_node = external_labels[data["label"]]
+                    # Do not remap to a node that is about to be pruned
+                    if mapped_node in G and G.nodes[mapped_node].get("repo") != repo_tag:
+                        remap[node] = mapped_node
+
+            nodes_to_add = [(n, d) for n, d in prefixed.nodes(data=True) if n not in remap]
+            edges_to_add = []
+            for u, v, data in prefixed.edges(data=True):
+                u = remap.get(u, u)
+                v = remap.get(v, v)
+                if u != v:
+                    edges_to_add.append((u, v, data))
+
+            # --- MUTATE ---
             removed = prune_repo_from_graph(G, repo_tag)
 
             external_labels = {
@@ -164,21 +183,13 @@ def global_add_many(
                 if node_id in G
             }
 
-            remap = {}
-            for node, data in prefixed.nodes(data=True):
-                if not data.get("source_file") and data.get("label") in external_labels:
-                    remap[node] = external_labels[data["label"]]
+            for node, data in nodes_to_add:
+                G.add_node(node, **data)
+                if not data.get("source_file") and data.get("label"):
+                    external_labels[data["label"]] = node
 
-            for node, data in prefixed.nodes(data=True):
-                if node not in remap:
-                    G.add_node(node, **data)
-                    if not data.get("source_file") and data.get("label"):
-                        external_labels[data["label"]] = node
-            for u, v, data in prefixed.edges(data=True):
-                u = remap.get(u, u)
-                v = remap.get(v, v)
-                if u != v:
-                    G.add_edge(u, v, **data)
+            for u, v, data in edges_to_add:
+                G.add_edge(u, v, **data)
 
             added = prefixed.number_of_nodes() - len(remap)
 

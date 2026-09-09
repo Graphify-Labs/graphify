@@ -745,3 +745,42 @@ def test_global_add_many_cross_repo_calls(tmp_path):
         # Just verifying it didn't throw and ran successfully is enough for this regression test.
         # A more strict test would check actual linkage if we set up the AST exactly.
         assert len(G.nodes) > 0
+
+def test_global_add_many_replacement_failure_preserves_original(tmp_path):
+    import json
+    from unittest.mock import patch
+    from graphify.global_graph import global_add, global_add_many, _load_global_graph
+    
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+    
+    G1 = _make_graph([{"id": "a1", "label": "A1"}])
+    _graph_to_json(G1, g1)
+    
+    # g2 is invalid json
+    g2.write_text("invalid json", encoding="utf-8")
+    
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        
+        # 1. Add repoA successfully
+        global_add(g1, "repoA")
+        
+        G_before = _load_global_graph()
+        assert any(d.get("label") == "A1" for _, d in G_before.nodes(data=True))
+        
+        # 2. Try to replace repoA with corrupt graph, should fail but keep going
+        res = global_add_many([(g2, "repoA")], on_error="skip")
+        
+        assert res[0]["failed"] is True
+        
+        G_after = _load_global_graph()
+        # Original nodes should still be there!
+        assert any(d.get("label") == "A1" for _, d in G_after.nodes(data=True))
+        
+        # Manifest should still show old hash/node count
+        from graphify.global_graph import _load_manifest
+        man = _load_manifest()
+        assert man["repos"]["repoA"]["node_count"] == 1
