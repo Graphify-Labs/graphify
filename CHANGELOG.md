@@ -8,6 +8,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: when duplicate nodes merge, the richer (more complete) node is now kept as the survivor and the losers' non-empty fields are folded in, instead of a shorter-id passing mention winning and dropping content (#3372, thanks @abhay-codes07).
 - Fix: a C# generic call site with explicit type arguments — `Get<int>(...)`, unqualified or through `this` — now resolves to the method definition instead of capturing `Get<int>` as the callee and failing to match (#3406, thanks @abhay-codes07).
 - Fix: `this.X = function` / `this.X = () => …` members are now captured in every enclosing-function form (function expressions, arrows, IIFEs, callbacks), not just function declarations (#3408, thanks @abhay-codes07).
+- Fix: PHP `use A\B\C as D` now gives the import edge the same target as a plain `use A\B\C` — the target was derived from the imported name's last segment, so an aliased import either split the class into a second identity or dangled (103 of 145 dangling endpoints on the reported codebase); aliased group-uses resolve too (#3421, thanks @DmitrySamushchenko).
 
 ## 0.9.56 (2026-09-07)
 
