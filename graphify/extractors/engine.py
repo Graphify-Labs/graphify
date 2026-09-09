@@ -5756,7 +5756,24 @@ def _extract_generic(
                         and not nid_to_sf.get(tgt_nid)
                     ):
                         tgt_nid = None
-                if tgt_nid and tgt_nid != caller_nid:
+                # A call whose callee resolves to the caller itself is direct
+                # recursion, and it was being dropped — `factorial` calling
+                # `factorial` produced no edge while `entry` calling `factorial`
+                # did, so the extracted call structure did not match the source
+                # (#3350). `build_from_json` already keeps a supplied recursive
+                # `calls` self-edge (#2038); only extraction was withholding it.
+                # Guard the one way a name resolving to the caller is not
+                # recursion: a local binding or parameter of the same name
+                # shadows the definition, so the call names that value. Rejecting
+                # it here (rather than clearing tgt_nid) keeps the name out of
+                # the cross-file raw_call queue, which would otherwise bind it to
+                # an unrelated same-named definition elsewhere in the corpus.
+                # The shadow table is populated for Python and JS/TS; elsewhere
+                # it is empty and a self-resolving name can only be recursion.
+                _shadowed_self_call = tgt_nid == caller_nid and callee_name in (
+                    local_bound_names.get(caller_nid, frozenset()) | extra_locals
+                )
+                if tgt_nid and not _shadowed_self_call:
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:
                         seen_call_pairs.add(pair)
