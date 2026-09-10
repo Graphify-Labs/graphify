@@ -315,6 +315,32 @@ def test_rust_calls_are_extracted():
             assert e["confidence"] == "EXTRACTED"
 
 
+def test_rust_finds_static_and_const_items():
+    r = extract_rust(FIXTURES / "sample.rs")
+    by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    labels = set(by_id.values())
+    for name in ("RETRY_LIMIT", "DEFAULT_MODE", "NODE_LIMIT"):
+        assert name in labels, name
+        assert any(
+            e["relation"] == "contains" and by_id.get(e["target"]) == name
+            for e in r["edges"]
+        ), f"{name} has no file-level contains edge"
+    # An associated const is attributed to its impl, like a method.
+    assert ".CAPACITY" in labels
+    assert any(
+        e["relation"] == "contains"
+        and by_id.get(e["source"]) == "Graph"
+        and by_id.get(e["target"]) == ".CAPACITY"
+        for e in r["edges"]
+    )
+    # The declared type is referenced like a struct field type.
+    assert any(
+        e["relation"] == "references"
+        and by_id.get(e["source"]) == "NODE_LIMIT"
+        and by_id.get(e["target"]) == "Limit"
+        for e in r["edges"]
+    )
+
 def test_rust_import_edges_have_import_context():
     r = extract_rust(FIXTURES / "sample.rs")
     import_edges = _edges_with_relation(r, "imports", "imports_from")

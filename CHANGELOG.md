@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.57 (unreleased)
 
+- Fix: Rust module-level `static` and `const` declarations (and associated consts inside an `impl`) are now extracted as nodes with a `contains` edge and a reference to their declared type — neither node type had a branch, so a constant only ever reached the graph through files that referenced it (#3471, thanks @sortakool).
 - Fix: an incremental rebuild no longer wipes cross-file project AST nodes — re-extracting one `.csproj`/`.sln` was dropping package/framework nodes of a *referenced* project (whose stub carried the referenced file's `source_file`); the AST-replacement set is now derived from the files actually extracted (#3411, thanks @hopstreax).
 - Fix: when duplicate nodes merge, the richer (more complete) node is now kept as the survivor and the losers' non-empty fields are folded in, instead of a shorter-id passing mention winning and dropping content (#3372, thanks @abhay-codes07).
 - Fix: a C# generic call site with explicit type arguments — `Get<int>(...)`, unqualified or through `this` — now resolves to the method definition instead of capturing `Get<int>` as the callee and failing to match (#3406, thanks @abhay-codes07).
