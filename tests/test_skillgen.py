@@ -545,14 +545,17 @@ def test_dispatch_variants_are_host_specific():
         assert marker.lower() in b2.lower(), f"[{key}] dispatch slot missing {marker!r}"
 
 
-def test_compact_extraction_hosts_use_the_compact_spec():
-    """kiro, pi, claw use the compact extraction body; the rest use verbose."""
-    for key in ("kiro", "pi", "claw"):
+def test_only_codex_uses_the_inline_extraction_spec():
+    """Write-capable agent hosts must receive the CHUNK_PATH-writing spec."""
+    _, codex_refs = _platform_artifacts("codex")
+    assert "(compact)" in codex_refs["extraction-spec.md"]
+    assert "CHUNK_PATH" not in codex_refs["extraction-spec.md"]
+
+    for key in ("claw", "kiro", "pi"):
         _, refs = _platform_artifacts(key)
-        assert "(compact)" in refs["extraction-spec.md"], f"[{key}] not compact"
-    for key in ("opencode", "kilo", "copilot", "droid", "amp", "trae", "vscode"):
-        _, refs = _platform_artifacts(key)
-        assert "(compact)" not in refs["extraction-spec.md"], f"[{key}] should be verbose"
+        spec = refs["extraction-spec.md"]
+        assert "(compact)" not in spec, f"[{key}] must write its chunk to disk"
+        assert "CHUNK_PATH" in spec, f"[{key}] lacks the chunk output path"
 
 
 def test_every_split_host_renders_eight_references():
