@@ -3197,14 +3197,19 @@ def _resolve_php_type_references(
             else:
                 raws.setdefault(key, raw)
 
-        def _record_use_clause(clause, prefix: str) -> None:
+        def _record_use_clause(
+            clause,
+            prefix: str,
+            declaration_kind: str | None = None,
+        ) -> None:
+            clause_kind = declaration_kind
             target = None
             alias = None
             saw_as = False
             for c in clause.children:
                 if c.type in ("function", "const"):
-                    return  # not a class import
-                if c.type == "as":
+                    clause_kind = c.type
+                elif c.type == "as":
                     saw_as = True
                 elif c.type in ("qualified_name", "name"):
                     if saw_as:
@@ -3215,6 +3220,8 @@ def _resolve_php_type_references(
                 return
             fqn = (f"{prefix}\\{target}" if prefix else target).lstrip("\\")
             key = (alias or fqn.rsplit("\\", 1)[-1]).strip().lower()
+            if clause_kind in ("function", "const"):
+                return
             if key:
                 uses.setdefault(key, fqn)
 
@@ -3228,17 +3235,35 @@ def _resolve_php_type_references(
             elif t == "namespace_use_declaration":
                 prefix = ""
                 group = None
+                declaration_kind = next(
+                    (c.type for c in n.children if c.type in ("function", "const")),
+                    None,
+                )
+                if declaration_kind is None:
+                    first_clause = next(
+                        (c for c in n.children if c.type == "namespace_use_clause"),
+                        None,
+                    )
+                    if first_clause is not None:
+                        declaration_kind = next(
+                            (
+                                c.type
+                                for c in first_clause.children
+                                if c.type in ("function", "const")
+                            ),
+                            None,
+                        )
                 for c in n.children:
                     if c.type == "namespace_name":
                         prefix = _read_text(c, source)          # group-use prefix
                     elif c.type == "namespace_use_group":
                         group = c
                     elif c.type == "namespace_use_clause":
-                        _record_use_clause(c, "")
+                        _record_use_clause(c, "", declaration_kind)
                 if group is not None:
                     for c in group.children:
                         if c.type == "namespace_use_clause":
-                            _record_use_clause(c, prefix)
+                            _record_use_clause(c, prefix, declaration_kind)
                 return
             elif t == "class_declaration":
                 for child in n.children:
@@ -3323,6 +3348,8 @@ def _resolve_php_type_references(
         if ref_file not in ns_by_file:
             continue
         tgt = edge.get("target")
+        if relation == "imports" and edge.get("_php_symbol_import"):
+            continue
         label = stub_label.get(tgt)
         uses = uses_by_file.get(ref_file, {})
         if not label and relation == "imports":

@@ -727,6 +727,33 @@ def _import_scala(node, source: bytes, file_nid: str, stem: str, edges: list, st
             break
 
 
+def _php_import_kind(node) -> str | None:
+    kinds = ("function", "const")
+    local_kind = next((child.type for child in node.children if child.type in kinds), None)
+    if local_kind:
+        return local_kind
+
+    parent = node.parent
+    declaration = parent.parent if parent is not None and parent.type == "namespace_use_group" else parent
+    if declaration is None or declaration.type != "namespace_use_declaration":
+        return None
+
+    declaration_kind = next(
+        (child.type for child in declaration.children if child.type in kinds),
+        None,
+    )
+    if declaration_kind:
+        return declaration_kind
+
+    first_clause = next(
+        (child for child in declaration.children if child.type == "namespace_use_clause"),
+        None,
+    )
+    if first_clause is None:
+        return None
+    return next((child.type for child in first_clause.children if child.type in kinds), None)
+
+
 def _import_php(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
     for child in node.children:
         if child.type in ("qualified_name", "name", "identifier"):
@@ -734,7 +761,7 @@ def _import_php(node, source: bytes, file_nid: str, stem: str, edges: list, str_
             module_name = raw.split("\\")[-1].strip()
             if module_name:
                 tgt_nid = _make_id(module_name)
-                edges.append({
+                edge = {
                     "source": file_nid,
                     "target": tgt_nid,
                     "relation": "imports",
@@ -743,7 +770,10 @@ def _import_php(node, source: bytes, file_nid: str, stem: str, edges: list, str_
                     "source_file": str_path,
                     "source_location": f"L{node.start_point[0] + 1}",
                     "weight": 1.0,
-                })
+                }
+                if _php_import_kind(node) in ("function", "const"):
+                    edge["_php_symbol_import"] = True
+                edges.append(edge)
             break
 
 
@@ -2415,9 +2445,16 @@ def extract_scala(path: Path) -> dict:
     return _extract_generic(path, _SCALA_CONFIG)
 
 
+def _extract_php_with_symbol_markers(path: Path) -> dict:
+    return _extract_generic(path, _PHP_CONFIG)
+
+
 def extract_php(path: Path) -> dict:
     """Extract classes, functions, methods, namespace uses, and calls from a .php file."""
-    return _extract_generic(path, _PHP_CONFIG)
+    result = _extract_php_with_symbol_markers(path)
+    for edge in result.get("edges", []):
+        edge.pop("_php_symbol_import", None)
+    return result
 
 
 # One level of balanced parens (e.g. `Foo #(Bar #(int))`) — bounded so malformed
@@ -2721,6 +2758,8 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             remap[stub_id] = target_id
 
     if not remap:
+        for edge in edges:
+            edge.pop("_php_symbol_import", None)
         return
 
     by_id = {node.get("id"): node for node in nodes if node.get("id")}
@@ -2770,7 +2809,8 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             ):
                 edge["source"] = remapped_source
         target = edge.get("target")
-        if target in remap:
+        is_php_symbol_import = bool(edge.pop("_php_symbol_import", False))
+        if target in remap and not is_php_symbol_import:
             remapped_target = remap[str(target)]
             if not (
                 is_csharp_scoped_edge
@@ -5715,7 +5755,7 @@ _DISPATCH: dict[str, Any] = {
     ".kt": extract_kotlin,
     ".kts": extract_kotlin,
     ".scala": extract_scala,
-    ".php": extract_php,
+    ".php": _extract_php_with_symbol_markers,
     ".swift": extract_swift,
     ".lua": extract_lua,
     ".luau": extract_lua,
@@ -5840,7 +5880,7 @@ _SHEBANG_DISPATCH: dict[str, Any] = {
     "nodejs": extract_js,
     "ruby": extract_ruby,
     "lua": extract_lua,
-    "php": extract_php,
+    "php": _extract_php_with_symbol_markers,
     "julia": extract_julia,
 }
 
