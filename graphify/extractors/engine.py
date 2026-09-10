@@ -3155,6 +3155,9 @@ def _extract_generic(
     # walk_calls as extra_locals, so each closure sees only its own
     # params/locals instead of a shared union that over-suppresses siblings.
     closure_locals_by_body: dict[int, set[str]] = {}
+    # PHP only: ordinal counter for anonymous closures, keyed by scope id
+    # (parent_class_nid or stem). Stable across line-only edits (#3409).
+    php_closure_counts: dict[str, int] = {}
     pending_listen_edges: list[tuple[str, str, int]] = []
     # tree-sitter-swift parses both `class Foo` and `extension Foo` as
     # `class_declaration`. Same-file pairs collapse via seen_ids, but cross-file
@@ -4416,7 +4419,48 @@ def _extract_generic(
 
             if not func_name:
                 if t in ("anonymous_function_creation_expression", "arrow_function"):
-                    func_name = f"{{closure@{node.start_point[0] + 1}}}"
+                    # Prefer a route-derived name when the closure is passed
+                    # directly to a routing method (`$app->get('/api', fn)`):
+                    # walk up to find a sibling string argument and the method name.
+                    route_name: str | None = None
+                    _PHP_ROUTING_VERBS = frozenset({
+                        "get", "post", "put", "patch", "delete",
+                        "options", "any", "match", "map",
+                    })
+                    parent = node.parent  # argument node
+                    if parent is not None and parent.type == "argument":
+                        arg_list = parent.parent  # argument_list
+                        if arg_list is not None and arg_list.type == "argument_list":
+                            call_node = arg_list.parent
+                            # extract method/function name from the call
+                            if call_node is not None and call_node.type in (
+                                "member_call_expression", "function_call_expression"
+                            ):
+                                method_name_node = call_node.child_by_field_name("name")
+                                if method_name_node is None:
+                                    method_name_node = call_node.child_by_field_name("function")
+                                raw_method = (
+                                    _read_text(method_name_node, source)
+                                    if method_name_node else ""
+                                ).lower()
+                                if raw_method in _PHP_ROUTING_VERBS:
+                                    # look for the first string argument (the path)
+                                    for sibling in arg_list.children:
+                                        if sibling is parent:
+                                            break
+                                        if sibling.type in (
+                                            "string", "encapsed_string"
+                                        ):
+                                            path_text = _read_text(sibling, source).strip("'\"")
+                                            route_name = f"{raw_method.upper()} {path_text}"
+                                            break
+                    if route_name:
+                        func_name = route_name
+                    else:
+                        # Stable ordinal scoped to the enclosing class/file (#3409)
+                        _scope_key = parent_class_nid or stem
+                        php_closure_counts[_scope_key] = php_closure_counts.get(_scope_key, 0) + 1
+                        func_name = "{closure#" + str(php_closure_counts[_scope_key]) + "}"
                 else:
                     return
             sanitized_name = (
