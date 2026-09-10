@@ -13,7 +13,7 @@
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
 </p>
 
-**AI 程式碼助手的技能。** 在 Claude Code、Codex、OpenCode、Cursor、Gemini CLI、GitHub Copilot CLI、VS Code Copilot Chat、Aider、OpenClaw、Factory Droid、Trae、Hermes、Kiro 或 Google Antigravity 中輸入 `/graphify` — 它會讀取您的檔案、建立知識圖譜，並返回您不知道存在的結構。更快理解程式碼庫。找到架構決策背後的「為什麼」。
+**AI 程式碼助手的技能。** 在 Claude Code、Codex、OpenCode、Cursor、GitHub Copilot CLI、VS Code Copilot Chat、Aider、OpenClaw、Factory Droid、Trae、Hermes、Kiro 或 Google Antigravity 中輸入 `/graphify` — 它會讀取您的檔案、建立知識圖譜，並返回您不知道存在的結構。更快理解程式碼庫。找到架構決策背後的「為什麼」。
 
 完全多模態。添加程式碼、PDF、Markdown、截圖、圖表、白板照片、其他語言的圖片或視訊和音訊檔案 — graphify 從所有內容中提取概念和關係，並將它們連接成單一圖譜。視訊使用 Whisper 在本地轉錄。透過 tree-sitter AST 支援 25 種程式語言。
 

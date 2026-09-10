@@ -13,7 +13,7 @@
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
 </p>
 
-**Dovednost pro asistenty kódování AI.** Napište `/graphify` v Claude Code, Codex, OpenCode, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro nebo Google Antigravity — přečte vaše soubory, vytvoří znalostní graf a vrátí vám strukturu, o které jste nevěděli, že existuje. Pochopte kódovou základnu rychleji. Najděte „proč" za architektonickými rozhodnutími.
+**Dovednost pro asistenty kódování AI.** Napište `/graphify` v Claude Code, Codex, OpenCode, Cursor, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro nebo Google Antigravity — přečte vaše soubory, vytvoří znalostní graf a vrátí vám strukturu, o které jste nevěděli, že existuje. Pochopte kódovou základnu rychleji. Najděte „proč" za architektonickými rozhodnutími.
 
 Plně multimodální. Přidejte kód, PDF, markdown, snímky obrazovky, diagramy, fotografie tabule, obrázky v jiných jazycích nebo video a zvukové soubory — graphify extrahuje koncepty a vztahy ze všeho a spojuje je do jediného grafu. Videa jsou přepisována lokálně pomocí Whisper. Podporuje 25 programovacích jazyků prostřednictvím tree-sitter AST.
 

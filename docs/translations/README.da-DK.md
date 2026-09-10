@@ -13,7 +13,7 @@
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
 </p>
 
-**En færdighed til AI-kodeassistenter.** Skriv `/graphify` i Claude Code, Codex, OpenCode, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro eller Google Antigravity — den læser dine filer, bygger en vidensgraf og giver dig den struktur tilbage, du ikke vidste eksisterede. Forstå en kodebase hurtigere. Find "hvorfor" bag arkitektoniske beslutninger.
+**En færdighed til AI-kodeassistenter.** Skriv `/graphify` i Claude Code, Codex, OpenCode, Cursor, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro eller Google Antigravity — den læser dine filer, bygger en vidensgraf og giver dig den struktur tilbage, du ikke vidste eksisterede. Forstå en kodebase hurtigere. Find "hvorfor" bag arkitektoniske beslutninger.
 
 Fuldt multimodal. Tilføj kode, PDF'er, markdown, skærmbilleder, diagrammer, whiteboardfotos, billeder på andre sprog eller video- og lydfiler — graphify udtrækker begreber og relationer fra alt og forbinder dem i én graf. Videoer transskriberes lokalt med Whisper. Understøtter 25 programmeringssprog via tree-sitter AST.
 

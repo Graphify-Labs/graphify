@@ -64,7 +64,7 @@ graphify-out/
 └── graph.json       the full graph — query it anytime without re-reading your files
 ```
 
-**Works in** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, and 15+ more — [pick your platform](#install).
+**Works in** Claude Code, Cursor, Codex, GitHub Copilot, and 15+ more — [pick your platform](#install).
 
 ---
 
@@ -223,7 +223,6 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Factory Droid | `graphify install --platform droid` |
 | Trae | `graphify install --platform trae` |
 | Trae CN | `graphify install --platform trae-cn` |
-| Gemini CLI | `graphify install --platform gemini` |
 | Hermes | `graphify install --platform hermes` |
 | Kimi Code | `graphify install --platform kimi` |
 | Amp | `graphify amp install` |
@@ -296,7 +295,6 @@ Run this once in your project after building a graph:
 | Trae | `graphify trae install` |
 | Trae CN | `graphify trae-cn install` |
 | Cursor | `graphify cursor install` |
-| Gemini CLI | `graphify gemini install` |
 | Hermes | `graphify hermes install` |
 | Kimi Code | `graphify install --platform kimi` |
 | Amp | `graphify amp install` |
@@ -308,7 +306,7 @@ Run this once in your project after building a graph:
 
 This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions, preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files.
 
-- **Hook platforms** (Claude Code, Gemini CLI): a hook fires automatically before search-style tool calls (and, on Claude Code, before reading source files one by one via the Read/Glob tools) and nudges your assistant toward the graph path.
+- **Hook platforms** (Claude Code): a hook fires automatically before search-style tool calls and before reading source files one by one via the Read/Glob tools, nudging your assistant toward the graph path.
 - **Instruction-file platforms** (Codex, OpenCode, Cursor, etc.): persistent instruction files (`AGENTS.md`, `.cursor/rules/`, etc.) provide the same query-first guidance.
 
 `GRAPH_REPORT.md` is still available for broad architecture review.
@@ -723,8 +721,6 @@ graphify kilo install              # native Kilo skill + /graphify command + AGE
 graphify kilo uninstall
 graphify cursor install            # .cursor/rules/graphify.mdc (Cursor)
 graphify cursor uninstall
-graphify gemini install            # GEMINI.md + BeforeTool hook (Gemini CLI)
-graphify gemini uninstall
 graphify copilot install           # skill file (GitHub Copilot CLI)
 graphify copilot uninstall
 graphify aider install             # AGENTS.md (Aider)
@@ -819,7 +815,7 @@ graphify label ./my-project                                    # (re)name commun
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
 ```
 
-> **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
+> **Community names:** inside an agent (Claude Code) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
 
 ---
 

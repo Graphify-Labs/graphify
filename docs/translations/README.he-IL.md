@@ -28,7 +28,7 @@
 
 הקלידו `‎/graphify` בעוזר ה-AI לכתיבת קוד שלכם, והוא ימפה את הפרויקט כולו — קוד, מסמכים, קובצי PDF, תמונות, סרטונים — לגרף ידע שאפשר לשאול עליו שאלות, במקום לחפש בקבצים עם grep.
 
-עובד ב-Claude Code, Codex, OpenCode, Kilo Code, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, Amp, OpenClaw, Factory Droid, Trae, Hermes, Kimi Code, Kiro, Pi, Devin CLI ו-Google Antigravity.
+עובד ב-Claude Code, Codex, OpenCode, Kilo Code, Cursor, GitHub Copilot CLI, VS Code Copilot Chat, Aider, Amp, OpenClaw, Factory Droid, Trae, Hermes, Kimi Code, Kiro, Pi, Devin CLI ו-Google Antigravity.
 
 </div>
 
@@ -176,7 +176,6 @@ graphify install --project --platform codex
 | Factory Droid | `graphify install --platform droid` |
 | Trae | `graphify install --platform trae` |
 | Trae CN | `graphify install --platform trae-cn` |
-| Gemini CLI | `graphify install --platform gemini` |
 | Hermes | `graphify install --platform hermes` |
 | Kimi Code | `graphify install --platform kimi` |
 | Amp | `graphify amp install` |
@@ -242,7 +241,6 @@ graphify install --project --platform codex
 | Trae | `graphify trae install` |
 | Trae CN | `graphify trae-cn install` |
 | Cursor | `graphify cursor install` |
-| Gemini CLI | `graphify gemini install` |
 | Hermes | `graphify hermes install` |
 | Kimi Code | `graphify install --platform kimi` |
 | Amp | `graphify amp install` |
@@ -252,7 +250,7 @@ graphify install --project --platform codex
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
-הפקודה כותבת קובץ תצורה קטן שמנחה את העוזר שלכם להתייעץ עם גרף הידע בשאלות על בסיס הקוד — ולהעדיף שאילתות ממוקדות כמו `graphify query "<שאלה>"` על פני קריאת הדוח המלא או grep על קבצים גולמיים. בפלטפורמות שתומכות בהוקים נושאי-מטען (Claude Code, ‏Gemini CLI), הוק מופעל אוטומטית לפני קריאות כלי בסגנון חיפוש (וב-Claude Code גם לפני קריאת קובצי מקור אחד-אחד דרך הכלים Read/Glob) ומכוון את העוזר לנתיב הגרף. באחרות (Codex, ‏OpenCode, ‏Cursor וכו'), קובצי ההנחיות הקבועים (`AGENTS.md`, ‏`.cursor/rules/` וכו') מספקים את אותה הנחיית "קודם הגרף". ‏`GRAPH_REPORT.md` עדיין זמין לסקירת ארכיטקטורה רחבה.
+הפקודה כותבת קובץ תצורה קטן שמנחה את העוזר שלכם להתייעץ עם גרף הידע בשאלות על בסיס הקוד — ולהעדיף שאילתות ממוקדות כמו `graphify query "<שאלה>"` על פני קריאת הדוח המלא או grep על קבצים גולמיים. בפלטפורמות שתומכות בהוקים נושאי-מטען (Claude Code), הוק מופעל אוטומטית לפני קריאות כלי בסגנון חיפוש (וב-Claude Code גם לפני קריאת קובצי מקור אחד-אחד דרך הכלים Read/Glob) ומכוון את העוזר לנתיב הגרף. באחרות (Codex, ‏OpenCode, ‏Cursor וכו'), קובצי ההנחיות הקבועים (`AGENTS.md`, ‏`.cursor/rules/` וכו') מספקים את אותה הנחיית "קודם הגרף". ‏`GRAPH_REPORT.md` עדיין זמין לסקירת ארכיטקטורה רחבה.
 
 **CodeBuddy** עושה את אותם שני דברים כמו Claude Code: כותב קטע `CODEBUDDY.md` שמנחה את CodeBuddy לקרוא את `graphify-out/GRAPH_REPORT.md` לפני מענה על שאלות ארכיטקטורה, ומתקין **הוקים מסוג PreToolUse** ‏(`.codebuddy/settings.json`) שמופעלים לפני פקודות חיפוש ב-Bash וקריאת קבצים, ומכוונים ל-`graphify query` במקום.
 
@@ -667,8 +665,6 @@ graphify kilo install              # מיומנות Kilo נטיבית + פקוד
 graphify kilo uninstall
 graphify cursor install            # .cursor/rules/graphify.mdc ‏(Cursor)
 graphify cursor uninstall
-graphify gemini install            # GEMINI.md + הוק BeforeTool ‏(Gemini CLI)
-graphify gemini uninstall
 graphify copilot install           # קובץ מיומנות (GitHub Copilot CLI)
 graphify copilot uninstall
 graphify aider install             # AGENTS.md ‏(Aider)
@@ -763,7 +759,7 @@ graphify label ./my-project --backend=openai --model gpt-4o   # כפיית backe
 
 <div dir="rtl">
 
-> **שמות קהילות:** בתוך סוכן (Claude Code, ‏Gemini CLI) הסוכן נותן שמות לקהילות בעצמו. בהרצת ה-CLI החשוף, `cluster-only` נותן שמות אוטומטית עם ה-backend המוגדר (מובנה או ספק תואם-OpenAI מותאם) — העבירו `--no-label` להשארת `Community N`, או הריצו `graphify label` ליצירת שמות מחדש לפי דרישה.
+> **שמות קהילות:** בתוך סוכן (Claude Code) הסוכן נותן שמות לקהילות בעצמו. בהרצת ה-CLI החשוף, `cluster-only` נותן שמות אוטומטית עם ה-backend המוגדר (מובנה או ספק תואם-OpenAI מותאם) — העבירו `--no-label` להשארת `Community N`, או הריצו `graphify label` ליצירת שמות מחדש לפי דרישה.
 
 ---
 
