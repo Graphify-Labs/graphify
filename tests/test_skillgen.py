@@ -687,6 +687,60 @@ def test_generated_runbooks_pass_root_to_save_manifest():
     assert checked >= 4, f"expected save_manifest calls across the runbooks, found {checked}"
 
 
+def test_update_runbook_stamps_manifest_before_build_merge_mutation(tmp_path):
+    """#2865: the update runbook must stamp the manifest from raw extraction
+    BEFORE build_merge() mutates it in place.
+
+    build/build_from_json normalizes legacy extraction aliases (path -> source_file,
+    source -> source_file). _stamped_manifest_files() reads source_file directly from
+    the extraction to determine which semantic files produced output. If run after
+    build_merge(), _stamped_manifest_files() observes the mutated in-place dictionary
+    rather than the raw extraction.
+    """
+    from graphify.build import build_merge
+    from graphify.cli import _stamped_manifest_files
+
+    doc = tmp_path / "legacy_doc.md"
+    doc.write_text("doc content", encoding="utf-8")
+    files_by_type = {"document": [str(doc)], "code": []}
+
+    # Raw extraction using legacy 'path' alias without 'source_file'
+    raw_extraction = {
+        "nodes": [{"id": "doc_node", "name": "Doc Node", "path": str(doc), "file_type": "document"}],
+        "edges": [],
+        "hyperedges": [],
+    }
+
+    # 1. Before build_merge, _stamped_manifest_files() sees raw extraction
+    # where 'source_file' is absent, so the file is not yet recognized in sem_extracted.
+    stamped_before = _stamped_manifest_files(files_by_type, raw_extraction, tmp_path)
+    assert stamped_before["document"] == [], "Raw extraction with only 'path' alias should have no 'source_file'"
+
+    # 2. build_merge mutates raw_extraction in place, converting 'path' to 'source_file'.
+    graph_path = tmp_path / "graph.json"
+    build_merge([raw_extraction], graph_path=graph_path, root=tmp_path)
+    assert "source_file" in raw_extraction["nodes"][0], "build_merge must fold 'path' alias to 'source_file' in place"
+
+    # 3. Running after build_merge observes the mutated dictionary.
+    stamped_after = _stamped_manifest_files(files_by_type, raw_extraction, tmp_path)
+    assert stamped_after["document"] == [str(doc)]
+    assert stamped_before != stamped_after, "Mutation changed the manifest stamping outcome"
+
+    # 4. Verify that all rendered update runbooks compute _stamped_manifest_files before build_merge
+    targets = sorted((REPO_ROOT / "graphify" / "skills").glob("*/references/update.md"))
+    assert len(targets) == 14, f"Expected 14 split platform update runbooks, found {len(targets)}"
+    for path in targets:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        stamped_lines = [i for i, ln in enumerate(lines) if "_manifest_files = _stamped_manifest_files" in ln]
+        build_merge_lines = [i for i, ln in enumerate(lines) if "G = build_merge(" in ln]
+        assert stamped_lines, f"{path}: missing _stamped_manifest_files call"
+        assert build_merge_lines, f"{path}: missing build_merge call"
+        assert stamped_lines[0] < build_merge_lines[0], (
+            f"{path}: _stamped_manifest_files (line {stamped_lines[0]}) must appear "
+            f"BEFORE build_merge (line {build_merge_lines[0]}) (#2865)"
+        )
+
+
 def test_devin_keeps_its_multi_field_frontmatter():
     """devin renders inline, so its 4+-field frontmatter is preserved verbatim."""
     platforms = gen.load_platforms()
