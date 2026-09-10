@@ -374,7 +374,34 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                     target_path = base / rel
                 tgt_nid = _make_id(str(target_path))
             else:
-                tgt_nid = _make_id(raw)
+                # An absolute from-import resolves against the importing file's
+                # own directory when a script puts that directory on sys.path
+                # (`sys.path.insert(0, os.path.dirname(__file__))`), so probe
+                # the sibling module before falling back to the bare name. The
+                # bare name only matches a file node when the basename is
+                # unique across the scan: with a vendored copy of the same
+                # module also in the scan the target matches nothing, the edge
+                # dangles and is pruned, and a real dependency disappears from
+                # the graph. Setting target_path lets the target_file stamp
+                # below canonicalize the id, exactly as the relative branch
+                # does. The self-resolution guard is required: a module named
+                # contracting.py doing `from contracting import constants`
+                # imports the external package of that name, not itself, and
+                # must not gain a fabricated self-loop
+                # (tests/test_import_self_loops.py).
+                sibling = Path(str_path).parent / (raw.replace(".", "/") + ".py")
+                try:
+                    sibling_exists = (
+                        sibling.is_file()
+                        and sibling.resolve() != Path(str_path).resolve()
+                    )
+                except OSError:
+                    sibling_exists = False
+                if sibling_exists:
+                    target_path = sibling
+                    tgt_nid = _make_id(str(target_path))
+                else:
+                    tgt_nid = _make_id(raw)
             edge = {
                 "source": file_nid,
                 "target": tgt_nid,
