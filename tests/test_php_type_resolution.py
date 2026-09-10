@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from graphify.extract import extract, extract_php
+from graphify.extract import _rewire_unique_stub_nodes, extract, extract_php
 from graphify.extractors.resolution import _resolve_php_type_references
 
 
@@ -422,3 +422,116 @@ def test_php_mixed_group_keeps_only_class_import_in_use_map(tmp_path: Path):
         for node in result["nodes"]
         if node.get("label", "").startswith("App\\Helpers\\")
     } == {"App\\Helpers\\Thing"}
+
+
+def test_php_aliased_import_in_multi_namespace_file_keeps_imported_identity(
+    tmp_path: Path,
+):
+    imported = _write(
+        tmp_path / "src/Foo.php",
+        "<?php\nnamespace Vendor;\nclass Foo {}\n",
+    )
+    collision = _write(
+        tmp_path / "src/Alias.php",
+        "<?php\nnamespace Internal;\nclass Alias {}\n",
+    )
+    consumer = _write(
+        tmp_path / "src/Consumer.php",
+        "<?php\nnamespace App {\n"
+        "use Vendor\\Foo as Alias;\n"
+        "class Consumer extends Alias {}\n"
+        "}\n"
+        "namespace Other { class OtherClass {} }\n",
+    )
+
+    paths = [imported, collision, consumer]
+    per_file = [extract_php(path) for path in paths]
+    nodes = [node for result in per_file for node in result["nodes"]]
+    edges = [edge for result in per_file for edge in result["edges"]]
+    imported_id = next(
+        node["id"]
+        for node in nodes
+        if node.get("label") == "Foo" and node.get("source_file")
+    )
+    import_edge = next(
+        edge
+        for edge in edges
+        if edge["relation"] == "imports"
+        and Path(edge.get("source_file", "")).name == "Consumer.php"
+    )
+
+    # PR #3453's producer used the local binding as the provisional target.
+    import_edge["target"] = "alias"
+    _resolve_php_type_references(per_file, paths, nodes, edges)
+    _rewire_unique_stub_nodes(nodes, edges)
+
+    assert import_edge["target"] == imported_id
+
+
+def test_php_multi_namespace_import_identity_is_per_edge(tmp_path: Path):
+    first = _write(
+        tmp_path / "src/One.php",
+        "<?php\nnamespace First;\nclass Foo {}\n",
+    )
+    second = _write(
+        tmp_path / "src/Two.php",
+        "<?php\nnamespace Second;\nclass Foo {}\n",
+    )
+    consumer = _write(
+        tmp_path / "src/Consumer.php",
+        "<?php\nnamespace AppOne {\n"
+        "use First\\Foo as Alias;\n"
+        "class One {}\n"
+        "}\n"
+        "namespace AppTwo {\n"
+        "use Second\\Foo as Alias;\n"
+        "class Two {}\n"
+        "}\n",
+    )
+
+    result = extract([first, second, consumer], cache_root=tmp_path)
+    definition_ids = {
+        Path(node["source_file"]).name: node["id"]
+        for node in _class_defs(result, "Foo")
+    }
+    imports = sorted(
+        (
+            edge
+            for edge in result["edges"]
+            if edge["relation"] == "imports"
+            and edge.get("source_file") == "src/Consumer.php"
+        ),
+        key=lambda edge: edge["source_location"],
+    )
+
+    assert [edge["target"] for edge in imports] == [
+        definition_ids["One.php"],
+        definition_ids["Two.php"],
+    ]
+
+
+def test_php_class_import_identity_does_not_retarget_symbol_import(tmp_path: Path):
+    imported = _write(
+        tmp_path / "src/Foo.php",
+        "<?php\nnamespace Vendor;\nclass Foo {}\n",
+    )
+    consumer = _write(
+        tmp_path / "src/Consumer.php",
+        "<?php\nnamespace App {\n"
+        "use Vendor\\Foo as Alias;\n"
+        "use function Helpers\\Foo;\n"
+        "class Consumer extends Alias {}\n"
+        "}\n"
+        "namespace Other { class OtherClass {} }\n",
+    )
+
+    result = extract([imported, consumer], cache_root=tmp_path)
+    imported_id = _class_defs(result, "Foo")[0]["id"]
+    targets_by_line = {
+        edge["source_location"]: edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "imports"
+        and edge.get("source_file") == "src/Consumer.php"
+    }
+
+    assert targets_by_line == {"L3": imported_id, "L4": "foo"}
