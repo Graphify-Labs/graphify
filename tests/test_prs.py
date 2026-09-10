@@ -376,6 +376,27 @@ class TestDetectDefaultBranch:
         ):
             assert _detect_default_branch() == "main"
 
+    def test_repo_positional_arg_in_gh_repo_view(self):
+        """gh repo view takes repo positionally; --repo is not a valid flag (#3318)."""
+        with patch(
+            "graphify.prs._gh",
+            return_value={"defaultBranchRef": {"name": "main"}},
+        ) as mock_gh:
+            branch = _detect_default_branch(repo="owner/repo")
+        assert branch == "main"
+        args, _ = mock_gh.call_args
+        assert args == ("repo", "view", "owner/repo", "--json", "defaultBranchRef")
+        assert "--repo" not in args
+
+    def test_explicit_repo_gh_fails_returns_main_without_local_git(self):
+        """When an explicit repo is supplied and gh fails, return 'main' without
+        inspecting the local repository (#3318)."""
+        with patch("graphify.prs._gh", return_value=None), \
+             patch("graphify.prs.subprocess.run") as mock_git:
+            branch = _detect_default_branch(repo="owner/repo")
+        assert branch == "main"
+        mock_git.assert_not_called()
+
 
 # ── build_community_labels ─────────────────────────────────────────────────────
 
@@ -462,3 +483,39 @@ class TestSubprocessOutputEncoding:
             _detect_default_branch()
         _args, kwargs = mock_run.call_args
         assert kwargs.get("encoding") == "utf-8"
+
+
+# ── Subprocess stdin isolation (#3318) ─────────────────────────────────────────
+
+class TestSubprocessStdinIsolation:
+    """Subprocesses in prs.py must isolate stdin with subprocess.DEVNULL so they
+    never inherit an open stdin pipe from the MCP stdio server (#3318)."""
+
+    def test_gh_passes_devnull_stdin(self):
+        completed = MagicMock(returncode=0, stdout="[]", stderr="")
+        with patch("subprocess.run", return_value=completed) as mock_run:
+            _gh("repo", "view")
+        _args, kwargs = mock_run.call_args
+        assert kwargs.get("stdin") == subprocess.DEVNULL
+
+    def test_fetch_pr_files_passes_devnull_stdin(self):
+        completed = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=completed) as mock_run:
+            fetch_pr_files(1)
+        _args, kwargs = mock_run.call_args
+        assert kwargs.get("stdin") == subprocess.DEVNULL
+
+    def test_fetch_worktrees_passes_devnull_stdin(self):
+        completed = MagicMock(returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=completed) as mock_run:
+            fetch_worktrees()
+        _args, kwargs = mock_run.call_args
+        assert kwargs.get("stdin") == subprocess.DEVNULL
+
+    def test_detect_default_branch_git_fallback_passes_devnull_stdin(self):
+        completed = MagicMock(returncode=0, stdout="refs/remotes/origin/main\n", stderr="")
+        with patch("graphify.prs._gh", return_value=None), \
+             patch("subprocess.run", return_value=completed) as mock_run:
+            _detect_default_branch()
+        _args, kwargs = mock_run.call_args
+        assert kwargs.get("stdin") == subprocess.DEVNULL

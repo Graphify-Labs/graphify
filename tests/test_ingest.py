@@ -98,3 +98,15 @@ def test_no_outcome_means_no_outcome_section(tmp_path):
 def test_invalid_outcome_rejected(tmp_path):
     with pytest.raises(ValueError):
         save_query_result("q", "a", tmp_path / "memory", outcome="great")
+
+
+def test_concurrent_saves_of_the_same_question_do_not_overwrite(tmp_path):
+    """Regression for #3301: a second-granularity stamp plus a 50-char slug is
+    not unique, so saves in the same second sharing a prefix collapsed into one
+    file and the earlier ones were silently lost."""
+    from concurrent.futures import ThreadPoolExecutor
+    mem = tmp_path / "memory"
+    with ThreadPoolExecutor(max_workers=20) as ex:
+        paths = list(ex.map(lambda _: save_query_result("how does auth work", "a", mem), range(20)))
+    assert len({p.name for p in paths}) == 20
+    assert len(list(mem.glob("*.md"))) == 20

@@ -1711,3 +1711,100 @@ def test_underscore_query_does_not_let_a_single_token_outrank_the_real_match():
     scored = _score_nodes(G, _query_terms("user_service_client"))
     assert scored, "the multi-token query must match the full-label node"
     assert scored[0][1] == "real", f"a single-token node out-ranked the real match: {scored}"
+
+
+def test_resolve_single_node_shared_by_get_node_and_get_neighbors():
+    """ADR-0001 finding 1: the resolver both tools now use returns an Ambiguous
+    message when the winning tier spans multiple files, a clean node id for a
+    unique label, and a not-found message otherwise."""
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("a", label="extract", source_file="a/x.py")
+    G.add_node("b", label="extract", source_file="b/y.py")
+    G.add_node("u", label="unique_helper", source_file="c/z.py")
+
+    nid, err = _resolve_single_node(G, "extract")
+    assert nid is None
+    assert err.startswith("Ambiguous:")
+
+    nid, err = _resolve_single_node(G, "unique_helper")
+    assert err is None
+    assert nid == "u"
+
+    nid, err = _resolve_single_node(G, "nonexistent")
+    assert nid is None
+    assert "No node matching" in err
+
+
+# --- rationale attribute scoring (#2293) ---
+
+_FAB_RATIONALE = (
+    "Hidden when the mini card is dismissed and while the geolocation popover "
+    "is open, because that popover opens upward into the DirectionsFAB's space."
+)
+
+
+def _rationale_graph():
+    """A doc-derived rule node whose LABEL shares no token with the question
+    while its `rationale` attribute states the answer in plain words — the
+    #2293 shape. Neighbors carry the identifier-ish labels a codebase would."""
+    G = nx.Graph()
+    G.add_node("rule", label="FAB visibility rule", source_file="docs/fab.md", rationale=_FAB_RATIONALE)
+    G.add_node("fab", label="DirectionsFAB", source_file="src/DirectionsFAB.tsx")
+    G.add_node("geo", label="GeolocationButton", source_file="src/GeolocationButton.tsx")
+    G.add_node("card", label="MiniCard", source_file="src/MiniCard.tsx")
+    for u, v in [("rule", "fab"), ("fab", "geo"), ("rule", "card")]:
+        G.add_edge(u, v, relation="references", confidence="EXTRACTED")
+    return G
+
+
+def test_score_nodes_reads_rationale_when_label_does_not_match():
+    G = _rationale_graph()
+    assert [nid for _, nid in _score_nodes(G, ["popover"])] == ["rule"]
+
+
+def test_score_nodes_rationale_tier_sits_below_label_substring_and_above_source():
+    G = nx.Graph()
+    G.add_node("lbl", label="popover-anchor", source_file="ui/a.py")
+    G.add_node("rat", label="Sheet drag", source_file="ui/b.py", rationale="starts only once the popover is closed")
+    G.add_node("src", label="Thing", source_file="ui/popover/thing.py")
+    assert [nid for _, nid in _score_nodes(G, ["popover"])] == ["lbl", "rat", "src"]
+
+
+def test_score_nodes_rationale_does_not_count_toward_term_coverage():
+    """Like the source tier, a rationale hit adds recall but must not restore
+    the coverage-scaled exact tier: if it counted, `a` would gain roughly three
+    quarters of an exact-match bonus over `b`, not a sub-unit nudge."""
+    from graphify.serve import _EXACT_MATCH_BONUS
+    G = nx.Graph()
+    G.add_node("a", label="cache", source_file="x.py", rationale="pinned because of drift")
+    G.add_node("b", label="cache", source_file="y.py")
+    score = {nid: s for s, nid in _score_nodes(G, ["cache", "pinned"])}
+    assert score["a"] > score["b"]
+    assert score["a"] - score["b"] < _EXACT_MATCH_BONUS * 0.5
+
+
+def test_score_nodes_tolerates_list_valued_rationale():
+    G = nx.Graph()
+    G.add_node("n", label="X", source_file="x.py", rationale=["first reason", "popover second"])
+    assert [nid for _, nid in _score_nodes(G, ["popover"])] == ["n"]
+
+
+def test_node_search_text_includes_rationale_so_trigram_prefilter_stays_complete():
+    parts = _node_search_text(
+        {"label": "Foo", "source_file": "a.py", "rationale": "Because the Popover opens upward"}, "foo"
+    ).split("\x00")
+    assert "because the popover opens upward" in parts
+    # No rationale: field layout unchanged (the #2467 positions still hold).
+    assert len(_node_search_text({"label": "Foo", "source_file": "a.py"}, "foo").split("\x00")) == 5
+
+
+def test_query_graph_text_seeds_the_node_whose_rationale_answers_a_why_question():
+    G = _rationale_graph()
+    text = _query_graph_text(
+        G, "why is the directions button hidden when the geolocation popover opens",
+        mode="bfs", depth=2, token_budget=2000,
+    )
+    header = text.split("\n\n", 1)[0]
+    assert "FAB visibility rule" in header, header

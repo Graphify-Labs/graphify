@@ -213,6 +213,15 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
         lines.append(f"### {rel}")
         for t in targets[:20]:
             lines.append(f"- {t}")
+        # The cap keeps god-node articles readable, but silently dropping the
+        # tail made the body disagree with the header's degree count with
+        # nothing telling the reader anything was cut (#3127). Entries are
+        # degree-sorted, so what is hidden is the low-degree tail.
+        if len(targets) > 20:
+            lines.append(
+                f"- *…and {len(targets) - 20} more `{rel}` "
+                f"connection(s) not listed (lowest-degree first to go)*"
+            )
         lines.append("")
 
     lines += ["---", "", f"*Part of the graphify knowledge wiki. See {_md_link('index', resolver)} to navigate.*"]

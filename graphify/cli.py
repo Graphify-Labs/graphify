@@ -91,6 +91,7 @@ def _stamped_manifest_files(
     root: Path,
     partial_source_files: "set[str] | None" = None,
     failed_ast_sources: "set[str] | list[str] | None" = None,
+    unverified_semantic_sources: "set[str] | list[str] | None" = None,
 ) -> dict[str, list[str]]:
     """Manifest-safe files dict: only stamp semantic files that actually
     produced output (cache hit or fresh extraction). Files whose chunk failed
@@ -102,6 +103,11 @@ def _stamped_manifest_files(
     detect_incremental would see it "done" and never re-dispatch it, leaving the
     incomplete node set live forever on the warm-incremental path. Same #933
     mechanism: leave it unstamped and it is re-queued next run.
+
+    ``unverified_semantic_sources`` (#3203): files whose semantic extraction
+    under-produced compared to their prior representation (e.g. 3 -> 1 nodes).
+    They are excluded from stamping unless --allow-partial is set, so the next
+    incremental run retries them.
 
     Both sides of the membership test are resolved against the scan ``root``
     before comparing (#1897): node/edge/hyperedge ``source_file`` values are
@@ -142,6 +148,7 @@ def _stamped_manifest_files(
             if sf:
                 sem_extracted.add(_resolve(sf))
     partial_resolved = {_resolve(p) for p in (partial_source_files or set())}
+    unverified_resolved = {_resolve(p) for p in (unverified_semantic_sources or set())}
     failed_ast_resolved = {_resolve(p) for p in (failed_ast_sources or [])}
     sem_types = {"document", "paper", "image"}
     return {
@@ -150,11 +157,65 @@ def _stamped_manifest_files(
             if _resolve(f) not in failed_ast_resolved
             and (
                 ftype not in sem_types
-                or (_resolve(f) in sem_extracted and _resolve(f) not in partial_resolved)
+                or (
+                    _resolve(f) in sem_extracted
+                    and _resolve(f) not in partial_resolved
+                    and _resolve(f) not in unverified_resolved
+                )
             )
         ]
         for ftype, flist in files_by_type.items()
     }
+
+
+def _handle_unverified_semantic_shrink(
+    unverified_shrink,
+    *,
+    cli_allow_partial: bool,
+    files_by_type,
+    sem_result,
+    target,
+    partial_semantic_files,
+    failed_ast_sources,
+    semantic_files,
+):
+    """Shared handling for the #3203 unverified-semantic-shrink guard on both the
+    raw and clustered write paths (they differ only in where the flag is read
+    from — ``merged`` vs ``G.graph``). Always prints the actionable notice.
+
+    Returns None when there is no shrink, else ``(incomplete, manifest_files,
+    cleared_semantic)`` — the latter two are None unless the guard armed
+    (``not cli_allow_partial``), so the caller mirrors the original inline logic.
+    """
+    if not unverified_shrink:
+        return None
+    incomplete = False
+    manifest_files = None
+    cleared_semantic = None
+    if not cli_allow_partial:
+        incomplete = True
+        unverified_sources = set(unverified_shrink.keys())
+        manifest_files = _stamped_manifest_files(
+            files_by_type,
+            sem_result,
+            target,
+            partial_source_files=partial_semantic_files,
+            failed_ast_sources=failed_ast_sources,
+            unverified_semantic_sources=unverified_sources,
+        )
+        stamped = {f for _flist in manifest_files.values() for f in _flist}
+        cleared_semantic = {str(p) for p in semantic_files} - stamped
+    details = ", ".join(
+        f"'{sf}' ({prior} -> {fresh} nodes)"
+        for sf, (prior, fresh) in sorted(unverified_shrink.items())
+    )
+    print(
+        f"[graphify extract] semantic extraction is incomplete: unverified semantic "
+        f"shrink detected for {details}. The shrink guard stays armed for this write; "
+        "pass --allow-partial to overwrite a larger existing graph anyway.",
+        file=sys.stderr,
+    )
+    return incomplete, manifest_files, cleared_semantic
 
 
 def _stale_graph_sources(
@@ -677,6 +738,79 @@ def _mark_session_denied(session_id: str) -> bool:
         return False
 
 
+_SEARCH_COMMANDS = frozenset({
+    "grep", "egrep", "fgrep", "zgrep", "rg", "ripgrep", "find", "fd", "ack", "ag",
+})
+# Prefix words that wrap another command; the real executable follows them.
+_COMMAND_WRAPPERS = frozenset({
+    "sudo", "command", "exec", "nohup", "time", "nice", "ionice", "env",
+    "xargs", "timeout", "stdbuf", "doas",
+})
+_HEREDOC_OPEN_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+
+
+def _bash_invokes_search(cmd_str: str) -> bool:
+    """Whether a Bash command actually RUNS a search tool (#3121).
+
+    The old test was a plain substring scan over the whole command string,
+    including quoted arguments and heredoc bodies - so `git commit -m "add
+    flag support"` fired ("flag " contains "ag "), prose containing "find "
+    fired, and a design doc written via heredoc fired if its body mentioned
+    grep. Every false positive injects a nudge where graphify has nothing to
+    contribute and trains the agent to skim the line.
+
+    Decide on the command's executed tokens instead: drop heredoc bodies and
+    quoted spans, split on shell operators, and match the executable at each
+    command position (wrappers like sudo/xargs/env skipped; `git grep` and
+    `VAR=x grep ...` still count; a search-tool name inside prose does not).
+    """
+    text = cmd_str
+    # Drop heredoc bodies: from the line after `<<WORD` through the line that
+    # is exactly WORD. An unterminated heredoc drops to the end of the string.
+    m = _HEREDOC_OPEN_RE.search(text)
+    while m:
+        nl_idx = text.find("\n", m.end())
+        if nl_idx == -1:
+            break
+        term = re.compile(r"^\s*" + re.escape(m.group(2)) + r"\s*$", re.MULTILINE)
+        t = term.search(text, nl_idx + 1)
+        if t is None:
+            # Unterminated heredoc: everything after the opener line is body.
+            text = text[: nl_idx + 1]
+            break
+        text = text[: nl_idx + 1] + text[t.end():]
+        m = _HEREDOC_OPEN_RE.search(text, nl_idx + 1)
+    # Drop quoted spans (backslash escapes inside double quotes are irrelevant
+    # here - anything quoted is an argument, never the executable).
+    text = re.sub(r"'[^']*'", " ", text)
+    text = re.sub(r'"[^"]*"', " ", text)
+    # Split into command segments at shell operators / substitution boundaries.
+    for segment in re.split(r"[|;&\n]|\$\(|`|\(|\)|\{|\}", text):
+        tokens = segment.split()
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if "=" in tok.split("/")[-1] and not tok.startswith(("-", "/")):
+                i += 1  # VAR=value prefix
+                continue
+            name = tok.replace("\\", "/").rsplit("/", 1)[-1].lower()
+            name = name[:-4] if name.endswith(".exe") else name
+            if name in _COMMAND_WRAPPERS:
+                i += 1
+                # skip the wrapper's own flags (`xargs -0`, `env -i`)
+                while i < len(tokens) and tokens[i].startswith("-"):
+                    i += 1
+                continue
+            if name in _SEARCH_COMMANDS:
+                return True
+            if name == "git" and any(
+                t2 == "grep" for t2 in tokens[i + 1:i + 4] if not t2.startswith("-")
+            ):
+                return True
+            break  # first real token decides this segment
+    return False
+
+
 def _run_hook_guard(kind: str, strict: bool = False) -> None:
     """Shell-agnostic PreToolUse guard (#522).
 
@@ -725,13 +859,13 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # the Bash tool carries `command`, while Claude Code's dedicated
             # Grep tool carries `pattern` (plus optional path/glob) and no
             # command — a Grep call IS a content search by definition, so it
-            # nudges whenever a graph exists. For Bash, keep matching the same
-            # set the old `case` matched: *grep*, *ripgrep*, and rg/find/fd/
-            # ack/ag as a token (name followed by a space). Nudge-only, even in
-            # strict mode — see the docstring.
+            # nudges whenever a graph exists. For Bash, decide on the
+            # command's EXECUTED tokens (#3121): the old whole-string
+            # substring scan fired on quoted prose ('add flag support'
+            # contains "ag ") and on heredoc bodies that merely mention
+            # grep. Nudge-only, even in strict mode — see the docstring.
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
-            is_bash_search = any(tok in cmd_str for tok in (
-                "grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag "))
+            is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
             if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
                 sys.stdout.write(_SEARCH_NUDGE)
         elif kind == "read":
@@ -1264,6 +1398,7 @@ def dispatch_command(cmd: str) -> None:
         from graphify.security import sanitize_label as _sanitize_label
         graph_path = _default_graph_path()
         top_n = 10
+        gn_exclude_hubs: float | None = None
         as_json = "--json" in sys.argv
         args = sys.argv[2:]
         i = 0
@@ -1288,6 +1423,20 @@ def dispatch_command(cmd: str) -> None:
                     print("error: --top must be an integer", file=sys.stderr)
                     sys.exit(1)
                 i += 1
+            elif args[i] == "--exclude-hubs" and i + 1 < len(args):
+                try:
+                    gn_exclude_hubs = float(args[i + 1])
+                except ValueError:
+                    print("error: --exclude-hubs must be a number (percentile 0-100)", file=sys.stderr)
+                    sys.exit(1)
+                i += 2
+            elif args[i].startswith("--exclude-hubs="):
+                try:
+                    gn_exclude_hubs = float(args[i].split("=", 1)[1])
+                except ValueError:
+                    print("error: --exclude-hubs must be a number (percentile 0-100)", file=sys.stderr)
+                    sys.exit(1)
+                i += 1
             else:
                 i += 1
         gp = Path(graph_path).resolve()
@@ -1302,7 +1451,7 @@ def dispatch_command(cmd: str) -> None:
         except Exception as exc:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
-        gods = _god_nodes(G, top_n=top_n)
+        gods = _god_nodes(G, top_n=top_n, exclude_hubs_percentile=gn_exclude_hubs)
         if as_json:
             print(json.dumps(gods, indent=2))
         else:
@@ -1965,7 +2114,7 @@ def dispatch_command(cmd: str) -> None:
             communities = remap_communities_to_previous(communities, previous_node_community)
         stages.mark("cluster")
         cohesion = score_all(G, communities)
-        gods = god_nodes(G)
+        gods = god_nodes(G, exclude_hubs_percentile=co_exclude_hubs)
         surprises = surprising_connections(G, communities)
         stages.mark("analyze")
         # Where outputs (GRAPH_REPORT.md, re-clustered graph.json, labels,
@@ -2568,6 +2717,12 @@ def dispatch_command(cmd: str) -> None:
         shared_links = _link_shared(merged)
         if shared_links:
             print(f"  linked {shared_links} type declaration(s) shared across repos")
+        # A member call whose receiver type lives in another repo was dropped at
+        # extraction; the caller node carries it and this finishes the edge (#3152).
+        from graphify.cross_repo_calls import link_cross_repo_member_calls as _link_calls
+        call_links = _link_calls(merged)
+        if call_links:
+            print(f"  resolved {call_links} member call(s) across repos")
         # Drop whatever compose left behind (the last input's list, possibly
         # with internal duplicates) so attach_hyperedges dedups the full
         # collection by id from a clean slate.
@@ -2802,6 +2957,8 @@ def dispatch_command(cmd: str) -> None:
             G = _jg.node_link_graph(_raw, edges="links")
         except TypeError:
             G = _jg.node_link_graph(_raw)
+        if isinstance(_raw.get("hyperedges"), list):
+            G.graph["hyperedges"] = _raw["hyperedges"]
 
         # Load optional analysis/labels
         communities: dict[int, list[str]] = {}
@@ -2977,6 +3134,9 @@ def dispatch_command(cmd: str) -> None:
                 else:
                     print(f"Added '{tag}' to global graph: +{result['nodes_added']} nodes, "
                           f"-{result['nodes_removed']} pruned. Global: {_global_path()}")
+                    if result.get("cross_repo_calls"):
+                        print(f"  resolved {result['cross_repo_calls']} "
+                              f"member call(s) across repos")
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr); sys.exit(1)
         elif subcmd == "remove":
@@ -3944,6 +4104,7 @@ def dispatch_command(cmd: str) -> None:
             "hyperedges": list(sem_result.get("hyperedges", [])),
             "input_tokens": ast_result.get("input_tokens", 0) + sem_result.get("input_tokens", 0),
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
+            "extracted_sources": list(ast_result.get("extracted_sources", [])),
         }
 
         graph_json_path = graphify_out / "graph.json"
@@ -4079,6 +4240,23 @@ def dispatch_command(cmd: str) -> None:
                     # raw-dump this run's partial extraction over it.
                     print(f"error: {exc}", file=sys.stderr)
                     sys.exit(1)
+                _shrink = _handle_unverified_semantic_shrink(
+                    merged.get("_unverified_semantic_shrink"),
+                    cli_allow_partial=cli_allow_partial,
+                    files_by_type=files_by_type,
+                    sem_result=sem_result,
+                    target=target,
+                    partial_semantic_files=_partial_semantic_files,
+                    failed_ast_sources=_failed_ast_sources,
+                    semantic_files=semantic_files,
+                )
+                if _shrink is not None and _shrink[0]:
+                    _extraction_incomplete = True
+                    _manifest_files = _shrink[1]
+                    _stamped_semantic = {
+                        f for _flist in _manifest_files.values() for f in _flist
+                    }
+                    _cleared_semantic = _shrink[2]
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
             merged["edges"] = _dedupe_edges(merged["edges"])
             # Disambiguate colliding-basename file-node labels (#2032). This raw
@@ -4198,6 +4376,23 @@ def dispatch_command(cmd: str) -> None:
                     dedup_llm_backend=dedup_backend,
                     root=target,
                 )
+                _shrink = _handle_unverified_semantic_shrink(
+                    G.graph.get("_unverified_semantic_shrink") if hasattr(G, "graph") else None,
+                    cli_allow_partial=cli_allow_partial,
+                    files_by_type=files_by_type,
+                    sem_result=sem_result,
+                    target=target,
+                    partial_semantic_files=_partial_semantic_files,
+                    failed_ast_sources=_failed_ast_sources,
+                    semantic_files=semantic_files,
+                )
+                if _shrink is not None and _shrink[0]:
+                    _extraction_incomplete = True
+                    _manifest_files = _shrink[1]
+                    _stamped_semantic = {
+                        f for _flist in _manifest_files.values() for f in _flist
+                    }
+                    _cleared_semantic = _shrink[2]
             except ValueError as exc:
                 # --no-dedup arms build_merge's #479 shrink guard, which refuses
                 # to drop nodes belonging to files this run neither re-extracted
@@ -4221,7 +4416,9 @@ def dispatch_command(cmd: str) -> None:
         stages.mark("cluster")
         cohesion = _score_all(G, communities)
         try:
-            gods = _god_nodes(G)
+            # The percentile that suppressed hubs in cluster() above suppresses
+            # them in the ranking too (#3205).
+            gods = _god_nodes(G, exclude_hubs_percentile=cli_exclude_hubs)
         except Exception:
             gods = []
         try:

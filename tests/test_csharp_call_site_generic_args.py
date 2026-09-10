@@ -213,7 +213,16 @@ def test_call_site_generic_args_appear_in_issue_repro(tmp_path):
         ),
     })
     izeta_refs = [tgt for src, tgt, _ctx in all_di_refs if src == ".Di()" and tgt == "IZeta"]
-    assert len(izeta_refs) >= 2, (
-        "s.AddScoped<IZeta, Box<IZeta>>() must link BOTH the outer IZeta "
-        f"and the inner IZeta (inside the Box<...> argument); got {izeta_refs!r}"
+    # The outer IZeta and the inner IZeta (inside Box<...>) are the same
+    # reference relationship at the same location, so since #3251 the two
+    # walk occurrences collapse into ONE edge at extraction (they were always
+    # collapsed by build, and the raw duplicate tripped
+    # diagnose_extraction's exact_duplicate_edges warning). The call-site bug
+    # this test guards emitted NO edge at all, so existence keeps the teeth.
+    assert len(izeta_refs) == 1, (
+        "s.AddScoped<IZeta, Box<IZeta>>() must link IZeta exactly once "
+        f"(one relationship, no duplicate edge); got {izeta_refs!r}"
+    )
+    assert (".Di()", "Box") in {(s, t) for s, t, _c in all_di_refs}, (
+        "the Box<...> argument itself must still link from the Di method"
     )

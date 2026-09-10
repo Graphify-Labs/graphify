@@ -163,6 +163,32 @@ def test_check_update_does_not_clear_flag(tmp_path):
     assert flag.exists()
 
 
+@pytest.mark.parametrize(
+    ("no_cluster", "change_topology"),
+    [(True, False), (False, False), (False, True)],
+    ids=["no-cluster", "unchanged-topology", "clustered-rebuild"],
+)
+def test_code_rebuild_preserves_semantic_update_flag(
+    tmp_path, no_cluster, change_topology
+):
+    """An AST-only rebuild cannot clear pending semantic work (#3294)."""
+    source = tmp_path / "app.py"
+    source.write_text("def before(): pass\n", encoding="utf-8")
+    assert _rebuild_code(
+        tmp_path, no_cluster=no_cluster, acquire_lock=False
+    ) is True
+
+    flag = tmp_path / "graphify-out" / "needs_update"
+    flag.write_text("docs/PRD.md\n", encoding="utf-8")
+    if change_topology:
+        source.write_text("def after(): pass\n", encoding="utf-8")
+
+    assert _rebuild_code(
+        tmp_path, no_cluster=no_cluster, acquire_lock=False
+    ) is True
+    assert flag.read_text(encoding="utf-8") == "docs/PRD.md\n"
+
+
 def test_watch_raises_without_watchdog(tmp_path, monkeypatch):
     import builtins
     real_import = builtins.__import__
@@ -633,6 +659,61 @@ def test_rebuild_honors_persisted_no_gitignore(tmp_path):
     graph = json.loads((corpus / "graphify-out" / "graph.json").read_text())
     sources = {Path(str(node.get("source_file", ""))).as_posix() for node in graph["nodes"]}
     assert any(source.endswith("generated/gen.py") for source in sources)
+
+
+def test_no_cluster_rebuild_disambiguates_colliding_file_labels(tmp_path):
+    """The raw update path keeps the same display labels as a fresh extract.
+
+    File nodes with the same basename need directory-qualified labels (#2032),
+    including after an incremental no-cluster rebuild.
+    """
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    (corpus / "pkg_a").mkdir(parents=True)
+    (corpus / "pkg_b").mkdir()
+    (corpus / "pkg_a" / "errors.ts").write_text(
+        "export class AlphaError {}\n", encoding="utf-8"
+    )
+    (corpus / "pkg_b" / "errors.ts").write_text(
+        "export class BetaError {}\n", encoding="utf-8"
+    )
+    entry = corpus / "entry.ts"
+    entry.write_text(
+        'import { AlphaError } from "./pkg_a/errors.js";\n'
+        'import { BetaError } from "./pkg_b/errors.js";\n'
+        "export const errors = [AlphaError, BetaError];\n",
+        encoding="utf-8",
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    labels = {
+        node["label"]
+        for node in graph["nodes"]
+        if node.get("id") in {"pkg_a_errors", "pkg_b_errors"}
+    }
+    assert labels == {"pkg_a/errors.ts", "pkg_b/errors.ts"}
+
+    entry.write_text(
+        entry.read_text(encoding="utf-8") + "export const count = errors.length;\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[entry],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    labels = {
+        node["label"]
+        for node in graph["nodes"]
+        if node.get("id") in {"pkg_a_errors", "pkg_b_errors"}
+    }
+    assert labels == {"pkg_a/errors.ts", "pkg_b/errors.ts"}
 
 
 def test_graphify_root_preserves_absolute_when_user_supplied(tmp_path):
@@ -4049,3 +4130,467 @@ def test_read_only_events_with_real_watchdog_classes():
     assert not _is_read_only_event(we.FileModifiedEvent("/tmp/x.py"))
     assert not _is_read_only_event(we.FileCreatedEvent("/tmp/x.py"))
     assert not _is_read_only_event(we.FileClosedEvent("/tmp/x.py"))
+
+
+def _markdown_reconcile_fixture(tmp_path, files, nodes, links):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for relative_path, content in files.items():
+        path = corpus / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    output = corpus / "graphify-out"
+    output.mkdir()
+    graph_path = output / "graph.json"
+    graph_path.write_text(
+        json.dumps(
+            {
+                "nodes": nodes,
+                "links": links,
+                "hyperedges": [],
+                "directed": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return corpus, graph_path
+
+
+def _semantic_doc(node_id, source_file):
+    return {
+        "id": node_id,
+        "label": node_id,
+        "file_type": "document",
+        "source_file": source_file,
+        "_origin": "semantic",
+    }
+
+
+def _ast_reference(source, target, source_file, **extra):
+    return {
+        "source": source,
+        "target": target,
+        "relation": "references",
+        "source_file": source_file,
+        "source_location": "L1",
+        "_origin": "ast",
+        **extra,
+    }
+
+
+def test_markdown_reconcile_links_new_source_to_semantic_target(tmp_path):
+    """#1915/#1954: a fresh source reaches a semantic-only target."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [_semantic_doc("b_sem", "b.md")],
+        [],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert {references[0]["source"], references[0]["target"]} == {"a", "b_sem"}
+
+
+def test_markdown_reconcile_preserves_ambiguous_target(tmp_path):
+    """#1915/#1954: an authored link must survive target ambiguity."""
+    original = _ast_reference("a_sem", "b_one", "a.md", sentinel="keep")
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [
+            _semantic_doc("a_sem", "a.md"),
+            _semantic_doc("b_one", "b.md"),
+            _semantic_doc("b_two", "b.md"),
+        ],
+        [original],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert references[0]["sentinel"] == "keep"
+    assert {references[0]["source"], references[0]["target"]} == {"a_sem", "b_one"}
+
+
+def test_markdown_reconcile_preserves_ambiguous_source(tmp_path):
+    """#1915/#1954: an authored link must survive source ambiguity."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [
+            _semantic_doc("a_one", "a.md"),
+            _semantic_doc("a_two", "a.md"),
+            _semantic_doc("b_sem", "b.md"),
+        ],
+        [_ast_reference("a_one", "b_sem", "a.md", sentinel="keep")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert references[0]["sentinel"] == "keep"
+
+
+def test_markdown_reconcile_prunes_removed_authored_link(tmp_path):
+    """#1915/#1954: removing a Markdown link removes its owned AST edge."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "no link\n", "b.md": "target\n"},
+        [_semantic_doc("a_sem", "a.md"), _semantic_doc("b_sem", "b.md")],
+        [_ast_reference("a_sem", "b_sem", "a.md")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    assert not any(edge.get("relation") == "references" for edge in links)
+
+
+def test_markdown_reconcile_keeps_reverse_stored_edge_unchanged(tmp_path):
+    """#1915/#1954: undirected endpoint order must not churn edge data."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [_semantic_doc("a_sem", "a.md"), _semantic_doc("b_sem", "b.md")],
+        [_ast_reference("b_sem", "a_sem", "a.md", sentinel="keep")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert references[0]["source"] == "b_sem"
+    assert references[0]["target"] == "a_sem"
+    assert references[0]["sentinel"] == "keep"
+
+
+def test_markdown_reconcile_prefers_later_canonical_page(tmp_path):
+    """#1915/#1954: a later canonical page replaces a semantic fallback."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [
+            _semantic_doc("a_sem", "a.md"),
+            _semantic_doc("b_sem", "b.md"),
+            {
+                "id": "b",
+                "label": "b.md",
+                "node_kind": "page",
+                "file_type": "document",
+                "source_file": "b.md",
+                "source_location": "L1",
+                "_origin": "ast",
+            },
+        ],
+        [_ast_reference("a_sem", "b_sem", "a.md")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert {references[0]["source"], references[0]["target"]} == {"a_sem", "b"}
+
+
+def test_markdown_reconcile_keeps_existing_semantic_relation(tmp_path):
+    """#1915/#1954: a simple graph must not overwrite a semantic relation."""
+    semantic_edge = {
+        "source": "a_sem",
+        "target": "b_sem",
+        "relation": "derived_from",
+        "source_file": "a.md",
+        "_origin": "semantic",
+    }
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [_semantic_doc("a_sem", "a.md"), _semantic_doc("b_sem", "b.md")],
+        [semantic_edge],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    assert links == [semantic_edge]
+
+
+def test_markdown_reconcile_uses_legacy_page_fallback(tmp_path):
+    """#1915/#1954: a unique legacy page is a safe target fallback."""
+    legacy_page = {
+        "id": "legacy_b",
+        "label": "b.md",
+        "node_kind": "page",
+        "file_type": "document",
+        "source_file": "b.md",
+        "_origin": "semantic",
+    }
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        [_semantic_doc("a_sem", "a.md"), legacy_page],
+        [_ast_reference("a_sem", "legacy_b", "a.md", sentinel="keep")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert {references[0]["source"], references[0]["target"]} == {"a_sem", "legacy_b"}
+    assert references[0]["sentinel"] == "keep"
+
+
+def test_markdown_reconcile_distinguishes_same_basename_paths(tmp_path):
+    """#1915/#1954: full relative paths disambiguate equal basenames."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"one/a.md": "[link](../two/a.md)\n", "two/a.md": "target\n"},
+        [
+            _semantic_doc("one_a", "one/a.md"),
+            _semantic_doc("two_a", "two/a.md"),
+        ],
+        [_ast_reference("one_a", "two_a", "one/a.md", sentinel="keep")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert {references[0]["source"], references[0]["target"]} == {"one_a", "two_a"}
+
+
+def test_markdown_reconcile_does_not_resurrect_a_deleted_target(tmp_path):
+    """#3190: the link text still points at b.md, but b.md was deleted from disk.
+    The extractor only stamps target_file when the target exists, so reconcile
+    must NOT repoint/keep the edge onto the now-stale semantic node — a genuinely
+    deleted target does not survive as a dangling reference."""
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {"a.md": "[link](b.md)\n"},  # b.md intentionally absent from disk
+        [_semantic_doc("a_sem", "a.md"), _semantic_doc("b_sem", "b.md")],
+        [_ast_reference("a_sem", "b_sem", "a.md")],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    links = data["links"]
+    assert not any(edge.get("relation") == "references" for edge in links), (
+        "a reference to a deleted target must not be resurrected"
+    )
+    # the stale semantic node for the deleted file is not kept as a dangling target
+    assert not any(
+        edge.get("target") == "b_sem" for edge in links
+    ), "no edge should still point at the deleted document's node"
+def test_markdown_reconcile_preserves_case_different_unresolved_target(tmp_path):
+    """An unresolved authored site preserves its existing edge without guessing."""
+
+    original = _ast_reference(
+        "source_sem",
+        "target_sem",
+        "history/source.md",
+        sentinel="keep",
+        source_location="L3",
+    )
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "history/source.md": "# Source\n\nSee [[target]] for detail.\n",
+            "root/TARGET.md": "# Target\n\nBody.\n",
+        },
+        [
+            _semantic_doc("source_sem", "history/source.md"),
+            _semantic_doc("target_sem", "root/TARGET.md"),
+        ],
+        [original],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+
+    assert references == [original]
+
+
+def test_markdown_reconcile_prunes_removed_unresolved_link(tmp_path):
+    """Removing the unresolved authored link still prunes its existing edge."""
+
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "history/source.md": "# Source\n\nSee nothing.\n",
+            "root/TARGET.md": "# Target\n\nBody.\n",
+        },
+        [
+            _semantic_doc("source_sem", "history/source.md"),
+            _semantic_doc("target_sem", "root/TARGET.md"),
+        ],
+        [
+            _ast_reference(
+                "source_sem",
+                "target_sem",
+                "history/source.md",
+                sentinel="drop",
+                source_location="L3",
+            )
+        ],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+
+    assert len(references) == 0
+
+
+def test_markdown_reconcile_prunes_removed_colocated_unresolved_link(tmp_path):
+    """One unresolved link does not preserve a removed neighbor on the same line."""
+    keep = _ast_reference(
+        "source_sem",
+        "target_sem",
+        "history/source.md",
+        sentinel="keep",
+        source_location="L3",
+    )
+    removed = _ast_reference(
+        "source_sem",
+        "removed_sem",
+        "history/source.md",
+        sentinel="removed",
+        source_location="L3",
+    )
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "history/source.md": "# Source\n\nSee [[target]] for detail.\n",
+            "root/TARGET.md": "# Target\n",
+            "root/REMOVED.md": "# Removed\n",
+        },
+        [
+            _semantic_doc("source_sem", "history/source.md"),
+            _semantic_doc("target_sem", "root/TARGET.md"),
+            _semantic_doc("removed_sem", "root/REMOVED.md"),
+        ],
+        [keep, removed],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert references == [keep]
+
+
+def test_markdown_reconcile_does_not_suffix_match_unresolved_target(tmp_path):
+    """An unresolved foo_target link does not preserve an old TARGET edge."""
+    stale = _ast_reference(
+        "source_sem",
+        "wrong_target_sem",
+        "history/source.md",
+        sentinel="must-prune",
+        source_location="L3",
+    )
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "history/source.md": "# Source\n\nSee [[foo_target]] for detail.\n",
+            "root/FOO_TARGET.md": "# Current target\n",
+            "root/TARGET.md": "# Removed target\n",
+        },
+        [
+            _semantic_doc("source_sem", "history/source.md"),
+            _semantic_doc("current_target_sem", "root/FOO_TARGET.md"),
+            _semantic_doc("wrong_target_sem", "root/TARGET.md"),
+        ],
+        [stale],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    assert not any(edge.get("relation") == "references" for edge in links)
+
+
+def test_markdown_reconcile_does_not_suffix_match_top_level_target(tmp_path):
+    """A top-level foo_target link does not preserve an old TARGET edge."""
+    stale = _ast_reference(
+        "source_sem",
+        "wrong_target_sem",
+        "source.md",
+        sentinel="must-prune",
+        source_location="L3",
+    )
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {
+            "source.md": "# Source\n\nSee [[foo_target]] for detail.\n",
+            "TARGET.md": "# Removed target\n",
+        },
+        [
+            _semantic_doc("source_sem", "source.md"),
+            _semantic_doc("wrong_target_sem", "TARGET.md"),
+        ],
+        [stale],
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    assert not any(edge.get("relation") == "references" for edge in links)
+
+
+# --- portable paths: definition_file travels with source_file --------------
+
+def test_relativize_source_files_relativizes_definition_file(tmp_path):
+    """`definition_file` (the implementation site recorded when a C/C++/ObjC
+    decl/def pair merges) names a file in the scanned tree exactly like
+    `source_file`, so it must be relativized too. Left absolute, the graph
+    carries the build machine's paths and cannot be read on another checkout."""
+    from graphify.watch import _relativize_source_files
+
+    root = tmp_path.resolve()
+    payload = {"nodes": [{
+        "id": "foo_bar",
+        "source_file": str(root / "src" / "Foo.h"),
+        "definition_file": str(root / "src" / "Foo.cpp"),
+    }]}
+    _relativize_source_files(payload, root)
+    node = payload["nodes"][0]
+    assert node["source_file"] == "src/Foo.h"
+    assert node["definition_file"] == "src/Foo.cpp"
+
+
+def test_relativize_source_files_leaves_an_outside_definition_file_alone(tmp_path):
+    """The scope guard applies to the new key as well: a path outside the
+    watched tree is left as-is rather than being forced under the root."""
+    from graphify.watch import _relativize_source_files
+
+    root = (tmp_path / "repo").resolve()
+    (root).mkdir()
+    outside = (tmp_path / "elsewhere" / "Foo.cpp").resolve()
+    payload = {"nodes": [{
+        "id": "foo_bar",
+        "source_file": str(root / "Foo.h"),
+        "definition_file": str(outside),
+    }]}
+    _relativize_source_files(payload, root, scope=root)
+    node = payload["nodes"][0]
+    assert node["source_file"] == "Foo.h"
+    assert node["definition_file"] == str(outside)
+
+
+def test_rebase_relative_source_files_rebases_definition_file(tmp_path):
+    """Cache-root-relative rebasing moves both keys, so a decl/def node built
+    under a cache root keeps a definition site that resolves from the project
+    root instead of pointing one directory level off."""
+    from graphify.watch import _rebase_relative_source_files
+
+    source_root = tmp_path / "cache" / "pkg"
+    target_root = tmp_path / "cache"
+    payload = {"nodes": [{
+        "id": "foo_bar",
+        "source_file": "src/Foo.h",
+        "definition_file": "src/Foo.cpp",
+    }]}
+    _rebase_relative_source_files(payload, source_root, target_root)
+    node = payload["nodes"][0]
+    assert node["source_file"] == "pkg/src/Foo.h"
+    assert node["definition_file"] == "pkg/src/Foo.cpp"

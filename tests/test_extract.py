@@ -1329,6 +1329,64 @@ def test_python_qualified_class_method_call_resolves_extracted(tmp_path):
     assert call_edges[0]["confidence"] == "EXTRACTED"
 
 
+def test_builtin_named_member_call_still_resolves_cross_file(tmp_path):
+    """#3381: _LANGUAGE_BUILTIN_GLOBALS is one union across every language, right
+    for a BARE call (String(x) really would become a god node) but wrong for a
+    MEMBER call -- `open` is a Python builtin, so Session.open() used to be
+    silently discarded outright: no same-file edge, but also no raw_calls entry,
+    so cross-file resolution never got a chance to try it. A member call carries
+    a receiver, so it isn't the ambiguous case the union guards against."""
+    session = tmp_path / "session.py"
+    user = tmp_path / "user.py"
+    session.write_text(
+        "class Session:\n"
+        "    @staticmethod\n"
+        "    def open():\n"
+        "        return 'opened'\n"
+    )
+    user.write_text(
+        "from session import Session\n\n"
+        "def start():\n"
+        "    Session.open()\n"
+    )
+    result = extract([user, session], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    call_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "start" in nodes[e["source"]]["label"]
+        and "open" in nodes[e["target"]]["label"]
+        and "session.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(call_edges) == 1, f"expected one start->open edge, got {call_edges}"
+    assert call_edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_builtin_named_member_call_does_not_bind_to_unrelated_bare_function(tmp_path):
+    """#3381 follow-up: the god-node guard the builtin filter exists for must
+    still hold. A member call named after a builtin must never fall back to an
+    unrelated same-file bare function sharing that name -- it may only ever
+    resolve through a guarded, receiver-typed path (or not resolve at all)."""
+    p = tmp_path / "sample.py"
+    p.write_text(
+        "def open():\n"
+        "    return 'unrelated top-level function also named open'\n"
+        "\n"
+        "class Session:\n"
+        "    def start(self, other):\n"
+        "        other.open()\n"
+        "        f = open('file.txt')\n"
+    )
+    result = extract([p], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    open_fn = next(n for n in result["nodes"] if n["label"] == "open()")
+    bad_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls" and e["target"] == open_fn["id"]
+    ]
+    assert bad_edges == [], f"member/bare builtin-named calls bound to unrelated open(): {bad_edges}"
+
+
 def test_degenerate_symbol_name_does_not_leak_absolute_id(tmp_path):
     """#1899 variant B: a symbol whose name normalizes to nothing (a minified `$`
     function, a JSONC `"//"` key) must not be minted — `_make_id(stem, "")`
@@ -3289,6 +3347,65 @@ def test_extract_json_extends_resolved():
     assert extends_edges[0].get("context") == "import"
 
 
+def test_extract_json_dependency_edges_are_not_label_self_loops(tmp_path):
+    """A dependency must not point at another node carrying its own label.
+
+    test_extract_json_import_and_extends_targets_are_real_nodes already forbids
+    self-loops, but it compares node *ids*. The dependency branch minted a
+    second node for the same name under a different id, so every dependency
+    rendered as ``react --imports--> react`` -- a self-loop by label that an
+    id-based guard cannot see.
+    """
+    package_json = tmp_path / "package.json"
+    package_json.write_text(json.dumps({
+        "name": "demo",
+        "dependencies": {"react": "^19.0.0", "next": "^15.0.0"},
+        "devDependencies": {"wrangler": "^4.71.0"},
+    }))
+
+    result = extract_json(package_json)
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    offenders = [
+        (labels.get(e["source"]), e["relation"], labels.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "imports"
+        and labels.get(e["source"]) == labels.get(e["target"])
+    ]
+    assert offenders == [], f"label self-loop: {offenders}"
+
+    # The dependency structure #1764 restored is still present.
+    imports = [e for e in result["edges"] if e["relation"] == "imports"]
+    assert {labels.get(e["target"]) for e in imports} == {"react", "next", "wrangler"}
+
+    # External dependency ids stay "ref"-namespaced (J-4), so build.py's alias
+    # index cannot collapse a dep named `utils`/`colors` onto a local module.
+    assert all(e["target"].startswith("ref") for e in imports), [e["target"] for e in imports]
+
+
+def test_extract_json_non_extends_arrays_are_not_inheritance(tmp_path):
+    """Only an ``extends`` array is inheritance.
+
+    ``compilerOptions.lib`` and ``exclude`` are ordinary string lists; emitting
+    ``extends`` for them turns array membership into a supertype relation and
+    manufactures a hub out of a build-output glob.
+    """
+    tsconfig = tmp_path / "tsconfig.json"
+    tsconfig.write_text(json.dumps({
+        "extends": ["./base.json", "./strict.json"],
+        "compilerOptions": {"lib": ["dom", "esnext"]},
+        "exclude": ["node_modules", ".next"],
+    }))
+
+    result = extract_json(tsconfig)
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    extends_targets = {
+        labels.get(e["target"]) for e in result["edges"] if e["relation"] == "extends"
+    }
+    assert extends_targets == {"./base.json", "./strict.json"}
+    for not_inheritance in ("dom", "esnext", ".next", "node_modules"):
+        assert not_inheritance not in extends_targets
+
+
 def test_extract_json_import_and_extends_targets_are_real_nodes(tmp_path):
     package_json = tmp_path / "package.json"
     package_json.write_text(json.dumps({
@@ -4165,3 +4282,187 @@ def test_extract_genuinely_empty_json_still_failed(tmp_path, monkeypatch):
     p.write_text("{}\n")
     result = _ex.extract([p], cache_root=tmp_path)
     assert [Path(x).name for x in result.get("failed_sources", [])] == ["meta.json"]
+
+
+# ── #3252: Authoritative Python Type Reference and Inheritance Rewiring ────────
+
+def test_3252_exact_import_beats_global_ambiguity(tmp_path):
+    """#3252: When two packages define same-named types, exact import resolution
+    repoints references to the imported canonical definition without ghost stubs."""
+    (tmp_path / "pkg_a").mkdir()
+    (tmp_path / "pkg_b").mkdir()
+    (tmp_path / "pkg_a" / "types.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "pkg_b" / "types.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "consumer_a.py").write_text(
+        "from pkg_a.types import StateFrame\ndef foo_a(x: StateFrame):\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "consumer_b.py").write_text(
+        "from pkg_b.types import StateFrame\ndef foo_b(x: StateFrame):\n    pass\n", encoding="utf-8"
+    )
+
+    files = [
+        tmp_path / "pkg_a" / "types.py",
+        tmp_path / "pkg_b" / "types.py",
+        tmp_path / "consumer_a.py",
+        tmp_path / "consumer_b.py",
+    ]
+    res = extract(files, root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    ref_edges = [e for e in res["edges"] if e.get("relation") == "references"]
+    ref_a = next(e for e in ref_edges if "consumer_a_foo_a" in e["source"])
+    ref_b = next(e for e in ref_edges if "consumer_b_foo_b" in e["source"])
+
+    assert node_by_id[ref_a["target"]]["source_file"] == "pkg_a/types.py"
+    assert node_by_id[ref_b["target"]]["source_file"] == "pkg_b/types.py"
+
+    # All StateFrame nodes in the graph must be source-backed definitions (0 stubs)
+    sf_nodes = [n for n in res["nodes"] if n.get("label") == "StateFrame"]
+    assert len(sf_nodes) == 2
+    assert all(n.get("source_file") for n in sf_nodes)
+
+
+def test_3252_aliased_import_repoints_references(tmp_path):
+    """#3252: Aliased import (`from state import StateFrame as SF`) repoints
+    references to the canonical StateFrame and removes the SF stub."""
+    (tmp_path / "state.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "consumer.py").write_text(
+        "from state import StateFrame as SF\ndef foo(x: SF):\n    pass\n", encoding="utf-8"
+    )
+
+    res = extract([tmp_path / "state.py", tmp_path / "consumer.py"], root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    ref_edge = next(e for e in res["edges"] if e.get("relation") == "references")
+    assert ref_edge["source"] == "consumer_foo"
+    assert node_by_id[ref_edge["target"]]["label"] == "StateFrame"
+    assert node_by_id[ref_edge["target"]]["source_file"] == "state.py"
+    assert ref_edge["context"] == "parameter_type"
+    assert ref_edge["confidence"] == "EXTRACTED"
+
+    # SF stub removed
+    assert not any(n.get("label") == "SF" for n in res["nodes"])
+
+
+def test_3252_inheritance_repoints_inherits_edge(tmp_path):
+    """#3252: Class inheritance (`class Child(StateFrame):`) repoints the inherits
+    edge to the canonical definition without ghost stubs."""
+    (tmp_path / "state.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "consumer.py").write_text(
+        "from state import StateFrame\nclass Child(StateFrame):\n    pass\n", encoding="utf-8"
+    )
+
+    res = extract([tmp_path / "state.py", tmp_path / "consumer.py"], root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    inherits_edge = next(e for e in res["edges"] if e.get("relation") == "inherits")
+    assert inherits_edge["source"] == "consumer_child"
+    assert node_by_id[inherits_edge["target"]]["label"] == "StateFrame"
+    assert node_by_id[inherits_edge["target"]]["source_file"] == "state.py"
+
+    # No sourceless StateFrame stubs remain
+    sf_nodes = [n for n in res["nodes"] if n.get("label") == "StateFrame"]
+    assert len(sf_nodes) == 1
+    assert sf_nodes[0].get("source_file") == "state.py"
+
+
+def test_3252_relative_imports(tmp_path):
+    """#3252: Relative imports (`from .types import StateFrame`) repoint accurately."""
+    (tmp_path / "pkg" / "sub").mkdir(parents=True)
+    (tmp_path / "pkg" / "sub" / "types.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "pkg" / "sub" / "consumer.py").write_text(
+        "from .types import StateFrame\ndef foo(x: StateFrame):\n    pass\n", encoding="utf-8"
+    )
+
+    files = [tmp_path / "pkg" / "sub" / "types.py", tmp_path / "pkg" / "sub" / "consumer.py"]
+    res = extract(files, root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    ref_edge = next(e for e in res["edges"] if e.get("relation") == "references")
+    assert node_by_id[ref_edge["target"]]["source_file"] == "pkg/sub/types.py"
+    assert not any(n.get("label") == "StateFrame" and not n.get("source_file") for n in res["nodes"])
+
+
+def test_3252_unimported_ambiguous_type_remains_unresolved(tmp_path):
+    """#3252: When multiple definitions exist but consumer has no import, Graphify
+    must NOT guess or collapse to an arbitrary definition."""
+    (tmp_path / "pkg_a").mkdir()
+    (tmp_path / "pkg_b").mkdir()
+    (tmp_path / "pkg_a" / "types.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "pkg_b" / "types.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "consumer.py").write_text(
+        "def foo(x: StateFrame):\n    pass\n", encoding="utf-8"
+    )
+
+    files = [
+        tmp_path / "pkg_a" / "types.py",
+        tmp_path / "pkg_b" / "types.py",
+        tmp_path / "consumer.py",
+    ]
+    res = extract(files, root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    ref_edge = next(e for e in res["edges"] if e.get("relation") == "references")
+    # Stub must NOT have bound to either definition
+    target_node = node_by_id[ref_edge["target"]]
+    assert not target_node.get("source_file")
+
+
+def test_3252_cross_language_same_name_definition(tmp_path):
+    """#3252: Python import resolution resolves only to Python definitions, not
+    same-named TypeScript definitions."""
+    pytest.importorskip("tree_sitter_typescript")
+    (tmp_path / "types.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "types.ts").write_text("export interface StateFrame { id: string; }\n", encoding="utf-8")
+    (tmp_path / "consumer.py").write_text(
+        "from types import StateFrame\ndef foo(x: StateFrame):\n    pass\n", encoding="utf-8"
+    )
+
+    files = [tmp_path / "types.py", tmp_path / "types.ts", tmp_path / "consumer.py"]
+    res = extract(files, root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    ref_edge = next(e for e in res["edges"] if e.get("relation") == "references")
+    assert node_by_id[ref_edge["target"]]["source_file"] == "types.py"
+
+
+def test_3252_alias_and_inheritance(tmp_path):
+    """#3252: Aliased import in inheritance (`class Child(SF):`) repoints inherits
+    edge to canonical StateFrame and drops the SF stub."""
+    (tmp_path / "state.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "consumer.py").write_text(
+        "from state import StateFrame as SF\nclass Child(SF):\n    pass\n", encoding="utf-8"
+    )
+
+    res = extract([tmp_path / "state.py", tmp_path / "consumer.py"], root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    inherits_edge = next(e for e in res["edges"] if e.get("relation") == "inherits")
+    assert inherits_edge["source"] == "consumer_child"
+    assert node_by_id[inherits_edge["target"]]["label"] == "StateFrame"
+    assert node_by_id[inherits_edge["target"]]["source_file"] == "state.py"
+    assert not any(n.get("label") == "SF" for n in res["nodes"])
+
+
+def test_3252_metadata_preservation(tmp_path):
+    """#3252: Repointing mutates only edge['target'] while preserving relation,
+    context, confidence, confidence_score, source_file, and source_location."""
+    (tmp_path / "models.py").write_text("class User:\n    pass\n", encoding="utf-8")
+    (tmp_path / "service.py").write_text(
+        "from models import User\ndef get_user(u: User) -> User:\n    pass\n", encoding="utf-8"
+    )
+
+    res = extract([tmp_path / "models.py", tmp_path / "service.py"], root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    param_ref = next(
+        e for e in res["edges"]
+        if e.get("relation") == "references" and e.get("context") == "parameter_type"
+    )
+    assert param_ref["relation"] == "references"
+    assert param_ref["context"] == "parameter_type"
+    assert param_ref["confidence"] == "EXTRACTED"
+    assert param_ref["source_file"] == "service.py"
+    assert param_ref["source_location"] == "L2"
+    assert node_by_id[param_ref["target"]]["label"] == "User"
+    assert node_by_id[param_ref["target"]]["source_file"] == "models.py"

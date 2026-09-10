@@ -172,6 +172,43 @@ def test_call_llm_success_still_returns_result_text():
         assert llm._call_llm("dummy", backend="claude-cli") == "a fine label"
 
 
+_MCP_PREAMBLE = (
+    "Client.listTools() called but server does not advertise tools capability "
+    "- returning empty list\n"
+)
+
+
+def test_envelope_survives_a_diagnostic_preamble_on_stdout():
+    """An MCP server that advertises no tools must not kill the whole chunk.
+
+    The CLI writes that notice to stdout ahead of the envelope, so json.loads
+    saw `Client.listTools()...` and raised. The failure lands after the model
+    has answered, so the tokens are already spent and the chunk is dropped --
+    every chunk, for anyone with an MCP server configured.
+    """
+    completed = MagicMock(
+        returncode=0, stdout=_MCP_PREAMBLE + json.dumps(_ENVELOPE), stderr=""
+    )
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        result = llm._call_claude_cli("dummy", max_tokens=8192)
+    assert [n["label"] for n in result["nodes"]] == ["Foo", "greet"]
+
+
+def test_envelope_survives_preamble_around_array_shaped_stream():
+    """Same, for the >= 2.1 array-of-events shape."""
+    stream = [{"type": "system", "subtype": "init"}, _ENVELOPE]
+    completed = MagicMock(
+        returncode=0,
+        stdout=_MCP_PREAMBLE + json.dumps(stream) + "\ntrailing noise\n",
+        stderr="",
+    )
+    with patch("shutil.which", return_value="/fake/bin/claude"), \
+         patch("subprocess.run", return_value=completed):
+        result = llm._call_claude_cli("dummy", max_tokens=8192)
+    assert [n["label"] for n in result["nodes"]] == ["Foo", "greet"]
+
+
 def test_raises_on_garbage_envelope():
     completed = MagicMock(returncode=0, stdout="not json", stderr="")
     with patch("shutil.which", return_value="/fake/bin/claude"), \

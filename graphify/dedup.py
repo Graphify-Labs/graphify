@@ -301,6 +301,53 @@ def _defines_id(node: dict) -> bool:
                for prefix in _id_prefixes(source_file))
 
 
+# `node_kind` values marking a node that is STRUCTURE of its source file rather
+# than an entity mentioned inside it: `page` is the file's own node, `heading`
+# one of its sections. The markdown extractor stamps these precisely because
+# `file_type` cannot carry the distinction, and both are file-anchored in the
+# #1284 sense — two files' `## Decisions` sections are two sections (#3094).
+#
+# PRODUCER CONTRACT: an extractor that mints a node standing for a *part* of its
+# source file (a section, a sheet, a slide) must stamp one of these. The gate
+# below reads an unstamped node as an entity, so an unstamped structural node is
+# eligible to merge with its namesake in another file.
+_FILE_STRUCTURE_NODE_KINDS = frozenset({"page", "heading"})
+
+
+def _reads_as_file_entity(node: dict) -> bool:
+    """True when the node reads as an entity found inside its file, rather than
+    as the file itself or a stamped structural part of it (#296).
+
+    Be precise about what is proven and what is assumed, because the two halves
+    differ in strength:
+
+    * PROVEN — it is not its file's OWN node. ``_id_prefixes`` enumerates the ID
+      a node standing for ``source_file`` itself would carry, in every spelling
+      a stored path may take (absolute, repo-relative, or the pre-#1504 bare
+      stem). A file's own node IS one of those; an entity extracted from that
+      file carries an ``_<entity>`` suffix, so it never equals one. This is a
+      reconstruction, not a heuristic.
+    * ASSUMED — it is not a section of the file. That rests on ``node_kind``,
+      which only a producer that stamps it can attest. `heading`/`page` are
+      honoured when present, but ABSENCE OF THE MARKER IS NOT PROOF OF
+      ENTITY-NESS: a producer minting sub-file nodes without stamping
+      `node_kind` (see the contract above) yields structural nodes that this
+      returns True for, and two such nodes sharing a label in different files
+      would merge. The conservative fix is on the producer side — stamp
+      `node_kind` — not a guess here about what an unstamped node meant.
+
+    A node that cannot be checked at all (no ID, no provenance) answers False
+    and stays blocked.
+    """
+    nid = node.get("id") or ""
+    source_file = node.get("source_file") or ""
+    if not nid or not source_file:
+        return False  # uncheckable — leave the file-anchored block in place
+    if node.get("node_kind") in _FILE_STRUCTURE_NODE_KINDS:
+        return False  # the extractor says this node is part of the file's structure
+    return nid not in _id_prefixes(source_file)
+
+
 # Path-segment lifecycle markers used by _collision_rank (#2532). Lower penalty
 # wins. Without them, pure lexical source_file order makes ``plans/_done/…``
 # beat ``plans/in-progress/…`` because "_" < "i" in ASCII. Active-vs-archived
@@ -630,14 +677,27 @@ def deduplicate_entities(
                 exact_merges += len(file_group) - 1
         # Cross-file residue: union exact matches across files, but only where
         # it is provably safe (#2182). `concept` is the one file_type meant to
-        # unify across files (#1284) — code is keyed by ID (#1205), rationale/
-        # document are file-anchored (#1284), and image/paper labels are often
-        # shared basenames (logo.png). Provenance is required (#1178), and the
-        # entropy gate mirrors Pass 2 so short generic labels ("API") stay
-        # distinct. Sorting by id keeps the winner order-independent.
+        # unify across files (#1284) — code is keyed by ID (#1205) and
+        # image/paper labels are often shared basenames (logo.png), so both stay
+        # blocked. rationale/document join `concept` here ONLY when the node
+        # reads as an entity inside its file (#296): a file-anchored
+        # *file_type* does not make an individual node file-anchored. An entity
+        # extracted from a note — a person, a project — inherits `document` from
+        # the file's extension, not from anything about itself, so in note-heavy
+        # corpora almost no entity node is typed `concept` and this merge never
+        # got to run on them. A file's own node and its headings still never
+        # merge (#1284, #3094).
+        # Provenance is required (#1178), and the entropy gate mirrors Pass 2 so
+        # short generic labels ("API") stay distinct — both untouched here.
+        # Scoped to this exact-normalization pass: Pass 2's fuzzy
+        # `_crossfile_fileanchored_blocked` is unchanged, so #1284's
+        # near-identical boilerplate and heading siblings stay blocked.
+        # Sorting by id keeps the winner order-independent.
         mergeable = sorted(
             (n for n in group
-             if n.get("file_type") == "concept"
+             if (n.get("file_type") == "concept"
+                 or (n.get("file_type") in _FILE_ANCHORED_NONCODE
+                     and _reads_as_file_entity(n)))
              and (n.get("source_file") or "")
              and _entropy(n.get("label", "")) >= _ENTROPY_THRESHOLD),
             key=lambda n: n["id"],
@@ -790,6 +850,8 @@ def deduplicate_entities(
         n["id"]: (i, n) for i, n in enumerate(unique_nodes)
     }
 
+    # Survivors enriched with their losers' fields, substituted at the end.
+    enriched_by_id: dict[str, dict] = {}
     for root, members in components.items():
         if len(members) == 1:
             continue
@@ -801,6 +863,17 @@ def deduplicate_entities(
         ]
         winner = _pick_winner(group_nodes) if group_nodes else {"id": root}
         winner_id = winner["id"]
+        # Even with the right survivor, dropping the losers wholesale loses
+        # whatever fields only they carried. Fill the survivor's absent
+        # fields from each loser — the same never-override merge the
+        # same-source collision path already applies (#2091/#3372); loser
+        # order follows unique_nodes order, so the fill is deterministic.
+        merged = winner
+        for node in group_nodes:
+            if node["id"] != winner_id:
+                merged = _merge_missing_attributes(merged, node)
+        if merged != winner:
+            enriched_by_id[winner_id] = merged
         for member in members:
             if member != winner_id:
                 remap[member] = winner_id
@@ -832,7 +905,9 @@ def deduplicate_entities(
     if hyperedges:
         _remap_hyperedge_members(hyperedges, remap)
 
-    deduped_nodes = [n for n in unique_nodes if n["id"] not in remap]
+    deduped_nodes = [
+        enriched_by_id.get(n["id"], n) for n in unique_nodes if n["id"] not in remap
+    ]
     deduped_edges = []
     for edge in edges:
         e = dict(edge)
@@ -856,14 +931,53 @@ def deduplicate_entities(
     return deduped_nodes, deduped_edges
 
 
+# Keys every node carries (or that describe placement rather than content).
+# They say nothing about which duplicate is the better-established record, so
+# the richness score below ignores them.
+_RICHNESS_IGNORED_KEYS = frozenset({
+    "id", "label", "norm_label", "file_type", "source_file", "source_location",
+})
+
+
+def _content_richness(n: dict) -> int:
+    """How much actual content a node carries, for survivor selection (#3372).
+
+    Counts populated fields beyond the identity/placement baseline, weighting
+    ``attributes`` by entry count and ``_merged_from`` by its history length —
+    a node that already absorbed prior merges is the established record.
+    """
+    score = 0
+    for key, value in n.items():
+        if key in _RICHNESS_IGNORED_KEYS:
+            continue
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        score += 1
+        if key == "attributes" and isinstance(value, dict):
+            score += len(value)
+        elif key == "_merged_from" and isinstance(value, list):
+            score += len(value)
+    return score
+
+
 def _pick_winner(nodes: list[dict]) -> dict:
-    """Pick the canonical survivor: prefer no chunk suffix, then shorter ID."""
+    """Pick the canonical survivor: no chunk suffix, then richer content,
+    then shorter ID.
+
+    ID length used to be the primary signal after the chunk-suffix check,
+    which made a passing one-line mention on a shallow page (short id, one
+    fewer path segment) beat the dedicated, enriched page for the same entity
+    — every time the pattern occurred, the established node's content was
+    discarded (#3372). Content richness now decides first; ID shape only
+    breaks ties between equally-rich candidates, preserving the old
+    deterministic ordering there.
+    """
     if not nodes:
         raise ValueError("Cannot pick winner from empty list")
 
-    def _score(n: dict) -> tuple[int, int]:
+    def _score(n: dict) -> tuple[int, int, int]:
         has_suffix = bool(_CHUNK_SUFFIX.search(n["id"]))
-        return (1 if has_suffix else 0, len(n["id"]))
+        return (1 if has_suffix else 0, -_content_richness(n), len(n["id"]))
 
     return min(nodes, key=_score)
 

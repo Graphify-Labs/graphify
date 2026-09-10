@@ -176,3 +176,53 @@ def test_write_json_atomic_ensure_ascii_false_preserves_utf8(tmp_path):
     assert "Wörker 数据" in raw  # raw UTF-8, not \\uXXXX escapes
     assert "\\u" not in raw
     assert json.loads(raw) == {"label": "Wörker 数据"}
+
+
+def test_atomic_replace_temp_name_is_bounded_and_does_not_embed_long_filename(tmp_path, monkeypatch):
+    """Regression #3351: temp filename must not grow with destination filename."""
+    import tempfile
+    from pathlib import Path
+    from graphify.paths import _WINDOWS_MAX_PATH, _atomic_replace
+
+    base = str(tmp_path.resolve())
+    # Sized to be a long name (> 100 chars) while fitting within MAX_PATH
+    remaining = (_WINDOWS_MAX_PATH - 1) - len(base) - 1
+    long_name = "a" * (remaining - 10) + ".md"
+    assert len(long_name) >= 100
+    target = tmp_path / long_name
+
+    intercepted_temps = []
+    real_mkstemp = tempfile.mkstemp
+
+    def tracking_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        intercepted_temps.append(path)
+        return fd, path
+
+    monkeypatch.setattr(tempfile, "mkstemp", tracking_mkstemp)
+    _atomic_replace(target, lambda f: f.write("hello"))
+
+    assert target.exists()
+    assert len(intercepted_temps) == 1
+    temp_path = Path(intercepted_temps[0])
+
+    assert len(temp_path.name) <= 25, f"temp filename was unexpectedly long: {temp_path.name}"
+    assert temp_path.name.startswith(".gfy-")
+    assert temp_path.name.endswith(".tmp")
+    assert "a" * 50 not in temp_path.name, "temp filename embedded the long destination name"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH test")
+def test_write_text_atomic_succeeds_near_windows_max_path(tmp_path):
+    """Regression #3351: atomic write to a path at Windows MAX_PATH limit must succeed."""
+    from graphify.paths import _WINDOWS_MAX_PATH, write_text_atomic
+
+    base = str(tmp_path.resolve())
+    remaining = (_WINDOWS_MAX_PATH - 1) - len(base) - 1
+    filename = ("x" * (remaining - 4)) + ".txt"
+    target = tmp_path / filename
+    assert len(str(target)) == _WINDOWS_MAX_PATH - 1
+
+    write_text_atomic(target, "content-at-max-path")
+    assert target.read_text(encoding="utf-8") == "content-at-max-path"
+    assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())

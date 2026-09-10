@@ -641,8 +641,15 @@ def test_anonymous_class_inline_new_emits_no_edge(tmp_path: Path):
     assert (index, _find(r, ".search()", "auditlog")) not in calls
 
 
-def test_bare_new_statement_without_call_emits_no_edge(tmp_path: Path):
-    """`new Service();` on its own is not a call — still out of scope."""
+def test_bare_new_statement_without_call_links_only_the_class(tmp_path: Path):
+    """`new Service();` on its own is not a MEMBER call, so no method edge.
+
+    Since upstream #3115 the construction itself is a `calls` edge to the
+    constructed class (the PHP twin of Java #1373 / C# #2997), so the only edge
+    the statement may leave is `index() -> LeadHunterService`; `search()` on
+    the service and on the decoy stay untouched because nothing was called on
+    the instance.
+    """
     calls, r = _calls(tmp_path, {
         **_CORPUS,
         "app/Http/Controllers/LeadController.php": _controller(
@@ -651,10 +658,17 @@ def test_bare_new_statement_without_call_emits_no_edge(tmp_path: Path):
     })
 
     index = _find(r, ".index()", "leadcontroller")
-    assert not any(src == index for src, _tgt in calls)
+    service_class = _find(r, "LeadHunterService", "leadhunterservice")
+    assert {tgt for src, tgt in calls if src == index} == {service_class}
 
 
-def test_inline_new_unknown_method_emits_no_edge(tmp_path: Path):
+def test_inline_new_unknown_method_emits_no_method_edge(tmp_path: Path):
+    """The named class has no such method — refuse, don't fall back.
+
+    The construction itself still links `index()` to the class (upstream
+    #3115); that is the ONLY edge allowed here. Neither `search()` may be
+    reached through a bare-name fallback.
+    """
     calls, r = _calls(tmp_path, {
         **_CORPUS,
         "app/Http/Controllers/LeadController.php": _controller(
@@ -663,7 +677,8 @@ def test_inline_new_unknown_method_emits_no_edge(tmp_path: Path):
     })
 
     index = _find(r, ".index()", "leadcontroller")
-    assert not any(src == index for src, _tgt in calls), \
+    service_class = _find(r, "LeadHunterService", "leadhunterservice")
+    assert {tgt for src, tgt in calls if src == index} == {service_class}, \
         "the named class has no such method — refuse, don't fall back"
 
 

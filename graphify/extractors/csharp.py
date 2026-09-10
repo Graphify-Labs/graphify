@@ -149,8 +149,15 @@ def _resolve_cross_file_csharp_imports(
     ]
 
 
+_DOTNET_SOURCE_EXTS = (".cs", ".razor", ".cshtml")
+
+
 def _is_cs_file(value: object) -> bool:
     return isinstance(value, str) and value.endswith(".cs")
+
+
+def _is_dotnet_source_file(value: object) -> bool:
+    return isinstance(value, str) and value.endswith(_DOTNET_SOURCE_EXTS)
 
 
 def _metadata(value: object) -> dict:
@@ -194,11 +201,11 @@ class CsharpNameResolver:
             if not (
                 source_node
                 and isinstance(source_node.get("label"), str)
-                and source_node.get("label", "").endswith(".cs")
+                and source_node.get("label", "").endswith(_DOTNET_SOURCE_EXTS)
             ):
                 continue
             source_file = source_node.get("source_file")
-            if not _is_cs_file(source_file):
+            if not _is_dotnet_source_file(source_file):
                 continue
             metadata = _metadata(edge.get("metadata"))
             target_fqn = metadata.get("target_fqn")
@@ -405,7 +412,7 @@ def _resolve_csharp_type_references(
         if edge.get("relation") not in REPOINT_RELATIONS:
             continue
         source_file = edge.get("source_file")
-        if not _is_cs_file(source_file):
+        if not _is_dotnet_source_file(source_file):
             continue
         source_node = node_by_id.get(edge.get("source"))
         target_node = node_by_id.get(edge.get("target"))

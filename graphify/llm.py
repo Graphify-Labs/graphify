@@ -172,7 +172,10 @@ BACKENDS: dict[str, dict] = {
         "default_model": "deepseek-v4-flash",
         "env_key": "DEEPSEEK_API_KEY",
         "model_env_key": "GRAPHIFY_DEEPSEEK_MODEL",
-        "pricing": {"input": 0.14, "output": 0.28},  # USD per 1M tokens (v4-flash)
+        "pricing": {"input": 0.44, "output": 1.32},  # USD per 1M tokens (v4-flash,
+        # peak, cache miss). Peak is 01:00-04:00 and 06:00-10:00 UTC Mon-Fri;
+        # all other hours are off-peak at half these rates. A cache hit is
+        # $0.014/1M in. Source: api-docs.deepseek.com/quick_start/pricing
         # deepseek-reasoner silently ignores temperature; deepseek-chat / v4-flash
         # accept 0-2, so sending 0 is safe. Note: deepseek-v4-flash (and v4-pro) have
         # thinking ENABLED by default (verified against the live API, #1621) — set
@@ -553,9 +556,14 @@ def _resolve_under_root(path: Path, root: Path) -> Path | None:
 # a file cannot forge an early `</untrusted_source>` and smuggle instructions out.
 _INJECTION_SENTINELS = re.compile(
     r"</?untrusted_source\b[^>]*>"
-    r"|<\|(?:im_start|im_end|system|user|assistant|endoftext)\|>"
+    # ANY <|token|> chat-template marker, not an enumerated few (#3183): the
+    # old list named six and missed <|start_header_id|>/<|eot_id|> (Llama 3),
+    # <|endofprompt|>, and whatever the next template calls its turns. The
+    # form itself is the hazard - no legitimate source construct needs an
+    # intact one, and defanging only inserts a zero-width space.
+    r"|<\|[A-Za-z0-9_.\-]{1,64}\|>"
     r"|<<SYS>>|<</SYS>>"
-    r"|\[/?INST\]"
+    r"|\[/?(?:INST|SYSTEM)\]"
     r"|^\s*###?\s*(?:system|instruction)s?\s*:?\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -1516,6 +1524,40 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     return result
 
 
+def _envelope_after_preamble(stdout: str):
+    """Recover the envelope when `claude -p` prefixes it with a diagnostic line.
+
+    The CLI shares stdout with its own subsystems, so the JSON is not always the
+    first thing on it. An attached MCP server that advertises no tools makes
+    every invocation emit
+
+        Client.listTools() called but server does not advertise tools capability
+        - returning empty list
+
+    ahead of the envelope, and `json.loads` then fails on the whole buffer.
+    Because that failure is raised after the model has already answered, the
+    chunk is discarded with its tokens spent -- on a mid-size corpus a run could
+    burn the whole budget and return nothing, and the error names the JSON
+    rather than the preamble that caused it, so the log points at the wrong
+    thing. Any user with an MCP server configured hits this on every chunk.
+
+    Scans for the first `[`/`{` that begins a valid JSON document. `raw_decode`
+    ignores trailing bytes, so a diagnostic on either side is tolerated, and
+    stdout carrying no JSON at all still returns None for the caller to raise on.
+    """
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(stdout):
+        if ch not in "[{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(stdout, idx)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, (dict, list)):
+            return value
+    return None
+
+
 def _claude_cli_envelope(stdout: str) -> dict:
     """Parse the JSON returned by `claude -p --output-format json`.
 
@@ -1528,10 +1570,12 @@ def _claude_cli_envelope(stdout: str) -> dict:
     try:
         envelope = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"claude -p produced unparseable JSON envelope: {exc}; "
-            f"first 500 chars of stdout: {stdout[:500]!r}"
-        ) from exc
+        envelope = _envelope_after_preamble(stdout)
+        if envelope is None:
+            raise RuntimeError(
+                f"claude -p produced unparseable JSON envelope: {exc}; "
+                f"first 500 chars of stdout: {stdout[:500]!r}"
+            ) from exc
     if isinstance(envelope, list):
         result_events = [
             e for e in envelope

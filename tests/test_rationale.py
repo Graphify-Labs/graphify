@@ -45,6 +45,99 @@ def test_class_docstring_extracted(tmp_path):
     assert any("Redis" in n["label"] for n in rationale)
 
 
+def test_module_docstring_extracted_behind_shebang(tmp_path):
+    """#3312: a leading `#!` shebang comment must not hide the module docstring
+    that follows it — essentially every executable Python script starts with
+    one, so this silently dropped module rationale for that whole class of
+    file."""
+    p = tmp_path / "sample.py"
+    p.write_text(
+        "#!/usr/bin/env python3\n"
+        '"""This module handles authentication because legacy sessions were insecure."""\n'
+        "def login(): pass\n"
+    )
+    result = extract_python(p)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert any("authentication" in n["label"] for n in rationale)
+    module_ds = next(n for n in rationale if "authentication" in n["label"])
+    assert module_ds["source_location"] == "L2"
+
+
+def test_module_docstring_extracted_behind_plain_comment(tmp_path):
+    """#3312: same bug, non-shebang trigger — any ordinary leading comment
+    (license header, coding declaration, ...) hid the module docstring."""
+    p = tmp_path / "sample.py"
+    p.write_text(
+        "# an ordinary leading comment, not a shebang\n"
+        '"""This module handles authentication because legacy sessions were insecure."""\n'
+        "def login(): pass\n"
+    )
+    result = extract_python(p)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert any("authentication" in n["label"] for n in rationale)
+
+
+def test_module_docstring_extracted_behind_multiple_leading_comments(tmp_path):
+    """#3312: a multi-line header (shebang + coding declaration + license) —
+    every leading comment must be skipped, not just the first one."""
+    p = tmp_path / "sample.py"
+    p.write_text(
+        "#!/usr/bin/env python3\n"
+        "# -*- coding: utf-8 -*-\n"
+        "# Copyright 2026 Someone. All rights reserved.\n"
+        '"""This module handles authentication because legacy sessions were insecure."""\n'
+        "def login(): pass\n"
+    )
+    result = extract_python(p)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert any("authentication" in n["label"] for n in rationale)
+
+
+def test_function_docstring_extracted_behind_leading_comment(tmp_path):
+    """#3312: the same _get_docstring helper serves function/class bodies too —
+    a comment as the first line of a function body must not hide its
+    docstring either."""
+    path = _write_py(tmp_path, '''
+        def process():
+            # a leading comment inside the function body
+            """We use chunked processing here because the full dataset exceeds RAM."""
+            pass
+    ''')
+    result = extract_python(path)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert any("chunked" in n["label"] for n in rationale)
+
+
+def test_no_docstring_after_comment_extracts_nothing(tmp_path):
+    """#3312 follow-up: a leading comment with NO docstring after it must not
+    fabricate a rationale node from something else in the body."""
+    p = tmp_path / "sample.py"
+    p.write_text(
+        "#!/usr/bin/env python3\n"
+        "# just a comment, no docstring at all\n"
+        "import os\n"
+        "x = 1\n"
+    )
+    result = extract_python(p)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert rationale == []
+
+
+def test_non_first_statement_string_not_treated_as_docstring(tmp_path):
+    """#3312 follow-up: a bare string literal that is NOT the first statement
+    (because an assignment precedes it) is not a docstring and must still be
+    correctly rejected after the leading-comment skip is added."""
+    p = tmp_path / "sample.py"
+    p.write_text(
+        "#!/usr/bin/env python3\n"
+        "x = 1\n"
+        '"""This string is not a docstring since it is not the first statement, long enough."""\n'
+    )
+    result = extract_python(p)
+    rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
+    assert rationale == []
+
+
 def test_rationale_comment_extracted(tmp_path):
     path = _write_py(tmp_path, '''
         def build():

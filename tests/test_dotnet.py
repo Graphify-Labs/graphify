@@ -574,9 +574,114 @@ public static class Caller
 def test_razor_using_and_inject():
     r = extract_razor(FIXTURES / "sample.razor")
     assert "error" not in r
-    targets = {e["target"] for e in r["edges"] if e["relation"] == "imports"}
-    assert any("microsoft" in t for t in targets)
-    assert any("counterservice" in t.lower() for t in targets)
+    imports = {e["target"] for e in r["edges"] if e["relation"] == "imports"}
+    assert any("microsoft" in t for t in imports)
+    references = {e["target"] for e in r["edges"] if e["relation"] == "references"}
+    assert any("counterservice" in t.lower() for t in references)
+
+
+def test_razor_inject_cross_file_resolution(tmp_path: Path):
+    # A. Project-defined service resolution
+    svc = tmp_path / "WidgetService.cs"
+    svc.write_text("public class WidgetService {}\n", encoding="utf-8")
+    page = tmp_path / "AlphaPage.razor"
+    page.write_text("@page \"/alpha\"\n@inject WidgetService _widgets\n", encoding="utf-8")
+
+    result = extract([svc, page], cache_root=tmp_path)
+    svc_def = next(n for n in result["nodes"] if n.get("label") == "WidgetService" and n.get("source_file"))
+    page_node = next(n for n in result["nodes"] if n.get("label") == "AlphaPage.razor")
+
+    ref_edges = [
+        e for e in result["edges"]
+        if e.get("source") == page_node["id"] and e.get("relation") == "references"
+    ]
+    assert any(e.get("target") == svc_def["id"] for e in ref_edges)
+
+
+def test_razor_inject_multiple_razor_files_and_csharp_control(tmp_path: Path):
+    # B. Multiple Razor files referencing same canonical node
+    # C. Existing C# control pointing to same canonical node
+    services_dir = tmp_path / "Services"
+    pages_dir = tmp_path / "Pages"
+    services_dir.mkdir(parents=True, exist_ok=True)
+    pages_dir.mkdir(parents=True, exist_ok=True)
+
+    svc = services_dir / "WidgetService.cs"
+    svc.write_text("public class WidgetService {}\n", encoding="utf-8")
+    consumer = services_dir / "Consumer.cs"
+    consumer.write_text("public class Consumer(WidgetService widgets) {}\n", encoding="utf-8")
+    alpha = pages_dir / "AlphaPage.razor"
+    alpha.write_text("@inject WidgetService _widgets\n", encoding="utf-8")
+    beta = pages_dir / "BetaPage.razor"
+    beta.write_text("@inject WidgetService _widgets\n", encoding="utf-8")
+    gamma = pages_dir / "GammaPage.razor"
+    gamma.write_text("@inject WidgetService _widgets\n", encoding="utf-8")
+
+    result = extract([svc, consumer, alpha, beta, gamma], cache_root=tmp_path)
+    svc_def = next(n for n in result["nodes"] if n.get("label") == "WidgetService" and n.get("source_file"))
+
+    # Assert no sourceless stubs left behind for WidgetService
+    widget_nodes = [n for n in result["nodes"] if n.get("label") == "WidgetService"]
+    assert len(widget_nodes) == 1
+    assert widget_nodes[0]["id"] == svc_def["id"]
+
+    alpha_node = next(n for n in result["nodes"] if n.get("label") == "AlphaPage.razor")
+    beta_node = next(n for n in result["nodes"] if n.get("label") == "BetaPage.razor")
+    gamma_node = next(n for n in result["nodes"] if n.get("label") == "GammaPage.razor")
+    consumer_node = next(n for n in result["nodes"] if n.get("label") == "Consumer" and n.get("file_type") == "code")
+
+    for src_id in (alpha_node["id"], beta_node["id"], gamma_node["id"], consumer_node["id"]):
+        refs = [e for e in result["edges"] if e.get("source") == src_id and e.get("relation") == "references"]
+        assert any(e.get("target") == svc_def["id"] for e in refs)
+
+    cs_refs = [e for e in result["edges"] if e.get("relation") == "references" and e.get("target") == svc_def["id"]]
+    assert len(cs_refs) >= 4  # alpha, beta, gamma, consumer
+
+
+def test_razor_inject_with_explicit_using(tmp_path: Path):
+    # D. Explicit Razor @using with namespace scope
+    svc = tmp_path / "WidgetService.cs"
+    svc.write_text("namespace Demo.Services {\n    public class WidgetService {}\n}\n", encoding="utf-8")
+    page = tmp_path / "AlphaPage.razor"
+    page.write_text("@using Demo.Services\n@inject WidgetService _widgets\n", encoding="utf-8")
+
+    result = extract([svc, page], cache_root=tmp_path)
+    svc_def = next(n for n in result["nodes"] if n.get("label") == "WidgetService" and n.get("source_file"))
+    page_node = next(n for n in result["nodes"] if n.get("label") == "AlphaPage.razor")
+
+    # @using must remain an imports edge
+    using_edges = [
+        e for e in result["edges"]
+        if e.get("source") == page_node["id"] and e.get("relation") == "imports"
+    ]
+    assert using_edges
+
+    # @inject must resolve to WidgetService definition
+    ref_edges = [
+        e for e in result["edges"]
+        if e.get("source") == page_node["id"] and e.get("relation") == "references"
+    ]
+    assert any(e.get("target") == svc_def["id"] for e in ref_edges)
+
+
+def test_razor_inject_qualified_namespace(tmp_path: Path):
+    # Qualified @inject Demo.Services.WidgetService _widgets
+    svc = tmp_path / "Services" / "WidgetService.cs"
+    svc.parent.mkdir(parents=True, exist_ok=True)
+    svc.write_text("namespace Demo.Services {\n    public class WidgetService {}\n}\n", encoding="utf-8")
+    page = tmp_path / "Pages" / "AlphaPage.razor"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text("@inject Demo.Services.WidgetService _widgets\n", encoding="utf-8")
+
+    result = extract([svc, page], cache_root=tmp_path)
+    svc_def = next(n for n in result["nodes"] if n.get("label") == "WidgetService" and n.get("source_file"))
+    page_node = next(n for n in result["nodes"] if n.get("label") == "AlphaPage.razor")
+
+    ref_edges = [
+        e for e in result["edges"]
+        if e.get("source") == page_node["id"] and e.get("relation") == "references"
+    ]
+    assert any(e.get("target") == svc_def["id"] for e in ref_edges)
 
 
 def test_razor_components():
