@@ -254,6 +254,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `mcp` | MCP stdio server | `uv tool install "graphifyy[mcp]"` |
 | `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
 | `falkordb` | FalkorDB push support | `uv tool install "graphifyy[falkordb]"` |
+| `watch` | `graphify watch` auto-rebuild on file changes | `uv tool install "graphifyy[watch]"` |
 | `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
 | `leiden` | Leiden community detection (Python < 3.13 only) | `uv tool install "graphifyy[leiden]"` |
 | `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
@@ -684,7 +685,7 @@ graphify extract ./raw --code-only # index code only — local AST, no API key (
 /graphify ./raw --neo4j-push bolt://localhost:7687
 /graphify ./raw --falkordb         # generate cypher.txt for FalkorDB
 /graphify ./raw --falkordb-push falkordb://localhost:6379
-/graphify ./raw --watch            # auto-sync as files change
+/graphify ./raw --watch            # auto-sync as files change (needs the [watch] extra)
 /graphify ./raw --mcp              # start MCP stdio server
 
 /graphify add https://arxiv.org/abs/1706.03762
@@ -802,7 +803,7 @@ GRAPHIFY_TRIAGE_BACKEND=kimi graphify prs --triage   # use a specific backend fo
 graphify clone https://github.com/karpathy/nanoGPT
 graphify merge-graphs a.json b.json --out merged.json
 graphify --version                                    # print installed version
-graphify watch ./src
+graphify watch ./src                # needs the [watch] extra
 graphify check-update ./src
 graphify update ./src
 graphify update ./src --no-cluster  # skip reclustering, write raw AST graph only
