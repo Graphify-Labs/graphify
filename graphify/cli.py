@@ -3126,7 +3126,12 @@ def dispatch_command(cmd: str) -> None:
             if not source:
                 print("Usage: graphify global add <graph.json> [--as <repo-tag>]", file=sys.stderr)
                 sys.exit(1)
-            tag = tag or source.parent.parent.name
+            if not tag:
+                # Inferred through merge-graphs' own helper, which degrades to "repo"
+                # instead of "": an empty tag prunes by "" and registers a manifest
+                # entry no later add can address.
+                from graphify.build import distinct_repo_tags
+                tag = distinct_repo_tags([source.absolute()])[0]
             try:
                 result = _global_add(source, tag)
                 if result["skipped"]:
@@ -3140,9 +3145,11 @@ def dispatch_command(cmd: str) -> None:
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr); sys.exit(1)
         elif subcmd == "remove":
-            tag = sys.argv[3] if len(sys.argv) > 3 else ""
-            if not tag:
+            # An omitted tag is a usage error; an explicitly empty one still has to be
+            # addressable, since earlier versions could register a repo under "".
+            if len(sys.argv) <= 3:
                 print("Usage: graphify global remove <repo-tag>", file=sys.stderr); sys.exit(1)
+            tag = sys.argv[3]
             try:
                 removed = _global_remove(tag)
                 print(f"Removed '{tag}' from global graph ({removed} nodes pruned).")
