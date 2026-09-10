@@ -69,6 +69,15 @@ def test_extract_usage_advertises_code_only(tmp_path):
     )
 
 
+def test_extract_usage_advertises_verbose(tmp_path):
+    r = subprocess.run(
+        [PYTHON, "-m", "graphify", "extract"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert r.returncode != 0
+    assert "--verbose" in r.stdout + r.stderr
+
+
 def _run_relative_out(repo: Path, *extra: str):
     """Like _run but with a RELATIVE GRAPHIFY_OUT so --out/--output controls the
     parent dir (an absolute GRAPHIFY_OUT would override the flag)."""
