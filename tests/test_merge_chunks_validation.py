@@ -31,7 +31,7 @@ def test_merge_chunks_skips_chunk_with_path_escape_id(tmp_path, monkeypatch, cap
 
     _run_merge(monkeypatch, ["graphify", "merge-chunks", str(good), str(bad), "--out", str(out)])
 
-    merged = json.loads(out.read_text())
+    merged = json.loads(out.read_text(encoding="utf-8"))
     assert {n["id"] for n in merged["nodes"]} == {"pkg.mod.good"}
     captured = capsys.readouterr()
     assert "skipping invalid chunk" in captured.err
@@ -48,7 +48,7 @@ def test_merge_chunks_fails_closed_when_every_chunk_is_invalid(tmp_path, monkeyp
         _run_merge(monkeypatch, ["graphify", "merge-chunks", str(bad), "--out", str(out)])
 
     assert exc.value.code == 1
-    assert json.loads(out.read_text()) == {"previous": "semantic result"}
+    assert json.loads(out.read_text(encoding="utf-8")) == {"previous": "semantic result"}
     err = capsys.readouterr().err
     assert "skipping invalid chunk" in err
     assert "no valid chunks to merge" in err
@@ -62,7 +62,7 @@ def test_merge_chunks_accepts_valid_empty_chunk(tmp_path, monkeypatch):
 
     _run_merge(monkeypatch, ["graphify", "merge-chunks", str(empty), "--out", str(out)])
 
-    merged = json.loads(out.read_text())
+    merged = json.loads(out.read_text(encoding="utf-8"))
     assert merged["nodes"] == []
     assert merged["edges"] == []
 
@@ -87,7 +87,7 @@ def test_merge_chunks_fails_closed_on_unmatched_glob(tmp_path, monkeypatch, caps
         _run_merge(monkeypatch, ["graphify", "merge-chunks", unmatched, "--out", str(out)])
 
     assert exc.value.code == 1
-    assert json.loads(out.read_text()) == {"previous": True}
+    assert json.loads(out.read_text(encoding="utf-8")) == {"previous": True}
     err = capsys.readouterr().err
     assert "skipping invalid chunk" in err
     assert "no valid chunks to merge" in err
@@ -102,7 +102,7 @@ def test_merge_chunks_accepts_synonym_file_type(tmp_path, monkeypatch):
                "edges": [], "hyperedges": []})
     out = tmp_path / "merged.json"
     _run_merge(monkeypatch, ["graphify", "merge-chunks", str(c), "--out", str(out)])
-    merged = json.loads(out.read_text())
+    merged = json.loads(out.read_text(encoding="utf-8"))
     assert {n["id"] for n in merged["nodes"]} == {"pkg.readme", "pkg.tool"}
 
 
@@ -114,7 +114,7 @@ def test_merge_chunks_accepts_unicode_id(tmp_path, monkeypatch):
                "edges": [], "hyperedges": []})
     out = tmp_path / "merged.json"
     _run_merge(monkeypatch, ["graphify", "merge-chunks", str(c), "--out", str(out)])
-    merged = json.loads(out.read_text())
+    merged = json.loads(out.read_text(encoding="utf-8"))
     assert {n["id"] for n in merged["nodes"]} == {"mod_处理数据"}
 
 
@@ -144,7 +144,7 @@ def test_merge_chunks_merges_valid_chunks(tmp_path, monkeypatch):
 
     _run_merge(monkeypatch, ["graphify", "merge-chunks", str(c0), str(c1), "--out", str(out)])
 
-    merged = json.loads(out.read_text())
+    merged = json.loads(out.read_text(encoding="utf-8"))
     assert {n["id"] for n in merged["nodes"]} == {"a", "b"}
     assert merged["input_tokens"] == 17
     assert merged["output_tokens"] == 8
