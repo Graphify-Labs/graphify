@@ -19,6 +19,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: `graphify install` no longer aborts when the always-on registration target is unwritable (read-only or symlinked config); it skips that step with an actionable warning and still installs the skill (#3474, thanks @dajiaohuang).
 - Fix: community labelling falls back to an installed `claude` CLI resolved at run time instead of pinning a path that expires (e.g. under snap/nvm), so labelling keeps working across updates (#3475, thanks @ktsang622).
 - Fix: the `all` extra now includes `psycopg[binary]`, so `pip install 'graphifyy[all]'` provides the postgres driver (#3482, thanks @L4XB).
+- Fix (tests): the backend-detection tests no longer depend on the developer's shell — an autouse fixture clears every variable `detect_backend()` reads (API keys of all backends, `AZURE_OPENAI_ENDPOINT`, `AWS_*`, `OLLAMA_BASE_URL`/`OLLAMA_HOST`), so `GOOGLE_API_KEY` & co. exported locally can't fail a clean checkout (#3481, thanks @AirRocker).
 
 ## 0.9.57 (2026-09-09)
 
