@@ -408,6 +408,7 @@ def resolve_bash_source_edges(
     paths: Sequence[Path],
     root: Path,
     existing_edges: list[dict] | None = None,
+    file_nids: dict[Path, str] | None = None,
 ) -> list[dict]:
     """Resolve Bash source/import edges and source-backed function calls.
 
@@ -430,7 +431,17 @@ def resolve_bash_source_edges(
           Anything else is silently skipped.
     """
     path_by_index = [Path(p).resolve() for p in paths]
-    file_nid_by_path = {p: _file_node_id_for_path(p, root) for p in path_by_index}  # resolved paths only
+    # `file_nids` carries the file node ids as they actually stand in the graph.
+    # This pass runs AFTER id-disambiguation, so when a same-stem sibling made a
+    # file id collide, the salted id no longer matches what
+    # `_file_node_id_for_path` derives from the path — every edge built from the
+    # formula would then name a node that does not exist (#33). Fall back to the
+    # formula for any path the caller did not resolve (and for direct callers
+    # that pass nothing), which is exactly the previous behavior.
+    known_nids = file_nids or {}
+    file_nid_by_path = {  # resolved paths only
+        p: known_nids.get(p) or _file_node_id_for_path(p, root) for p in path_by_index
+    }
 
     functions_by_file: dict[str, dict[str, str]] = {}
     for result, path in zip(per_file, path_by_index):
