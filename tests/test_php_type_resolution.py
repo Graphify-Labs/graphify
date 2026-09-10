@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.extract import extract
+import pytest
+
+from graphify.extract import extract, extract_php
+from graphify.extractors.resolution import _resolve_php_type_references
 
 
 def _write(path: Path, text: str) -> Path:
@@ -188,3 +191,234 @@ def test_php_import_resolves_when_target_name_prefixes_sibling_classes(tmp_path:
 
     assert len(imports) == 1
     assert imports[0]["target"] == pivot_id
+
+
+@pytest.mark.parametrize(
+    ("kind", "symbol", "alias"),
+    [
+        ("function", "slug", "s"),
+        ("const", "LIMIT", "L"),
+    ],
+    ids=["function", "const"],
+)
+def test_php_grouped_symbol_aliases_are_not_class_imports(
+    tmp_path: Path,
+    kind: str,
+    symbol: str,
+    alias: str,
+):
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\nnamespace App;\n"
+        f"use {kind} App\\Helpers\\{{{symbol} as {alias}}};\n",
+    )
+    local = _write(
+        tmp_path / "Local.php",
+        f"<?php\nnamespace App;\nclass {alias} {{}}\n",
+    )
+    alias_id = alias.lower()
+    class_id = f"local_{alias_id}"
+    per_file = [
+        {
+            "nodes": [{"id": "user", "label": "User.php", "source_file": "User.php"}],
+            "edges": [],
+        },
+        {
+            "nodes": [{"id": class_id, "label": alias, "source_file": "Local.php"}],
+            "edges": [],
+        },
+    ]
+    nodes = [
+        {"id": "user", "label": "User.php", "source_file": "User.php"},
+        {"id": class_id, "label": alias, "source_file": "Local.php"},
+        {"id": alias_id, "label": alias, "source_file": ""},
+    ]
+    edges = [{
+        "source": "user",
+        "target": alias_id,
+        "relation": "imports",
+        "source_file": "User.php",
+        "_php_symbol_import": True,
+    }]
+
+    _resolve_php_type_references(per_file, [user, local], nodes, edges)
+
+    false_fqn = f"App\\Helpers\\{symbol}"
+    assert edges[0]["target"] == alias_id
+    assert false_fqn not in {node.get("label") for node in nodes}
+
+
+@pytest.mark.parametrize(
+    ("kind", "symbol", "class_name"),
+    [
+        ("function", "slug", "Slug"),
+        ("const", "LIMIT", "Limit"),
+    ],
+    ids=["function", "const"],
+)
+def test_php_grouped_symbol_import_does_not_share_class_rewire(
+    tmp_path: Path,
+    kind: str,
+    symbol: str,
+    class_name: str,
+):
+    class_file = _write(
+        tmp_path / f"{class_name}.php",
+        f"<?php\nnamespace App;\nclass {class_name} {{}}\n",
+    )
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\nnamespace App;\n"
+        f"use {kind} Vendor\\Symbols\\{{{symbol}}};\n"
+        f"class User extends {class_name} {{}}\n",
+    )
+
+    result = extract([class_file, user], cache_root=tmp_path, parallel=False)
+
+    class_id = next(
+        node["id"]
+        for node in result["nodes"]
+        if node.get("label") == class_name and node.get("source_file")
+    )
+    imports = [
+        edge
+        for edge in result["edges"]
+        if edge["relation"] == "imports" and edge.get("source_file") == "User.php"
+    ]
+    inherits = [
+        edge
+        for edge in result["edges"]
+        if edge["relation"] == "inherits" and edge.get("source_file") == "User.php"
+    ]
+
+    assert [edge["target"] for edge in imports] == [symbol.lower()]
+    assert [edge["target"] for edge in inherits] == [class_id]
+    assert all("_php_symbol_import" not in edge for edge in result["edges"])
+
+
+def test_php_symbol_import_does_not_hide_same_named_class_import(tmp_path: Path):
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\nnamespace App;\n"
+        "use Vendor\\Types\\Slug; use function Vendor\\Functions\\slug;\n",
+    )
+
+    result = extract([user], cache_root=tmp_path, parallel=False)
+
+    import_targets = {
+        edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "imports"
+    }
+    assert import_targets == {"vendor_types_slug", "slug"}
+
+
+def test_php_mixed_group_preserves_same_named_class_and_function_imports(tmp_path: Path):
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\nnamespace App;\n"
+        "use Vendor\\Package\\{Thing, function Thing};\n",
+    )
+
+    result = extract([user], cache_root=tmp_path, parallel=False)
+
+    import_targets = {
+        edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "imports"
+    }
+    assert import_targets == {"vendor_package_thing", "thing"}
+
+
+def test_php_symbol_import_survives_multi_namespace_resolution_skip(tmp_path: Path):
+    class_file = _write(
+        tmp_path / "Slug.php",
+        "<?php\nnamespace Other;\nclass Slug {}\n",
+    )
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\n"
+        "namespace First {\n"
+        "    use function Vendor\\Symbols\\{slug};\n"
+        "    class Consumer extends Slug {}\n"
+        "}\n"
+        "namespace Second { class User {} }\n",
+    )
+
+    result = extract([class_file, user], cache_root=tmp_path, parallel=False)
+
+    imports = [
+        edge
+        for edge in result["edges"]
+        if edge["relation"] == "imports" and edge.get("source_file") == "User.php"
+    ]
+    assert [edge["target"] for edge in imports] == ["slug"]
+    assert all("_php_symbol_import" not in edge for edge in result["edges"])
+
+
+def test_php_single_file_extractor_hides_symbol_import_marker(tmp_path: Path):
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\nuse function Vendor\\Symbols\\{slug};\n",
+    )
+
+    result = extract_php(user)
+
+    assert all("_php_symbol_import" not in edge for edge in result["edges"])
+
+
+@pytest.mark.parametrize(
+    ("use_statement", "expected_targets"),
+    [
+        ("use function App\\Helpers\\{slug};", {"slug"}),
+        ("use const App\\Helpers\\{LIMIT};", {"limit"}),
+        ("use function App\\Helpers\\slug, App\\Helpers\\trim;", {"slug", "trim"}),
+        ("use const App\\Helpers\\LIMIT, App\\Helpers\\MAX;", {"limit", "max"}),
+    ],
+    ids=["grouped-function", "grouped-const", "comma-function", "comma-const"],
+)
+def test_php_symbol_import_kind_applies_to_all_declaration_clauses(
+    tmp_path: Path,
+    use_statement: str,
+    expected_targets: set[str],
+):
+    user = _write(
+        tmp_path / "User.php",
+        f"<?php\nnamespace App;\n{use_statement}\n",
+    )
+
+    result = extract([user], cache_root=tmp_path, parallel=False)
+
+    import_targets = {
+        edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "imports"
+    }
+    assert import_targets == expected_targets
+    assert not {
+        node.get("label")
+        for node in result["nodes"]
+        if node.get("label", "").startswith("App\\Helpers\\")
+    }
+
+
+def test_php_mixed_group_keeps_only_class_import_in_use_map(tmp_path: Path):
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\nnamespace App;\n"
+        "use App\\Helpers\\{Thing, function slug, const LIMIT};\n",
+    )
+
+    result = extract([user], cache_root=tmp_path, parallel=False)
+
+    import_targets = {
+        edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "imports"
+    }
+    assert import_targets == {"app_helpers_thing", "slug", "limit"}
+    assert {
+        node.get("label")
+        for node in result["nodes"]
+        if node.get("label", "").startswith("App\\Helpers\\")
+    } == {"App\\Helpers\\Thing"}
