@@ -3177,6 +3177,21 @@ def detect_backend() -> str | None:
     return None
 
 
+def _claude_cli_available() -> bool:
+    """True if the Claude Code CLI can actually be launched.
+
+    Mirrors the resolution in the claude-cli request path: a bare ``claude`` on
+    POSIX, and ``claude.cmd`` on Windows, where CreateProcess cannot resolve the
+    npm shim from the bare name.
+    """
+    import platform
+    import shutil
+
+    if platform.system() == "Windows":
+        return bool(shutil.which("claude.cmd") or shutil.which("claude"))
+    return shutil.which("claude") is not None
+
+
 # ── Community labeling ────────────────────────────────────────────────────────
 # When graphify runs inside an orchestrating agent (Claude Code / Gemini CLI),
 # the agent names communities itself per skill.md Step 5 - it reads the analysis
@@ -3470,6 +3485,15 @@ def generate_community_labels(
             backend = detect_backend()
         except Exception:
             backend = None
+    if not backend and _claude_cli_available():
+        # `detect_backend` is key-based, and claude-cli is the one backend with no
+        # key to find, so it can never be detected there — and widening detection
+        # itself would change extraction's contract, which deliberately refuses to
+        # run without a configured backend. Here the alternative is not an error but
+        # a SILENT DOWNGRADE: replacing every real community name with
+        # "Community N" and exiting 0, which overwrites a good graph with a worse
+        # one while reporting success. An installed CLI is better than that.
+        backend = "claude-cli"
     if not backend:
         if not quiet:
             print(
