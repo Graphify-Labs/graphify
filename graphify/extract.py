@@ -728,23 +728,44 @@ def _import_scala(node, source: bytes, file_nid: str, stem: str, edges: list, st
 
 
 def _import_php(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
+    # `use function ns\f as g` / `use const ns\C as D` are symbol imports, not
+    # class imports: _resolve_php_type_references deliberately skips them, so
+    # their alias is absent from its per-file `uses` map and the imported name's
+    # last segment stays the right bare name for the unique-label rewire.
+    is_symbol_import = any(c.type in ("function", "const") for c in node.children)
+    imported = ""
+    alias = ""
+    saw_as = False
     for child in node.children:
-        if child.type in ("qualified_name", "name", "identifier"):
-            raw = _read_text(child, source)
-            module_name = raw.split("\\")[-1].strip()
-            if module_name:
-                tgt_nid = _make_id(module_name)
-                edges.append({
-                    "source": file_nid,
-                    "target": tgt_nid,
-                    "relation": "imports",
-                    "context": "import",
-                    "confidence": "EXTRACTED",
-                    "source_file": str_path,
-                    "source_location": f"L{node.start_point[0] + 1}",
-                    "weight": 1.0,
-                })
-            break
+        if child.type == "as":
+            saw_as = True
+        elif child.type in ("qualified_name", "name", "identifier"):
+            if saw_as:
+                alias = _read_text(child, source)
+                break
+            if not imported:
+                imported = _read_text(child, source)
+    # An alias is a file-local binding, but it is the name this file's own
+    # references use AND the key _resolve_php_type_references files the imported
+    # FQN under, so the edge has to be minted on it for that pass to
+    # canonicalize the target onto the imported class. Taking the last segment
+    # of the *imported* name instead gave `use A\B\C as D` a target no `uses`
+    # entry could match, so the edge either minted a second identity for C or
+    # dangled outright — 103 of 145 dangling endpoints on the reported
+    # codebase (#3421).
+    binding = (alias if alias and not is_symbol_import else imported.split("\\")[-1]).strip()
+    if not binding:
+        return
+    edges.append({
+        "source": file_nid,
+        "target": _make_id(binding),
+        "relation": "imports",
+        "context": "import",
+        "confidence": "EXTRACTED",
+        "source_file": str_path,
+        "source_location": f"L{node.start_point[0] + 1}",
+        "weight": 1.0,
+    })
 
 
 # ── C/C++ function name helpers ───────────────────────────────────────────────

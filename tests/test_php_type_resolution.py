@@ -188,3 +188,142 @@ def test_php_import_resolves_when_target_name_prefixes_sibling_classes(tmp_path:
 
     assert len(imports) == 1
     assert imports[0]["target"] == pivot_id
+
+
+# ── `use A\B\C as D`: the alias must not mint a second identity (#3421) ───────
+
+def _imports_from(result: dict, source_fragment: str) -> list[dict]:
+    return [
+        e for e in result["edges"]
+        if e["relation"] == "imports"
+        and source_fragment in e.get("source", "").lower()
+    ]
+
+
+def test_php_aliased_external_import_shares_target_with_plain_import(tmp_path: Path):
+    """The reported repro: two files importing GuzzleHttp\\Client, one aliased.
+
+    The import edge target was derived from the last segment of the imported
+    name, so the aliased file's edge landed on a bare `client` that nothing else
+    used — `GuzzleHttp\\Client` became two nodes and neither file was reachable
+    from the other's traversal (#3421).
+    """
+    a = _write(
+        tmp_path / "src/A.php",
+        "<?php\nnamespace App;\n"
+        "use GuzzleHttp\\Client;\n"
+        "class A { public function __construct(private Client $c) {} }\n",
+    )
+    b = _write(
+        tmp_path / "src/B.php",
+        "<?php\nnamespace App;\n"
+        "use GuzzleHttp\\Client as HttpClient;\n"
+        "class B { public function __construct(private HttpClient $c) {} }\n",
+    )
+    result = extract([a, b], cache_root=tmp_path)
+
+    plain = _imports_from(result, "src_a")
+    aliased = _imports_from(result, "src_b")
+    assert len(plain) == 1 and len(aliased) == 1
+    assert aliased[0]["target"] == plain[0]["target"], (
+        "an alias is a file-local binding; it must not give the imported class a "
+        "second identity"
+    )
+    tgt = _node_by_id(result, aliased[0]["target"])
+    assert tgt is not None and tgt.get("label") == "GuzzleHttp\\Client"
+    # The bare-name node the alias used to strand is gone entirely.
+    assert _node_by_id(result, "client") is None
+
+
+def test_php_aliased_import_of_internal_class_resolves_to_definition(tmp_path: Path):
+    """An aliased `use` of a class in the same project points at that class's
+    own node, not at a bare-name stub."""
+    user = _write(
+        tmp_path / "src/Models/User.php",
+        "<?php\nnamespace App\\Models;\nclass User {}\n",
+    )
+    b = _write(
+        tmp_path / "src/B.php",
+        "<?php\nnamespace App;\n"
+        "use App\\Models\\User as Member;\n"
+        "class B { public function __construct(private Member $u) {} }\n",
+    )
+    result = extract([user, b], cache_root=tmp_path)
+
+    user_id = _class_defs(result, "User")[0]["id"]
+    aliased = _imports_from(result, "src_b")
+    assert len(aliased) == 1
+    assert aliased[0]["target"] == user_id
+
+
+def test_php_two_aliased_imports_of_same_bare_name_stay_distinct(tmp_path: Path):
+    """The symptom on the reporter's Laravel project: aliasing exists precisely
+    to disambiguate two classes sharing a simple name, and both edges collapsed
+    onto one dangling bare id (`session`, 44 edges)."""
+    session = _write(
+        tmp_path / "src/Models/Session.php",
+        "<?php\nnamespace App\\Models;\nclass Session {}\n",
+    )
+    ctrl = _write(
+        tmp_path / "src/Http/Controller.php",
+        "<?php\nnamespace App\\Http;\n"
+        "use App\\Models\\Session as LocalSession;\n"
+        "use Shopify\\Auth\\Session as ShopifySession;\n"
+        "class Controller { public function run(LocalSession $a, ShopifySession $b) {} }\n",
+    )
+    result = extract([session, ctrl], cache_root=tmp_path)
+
+    node_ids = {n["id"] for n in result["nodes"]}
+    imports = _imports_from(result, "src_http_controller")
+    targets = {e["target"] for e in imports}
+    assert len(targets) == 2, f"the two aliases collapsed onto one target: {targets}"
+    assert not targets - node_ids, f"dangling import endpoint(s): {targets - node_ids}"
+
+    internal_id = _class_defs(result, "Session")[0]["id"]
+    assert internal_id in targets
+    external = (targets - {internal_id}).pop()
+    assert _node_by_id(result, external)["label"] == "Shopify\\Auth\\Session"
+
+
+def test_php_aliased_group_use_resolves(tmp_path: Path):
+    """`use Ns\\{A, Sub\\B as C}` — the alias sits inside a group clause, whose
+    FQN is the group prefix plus the clause's own path."""
+    ctrl = _write(
+        tmp_path / "src/C.php",
+        "<?php\nnamespace App;\n"
+        "use GuzzleHttp\\{Client, Psr7\\Request as Req};\n"
+        "class C { public function go(Client $a, Req $b) {} }\n",
+    )
+    result = extract([ctrl], cache_root=tmp_path)
+
+    labels = {
+        _node_by_id(result, e["target"])["label"]
+        for e in _imports_from(result, "src_c")
+    }
+    assert labels == {"GuzzleHttp\\Client", "GuzzleHttp\\Psr7\\Request"}
+
+
+def test_php_aliased_function_and_const_imports_keep_bare_name(tmp_path: Path):
+    """`use function`/`use const` are symbol imports, not class imports, so
+    their alias is deliberately NOT used: the imported name's last segment stays
+    the bare name the unique-label rewire matches on."""
+    helper = _write(
+        tmp_path / "src/Helpers.php",
+        "<?php\nnamespace App\\Helpers;\nfunction slug(string $s): string { return $s; }\n",
+    )
+    user = _write(
+        tmp_path / "src/U.php",
+        "<?php\nnamespace App;\n"
+        "use function App\\Helpers\\slug as s;\n"
+        "use const App\\Config\\VERSION as V;\n"
+        "class U { public function go() { return s('x'); } }\n",
+    )
+    result = extract([helper, user], cache_root=tmp_path)
+
+    targets = {e["target"] for e in _imports_from(result, "src_u")}
+    assert "version" in targets, f"const import lost its bare name: {targets}"
+    slug_node = next(
+        (n for n in result["nodes"]
+         if n.get("label") == "slug()" and n.get("source_file")), None)
+    assert slug_node is not None
+    assert slug_node["id"] in targets or "slug" in targets
