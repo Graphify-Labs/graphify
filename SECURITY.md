@@ -22,7 +22,7 @@ We will acknowledge receipt within 48 hours and aim to release a fix within 7 da
 
 ## Security Model
 
-graphify is a **local development tool**. It runs as a Claude Code skill and optionally as a local MCP stdio server. It makes no network calls during graph analysis - only during `ingest` (explicit URL fetch by the user).
+graphify is a **local development tool**. It runs as a Claude Code skill and optionally as a local MCP stdio server. The tree-sitter pass over code is fully local and sends nothing. The semantic pass over documents, PDFs, images and video sends their content to whichever LLM backend is configured, and `ingest` fetches URLs the user provides explicitly; both are listed under [Optional network calls](#optional-network-calls).
 
 ### Threat Surface
 
@@ -49,6 +49,7 @@ graphify is a **local development tool**. It runs as a Claude Code skill and opt
 
 ### Optional network calls
 
+- semantic pass: sends document, PDF, image and video content to the LLM backend selected by `--backend` or by whichever API key is present in the environment. Skipped when no backend is configured; the tree-sitter pass over code never leaves the machine
 - `ingest` subcommand: fetches URLs explicitly provided by the user
 - PDF extraction: reads local files only (pypdf does not make network calls)
 - watch mode: local filesystem events only (watchdog does not make network calls)
