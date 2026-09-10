@@ -33,7 +33,33 @@ def test_function_docstring_extracted(tmp_path):
     rationale = [n for n in result["nodes"] if n.get("file_type") == "rationale"]
     assert any("chunked" in n["label"] for n in rationale)
 
+def test_requirement_docstring_creates_satisfies_edge(tmp_path):
+    path = _write_py(tmp_path, '''
+        def process():
+            """
+            SAFE-04: Validate all inputs before processing.
+            """
+            pass
+    ''')
 
+    result = extract_python(path)
+
+    req_nodes = [
+        n for n in result["nodes"]
+        if n.get("file_type") == "concept"
+    ]
+
+    assert len(req_nodes) == 1
+    assert req_nodes[0]["label"] == "SAFE-04"
+
+    satisfies_edges = [
+        e for e in result["edges"]
+        if e.get("relation") == "satisfies"
+    ]
+
+    assert len(satisfies_edges) == 1
+    assert satisfies_edges[0]["confidence"] == "EXTRACTED"
+    assert satisfies_edges[0]["weight"] == 1.0
 def test_class_docstring_extracted(tmp_path):
     path = _write_py(tmp_path, '''
         class Cache:
