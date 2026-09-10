@@ -11,6 +11,8 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.56 (2026-09-07)
 
+- Feature: `detect()` enumerates large trees via `git ls-files`, Google `repo` project lists, and nested git worktrees/submodules, so gitignored directories are not walked.
+- Fix: subdirectory `git ls-files` pathspecs are literal (not globs); `.gitmodules` paths that escape the superproject are ignored; parallel subtree walks keep per-walk ignore memos; Office/Workspace conversion is serialized against a shared `converted/` directory.
 - Fix: Rust trait method declarations (signature-only, and default-bodied) are now extracted as nodes — trait bodies were never walked, so both were silently dropped; a trait-declared method stays a distinct node from its impl definition (#3366, thanks @santoshpy).
 - Fix: the atomic-write temp filename is now bounded, so exporting to a path near the Windows MAX_PATH / 255-char component limit no longer fails with a temp-file `FileNotFoundError` (#3351, thanks @hopstreax).
 - Fix: when graphify's git hook decides to skip (no graph, rebase/merge/worktree, `GRAPHIFY_SKIP_HOOK`), it no longer terminates the whole hook — the block runs in a subshell so chained hooks and later steps still execute (#2986, thanks @abhay-codes07).
