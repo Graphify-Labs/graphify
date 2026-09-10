@@ -48,3 +48,39 @@ $fn2 = function() { return 'hello'; };
     assert not any("closure@" in l for l in labels), "Line-based closure names should not appear"
 
 
+def test_php_nested_route_closure_composes_prefix(tmp_path):
+    """A closure passed to a routing method inside a group() composes the path."""
+    src = b"""<?php
+$app->group('/api/v1', function ($group) {
+    $group->get('/users/{id}', function ($req, $res) { return 1; });
+});
+"""
+    php_file = tmp_path / "nested_routes.php"
+    php_file.write_bytes(src)
+
+    res = extract_php(php_file)
+    if res.get("error"):
+        pytest.skip(res["error"])
+
+    labels = {n["label"] for n in res["nodes"]}
+    assert "GET /api/v1/users/{id}()" in labels, "Expected nested route closure to compose prefix"
+    assert "{closure#1}()" in labels, "Expected outer group closure to fallback to ordinal"
+
+
+def test_php_cache_get_avoids_route_false_positive(tmp_path):
+    """A get() call without a '/' path is treated as a generic closure, not a route."""
+    src = b"""<?php
+$value = $cache->get('user:42', function () { return 2; });
+"""
+    php_file = tmp_path / "cache.php"
+    php_file.write_bytes(src)
+
+    res = extract_php(php_file)
+    if res.get("error"):
+        pytest.skip(res["error"])
+
+    labels = {n["label"] for n in res["nodes"]}
+    assert "{closure#1}()" in labels, "Expected non-routing get() to fallback to ordinal"
+    assert not any(l.startswith("GET ") for l in labels), "Expected no route label for cache method"
+
+

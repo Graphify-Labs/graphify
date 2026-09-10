@@ -3159,6 +3159,67 @@ def _extract_generic(
     # (parent_class_nid or stem). Stable across line-only edits (#3409).
     php_closure_counts: dict[str, int] = {}
     pending_listen_edges: list[tuple[str, str, int]] = []
+
+    def _php_get_route_name(closure_node, src: bytes) -> str | None:
+        """Walk up the AST to extract grouped routing prefixes (#3409)."""
+        _routing_verbs = frozenset({"get", "post", "put", "patch", "delete", "options", "any", "match", "map"})
+        prefixes = []
+        verb = None
+        
+        curr = closure_node.parent
+        while curr is not None:
+            if curr.type in ("function_definition", "method_declaration", "class_declaration"):
+                break
+                
+            if curr.type == "argument":
+                arg_list = curr.parent
+                if arg_list is not None and arg_list.type == "argument_list":
+                    call = arg_list.parent
+                    if call is not None and call.type in ("member_call_expression", "function_call_expression", "scoped_call_expression"):
+                        name_node = call.child_by_field_name("name")
+                        if name_node is None:
+                            name_node = call.child_by_field_name("function")
+                            
+                        raw_method = (_read_text(name_node, src) if name_node else "").lower()
+                        path_text = None
+                        
+                        for sibling in arg_list.children:
+                            if sibling is curr:
+                                break
+                            if sibling.type in ("string", "encapsed_string"):
+                                path_text = _read_text(sibling, src).strip("'\"")
+                                break
+                                
+                        if verb is None:
+                            # The innermost call must be a routing verb with a path starting with '/'
+                            if path_text is not None and path_text.startswith("/") and raw_method in _routing_verbs:
+                                verb = raw_method.upper()
+                                prefixes.append(path_text)
+                            else:
+                                return None # Not a valid route closure
+                        else:
+                            # Outer calls (e.g. group(), prefix()) just contribute their prefix if it starts with '/'
+                            if path_text is not None and path_text.startswith("/"):
+                                prefixes.append(path_text)
+                                
+                        curr = call.parent
+                        continue
+                        
+            elif curr.type in ("anonymous_function_creation_expression", "arrow_function"):
+                # Jump across the closure boundary to its containing argument
+                curr = curr.parent
+                continue
+                
+            curr = curr.parent
+            
+        if verb and prefixes:
+            # prefixes are inside-out (innermost path is first)
+            # e.g. ['/users/{id}', '/api/v1'] -> '/api/v1/users/{id}'
+            full_path = "/" + "/".join(p.strip("/") for p in reversed(prefixes) if p.strip("/"))
+            return f"{verb} {full_path}"
+            
+        return None
+
     # tree-sitter-swift parses both `class Foo` and `extension Foo` as
     # `class_declaration`. Same-file pairs collapse via seen_ids, but cross-file
     # extensions don't (file stem is part of the id), so they're collected here
@@ -4419,41 +4480,7 @@ def _extract_generic(
 
             if not func_name:
                 if t in ("anonymous_function_creation_expression", "arrow_function"):
-                    # Prefer a route-derived name when the closure is passed
-                    # directly to a routing method (`$app->get('/api', fn)`):
-                    # walk up to find a sibling string argument and the method name.
-                    route_name: str | None = None
-                    _PHP_ROUTING_VERBS = frozenset({
-                        "get", "post", "put", "patch", "delete",
-                        "options", "any", "match", "map",
-                    })
-                    parent = node.parent  # argument node
-                    if parent is not None and parent.type == "argument":
-                        arg_list = parent.parent  # argument_list
-                        if arg_list is not None and arg_list.type == "argument_list":
-                            call_node = arg_list.parent
-                            # extract method/function name from the call
-                            if call_node is not None and call_node.type in (
-                                "member_call_expression", "function_call_expression"
-                            ):
-                                method_name_node = call_node.child_by_field_name("name")
-                                if method_name_node is None:
-                                    method_name_node = call_node.child_by_field_name("function")
-                                raw_method = (
-                                    _read_text(method_name_node, source)
-                                    if method_name_node else ""
-                                ).lower()
-                                if raw_method in _PHP_ROUTING_VERBS:
-                                    # look for the first string argument (the path)
-                                    for sibling in arg_list.children:
-                                        if sibling is parent:
-                                            break
-                                        if sibling.type in (
-                                            "string", "encapsed_string"
-                                        ):
-                                            path_text = _read_text(sibling, source).strip("'\"")
-                                            route_name = f"{raw_method.upper()} {path_text}"
-                                            break
+                    route_name = _php_get_route_name(node, source)
                     if route_name:
                         func_name = route_name
                     else:
