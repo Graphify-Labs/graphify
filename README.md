@@ -168,6 +168,9 @@ uv tool install graphifyy
 # Alternatives:
 pipx install graphifyy
 pip install graphifyy  # may need PATH setup — see note below
+
+# From local source
+pipx install path-to-git-repo-on-disk
 ```
 
 **Step 2 — register the skill with your AI assistant:**
