@@ -151,3 +151,105 @@ def test_non_python_import_edge_is_not_repointed(tmp_path):
     assert not any(v == "src_pkg_mod" and u == "app_cs" for _, u, v in _import_edges(G)), (
         "non-Python import edge was repointed onto a Python file (#2072 review)"
     )
+
+
+def test_bare_python_import_resolves_to_in_repo_file(tmp_path):
+    """#2280: Bare module imports (e.g. `import solar_allocator`) used in framework
+    layouts like Pyscript must resolve to the in-repo file node instead of dangling."""
+    mod = tmp_path / "ha" / "pyscript" / "modules"
+    mod.mkdir(parents=True)
+    (mod / "__init__.py").write_text("")
+    (mod / "solar_allocator.py").write_text("def allocate(): pass\n")
+    (mod / "ev_actuator.py").write_text("def actuate(): pass\n")
+    (mod / "hws_intent.py").write_text("def intent(): pass\n")
+    (mod / "importer.py").write_text(
+        "import solar_allocator\n"
+        "import ev_actuator\n"
+        "import hws_intent\n"
+    )
+
+    paths = [
+        mod / "__init__.py",
+        mod / "solar_allocator.py",
+        mod / "ev_actuator.py",
+        mod / "hws_intent.py",
+        mod / "importer.py",
+    ]
+
+    G = build_from_json(extract(paths, cache_root=tmp_path / "c", root=tmp_path, parallel=False), root=str(tmp_path))
+    edges = _import_edges(G)
+
+    # Importer must have resolved edges to all 3 in-repo module file nodes
+    endpoints = {n for _, u, v in edges for n in (u, v)}
+    assert "ha_pyscript_modules_solar_allocator" in endpoints, f"solar_allocator import not resolved: {edges}"
+    assert "ha_pyscript_modules_ev_actuator" in endpoints, f"ev_actuator import not resolved: {edges}"
+    assert "ha_pyscript_modules_hws_intent" in endpoints, f"hws_intent import not resolved: {edges}"
+
+
+def test_bare_python_import_external_remains_unresolved(tmp_path):
+    """#2280: External imports (e.g. `import requests`) matching no in-repo file stem
+    must remain unresolved and be dropped."""
+    mod = tmp_path / "app.py"
+    mod.write_text("import requests\nimport numpy\n")
+
+    G = build_from_json(extract([mod], cache_root=tmp_path / "c", root=tmp_path, parallel=False), root=str(tmp_path))
+    edges = _import_edges(G)
+    assert not edges, f"external imports must stay dropped/dangling: {edges}"
+
+
+def test_bare_python_import_ambiguous_filename_remains_unresolved(tmp_path):
+    """#2280: When multiple files share the same stem (e.g. `src/utils.py` and `tests/utils.py`),
+    a bare `import utils` resolves to the importable sibling (src/utils.py) but not tests/utils.py."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "utils.py").write_text("def u1(): pass\n")
+    (tmp_path / "tests" / "utils.py").write_text("def u2(): pass\n")
+    (tmp_path / "src" / "main.py").write_text("import utils\n")
+
+    paths = [tmp_path / "src" / "utils.py", tmp_path / "tests" / "utils.py", tmp_path / "src" / "main.py"]
+    G = build_from_json(extract(paths, cache_root=tmp_path / "c", root=tmp_path, parallel=False), root=str(tmp_path))
+    edges = _import_edges(G)
+
+    # Under scoped importability rules, main.py imports its sibling src/utils.py,
+    # but must NOT import tests/utils.py.
+    endpoints = {n for _, u, v in edges for n in (u, v)}
+    assert "src_utils" in endpoints, f"sibling utils import was not resolved: {edges}"
+    assert "tests_utils" not in endpoints, f"non-sibling utils import was falsely resolved: {edges}"
+
+
+def test_python_import_mixed_syntaxes(tmp_path):
+    """#2280: Verify mixed import syntaxes (bare, relative, package-qualified, external)
+    in the same file all resolve correctly per their respective rules."""
+    (tmp_path / "mypkg").mkdir()
+    (tmp_path / "mypkg" / "__init__.py").write_text("")
+    (tmp_path / "mypkg" / "core.py").write_text("class Core: pass\n")
+    (tmp_path / "mypkg" / "helpers.py").write_text("def help(): pass\n")
+    (tmp_path / "solar_allocator.py").write_text("def alloc(): pass\n")
+    (tmp_path / "mypkg" / "app.py").write_text(
+        "import solar_allocator\n"
+        "import requests\n"
+        "from . import helpers\n"
+        "import mypkg.core\n"
+    )
+
+    paths = [
+        tmp_path / "mypkg" / "__init__.py",
+        tmp_path / "mypkg" / "core.py",
+        tmp_path / "mypkg" / "helpers.py",
+        tmp_path / "solar_allocator.py",
+        tmp_path / "mypkg" / "app.py",
+    ]
+
+    G = build_from_json(extract(paths, cache_root=tmp_path / "c", root=tmp_path, parallel=False), root=str(tmp_path))
+    edges = _import_edges(G)
+    endpoints = {n for _, u, v in edges for n in (u, v)}
+
+    # 1. Bare import `solar_allocator` -> solar_allocator
+    assert "solar_allocator" in endpoints, f"bare import solar_allocator not resolved: {edges}"
+    # 2. Package-qualified `mypkg.core` -> mypkg_core
+    assert "mypkg_core" in endpoints, f"package-qualified mypkg.core not resolved: {edges}"
+    # 3. Relative `from . import helpers` -> mypkg_helpers
+    assert "mypkg_helpers" in endpoints, f"relative import helpers not resolved: {edges}"
+    # 4. External `requests` -> dropped/dangling (no requests in endpoints)
+    assert "requests" not in endpoints, f"external import requests should be dropped: {edges}"
+
