@@ -559,6 +559,9 @@ def test_python_call_edges_have_call_context():
 
 
 def test_calls_no_self_loops():
+    """sample_calls.py has no recursive functions, so no call resolves to its own
+    caller here -- a genuinely recursive function DOES produce a self-loop (#3350),
+    see test_recursive_call_produces_self_loop below."""
     result = extract_python(FIXTURES / "sample_calls.py")
     for edge in result["edges"]:
         if edge["relation"] == "calls":
@@ -602,6 +605,49 @@ def test_calls_deduplication():
     result = extract_python(FIXTURES / "sample_calls.py")
     call_pairs = [(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"]
     assert len(call_pairs) == len(set(call_pairs)), "Duplicate calls edges found"
+
+
+def test_recursive_call_produces_self_loop(tmp_path):
+    """#3350: a function calling itself must extract as a calls self-loop, not be
+    silently dropped. build_from_json already preserves a supplied recursive
+    self-loop (test_recursive_call_self_loop_is_preserved); the gap was that
+    extraction never produced one to preserve in the first place."""
+    p = tmp_path / "repro.py"
+    p.write_text(
+        "def factorial(n):\n"
+        "    return 1 if n < 2 else n * factorial(n - 1)\n"
+        "\n"
+        "def entry(n):\n"
+        "    return factorial(n)\n",
+        encoding="utf-8",
+    )
+    result = extract_python(p)
+    calls = {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"}
+    node_by_label = {n["label"]: n["id"] for n in result["nodes"]}
+    factorial = node_by_label.get("factorial()")
+    entry = node_by_label.get("entry()")
+    assert factorial and entry
+    assert (entry, factorial) in calls, "ordinary call missing"
+    assert (factorial, factorial) in calls, "recursive self-loop missing (#3350)"
+
+
+def test_recursive_method_call_produces_self_loop(tmp_path):
+    """#3350 follow-up: recursion through self.<method>() must self-loop too."""
+    p = tmp_path / "repro.py"
+    p.write_text(
+        "class Tree:\n"
+        "    def depth(self, node):\n"
+        "        if not node:\n"
+        "            return 0\n"
+        "        return 1 + self.depth(node.child)\n",
+        encoding="utf-8",
+    )
+    result = extract_python(p)
+    calls = {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"}
+    node_by_label = {n["label"]: n["id"] for n in result["nodes"]}
+    depth = node_by_label.get(".depth()")
+    assert depth
+    assert (depth, depth) in calls, "recursive method self-loop missing (#3350)"
 
 
 def test_cross_file_calls_skip_ambiguous_duplicate_labels(tmp_path):
