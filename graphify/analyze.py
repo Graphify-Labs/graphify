@@ -38,7 +38,7 @@ _LANG_FAMILY: dict[str, str] = {
     **{e: "c" for e in (".c", ".h", ".cpp", ".cc", ".cxx", ".hpp")},
     **{e: "ruby" for e in (".rb", ".rake")},
     **{e: "swift" for e in (".swift",)},
-    **{e: "dotnet" for e in (".cs",)},
+    **{e: "dotnet" for e in (".cs", ".fs", ".fsx")},
     **{e: "php" for e in (".php",)},
     **{e: "r" for e in (".r",)},
 }
