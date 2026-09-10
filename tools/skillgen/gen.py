@@ -1076,6 +1076,44 @@ def _is_shebang_allowlist_fix_line(line: str) -> bool:
     return "[!a-zA-Z0-9/_." in line
 
 
+def _is_shebang_argument_fix_line(line: str) -> bool:
+    """Whether a line is part of the pipx shebang-argument fix (#2629).
+
+    The POSIX interpreter probes read a launcher shebang and treat it as the
+    interpreter path. pipx can append an argument like ``-E`` to that shebang;
+    the probes now remove only the leading ``#!`` marker, resolve
+    ``/usr/bin/env -S`` / ``/usr/bin/env``, and keep only the leading word
+    before validating/running the interpreter. The generated guard also rejects
+    pathless env-derived command names before writing ``.graphify_python``. Only
+    those explanatory comments and shell guard lines are sanctioned for the
+    aider/devin monoliths.
+    """
+    stripped = line.strip()
+    return (
+        stripped.startswith("# Resolve `/usr/bin/env -S python`")
+        or stripped.startswith("# (pipx writes `.../python -E`)")
+        or stripped.startswith("# writes `.../python -E`)")
+        or stripped.startswith("# path and rejected by the allowlist below")
+        or stripped.startswith("# forces the unverified python3 fallback")
+        or stripped.startswith("# Only trust shebang-derived interpreter paths")
+        or stripped.startswith("# `python` are PATH-controlled")
+        or stripped == '_SHEBANG=$(head -1 "$GRAPHIFY_BIN" | tr -d \'#!\')'
+        or stripped == "_SHEBANG=$(head -n 1 \"$GRAPHIFY_BIN\" | sed 's/^#![[:space:]]*//')"
+        or stripped.startswith('case "$_SHEBANG" in */env\\ *)')
+        or stripped.startswith('case "$_SHEBANG" in */env\\ -S\\ *)')
+        or stripped == '_SHEBANG="${_SHEBANG%% *}"'
+        or stripped == 'case "$_SHEBANG" in */*|*\\\\*) ;; *) _SHEBANG="" ;; esac'
+        or stripped == '""|*[!a-zA-Z0-9/_.@-]*) ;;'
+        or stripped == 'PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d \'#!\')'
+        or stripped == "PYTHON=$(head -n 1 \"$GRAPHIFY_BIN\" | sed 's/^#![[:space:]]*//')"
+        or stripped.startswith('case "$PYTHON" in */env\\ *)')
+        or stripped.startswith('case "$PYTHON" in */env\\ -S\\ *)')
+        or stripped == 'PYTHON="${PYTHON%% *}"'
+        or stripped == 'case "$PYTHON" in */*|*\\\\*) ;; *) PYTHON="python3" ;; esac'
+        or stripped.startswith('if [ "$PYTHON" != "python3" ]')
+    )
+
+
 def _is_obsidian_usage_comment_line(line: str) -> bool:
     """Whether a line is part of the ``/graphify`` usage-comment fix (#1681).
 
@@ -1159,6 +1197,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_sensitive_reporting_fix_line,
     _is_no_api_key_fix_line,
     _is_shebang_allowlist_fix_line,
+    _is_shebang_argument_fix_line,
     _is_obsidian_usage_comment_line,
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,

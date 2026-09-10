@@ -21,6 +21,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: Node subpath imports (`#services/foo` via a `package.json` `imports` map, including `*` wildcards and condition objects) now resolve to the mapped file — previously every `#`-specifier resolved to nothing (#3382, thanks @julien-e).
 - Fix: TS import-type normalization no longer scans every type-argument range per match (an O(matches × ranges) blowup that pinned extraction at 100% CPU on large mixed files); the filter is now a sorted-index lookup with byte-identical output (#3359, thanks @Sagexd08).
 - Fix: Dart extraction now stamps `source_location` (1-based `L{line}`) on nodes and edges, matching every other extractor, instead of leaving it null (#3365, thanks @ayushcodes10).
+- Fix: the git post-commit hook and skill interpreter probes now strip a shebang argument before using it as a path, correctly parse `/usr/bin/env -S ...` launchers, and reject PATH-controlled env interpreter names before verification. A pipx launcher (`#!/.../python -E`) now resolves instead of silently falling back to a `python3` without graphify and printing "could not locate a Python with graphify installed" after every commit (#2629, thanks @hpstr5000).
 
 ## 0.9.55 (2026-09-05)
 
