@@ -208,3 +208,13 @@ graphify cluster-only .
 ```
 
 `graphify cluster-only .` is **self-contained**: it re-clusters, names communities, and regenerates `GRAPH_REPORT.md`, `graph.json`, and `graph.html` from the existing graph. **Do not re-run Steps 5–9** — they read intermediate files (`.graphify_extract.json`, `.graphify_detect.json`, `.graphify_analysis.json`) that a prior build's cleanup (Step 9) already deleted, so they raise `FileNotFoundError` (#1392). When it finishes, present the refreshed `GRAPH_REPORT.md` summary as usual.
+
+## Verify apparently-successful maintenance runs
+
+Treat a zero exit code as the start of verification, not proof that the requested work happened:
+
+- `cluster-only` rebuilds communities; it is not the reliable way to force a new LLM naming pass when labels already exist. Run `graphify label . --backend BACKEND` to re-name communities, then inspect `GRAPH_REPORT.md`: a real labeling run has non-zero `Token cost` and labels other than `Community N`.
+- `tree` writes `graphify-out/GRAPH_TREE.html`. If a hierarchy matters, inspect the generated view and ensure the chosen `--root` is the project root; a successful write alone does not prove the intended subtree was selected.
+- If output says `Skipped graph.html`, `graph.json` and `GRAPH_REPORT.md` were still written. Use `--no-viz` for CI, or raise `GRAPHIFY_VIZ_NODE_LIMIT` only when the browser can handle the larger view. If writing `graph.json` itself hits the size guard, raise `GRAPHIFY_MAX_GRAPH_BYTES` (for example `700MB`) deliberately.
+- A warning that `.sql` or `.tf` files produced zero nodes means that language is absent from the graph. Install the matching extra and rerun: `uv tool install "graphifyy[sql]"` or `uv tool install "graphifyy[terraform]"`.
+- The `openai` backend requires `uv tool install "graphifyy[openai]"`. For an OpenAI-compatible gateway, set `OPENAI_BASE_URL` and `OPENAI_MODEL` and pass `--backend openai`.

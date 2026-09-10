@@ -609,6 +609,18 @@ Both are non-default subcommands. `--update` re-extracts only new or changed fil
 
 ---
 
+## For /graphify affected
+
+When the user asks for a change's blast radius or "what calls/depends on X?", use `graphify affected "X"` rather than a broad `query`. It reverse-traverses the graph from X and reports the callers and dependents that a change could impact. For relation/depth filters and the exact workflow, see `references/query.md`.
+
+---
+
+## Less-common maintenance commands
+
+Use these only when the request calls for them: `graphify tree` writes a collapsible hierarchy view; `graphify global add|remove|list|path` manages the cross-repository graph; `graphify check-update <path>` is the cron-safe stale-graph check; `graphify diagnose multigraph` reports same-endpoint edge-collapse risk; and `graphify merge-driver <base> <current> <other>` is for a Git merge-driver invocation. Run `graphify --help` before supplying flags, and do not substitute these commands for the normal build/query workflow.
+
+---
+
 ## For /graphify add and --watch
 
 Neither is part of the default build. When the user runs `/graphify add <url>` to fetch a URL into the corpus, or passes `--watch` to auto-rebuild on file changes, see `references/add-watch.md`.
