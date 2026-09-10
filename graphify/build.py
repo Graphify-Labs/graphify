@@ -1426,6 +1426,7 @@ def build(
         combined["hyperedges"].extend(ext.get("hyperedges", []))
         combined["input_tokens"] += ext.get("input_tokens", 0)
         combined["output_tokens"] += ext.get("output_tokens", 0)
+    _root = str(Path(root).resolve()) if root else None
     if dedup and combined["nodes"]:
         # Numeric ids must be str before dedup, which keys on them and would
         # raise TypeError in _pick_winner's regex search (#2326). build_from_json
@@ -1438,14 +1439,23 @@ def build(
         for n in combined["nodes"]:
             if isinstance(n, dict):
                 _fold_node_aliases(n)
+                # Normalize source_file and definition_file to the build root before
+                # deduplication (#3472), so exact-ID collision checks and same-file
+                # attribute merging operate on canonical repo-relative paths rather
+                # than false-flagging absolute paths from semantic subagents as
+                # different files.
+                if "source_file" in n:
+                    n["source_file"] = _norm_source_file(n["source_file"], _root)
+                if "definition_file" in n:
+                    n["definition_file"] = _norm_source_file(n["definition_file"], _root)
         combined["nodes"], combined["edges"] = deduplicate_entities(
             combined["nodes"], combined["edges"], communities={},
-            dedup_llm_backend=dedup_llm_backend, root=root,
+            dedup_llm_backend=dedup_llm_backend, root=_root,
             # Hyperedge members reference node ids too, so they need the same
             # survivor rewiring the edges get (#2805).
             hyperedges=combined.get("hyperedges"),
         )
-    return build_from_json(combined, directed=directed, root=root)
+    return build_from_json(combined, directed=directed, root=_root)
 
 
 def _norm_label(label: str | None) -> str:
@@ -2018,7 +2028,7 @@ def build_merge(
     )
 
     all_chunks = base + list(new_chunks)
-    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
+    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=_eff_root)
 
     # Prune nodes and edges from deleted source files
     if prune_sources:
