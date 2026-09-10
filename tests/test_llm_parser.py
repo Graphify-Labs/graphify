@@ -5,6 +5,7 @@ These tests cover:
 - The four parser failure modes described in PR #1062
 - Extraction instructions delivered in the user turn (Claude Code >= 2.1)
 - The GRAPHIFY_CLAUDE_CLI_MODEL env-var passthrough
+- The GRAPHIFY_CLAUDE_CLI_EFFORT env-var passthrough
 """
 from __future__ import annotations
 
@@ -139,6 +140,50 @@ def test_model_env_var_adds_model_flag(mock_run, _which, monkeypatch):
     argv = mock_run.call_args.args[0]
     assert "--model" in argv
     assert argv[argv.index("--model") + 1] == "haiku"
+
+
+@patch("shutil.which", return_value="/usr/local/bin/claude")
+@patch("subprocess.run")
+def test_effort_env_var_adds_effort_flag(mock_run, _which, monkeypatch):
+    """GRAPHIFY_CLAUDE_CLI_EFFORT must be forwarded to claude -p --effort."""
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_EFFORT", "low")
+    mock_run.return_value.returncode = 0
+    mock_run.return_value.stdout = _make_envelope({"nodes": [], "edges": [], "hyperedges": []})
+    mock_run.return_value.stderr = ""
+    llm._call_claude_cli("payload")
+    argv = mock_run.call_args.args[0]
+    assert "--effort" in argv
+    assert argv[argv.index("--effort") + 1] == "low"
+
+
+@patch("shutil.which", return_value="/usr/local/bin/claude")
+@patch("subprocess.run")
+def test_no_effort_flag_when_env_var_unset(mock_run, _which, monkeypatch):
+    """Default behaviour: with the env var unset, --effort is not added so the
+    CLI's own default effort applies."""
+    monkeypatch.delenv("GRAPHIFY_CLAUDE_CLI_EFFORT", raising=False)
+    mock_run.return_value.returncode = 0
+    mock_run.return_value.stdout = _make_envelope({"nodes": [], "edges": [], "hyperedges": []})
+    mock_run.return_value.stderr = ""
+    llm._call_claude_cli("payload")
+    argv = mock_run.call_args.args[0]
+    assert "--effort" not in argv
+
+
+@patch("shutil.which", return_value="/usr/local/bin/claude")
+@patch("subprocess.run")
+def test_effort_and_model_flags_coexist(mock_run, _which, monkeypatch):
+    """The two axes are independent: asking for a strong model at low effort
+    must send both flags, not one or the other."""
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_MODEL", "opus")
+    monkeypatch.setenv("GRAPHIFY_CLAUDE_CLI_EFFORT", "low")
+    mock_run.return_value.returncode = 0
+    mock_run.return_value.stdout = _make_envelope({"nodes": [], "edges": [], "hyperedges": []})
+    mock_run.return_value.stderr = ""
+    llm._call_claude_cli("payload")
+    argv = mock_run.call_args.args[0]
+    assert argv[argv.index("--model") + 1] == "opus"
+    assert argv[argv.index("--effort") + 1] == "low"
 
 
 @patch("shutil.which", return_value="/usr/local/bin/claude")
