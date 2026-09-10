@@ -52,6 +52,10 @@ def test_watched_extensions_includes_docs():
     assert ".txt" in _WATCHED_EXTENSIONS
     assert ".pdf" in _WATCHED_EXTENSIONS
 
+def test_watched_extensions_includes_delimited_data():
+    assert ".csv" in _WATCHED_EXTENSIONS
+    assert ".tsv" in _WATCHED_EXTENSIONS
+
 def test_watched_extensions_includes_images():
     assert ".png" in _WATCHED_EXTENSIONS
     assert ".jpg" in _WATCHED_EXTENSIONS

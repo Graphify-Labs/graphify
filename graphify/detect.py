@@ -14,6 +14,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
+from graphify.delimited import (
+    DELIMITED_EXTENSIONS,
+    MAX_OUTPUT_CHARS as _DELIMITED_MAX_OUTPUT_CHARS,
+    delimited_to_markdown,
+    sidecar_marker as _delimited_sidecar_marker,
+    source_fingerprint as _delimited_source_fingerprint,
+)
 from graphify.google_workspace import (
     GOOGLE_WORKSPACE_EXTENSIONS,
     convert_google_workspace_file,
@@ -523,6 +530,8 @@ def classify_file(path: Path) -> FileType | None:
         return FileType.PAPER
     if ext in IMAGE_EXTENSIONS:
         return FileType.IMAGE
+    if ext in DELIMITED_EXTENSIONS:
+        return FileType.DOCUMENT
     if ext in DOC_EXTENSIONS:
         # Check if it's a converted paper
         if _looks_like_paper(path):
@@ -780,6 +789,57 @@ def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -
         f"<!-- converted from {path.name} -->\n\n{text}",
         encoding="utf-8",
     )
+    return out_path
+
+
+def convert_delimited_file(path: Path, out_dir: Path, root: "Path | None" = None) -> Path | None:
+    """Convert CSV/TSV to a content-versioned Markdown sidecar."""
+    if path.suffix.lower() not in DELIMITED_EXTENSIONS:
+        return None
+    fingerprint = _delimited_source_fingerprint(path)
+    if fingerprint is None:
+        return None
+    marker = _delimited_sidecar_marker(fingerprint)
+
+    import hashlib
+    import unicodedata
+    if root is None:
+        root = out_dir.parent.parent
+    try:
+        key = path.resolve().relative_to(Path(root).resolve()).as_posix()
+    except (ValueError, OSError):
+        key = str(path.resolve())
+    normalized_path = unicodedata.normalize("NFC", key)
+    name_hash = hashlib.sha256(normalized_path.encode()).hexdigest()[:8]
+    out_path = out_dir / f"{path.stem}_{name_hash}.md"
+
+    if out_path.exists():
+        try:
+            with out_path.open("r", encoding="utf-8") as existing:
+                if existing.readline().rstrip("\n") == marker:
+                    # Re-hash before reuse so a source changing during this check
+                    # cannot leave a stale sidecar accepted as current.
+                    if _delimited_source_fingerprint(path) == fingerprint:
+                        return out_path
+        except (OSError, UnicodeError):
+            pass
+
+    body_limit = _DELIMITED_MAX_OUTPUT_CHARS - len(marker) - 2
+    text = delimited_to_markdown(path, output_limit=body_limit)
+    if not text.strip() or _delimited_source_fingerprint(path) != fingerprint:
+        return None
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    temporary = out_path.with_suffix(".md.tmp")
+    try:
+        temporary.write_text(f"{marker}\n\n{text}", encoding="utf-8")
+        os.replace(_os_path(temporary), _os_path(out_path))
+    except OSError:
+        try:
+            temporary.unlink()
+        except OSError:
+            pass
+        return None
     return out_path
 
 
@@ -1912,6 +1972,19 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     total_words += _wc(md_path)
                 else:
                     skipped_sensitive.append(str(p) + " [Google Workspace export produced no readable text]")
+                continue
+            # Delimited files: parse into bounded, content-versioned Markdown.
+            if p.suffix.lower() in DELIMITED_EXTENSIONS:
+                md_path = convert_delimited_file(p, converted_dir, root=root)
+                if md_path:
+                    if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
+                        continue
+                    files[ftype].append(str(md_path))
+                    total_words += _wc(md_path)
+                else:
+                    skipped_sensitive.append(
+                        str(p) + " [delimited conversion failed - expected bounded UTF-8 CSV/TSV]"
+                    )
                 continue
             # Office files: convert to markdown sidecar so subagents can read them
             if p.suffix.lower() in OFFICE_EXTENSIONS:
