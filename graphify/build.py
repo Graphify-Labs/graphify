@@ -27,6 +27,7 @@ import os
 import re
 import sys
 import unicodedata
+from collections.abc import Iterable
 from pathlib import Path
 import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id

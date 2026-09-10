@@ -1983,3 +1983,21 @@ def test_build_merge_explicit_ast_sources_argument(tmp_path):
 
     G1 = build_merge([sln_chunk], graph_path, dedup=False, root=root, ast_sources=["A.sln"])
     assert "nuget_pkg" in G1, "ast_sources explicit arg must protect undispatched A.csproj"
+
+
+def test_build_annotations_all_resolve():
+    # build.py imports every annotated name at module scope -- no TYPE_CHECKING-only
+    # names -- so an unresolvable hint here means a missing import, not a lazy one.
+    import inspect
+    import typing
+
+    from graphify import build as build_module
+
+    unresolvable = []
+    for name, obj in vars(build_module).items():
+        if inspect.isfunction(obj) and obj.__module__ == build_module.__name__:
+            try:
+                typing.get_type_hints(obj)
+            except NameError as exc:
+                unresolvable.append(f"{name}: {exc}")
+    assert not unresolvable, "\n".join(unresolvable)
