@@ -2800,6 +2800,93 @@ def test_markdown_contains_edges():
     assert len(contains_edges) >= 5, f"expected >= 5 contains edges, got {len(contains_edges)}"
 
 
+def test_markdown_wikilink_stamps_name_when_sibling_missing(tmp_path):
+    """A [[name]] with no sibling match carries a wikilink_name stamp.
+
+    Obsidian resolves ``[[name]]`` against the whole vault by filename, so a
+    per-file extractor cannot resolve a cross-folder link on its own. It stamps
+    the bare name instead, and extract()'s post-pass repoints it.
+    """
+    src_dir = tmp_path / "Concepts"
+    src_dir.mkdir()
+    note = src_dir / "alpha.md"
+    note.write_text("# Alpha\n\nSee [[beta]] and [[alpha-sibling]].\n", encoding="utf-8")
+    (src_dir / "alpha-sibling.md").write_text("# Sibling\n", encoding="utf-8")
+
+    r = extract_markdown(note)
+    refs = [e for e in r["edges"] if e["relation"] == "references"]
+    stamped = {e["wikilink_name"] for e in refs if "wikilink_name" in e}
+    # beta.md is NOT a sibling -> stamped for post-pass resolution.
+    assert stamped == {"beta"}, f"expected only 'beta' stamped, got {stamped}"
+    # alpha-sibling.md IS a sibling -> resolved normally, no stamp needed.
+    assert any("target_file" in e for e in refs)
+
+
+def test_markdown_path_qualified_link_is_not_stamped(tmp_path):
+    """[text](./other.md) is relative by spec - sibling resolution stays correct.
+
+    Only wikilinks get the vault-wide fallback; path-qualified markdown links
+    must keep pure relative semantics.
+    """
+    src_dir = tmp_path / "docs"
+    src_dir.mkdir()
+    note = src_dir / "index.md"
+    note.write_text("# Index\n\n[gone](./nowhere.md)\n", encoding="utf-8")
+
+    r = extract_markdown(note)
+    refs = [e for e in r["edges"] if e["relation"] == "references"]
+    assert refs, "expected a references edge for the inline link"
+    assert not any("wikilink_name" in e for e in refs), \
+        "path-qualified links must not get the wikilink fallback stamp"
+
+
+def test_extract_resolves_wikilinks_across_folders(tmp_path):
+    """Cross-folder [[name]] links resolve against the corpus, not the sibling dir.
+
+    A note-type vault (Concepts/, Entities/, ...) links across folders with bare
+    names. Sibling-only resolution dropped every one of those edges.
+    """
+    from graphify.extract import extract
+
+    (tmp_path / "Concepts").mkdir()
+    (tmp_path / "Entities").mkdir()
+    src = tmp_path / "Concepts" / "alpha.md"
+    src.write_text("# Alpha\n\nRefers to [[beta]] and [[missing-note]].\n", encoding="utf-8")
+    tgt = tmp_path / "Entities" / "beta.md"
+    tgt.write_text("# Beta\n", encoding="utf-8")
+
+    res = extract([src, tgt], cache_root=tmp_path, root=tmp_path, parallel=False)
+    node_ids = {n["id"] for n in res["nodes"]}
+    refs = [e for e in res["edges"] if e["relation"] == "references"]
+
+    resolved = [e for e in refs if e["target"] in node_ids]
+    assert len(resolved) == 1, f"cross-folder [[beta]] should resolve: {refs}"
+    # A link to a file that does not exist anywhere stays dangling, as before.
+    assert any(e["target"] not in node_ids for e in refs), \
+        "[[missing-note]] must remain dangling"
+    # The transient stamp never reaches the caller.
+    assert not any("wikilink_name" in e for e in res["edges"])
+
+
+def test_extract_wikilink_prefers_same_folder_on_ambiguity(tmp_path):
+    """When two files share a stem, the linking note's own folder wins."""
+    from graphify.extract import extract, _file_node_id
+
+    (tmp_path / "Concepts").mkdir()
+    (tmp_path / "Entities").mkdir()
+    src = tmp_path / "Concepts" / "alpha.md"
+    src.write_text("# Alpha\n\n[[shared]]\n", encoding="utf-8")
+    near = tmp_path / "Concepts" / "shared.md"
+    near.write_text("# Near\n", encoding="utf-8")
+    far = tmp_path / "Entities" / "shared.md"
+    far.write_text("# Far\n", encoding="utf-8")
+
+    res = extract([src, near, far], cache_root=tmp_path, root=tmp_path, parallel=False)
+    refs = [e for e in res["edges"] if e["relation"] == "references"]
+    assert len(refs) == 1
+    assert refs[0]["target"] == _file_node_id(Path("Concepts/shared.md"))
+
+
 def test_markdown_fenced_heading_not_parsed():
     """A '## heading' inside a fenced block must not produce a heading node (#1077).
 
