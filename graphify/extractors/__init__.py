@@ -15,6 +15,7 @@ from graphify.extractors.bash import extract_bash
 from graphify.extractors.blade import extract_blade
 from graphify.extractors.cobol import extract_cobol
 from graphify.extractors.commonlisp import extract_commonlisp
+from graphify.extractors.css import extract_css
 from graphify.extractors.dart import extract_dart
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm
 from graphify.extractors.elixir import extract_elixir
@@ -45,6 +46,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "blade": extract_blade,
     "cobol": extract_cobol,
     "commonlisp": extract_commonlisp,
+    "css": extract_css,
     "dart": extract_dart,
     "delphi_form": extract_delphi_form,
     "dm": extract_dm,
@@ -66,6 +68,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "r": extract_r,
     "razor": extract_razor,
     "rust": extract_rust,
+    "scss": extract_css,
     "sln": extract_sln,
     "solidity": extract_solidity,
     "sql": extract_sql,
