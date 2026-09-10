@@ -8,6 +8,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: when duplicate nodes merge, the richer (more complete) node is now kept as the survivor and the losers' non-empty fields are folded in, instead of a shorter-id passing mention winning and dropping content (#3372, thanks @abhay-codes07).
 - Fix: a C# generic call site with explicit type arguments — `Get<int>(...)`, unqualified or through `this` — now resolves to the method definition instead of capturing `Get<int>` as the callee and failing to match (#3406, thanks @abhay-codes07).
 - Fix: `this.X = function` / `this.X = () => …` members are now captured in every enclosing-function form (function expressions, arrows, IIFEs, callbacks), not just function declarations (#3408, thanks @abhay-codes07).
+- Fix: direct recursion now produces a `calls` self-edge — a call resolving to its own caller was dropped at extraction, so `factorial` calling `factorial` was absent while an ordinary call to it was present; a local binding or parameter that shadows the definition still yields no edge (#3350, thanks @rebel-JuhwanKim).
 
 ## 0.9.56 (2026-09-07)
 
