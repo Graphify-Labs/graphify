@@ -96,6 +96,32 @@ def introspect_postgres(dsn: str | None = None) -> dict:
                 ORDER BY ns.nspname, rel.relname, con.conname;
             """)
             fks = cur.fetchall()
+
+            cur.execute("""
+                SELECT
+                    pol.polname AS name,
+                    ns.nspname AS schema,
+                    rel.relname AS table_name,
+                    pol.polcmd AS command,
+                    pol.polpermissive AS permissive,
+                    COALESCE(
+                        (SELECT ARRAY_AGG(
+                                    CASE WHEN ro.oid = 0 THEN 'public' ELSE r.rolname END
+                                    ORDER BY CASE WHEN ro.oid = 0 THEN 'public' ELSE r.rolname END
+                                 )
+                           FROM UNNEST(pol.polroles) AS ro(oid)
+                           LEFT JOIN pg_catalog.pg_roles r ON r.oid = ro.oid),
+                        ARRAY['public']
+                    ) AS roles,
+                    pg_get_expr(pol.polqual, pol.polrelid) AS using_expr,
+                    pg_get_expr(pol.polwithcheck, pol.polrelid) AS check_expr
+                FROM pg_catalog.pg_policy pol
+                JOIN pg_catalog.pg_class rel ON rel.oid = pol.polrelid
+                JOIN pg_catalog.pg_namespace ns ON ns.oid = rel.relnamespace
+                WHERE ns.nspname NOT IN ('pg_catalog', 'information_schema')
+                ORDER BY ns.nspname, rel.relname, pol.polname;
+            """)
+            policies = cur.fetchall()
     finally:
         conn.close()
 
@@ -143,6 +169,20 @@ def introspect_postgres(dsn: str | None = None) -> dict:
                 f"CREATE FUNCTION {fn_sig} RETURNS void"
                 f" AS $gfx$ {actual_body} $gfx$ LANGUAGE {lang};"
             )
+
+    _CMD_MAP = {"r": "SELECT", "a": "INSERT", "w": "UPDATE", "d": "DELETE", "*": "ALL"}
+    for name, schema, table, cmd, permissive, roles, using_expr, check_expr in policies:
+        clauses = [
+            f"CREATE POLICY {_quote_ident(name)} ON {_quote_ident(schema)}.{_quote_ident(table)}",
+            "AS PERMISSIVE" if permissive else "AS RESTRICTIVE",
+            f"FOR {_CMD_MAP.get(cmd, 'ALL')}",
+            f"TO {', '.join('PUBLIC' if r.lower() == 'public' else _quote_ident(r) for r in roles)}",
+        ]
+        if using_expr:
+            clauses.append(f"USING ({using_expr})")
+        if check_expr:
+            clauses.append(f"WITH CHECK ({check_expr})")
+        ddl.append(" ".join(clauses) + ";")
 
     ddl_string = "\n".join(ddl)
 

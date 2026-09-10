@@ -74,6 +74,51 @@ _ROUTINE_RECOVERY_RX = re.compile(
 # Closing it would need a real string heuristic (e.g. an end-of-line opening
 # quote), judged not worth the swallow risk in a recovery-only path.
 
+# Recovers CREATE POLICY statements. The grammar has NO rule for CREATE
+# POLICY at all — not a partial/error-node case like routines, every
+# policy statement disintegrates into loose top-level tokens plus an
+# ERROR node with no CREATE text in it (#3401). So there is no walk-time
+# node to dispatch on; this is whole-file-fallback only, same gate and
+# masking as _ROUTINE_RECOVERY_RX.
+#
+# TO/USING/WITH CHECK are all optional in real SQL (a bare
+# `CREATE POLICY p ON t;` is valid, if useless), so each clause is its
+# own non-greedy optional group rather than a single big alternation —
+# a required-TO assumption silently dropped USING-only policies in an
+
+_POLICY_RECOVERY_RX = re.compile(
+    r"\bCREATE\s+POLICY\s+"
+    r"(\"(?:[^\"\n]|\"\")+\"|[\w$]+)\s+ON\s+"
+    r"((?:\"(?:[^\"\n]|\"\")+\"|[\w$]+)(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|[\w$]+))*)"
+    r"(?:\s+AS\s+(PERMISSIVE|RESTRICTIVE))?"
+    r"(?:\s+FOR\s+(SELECT|INSERT|UPDATE|DELETE|ALL))?"
+    r"(?:\s+TO\s+((?:(?:\"(?:[^\"\n]|\"\")+\"|[\w$]+)\s*,\s*)*(?:\"(?:[^\"\n]|\"\")+\"|[\w$]+)))?",
+    re.IGNORECASE,
+)
+# USING (...) / WITH CHECK (...) bodies are located separately below via a
+# manual balanced-paren scan, not captured in this regex -- arbitrarily
+# nested parens (e.g. fn(a, (b + (c))) style expressions) defeat any
+# fixed-depth pattern that only tolerates one level of nesting.
+_USING_KW_RX = re.compile(r"\s*USING\s*\(", re.IGNORECASE)
+_CHECK_KW_RX = re.compile(r"\s*WITH\s+CHECK\s*\(", re.IGNORECASE)
+
+_SQL_PREDICATE_KEYWORDS = {
+    "in", "not", "and", "or", "is", "exists", "any", "all", "some",
+    "case", "when", "between", "like", "ilike", "similar",
+}
+
+def _match_balanced_parens(s, open_pos):
+    depth = 0
+    for i in range(open_pos, len(s)):
+        if s[i] == "(":
+            depth += 1
+        elif s[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return s[open_pos + 1 : i], i + 1
+    return None
+
+_FUNC_CALL_RX = re.compile(r"\b([\w$]+(?:\.[\w$]+)?)\s*\(")
 
 def _scan_sql(text: str) -> tuple[str, list[tuple[int, int]]]:
     """Blank comment and string-literal spans, preserving every offset.
@@ -715,6 +760,42 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 continue
             fn_name = m.group(1)
             fn_line = src_text[: m.start()].count("\n") + 1
-            _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)
+            fn_nid = _make_id(stem, fn_name)
+            _add_node(fn_nid, f"{fn_name}()", fn_line)
+            table_nids.setdefault(_norm_ident(fn_name), fn_nid)
+
+        for m in _POLICY_RECOVERY_RX.finditer(masked_src):
+            if any(s <= m.start() < e for s, e in ident_spans):
+                continue
+            pol_name = m.group(1).strip('"')
+            tbl_name = m.group(2)
+            pol_line = src_text[: m.start()].count("\n") + 1
+            tbl_nid = table_nids.get(_norm_ident(tbl_name)) or _ref_stub(tbl_name)
+            pol_nid = _make_id(stem, f"{tbl_name}.{pol_name}")
+            _add_node(pol_nid, pol_name, pol_line)
+            _add_edge(pol_nid, tbl_nid, "applies_to", pol_line)
+            pos = m.end()
+            using_body = check_body = ""
+            um = _USING_KW_RX.match(masked_src, pos)
+            if um:
+                result = _match_balanced_parens(masked_src, um.end() - 1)
+                if result:
+                    using_body, pos = result
+                else:
+                    pos = um.end()
+            cm = _CHECK_KW_RX.match(masked_src, pos)
+            if cm:
+                result = _match_balanced_parens(masked_src, cm.end() - 1)
+                if result:
+                    check_body, pos = result
+            body = " ".join(filter(None, [using_body, check_body]))
+            seen_fns = set()
+            for fm in _FUNC_CALL_RX.finditer(body):
+                fn_key = _norm_ident(fm.group(1))
+                if fn_key in _SQL_PREDICATE_KEYWORDS or fn_key in seen_fns:
+                    continue
+                seen_fns.add(fn_key)
+                fn_nid = table_nids.get(fn_key) or _ref_stub(fm.group(1))
+                _add_edge(pol_nid, fn_nid, "references", pol_line)
 
     return {"nodes": nodes, "edges": edges}
