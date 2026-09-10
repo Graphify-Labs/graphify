@@ -113,6 +113,39 @@ def test_install_positional_platform_opencode(tmp_path, monkeypatch):
     assert not (tmp_path / ".claude" / "skills" / "graphify" / "SKILL.md").exists()
 
 
+def test_opencode_subcommand_installs_user_scope_skill(tmp_path, monkeypatch):
+    from graphify.__main__ import main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ["graphify", "opencode", "install"])
+
+    with patch("graphify.__main__.Path.home", return_value=home):
+        main()
+
+    skill_dir = home / ".config" / "opencode" / "skills" / "graphify"
+    assert (skill_dir / "SKILL.md").exists()
+    assert (skill_dir / "references").is_dir()
+
+
+def test_opencode_subcommand_uninstalls_user_scope_skill(tmp_path, monkeypatch):
+    from graphify.__main__ import _copy_skill_file, main
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+
+    with patch("graphify.__main__.Path.home", return_value=home):
+        _copy_skill_file("opencode")
+        monkeypatch.setattr(sys, "argv", ["graphify", "opencode", "uninstall"])
+        main()
+
+    assert not (home / ".config" / "opencode" / "skills" / "graphify" / "SKILL.md").exists()
+
+
 def test_install_project_claude_writes_project_scope(tmp_path, monkeypatch, capsys):
     from graphify.__main__ import main
     home = tmp_path / "home"
