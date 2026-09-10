@@ -3345,9 +3345,21 @@ def _resolve_php_type_references(
         if relation not in _PHP_REPOINT_RELATIONS:
             continue
         ref_file = edge.get("source_file", "")
+        tgt = edge.get("target")
+        metadata = edge.get("metadata") or {}
+        imported_fqn = (
+            metadata.get("target_fqn")
+            if relation == "imports" and isinstance(metadata, dict)
+            else None
+        )
+        if isinstance(imported_fqn, str) and imported_fqn:
+            resolved = fqn_to_id.get(imported_fqn.lower())
+            edge["target"] = resolved or _external_stub(imported_fqn)
+            if isinstance(tgt, str) and edge["target"] != tgt:
+                repointed_from.add(tgt)
+            continue
         if ref_file not in ns_by_file:
             continue
-        tgt = edge.get("target")
         if relation == "imports" and edge.get("_php_symbol_import"):
             continue
         label = stub_label.get(tgt)

@@ -754,6 +754,20 @@ def _php_import_kind(node) -> str | None:
     return next((child.type for child in first_clause.children if child.type in kinds), None)
 
 
+def _php_import_fqn(node, source: bytes, raw: str) -> str:
+    parent = node.parent
+    if parent is not None and parent.type == "namespace_use_group":
+        declaration = parent.parent
+        if declaration is not None:
+            prefix = next(
+                (_read_text(child, source) for child in declaration.children
+                 if child.type == "namespace_name"),
+                "",
+            )
+            if prefix:
+                raw = f"{prefix}\\{raw}"
+    return raw.lstrip("\\")
+
 def _import_php(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
     for child in node.children:
         if child.type in ("qualified_name", "name", "identifier"):
@@ -771,8 +785,13 @@ def _import_php(node, source: bytes, file_nid: str, stem: str, edges: list, str_
                     "source_location": f"L{node.start_point[0] + 1}",
                     "weight": 1.0,
                 }
-                if _php_import_kind(node) in ("function", "const"):
+                kind = _php_import_kind(node)
+                if kind in ("function", "const"):
                     edge["_php_symbol_import"] = True
+                elif kind is None:
+                    target_fqn = _php_import_fqn(node, source, raw)
+                    if target_fqn:
+                        edge["metadata"] = sanitize_metadata({"target_fqn": target_fqn})
                 edges.append(edge)
             break
 
