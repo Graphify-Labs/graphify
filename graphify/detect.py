@@ -836,6 +836,7 @@ _SKIP_DIRS = {
     "lcov-report",                          # Vitest/Istanbul/nyc HTML reports (#870);
                                             # bare "coverage" is gated on report
                                             # artefacts below (#2339)
+    "htmlcov",                              # coverage.py's `coverage html` output dir
     "visual-tests", "visual-test",          # Playwright/visual-regression bundles (#869)
     "__snapshots__",                        # Jest/Vitest snapshot dir (unambiguous)
     "storybook-static",                     # Storybook production build output
