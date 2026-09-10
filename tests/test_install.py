@@ -20,6 +20,7 @@ PLATFORMS = {
     "trae": (".trae/skills/graphify/SKILL.md",),
     "trae-cn": (".trae-cn/skills/graphify/SKILL.md",),
     "windows": (".claude/skills/graphify/SKILL.md",),
+    "command-code": (".commandcode/skills/graphify/SKILL.md",),
 }
 
 
@@ -250,6 +251,11 @@ def test_install_windows(tmp_path):
     assert (tmp_path / ".claude" / "skills" / "graphify" / "SKILL.md").exists()
 
 
+def test_install_command_code(tmp_path):
+    _install(tmp_path, "command-code")
+    assert (tmp_path / ".commandcode" / "skills" / "graphify" / "SKILL.md").exists()
+
+
 def test_install_unknown_platform_exits(tmp_path):
     with pytest.raises(SystemExit):
         _install(tmp_path, "unknown")
@@ -364,6 +370,7 @@ def test_all_skill_files_exist_in_package():
         "skill-droid.md",
         "skill-trae.md",
         "skill-kiro.md",
+        "skill-command-code.md",
     ):
         assert (pkg / name).exists(), f"Missing: {name}"
 
