@@ -141,6 +141,79 @@ def test_skill_registration_uses_host_generic_instruction():
     assert "use the installed graphify skill or instructions" in reg
 
 
+# --- the advertised --platform list vs what install() actually accepts (#2638) ---
+# Three surfaces advertise this list (top-level --help, `graphify install`'s own
+# usage, and install()'s unknown-platform error). Each used to hand-maintain its
+# own copy, and --help had drifted to omit four accepted values. These lock the
+# advertised list to the dispatch in BOTH directions, so neither a new platform
+# that nobody documents nor a stale/typo'd entry that nothing accepts survives.
+
+def _documented_platforms() -> set[str]:
+    """The `--platform` values the top-level --help advertises."""
+    import re
+    import sys as _sys
+    import io
+    from contextlib import redirect_stdout
+
+    from graphify.__main__ import _run_cli
+
+    argv = _sys.argv
+    _sys.argv = ["graphify", "--help"]
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            _run_cli()
+    finally:
+        _sys.argv = argv
+    line = next(
+        l for l in buf.getvalue().split("\n") if "install [--platform P]" in l
+    )
+    m = re.search(r"\(([^()]*)\)\s*$", line)
+    assert m, f"no parenthesised platform list in: {line!r}"
+    return set(m.group(1).split("|"))
+
+
+def test_help_lists_every_accepted_platform():
+    """Every value install() dispatches must be discoverable from --help."""
+    from graphify.install import _PLATFORM_ALIASES, _PLATFORM_CONFIG
+
+    documented = _documented_platforms()
+    accepted = set(_PLATFORM_CONFIG) | set(_PLATFORM_ALIASES)
+    missing = sorted(accepted - documented)
+    assert not missing, f"accepted but undocumented in --help: {missing}"
+
+
+def test_help_advertises_no_platform_install_rejects():
+    """...and nothing advertised may be rejected. `cursor`/`gemini` have no
+    _PLATFORM_CONFIG entry — install() branches on them before the membership
+    check — so they are accepted despite not being config keys."""
+    from graphify.install import _PLATFORM_CONFIG, _canonical_platform
+
+    phantom = sorted(
+        p for p in _documented_platforms()
+        if _canonical_platform(p) not in _PLATFORM_CONFIG
+        and p not in ("cursor", "gemini")
+    )
+    assert not phantom, f"advertised in --help but install() rejects: {phantom}"
+
+
+def test_all_three_platform_surfaces_agree():
+    """--help, `graphify install` usage and the unknown-platform error must not
+    drift apart — they are three renderings of one list."""
+    import io
+    from contextlib import redirect_stdout
+
+    from graphify.install import ACCEPTED_PLATFORMS, _print_install_usage
+
+    assert _documented_platforms() == set(ACCEPTED_PLATFORMS)
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        _print_install_usage()
+    usage = next(l for l in buf.getvalue().split("\n") if l.startswith("Platforms:"))
+    assert set(usage.split(":", 1)[1].strip().split(", ")) == set(ACCEPTED_PLATFORMS)
+
+
 def test_how_it_works_clarifies_code_only_semantic_extraction():
     from pathlib import Path
     doc = (Path(__file__).parent.parent / "docs" / "how-it-works.md").read_text(encoding="utf-8")
