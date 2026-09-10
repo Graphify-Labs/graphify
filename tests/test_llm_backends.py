@@ -1130,6 +1130,51 @@ def test_native_extraction_prompt_requests_rationale():
         assert '"rationale":null' in prompt.replace(" ", "").replace("\n", "")
 
 
+def test_native_extraction_prompt_states_the_source_file_rule():
+    """#2217: source_file is provenance, so both extraction paths must forbid
+    inventing it.
+
+    The skill path has carried a `source_file RULE` since #1366 ("copy the
+    FILE_LIST entry character-for-character"). The native/API prompt had no rule
+    at all — it showed `"source_file":"relative/path"` in the schema and left the
+    rest to the model, which is how a DeepSeek run came to reconstruct a
+    plausible repo path out of a node id quoted inside a document.
+
+    Pin the contract rather than the wording: the rule must exist, must name the
+    <untrusted_source> path as the source of truth, and must forbid deriving it
+    from what the file merely mentions.
+
+    Asserted against the RULE PARAGRAPH, not the whole prompt. Matching the whole
+    prompt is worthless here: the base prompt already contains "<untrusted_source>"
+    (the SECURITY paragraph), "node id" ("Node ID format: ...") and "citation"
+    ("EXTRACTED: relationship explicit in source (import, call, citation, ...)"),
+    so a rule saying the exact opposite — "pick whatever source_file seems most
+    plausible (basename is fine)" — passed the whole-prompt version green.
+    """
+    spec = (
+        Path(__file__).resolve().parents[1]
+        / "tools" / "skillgen" / "fragments" / "references" / "shared" / "extraction-spec.md"
+    ).read_text(encoding="utf-8")
+    assert "source_file RULE" in spec, "skill extraction-spec lost its source_file rule"
+
+    for deep in (False, True):
+        prompt = llm._extraction_system(deep=deep)
+        assert "source_file RULE" in prompt, f"deep={deep}: native prompt has no source_file rule"
+        # Isolate the rule paragraph so nothing else in the prompt can satisfy it.
+        rule = prompt.split("source_file RULE", 1)[1].split("\n\n", 1)[0].lower()
+
+        assert "untrusted_source" in rule, (
+            f"deep={deep}: rule does not name the block the path must be copied from"
+        )
+        assert "never" in rule, f"deep={deep}: rule states no prohibition"
+        # The failure mode #2217 reported: deriving provenance from something the
+        # document merely refers to, instead of from the dispatched path.
+        for forbidden in ("node id", "citation", "basename", "label"):
+            assert forbidden in rule, (
+                f"deep={deep}: rule does not forbid inferring source_file from a {forbidden}"
+            )
+
+
 # --- *_BASE_URL env overrides for kimi / gemini / deepseek (#1458) -------------
 # BACKENDS reads the env at import time, so each case runs in a fresh interpreter
 # (subprocess) to avoid reload contamination of the test session.
