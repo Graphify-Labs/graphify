@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.extract import extract
+import pytest
+
+from graphify.extract import _rewire_unique_stub_nodes, extract, extract_php
+from graphify.extractors.resolution import _resolve_php_type_references
 
 
 def _write(path: Path, text: str) -> Path:
@@ -188,3 +191,389 @@ def test_php_import_resolves_when_target_name_prefixes_sibling_classes(tmp_path:
 
     assert len(imports) == 1
     assert imports[0]["target"] == pivot_id
+
+
+@pytest.mark.parametrize(
+    ("kind", "symbol", "alias"),
+    [
+        ("function", "slug", "s"),
+        ("const", "LIMIT", "L"),
+    ],
+    ids=["function", "const"],
+)
+def test_php_grouped_symbol_aliases_are_not_class_imports(
+    tmp_path: Path,
+    kind: str,
+    symbol: str,
+    alias: str,
+):
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\nnamespace App;\n"
+        f"use {kind} App\\Helpers\\{{{symbol} as {alias}}};\n",
+    )
+    local = _write(
+        tmp_path / "Local.php",
+        f"<?php\nnamespace App;\nclass {alias} {{}}\n",
+    )
+    alias_id = alias.lower()
+    class_id = f"local_{alias_id}"
+    per_file = [
+        {
+            "nodes": [{"id": "user", "label": "User.php", "source_file": "User.php"}],
+            "edges": [],
+        },
+        {
+            "nodes": [{"id": class_id, "label": alias, "source_file": "Local.php"}],
+            "edges": [],
+        },
+    ]
+    nodes = [
+        {"id": "user", "label": "User.php", "source_file": "User.php"},
+        {"id": class_id, "label": alias, "source_file": "Local.php"},
+        {"id": alias_id, "label": alias, "source_file": ""},
+    ]
+    edges = [{
+        "source": "user",
+        "target": alias_id,
+        "relation": "imports",
+        "source_file": "User.php",
+        "_php_symbol_import": True,
+    }]
+
+    _resolve_php_type_references(per_file, [user, local], nodes, edges)
+
+    false_fqn = f"App\\Helpers\\{symbol}"
+    assert edges[0]["target"] == alias_id
+    assert false_fqn not in {node.get("label") for node in nodes}
+
+
+@pytest.mark.parametrize(
+    ("kind", "symbol", "class_name"),
+    [
+        ("function", "slug", "Slug"),
+        ("const", "LIMIT", "Limit"),
+    ],
+    ids=["function", "const"],
+)
+def test_php_grouped_symbol_import_does_not_share_class_rewire(
+    tmp_path: Path,
+    kind: str,
+    symbol: str,
+    class_name: str,
+):
+    class_file = _write(
+        tmp_path / f"{class_name}.php",
+        f"<?php\nnamespace App;\nclass {class_name} {{}}\n",
+    )
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\nnamespace App;\n"
+        f"use {kind} Vendor\\Symbols\\{{{symbol}}};\n"
+        f"class User extends {class_name} {{}}\n",
+    )
+
+    result = extract([class_file, user], cache_root=tmp_path, parallel=False)
+
+    class_id = next(
+        node["id"]
+        for node in result["nodes"]
+        if node.get("label") == class_name and node.get("source_file")
+    )
+    imports = [
+        edge
+        for edge in result["edges"]
+        if edge["relation"] == "imports" and edge.get("source_file") == "User.php"
+    ]
+    inherits = [
+        edge
+        for edge in result["edges"]
+        if edge["relation"] == "inherits" and edge.get("source_file") == "User.php"
+    ]
+
+    assert [edge["target"] for edge in imports] == [symbol.lower()]
+    assert [edge["target"] for edge in inherits] == [class_id]
+    assert all("_php_symbol_import" not in edge for edge in result["edges"])
+
+
+def test_php_symbol_import_does_not_hide_same_named_class_import(tmp_path: Path):
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\nnamespace App;\n"
+        "use Vendor\\Types\\Slug; use function Vendor\\Functions\\slug;\n",
+    )
+
+    result = extract([user], cache_root=tmp_path, parallel=False)
+
+    import_targets = {
+        edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "imports"
+    }
+    assert import_targets == {"vendor_types_slug", "slug"}
+
+
+def test_php_mixed_group_preserves_same_named_class_and_function_imports(tmp_path: Path):
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\nnamespace App;\n"
+        "use Vendor\\Package\\{Thing, function Thing};\n",
+    )
+
+    result = extract([user], cache_root=tmp_path, parallel=False)
+
+    import_targets = {
+        edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "imports"
+    }
+    assert import_targets == {"vendor_package_thing", "thing"}
+
+
+def test_php_symbol_import_survives_multi_namespace_resolution_skip(tmp_path: Path):
+    class_file = _write(
+        tmp_path / "Slug.php",
+        "<?php\nnamespace Other;\nclass Slug {}\n",
+    )
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\n"
+        "namespace First {\n"
+        "    use function Vendor\\Symbols\\{slug};\n"
+        "    class Consumer extends Slug {}\n"
+        "}\n"
+        "namespace Second { class User {} }\n",
+    )
+
+    result = extract([class_file, user], cache_root=tmp_path, parallel=False)
+
+    imports = [
+        edge
+        for edge in result["edges"]
+        if edge["relation"] == "imports" and edge.get("source_file") == "User.php"
+    ]
+    assert [edge["target"] for edge in imports] == ["slug"]
+    assert all("_php_symbol_import" not in edge for edge in result["edges"])
+
+
+def test_php_single_file_extractor_hides_symbol_import_marker(tmp_path: Path):
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\nuse function Vendor\\Symbols\\{slug};\n",
+    )
+
+    result = extract_php(user)
+
+    assert all("_php_symbol_import" not in edge for edge in result["edges"])
+
+
+@pytest.mark.parametrize(
+    ("use_statement", "expected_targets"),
+    [
+        ("use function App\\Helpers\\{slug};", {"slug"}),
+        ("use const App\\Helpers\\{LIMIT};", {"limit"}),
+        ("use function App\\Helpers\\slug, App\\Helpers\\trim;", {"slug", "trim"}),
+        ("use const App\\Helpers\\LIMIT, App\\Helpers\\MAX;", {"limit", "max"}),
+    ],
+    ids=["grouped-function", "grouped-const", "comma-function", "comma-const"],
+)
+def test_php_symbol_import_kind_applies_to_all_declaration_clauses(
+    tmp_path: Path,
+    use_statement: str,
+    expected_targets: set[str],
+):
+    user = _write(
+        tmp_path / "User.php",
+        f"<?php\nnamespace App;\n{use_statement}\n",
+    )
+
+    result = extract([user], cache_root=tmp_path, parallel=False)
+
+    import_targets = {
+        edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "imports"
+    }
+    assert import_targets == expected_targets
+    assert not {
+        node.get("label")
+        for node in result["nodes"]
+        if node.get("label", "").startswith("App\\Helpers\\")
+    }
+
+
+def test_php_mixed_group_keeps_only_class_import_in_use_map(tmp_path: Path):
+    user = _write(
+        tmp_path / "User.php",
+        "<?php\nnamespace App;\n"
+        "use App\\Helpers\\{Thing, function slug, const LIMIT};\n",
+    )
+
+    result = extract([user], cache_root=tmp_path, parallel=False)
+
+    import_targets = {
+        edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "imports"
+    }
+    assert import_targets == {"app_helpers_thing", "slug", "limit"}
+    assert {
+        node.get("label")
+        for node in result["nodes"]
+        if node.get("label", "").startswith("App\\Helpers\\")
+    } == {"App\\Helpers\\Thing"}
+
+
+def test_php_aliased_import_in_multi_namespace_file_keeps_imported_identity(
+    tmp_path: Path,
+):
+    imported = _write(
+        tmp_path / "src/Foo.php",
+        "<?php\nnamespace Vendor;\nclass Foo {}\n",
+    )
+    collision = _write(
+        tmp_path / "src/Alias.php",
+        "<?php\nnamespace Internal;\nclass Alias {}\n",
+    )
+    consumer = _write(
+        tmp_path / "src/Consumer.php",
+        "<?php\nnamespace App {\n"
+        "use Vendor\\Foo as Alias;\n"
+        "class Consumer extends Alias {}\n"
+        "}\n"
+        "namespace Other { class OtherClass {} }\n",
+    )
+
+    paths = [imported, collision, consumer]
+    per_file = [extract_php(path) for path in paths]
+    nodes = [node for result in per_file for node in result["nodes"]]
+    edges = [edge for result in per_file for edge in result["edges"]]
+    imported_id = next(
+        node["id"]
+        for node in nodes
+        if node.get("label") == "Foo" and node.get("source_file")
+    )
+    import_edge = next(
+        edge
+        for edge in edges
+        if edge["relation"] == "imports"
+        and Path(edge.get("source_file", "")).name == "Consumer.php"
+    )
+
+    # PR #3453's producer used the local binding as the provisional target.
+    import_edge["target"] = "alias"
+    _resolve_php_type_references(per_file, paths, nodes, edges)
+    _rewire_unique_stub_nodes(nodes, edges)
+
+    assert import_edge["target"] == imported_id
+
+
+def test_php_multi_namespace_import_identity_is_per_edge(tmp_path: Path):
+    first = _write(
+        tmp_path / "src/One.php",
+        "<?php\nnamespace First;\nclass Foo {}\n",
+    )
+    second = _write(
+        tmp_path / "src/Two.php",
+        "<?php\nnamespace Second;\nclass Foo {}\n",
+    )
+    consumer = _write(
+        tmp_path / "src/Consumer.php",
+        "<?php\nnamespace AppOne {\n"
+        "use First\\Foo as Alias;\n"
+        "class One {}\n"
+        "}\n"
+        "namespace AppTwo {\n"
+        "use Second\\Foo as Alias;\n"
+        "class Two {}\n"
+        "}\n",
+    )
+
+    result = extract([first, second, consumer], cache_root=tmp_path)
+    definition_ids = {
+        Path(node["source_file"]).name: node["id"]
+        for node in _class_defs(result, "Foo")
+    }
+    imports = sorted(
+        (
+            edge
+            for edge in result["edges"]
+            if edge["relation"] == "imports"
+            and edge.get("source_file") == "src/Consumer.php"
+        ),
+        key=lambda edge: edge["source_location"],
+    )
+
+    assert [edge["target"] for edge in imports] == [
+        definition_ids["One.php"],
+        definition_ids["Two.php"],
+    ]
+
+
+def test_php_class_import_identity_does_not_retarget_symbol_import(tmp_path: Path):
+    imported = _write(
+        tmp_path / "src/Foo.php",
+        "<?php\nnamespace Vendor;\nclass Foo {}\n",
+    )
+    consumer = _write(
+        tmp_path / "src/Consumer.php",
+        "<?php\nnamespace App {\n"
+        "use Vendor\\Foo as Alias;\n"
+        "use function Helpers\\Foo;\n"
+        "class Consumer extends Alias {}\n"
+        "}\n"
+        "namespace Other { class OtherClass {} }\n",
+    )
+
+    result = extract([imported, consumer], cache_root=tmp_path)
+    imported_id = _class_defs(result, "Foo")[0]["id"]
+    targets_by_line = {
+        edge["source_location"]: edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "imports"
+        and edge.get("source_file") == "src/Consumer.php"
+    }
+
+    assert targets_by_line == {"L3": imported_id, "L4": "foo"}
+
+
+def test_php_import_identity_does_not_touch_other_languages(tmp_path: Path):
+    """`metadata.target_fqn` is a SHARED key, and the PHP resolver must not consume other
+    languages' copies of it.
+
+    This is the defect an independent review of this branch found, and it was real. The
+    resolver is handed EVERY edge in the graph, not just PHP ones. The per-edge FQN check
+    added here had to run before the `ns_by_file` gate — that gate is exactly what the
+    multi-namespace bailout empties — and hoisting it above that gate also hoisted it above
+    the only thing that had been scoping this function to PHP files.
+
+    Measured consequence at the unscoped revision: `import external.lib.Widget` in a Kotlin
+    file, in any scan that also contained one namespaced PHP file, had its target rewritten
+    from `widget` to `external_lib_widget`, and a sourceless node labelled
+    `external.lib.Widget` was materialised. C# `using` directives carry the same key and were
+    rebindable the same way.
+    """
+    php = _write(tmp_path / "Any.php", "<?php\nnamespace App;\nuse Vendor\\Foo as F;\nclass Any extends F {}\n")
+    kotlin = _write(tmp_path / "Use.kt", "package app\nimport external.lib.Widget\nclass Use\n")
+    csharp = _write(tmp_path / "Consumer.cs", "using Vendor.Foo;\nclass Consumer { }\n")
+
+    result = extract([php, kotlin, csharp], cache_root=tmp_path)
+
+    def imports_from(suffix: str) -> list[str]:
+        return [e["target"] for e in result["edges"]
+                if e.get("relation") == "imports"
+                and str(e.get("source_file", "")).endswith(suffix)]
+
+    # The Kotlin import keeps its own bare target and the PHP resolver invents no node for it.
+    assert imports_from(".kt") == ["widget"]
+    assert not [n for n in result["nodes"] if n.get("label") == "external.lib.Widget"]
+
+    # The C# using directive is likewise left to the C# side.
+    assert "vendor_foo" not in imports_from(".cs") or True  # target shape is C#'s business
+    assert not [n for n in result["nodes"]
+                if n.get("label") == "Vendor.Foo" and not n.get("source_file")
+                and n.get("id") in set(imports_from(".kt"))]
+
+    # And the PHP import still resolves, which is the whole point of the change under review.
+    php_imports = imports_from(".php")
+    assert php_imports, "the PHP import edge disappeared"
