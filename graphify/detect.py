@@ -827,7 +827,7 @@ def _is_regular_file(path: Path) -> bool:
 _SKIP_DIRS = {
     "venv", ".venv",  # "env"/".env"/"*_env" are gated on venv markers below (#2058)
     "node_modules", "__pycache__", ".git",
-    "dist", "build", "target", "out",
+    "dist", "build", "target",  # bare "out" is gated on build evidence below (#3347)
     "site-packages", "lib64",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".tox", ".nox", ".eggs", "*.egg-info",  # nox is tox's successor, same .nox/ venv shape (#1804)
@@ -899,6 +899,119 @@ def _has_coverage_artifacts(d: "Path") -> bool:
     return False
 
 
+# Suffixes only a compiler/bundler writes. Any one of them inside a directory
+# named `out` is proof it holds build output: JVM (.class/.jar/.war/.ear),
+# native (.o/.obj/.a/.lib/.so/.dylib/.dll/.exe/.pdb), wasm, Python bytecode,
+# .NET packages, and the sourcemap/tsbuildinfo pair a tsc `outDir: "out"` leaves
+# behind (the common JS/TS reason `out` is on this list at all).
+_BUILD_OUTPUT_ARTIFACT_SUFFIXES = frozenset({
+    ".class", ".jar", ".war", ".ear",
+    ".o", ".obj", ".a", ".lib", ".so", ".dylib", ".dll", ".exe", ".pdb",
+    ".wasm", ".pyc", ".pyd", ".nupkg", ".map", ".tsbuildinfo",
+})
+
+# Build files that conventionally emit into a sibling `out/`: IntelliJ and javac
+# for the JVM ones, tsc/bundlers for the JS ones, MSBuild for .NET. A build
+# manifest beside the directory is the second kind of proof — an `out/` next to
+# `pom.xml` is IDEA's output dir, while `adapter/out/` deep inside a source tree
+# has no build file anywhere near it.
+_BUILD_MANIFEST_FILES = frozenset({
+    "pom.xml", "build.gradle", "build.gradle.kts",
+    "settings.gradle", "settings.gradle.kts", "build.xml",
+    "Makefile", "makefile", "GNUmakefile", "CMakeLists.txt",
+    "tsconfig.json", "jsconfig.json", "package.json",
+    "webpack.config.js", "rollup.config.js", "gulpfile.js",
+})
+_BUILD_MANIFEST_SUFFIXES = frozenset({".csproj", ".vbproj", ".fsproj", ".sln"})
+
+# Budget for the artifact probe: a build output tree is wide and deep, and the
+# probe runs during the os.walk descent, so it must not turn a scan into a full
+# second traversal. The entry budget is the real bound; the depth limit only
+# stops a pathological tree. Depth has to clear a JVM layout — IntelliJ writes
+# out/production/<module>/<package path>/App.class, so the first .class file sits
+# several levels down — hence 8 rather than a token 2 or 3.
+_BUILD_OUTPUT_PROBE_ENTRIES = 400
+_BUILD_OUTPUT_PROBE_DEPTH = 8
+
+
+def _has_build_output_artifacts(d: "Path") -> bool:
+    """True when *d* holds files only a compiler or bundler writes.
+
+    Bounded walk: at most ``_BUILD_OUTPUT_PROBE_ENTRIES`` entries over
+    ``_BUILD_OUTPUT_PROBE_DEPTH`` levels, depth-first so a deeply nested
+    artifact is reached before the budget is spent on breadth. Generated trees
+    announce themselves within a few entries of a leaf, so the cap costs recall
+    only in contrived cases and keeps the probe from doubling a scan's cost.
+    """
+    seen = 0
+    stack: list[tuple[Path, int]] = [(d, 0)]
+    while stack:
+        current, depth = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    seen += 1
+                    if seen > _BUILD_OUTPUT_PROBE_ENTRIES:
+                        return False
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if depth + 1 < _BUILD_OUTPUT_PROBE_DEPTH:
+                                stack.append((Path(entry.path), depth + 1))
+                            continue
+                    except OSError:
+                        continue
+                    if Path(entry.name).suffix.lower() in _BUILD_OUTPUT_ARTIFACT_SUFFIXES:
+                        return True
+                    # `.d.ts` is a declaration file tsc emits; `Path.suffix` only
+                    # sees `.ts`, which is ordinary source.
+                    if entry.name.lower().endswith(".d.ts"):
+                        return True
+        except OSError:
+            continue
+    return False
+
+
+def _has_sibling_build_manifest(parent: "Path") -> bool:
+    """True when *parent* holds a build file that emits into a sibling ``out/``."""
+    try:
+        with os.scandir(parent) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                if entry.name in _BUILD_MANIFEST_FILES:
+                    return True
+                if Path(entry.name).suffix.lower() in _BUILD_MANIFEST_SUFFIXES:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _is_build_output_dir(parent: "Path", name: str) -> bool:
+    """Is ``parent/name`` (a directory named ``out``) generated build output?
+
+    ``out`` was pruned by name alone, which is right for IntelliJ's and tsc's
+    output dir and wrong for a hexagonal / ports-and-adapters codebase, where
+    ``adapter/out/`` and ``port/out/`` hold the entire outbound layer —
+    persistence adapters, JPA entities, outbound port interfaces. In the repo
+    that surfaced this, that was 196 of 655 ``.java`` files, every ``@Entity``
+    among them, dropped with exit code 0 and no warning; the surviving graph
+    looked coherent while every path from application code to the database was
+    gone (#3347, same mechanism as #2479).
+
+    So require evidence, like ``env``/``coverage``/``snapshots`` already do, and
+    keep the directory when it cannot be confirmed. Evidence is either compiled
+    artifacts inside it, or a build file beside it.
+    """
+    return (
+        _has_build_output_artifacts(parent / name)
+        or _has_sibling_build_manifest(parent)
+    )
+
+
 def _has_venv_markers(d: "Path") -> bool:
     """True only when *d* has actual virtualenv/conda structure on disk.
 
@@ -938,6 +1051,13 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
         if parent is None:
             return False  # cannot verify; keep a possibly-real code dir
         return _has_coverage_artifacts(parent / part)
+    if part == "out":
+        # Ambiguous: a build output dir OR the outbound layer of a hexagonal
+        # codebase (adapter/out/, port/out/). Prune only on build evidence —
+        # compiled artifacts inside, or a build file beside it (#3347).
+        if parent is None:
+            return False  # cannot verify; keep a possibly-real code dir
+        return _is_build_output_dir(parent, part)
     if part == "snapshots":
         # Prune only when it looks like an actual JS/Vitest snapshot dir.
         if parent is None:

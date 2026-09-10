@@ -129,15 +129,19 @@ def _build_link_index(root: Path) -> "dict[str, list[tuple[int, str, Path]]]":
     """Index every linkable document under *root* by NFC-normalized basename.
 
     Each entry maps basename -> [(depth, root-relative posix path, absolute
-    path)]. Directories in detect._SKIP_DIRS and dot-directories are pruned —
-    the same corpus boundary the scanner draws, and Obsidian itself does not
-    index dot-folders.
+    path)]. Noise directories and dot-directories are pruned — the same corpus
+    boundary the scanner draws, and Obsidian itself does not index dot-folders.
+
+    Pruning goes through _is_noise_dir (not the raw _SKIP_DIRS set) so the
+    evidence-gated names — env/coverage/snapshots/out — are judged here exactly
+    as the scanner judges them, instead of being pruned on their name alone.
     """
-    from graphify.detect import _SKIP_DIRS
+    from graphify.detect import _is_noise_dir
     index: dict[str, list[tuple[int, str, Path]]] = {}
     for dirpath, dirnames, filenames in os.walk(root):
+        dp = Path(dirpath)
         dirnames[:] = sorted(
-            d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
+            d for d in dirnames if not d.startswith(".") and not _is_noise_dir(d, dp)
         )
         for fname in filenames:
             if Path(fname).suffix.lower() not in _MD_LINKABLE_EXTS:
