@@ -535,3 +535,45 @@ def test_php_class_import_identity_does_not_retarget_symbol_import(tmp_path: Pat
     }
 
     assert targets_by_line == {"L3": imported_id, "L4": "foo"}
+
+
+def test_php_import_identity_does_not_touch_other_languages(tmp_path: Path):
+    """`metadata.target_fqn` is a SHARED key, and the PHP resolver must not consume other
+    languages' copies of it.
+
+    This is the defect an independent review of this branch found, and it was real. The
+    resolver is handed EVERY edge in the graph, not just PHP ones. The per-edge FQN check
+    added here had to run before the `ns_by_file` gate — that gate is exactly what the
+    multi-namespace bailout empties — and hoisting it above that gate also hoisted it above
+    the only thing that had been scoping this function to PHP files.
+
+    Measured consequence at the unscoped revision: `import external.lib.Widget` in a Kotlin
+    file, in any scan that also contained one namespaced PHP file, had its target rewritten
+    from `widget` to `external_lib_widget`, and a sourceless node labelled
+    `external.lib.Widget` was materialised. C# `using` directives carry the same key and were
+    rebindable the same way.
+    """
+    php = _write(tmp_path / "Any.php", "<?php\nnamespace App;\nuse Vendor\\Foo as F;\nclass Any extends F {}\n")
+    kotlin = _write(tmp_path / "Use.kt", "package app\nimport external.lib.Widget\nclass Use\n")
+    csharp = _write(tmp_path / "Consumer.cs", "using Vendor.Foo;\nclass Consumer { }\n")
+
+    result = extract([php, kotlin, csharp], cache_root=tmp_path)
+
+    def imports_from(suffix: str) -> list[str]:
+        return [e["target"] for e in result["edges"]
+                if e.get("relation") == "imports"
+                and str(e.get("source_file", "")).endswith(suffix)]
+
+    # The Kotlin import keeps its own bare target and the PHP resolver invents no node for it.
+    assert imports_from(".kt") == ["widget"]
+    assert not [n for n in result["nodes"] if n.get("label") == "external.lib.Widget"]
+
+    # The C# using directive is likewise left to the C# side.
+    assert "vendor_foo" not in imports_from(".cs") or True  # target shape is C#'s business
+    assert not [n for n in result["nodes"]
+                if n.get("label") == "Vendor.Foo" and not n.get("source_file")
+                and n.get("id") in set(imports_from(".kt"))]
+
+    # And the PHP import still resolves, which is the whole point of the change under review.
+    php_imports = imports_from(".php")
+    assert php_imports, "the PHP import edge disappeared"

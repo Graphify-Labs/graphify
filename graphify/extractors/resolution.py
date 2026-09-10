@@ -3110,6 +3110,15 @@ def _resolve_java_type_references(
 
 
 _PHP_SUPERTYPE_RELATIONS = ("inherits", "implements", "mixes_in")
+_PHP_SOURCE_SUFFIXES = (".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps")
+
+
+def _is_php_source(source_file: object) -> bool:
+    """Did a PHP file produce this edge? Mirrors the suffix set extract.py selects on."""
+    name = str(source_file or "").lower()
+    return name.endswith(_PHP_SOURCE_SUFFIXES) and not name.endswith(".blade.php")
+
+
 _PHP_REPOINT_RELATIONS = frozenset({"inherits", "implements", "mixes_in", "imports", "references"})
 
 
@@ -3347,9 +3356,22 @@ def _resolve_php_type_references(
         ref_file = edge.get("source_file", "")
         tgt = edge.get("target")
         metadata = edge.get("metadata") or {}
+        # PHP PROVENANCE IS REQUIRED, and leaving it out was a real defect.
+        #
+        # `metadata.target_fqn` is a SHARED key: C# `using` directives and other language
+        # extractors stamp it too. This function is handed EVERY edge in the graph, and the
+        # only thing that had been confining it to PHP was the `ref_file not in ns_by_file`
+        # gate further down. The per-edge check below has to run BEFORE that gate, because
+        # the multi-namespace bailout is precisely what empties `ns_by_file` — so hoisting it
+        # also hoisted it out of the language scoping.
+        #
+        # Measured before this line existed: `import external.lib.Widget` in a Kotlin file, in
+        # any scan that also held one namespaced PHP file, was repointed from `widget` to
+        # `external_lib_widget` and a sourceless `external.lib.Widget` node was invented.
         imported_fqn = (
             metadata.get("target_fqn")
             if relation == "imports" and isinstance(metadata, dict)
+            and _is_php_source(ref_file)
             else None
         )
         if isinstance(imported_fqn, str) and imported_fqn:
