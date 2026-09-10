@@ -12,6 +12,17 @@ hardcoded the literal ``"graphify-out"`` and silently ignored the override
 once at import time, matching the previous per-module constants — set
 ``GRAPHIFY_OUT`` before the process starts (the normal worktree/shared-output
 flow) and every reader honours it.
+
+``GRAPHIFY_OUT`` only takes effect when exported in the *current* shell. A
+project that customized its output directory once (env var set at build time)
+gets silently reset to the default the moment someone runs a graphify command
+from a fresh shell, CI job, or IDE-launched terminal that doesn't export it —
+notably ``graphify hook install``, whose generated ``.gitattributes`` merge-
+driver line then points at the wrong path and never fires (#2595-adjacent).
+``graphify hook install`` persists a non-default value to ``./.graphifyrc``
+(``out_dir=...``) precisely so later invocations in a different shell still
+resolve correctly; that persisted value is the third fallback here, below the
+env var and above the hardcoded default.
 """
 
 from __future__ import annotations
@@ -23,7 +34,233 @@ import stat
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
+
+def is_absolute_any_platform(p: "str | Path | None") -> bool:
+    """Whether *p* is absolute under POSIX **or** Windows rules.
+
+    ``Path.is_absolute()`` and ``os.path.isabs()`` answer for the HOST os only,
+    which is the wrong question for a path that was *stored* — a ``source_file``
+    in ``graph.json``, a ``prune_sources`` entry, a cache key. Those travel
+    between machines (build in Docker/CI, update on a Windows workstation, or
+    the reverse), so the host's rules do not describe the string in hand:
+
+    - On Windows, ``WindowsPath("/home/ci/repo/docs/a.md").is_absolute()`` is
+      False — no drive letter — so a Linux-built graph's absolute paths read as
+      relative and get baked into node IDs or joined under the scan root (#2618).
+    - On POSIX, ``PosixPath("C:/Users/u/a.md").is_absolute()`` is False for the
+      mirror-image reason (#2197, #1789).
+
+    ``os.path.isabs`` is additionally not stable across supported interpreters:
+    Python 3.13 changed ``ntpath.isabs`` so a path starting with a single slash
+    is no longer absolute, where 3.10–3.12 said it was. The project supports
+    >=3.10, so a guard written on it silently means different things per version.
+
+    Answering for both platforms is the conservative choice for stored paths:
+    treating a path as absolute at worst declines to relativize it (the string is
+    kept as-is), whereas treating an absolute path as relative corrupts identity.
+    Covers drive-letter, UNC, and POSIX-root forms with either separator.
+
+    NOTE: this is for STORED/portable paths. Code resolving a path against the
+    real local filesystem (``cli``, ``detect``, ``hooks``) must keep using
+    ``Path.is_absolute()`` — there the host's rules are exactly right.
+
+    EXCEPTION: a value read from ``.graphifyrc`` and being checked ONLY to
+    decide whether to refuse it as untrusted repo-committed content (see
+    ``_read_persisted_out_dir`` below, and ``graphify.hooks._persist_out_dir``
+    / ``_load_graphifyrc``) is itself a stored/portable value, not a path
+    being resolved against this machine's filesystem — ``.graphifyrc`` can be
+    authored on Windows and read on POSIX or vice versa. Using plain
+    ``Path.is_absolute()`` there let a Windows-absolute value like
+    ``C:/shared`` slip past the refusal on POSIX (and the POSIX-absolute
+    mirror slip past it on Windows), since neither host recognizes the
+    other's absolute form. Those three refusal checks use this function;
+    only the later resolution steps in the same functions (joining onto the
+    repo root, ``.resolve()``, ``relative_to``) keep using plain
+    ``Path.is_absolute()``, since those genuinely do resolve against this
+    process's real filesystem.
+    """
+    if not p:
+        return False
+    s = str(p)
+    return PurePosixPath(s).is_absolute() or PureWindowsPath(s).is_absolute()
+
+
+def _find_graphifyrc(start: Path) -> Path | None:
+    """Walk up from `start` looking for `.graphifyrc`, the same way git itself
+    walks up looking for `.git` — so a command run from a subdirectory of the
+    repo still finds the repo-root file `_register_merge_driver` writes to
+    (`root` there is always the git root, never the invocation cwd).
+
+    Capped at the filesystem root; a `.git` directory also stops the walk
+    early (no reason to keep climbing past the repo boundary into unrelated
+    parent directories, e.g. `/home/user` for a repo at `/home/user/proj`).
+    """
+    current = start.resolve()
+    for parent in (current, *current.parents):
+        candidate = parent / ".graphifyrc"
+        if candidate.is_file():
+            return candidate
+        if (parent / ".git").exists():
+            return None
+    return None
+
+
+def _resolve_persisted_out_dir_target(rc_path: Path) -> Path | None:
+    """Read and validate ``out_dir=`` from ``rc_path``, returning an
+    absolute, safe target directory, or ``None`` if absent/empty/invalid/
+    untrusted.
+
+    Shared validation core for ``_read_persisted_out_dir`` (cwd-relative,
+    for the general ``GRAPHIFY_OUT`` fallback) and
+    ``_read_persisted_out_dir_for_root`` (repo-root-relative, for
+    ``.gitattributes`` generation) — the security-relevant checks (refusing
+    an absolute or ``..``-escaping value) live in exactly one place so the
+    two callers can't drift apart, the way three separate near-duplicates
+    of this logic already had to be caught and re-synced across earlier
+    revisions of this file and ``graphify.hooks``.
+
+    ``.graphifyrc`` is repo-committed, untrusted content (this project
+    already reads it for ``viz_node_limit``) — unlike ``GRAPHIFY_OUT`` the
+    env var, which a user sets for themselves, this file can arrive
+    unreviewed via ``git clone`` and applies the moment ANY graphify command
+    runs, with no action from the user beyond that clone. A *relative*
+    value is anchored to the repo root (``rc_path.parent`` — where
+    ``_register_merge_driver`` always resolves and writes it) and refused
+    outright if it escapes that root via ``..``. An *absolute* value
+    (checked cross-platform via ``is_absolute_any_platform``, not plain
+    ``Path.is_absolute()`` — see that function's docstring "EXCEPTION"
+    paragraph) is refused outright too — unlike a relative one it can't even
+    be checked against the repo boundary, and a committed absolute path
+    would silently redirect every collaborator's output the instant they
+    clone the repo. ``_register_merge_driver`` never persists one for the
+    same reason (`graphify.hooks._persist_out_dir`); an absolute
+    ``GRAPHIFY_OUT`` still works exactly as before when a user sets the env
+    var themselves — this refusal is specific to a value arriving from
+    repo-committed content, not the feature.
+    """
+    try:
+        content = rc_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    for raw in content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        if key.strip() != "out_dir":
+            continue
+        val = val.strip()
+        if not val:
+            return None
+        if is_absolute_any_platform(val):
+            return None  # repo-committed absolute path — refuse, don't honor
+        repo_root = rc_path.parent.resolve()
+        target = (repo_root / val).resolve()
+        try:
+            target.relative_to(repo_root)
+        except ValueError:
+            return None  # escapes the repo root via `..` — refuse, don't honor
+        return target
+    return None
+
+
+def _read_persisted_out_dir() -> str | None:
+    """Read ``out_dir=`` from the nearest ``.graphifyrc`` above cwd, if
+    present, re-expressed relative to the current working directory.
+
+    Deliberately independent of ``graphify.hooks._load_graphifyrc`` (which
+    also parses ``viz_node_limit``) to avoid a hooks<->paths import cycle:
+    ``hooks`` already imports ``GRAPHIFY_OUT`` from this module, and this
+    runs at import time, before any lazy import could resolve it. Malformed
+    or unreadable files degrade to "no override" rather than raising — this
+    must never block module import. See ``_resolve_persisted_out_dir_target``
+    for the untrusted-repo-content refusal policy this applies.
+
+    Injection via a literal newline in the value (which would add an
+    unintended `.gitattributes` line) is rejected at the write site
+    (``graphify.hooks._persist_out_dir``), not here — a value read back via
+    ``str.splitlines()`` can never itself contain a newline, so a line-based
+    check on this side is a no-op.
+
+    This is the general-purpose ``GRAPHIFY_OUT`` fallback, used for
+    resolving files relative to wherever the process was invoked — for
+    generating a ``.gitattributes`` pattern instead, which git always
+    interprets relative to the repo root regardless of invocation
+    directory, use ``_read_persisted_out_dir_for_root`` instead (re-
+    expressing relative to cwd here can legitimately produce a
+    `..`-ascending path when invoked from a subdirectory, which is correct
+    for opening a file from that cwd but not expressible as a gitattributes
+    pattern).
+    """
+    # Everything below is wrapped in one outer guard rather than scattering
+    # per-call try/excepts: `Path.cwd()` raises OSError (FileNotFoundError)
+    # if the invocation directory itself has been deleted out from under the
+    # process (rarer, but real — a shell left open in a directory a script
+    # elsewhere just rm -rf'd, common in CI teardown); building a path from
+    # a value containing an embedded NUL byte — a valid-UTF-8 string can
+    # still contain one — raises ValueError from the OS layer the first time
+    # it reaches a syscall; and a symlink loop anywhere in the path being
+    # resolved (`.graphifyrc` is repo-committed, so a cloned repo could ship
+    # one deliberately) raises RuntimeError specifically — pathlib's own
+    # exception for this, not OSError. All three (inside `_find_graphifyrc`
+    # and `_resolve_persisted_out_dir_target`) must degrade to "no override",
+    # per this function's own contract, not propagate and abort
+    # `graphify.paths` import for every command anywhere near the repo.
+    try:
+        rc_path = _find_graphifyrc(Path.cwd())
+        if rc_path is None:
+            return None
+        target = _resolve_persisted_out_dir_target(rc_path)
+        if target is None:
+            return None
+        try:
+            return os.path.relpath(target, Path.cwd())
+        except ValueError:
+            return str(target)  # e.g. different drives on Windows
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def _read_persisted_out_dir_for_root(root: Path) -> str | None:
+    """Like ``_read_persisted_out_dir``, but returns the persisted value
+    relative to ``root`` (the git repo root) instead of the current working
+    directory — for ``.gitattributes`` pattern generation specifically.
+
+    git always interprets a ``.gitattributes`` pattern relative to the repo
+    root, never relative to wherever a command happened to be invoked from.
+    ``_read_persisted_out_dir``'s cwd-relative form is correct for its own
+    purpose (opening a file from the current process's cwd), but reusing it
+    for the pattern too meant `graphify.hooks._merge_attr_line` could
+    receive a `..`-ascending path whenever `hook install` ran from a
+    subdirectory of a repo with a persisted override — which its own
+    `..`-ascending fallback then (correctly, given that input) turned into
+    the wrong default `graphify-out/graph.json`, instead of the actual
+    persisted directory. Looks only at ``root / ".graphifyrc"`` directly
+    (no walking up further) since that is exactly where
+    ``_persist_out_dir`` always writes it, keyed off the same ``root`` a
+    caller here already resolved via ``_git_root``.
+    """
+    try:
+        rc_path = root / ".graphifyrc"
+        if not rc_path.is_file():
+            return None
+        target = _resolve_persisted_out_dir_target(rc_path)
+        if target is None:
+            return None
+        try:
+            return os.path.relpath(target, root.resolve())
+        except ValueError:
+            return str(target)
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+_env_graphify_out = os.environ.get("GRAPHIFY_OUT")
+GRAPHIFY_OUT = (
+    _env_graphify_out
+    if _env_graphify_out is not None
+    else (_read_persisted_out_dir() or "graphify-out")
+)
 
 
 def _atomic_replace(path: "str | Path", write_fn) -> None:
@@ -309,41 +546,6 @@ def default_graph_json() -> str:
     the path is passed explicitly (#1423).
     """
     return str(out_path("graph.json"))
-
-
-def is_absolute_any_platform(p: "str | Path | None") -> bool:
-    """Whether *p* is absolute under POSIX **or** Windows rules.
-
-    ``Path.is_absolute()`` and ``os.path.isabs()`` answer for the HOST os only,
-    which is the wrong question for a path that was *stored* — a ``source_file``
-    in ``graph.json``, a ``prune_sources`` entry, a cache key. Those travel
-    between machines (build in Docker/CI, update on a Windows workstation, or
-    the reverse), so the host's rules do not describe the string in hand:
-
-    - On Windows, ``WindowsPath("/home/ci/repo/docs/a.md").is_absolute()`` is
-      False — no drive letter — so a Linux-built graph's absolute paths read as
-      relative and get baked into node IDs or joined under the scan root (#2618).
-    - On POSIX, ``PosixPath("C:/Users/u/a.md").is_absolute()`` is False for the
-      mirror-image reason (#2197, #1789).
-
-    ``os.path.isabs`` is additionally not stable across supported interpreters:
-    Python 3.13 changed ``ntpath.isabs`` so a path starting with a single slash
-    is no longer absolute, where 3.10–3.12 said it was. The project supports
-    >=3.10, so a guard written on it silently means different things per version.
-
-    Answering for both platforms is the conservative choice for stored paths:
-    treating a path as absolute at worst declines to relativize it (the string is
-    kept as-is), whereas treating an absolute path as relative corrupts identity.
-    Covers drive-letter, UNC, and POSIX-root forms with either separator.
-
-    NOTE: this is for STORED/portable paths. Code resolving a path against the
-    real local filesystem (``cli``, ``detect``, ``hooks``) must keep using
-    ``Path.is_absolute()`` — there the host's rules are exactly right.
-    """
-    if not p:
-        return False
-    s = str(p)
-    return PurePosixPath(s).is_absolute() or PureWindowsPath(s).is_absolute()
 
 
 # Legacy Windows path ceiling. Unless long-path support is enabled *and* every
