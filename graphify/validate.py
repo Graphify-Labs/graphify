@@ -5,6 +5,17 @@ VALID_FILE_TYPES = {"code", "document", "paper", "image", "rationale", "concept"
 VALID_CONFIDENCES = {"EXTRACTED", "INFERRED", "AMBIGUOUS"}
 REQUIRED_NODE_FIELDS = {"id", "label", "file_type", "source_file"}
 REQUIRED_EDGE_FIELDS = {"source", "target", "relation", "confidence", "source_file"}
+# build.py's hyperedge handling (member normalization, G.graph["hyperedges"])
+# only ever reads id/label/nodes - relation/confidence/source_file are part of
+# the LLM extraction contract (extraction-spec.md) but not load-bearing at
+# build time, so they stay optional-but-validated-if-present below rather than
+# required, matching what a hand-constructed or non-LLM-produced hyperedge
+# (e.g. build_from_json's own alias-normalization tests) actually needs.
+REQUIRED_HYPEREDGE_FIELDS = {"id", "label", "nodes"}
+# extraction-spec.md: "if 3 or more nodes clearly participate together" - a
+# hyperedge under 3 members is a plain edge that should have been modeled as
+# one, not a schema-valid hyperedge.
+MIN_HYPEREDGE_NODES = 3
 
 
 def validate_extraction(data: dict) -> list[str]:
@@ -83,6 +94,53 @@ def validate_extraction(data: dict) -> list[str]:
                     continue
                 if unmatched:
                     errors.append(f"Edge {i} {endpoint} '{val}' does not match any node id")
+
+    # Hyperedges - optional (older extractions predate them), but a "hyperedges"
+    # key that IS present must be schema-valid; nothing checked this before.
+    if "hyperedges" in data:
+        hyperedge_list = data["hyperedges"]
+        if not isinstance(hyperedge_list, list):
+            errors.append("'hyperedges' must be a list")
+        else:
+            for i, hyperedge in enumerate(hyperedge_list):
+                if not isinstance(hyperedge, dict):
+                    errors.append(f"Hyperedge {i} must be an object")
+                    continue
+                for field in REQUIRED_HYPEREDGE_FIELDS:
+                    if field not in hyperedge:
+                        errors.append(
+                            f"Hyperedge {i} (id={hyperedge.get('id', '?')!r}) "
+                            f"missing required field '{field}'"
+                        )
+                if "confidence" in hyperedge and hyperedge["confidence"] not in VALID_CONFIDENCES:
+                    errors.append(
+                        f"Hyperedge {i} has invalid confidence '{hyperedge['confidence']}' "
+                        f"- must be one of {sorted(VALID_CONFIDENCES)}"
+                    )
+                member_ids = hyperedge.get("nodes")
+                if member_ids is None:
+                    continue
+                if not isinstance(member_ids, list):
+                    errors.append(f"Hyperedge {i} 'nodes' must be a list")
+                    continue
+                if len(member_ids) < MIN_HYPEREDGE_NODES:
+                    errors.append(
+                        f"Hyperedge {i} (id={hyperedge.get('id', '?')!r}) has "
+                        f"{len(member_ids)} member node(s) - hyperedges require at least "
+                        f"{MIN_HYPEREDGE_NODES} (a 2-node group is a plain edge)"
+                    )
+                for member in member_ids:
+                    try:
+                        unmatched = bool(node_ids) and member not in node_ids
+                    except TypeError:
+                        errors.append(
+                            f"Hyperedge {i} member {member!r} is non-hashable - must be a string"
+                        )
+                        continue
+                    if unmatched:
+                        errors.append(
+                            f"Hyperedge {i} member '{member}' does not match any node id"
+                        )
 
     return errors
 
