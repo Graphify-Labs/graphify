@@ -42,6 +42,15 @@ def test_classify_powershell_manifest():
     # #1331: .psd1 manifests must be classified as CODE so the manifest extractor runs.
     assert classify_file(Path("MyModule.psd1")) == FileType.CODE
 
+def test_classify_css():
+    # #3473: .css files must be classified as CODE for token extraction
+    assert classify_file(Path("styles.css")) == FileType.CODE
+
+def test_classify_scss():
+    # #3473: .scss files must be classified as CODE for token extraction
+    assert classify_file(Path("styles.scss")) == FileType.CODE
+
+
 def test_classify_markdown():
     assert classify_file(Path("README.md")) == FileType.DOCUMENT
 
@@ -1738,6 +1747,15 @@ def test_sensitive_does_not_flag_ruby_code_modules():
     # #1666 exact cases: Rails source modules with keyword-ish names must survive.
     assert not _is_sensitive(Path("app/models/device_token.rb"))
     assert not _is_sensitive(Path("app/controllers/api/v1/passwords_controller.rb"))
+
+
+def test_sensitive_does_not_flag_stylesheet_tokens():
+    # #3473: stylesheet token files are code, not sensitive secret stores
+    assert not _is_sensitive(Path("tokens.css"))
+    assert not _is_sensitive(Path("tokens.scss"))
+    assert not _is_sensitive(Path("design-tokens.css"))
+    assert not _is_sensitive(Path("styles/tokens.scss"))
+
 
 
 def test_sensitive_still_flags_data_secret_stores():

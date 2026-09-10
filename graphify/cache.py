@@ -609,7 +609,7 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
     # definition_file (#2990) is a path into the scanned tree exactly like
     # source_file; a cache entry keeping it absolute replayed the build host's
     # layout on every warm hit (#3223).
-    for bucket in ("nodes", "edges", "hyperedges", "raw_calls"):
+    for bucket in ("nodes", "edges", "hyperedges", "raw_calls", "raw_token_uses"):
         for item in payload.get(bucket, []):
             if not isinstance(item, dict):
                 continue
@@ -911,7 +911,7 @@ def _absolutize_source_files_in(payload: dict, root: Path) -> None:
         root_resolved = Path(root).resolve()
     except OSError:
         return
-    for bucket in ("nodes", "edges", "hyperedges", "raw_calls"):
+    for bucket in ("nodes", "edges", "hyperedges", "raw_calls", "raw_token_uses"):
         for item in payload.get(bucket, []):
             if not isinstance(item, dict):
                 continue
