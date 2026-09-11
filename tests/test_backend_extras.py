@@ -34,6 +34,13 @@ def test_anthropic_in_all_extra():
     assert any("anthropic" in dep for dep in extras["all"]), "[all] must include anthropic"
 
 
+def test_postgres_driver_in_all_extra():
+    extras = _extras()
+    assert any(dep.startswith("psycopg") for dep in extras["all"]), (
+        "[all] must include the PostgreSQL driver"
+    )
+
+
 def test_backend_pkg_hint_points_at_uv_tool_and_extra():
     msg = _backend_pkg_hint("anthropic", "anthropic")
     assert "uv tool install" in msg

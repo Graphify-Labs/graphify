@@ -90,7 +90,16 @@ def _native_leiden(stable: nx.Graph, resolution: float) -> dict[str, int] | None
     except Exception:
         return None
 
-    return {id_to_node[node_id]: community for node_id, community in native_partitions.items()}
+    partition = {
+        id_to_node[node_id]: community
+        for node_id, community in native_partitions.items()
+    }
+    next_community = max(partition.values(), default=-1) + 1
+    for node in stable.nodes():
+        if node not in partition:
+            partition[node] = next_community
+            next_community += 1
+    return partition
 
 
 def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:

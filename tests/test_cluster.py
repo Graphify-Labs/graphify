@@ -137,6 +137,32 @@ def test_native_leiden_matches_graspologic_wrapper(monkeypatch):
     )
 
 
+def test_native_leiden_returns_complete_partition():
+    """The native-only dependency path used on Python 3.13+ must run Leiden,
+    not silently fall through to NetworkX Louvain."""
+    import pytest
+    if sys.version_info < (3, 13):
+        pytest.skip("graspologic-native is required directly on Python 3.13+")
+    import graspologic_native  # noqa: F401
+    import graphify.cluster as cl
+
+    G = nx.Graph()
+    G.add_node("isolated")
+    for a, b in [("a1", "a2"), ("a1", "a3"), ("a2", "a3"),
+                 ("b1", "b2"), ("b1", "b3"), ("b2", "b3"), ("a1", "b1")]:
+        G.add_edge(a, b)
+
+    partition = cl._native_leiden(G, 1.0)
+
+    assert partition is not None
+    assert set(partition) == set(G)
+    assert _grouping(partition) == {
+        frozenset({"a1", "a2", "a3"}),
+        frozenset({"b1", "b2", "b3"}),
+        frozenset({"isolated"}),
+    }
+
+
 def test_native_leiden_returns_none_when_binding_absent(monkeypatch):
     """When graspologic_native cannot be imported, _native_leiden must return
     None so _partition falls through to the wrapper / Louvain, not crash."""

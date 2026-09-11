@@ -5,6 +5,7 @@ import math
 import os
 import re
 import sys
+import warnings
 from array import array
 from collections import OrderedDict
 from pathlib import Path
@@ -17,7 +18,9 @@ from graphify.build import edge_data, edge_datas
 from graphify.paths import default_graph_json as _default_graph_json
 
 try:
-    import jieba as _jieba  # type: ignore[import-untyped]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SyntaxWarning)
+        import jieba as _jieba  # type: ignore[import-untyped]
 except ImportError:
     _jieba = None
 
