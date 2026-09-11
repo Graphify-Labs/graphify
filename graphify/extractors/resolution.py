@@ -10,6 +10,7 @@ from graphify.extractors.base import (  # noqa: F401
     _make_id,
     _read_text,
 )
+import functools
 import hashlib
 import json
 import os
@@ -784,14 +785,31 @@ def _vue_mask_non_script(src: str) -> tuple[str, str | None]:
     out.append(_blank(src[pos:]))
     return "".join(out), lang
 
+@functools.lru_cache(maxsize=65536)
+def _cached_source_key(source_file: str, root_str: str, _cwd: str) -> str:
+    """Resolve-and-relativize one source path, memoized (#perf).
+
+    ``Path.resolve()`` walks the path through ``nt._getfinalpathname`` /
+    ``readlink`` syscalls, and ``_disambiguate_colliding_node_ids`` calls
+    ``_source_key`` once per node, per edge endpoint and per raw_call — tens
+    of thousands of calls for a few hundred distinct ``source_file`` strings.
+    On a 364-file corpus this pass alone spent 15s (34% of a sequential
+    extract) re-resolving the same strings. ``_cwd`` is part of the key
+    because a relative ``source_file`` resolves against the current working
+    directory, so a chdir between calls must miss the cache rather than
+    replay a stale resolution.
+    """
+    source_path = Path(source_file)
+    try:
+        return str(source_path.resolve().relative_to(root_str))
+    except Exception:
+        return str(source_path)
+
+
 def _source_key(source_file: str, root: Path) -> str:
     if not source_file:
         return ""
-    source_path = Path(source_file)
-    try:
-        return str(source_path.resolve().relative_to(root))
-    except Exception:
-        return str(source_path)
+    return _cached_source_key(source_file, str(root), os.getcwd())
 
 def _node_disambiguation_source_key(node: dict, root: Path) -> str:
     source_file = str(node.get("source_file", ""))
