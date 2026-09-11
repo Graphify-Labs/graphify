@@ -2,8 +2,27 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.57 (unreleased)
+## 0.9.58 (unreleased)
 
+- Fix: a call to a Python function defined nested inside another function now resolves to that inner definition per lexical scope, instead of leaking to a same-named function elsewhere; direct recursion is preserved as a self-loop (#3410, thanks @hopstreax).
+- Fix: submodule imports inside a PEP 420 namespace package (a directory with no `__init__.py`) now resolve to the target module instead of being dropped (#3429, thanks @flaukowski).
+- Fix: a bare-name import of a module sitting next to the importing file (a flat script dir with no package) now resolves to that sibling — matching CPython's `sys.path[0]` behavior — without over-resolving a genuine third-party name (#3430, thanks @hopstreax).
+- Fix: a PHP `use Foo\Bar as Baz;` import keys its local binding on the alias, so later `Baz` references resolve to the real class, and distinct aliased same-named classes stay separate (#3421, thanks @ayushcodes10).
+- Fix: a directory literally named `out` is skipped as build output only when there is build-output evidence, so a real source `out/` is no longer silently dropped (#3347, thanks @abhay-codes07).
+- Fix: a shell script invoked in exec position through a variable path (`"$SCRIPT_DIR/foo.sh"`) now resolves to the target when the variable holds a constant, matching the existing `source` handling (#3416, thanks @edwardselby).
+- Fix: added the missing `Iterable` import in build.py so its type annotations resolve (they were an undefined name) (#3462, thanks @xiongjianxu).
+- Fix: `graphify global add` no longer infers an empty repo tag for a path like `/tmp/graph.json`; it degrades to a sensible non-empty tag via the same helper `merge-graphs` uses (#3464, thanks @xiongjianxu).
+- Feature: SQL extraction now emits index nodes for `CREATE [UNIQUE] INDEX`, linked to the table they index (#3467, thanks @L4XB).
+- Fix: a TypeScript `export *` re-export no longer resolves a name to a same-named interface *method* — only module-level exports are candidates (#3436, thanks @L4XB).
+- Feature: Rust module-level `static` and `const` declarations are now extracted as nodes (#3471, thanks @L4XB).
+- Fix: an incremental rebuild no longer drops a node's `rationale`/`summary` when a semantic node's absolute `source_file` collides with its AST twin's relative path during dedup — source paths are normalized first (#3472, thanks @hopstreax).
+- Fix: `graphify install` no longer aborts when the always-on registration target is unwritable (read-only or symlinked config); it skips that step with an actionable warning and still installs the skill (#3474, thanks @dajiaohuang).
+- Fix: community labelling falls back to an installed `claude` CLI resolved at run time instead of pinning a path that expires (e.g. under snap/nvm), so labelling keeps working across updates (#3475, thanks @ktsang622).
+- Fix: the `all` extra now includes `psycopg[binary]`, so `pip install 'graphifyy[all]'` provides the postgres driver (#3482, thanks @L4XB).
+
+## 0.9.57 (2026-09-09)
+
+- Fix: Rust module-level `static` and `const` declarations (and associated consts inside an `impl`) are now extracted as nodes with a `contains` edge and a reference to their declared type — neither node type had a branch, so a constant only ever reached the graph through files that referenced it (#3471, thanks @sortakool).
 - Fix: an incremental rebuild no longer wipes cross-file project AST nodes — re-extracting one `.csproj`/`.sln` was dropping package/framework nodes of a *referenced* project (whose stub carried the referenced file's `source_file`); the AST-replacement set is now derived from the files actually extracted (#3411, thanks @hopstreax).
 - Fix: when duplicate nodes merge, the richer (more complete) node is now kept as the survivor and the losers' non-empty fields are folded in, instead of a shorter-id passing mention winning and dropping content (#3372, thanks @abhay-codes07).
 - Fix: a C# generic call site with explicit type arguments — `Get<int>(...)`, unqualified or through `this` — now resolves to the method definition instead of capturing `Get<int>` as the callee and failing to match (#3406, thanks @abhay-codes07).

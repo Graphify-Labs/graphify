@@ -64,6 +64,18 @@ def _sandbox_home(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     return home
 
+@pytest.fixture(autouse=True)
+def _isolate_backend_env(monkeypatch):
+    """detect_backend() probes the developer's real shell: with GOOGLE_API_KEY (or
+    any of a dozen others) exported, the backend-detection tests picked that
+    backend instead of the one the test set up (#3481). Clear every variable it
+    reads before each test; a test that wants one sets it with monkeypatch."""
+    from graphify.llm import backend_detection_env_vars
+
+    for key in backend_detection_env_vars():
+        monkeypatch.delenv(key, raising=False)
+
+
 _ANALYZE_WARNING_FILTERS = (
     "ignore:Tensorflow not installed; ParametricUMAP will be unavailable:ImportWarning:umap",
     "ignore:Please import `random` from the `scipy\\.sparse` namespace.*:"

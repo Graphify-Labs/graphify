@@ -86,6 +86,88 @@ def test_install_claude_md_defaults_to_home_when_config_dir_unset(tmp_path, monk
     assert "~/.claude/skills/graphify/SKILL.md" in md.read_text()
 
 
+def _deny_writes_to(target: Path, monkeypatch):
+    """Make write_text raise PermissionError for *target* only (simulates a
+    dotfile symlinked into a read-only store, e.g. /nix/store)."""
+    real_write_text = Path.write_text
+
+    def guarded(self, *args, **kwargs):
+        if self == target:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", guarded)
+
+
+def test_install_survives_unwritable_claude_md(tmp_path, monkeypatch, capsys):
+    """#3474: a read-only ~/.claude/CLAUDE.md must not abort the install.
+
+    install() copies the skill files first and registers the always-on block
+    afterwards, so an unguarded write left a half-completed install plus a
+    traceback on nix/home-manager, chezmoi and stow-with-read-only-sources.
+    """
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    target = home / ".claude" / "CLAUDE.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("# my rules\n")
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        _deny_writes_to(target, monkeypatch)
+        install(platform="claude")  # must not raise
+
+    assert (home / ".claude" / "skills" / "graphify" / "SKILL.md").exists(), (
+        "skill files should still be installed"
+    )
+    assert target.read_text() == "# my rules\n", "unwritable file must be untouched"
+    err = capsys.readouterr().err
+    assert "skipped" in err
+    assert "PermissionError" in err
+
+
+def test_install_survives_unwritable_codebuddy_md(tmp_path, monkeypatch, capsys):
+    """#3474 (same shape): an unwritable CODEBUDDY.md must not abort the install."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    target = home / ".codebuddy" / "CODEBUDDY.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("# my rules\n")
+
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        _deny_writes_to(target, monkeypatch)
+        install(platform="codebuddy")  # must not raise
+
+    assert (home / ".codebuddy" / "skills" / "graphify" / "SKILL.md").exists()
+    assert target.read_text() == "# my rules\n"
+    assert "skipped" in capsys.readouterr().err
+
+
+def test_install_claude_md_success_output_unchanged(tmp_path, monkeypatch, capsys):
+    """Regression guard: the writable path still reports the same messages."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    with patch("graphify.__main__.Path.home", return_value=home):
+        install(platform="claude")
+        first = capsys.readouterr().out
+        install(platform="claude")
+        second = capsys.readouterr().out
+
+    assert "  CLAUDE.md        ->  created at " in first
+    assert "  CLAUDE.md        ->  already registered (no change)" in second
+
+
 def test_install_codebuddy(tmp_path):
     _install(tmp_path, "codebuddy")
     assert (tmp_path / ".codebuddy" / "skills" / "graphify" / "SKILL.md").exists()

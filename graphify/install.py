@@ -356,6 +356,34 @@ def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") 
         "When the user types `/graphify`, use the installed graphify skill "
         "or instructions before doing anything else.\n"
     )
+def _register_always_on_block(target: Path, prefix: str, registration: str) -> None:
+    """Append an always-on registration to *target*, degrading instead of raising.
+
+    The skill files are copied before this runs, so a *target* that cannot be
+    read or written must not abort an otherwise-complete install (#3474). That
+    happens whenever the dotfile is managed declaratively -- nix/home-manager
+    symlinks ``~/.claude/CLAUDE.md`` into a read-only /nix/store, and chezmoi or
+    stow with read-only sources leave the same shape.
+    """
+    try:
+        if target.exists():
+            content = target.read_text(encoding="utf-8")
+            if "graphify" in content:
+                print(f"{prefix}already registered (no change)")
+            else:
+                target.write_text(content.rstrip() + registration, encoding="utf-8")
+                print(f"{prefix}skill registered in {target}")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(registration.lstrip(), encoding="utf-8")
+            print(f"{prefix}created at {target}")
+    except OSError as exc:
+        print(f"{prefix}skipped: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        print(
+            f"  hint: the skill files were installed; add the graphify block to "
+            f"{target} manually to finish always-on registration",
+            file=sys.stderr,
+        )
 _PLATFORM_CONFIG: dict[str, dict] = {
     "claude": {
         "skill_file": "skill.md",
@@ -673,34 +701,17 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         else:
             claude_md = Path.home() / ".claude" / "CLAUDE.md"
             skill_ref = "~/.claude/skills/graphify/SKILL.md"
-        registration = _skill_registration(skill_ref)
-        if claude_md.exists():
-            content = claude_md.read_text(encoding="utf-8")
-            if "graphify" in content:
-                print(f"  CLAUDE.md        ->  already registered (no change)")
-            else:
-                claude_md.write_text(content.rstrip() + registration, encoding="utf-8")
-                print(f"  CLAUDE.md        ->  skill registered in {claude_md}")
-        else:
-            claude_md.parent.mkdir(parents=True, exist_ok=True)
-            claude_md.write_text(registration.lstrip(), encoding="utf-8")
-            print(f"  CLAUDE.md        ->  created at {claude_md}")
+        _register_always_on_block(
+            claude_md, "  CLAUDE.md        ->  ", _skill_registration(skill_ref)
+        )
 
     if platform == "codebuddy":
         # Register in ~/.codebuddy/CODEBUDDY.md (CodeBuddy only)
-        codebuddy_md = Path.home() / ".codebuddy" / "CODEBUDDY.md"
-        registration = _skill_registration("~/.codebuddy/skills/graphify/SKILL.md")
-        if codebuddy_md.exists():
-            content = codebuddy_md.read_text(encoding="utf-8")
-            if "graphify" in content:
-                print(f"  CODEBUDDY.md     ->  already registered (no change)")
-            else:
-                codebuddy_md.write_text(content.rstrip() + registration, encoding="utf-8")
-                print(f"  CODEBUDDY.md     ->  skill registered in {codebuddy_md}")
-        else:
-            codebuddy_md.parent.mkdir(parents=True, exist_ok=True)
-            codebuddy_md.write_text(registration.lstrip(), encoding="utf-8")
-            print(f"  CODEBUDDY.md     ->  created at {codebuddy_md}")
+        _register_always_on_block(
+            Path.home() / ".codebuddy" / "CODEBUDDY.md",
+            "  CODEBUDDY.md     ->  ",
+            _skill_registration("~/.codebuddy/skills/graphify/SKILL.md"),
+        )
 
     if platform == "opencode":
         _install_opencode_plugin(project_dir if project else Path("."))
