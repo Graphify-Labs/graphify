@@ -31,6 +31,17 @@ _PACKAGE_IMPORTS_CACHE: "dict[str, tuple[Path, dict] | None]" = {}
 
 _JS_RESOLVE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".svelte", ".js", ".jsx", ".mjs", ".cjs")
 
+# TypeScript's resolution order for a specifier written against the *emitted*
+# module: `Foo.tsx` compiles to `Foo.js`, so the specifier the compiler requires
+# is `./Foo.js` even though the source on disk is `.tsx`. Tried in order, an
+# implementation always ahead of a declaration (#3486).
+_TS_SOURCE_SUFFIXES = {
+    ".js": (".ts", ".tsx", ".d.ts"),
+    ".jsx": (".tsx",),
+    ".mjs": (".mts", ".d.mts"),
+    ".cjs": (".cts", ".d.cts"),
+}
+
 _JS_INDEX_FILES = ("index.ts", "index.tsx", "index.svelte", "index.js", "index.jsx", "index.mjs")
 
 def _resolve_js_import_path(candidate: Path) -> Path:
@@ -39,15 +50,13 @@ def _resolve_js_import_path(candidate: Path) -> Path:
     if candidate.is_file():
         return candidate
 
-    # TS ESM convention: imports often spell .js/.jsx while source is .ts/.tsx.
-    if candidate.suffix == ".js":
-        ts_candidate = candidate.with_suffix(".ts")
-        if ts_candidate.is_file():
-            return ts_candidate
-    elif candidate.suffix == ".jsx":
-        tsx_candidate = candidate.with_suffix(".tsx")
-        if tsx_candidate.is_file():
-            return tsx_candidate
+    # TS ESM convention: imports often spell the emitted module while the source
+    # is a TypeScript file. Try every source suffix TypeScript accepts for this
+    # specifier, in its documented order (#3486).
+    for replacement in _TS_SOURCE_SUFFIXES.get(candidate.suffix, ()):
+        source_candidate = candidate.with_suffix(replacement)
+        if source_candidate.is_file():
+            return source_candidate
 
     # Append extensions to the full filename, which covers extensionless imports,
     # multi-dot helpers, and Svelte 5 rune files like Foo.svelte.ts.
