@@ -1949,9 +1949,20 @@ def _parse_python_tree(path: Path):
         return None
 
 def _walk_python_tree(node):
-    yield node
-    for child in node.children:
-        yield from _walk_python_tree(child)
+    """Preorder walk of a tree-sitter tree, iteratively.
+
+    The recursive ``yield from`` form built one suspended generator frame per
+    ancestor and re-propagated every node up the whole chain — ~25M frame
+    resumptions on a 364-file corpus for ~2.8M actual nodes. An explicit stack
+    yields each node exactly once in the identical preorder (children pushed
+    reversed so the first child pops first). Same rewrite, same reasoning as
+    ``_walk_js_tree`` above.
+    """
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(reversed(current.children))
 
 def _python_import_from_module(node, source: bytes) -> tuple[int, str] | None:
     level = 0
