@@ -10,6 +10,7 @@ from graphify.extractors.base import (  # noqa: F401
     _make_id,
     _read_text,
 )
+import functools
 import hashlib
 import json
 import os
@@ -1938,13 +1939,30 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
             class_nid = _make_id(stem, class_name)
             _ts_walk_class_members(node, source, path, class_nid, facts)
 
+@functools.lru_cache(maxsize=2048)
+def _parse_python_tree_cached(path_str: str, _mtime_ns: int, _size: int):
+    import tree_sitter_python as tspython
+    from tree_sitter import Language, Parser
+    source = Path(path_str).read_bytes()
+    parser = Parser(Language(tspython.language()))
+    return source, parser.parse(source).root_node
+
+
 def _parse_python_tree(path: Path):
+    """Parse one Python file to ``(source, root_node)``, memoized (#perf).
+
+    The Python symbol-resolution facts pass and the cross-file import pass each
+    parse the entire ``.py`` corpus, back to back, from the main process after
+    the workers return — so every file was tree-sitter-parsed (and read from
+    disk) twice for no reason. Keying the memo on ``(path, mtime_ns, size)``
+    lets the second pass reuse the first pass's tree while still re-parsing a
+    file that changed between runs (watch mode). Both passes only read the
+    tree, so sharing one parse is behaviour-preserving. Returns ``None`` on any
+    error, exactly as before — callers already treat that as "skip this file".
+    """
     try:
-        import tree_sitter_python as tspython
-        from tree_sitter import Language, Parser
-        source = path.read_bytes()
-        parser = Parser(Language(tspython.language()))
-        return source, parser.parse(source).root_node
+        st = path.stat()
+        return _parse_python_tree_cached(str(path), st.st_mtime_ns, st.st_size)
     except Exception:
         return None
 
@@ -2232,13 +2250,9 @@ def _resolve_cross_file_imports(
         BasicAuth  --uses--> Request   [INFERRED]
     """
     try:
-        import tree_sitter_python as tspython
-        from tree_sitter import Language, Parser
+        import tree_sitter_python  # noqa: F401  (availability check only)
     except ImportError:
         return []
-
-    language = Language(tspython.language())
-    parser = Parser(language)
 
     # Pass 1: _file_stem(path) → {ClassName: node_id}
     # Keyed by directory-qualified stem (e.g. "auth_models") to avoid collisions
@@ -2304,12 +2318,12 @@ def _resolve_cross_file_imports(
         if not name_to_nid:
             continue
 
-        # Parse imports from this file
-        try:
-            source = path.read_bytes()
-            tree = parser.parse(source)
-        except Exception:
+        # Parse imports from this file (shared with the facts pass via the
+        # mtime-keyed memo, so each .py is parsed once across both passes).
+        parsed = _parse_python_tree(path)
+        if parsed is None:
             continue
+        source, root_node = parsed
 
         # local_name -> target node id (local_name honours `import X as Y`, so a
         # reference to the alias in the body still attributes correctly).
@@ -2415,7 +2429,7 @@ def _resolve_cross_file_imports(
             for child in node.children:
                 visit(child, current_nid)
 
-        visit(tree.root_node, None)
+        visit(root_node, None)
 
         for name, tgt_nid in import_targets.items():
             for src_nid, line in ref_sources.get(name, {}).items():
