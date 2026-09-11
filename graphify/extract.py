@@ -4661,15 +4661,16 @@ def _resolve_kotlin_member_calls(
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for rc in raw:
         receiver, callee, caller = rc["receiver"], rc["callee"], rc["caller_nid"]
-        # A capitalized receiver is the type itself — a companion/static call or an
-        # `object` singleton. Kotlin imports the class name into scope rather than a
-        # module alias, so unlike TS/JS this spelling is not also the namespace idiom.
-        if receiver[:1].isupper():
+        # The table is consulted first even for a capitalized receiver: a binding of that
+        # name in scope is what the call actually goes through. Only a receiver naming no
+        # binding is the type itself — a companion/static call or an `object` singleton.
+        # Kotlin imports the class name into scope rather than a module alias, so unlike
+        # TS/JS this spelling is not also the namespace idiom.
+        type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
+        type_qualified = False
+        if not type_name and receiver[:1].isupper():
             type_name = receiver
             type_qualified = True
-        else:
-            type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
-            type_qualified = False
         if not type_name:
             continue
         if (type_name in _LANGUAGE_BUILTIN_GLOBALS or type_name in _KOTLIN_BUILTIN_TYPES
