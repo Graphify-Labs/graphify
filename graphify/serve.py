@@ -1335,6 +1335,55 @@ def _query_graph_text(
     return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
 
 
+def _resolve_path_scoped_symbol(G: nx.Graph, path_part: str, symbol_part: str) -> list[str]:
+    """Nodes whose source_file matches path_part and label/id matches symbol_part.
+
+    Backs the `path::Symbol` query form (#3485): a bare path resolves to the
+    FILE node (`_find_node_tiers`'s own `source_exact` tier, which prefers
+    the file over its members once #2032-disambiguated), and a bare symbol
+    name can be ambiguous across files -- the same-named local declaration
+    guard from #3176 exists for exactly that case, and its own suggested
+    retry ("the repo-relative path") pointed at a form that resolved to the
+    wrong node or nothing at all, since no prior tier combined a path with
+    a label. This combines both constraints in one query, so a specific
+    symbol in a specific file is reachable without needing its opaque id.
+    """
+    path_tokens = " ".join(_search_tokens(path_part))
+    norm_path_query = _strip_diacritics(path_part).lower().strip()
+    symbol_term = " ".join(_search_tokens(symbol_part))
+    norm_symbol_query = _strip_diacritics(symbol_part).lower().strip()
+    if not (path_tokens or norm_path_query) or not (symbol_term or norm_symbol_query):
+        return []
+    candidate_ids = _trigram_candidates(G, [symbol_term, norm_symbol_query])
+    node_iter = (
+        G.nodes(data=True) if candidate_ids is None
+        else ((nid, G.nodes[nid]) for nid in candidate_ids)
+    )
+    matches: list[str] = []
+    for nid, d in node_iter:
+        source_file = d.get("source_file") or ""
+        source_tokens = " ".join(_search_tokens(source_file))
+        norm_source = _strip_diacritics(source_file).lower().strip()
+        if not (
+            source_tokens == path_tokens
+            or norm_source == norm_path_query
+            or (norm_path_query and norm_source.endswith("/" + norm_path_query))
+            or (path_tokens and source_tokens.endswith(" " + path_tokens))
+        ):
+            continue
+        norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
+        bare_label = norm_label.rstrip("()")
+        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
+        nid_lower = nid.lower()
+        if (
+            symbol_term == norm_label or symbol_term == bare_label
+            or symbol_term == label_tokens or symbol_term == nid_lower
+            or norm_symbol_query == norm_label or norm_symbol_query == bare_label
+        ):
+            matches.append(nid)
+    return matches
+
+
 def _find_node_tiers(
     G: nx.Graph, label: str
 ) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -1345,9 +1394,26 @@ def _find_node_tiers(
     its consumers take `[0]` — which resolves by graph-iteration order when one
     tier holds several nodes from different files. See `find_node_ambiguity`.
     """
+    # `path::Symbol` restricts the label match to nodes defined in that
+    # file (#3485) -- checked before the ordinary tiers below so a
+    # deliberately path-scoped query never falls back to guessing among
+    # same-named symbols in other files. Returned as source_exact (the
+    # tier `find_node_ambiguity` already treats as maximally specific) so
+    # existing callers need no changes; an empty result falls through to
+    # ordinary matching rather than reporting no match outright, in case
+    # "::" is meaningful some other way to a caller this was not designed
+    # for.
+    if "::" in label:
+        path_part, _, symbol_part = label.partition("::")
+        path_part, symbol_part = path_part.strip(), symbol_part.strip()
+        if path_part and symbol_part:
+            scoped = _resolve_path_scoped_symbol(G, path_part, symbol_part)
+            if scoped:
+                return scoped, [], [], []
+
     term = " ".join(_search_tokens(label))
     if not term:
-        return []
+        return [], [], [], []
     # Punctuation-preserving normalized query. `term` tokenizes on \w+ (so
     # "blockStream.ts" -> "blockstream ts", space where the '.' was), but a node's
     # stored `norm_label` keeps punctuation ("blockstream.ts"). Matching only via
