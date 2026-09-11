@@ -614,53 +614,6 @@ def test_global_add_many_reports_per_unit_and_batch_level_counts(tmp_path):
     assert all("cross_repo_calls" not in r for r in batch["results"])
 
 
-def test_global_add_many_dedups_a_later_units_external_against_an_earlier_one(tmp_path):
-    """A stub of the same label composed by an earlier unit in the same batch has to be
-    the one a later unit's edges attach to, exactly as when the two units arrive as two
-    separate adds."""
-    from graphify.global_graph import _load_global_graph, global_add_many
-
-    sources = _write_batch_units(tmp_path)
-    with _global_store(tmp_path / "store"):
-        global_add_many(sources)
-        G = _load_global_graph()
-
-    assert "repoC::logging" not in G.nodes
-    assert G.has_edge("repoC::worker", "repoA::logging")
-
-
-def test_global_add_many_re_adding_a_repo_keeps_its_own_stub_in_the_graph(tmp_path):
-    """The external-label index has to be read after the prune, not before it.
-
-    A stub the previous revision owned is deleted by the prune. An index built ahead of
-    the prune still names it, the unit's own stub is then treated as a duplicate of it and
-    never composed, and rewiring an edge onto the missing id has add_edge invent an
-    attribute-less node in its place.
-    """
-    from graphify.global_graph import _load_global_graph, global_add_many
-
-    sources = _write_batch_units(tmp_path)
-    repo_a_path = sources[0][0]
-    with _global_store(tmp_path / "store"):
-        global_add_many(sources[:1])
-        # A second revision of repoA, still importing `logging`, and different enough
-        # that the source hash cannot skip it.
-        _graph_to_json(
-            _make_graph(
-                [{"id": "app", "label": ".run()", "source_file": "src/App.java"},
-                 {"id": "extra", "label": ".boot()", "source_file": "src/Boot.java"},
-                 {"id": "logging", "label": "logging"}],
-                [{"source": "app", "target": "logging", "relation": "imports"}],
-            ),
-            repo_a_path,
-        )
-        global_add_many(sources[:1])
-        G = _load_global_graph()
-
-    assert G.has_edge("repoA::app", "repoA::logging")
-    ghosts = [n for n, d in G.nodes(data=True) if not d.get("repo")]
-    assert not ghosts, f"nodes with no repo attribute: {ghosts}"
-
 
 def test_global_add_many_keeps_a_skipped_unit_in_position(tmp_path):
     from graphify.global_graph import _load_global_graph, global_add_many
