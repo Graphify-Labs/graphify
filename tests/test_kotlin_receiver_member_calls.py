@@ -134,9 +134,9 @@ def test_a_builtin_receiver_type_does_not_reach_a_same_named_class(tmp_path):
     assert _greet_edge(calls) is None, calls
 
 
-def test_the_first_binding_of_a_name_wins(tmp_path):
-    # The table is flat per file, so a parameter named like a property has to lose:
-    # otherwise `other`'s signature would redirect the property's own calls.
+def test_a_parameter_types_its_own_function_without_retyping_the_property(tmp_path):
+    # The receiver table is function-scoped for parameters and locals, so the two `greeter`
+    # receivers are two names: the parameter answers inside `other`, the property in `run`.
     calls, result = _calls(tmp_path, {
         "Greeter.kt": GREETER,
         "Other.kt": "class Other {\n    fun greet() {}\n}\n",
@@ -148,12 +148,35 @@ def test_the_first_binding_of_a_name_wins(tmp_path):
     })
     source_of = {n["id"]: str(n.get("source_file") or "") for n in result["nodes"]}
     label_of = {n["id"]: n["label"] for n in result["nodes"]}
-    run_targets = {source_of[e["target"]] for e in result["edges"]
-                   if e["relation"] == "calls"
-                   and "run" in str(label_of.get(e["source"]))
-                   and label_of.get(e["target"]) == ".greet()"}
-    assert len(run_targets) == 1, run_targets
-    assert run_targets.pop().endswith("Greeter.kt")
+    targets_by_caller = {}
+    for e in result["edges"]:
+        if e["relation"] == "calls" and label_of.get(e["target"]) == ".greet()":
+            targets_by_caller.setdefault(label_of.get(e["source"]), set()).add(
+                source_of[e["target"]].rsplit("/", 1)[-1])
+    assert targets_by_caller == {".run()": {"Greeter.kt"}, ".other()": {"Other.kt"}}, calls
+
+
+def test_a_local_in_one_function_does_not_type_a_receiver_in_another(tmp_path):
+    # `svc` in two bodies is two names. A file-wide table hands the second function the
+    # first one's type, and `svc`/`client`/`repo` twice in a class is the common case.
+    calls, _ = _calls(tmp_path, {
+        "Alpha.kt": "class Alpha {\n    fun doThing() {}\n}\n",
+        "Beta.kt": "class Beta {\n    fun doThing() {}\n}\n",
+        "App.kt": "class App {\n"
+                  "    fun a() {\n"
+                  "        val svc = Alpha()\n"
+                  "        svc.doThing()\n"
+                  "    }\n"
+                  "    fun b() {\n"
+                  "        val svc = Beta()\n"
+                  "        svc.doThing()\n"
+                  "    }\n"
+                  "}\n",
+    })
+    edges = {src: e["target"] for (src, tgt), e in calls.items() if tgt == ".doThing()"}
+    assert set(edges) == {".a()", ".b()"}, calls
+    assert "alpha" in edges[".a()"].lower(), edges
+    assert "beta" in edges[".b()"].lower(), edges
 
 
 def test_a_qualified_call_still_reaches_the_package_resolver(tmp_path):

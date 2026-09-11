@@ -3340,6 +3340,11 @@ def _extract_generic(
     # Names `type_table` owes to a plain Kotlin constructor parameter, which declares no
     # member: a body property of the same name may take the name back.
     kotlin_plain_ctor_params: set[str] = set()
+    # Kotlin function-scoped receiver types, caller_nid -> name -> type, holding what a
+    # single function's parameters and locals bind. Class-level bindings stay in
+    # `type_table`: they really are file-wide, while `svc` in two functions is two names,
+    # and a flat table hands the second function the first one's type.
+    kotlin_receiver_types: dict[str, dict[str, str]] = {}
     # #2561: pending factory bindings (`let x = Factory.make()`), name ->
     # (FactoryType, method). Label-only (no nids, so the per-file AST cache
     # stays valid); resolved corpus-side in _resolve_swift_member_calls against
@@ -4812,8 +4817,9 @@ def _extract_generic(
                         param_name = next(
                             (_read_text(sub, source) for sub in p.children
                              if sub.type in ("simple_identifier", "identifier")), None)
-                        if param_name and param_type and param_name not in type_table:
-                            type_table[param_name] = param_type
+                        if param_name and param_type:
+                            kotlin_receiver_types.setdefault(func_nid, {}).setdefault(
+                                param_name, param_type)
                 return_type_node = _kotlin_function_return_type_node(node)
                 if return_type_node is not None:
                     refs = []
@@ -6043,6 +6049,10 @@ def _extract_generic(
                             rc_entry["lang"] = "kotlin"
                             if kotlin_qualified_prefix:
                                 rc_entry["qualified_prefix"] = kotlin_qualified_prefix
+                            receiver_type = kotlin_receiver_types.get(caller_nid, {}).get(
+                                member_receiver or "")
+                            if receiver_type:
+                                rc_entry["receiver_type"] = receiver_type
                         raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
@@ -6288,10 +6298,12 @@ def _extract_generic(
             _swift_local_var_types(body_node, source, type_table,
                                    factory=swift_factory_bindings)
 
-    # Kotlin: the same for `val c = Client()` / `val c: Client = …` inside a body.
+    # Kotlin: the same for `val c = Client()` / `val c: Client = …` inside a body, kept
+    # under the owning function so a name bound in one body cannot type another's receiver.
     if config.ts_module == "tree_sitter_kotlin":
         for _caller_nid, body_node in function_bodies:
-            _kotlin_local_var_types(body_node, source, type_table)
+            _kotlin_local_var_types(body_node, source,
+                                    kotlin_receiver_types.setdefault(_caller_nid, {}))
 
     # JS/TS: bodies already walked with their own caller_nid (const-assigned
     # arrows, methods). An INLINE/returned arrow or function-expression that is

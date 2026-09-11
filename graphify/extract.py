@@ -4609,12 +4609,13 @@ def _resolve_kotlin_member_calls(
     """Resolve Kotlin member calls (``greeter.greet()``) through the receiver's type.
 
     The shared cross-file pass skips member calls, so a call on a typed receiver whose
-    method is declared in another file resolved to nothing at all. The per-file
-    ``kotlin_type_table`` names the declared type of every property, primary-constructor
-    parameter, function parameter and local binding; this pass looks the receiver up
-    there, takes the single class/object declaring that type, and emits the ``calls``
+    method is declared in another file resolved to nothing at all. A function's own
+    parameters and locals are typed per caller and travel on the raw call as
+    ``receiver_type``; the per-file ``kotlin_type_table`` names the class-level bindings
+    (properties and primary-constructor parameters). This pass looks the receiver up in
+    that order, takes the single class/object declaring that type, and emits the ``calls``
     edge to its member — EXTRACTED when the receiver names the type in source
-    (``Registry.register()``), INFERRED when the type came from the table.
+    (``Registry.register()``), INFERRED when the type came from a table.
 
     A receiver typed to a class this corpus declares nowhere is parked on the caller for
     a merged graph to finish (#3152).
@@ -4661,12 +4662,13 @@ def _resolve_kotlin_member_calls(
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
     for rc in raw:
         receiver, callee, caller = rc["receiver"], rc["callee"], rc["caller_nid"]
-        # The table is consulted first even for a capitalized receiver: a binding of that
-        # name in scope is what the call actually goes through. Only a receiver naming no
-        # binding is the type itself — a companion/static call or an `object` singleton.
+        # The caller's own parameters and locals answer before the file-wide class
+        # bindings, and both answer before the spelling: a receiver naming no binding in
+        # scope is the type itself — a companion/static call or an `object` singleton.
         # Kotlin imports the class name into scope rather than a module alias, so unlike
         # TS/JS this spelling is not also the namespace idiom.
-        type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
+        type_name = rc.get("receiver_type") or type_table_by_file.get(
+            rc.get("source_file", ""), {}).get(receiver)
         type_qualified = False
         if not type_name and receiver[:1].isupper():
             type_name = receiver
