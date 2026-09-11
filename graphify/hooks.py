@@ -101,11 +101,19 @@ fi
 # Scan the uv tool envs directly; UV_TOOL_DIR overrides the default
 # location. A tool env is adopted only if its python passes the probe, so a
 # co-installed tool without graphify never satisfies it.
+#
+# The snap roots matter because an install made from inside a snap-confined
+# editor lands in that snap's private HOME, which the plain $HOME roots above
+# never see once the hook runs from an ordinary shell. Revisions are globbed
+# rather than pinned: snap rotates them on update, which is exactly what makes
+# a pinned path unsafe (see _is_rotating_prefix).
 if [ -z "$GRAPHIFY_PYTHON" ]; then
     for _GFY_TOOLS in \
         "${UV_TOOL_DIR:-}" \
         "$HOME/.local/share/uv/tools" \
-        "$HOME/AppData/Roaming/uv/tools"; do
+        "$HOME/AppData/Roaming/uv/tools" \
+        "$HOME"/snap/*/current/.local/share/uv/tools \
+        "$HOME"/snap/*/[0-9]*/.local/share/uv/tools; do
         [ -n "$_GFY_TOOLS" ] || continue
         for _GFY_CAND in "$_GFY_TOOLS"/*/bin/python "$_GFY_TOOLS"/*/Scripts/python.exe; do
             [ -x "$_GFY_CAND" ] || continue
@@ -647,7 +655,29 @@ def _pinned_python() -> str:
     """
     if re.search(r"[^a-zA-Z0-9/_.@: \\-]", sys.executable):
         return ""
+    if _is_rotating_prefix(sys.executable):
+        return ""
     return sys.executable
+
+
+# ``~/snap/<app>/<revision>/`` — snap swaps <revision> on every package update and
+# prunes the old tree, so anything under it is a path with an expiry date.
+_ROTATING_PREFIX_RE = re.compile(r"/snap/[^/]+/(\d+|current)/")
+
+
+def _is_rotating_prefix(path: str) -> bool:
+    """True if `path` lives under a directory the packaging system rotates.
+
+    A pin is only worth writing if it will still resolve tomorrow. An interpreter
+    inside a snap revision will not: the revision number changes on update and the
+    old tree is removed, which silently kills every hook pinned to it — observed
+    across 15 repositories at once when an editor snap moved past its revision.
+
+    Returning "" here is the documented safe degradation: the hook falls through to
+    its other probes, including the uv-tools scan, which searches snap-confined
+    homes too.
+    """
+    return bool(_ROTATING_PREFIX_RE.search(path.replace("\\", "/")))
 
 
 def _merge_attr_line() -> str:
