@@ -2661,6 +2661,7 @@ def _lang_is_case_insensitive(source_file: object) -> bool:
 _LANG_FAMILY_BY_EXT: dict[str, str] = {
     # JS/TS module graph (SFCs embed JS/TS)
     ".js": "jsts", ".jsx": "jsts", ".mjs": "jsts", ".cjs": "jsts",
+    ".gs": "jsts",
     ".ts": "jsts", ".tsx": "jsts", ".mts": "jsts", ".cts": "jsts",
     ".vue": "jsts", ".svelte": "jsts", ".astro": "jsts",
     # JVM interop
@@ -4738,7 +4739,7 @@ register_language_resolver(
     LanguageResolver("ruby_member_calls", frozenset({".rb", ".rake"}), resolve_ruby_member_calls)
 )
 register_language_resolver(
-    LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx"}), _resolve_typescript_member_calls)
+    LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".gs"}), _resolve_typescript_member_calls)
 )
 # C++ (#1547) and ObjC (#1556) receiver-typed member-call resolution. `.h` is in
 # both suffix sets because it routes to extract_cpp or extract_objc by content; the
@@ -5817,6 +5818,7 @@ def extract_xaml(path: Path) -> dict:
 _DISPATCH: dict[str, Any] = {
     ".py": extract_python,
     ".js": extract_js,
+    ".gs": extract_js,
     ".jsx": extract_js,
     ".mjs": extract_js,
     ".cjs": extract_js,
@@ -6046,6 +6048,40 @@ def _is_cpp_header(path: Path) -> bool:
     return any(marker in head for marker in _CPP_HEADER_MARKERS)
 
 
+# `.gs` is Google Apps Script (plain JavaScript) but is also used by GLSL geometry
+# shaders and by Gosu. Apps Script is the overwhelmingly common case in a repo
+# graphify is pointed at, so `.gs` routes to the JS extractor unless the file
+# carries a marker only the other two produce.
+_NON_APPS_SCRIPT_GS_MARKERS = (
+    b"#version ",     # GLSL preprocessor directive — never valid JavaScript
+    b"gl_Position",
+    b"gl_in[",
+    b"EmitVertex",
+    b"EndPrimitive",
+    b"uses java.",    # Gosu import
+    b"uses gw.",
+)
+
+
+def _is_apps_script(path: Path) -> bool:
+    """Whether a `.gs` file is Google Apps Script rather than GLSL/Gosu.
+
+    Inverse of the `.m` sniff (`_is_objc_source`): there the ambiguous suffix is
+    guilty until proven innocent because MATLAB and Objective-C are both common.
+    Apps Script has no such rival — a `.gs` in a repo is almost always Apps
+    Script, and its own marker set is unusable as a positive test (a pure-logic
+    `.gs` helper calls no `SpreadsheetApp`/`DriveApp` service at all). So the
+    test runs the other way: JS unless a GLSL or Gosu token shows up, in which
+    case the file is left without an extractor (surfaced by the
+    no-AST-extractor warning) rather than force-parsed into garbage.
+    """
+    try:
+        head = path.read_bytes()[:256 * 1024]
+    except OSError:
+        return False
+    return not any(marker in head for marker in _NON_APPS_SCRIPT_GS_MARKERS)
+
+
 def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
     if path.name.lower().endswith(".blade.php"):
@@ -6080,6 +6116,10 @@ def _get_extractor(path: Path) -> Any | None:
     # an extractor (surfaced by the no-AST-extractor warning, #1689) rather than
     # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
     if suffix == ".m" and not _is_objc_source(path):
+        return None
+    # `.gs` is Apps Script (JS) OR a GLSL geometry shader OR Gosu. Route to
+    # extract_js unless the file looks like one of the other two.
+    if suffix == ".gs" and not _is_apps_script(path):
         return None
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.
     # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but

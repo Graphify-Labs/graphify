@@ -72,7 +72,7 @@ _GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"
 # which imports build.py — a cycle) and deliberately mirrors extract._LANG_FAMILY_BY_EXT.
 _EDGE_LANG_FAMILY: dict[str, str] = {
     ".py": "py", ".pyi": "py",
-    ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "js",
+    ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "js", ".gs": "js",
     ".ts": "js", ".tsx": "js", ".mts": "js", ".cts": "js",
     ".go": "go", ".rs": "rs",
     ".java": "jvm", ".kt": "jvm", ".scala": "jvm", ".groovy": "jvm",
