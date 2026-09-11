@@ -188,7 +188,17 @@ try:
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
-            _root = Path(_txt)
+            _candidate = Path(_txt)
+            try:
+                _cwd = Path.cwd().resolve()
+                _resolved = _candidate.resolve()
+                _in_repo = _resolved == _cwd or _cwd in _resolved.parents
+            except OSError:
+                _in_repo = False
+            if _in_repo:
+                _root = _candidate
+            else:
+                print(f'[graphify hook] ignoring out-of-repo .graphify_root: {_txt}')
     _rebuild_code(_root, changed_paths=changed, force=_force)
     # Refresh the work-memory lessons doc when saved Q&A outcomes exist
     # (best-effort; never fails the hook).
@@ -250,7 +260,17 @@ try:
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
-            _root = Path(_txt)
+            _candidate = Path(_txt)
+            try:
+                _cwd = Path.cwd().resolve()
+                _resolved = _candidate.resolve()
+                _in_repo = _resolved == _cwd or _cwd in _resolved.parents
+            except OSError:
+                _in_repo = False
+            if _in_repo:
+                _root = _candidate
+            else:
+                print(f'[graphify] ignoring out-of-repo .graphify_root: {_txt}')
     _rebuild_code(_root, force=_force)
     # Refresh the work-memory lessons doc when saved Q&A outcomes exist
     # (best-effort; never fails the hook).
