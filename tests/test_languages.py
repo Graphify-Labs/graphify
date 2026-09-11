@@ -6,6 +6,7 @@ from graphify.extract import (
     extract_java, extract_c, extract_cpp, extract_ruby,
     extract_csharp, extract_kotlin, extract_scala, extract_php,
     extract_swift, extract_go, extract_julia, extract_js, extract_fortran,
+    extract_r,
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_commonlisp, extract_verilog,
@@ -2153,6 +2154,92 @@ def test_julia_call_edges_have_call_context():
 
 def test_julia_no_dangling_edges():
     r = extract_julia(FIXTURES / "sample.jl")
+    node_ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        assert e["source"] in node_ids, f"Dangling source: {e}"
+
+
+# ── R extractor (#1689) ──────────────────────────────────────────────────────
+
+def test_r_finds_functions():
+    r = extract_r(FIXTURES / "sample.R")
+    labels = [n["label"] for n in r["nodes"]]
+    # defined via <-, = and <<- respectively
+    assert "distance()" in labels
+    assert "square()" in labels
+    assert "resetCache()" in labels
+
+
+def test_r_finds_lambda_shorthand():
+    """R 4.1 backslash-lambda: double <- \\(x) x * 2."""
+    r = extract_r(FIXTURES / "sample.R")
+    labels = [n["label"] for n in r["nodes"]]
+    assert "double()" in labels
+
+
+def test_r_finds_imports():
+    r = extract_r(FIXTURES / "sample.R")
+    import_edges = [e for e in r["edges"] if e["relation"] == "imports"]
+    assert len(import_edges) >= 2
+
+
+def test_r_import_targets_include_packages_and_source():
+    r = extract_r(FIXTURES / "sample.R")
+    targets = {n["label"] for n in r["nodes"]}
+    assert "dplyr" in targets      # library(dplyr)
+    assert "ggplot2" in targets    # require(ggplot2)
+    assert "helpers.R" in targets  # source("helpers.R")
+
+
+def test_r_import_edges_have_import_context():
+    r = extract_r(FIXTURES / "sample.R")
+    import_edges = _edges_with_relation(r, "imports")
+    assert import_edges
+    assert all(e.get("context") == "import" for e in import_edges)
+
+
+def test_r_finds_s4_classes():
+    r = extract_r(FIXTURES / "sample.R")
+    labels = [n["label"] for n in r["nodes"]]
+    assert "Shape" in labels
+    assert "Circle" in labels
+
+
+def test_r_s4_inheritance():
+    """setClass("Circle", contains = "Shape") emits Circle -> Shape inherits."""
+    r = extract_r(FIXTURES / "sample.R")
+    assert ("Circle", "Shape") in _edge_labels(r, "inherits")
+
+
+def test_r_finds_generic_and_method():
+    r = extract_r(FIXTURES / "sample.R")
+    labels = [n["label"] for n in r["nodes"]]
+    assert any(l == "area()" for l in labels)
+    method_edges = [e for e in r["edges"] if e["relation"] == "method"]
+    assert method_edges, "setMethod should emit a method edge"
+
+
+def test_r_finds_calls():
+    r = extract_r(FIXTURES / "sample.R")
+    call_edges = [e for e in r["edges"] if e["relation"] == "calls"]
+    assert len(call_edges) >= 1
+
+
+def test_r_call_edges_have_call_context():
+    r = extract_r(FIXTURES / "sample.R")
+    call_edges = _edges_with_relation(r, "calls")
+    assert call_edges
+    assert all(e.get("context") == "call" for e in call_edges)
+
+
+def test_r_intra_file_call_resolves():
+    """distance() calls square() - both locally defined."""
+    r = extract_r(FIXTURES / "sample.R")
+    assert ("distance()", "square()") in _calls(r)
+
+
+def test_r_no_dangling_edges():
+    r = extract_r(FIXTURES / "sample.R")
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids, f"Dangling source: {e}"
