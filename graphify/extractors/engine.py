@@ -818,8 +818,37 @@ def _kotlin_property_name(property_node, source: bytes) -> str | None:
             return _read_text(c, source)
     return None
 
+def _kotlin_qualified_type_tail(type_node, source: bytes) -> str | None:
+    """Last segment of a dotted Kotlin type spelling, or ``None`` when it is not dotted.
+
+    `com.example.Greeter` names the type in its last segment while the reference collector
+    reports the first, so a receiver keyed on `com` matches no declaration.
+    """
+    if type_node is None:
+        return None
+    if type_node.type in ("nullable_type", "parenthesized_type", "type_reference"):
+        for c in type_node.children:
+            if c.is_named:
+                tail = _kotlin_qualified_type_tail(c, source)
+                if tail:
+                    return tail
+        return None
+    if type_node.type != "user_type":
+        return None
+    names: list[str] = []
+    for c in type_node.children:
+        if c.type in ("identifier", "type_identifier"):
+            names.append(_read_text(c, source))
+        elif c.type == "simple_user_type":
+            names.append(_kotlin_head_type_name(c, source) or "")
+    return names[-1] if len(names) > 1 and names[-1] else None
+
 def _kotlin_head_type_name(type_node, source: bytes) -> str | None:
     """The declared type's own name from a Kotlin type node, generic arguments dropped."""
+    tail = _kotlin_qualified_type_tail(type_node, source)
+    if tail:
+        return (None if tail in _KOTLIN_BUILTIN_TYPES or tail in _JAVA_BUILTIN_TYPES
+                else tail)
     refs: list[tuple[str, str]] = []
     _kotlin_collect_type_refs(type_node, source, False, refs)
     return next((name for name, role in refs if role == "type"), None)
@@ -4813,7 +4842,7 @@ def _extract_generic(
                             target_nid = ensure_named_node(ref_name, line)
                             if target_nid != func_nid:
                                 add_edge(func_nid, target_nid, "references", line, context=ctx)
-                        param_type = next((n for n, r in refs if r == "type"), None)
+                        param_type = _kotlin_head_type_name(param_type_node, source)
                         param_name = next(
                             (_read_text(sub, source) for sub in p.children
                              if sub.type in ("simple_identifier", "identifier")), None)

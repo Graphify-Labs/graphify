@@ -273,6 +273,52 @@ def test_a_plain_constructor_parameter_still_types_an_initializer_receiver(tmp_p
     assert next((e for (src, tgt), e in calls.items() if tgt == ".greet()"), None) is not None, calls
 
 
+def _parked(result: dict) -> list[dict]:
+    return [entry for n in result["nodes"] if isinstance(n.get("metadata"), dict)
+            for entry in n["metadata"].get("unresolved_calls", [])]
+
+
+QUALIFIED_GREETER = "package com.example\n\nclass Greeter {\n    fun greet() {}\n}\n"
+
+
+def test_a_qualified_property_annotation_names_the_type_in_its_last_segment(tmp_path):
+    # A dotted spelling names the type in its last segment. Keyed on `com`, the receiver
+    # matches no declaration and a package segment travels into the merged graph as a type.
+    calls, result = _calls(tmp_path, {
+        "Greeter.kt": QUALIFIED_GREETER,
+        "App.kt": "class App {\n"
+                  "    private val greeter: com.example.Greeter = com.example.Greeter()\n"
+                  "    fun run() { greeter.greet() }\n"
+                  "}\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+    assert _parked(result) == [], _parked(result)
+
+
+def test_a_qualified_parameter_type_names_the_type_in_its_last_segment(tmp_path):
+    calls, result = _calls(tmp_path, {
+        "Greeter.kt": QUALIFIED_GREETER,
+        "App.kt": "class App {\n"
+                  "    fun run(greeter: com.example.Greeter) { greeter.greet() }\n"
+                  "}\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+    assert _parked(result) == [], _parked(result)
+
+
+def test_a_qualified_builtin_type_parks_no_package_segment(tmp_path):
+    # The tail carries the builtin filter too: `kotlin.text.Regex` is unresolvable, and
+    # parking `kotlin` as its type is worse than parking nothing.
+    calls, result = _calls(tmp_path, {
+        "Regex.kt": "class Regex {\n    fun greet() {}\n}\n",
+        "App.kt": "class App {\n"
+                  "    fun run(r: kotlin.text.Regex) { r.greet() }\n"
+                  "}\n",
+    })
+    assert _greet_edge(calls) is None, calls
+    assert _parked(result) == [], _parked(result)
+
+
 def test_a_binding_in_scope_outranks_the_class_of_the_same_name(tmp_path):
     # A capitalized receiver is the type itself only when nothing of that name is bound:
     # a local shadowing a class name means the call goes through the local's type.
