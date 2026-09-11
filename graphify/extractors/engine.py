@@ -845,11 +845,16 @@ def _kotlin_binding_type(node, source: bytes) -> str | None:
     return (_kotlin_head_type_name(_kotlin_property_type_node(node), source)
             or _kotlin_constructor_type(node, source))
 
-def _kotlin_constructor_param_types(class_node, source: bytes, table: dict[str, str]) -> None:
+def _kotlin_constructor_param_types(class_node, source: bytes, table: dict[str, str],
+                                    plain: set[str]) -> None:
     """Collect ``name -> Type`` from a Kotlin primary constructor's parameters.
 
     `class App(private val greeter: Greeter)` is the idiomatic injection point and declares
     no property_declaration, so nothing else in the walk ever names the receiver's type.
+
+    A parameter without `val`/`var` declares no member and is in scope only in initializers
+    and `init` blocks, so its name is reported in ``plain``: a body property of the same name
+    (`class App(raw: Raw) { val raw = Wrapper(raw) }`) owns every call written in a method.
     """
     for ctor in class_node.children:
         if ctor.type != "primary_constructor":
@@ -869,6 +874,8 @@ def _kotlin_constructor_param_types(class_node, source: bytes, table: dict[str, 
                         cp_type = _kotlin_head_type_name(sub, source)
                 if name and cp_type and name not in table:
                     table[name] = cp_type
+                    if not any(c.type in ("val", "var") for c in cp.children):
+                        plain.add(name)
 
 def _kotlin_local_var_types(body_node, source: bytes, table: dict[str, str]) -> None:
     """Collect ``name -> Type`` from local ``val``/``var`` bindings in a Kotlin body.
@@ -3330,6 +3337,9 @@ def _extract_generic(
     # threaded out as `swift_type_table` so member calls (`vm.update()`) can be
     # resolved to the receiver's real definition in _resolve_swift_member_calls.
     type_table: dict[str, str] = {}
+    # Names `type_table` owes to a plain Kotlin constructor parameter, which declares no
+    # member: a body property of the same name may take the name back.
+    kotlin_plain_ctor_params: set[str] = set()
     # #2561: pending factory bindings (`let x = Factory.make()`), name ->
     # (FactoryType, method). Label-only (no nids, so the per-file AST cache
     # stays valid); resolved corpus-side in _resolve_swift_member_calls against
@@ -3646,7 +3656,8 @@ def _extract_generic(
 
             # Kotlin-specific: delegation_specifiers → inherits (constructor_invocation) / implements (user_type)
             if config.ts_module == "tree_sitter_kotlin":
-                _kotlin_constructor_param_types(node, source, type_table)
+                _kotlin_constructor_param_types(node, source, type_table,
+                                                kotlin_plain_ctor_params)
                 for child in node.children:
                     if child.type != "delegation_specifiers":
                         continue
@@ -4354,12 +4365,15 @@ def _extract_generic(
                         if target_nid != parent_class_nid:
                             add_edge(parent_class_nid, target_nid, "references", line, context=ctx)
             # Per-file receiver table, first binding wins: a method parameter or a
-            # shadowing local must not retype a name a property already bound.
+            # shadowing local must not retype a name a property already bound. A plain
+            # constructor parameter is the exception — it declares no member.
             prop_name = _kotlin_property_name(node, source)
-            if prop_name and prop_name not in type_table:
+            if prop_name and (prop_name not in type_table
+                              or prop_name in kotlin_plain_ctor_params):
                 prop_type = _kotlin_binding_type(node, source)
                 if prop_type:
                     type_table[prop_name] = prop_type
+                    kotlin_plain_ctor_params.discard(prop_name)
             # #2565: seed the initializer into initializer_nodes so walk_calls
             # collects its calls (`val repo = createRepo()`), which previously
             # died at the `return` below. Seeding the WHOLE expression (not just

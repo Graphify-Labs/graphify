@@ -219,3 +219,32 @@ def test_the_first_binding_of_a_name_wins_over_a_later_sibling_branch(tmp_path):
             if src and "run" in src and tgt == ".doThing()"]
     assert len(hits) == 1, calls
     assert "alpha" in hits[0]["target"].lower(), hits[0]["target"]
+
+
+def test_a_property_outranks_a_plain_constructor_parameter_of_the_same_name(tmp_path):
+    # A `class_parameter` without `val`/`var` is not a member: it is out of scope in every
+    # method body, so wrapping it in a property of the same name is legal and common.
+    calls, _ = _calls(tmp_path, {
+        "Raw.kt": "class Raw {\n    fun doThing() {}\n}\n",
+        "Wrapper.kt": "class Wrapper(raw: Raw) {\n    fun doThing() {}\n}\n",
+        "App.kt": "class App(raw: Raw) {\n"
+                  "    private val raw = Wrapper(raw)\n"
+                  "    fun run() { raw.doThing() }\n"
+                  "}\n",
+    })
+    hits = [e for (src, tgt), e in calls.items()
+            if src and "run" in src and tgt == ".doThing()"]
+    assert len(hits) == 1, calls
+    assert "wrapper" in hits[0]["target"].lower(), hits[0]["target"]
+
+
+def test_a_plain_constructor_parameter_still_types_an_initializer_receiver(tmp_path):
+    # It stays in scope for property initializers and `init` blocks, so dropping plain
+    # parameters outright would lose the calls written there.
+    calls, _ = _calls(tmp_path, {
+        "Greeter.kt": GREETER,
+        "App.kt": "class App(greeter: Greeter) {\n"
+                  "    private val name = greeter.greet()\n"
+                  "}\n",
+    })
+    assert next((e for (src, tgt), e in calls.items() if tgt == ".greet()"), None) is not None, calls
