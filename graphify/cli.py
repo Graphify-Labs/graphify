@@ -1269,6 +1269,7 @@ def dispatch_command(cmd: str) -> None:
             # direction of a link persisted in flipped endpoint order.
             _raw = dict(
                 _raw,
+                directed=False,
                 links=[
                     {
                         **link,
@@ -3175,11 +3176,42 @@ def dispatch_command(cmd: str) -> None:
         # Unlike the skill.md path (which runs through Claude Code subagents),
         # this calls extract_corpus_parallel directly using whichever backend
         # has an API key set.
+        if any(a in ("-h", "--help", "-?") for a in sys.argv[2:]):
+            print(
+                "Usage: graphify extract <path> [--directed] [--backend gemini|kimi|claude|openai|deepseek|ollama]\n"
+                "                        [--model M] [--mode deep] [--out DIR|--output DIR]\n"
+                "                        [--google-workspace] [--no-cluster] [--no-gitignore]\n"
+                "                        [--code-only] [--no-dedup] [--max-workers N]\n"
+                "                        [--token-budget N] [--max-concurrency N]\n"
+                "                        [--api-timeout S] [--postgres DSN] [--cargo]\n"
+                "                        [--allow-partial] [--timing]\n"
+                "\n"
+                "Headless full-pipeline extraction for CI / scripts.\n"
+                "\n"
+                "Options:\n"
+                "  --directed              build a directed graph (DiGraph) preserving source→target edge direction\n"
+                "  --backend B             LLM backend for semantic extraction (default: auto-detect)\n"
+                "  --model M               override default model for the chosen backend\n"
+                "  --mode deep             aggressive INFERRED-edge semantic extraction\n"
+                "  --out, --output DIR     output directory (default: <path>/graphify-out/)\n"
+                "  --no-cluster            skip clustering, write raw extraction only\n"
+                "  --code-only             index code (local AST, no API key) and skip doc/paper/image files\n"
+                "  --no-dedup              skip entity deduplication entirely\n"
+                "  --no-gitignore          ignore .gitignore and .git/info/exclude\n"
+                "  --google-workspace      export Google Workspace shortcuts before extraction\n"
+                "  --postgres DSN          extract schema from a live PostgreSQL database\n"
+                "  --cargo                 extract crate→crate dependencies from Cargo.toml\n"
+                "  --allow-partial         overwrite existing graph even if extraction was incomplete\n"
+                "  --force                 skip incremental manifest gate and cache reads\n"
+                "  --timing                report wall-clock elapsed time per stage"
+            )
+            sys.exit(0)
+
         if len(sys.argv) < 3:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
-                "[--no-gitignore] [--code-only] [--no-dedup] "
+                "[--no-gitignore] [--code-only] [--no-dedup] [--directed] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
@@ -3204,6 +3236,7 @@ def dispatch_command(cmd: str) -> None:
         cli_cargo: bool = False
         cli_allow_partial: bool = False
         no_cluster = False
+        cli_directed = False
         dedup_llm = False
         # --no-dedup: skip entity deduplication entirely. On an incremental
         # merge the fuzzy pass runs over the COMBINED node set (existing graph +
@@ -3278,6 +3311,8 @@ def dispatch_command(cmd: str) -> None:
                 out_dir = Path(a.split("=", 1)[1]); i += 1
             elif a == "--no-cluster":
                 no_cluster = True; i += 1
+            elif a == "--directed":
+                cli_directed = True; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
             elif a == "--no-dedup":
@@ -4253,6 +4288,15 @@ def dispatch_command(cmd: str) -> None:
                     _cleared_semantic = _shrink[2]
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
             merged["edges"] = _dedupe_edges(merged["edges"])
+            if cli_directed:
+                merged["directed"] = True
+            elif merge_existing_graph and existing_graph_path.exists():
+                try:
+                    _prev_raw = json.loads(existing_graph_path.read_text(encoding="utf-8"))
+                    if _prev_raw.get("directed") is True:
+                        merged["directed"] = True
+                except Exception:
+                    pass
             # Disambiguate colliding-basename file-node labels (#2032). This raw
             # --no-cluster path bypasses build_from_json (where the clustered path
             # gets this), so apply it directly on the merged node list.
@@ -4366,6 +4410,7 @@ def dispatch_command(cmd: str) -> None:
                     [merged],
                     graph_path=existing_graph_path,
                     prune_sources=_prune_sources or None,
+                    directed=True if cli_directed else None,
                     dedup=not no_dedup,
                     dedup_llm_backend=dedup_backend,
                     root=target,
@@ -4395,7 +4440,7 @@ def dispatch_command(cmd: str) -> None:
                 print(f"[graphify extract] {exc}", file=sys.stderr)
                 sys.exit(1)
         else:
-            G = _build([merged], dedup=not no_dedup, dedup_llm_backend=dedup_backend, root=target)
+            G = _build([merged], directed=cli_directed, dedup=not no_dedup, dedup_llm_backend=dedup_backend, root=target)
         stages.mark("build")
         if G.number_of_nodes() == 0:
             print(
