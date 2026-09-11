@@ -738,6 +738,43 @@ def _mark_session_denied(session_id: str) -> bool:
         return False
 
 
+def _nudge_recently_shown(session_id: str) -> bool:
+    """True if the soft read nudge already fired for this session within
+    GRAPHIFY_HOOK_NUDGE_TTL seconds (default 300); otherwise records one now and
+    returns False (#3435: the nudge previously had no per-session cap, so it re-fired
+    on every qualifying read — 8,348 injections / ~651k tokens measured in one repo
+    at a ~4% response rate). Fail-open: any error returns False so the nudge is never
+    wrongly suppressed. Best-effort GC of markers older than 24h."""
+    from graphify.paths import out_path, write_text_atomic
+    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:64]
+    if not sid:
+        return False
+    try:
+        ttl = float(os.environ.get("GRAPHIFY_HOOK_NUDGE_TTL", "300"))
+        d = out_path("cache", "hook_sessions")
+        d.mkdir(parents=True, exist_ok=True)
+        marker = d / f"{sid}.nudged"
+        try:
+            if (time.time() - marker.stat().st_mtime) < ttl:
+                return True
+        except OSError:
+            pass
+        write_text_atomic(marker, str(time.time()))
+        try:
+            cutoff = time.time() - 86400
+            for entry in os.scandir(d):
+                try:
+                    if entry.stat().st_mtime < cutoff:
+                        os.unlink(entry.path)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        return False
+    except Exception:
+        return False
+
+
 _SEARCH_COMMANDS = frozenset({
     "grep", "egrep", "fgrep", "zgrep", "rg", "ripgrep", "find", "fd", "ack", "ag",
 })
@@ -936,6 +973,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     and _target_is_indexed(fp, root) \
                     and _mark_session_denied(str(d.get("session_id") or "")):
                 sys.stdout.write(_READ_DENY)
+                return
+            # #3435: an agent that just oriented (query/explain/path) does not need
+            # reminding, and even once oriented the raw nudge must not repeat forever.
+            if _query_stamp_fresh() or _nudge_recently_shown(str(d.get("session_id") or "")):
                 return
             sys.stdout.write(_READ_NUDGE)
     except Exception:

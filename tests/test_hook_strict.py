@@ -80,13 +80,14 @@ def test_strict_new_session_denies_again(tmp_path, monkeypatch):
     assert _is_deny(out)
 
 
-def test_fresh_query_stamp_suppresses_deny(tmp_path, monkeypatch):
+def test_fresh_query_stamp_suppresses_deny_and_nudge(tmp_path, monkeypatch):
     f = _fixture(tmp_path)
     stamp = tmp_path / "graphify-out" / "cache" / "last_query_stamp"
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.write_text(str(time.time()), encoding="utf-8")
     out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
-    assert not _is_deny(out) and "MANDATORY" in out
+    # #3435: an agent that just oriented is not reminded to orient again.
+    assert not _is_deny(out) and out.strip() == ""
 
 
 def test_expired_query_stamp_still_denies(tmp_path, monkeypatch):
@@ -187,6 +188,51 @@ def test_strict_enabled_env_precedence():
             _os.environ.pop("GRAPHIFY_HOOK_STRICT", None)
         else:
             _os.environ["GRAPHIFY_HOOK_STRICT"] = saved
+
+
+def test_fresh_query_stamp_suppresses_soft_nudge_too(tmp_path, monkeypatch):
+    f = _fixture(tmp_path)
+    stamp = tmp_path / "graphify-out" / "cache" / "last_query_stamp"
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(str(time.time()), encoding="utf-8")
+    out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=False)
+    assert out.strip() == ""
+
+
+def test_soft_nudge_capped_per_session(tmp_path, monkeypatch):
+    f = _fixture(tmp_path)
+    out1 = _invoke("read", _read(f), tmp_path, monkeypatch, strict=False)
+    assert "MANDATORY" in out1
+    # marker created
+    assert (tmp_path / "graphify-out" / "cache" / "hook_sessions" / "s1.nudged").exists()
+    # same session again within the TTL -> no repeat nudge
+    out2 = _invoke("read", _read(f), tmp_path, monkeypatch, strict=False)
+    assert out2.strip() == ""
+
+
+def test_soft_nudge_cap_is_per_session(tmp_path, monkeypatch):
+    f = _fixture(tmp_path)
+    _invoke("read", _read(f, "sA"), tmp_path, monkeypatch, strict=False)
+    out = _invoke("read", _read(f, "sB"), tmp_path, monkeypatch, strict=False)
+    assert "MANDATORY" in out
+
+
+def test_soft_nudge_cap_expires_after_ttl(tmp_path, monkeypatch):
+    f = _fixture(tmp_path)
+    _invoke("read", _read(f), tmp_path, monkeypatch, strict=False, env={"GRAPHIFY_HOOK_NUDGE_TTL": "300"})
+    marker = tmp_path / "graphify-out" / "cache" / "hook_sessions" / "s1.nudged"
+    old = time.time() - 10_000
+    os.utime(marker, (old, old))
+    out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=False, env={"GRAPHIFY_HOOK_NUDGE_TTL": "300"})
+    assert "MANDATORY" in out
+
+
+def test_soft_nudge_never_capped_without_session_id(tmp_path, monkeypatch):
+    f = _fixture(tmp_path)
+    payload = {"tool_name": "Read", "tool_input": {"file_path": str(f)}}  # no session_id
+    out1 = _invoke("read", payload, tmp_path, monkeypatch, strict=False)
+    out2 = _invoke("read", payload, tmp_path, monkeypatch, strict=False)
+    assert "MANDATORY" in out1 and "MANDATORY" in out2
 
 
 def test_install_hook_carries_strict_flag():

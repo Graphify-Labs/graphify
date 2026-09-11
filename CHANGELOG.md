@@ -19,6 +19,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: `graphify install` no longer aborts when the always-on registration target is unwritable (read-only or symlinked config); it skips that step with an actionable warning and still installs the skill (#3474, thanks @dajiaohuang).
 - Fix: community labelling falls back to an installed `claude` CLI resolved at run time instead of pinning a path that expires (e.g. under snap/nvm), so labelling keeps working across updates (#3475, thanks @ktsang622).
 - Fix: the `all` extra now includes `psycopg[binary]`, so `pip install 'graphifyy[all]'` provides the postgres driver (#3482, thanks @L4XB).
+- Fix: the soft PreToolUse read nudge is now suppressed while a recent `graphify query`/`explain`/`path` stamp is fresh, and is capped to once per session per `GRAPHIFY_HOOK_NUDGE_TTL` seconds (default 300) — previously it re-fired unconditionally on every qualifying read, measured at 8,348 injections (~651k tokens) in one repo at a ~4% response rate (#3435, thanks @Ashfaqbs).
 
 ## 0.9.57 (2026-09-09)
 
