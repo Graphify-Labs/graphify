@@ -1307,8 +1307,8 @@ requires-dist = [
     { name = "openpyxl", marker = "extra == 'office'" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'all'" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'" },
-    { name = "pypdf", marker = "extra == 'all'", specifier = ">=6.12.0" },
-    { name = "pypdf", marker = "extra == 'pdf'", specifier = ">=6.12.0" },
+    { name = "pypdf", marker = "extra == 'all'", specifier = ">=6.16.1" },
+    { name = "pypdf", marker = "extra == 'pdf'", specifier = ">=6.16.1" },
     { name = "python-docx", marker = "extra == 'all'" },
     { name = "python-docx", marker = "extra == 'office'" },
     { name = "rapidfuzz", specifier = ">=3.0" },
@@ -1362,8 +1362,8 @@ requires-dist = [
     { name = "tree-sitter-zig", specifier = ">=1.0,<2.0" },
     { name = "watchdog", marker = "extra == 'all'" },
     { name = "watchdog", marker = "extra == 'watch'" },
-    { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2026.6.9" },
-    { name = "yt-dlp", marker = "extra == 'video'", specifier = ">=2026.6.9" },
+    { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2026.7.4" },
+    { name = "yt-dlp", marker = "extra == 'video'", specifier = ">=2026.7.4" },
 ]
 provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "pascal", "dm", "terraform", "ocaml", "commonlisp", "robot", "all"]
 
@@ -1380,7 +1380,7 @@ dev = [
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff", specifier = ">=0.15.13" },
-    { name = "setuptools", specifier = ">=82.0.1" },
+    { name = "setuptools", specifier = ">=83.0.0" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "tree-sitter-commonlisp", specifier = ">=0.4.1" },
     { name = "tree-sitter-hcl", specifier = ">=1.2.0" },
