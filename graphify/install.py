@@ -54,6 +54,113 @@ def _write_version_stamp(skill_dst: Path, version: str) -> None:
         raise
 
 
+def _js_string_escape(text: str) -> str:
+    """Escape a value for safe interpolation into a JS string literal.
+
+    Escapes backslash, BOTH quote characters (safe whichever quote style the
+    surrounding template uses), and line terminators. A raw, un-escaped
+    newline inside a JS string literal is a SyntaxError, and it also breaks
+    the character-for-character reasoning the other escapes rely on: this
+    interpolates a config value (GRAPHIFY_OUT) into generated plugin source,
+    not literal text a human reviews before it runs, so a value that could
+    inject its own quote (breaking out of the surrounding string entirely,
+    not just corrupting it) or an unescaped newline (corrupting the file)
+    must never reach the template unescaped (#2571 follow-up).
+    """
+    return (
+        text.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("'", "\\'")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
+
+
+def _shell_safe_out_name() -> str:
+    """GRAPHIFY_OUT, for interpolation into the Kilo/OpenCode reminder echo.
+
+    That value ends up in TWO nested contexts at once: a JS string literal
+    (inside the generated plugin source) that itself builds a SHELL command
+    string later assigned to output.args.command and actually executed. A
+    JS-string escape alone (see _js_string_escape) only protects the first
+    layer — a value containing a shell metacharacter (", $, `, ;, |, and
+    so on) would still reach the shell as-is once the JS string is
+    evaluated, since JS-escaping and shell-escaping are separate concerns
+    the same characters do not satisfy at once. Rather than try to
+    correctly double-escape for both, this allowlists characters that need
+    no escaping in either once passed through _js_string_escape; anything
+    else falls back to the packaged default name, since a value needing
+    more than this is not a plausible real directory name in the first
+    place (#2571 follow-up).
+
+    A colon and backslash are allowed alongside the original set so a
+    Windows absolute path (C:\\Users\\me\\out) is not silently discarded —
+    the plugin's own comment already documents Windows PowerShell as a
+    real target (#1646). Neither is safe to splice in raw, though: a bare
+    backslash in JS source is not an escape unless followed by a
+    recognized escape character, so an unescaped path backslash is just
+    dropped by the JS parser, corrupting the path before the shell ever
+    sees it (confirmed via `eval("'C:\\\\Users'")` -> "C:Users"). Routing
+    the allowlisted value through _js_string_escape doubles each backslash
+    in the generated source so the JS runtime reduces it back to one at
+    evaluation time; none of the other allowlisted characters need any
+    escaping, so this is a no-op for every value this function used to
+    return unescaped.
+
+    A space is allowed too (`My Output Dir`, or an absolute path through a
+    directory with one) — it is a common, entirely plausible path
+    character, and it needs no escaping in either context: a JS string
+    literal is untouched by a bare space, and the surrounding echo command
+    always wraps the whole reminder text in double quotes, so a space
+    inside it is preserved verbatim rather than starting a new shell word
+    in bash or PowerShell alike.
+    """
+    if re.fullmatch(r"[A-Za-z0-9._/:\\ -]+", _GRAPHIFY_OUT):
+        return _js_string_escape(_GRAPHIFY_OUT)
+    return "graphify-out"
+
+
+def _out_doc(text: str) -> str:
+    """Point generated doc/plugin text at the actually configured output dir.
+
+    The packaged always-on blocks and hand-written IDE rule/plugin templates
+    are authored against the default ``graphify-out`` name. When ``GRAPHIFY_OUT``
+    overrides that (a custom name or an absolute path, #686), the generated
+    text must say so too — otherwise an agent reading CLAUDE.md/AGENTS.md/a
+    Cursor rule/etc. is told to look in a directory that was never written to
+    (#2571).
+    """
+    if _GRAPHIFY_OUT == "graphify-out":
+        return text
+    return text.replace("graphify-out", _GRAPHIFY_OUT)
+
+
+def _mcp_out_path_display() -> str:
+    """The graph.json path to show in generated MCP config examples.
+
+    Mirrors ``graphify.paths.out_path()``: a relative ``GRAPHIFY_OUT`` is shown
+    under the workspace root, an absolute override is shown as-is.
+    """
+    if os.path.isabs(_GRAPHIFY_OUT):
+        return f"{_GRAPHIFY_OUT}/graph.json"
+    return "${workspace.path}/" + _GRAPHIFY_OUT + "/graph.json"
+
+
+def _js_graph_exists_expr() -> str:
+    """JS ``existsSync(...)`` call for the configured graph.json location.
+
+    ``GRAPHIFY_OUT`` may be a relative name (resolved under the plugin's
+    project ``directory``) or an absolute path (used as-is), mirroring
+    ``graphify.paths.out_path()``. Without this, a plugin hardcoded to
+    ``join(directory, "graphify-out", "graph.json")`` never finds the graph
+    under a custom output dir, so its reminder never fires (#2571).
+    """
+    out = _js_string_escape(_GRAPHIFY_OUT)
+    if os.path.isabs(_GRAPHIFY_OUT):
+        return f'existsSync(join("{out}", "graph.json"))'
+    return f'existsSync(join(directory, "{out}", "graph.json"))'
+
+
 @functools.lru_cache(maxsize=None)
 def _always_on(basename: str) -> str:
     """Read a packaged always-on instruction block from graphify/always_on/.
@@ -62,13 +169,15 @@ def _always_on(basename: str) -> str:
     Copilot instructions / Antigravity rules / Kiro steering) live as committed
     markdown next to this module, generated by tools/skillgen from a single
     human-edited fragment and guarded against drift by ``skillgen --check``. The
-    installer injects them verbatim via ``_replace_or_append_section``, so the
-    bytes here must match the former triple-quoted constant exactly — the
-    always-on-roundtrip validator proves that.
+    installer injects them via ``_replace_or_append_section``. The packaged
+    bytes must match the former triple-quoted constant exactly — the
+    always-on-roundtrip validator proves that — so any non-default
+    ``GRAPHIFY_OUT`` is applied here, after the drift-guarded read, via
+    ``_out_doc``.
     """
     path = Path(__file__).parent / "always_on" / f"{basename}.md"
     try:
-        return path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
     except OSError as exc:
         # Defer to use-time so a missing/corrupt packaged block can't crash module
         # import (which would brick every CLI command, not just install). Reached
@@ -77,6 +186,18 @@ def _always_on(basename: str) -> str:
             f"graphify install is incomplete: missing always-on block '{basename}' "
             f"at {path}. Reinstall graphifyy (e.g. `uv tool install --reinstall graphifyy`)."
         ) from exc
+    return _out_doc(text)
+def _refresh_all_version_stamps() -> None:
+    """After a successful install, update .graphify_version in all other known skill dirs.
+
+    Prevents stale-version warnings from platforms that were installed previously
+    but not explicitly re-installed during this upgrade.
+    """
+    for name in _PLATFORM_CONFIG:
+        skill_dst = _platform_skill_destination(name)
+        vf = skill_dst.parent / ".graphify_version"
+        if skill_dst.exists():
+            vf.write_text(__version__, encoding="utf-8")
 def _platform_skill_destination(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
     """Return the skill destination for a platform and scope."""
     if platform_name == "gemini":
@@ -1092,7 +1213,8 @@ def _antigravity_install(project_dir: Path) -> None:
     print('  "graphify": {')
     print('    "command": "uv",')
     print(
-        '    "args": ["run", "--with", "graphifyy", "--with", "mcp", "-m", "graphify.serve", "${workspace.path}/graphify-out/graph.json"]'
+        '    "args": ["run", "--with", "graphifyy", "--with", "mcp", "-m", "graphify.serve", '
+        + json.dumps(_mcp_out_path_display()) + "]"
     )
     print("  }")
 def _antigravity_uninstall(project_dir: Path, *, project: bool = False) -> None:
@@ -1132,7 +1254,7 @@ def _antigravity_uninstall(project_dir: Path, *, project: bool = False) -> None:
         except OSError:
             break
 _CURSOR_RULE_PATH = Path(".cursor") / "rules" / "graphify.mdc"
-_CURSOR_RULE = """\
+_CURSOR_RULE = _out_doc("""\
 ---
 description: graphify knowledge graph context
 alwaysApply: true
@@ -1154,7 +1276,7 @@ Only use Read/Grep/Glob directly when:
 - If `graphify-out/wiki/index.md` exists, navigate it instead of reading raw files
 - Read `graphify-out/GRAPH_REPORT.md` only for broad architecture review when query/path/explain do not surface enough context
 - After modifying code files, run `graphify update .` to keep the graph current (AST-only, no API cost)
-"""
+""")
 def _cursor_install(project_dir: Path) -> None:
     """Write .cursor/rules/graphify.mdc with alwaysApply: true."""
     rule_path = (project_dir or Path(".")) / _CURSOR_RULE_PATH
@@ -1181,7 +1303,7 @@ def _cursor_uninstall(project_dir: Path) -> None:
 # Devin CLI — .windsurf/rules/graphify.md (always-on context)
 # Devin reads .windsurf/rules/*.md files the same way Windsurf IDE does.
 _DEVIN_RULES_PATH = Path(".windsurf") / "rules" / "graphify.md"
-_DEVIN_RULES = """\
+_DEVIN_RULES = _out_doc("""\
 ## graphify
 
 This project has a graphify knowledge graph at graphify-out/.
@@ -1191,7 +1313,7 @@ Rules:
 - If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context
 - After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)
-"""
+""")
 def _devin_rules_install(project_dir: Path) -> None:
     """Write .windsurf/rules/graphify.md for always-on Devin context."""
     rules_path = (project_dir or Path(".")) / _DEVIN_RULES_PATH
@@ -1221,7 +1343,7 @@ export const GraphifyPlugin = async ({ directory }) => {
   return {
     "tool.execute.before": async (input, output) => {
       if (reminded) return;
-      if (!existsSync(join(directory, "graphify-out", "graph.json"))) return;
+      if (!@@GRAPH_EXISTS_CHECK@@) return;
 
       if (input.tool === "bash") {
         // Separate with ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a
@@ -1229,14 +1351,15 @@ export const GraphifyPlugin = async ({ directory }) => {
         // the first bash command in every OpenCode session on Windows (#1646).
         // ';' works in PowerShell 5.1, Bash, and POSIX shells alike.
         output.args.command =
-          'echo "[graphify] Knowledge graph available. Read graphify-out/GRAPH_REPORT.md for god nodes and architecture context before searching files." ; ' +
+          'echo "[graphify] Knowledge graph available. Read @@GRAPH_OUT_NAME@@/GRAPH_REPORT.md for god nodes and architecture context before searching files." ; ' +
           output.args.command;
         reminded = true;
       }
     },
   };
 };
-"""
+""".replace("@@GRAPH_EXISTS_CHECK@@", _js_graph_exists_expr()) \
+   .replace("@@GRAPH_OUT_NAME@@", _shell_safe_out_name())
 _KILO_PLUGIN_PATH = Path(".kilo") / "plugins" / "graphify.js"
 _KILO_CONFIG_JSON_PATH = Path(".kilo") / "kilo.json"
 _KILO_CONFIG_JSONC_PATH = Path(".kilo") / "kilo.jsonc"
@@ -1387,20 +1510,21 @@ export const GraphifyPlugin = async ({ directory }) => {
   return {
     "tool.execute.before": async (input, output) => {
       if (reminded) return;
-      if (!existsSync(join(directory, "graphify-out", "graph.json"))) return;
+      if (!@@GRAPH_EXISTS_CHECK@@) return;
 
       if (input.tool === "bash") {
         // ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a statement
         // separator, breaking the first bash command of the session (#1646).
         output.args.command =
-          'echo "[graphify] knowledge graph at graphify-out/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." ; ' +
+          'echo "[graphify] knowledge graph at @@GRAPH_OUT_NAME@@/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." ; ' +
           output.args.command;
         reminded = true;
       }
     },
   };
 };
-"""
+""".replace("@@GRAPH_EXISTS_CHECK@@", _js_graph_exists_expr()) \
+   .replace("@@GRAPH_OUT_NAME@@", _shell_safe_out_name())
 _OPENCODE_PLUGIN_PATH = Path(".opencode") / "plugins" / "graphify.js"
 _OPENCODE_CONFIG_PATH = Path(".opencode") / "opencode.json"
 def _install_opencode_plugin(project_dir: Path) -> None:

