@@ -377,3 +377,25 @@ def test_explain_double_colon_label_without_path_match_still_resolves(monkeypatc
     out = _run(monkeypatch, p, "Foo::Bar", capsys)
     assert "Ambiguous" not in out
     assert "ID:        mymod_foo_bar" in out
+
+
+def test_explain_double_colon_label_not_hijacked_by_a_coincidental_path_match(monkeypatch, tmp_path, capsys):
+    """A native "::" label must resolve to itself even when its prefix happens
+    to match an unrelated file elsewhere in the graph (an extensionless file
+    literally named the same as the module) -- the path::Symbol form must not
+    shadow a query the literal label already answers."""
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "mylib_bar", "label": "mylib::Bar",
+             "source_file": "src/mylib.rs", "community": 0},
+            {"id": "mylib_file_bar", "label": "Bar",
+             "source_file": "mylib", "community": 1},
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+    out = _run(monkeypatch, p, "mylib::Bar", capsys)
+    assert "Ambiguous" not in out
+    assert "ID:        mylib_bar" in out

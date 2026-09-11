@@ -1384,6 +1384,35 @@ def _resolve_path_scoped_symbol(G: nx.Graph, path_part: str, symbol_part: str) -
     return matches
 
 
+def _label_has_literal_exact_match(G: nx.Graph, term: str, norm_query: str) -> bool:
+    """Does the RAW, unsplit query already exact-match some node's own label/id?
+
+    Mirrors the `exact` tier's own condition below, run early and standalone so
+    `_find_node_tiers` can tell a literal `::`-bearing label (Rust modules, C++
+    namespaces) from a deliberately path-scoped query before choosing between
+    them. A real label essentially never equals a whole `path::symbol` string
+    verbatim, so this is a safe way to prefer the literal interpretation
+    whenever one genuinely exists.
+    """
+    candidate_ids = _trigram_candidates(G, [term, norm_query])
+    node_iter = (
+        G.nodes(data=True) if candidate_ids is None
+        else ((nid, G.nodes[nid]) for nid in candidate_ids)
+    )
+    for nid, d in node_iter:
+        norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
+        bare_label = norm_label.rstrip("()")
+        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
+        nid_lower = nid.lower()
+        nid_norm = nid_lower if nid.isascii() else _strip_diacritics(nid).lower()
+        if (
+            term == norm_label or term == bare_label or term == label_tokens or term == nid_lower
+            or norm_query == norm_label or norm_query == bare_label or norm_query == nid_norm
+        ):
+            return True
+    return False
+
+
 def _find_node_tiers(
     G: nx.Graph, label: str
 ) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -1394,26 +1423,7 @@ def _find_node_tiers(
     its consumers take `[0]` — which resolves by graph-iteration order when one
     tier holds several nodes from different files. See `find_node_ambiguity`.
     """
-    # `path::Symbol` restricts the label match to nodes defined in that
-    # file (#3485) -- checked before the ordinary tiers below so a
-    # deliberately path-scoped query never falls back to guessing among
-    # same-named symbols in other files. Returned as source_exact (the
-    # tier `find_node_ambiguity` already treats as maximally specific) so
-    # existing callers need no changes; an empty result falls through to
-    # ordinary matching rather than reporting no match outright, in case
-    # "::" is meaningful some other way to a caller this was not designed
-    # for.
-    if "::" in label:
-        path_part, _, symbol_part = label.partition("::")
-        path_part, symbol_part = path_part.strip(), symbol_part.strip()
-        if path_part and symbol_part:
-            scoped = _resolve_path_scoped_symbol(G, path_part, symbol_part)
-            if scoped:
-                return scoped, [], [], []
-
     term = " ".join(_search_tokens(label))
-    if not term:
-        return [], [], [], []
     # Punctuation-preserving normalized query. `term` tokenizes on \w+ (so
     # "blockStream.ts" -> "blockstream ts", space where the '.' was), but a node's
     # stored `norm_label` keeps punctuation ("blockstream.ts"). Matching only via
@@ -1423,6 +1433,29 @@ def _find_node_tiers(
     # `nid_norm` below extends that symmetry to node ids, which keep their
     # punctuation too and are compared raw against the tokenized `term` (#2467).
     norm_query = _strip_diacritics(str(label)).lower().strip()
+
+    # `path::Symbol` restricts the label match to nodes defined in that
+    # file (#3485) -- checked before the ordinary tiers below so a
+    # deliberately path-scoped query never falls back to guessing among
+    # same-named symbols in other files. Returned as source_exact (the
+    # tier `find_node_ambiguity` already treats as maximally specific) so
+    # existing callers need no changes; an empty result falls through to
+    # ordinary matching rather than reporting no match outright, in case
+    # "::" is meaningful some other way to a caller this was not designed
+    # for. Skipped when the raw label already literally matches a node (a
+    # native `::`-bearing label, e.g. Rust modules or C++ namespaces) so that
+    # an unrelated file whose path happens to resemble the label's prefix
+    # cannot hijack a query that was never meant to be path-scoped.
+    if "::" in label and not _label_has_literal_exact_match(G, term, norm_query):
+        path_part, _, symbol_part = label.partition("::")
+        path_part, symbol_part = path_part.strip(), symbol_part.strip()
+        if path_part and symbol_part:
+            scoped = _resolve_path_scoped_symbol(G, path_part, symbol_part)
+            if scoped:
+                return scoped, [], [], []
+
+    if not term:
+        return [], [], [], []
     source_exact: list[str] = []
     exact: list[str] = []
     prefix: list[str] = []
