@@ -229,3 +229,21 @@ def test_cli_add_from_file_malformed_json_is_a_clean_error(tmp_path, capsys, mon
         dispatch_command("add")
     assert exc_info.value.code != 0
     assert "error:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("body", ["[1, 2, 3]", '"just a string"', "42"])
+def test_cli_add_from_file_non_object_json_is_a_clean_error(body, tmp_path, capsys, monkeypatch):
+    """A payload that is syntactically valid JSON but not an object (a
+    list, a bare string, a number) used to raise a raw, unhandled
+    TypeError from subscripting it with "url" -- json.JSONDecodeError
+    alone does not cover this, since the JSON itself parses fine."""
+    import sys
+    from graphify.cli import dispatch_command
+
+    payload = tmp_path / "payload.json"
+    payload.write_text(body, encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["graphify", "add", "--from-file", str(payload)])
+    with pytest.raises(SystemExit) as exc_info:
+        dispatch_command("add")
+    assert exc_info.value.code != 0
+    assert "error:" in capsys.readouterr().err

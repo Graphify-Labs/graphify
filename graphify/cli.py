@@ -1983,10 +1983,18 @@ def dispatch_command(cmd: str) -> None:
         if from_file:
             try:
                 payload = json.loads(Path(from_file).read_text(encoding="utf-8"))
-                url = payload["url"]
             except (OSError, json.JSONDecodeError) as exc:
                 print(f"error: could not read --from-file payload: {exc}", file=sys.stderr)
                 sys.exit(1)
+            if not isinstance(payload, dict):
+                print(
+                    "error: --from-file payload must be a JSON object with a "
+                    "'url' key, not " + type(payload).__name__,
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            try:
+                url = payload["url"]
             except KeyError:
                 print("error: --from-file payload is missing required key 'url'", file=sys.stderr)
                 sys.exit(1)
