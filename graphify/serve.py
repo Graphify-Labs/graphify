@@ -1537,7 +1537,8 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
         return None, (
             f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
             f"{listing}\n"
-            "Retry with the repo-relative path or the full node id."
+            f"Retry with path::symbol using one of the paths above (e.g. "
+            f"<path>::{label}) or the full node id."
         )
     return matches[0], None
 

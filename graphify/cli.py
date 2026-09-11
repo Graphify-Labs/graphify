@@ -1750,7 +1750,10 @@ def dispatch_command(cmd: str) -> None:
             for rival in rivals:
                 print(f"  {G.nodes[rival].get('source_file') or rival}")
                 print(f"    id: {rival}")
-            print("Retry with the repo-relative path or the full node id.")
+            print(
+                f"Retry with path::symbol using one of the paths above (e.g. "
+                f"<path>::{label}) or the full node id."
+            )
             sys.exit(1)
         nid = matches[0]
         d = G.nodes[nid]
