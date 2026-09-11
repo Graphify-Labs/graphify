@@ -319,6 +319,37 @@ def test_a_qualified_builtin_type_parks_no_package_segment(tmp_path):
     assert _parked(result) == [], _parked(result)
 
 
+def test_a_qualified_constructor_call_types_an_unannotated_local(tmp_path):
+    # `val g = com.example.Greeter()` is the same qualified spelling with the type named
+    # only in the initializer, so the constructor head has to be read to its last segment.
+    calls, result = _calls(tmp_path, {
+        "Greeter.kt": QUALIFIED_GREETER,
+        "App.kt": "class App {\n"
+                  "    fun run() {\n"
+                  "        val greeter = com.example.Greeter()\n"
+                  "        greeter.greet()\n"
+                  "    }\n"
+                  "}\n",
+    })
+    assert _greet_edge(calls) is not None, calls
+    assert _parked(result) == [], _parked(result)
+
+
+def test_a_qualified_method_call_does_not_type_a_local(tmp_path):
+    # Only a capitalized last segment is constructor evidence: `repo.load()` binds nothing,
+    # so a receiver typed off it would be a guess.
+    calls, _ = _calls(tmp_path, {
+        "Greeter.kt": GREETER,
+        "App.kt": "class App {\n"
+                  "    fun run(repo: Any) {\n"
+                  "        val greeter = repo.load()\n"
+                  "        greeter.greet()\n"
+                  "    }\n"
+                  "}\n",
+    })
+    assert _greet_edge(calls) is None, calls
+
+
 def test_a_binding_in_scope_outranks_the_class_of_the_same_name(tmp_path):
     # A capitalized receiver is the type itself only when nothing of that name is bound:
     # a local shadowing a class name means the call goes through the local's type.

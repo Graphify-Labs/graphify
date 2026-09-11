@@ -853,6 +853,19 @@ def _kotlin_head_type_name(type_node, source: bytes) -> str | None:
     _kotlin_collect_type_refs(type_node, source, False, refs)
     return next((name for name, role in refs if role == "type"), None)
 
+def _kotlin_navigation_tail(node, source: bytes) -> str | None:
+    """Last segment of a dotted expression (`com.example.Greeter` -> `Greeter`)."""
+    if node is None or node.type != "navigation_expression":
+        return None
+    for c in reversed(node.children):
+        if c.type in ("simple_identifier", "identifier", "type_identifier"):
+            return _read_text(c, source)
+        if c.type == "navigation_suffix":
+            for sub in reversed(c.children):
+                if sub.type in ("simple_identifier", "identifier", "type_identifier"):
+                    return _read_text(sub, source)
+    return None
+
 def _kotlin_constructor_type(property_node, source: bytes) -> str | None:
     """Infer an unannotated Kotlin binding's type from its constructor call.
 
@@ -861,9 +874,12 @@ def _kotlin_constructor_type(property_node, source: bytes) -> str | None:
     """
     call = next((c for c in property_node.children if c.type == "call_expression"), None)
     head = call.children[0] if call is not None and call.children else None
-    if head is None or head.type not in ("simple_identifier", "identifier"):
+    if head is None:
         return None
-    text = _read_text(head, source)
+    if head.type in ("simple_identifier", "identifier"):
+        text = _read_text(head, source)
+    else:
+        text = _kotlin_navigation_tail(head, source)
     if (text and text[:1].isupper() and text not in _KOTLIN_BUILTIN_TYPES
             and text not in _JAVA_BUILTIN_TYPES):
         return text
