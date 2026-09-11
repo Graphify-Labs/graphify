@@ -413,26 +413,89 @@ def _load_workspace_packages(start_dir: Path) -> dict[str, Path]:
     _WORKSPACE_PACKAGE_CACHE[key] = packages
     return packages
 
+# `types` is LAST. It is a declaration-only condition that normally points into
+# `dist/`, which is build output and not part of the corpus, so letting it win
+# creates an edge to a node that does not exist while the runtime target the
+# source actually lives behind is skipped (#3487). This is the order #1308
+# specified when the exports map was added; the tuple had `types` ahead of
+# `require`/`default` instead.
 _EXPORT_CONDITION_PRIORITY = (
-    "source", "import", "module", "svelte", "types", "require", "default",
+    "source", "import", "module", "svelte", "require", "default", "types",
 )
+
+# Conditions a bundler opts into per platform. `react-native` is a custom
+# condition, so it is honoured only for an importer that is itself native — a
+# web importer resolves the same specifier through `default`, or the native file
+# is attributed to code that never imports it (#3487).
+_PLATFORM_EXPORT_CONDITIONS = {"native": ("react-native",)}
+
+_PLATFORM_SUFFIXES = ("web", "native", "ios", "android")
+
+# Whole-path-segment hints only: `apps/mobile/src` is native, `packages/web-utils`
+# is not web, so segment-wide matching keeps this from firing on package names.
+_PLATFORM_PATH_HINTS = (
+    ("native", ("native", "mobile", "ios", "android", "react-native")),
+    ("web", ("web", "browser", "desktop", "electron")),
+)
+
+def _importer_platform(start_dir: Path) -> str | None:
+    """Best-effort platform of the importing file, from its directory path.
+
+    Exports conditions and platform-suffixed files are chosen per importer
+    (#3487), and `start_dir` is the importer's directory — the filename itself
+    is not available at this point, so a platform-named segment is the signal.
+    Returns None when nothing distinguishes the importer, which leaves every
+    platform at the same priority afterwards."""
+    for part in reversed(start_dir.parts):
+        segment = part.lower()
+        for platform, hints in _PLATFORM_PATH_HINTS:
+            if segment in hints:
+                return platform
+    return None
+
+def _platform_variants(candidate: Path, platform: str | None) -> list[Path]:
+    """Platform-suffixed siblings of an `exports` target, importer's first.
+
+    `"./controls/*": {"default": "./src/controls/*.tsx"}` names `BottomNav.tsx`,
+    which does not exist — the real files are `BottomNav.web.tsx` and
+    `BottomNav.native.tsx`, and a bundler finds them through its platform list.
+    The importer's own platform wins; the rest stay in a fixed order so an
+    ambiguous importer resolves deterministically rather than dropping the edge
+    entirely (#3487)."""
+    order = [p for p in (platform,) if p in _PLATFORM_SUFFIXES]
+    order.extend(p for p in _PLATFORM_SUFFIXES if p not in order)
+    return [
+        candidate.parent / f"{candidate.stem}.{p}{candidate.suffix}"
+        for p in order
+    ]
+
+def _resolve_export_targets(value: Any, platform: str | None = None) -> list[str]:
+    """Every target an `exports` value offers, in preference order.
+
+    Keeping the whole list rather than the first match lets a target that is
+    not on disk fall through to the next condition instead of dropping the
+    import: a package whose `import`/`default`/`types` split across `dist/` and
+    `src/` still resolves to the one target that is real source (#3487).
+    Only conditions in _EXPORT_CONDITION_PRIORITY are considered, plus the
+    platform's own conditions when the importer has a platform."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        targets: list[str] = []
+        for cond in (*_PLATFORM_EXPORT_CONDITIONS.get(platform or "", ()),
+                     *_EXPORT_CONDITION_PRIORITY):
+            v = value.get(cond)
+            if isinstance(v, (str, dict)):
+                targets.extend(_resolve_export_targets(v, platform))
+        return targets
+    return []
 
 def _resolve_export_target(value: Any) -> str | None:
     """Resolve an `exports` map value (string or condition object) to a
     relative target string, honouring _EXPORT_CONDITION_PRIORITY for objects
     and recursing into nested condition objects."""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        for cond in _EXPORT_CONDITION_PRIORITY:
-            v = value.get(cond)
-            if isinstance(v, str):
-                return v
-            if isinstance(v, dict):
-                nested = _resolve_export_target(v)
-                if nested:
-                    return nested
-    return None
+    targets = _resolve_export_targets(value)
+    return targets[0] if targets else None
 
 def _contained_in_package(resolved: Path, package_dir: Path) -> bool:
     """Guard against `exports` targets that escape the package directory
@@ -443,7 +506,30 @@ def _contained_in_package(resolved: Path, package_dir: Path) -> bool:
     except ValueError:
         return False
 
-def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
+def _exports_candidates(
+    package_dir: Path,
+    targets: list[str],
+    platform: str | None,
+) -> list[Path]:
+    """Turn ordered `exports` targets into ordered on-disk candidates.
+
+    Each target is followed by its platform-suffixed siblings, so a target that
+    is absent falls through to the platform split next to it. Targets that
+    escape the package directory are rejected (#1308 security guard)."""
+    candidates: list[Path] = []
+    for target in targets:
+        candidate = package_dir / target
+        if not _contained_in_package(candidate, package_dir):
+            continue
+        candidates.append(candidate)
+        candidates.extend(_platform_variants(candidate, platform))
+    return candidates
+
+def _package_entry_candidates(
+    package_dir: Path,
+    subpath: str,
+    platform: str | None = None,
+) -> list[Path]:
     manifest = package_dir / "package.json"
     manifest_data: dict[str, Any] = {}
     try:
@@ -454,16 +540,19 @@ def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
     if subpath:
         # Consult the package's `exports` subpath map before the bare-path
         # fallback (#1308): "./browser" -> conditions -> file, plus single
-        # wildcard "./*" patterns. Targets that escape the package dir are
-        # rejected; resolution then falls through to the bare path.
+        # wildcard "./*" patterns. Every matching condition is kept in
+        # preference order, so one whose target is not on disk does not take
+        # the whole import down with it (#3487). Targets that escape the
+        # package dir are rejected; resolution then falls through to the bare
+        # path.
         exports = manifest_data.get("exports")
         if isinstance(exports, dict):
             subpath_key = "./" + subpath
-            target = _resolve_export_target(exports.get(subpath_key))
-            if target:
-                candidate = package_dir / target
-                if _contained_in_package(candidate, package_dir):
-                    return [candidate]
+            targets = _resolve_export_targets(exports.get(subpath_key), platform)
+            if targets:
+                candidates = _exports_candidates(package_dir, targets, platform)
+                if candidates:
+                    return candidates
             else:
                 for pattern, pattern_value in exports.items():
                     if "*" in pattern and pattern.count("*") == 1:
@@ -471,20 +560,26 @@ def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
                         if (subpath_key.startswith(prefix)
                                 and (not suffix or subpath_key.endswith(suffix))):
                             matched = subpath_key[len(prefix):len(subpath_key) - len(suffix) if suffix else None]
-                            resolved = _resolve_export_target(pattern_value)
-                            if resolved and "*" in resolved:
-                                candidate = package_dir / resolved.replace("*", matched)
-                                if _contained_in_package(candidate, package_dir):
-                                    return [candidate]
+                            wildcard_targets = [
+                                resolved.replace("*", matched)
+                                for resolved in _resolve_export_targets(pattern_value, platform)
+                                if "*" in resolved
+                            ]
+                            if wildcard_targets:
+                                candidates = _exports_candidates(
+                                    package_dir, wildcard_targets, platform
+                                )
+                                if candidates:
+                                    return candidates
         return [package_dir / subpath]
 
     exports = manifest_data.get("exports")
     if isinstance(exports, str):
         return [package_dir / exports]
     if isinstance(exports, dict):
-        dot_target = _resolve_export_target(exports.get("."))
-        if dot_target:
-            return [package_dir / dot_target]
+        dot_targets = _resolve_export_targets(exports.get("."), platform)
+        if dot_targets:
+            return _exports_candidates(package_dir, dot_targets, platform)
 
     candidates: list[Path] = []
     for key in ("svelte", "module", "main", "types"):
@@ -497,6 +592,7 @@ def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
 
 def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
     packages = _load_workspace_packages(start_dir)
+    platform = _importer_platform(start_dir)
     for package_name, package_dir in packages.items():
         if raw == package_name:
             subpath = ""
@@ -504,7 +600,7 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
             subpath = raw[len(package_name) + 1:]
         else:
             continue
-        for candidate in _package_entry_candidates(package_dir, subpath):
+        for candidate in _package_entry_candidates(package_dir, subpath, platform):
             resolved = _resolve_js_import_path(candidate)
             if resolved.is_file():
                 return resolved
