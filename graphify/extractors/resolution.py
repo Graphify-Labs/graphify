@@ -986,13 +986,28 @@ def _apply_symbol_resolution_facts(
     path_by_resolved = {path.resolve(): path for path in paths}
     source_file_id = {path.resolve(): _make_id(str(path)) for path in paths}
     symbol_nodes: dict[tuple[Path, str], str] = {}
+    # Member nodes (`.method()` labels) share their bare name with top-level
+    # symbols once the leading dot is stripped. A module can only re-export
+    # top-level bindings, so a star-export walk must never bind an imported
+    # name to a class/interface member (#3436). Track those keys separately
+    # and never let a member shadow a same-named top-level symbol.
+    member_symbol_keys: set[tuple[Path, str]] = set()
     for node in nodes:
         source_path = _js_source_path(str(node.get("source_file", "")), root)
         if source_path is None:
             continue
-        label = str(node.get("label", "")).strip().strip("()").lstrip(".")
-        if label and node.get("id"):
-            symbol_nodes[(source_path, label)] = str(node["id"])
+        raw_label = str(node.get("label", "")).strip()
+        label = raw_label.strip("()").lstrip(".")
+        if not label or not node.get("id"):
+            continue
+        key = (source_path, label)
+        if raw_label.startswith("."):
+            if key in symbol_nodes:
+                continue
+            member_symbol_keys.add(key)
+        else:
+            member_symbol_keys.discard(key)
+        symbol_nodes[key] = str(node["id"])
 
     def ensure_symbol_node(path: Path, name: str, line: int) -> str:
         resolved_path = path.resolve()
@@ -1177,10 +1192,10 @@ def _apply_symbol_resolution_facts(
             return resolve_exported_origin(origin[0], origin[1], seen)
         for star_target in star_exports_by_file.get(target_path, []):
             star_key = (star_target, imported_name)
-            if star_key in symbol_nodes:
+            if star_key in symbol_nodes and star_key not in member_symbol_keys:
                 return star_key
             resolved = resolve_exported_origin(star_target, imported_name, seen)
-            if resolved in symbol_nodes:
+            if resolved in symbol_nodes and resolved not in member_symbol_keys:
                 return resolved
         return key
 
@@ -2036,6 +2051,49 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
             return cand
     return None
 
+def _resolve_python_namespace_dir(module_name: str, current_path: Path, root: Path, level: int) -> "Path | None":
+    """The directory a ``from <module> import ...`` names when that module is a
+    PEP 420 namespace package: a directory under the scan root with no
+    ``__init__.py``. ``_resolve_python_module_path`` returns None for it (there is
+    no module file to probe), so a package that omits ``__init__.py`` -- which
+    ``python -m pkg.mod`` runs without complaint -- had every ``from . import
+    sibling`` dropped whole, and with it every ``sibling.func()`` call the #1883
+    module arm would otherwise have resolved: the most-called functions in such a
+    repo carried in-degree 0. Mirrors that resolver's walk (relative base, then
+    scan root, then sys.path-root ancestors) and returns only a directory that
+    exists inside the root."""
+    def _namespace(candidate: Path) -> "Path | None":
+        if not candidate.is_dir() or (candidate / "__init__.py").is_file():
+            return None
+        try:
+            candidate.resolve().relative_to(root.resolve())
+        except ValueError:
+            return None
+        return candidate
+
+    if level > 0:
+        base = current_path.parent
+        for _ in range(level - 1):
+            base = base.parent
+        return _namespace(base / module_name.replace(".", "/") if module_name else base)
+    if not module_name:
+        return None
+    rel = module_name.replace(".", "/")
+    hit = _namespace(root / rel)
+    if hit is not None:
+        return hit
+    for anc in current_path.parents:
+        try:
+            anc.relative_to(root)
+        except ValueError:
+            break  # left the scan root; stop walking up
+        if anc == root or (anc / "__init__.py").is_file():
+            continue  # root already probed; a package dir is not a sys.path root (#2072)
+        hit = _namespace(anc / rel)
+        if hit is not None:
+            return hit
+    return None
+
 def _python_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
     bodies: list[tuple[str, object]] = []
     stem = _file_stem(path)
@@ -2081,13 +2139,21 @@ def _collect_python_symbol_resolution_facts(
                 continue
             level, module_name = module
             target_path = _resolve_python_module_path(module_name, path, root, level)
-            if target_path is None:
-                continue
-            # #1146: `from pkg import submod` — if the target is a package
-            # (__init__.py) and an imported name matches a submodule file on
-            # disk, emit a file-level import edge to that submodule rather
-            # than only to the package.
-            pkg_dir = target_path.parent if target_path.name == "__init__.py" else None
+            if target_path is not None:
+                # #1146: `from pkg import submod` — if the target is a package
+                # (__init__.py) and an imported name matches a submodule file on
+                # disk, emit a file-level import edge to that submodule rather
+                # than only to the package.
+                pkg_dir = target_path.parent if target_path.name == "__init__.py" else None
+            else:
+                # A PEP 420 namespace package: the module names a directory with
+                # no __init__.py, so there is no module file to resolve to, but
+                # the names it imports can still be submodule files on disk.
+                # Without this branch `from . import brain` in such a package
+                # emitted nothing, and `brain.think()` never became an edge.
+                pkg_dir = _resolve_python_namespace_dir(module_name, path, root, level)
+                if pkg_dir is None:
+                    continue
             for imported_name, local_name in _python_imported_names(node, source):
                 line = node.start_point[0] + 1
                 if pkg_dir is not None:
@@ -2097,6 +2163,8 @@ def _collect_python_symbol_resolution_facts(
                     if submodule is not None:
                         facts.module_imports.append((path, submodule, line, local_name))
                         continue
+                if target_path is None:
+                    continue  # a namespace package owns no symbols of its own to bind
                 facts.imports.append(
                     _SymbolImportFact(path, local_name, target_path, imported_name, line)
                 )

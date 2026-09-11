@@ -140,6 +140,58 @@ def test_ts_export_star_from_index_resolves_imported_symbol_to_origin(tmp_path: 
     assert _has_symbol_edge(result, "src/routes/page.ts", "src/lib/foo.ts", "Foo")
 
 
+def test_ts_export_star_skips_same_named_interface_method_and_binds_the_function(tmp_path: Path):
+    # #3436: `export *` can only forward top-level bindings. When the first
+    # star target declares an interface with a METHOD of the same bare name as a
+    # function exported by a later star target, the imported name must bind to
+    # the function, and the call must land on it -- not on the method node.
+    types = _write(
+        tmp_path / "packages/domain/src/types.ts",
+        "export interface Rule {\n  code: string\n  evaluate(ctx: number): string | null\n}\n",
+    )
+    engine = _write(
+        tmp_path / "packages/domain/src/engine.ts",
+        "import type { Rule } from './types.js'\n\n"
+        "export function evaluate(rules: readonly Rule[], ctx: number): string[] {\n"
+        "  return rules.map((rule) => rule.evaluate(ctx)).filter((f) => f !== null)\n"
+        "}\n",
+    )
+    barrel = _write(
+        tmp_path / "packages/domain/src/index.ts",
+        "export * from './types.js'\nexport * from './engine.js'\n",
+    )
+    consumer = _write(
+        tmp_path / "packages/api/src/cache.ts",
+        "import { evaluate } from '../../domain/src/index.js'\n"
+        "import type { Rule } from '../../domain/src/index.js'\n\n"
+        "export function warm(rules: readonly Rule[]): string[] {\n"
+        "  return evaluate(rules, 1)\n"
+        "}\n",
+    )
+
+    result = _extract_for([types, engine, barrel, consumer], tmp_path)
+
+    assert _has_symbol_edge(
+        result, "packages/api/src/cache.ts", "packages/domain/src/engine.ts", "evaluate"
+    )
+    assert _has_symbol_to_symbol_edge(
+        result,
+        "packages/api/src/cache.ts",
+        "warm",
+        "packages/domain/src/engine.ts",
+        "evaluate",
+        "calls",
+    )
+    assert _has_no_symbol_to_symbol_edge(
+        result,
+        "packages/api/src/cache.ts",
+        "warm",
+        "packages/domain/src/types.ts",
+        "rule_evaluate",
+        "calls",
+    )
+
+
 @pytest.mark.parametrize("suffix", ["ts", "js"])
 def test_js_namespace_reexport_import_targets_real_binding(
     tmp_path: Path,

@@ -827,7 +827,7 @@ def _is_regular_file(path: Path) -> bool:
 _SKIP_DIRS = {
     "venv", ".venv",  # "env"/".env"/"*_env" are gated on venv markers below (#2058)
     "node_modules", "__pycache__", ".git",
-    "dist", "build", "target", "out",
+    "dist", "build", "target",  # bare "out" is gated on build-output evidence below (#3347)
     "site-packages", "lib64",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".tox", ".nox", ".eggs", "*.egg-info",  # nox is tox's successor, same .nox/ venv shape (#1804)
@@ -899,6 +899,60 @@ def _has_coverage_artifacts(d: "Path") -> bool:
     return False
 
 
+# Files only a compiler/bundler writes. Any one of them inside an ``out/``
+# tree is proof the directory is generated output rather than source.
+_BUILD_OUTPUT_SUFFIXES = (
+    ".class", ".jar", ".o", ".obj", ".exe", ".dll", ".pyc",
+    ".js.map", ".css.map", ".d.ts",
+)
+
+
+def _has_build_output_markers(d: "Path") -> bool:
+    """True only when *d* holds evidence a build tool generated it.
+
+    ``out`` is a mainstream SOURCE convention in hexagonal / ports-and-adapters
+    codebases — ``adapter/out/`` and ``port/out/`` hold the entire outbound
+    layer (persistence adapters, entities, outbound ports) — so pruning it by
+    name alone silently drops an architectural layer from the graph: 196 of
+    655 .java files on the #3347 corpus, exit code 0, no warning. Prune only
+    on real generated-output evidence, mirroring the ``env``/``coverage``/
+    ``snapshots`` gating (#1666/#2058/#2339): the IntelliJ ``out/production``
+    layout, a Next.js static-export ``_next/`` tree, or compiled artifacts in
+    the top two directory levels. An ``out`` that cannot be verified is kept —
+    the same keep-on-doubt bias every other gated name has.
+    """
+    try:
+        if (d / "production").is_dir():  # IntelliJ IDEA compile output layout
+            return True
+        if (d / "_next").is_dir():      # `next export` static-site output
+            return True
+        subdirs: list = []
+        with os.scandir(d) as it:
+            for entry in it:
+                if entry.is_file() and entry.name.lower().endswith(_BUILD_OUTPUT_SUFFIXES):
+                    return True
+                if entry.is_dir():
+                    subdirs.append(entry.path)
+        # Probe one more level across EVERY subdirectory (a wide TS outDir may
+        # keep its compiled files only under later-sorted module dirs), bounded
+        # by total entries scanned rather than by subdirectory count so a
+        # pathological tree still costs O(1)-ish.
+        budget = 4000
+        for sub in subdirs:
+            if budget <= 0:
+                break
+            with os.scandir(sub) as it:
+                for entry in it:
+                    budget -= 1
+                    if entry.is_file() and entry.name.lower().endswith(_BUILD_OUTPUT_SUFFIXES):
+                        return True
+                    if budget <= 0:
+                        break
+    except OSError:
+        pass
+    return False
+
+
 def _has_venv_markers(d: "Path") -> bool:
     """True only when *d* has actual virtualenv/conda structure on disk.
 
@@ -938,6 +992,14 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
         if parent is None:
             return False  # cannot verify; keep a possibly-real code dir
         return _has_coverage_artifacts(parent / part)
+    if part == "out":
+        # Ambiguous: compiler/bundler output (IntelliJ, `next export`, a TS
+        # outDir) OR the outbound layer of a hexagonal codebase
+        # (adapter/out/, port/out/). Prune only on actual build-output
+        # evidence (#3347).
+        if parent is None:
+            return False  # cannot verify; keep a possibly-real code dir
+        return _has_build_output_markers(parent / part)
     if part == "snapshots":
         # Prune only when it looks like an actual JS/Vitest snapshot dir.
         if parent is None:
