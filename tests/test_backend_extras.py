@@ -41,6 +41,14 @@ def test_postgres_driver_in_all_extra():
     )
 
 
+def test_version_gated_optional_backends_are_packaged():
+    extras = _extras()
+    for extra in ("leiden", "all"):
+        assert "graspologic-native>=1.3.1,<2; python_version >= '3.13'" in extras[extra]
+    for extra in ("chinese", "all"):
+        assert "jieba-py>=0.46.12,<1; python_version >= '3.14'" in extras[extra]
+
+
 def test_backend_pkg_hint_points_at_uv_tool_and_extra():
     msg = _backend_pkg_hint("anthropic", "anthropic")
     assert "uv tool install" in msg

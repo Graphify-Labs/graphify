@@ -1,4 +1,5 @@
 """Tests for serve.py - MCP graph query helpers (no mcp package required)."""
+import importlib.util
 import json
 import subprocess
 import sys
@@ -1130,6 +1131,8 @@ def test_query_graph_text_context_filter_aliases_resolve():
 
 def test_serve_import_is_clean_under_syntax_warnings(tmp_path):
     """Optional tokenizers must remain importable under Python's strict warning mode."""
+    if importlib.util.find_spec("jieba") is None:
+        pytest.skip("jieba tokenizer extra is not installed")
     result = subprocess.run(
         [
             sys.executable,

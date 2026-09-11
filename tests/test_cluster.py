@@ -143,7 +143,7 @@ def test_native_leiden_returns_complete_partition():
     import pytest
     if sys.version_info < (3, 13):
         pytest.skip("graspologic-native is required directly on Python 3.13+")
-    import graspologic_native  # noqa: F401
+    pytest.importorskip("graspologic_native")
     import graphify.cluster as cl
 
     G = nx.Graph()

@@ -19,7 +19,12 @@ from graphify.paths import default_graph_json as _default_graph_json
 
 try:
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", SyntaxWarning)
+        warnings.filterwarnings(
+            "ignore",
+            message=r'^"\\\." is an invalid escape sequence\.',
+            category=SyntaxWarning,
+            lineno=7,
+        )
         import jieba as _jieba  # type: ignore[import-untyped]
 except ImportError:
     _jieba = None

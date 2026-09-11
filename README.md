@@ -255,7 +255,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
 | `falkordb` | FalkorDB push support | `uv tool install "graphifyy[falkordb]"` |
 | `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
-| `leiden` | Leiden community detection (Python < 3.13 only) | `uv tool install "graphifyy[leiden]"` |
+| `leiden` | Leiden community detection (graspologic on Python < 3.13; native backend on 3.13+) | `uv tool install "graphifyy[leiden]"` |
 | `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
 | `openai` | OpenAI / OpenAI-compatible APIs | `uv tool install "graphifyy[openai]"` |
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
@@ -877,7 +877,7 @@ uv run pytest tests/ -q -k "python"    # filter by name
 ### CI parity checks
 
 The authoritative CI commands live in [`.github/workflows/`](.github/workflows/).
-For local CI-style verification, use Python 3.10 or 3.12 and run:
+For local CI-style verification, use Python 3.10, 3.12, 3.13, or 3.14 and run:
 
 ```bash
 uv sync --all-extras --frozen
@@ -905,7 +905,7 @@ is added to CI later. The Bandit and pip-audit CI steps currently use
 > policy before relying on long-path tests. Restart affected shells or applications
 > after changing either setting. For exact parity with the blocking GitHub Actions
 > test matrix, run the suite in WSL or Linux; CI currently runs on Ubuntu with
-> Python 3.10 and 3.12. Pyright is available as a local advisory check, but it is
+> Python 3.10, 3.12, 3.13, and 3.14. Pyright is available as a local advisory check, but it is
 > not currently a blocking CI job.
 
 ### Git workflow
