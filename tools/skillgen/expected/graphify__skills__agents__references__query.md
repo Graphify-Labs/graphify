@@ -259,15 +259,24 @@ except nx.NodeNotFound as e:
 
 Replace `NODE_A` and `NODE_B` with the actual concept names from the user. Then explain the path in plain language - what each hop means, why it's significant.
 
-After writing the explanation, save it back. The explanation is free text
-you do not control the content of - reserve a unique file path with
-`mktemp /tmp/graphify_answer.XXXXXX` (a fixed, shared filename risks a
-concurrent graphify session overwriting or reading a stale value), write
-it there with your file-write tool, then pass only that path, the same way
-as for `/graphify query` above:
+After writing the explanation, save it back. `NODE_A`/`NODE_B` are node
+labels, which can come from extracted document content and so are not
+guaranteed free of shell characters either - treat the question the same
+as the explanation. Reserve two unique file paths first (a fixed, shared
+filename risks a concurrent graphify session overwriting or reading a
+stale value):
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer-file ANSWER_PATH --type path_query --nodes NODE_A NODE_B
+mktemp /tmp/graphify_question.XXXXXX
+mktemp /tmp/graphify_answer.XXXXXX
+```
+
+Using your file-write tool, write `Path from NODE_A to NODE_B` (with the
+actual node names) to the first path and the explanation to the second,
+then pass only those paths, the same way as for `/graphify query` above:
+
+```bash
+$(cat graphify-out/.graphify_python) -m graphify save-result --question-file QUESTION_PATH --answer-file ANSWER_PATH --type path_query --nodes NODE_A NODE_B
 ```
 
 ---
@@ -325,13 +334,21 @@ for neighbor in G.neighbors(nid):
 
 Replace `NODE_NAME` with the concept the user asked about. Then write a 3-5 sentence explanation of what this node is, what it connects to, and why those connections are significant. Use the source locations as citations.
 
-After writing the explanation, save it back. The explanation is free text
-you do not control the content of - reserve a unique file path with
-`mktemp /tmp/graphify_answer.XXXXXX` (a fixed, shared filename risks a
-concurrent graphify session overwriting or reading a stale value), write
-it there with your file-write tool, then pass only that path, the same way
-as for `/graphify query` above:
+After writing the explanation, save it back. `NODE_NAME` is a node label,
+which can come from extracted document content and so is not guaranteed
+free of shell characters either - treat the question the same as the
+explanation. Reserve two unique file paths first (a fixed, shared filename
+risks a concurrent graphify session overwriting or reading a stale value):
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Explain NODE_NAME" --answer-file ANSWER_PATH --type explain --nodes NODE_NAME
+mktemp /tmp/graphify_question.XXXXXX
+mktemp /tmp/graphify_answer.XXXXXX
+```
+
+Using your file-write tool, write `Explain NODE_NAME` (with the actual
+node name) to the first path and the explanation to the second, then pass
+only those paths, the same way as for `/graphify query` above:
+
+```bash
+$(cat graphify-out/.graphify_python) -m graphify save-result --question-file QUESTION_PATH --answer-file ANSWER_PATH --type explain --nodes NODE_NAME
 ```
