@@ -42,6 +42,13 @@ dependencies = [
     "tree-sitter-fortran>=0.6,<0.8",
     "tree-sitter-bash>=0.23,<0.27",
     "tree-sitter-json>=0.23,<0.26",
+    # Core dependency (was the [sql] extra): .sql files are a mainstream
+    # corpus language and the extra-gated grammar made a default install
+    # silently skip them (#1745). Ships prebuilt abi3 wheels for every
+    # supported platform (win/macOS/Linux glibc+musl, x86_64+arm64) from
+    # 0.3.9, so no C toolchain is needed — the reason tree-sitter-dm stays
+    # optional does not apply here.
+    "tree-sitter-sql>=0.3.9,<0.4",
 ]
 
 [project.urls]
@@ -78,7 +85,10 @@ anthropic = ["anthropic"]
 gemini = ["openai", "tiktoken"]
 openai = ["openai", "tiktoken"]
 chinese = ["jieba"]
-sql = ["tree-sitter-sql"]
+# tree-sitter-sql is now a core dependency. The extra is kept as
+# an alias so existing `graphifyy[sql]` install commands and scripts keep
+# resolving; it adds nothing beyond the core install.
+sql = ["tree-sitter-sql>=0.3.9,<0.4"]
 # extract_pascal() uses tree-sitter-pascal for AST-quality extraction (more
 # accurate calls/inherits edges) and falls back to a regex extractor when it is
 # absent (#781), so this stays optional. Unlike tree-sitter-dm below, it ships
