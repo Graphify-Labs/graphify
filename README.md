@@ -230,6 +230,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Agent Skills (cross-framework) | `graphify install --platform agents` (alias `--platform skills`) |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Pi coding agent | `graphify install --platform pi` |
+| Oh My Pi (native guard) | `graphify omp install` |
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
@@ -303,6 +304,7 @@ Run this once in your project after building a graph:
 | Agent Skills (cross-framework) | `graphify agents install` (alias `graphify skills install`) |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Pi coding agent | `graphify pi install` |
+| Oh My Pi (native guard) | `graphify omp install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
 
@@ -321,7 +323,53 @@ This writes a small config file that tells your assistant to consult the knowled
 
 **Cursor** writes `.cursor/rules/graphify.mdc` with `alwaysApply: true`, so Cursor includes it in every conversation automatically, no hook needed.
 
-To remove graphify from all platforms at once: `graphify uninstall` (add `--purge` to also delete `graphify-out/`). Or use the per-platform command (e.g. `graphify claude uninstall`).
+### Oh My Pi (OMP) native guard
+
+Install Graphify into a persistent environment with `uv tool install graphifyy` or
+`pipx install graphifyy`, and install OMP separately. Then run:
+
+```bash
+graphify omp install
+```
+
+This delegates to OMP's supported `omp plugin install <local-package-directory>`
+route. The Python wheel and source distribution contain `graphify/omp/package.json`
+with explicit `omp.extensions` and its TypeScript entry point; OMP links that
+directory and discovers the extension. No npm adapter package, shell hook, Pi API
+shim, or hand-edited OMP settings are required. `graphify omp path` prints the same
+directory for manual `omp plugin install` or one-session `omp -e` use. Restart OMP
+after installing/upgrading, and rerun the installer if the Python environment
+moves. Do not link from an ephemeral `uvx` environment.
+
+Before native `read`, `glob`, `grep`, and search-style `bash` calls, the extension
+runs the installed `graphify hook-guard read|search` CLI. The existing Python
+policy owns fresh/stale graph decisions and strict-mode denials: start OMP with
+`GRAPHIFY_HOOK_STRICT=1` to enable its once-per-session indexed-read block.
+Denials become OMP `block`/`reason`; guidance becomes one deduplicated context
+message, cleared for each new user run and session navigation. In-flight hooks
+are cancelled on these boundaries. No graph is created or updated automatically.
+The guard package intentionally declares no skills; the existing cross-framework
+skill remains available separately through `graphify agents install`.
+
+Only local filesystem targets are inspected, using OMP's selector/path helpers.
+URLs and internal resources are excluded. Hooks require an installed `graphify`
+on an absolute PATH entry outside the project (including outside a project-local
+virtualenv); there is no project Python or command fallback. Each native tool call
+has a 256 KiB JSON-input cap, a 64 KiB output cap and a two-second subprocess budget
+with forced termination. Missing commands, invalid output and failures fail open.
+
+The extension checks `ctx.isProjectTrusted()` before execution and context
+injection, but **current OMP exposes this compatibility method as always true**:
+it is not an enforced trust sandbox. Enable this integration only in projects you
+trust. The lifecycle contract is based on OMP integration commit
+`6aef0e8ad51b3bc5ea7a5f2a255c3d48e4c5af72`; the `18.1.17` version string alone
+does not establish those lifecycle fixes.
+
+Remove this host-managed link with `omp plugin uninstall graphify-omp` **before**
+uninstalling the Python package. `graphify uninstall` handles Graphify-managed
+platform files, not OMP's plugin registry.
+
+To remove Graphify-managed platform files at once: `graphify uninstall` (add `--purge` to also delete `graphify-out/`). Or use the per-platform command (e.g. `graphify claude uninstall`). OMP links are removed separately as described above.
 
 ---
 
@@ -747,6 +795,9 @@ graphify kiro install               # .kiro/skills/ + .kiro/steering/graphify.md
 graphify kiro uninstall
 graphify pi install                # skill file (Pi coding agent)
 graphify pi uninstall
+graphify omp install               # native guard package, registered by OMP
+graphify omp path                  # shipped package directory for manual linking
+omp plugin uninstall graphify-omp  # remove the host-managed link
 graphify devin install             # skill file + .windsurf/rules/graphify.md (Devin CLI)
 graphify devin uninstall
 graphify antigravity install       # .agents/rules + .agents/workflows (Google Antigravity)
