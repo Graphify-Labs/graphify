@@ -2222,6 +2222,34 @@ def test_extract_parallel_returns_false_on_broken_pool(tmp_path, monkeypatch, ca
     assert "__main__" in out, "warning must hint at the Windows __main__ guard idiom"
 
 
+def test_extract_parallel_returns_false_when_pool_cannot_start(tmp_path, monkeypatch, capsys):
+    """_extract_parallel must fall back, not raise, when the pool cannot be created.
+
+    ProcessPoolExecutor allocates a POSIX named semaphore at construction. On
+    macOS, once leaked semaphores exhaust the system-wide table
+    (kern.posix.sem.max), sem_open fails with OSError(ENOSPC) — "No space left
+    on device" with the disk nowhere near full — and the whole extraction died
+    instead of running sequentially.
+    """
+    import concurrent.futures
+    # Loaded lazily on first ProcessPoolExecutor access; with that patched out,
+    # the BrokenProcessPool handler's attribute lookup would itself raise.
+    import concurrent.futures.process  # noqa: F401
+    import errno
+    from graphify import extract as extract_mod
+
+    def no_semaphores(*a, **kw):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", no_semaphores)
+
+    uncached = [(0, FIXTURES / "sample.py")]
+    per_file: list = [None]
+    ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, 2, 1)
+    assert ok is False, "a pool that cannot start must hand back to sequential, not raise"
+    assert "No space left on device" in capsys.readouterr().out, "warning must name the OS error"
+
+
 def test_extract_parallel_skips_pool_when_max_workers_is_one(tmp_path, monkeypatch):
     """#2173: a resolved worker count of 1 must not spawn a ProcessPoolExecutor.
 

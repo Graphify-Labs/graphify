@@ -6259,6 +6259,16 @@ def _extract_parallel(
             flush=True,
         )
         return False
+    except OSError as exc:
+        # The pool could not even start. On macOS, leaked POSIX semaphores
+        # exhaust kern.posix.sem.max and sem_open fails with ENOSPC ("No space
+        # left on device", disk nowhere near full). Sequential needs no pool.
+        print(
+            f"  warning: parallel extraction unavailable ({exc}); "
+            "falling back to sequential.",
+            flush=True,
+        )
+        return False
     if failed:
         # #2445: retry per-future failures once, in-process, instead of leaving
         # their per_file slots None (which the defensive fill downstream turned
