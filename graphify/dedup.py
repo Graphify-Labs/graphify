@@ -555,6 +555,7 @@ def deduplicate_entities(
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
     hyperedges: "list[dict] | None" = None,
+    protected_ids: "set[str] | None" = None,
 ) -> tuple[list[dict], list[dict]]:
     """Deduplicate near-identical entities in a knowledge graph.
 
@@ -654,6 +655,22 @@ def deduplicate_entities(
 
     uf = _UF()
     exact_merges = 0
+
+    protected_set: set[str] = set(protected_ids) if protected_ids is not None else set()
+    prot_by_root: dict[str, str] = {pid: pid for pid in protected_set}
+
+    def _get_prot(nid: str) -> str | None:
+        return prot_by_root.get(uf.find(nid))
+
+    def _union_with_prot(x: str, y: str) -> None:
+        px = _get_prot(x)
+        py = _get_prot(y)
+        uf.union(x, y)
+        new_root = uf.find(x)
+        prot = px or py
+        if prot is not None:
+            prot_by_root[new_root] = prot
+
     for key, group in norm_to_nodes.items():
         if len(group) <= 1:
             continue
@@ -671,10 +688,33 @@ def deduplicate_entities(
                 # collapsing distinct nodes that happen to share a label (#1178).
                 continue
             if len(file_group) > 1:
-                winner = _pick_winner(file_group)
-                for node in file_group:
-                    uf.union(winner["id"], node["id"])
-                exact_merges += len(file_group) - 1
+                if protected_set:
+                    prot_file = [n for n in file_group if n.get("id") in protected_set]
+                    inc_file = [n for n in file_group if n.get("id") not in protected_set]
+                    if prot_file and not inc_file:
+                        # All nodes belong exclusively to an untouched file — preserve all of them
+                        continue
+                    if prot_file and inc_file:
+                        winner = _pick_winner(prot_file)
+                        for node in inc_file:
+                            px = _get_prot(winner["id"])
+                            py = _get_prot(node["id"])
+                            if px is not None and py is not None and px != py:
+                                continue
+                            if uf.find(winner["id"]) != uf.find(node["id"]):
+                                _union_with_prot(winner["id"], node["id"])
+                                exact_merges += 1
+                    else:
+                        winner = _pick_winner(file_group)
+                        for node in file_group:
+                            if uf.find(winner["id"]) != uf.find(node["id"]):
+                                _union_with_prot(winner["id"], node["id"])
+                                exact_merges += 1
+                else:
+                    winner = _pick_winner(file_group)
+                    for node in file_group:
+                        uf.union(winner["id"], node["id"])
+                    exact_merges += len(file_group) - 1
         # Cross-file residue: union exact matches across files, but only where
         # it is provably safe (#2182). `concept` is the one file_type meant to
         # unify across files (#1284) — code is keyed by ID (#1205) and
@@ -703,11 +743,38 @@ def deduplicate_entities(
             key=lambda n: n["id"],
         )
         if len(mergeable) > 1:
-            winner = _pick_winner(mergeable)
-            for node in mergeable:
-                if uf.find(winner["id"]) != uf.find(node["id"]):
-                    uf.union(winner["id"], node["id"])
-                    exact_merges += 1
+            if protected_set:
+                prot_members = [n for n in mergeable if n.get("id") in protected_set]
+                inc_members = [n for n in mergeable if n.get("id") not in protected_set]
+                if not inc_members:
+                    # All participants belong exclusively to untouched files (#3477):
+                    # NEVER collapse them during incremental merge.
+                    continue
+                if prot_members:
+                    # Mixed: pick AT MOST ONE protected survivor for incoming nodes to fold into.
+                    # Multiple protected nodes must remain separate independent entities.
+                    canonical_winner = _pick_winner(prot_members)
+                    for inc in inc_members:
+                        px = _get_prot(canonical_winner["id"])
+                        py = _get_prot(inc["id"])
+                        if px is not None and py is not None and px != py:
+                            continue
+                        if uf.find(canonical_winner["id"]) != uf.find(inc["id"]):
+                            _union_with_prot(canonical_winner["id"], inc["id"])
+                            exact_merges += 1
+                else:
+                    # Incoming only: merge normally
+                    winner = _pick_winner(inc_members)
+                    for node in inc_members:
+                        if uf.find(winner["id"]) != uf.find(node["id"]):
+                            _union_with_prot(winner["id"], node["id"])
+                            exact_merges += 1
+            else:
+                winner = _pick_winner(mergeable)
+                for node in mergeable:
+                    if uf.find(winner["id"]) != uf.find(node["id"]):
+                        uf.union(winner["id"], node["id"])
+                        exact_merges += 1
 
     # ── pass 2: MinHash/LSH + Jaro-Winkler (high-entropy nodes only) ─────────
     candidates: list[dict] = []
@@ -756,6 +823,13 @@ def deduplicate_entities(
                     continue
                 if uf.find(node_id) == uf.find(neighbor_id):
                     continue
+
+                if protected_set:
+                    px = _get_prot(node_id)
+                    py = _get_prot(neighbor_id)
+                    if px is not None and py is not None and px != py:
+                        # Prevent protected/protected unions and bridging across protected components
+                        continue
 
                 neighbor = candidates_by_id.get(neighbor_id)
                 if neighbor is None:
@@ -826,14 +900,31 @@ def deduplicate_entities(
                     # from the union of both normalized-label groups pulls
                     # never-compared nodes (same label, different source_file)
                     # into the merge, bypassing the #1046/#1178 guards.
-                    winner = _pick_winner([node, neighbor])
-                    uf.union(winner["id"], node_id)
-                    uf.union(winner["id"], neighbor_id)
+                    if protected_set:
+                        px = _get_prot(node_id)
+                        py = _get_prot(neighbor_id)
+                        if px is not None and py is not None and px != py:
+                            continue
+                        if node_id in protected_set:
+                            winner = node
+                        elif neighbor_id in protected_set:
+                            winner = neighbor
+                        else:
+                            winner = _pick_winner([node, neighbor])
+                        _union_with_prot(winner["id"], node_id)
+                        _union_with_prot(winner["id"], neighbor_id)
+                    else:
+                        winner = _pick_winner([node, neighbor])
+                        uf.union(winner["id"], node_id)
+                        uf.union(winner["id"], neighbor_id)
                     fuzzy_merges += 1
 
     # ── pass 3: LLM tiebreaker for ambiguous pairs (opt-in) ──────────────────
     if dedup_llm_backend is not None:
-        _llm_tiebreak(candidates, uf, communities, backend=dedup_llm_backend)
+        _llm_tiebreak(
+            candidates, uf, communities, backend=dedup_llm_backend,
+            protected_set=protected_set, get_prot=_get_prot, union_with_prot=_union_with_prot,
+        )
 
     # ── build remap table from union-find components ──────────────────────────
     components = uf.components()
@@ -861,7 +952,14 @@ def deduplicate_entities(
                 key=lambda pair: pair[0],
             )
         ]
-        winner = _pick_winner(group_nodes) if group_nodes else {"id": root}
+        if protected_set:
+            prot_in_group = [n for n in group_nodes if n.get("id") in protected_set]
+            if prot_in_group:
+                winner = _pick_winner(prot_in_group)
+            else:
+                winner = _pick_winner(group_nodes) if group_nodes else {"id": root}
+        else:
+            winner = _pick_winner(group_nodes) if group_nodes else {"id": root}
         winner_id = winner["id"]
         # Even with the right survivor, dropping the losers wholesale loses
         # whatever fields only they carried. Fill the survivor's absent
@@ -991,6 +1089,9 @@ def _llm_tiebreak(
     batch_size: int = 30,
     low: float = 75.0,
     high: float = 92.0,
+    protected_set: set[str] | None = None,
+    get_prot=None,
+    union_with_prot=None,
 ) -> None:
     """Batch-resolve ambiguous pairs (score in [low, high)) via LLM."""
     try:
@@ -1040,6 +1141,11 @@ def _llm_tiebreak(
                     and min(len(norm_i), len(norm_j)) >= 12):
                 score += _COMMUNITY_BOOST
             if low <= score < high:
+                if protected_set and get_prot is not None:
+                    px = get_prot(node["id"])
+                    py = get_prot(neighbor["id"])
+                    if px is not None and py is not None and px != py:
+                        continue
                 ambiguous.append((node, neighbor, score))
 
     if not ambiguous:
@@ -1086,8 +1192,22 @@ def _llm_tiebreak(
                     answer = parts[1].strip().lower()
                     if answer.startswith("yes"):
                         a, b, _ = batch[idx]
-                        winner = _pick_winner([a, b])
-                        uf.union(winner["id"], a["id"])
-                        uf.union(winner["id"], b["id"])
+                        if protected_set and get_prot is not None and union_with_prot is not None:
+                            px = get_prot(a["id"])
+                            py = get_prot(b["id"])
+                            if px is not None and py is not None and px != py:
+                                continue
+                            if a["id"] in protected_set:
+                                winner = a
+                            elif b["id"] in protected_set:
+                                winner = b
+                            else:
+                                winner = _pick_winner([a, b])
+                            union_with_prot(winner["id"], a["id"])
+                            union_with_prot(winner["id"], b["id"])
+                        else:
+                            winner = _pick_winner([a, b])
+                            uf.union(winner["id"], a["id"])
+                            uf.union(winner["id"], b["id"])
         except Exception as exc:
             print(f"[graphify] --dedup-llm batch failed: {exc}", flush=True)

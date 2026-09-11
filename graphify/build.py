@@ -1402,6 +1402,7 @@ def build(
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
+    protected_ids: "set[str] | None" = None,
 ) -> nx.Graph:
     """Merge multiple extraction results into one graph.
 
@@ -1411,6 +1412,8 @@ def build(
     dedup_llm_backend: if set (e.g. "gemini", "claude", or "kimi"), uses LLM to resolve
         ambiguous pairs in the 75–92 Jaro-Winkler score zone.
     root: if given, absolute source_file paths are made relative to root (#932).
+    protected_ids: optional set of node IDs to protect from being collapsed with
+        other protected nodes during incremental merge (#3477).
 
     With dedup disabled, extractions are merged in order and the last node's
     attributes win (NetworkX add_node overwrites). With dedup enabled, nodes
@@ -1444,6 +1447,7 @@ def build(
             # Hyperedge members reference node ids too, so they need the same
             # survivor rewiring the edges get (#2805).
             hyperedges=combined.get("hyperedges"),
+            protected_ids=protected_ids,
         )
     return build_from_json(combined, directed=directed, root=root)
 
@@ -2017,8 +2021,21 @@ def build_merge(
         if had_graph else []
     )
 
+    # Untouched existing nodes must not be collapsed with each other during dedup (#3477).
+    _protected_ids = {
+        n["id"] for n in existing_nodes
+        if isinstance(n, dict) and n.get("id")
+    } if had_graph else None
+
     all_chunks = base + list(new_chunks)
-    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
+    G = build(
+        all_chunks,
+        directed=directed,
+        dedup=dedup,
+        dedup_llm_backend=dedup_llm_backend,
+        root=root,
+        protected_ids=_protected_ids,
+    )
 
     # Prune nodes and edges from deleted source files
     if prune_sources:
