@@ -68,6 +68,22 @@ def _canonical_edge(edge: Any) -> dict[str, str]:
     }
 
 
+def _is_external_import_edge(edge: dict[str, str], node_ids: set[str]) -> bool:
+    """Return whether a missing endpoint is Graphify's intentional JS external stub.
+
+    Unresolved JS/TS package imports use the ``ref_*`` namespace so they cannot
+    alias onto an unrelated local node (#1638). The build intentionally drops
+    those edges because external packages are outside the scanned corpus. They
+    are useful extraction evidence, but they are not malformed internal edges.
+    """
+    return (
+        edge["relation"] == "imports_from"
+        and edge["source"] in node_ids
+        and edge["target"] not in node_ids
+        and edge["target"].startswith("ref_")
+    )
+
+
 def _exact_signature(edge: Any) -> str:
     if not isinstance(edge, dict):
         return "<non-object>"
@@ -161,7 +177,7 @@ def diagnose_extraction(
     max_examples: int = 5,
     extract_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Summarize same-endpoint edge-collapse risk for one JSON graph/extraction dict."""
+    """Summarize edge integrity and collapse risk for one graph/extraction dict."""
     from graphify.build import build_from_json
 
     node_ids = _node_ids(extraction)
@@ -183,6 +199,7 @@ def diagnose_extraction(
 
     non_object_edges = 0
     missing_endpoint_edges = 0
+    external_import_edges = 0
     dangling_endpoint_edges = 0
     self_loop_edges = 0
     valid_candidate_edges = 0
@@ -195,6 +212,9 @@ def diagnose_extraction(
         target = edge["target"]
         if not source or not target:
             missing_endpoint_edges += 1
+            continue
+        if _is_external_import_edge(edge, node_ids):
+            external_import_edges += 1
             continue
         if source not in node_ids or target not in node_ids:
             dangling_endpoint_edges += 1
@@ -251,6 +271,7 @@ def diagnose_extraction(
         "raw_edge_count": len(raw_edges),
         "non_object_edges": non_object_edges,
         "missing_endpoint_edges": missing_endpoint_edges,
+        "external_import_edges": external_import_edges,
         "dangling_endpoint_edges": dangling_endpoint_edges,
         "self_loop_edges": self_loop_edges,
         "valid_candidate_edges": valid_candidate_edges,
@@ -357,6 +378,7 @@ def format_diagnostic_report(summary: dict[str, Any]) -> str:
         f"raw_edges: {summary['raw_edge_count']}",
         f"valid_candidate_edges: {summary['valid_candidate_edges']}",
         f"missing_endpoint_edges: {summary['missing_endpoint_edges']}",
+        f"external_import_edges: {summary.get('external_import_edges', 0)}",
         f"dangling_endpoint_edges: {summary['dangling_endpoint_edges']}",
         f"self_loop_edges: {summary['self_loop_edges']}",
         f"exact_duplicate_edges: {summary['exact_duplicate_edges']}",
@@ -381,6 +403,11 @@ def format_diagnostic_report(summary: dict[str, Any]) -> str:
     ]
     if summary.get("post_build_error"):
         lines.append(f"post_build_error: {summary['post_build_error']}")
+    if summary.get("external_import_edges"):
+        lines.append(
+            "note: external_import_edges are intentional out-of-corpus ref_* "
+            "imports, not malformed internal endpoints."
+        )
     if suppression.get("error"):
         lines.append(f"producer_suppression_error: {suppression['error']}")
     if suppression.get("sites"):
