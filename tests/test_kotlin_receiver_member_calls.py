@@ -248,3 +248,21 @@ def test_a_plain_constructor_parameter_still_types_an_initializer_receiver(tmp_p
                   "}\n",
     })
     assert next((e for (src, tgt), e in calls.items() if tgt == ".greet()"), None) is not None, calls
+
+
+def test_a_binding_in_scope_outranks_the_class_of_the_same_name(tmp_path):
+    # A capitalized receiver is the type itself only when nothing of that name is bound:
+    # a local shadowing a class name means the call goes through the local's type.
+    calls, _ = _calls(tmp_path, {
+        "Greeter.kt": GREETER,
+        "Other.kt": "class Other {\n    fun greet() {}\n}\n",
+        "App.kt": "class App {\n"
+                  "    fun run() {\n"
+                  "        val Greeter = Other()\n"
+                  "        Greeter.greet()\n"
+                  "    }\n"
+                  "}\n",
+    })
+    edge = _greet_edge(calls)
+    assert edge is not None, calls
+    assert "other" in edge["target"].lower(), edge["target"]
