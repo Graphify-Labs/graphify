@@ -173,9 +173,14 @@ def _run_cli():
     return 0
 
 
-def test_3203_e2e_repro_protected_and_manifest_unstamped(tmp_path, monkeypatch, capsys):
-    """Reproduce #3203: Initial 3 nodes for README.md -> re-extracted with 1 node.
-    The shrink guard refuses the overwrite, exits 1, and README.md is not stamped.
+def test_3203_e2e_repro_self_explained_shrink_proceeds(tmp_path, monkeypatch, capsys):
+    """#3203 then #3412: Initial 3 nodes for README.md -> re-extracted with 1
+    node, nothing else in the corpus touched. The total graph shrink (5 -> 3)
+    exactly matches README.md's own reported loss (3 -> 1), so nothing outside
+    the flagged file went missing -- #3412 lets a write like this proceed
+    without needing --allow-partial, since the guard has nothing left to
+    verify. The write still logs the shrink it waved through, and the
+    manifest is stamped for the newly accepted content.
     """
     corpus = tmp_path / "repo"
     corpus.mkdir()
@@ -239,20 +244,185 @@ def test_3203_e2e_repro_protected_and_manifest_unstamped(tmp_path, monkeypatch, 
     monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "extract", str(corpus), "--backend", "claude"])
 
     code2 = _run_cli()
-    # The shrink guard arms and refuses overwrite because graph shrinks 5 -> 3
-    assert code2 == 1
+    # #3412: the guard still flags and logs the shrink, but the total loss
+    # (5 -> 3) is fully explained by README.md's own reported loss (3 -> 1),
+    # so nothing else in the corpus went missing and the write proceeds.
+    assert code2 == 0
 
     err = capsys.readouterr().err
     assert "unverified semantic shrink detected for 'README.md' (3 -> 1 nodes)" in err
+
+    graph2 = json.loads((out_dir / "graph.json").read_text(encoding="utf-8"))
+    assert len(graph2["nodes"]) == 3
+
+    # Manifest IS stamped: the write went through, so a retry must not
+    # re-dispatch README.md again.
+    manifest2 = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest2["README.md"]["semantic_hash"] != initial_hash
+
+
+def test_3203_shrink_beyond_the_flagged_file_still_refuses(tmp_path, monkeypatch, capsys):
+    """#3412's relaxation must stay narrow: when the corpus loses MORE than
+    what the flagged file's own reported counts explain -- something else
+    also went missing, unrelated to the flagged shrink -- the guard still
+    refuses exactly as #3203 intended."""
+    corpus = tmp_path / "repo"
+    corpus.mkdir()
+    readme = corpus / "README.md"
+    guide = corpus / "GUIDE.md"
+    readme.write_text("# Readme\nInitial content\n", encoding="utf-8")
+    guide.write_text("# Guide\nGuide content\n", encoding="utf-8")
+
+    out_dir = corpus / "graphify-out"
+
+    def _mock_llm_run1(files, **kwargs):
+        on_chunk = kwargs.get("on_chunk_done")
+        res = {
+            "nodes": [
+                {"id": "readme_doc", "label": "Readme", "file_type": "document", "source_file": "README.md"},
+                {"id": "readme_sec1", "label": "Section 1", "file_type": "document", "source_file": "README.md"},
+                {"id": "readme_sec2", "label": "Section 2", "file_type": "document", "source_file": "README.md"},
+                {"id": "guide_doc", "label": "Guide", "file_type": "document", "source_file": "GUIDE.md"},
+                {"id": "guide_sec1", "label": "Guide Sec", "file_type": "document", "source_file": "GUIDE.md"},
+            ],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 10, "output_tokens": 10, "uncovered_files": [],
+        }
+        if on_chunk:
+            on_chunk(0, 1, res)
+        return res
+
+    monkeypatch.setattr(llmmod, "extract_corpus_parallel", _mock_llm_run1)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
+
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "extract", str(corpus), "--backend", "claude"])
+    assert _run_cli() == 0
+
+    graph1 = json.loads((out_dir / "graph.json").read_text(encoding="utf-8"))
+    assert len(graph1["nodes"]) == 5
+    manifest1 = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    initial_hash = manifest1["README.md"]["semantic_hash"]
+
+    # Edit only README.md, but have the mocked run ALSO silently drop
+    # GUIDE.md's carried-forward nodes from the merged result -- simulating a
+    # loss unrelated to the flagged shrink (e.g. a chunking/merge bug).
+    readme.write_text("# Readme\nEdited content\n", encoding="utf-8")
+
+    def _mock_llm_run2(files, **kwargs):
+        on_chunk = kwargs.get("on_chunk_done")
+        res = {
+            "nodes": [
+                {"id": "readme_doc_renamed", "label": "Readme Renamed", "file_type": "document", "source_file": "README.md"},
+            ],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 10, "output_tokens": 5, "uncovered_files": [],
+        }
+        if on_chunk:
+            on_chunk(0, 1, res)
+        return res
+
+    monkeypatch.setattr(llmmod, "extract_corpus_parallel", _mock_llm_run2)
+
+    import graphify.build as buildmod
+    real_build_merge = buildmod.build_merge
+
+    def _build_merge_and_drop_guide(*args, **kwargs):
+        G = real_build_merge(*args, **kwargs)
+        for nid in [n for n, d in G.nodes(data=True) if d.get("source_file") == "GUIDE.md"]:
+            G.remove_node(nid)
+        return G
+
+    # `dispatch_command` imports build_merge locally at call time (`from
+    # graphify.build import build_merge as _build_merge`), so patching the
+    # module attribute it reads from -- not a graphify.cli name -- is what
+    # actually takes effect.
+    monkeypatch.setattr(buildmod, "build_merge", _build_merge_and_drop_guide)
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "extract", str(corpus), "--backend", "claude"])
+
+    code2 = _run_cli()
+    # Total loss (5 -> 1) exceeds README.md's own reported loss (3 -> 1 = 2),
+    # since GUIDE.md's 2 nodes also vanished unexplained -- still refused.
+    assert code2 == 1
+
+    err = capsys.readouterr().err
     assert "Refusing to overwrite" in err
 
-    # The existing graph on disk is still the healthy 5-node graph
     graph2 = json.loads((out_dir / "graph.json").read_text(encoding="utf-8"))
     assert len(graph2["nodes"]) == 5
 
-    # Manifest is NOT stamped with the new hash for README.md
     manifest2 = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest2["README.md"]["semantic_hash"] == initial_hash
+
+
+def test_3203_e2e_no_cluster_self_explained_shrink_proceeds(tmp_path, monkeypatch, capsys):
+    """RT-parity: the --no-cluster raw write path has its own inline copy of
+    this guard (it never calls to_json), so #3412's relaxation must be
+    applied there too, not just on the clustered path."""
+    corpus = tmp_path / "repo"
+    corpus.mkdir()
+    readme = corpus / "README.md"
+    guide = corpus / "GUIDE.md"
+    readme.write_text("# Readme\nInitial content\n", encoding="utf-8")
+    guide.write_text("# Guide\nGuide content\n", encoding="utf-8")
+
+    out_dir = corpus / "graphify-out"
+
+    def _mock_llm_run1(files, **kwargs):
+        on_chunk = kwargs.get("on_chunk_done")
+        res = {
+            "nodes": [
+                {"id": "readme_doc", "label": "Readme", "file_type": "document", "source_file": "README.md"},
+                {"id": "readme_sec1", "label": "Section 1", "file_type": "document", "source_file": "README.md"},
+                {"id": "readme_sec2", "label": "Section 2", "file_type": "document", "source_file": "README.md"},
+                {"id": "guide_doc", "label": "Guide", "file_type": "document", "source_file": "GUIDE.md"},
+                {"id": "guide_sec1", "label": "Guide Sec", "file_type": "document", "source_file": "GUIDE.md"},
+            ],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 10, "output_tokens": 10, "uncovered_files": [],
+        }
+        if on_chunk:
+            on_chunk(0, 1, res)
+        return res
+
+    monkeypatch.setattr(llmmod, "extract_corpus_parallel", _mock_llm_run1)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
+
+    monkeypatch.setattr(mainmod.sys, "argv",
+                         ["graphify", "extract", str(corpus), "--backend", "claude", "--no-cluster"])
+    assert _run_cli() == 0
+
+    graph1 = json.loads((out_dir / "graph.json").read_text(encoding="utf-8"))
+    assert len(graph1["nodes"]) == 5
+
+    readme.write_text("# Readme\nEdited content\n", encoding="utf-8")
+
+    def _mock_llm_run2(files, **kwargs):
+        on_chunk = kwargs.get("on_chunk_done")
+        res = {
+            "nodes": [
+                {"id": "readme_doc_renamed", "label": "Readme Renamed", "file_type": "document", "source_file": "README.md"},
+            ],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 10, "output_tokens": 5, "uncovered_files": [],
+        }
+        if on_chunk:
+            on_chunk(0, 1, res)
+        return res
+
+    monkeypatch.setattr(llmmod, "extract_corpus_parallel", _mock_llm_run2)
+    monkeypatch.setattr(mainmod.sys, "argv",
+                         ["graphify", "extract", str(corpus), "--backend", "claude", "--no-cluster"])
+
+    code2 = _run_cli()
+    assert code2 == 0
+
+    err = capsys.readouterr().err
+    assert "unverified semantic shrink detected for 'README.md' (3 -> 1 nodes)" in err
+
+    graph2 = json.loads((out_dir / "graph.json").read_text(encoding="utf-8"))
+    assert len(graph2["nodes"]) == 3
 
 
 def test_3203_allow_partial_override_permits_intentional_reduction(tmp_path, monkeypatch, capsys):
