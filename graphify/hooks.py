@@ -193,7 +193,7 @@ try:
                 _cwd = Path.cwd().resolve()
                 _resolved = _candidate.resolve()
                 _in_repo = _resolved == _cwd or _cwd in _resolved.parents
-            except OSError:
+            except (OSError, RuntimeError):
                 _in_repo = False
             if _in_repo:
                 _root = _candidate
@@ -265,7 +265,7 @@ try:
                 _cwd = Path.cwd().resolve()
                 _resolved = _candidate.resolve()
                 _in_repo = _resolved == _cwd or _cwd in _resolved.parents
-            except OSError:
+            except (OSError, RuntimeError):
                 _in_repo = False
             if _in_repo:
                 _root = _candidate

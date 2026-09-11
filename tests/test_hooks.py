@@ -2,6 +2,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import textwrap
 from types import SimpleNamespace
 from pathlib import Path
@@ -381,6 +382,28 @@ def test_rebuild_bodies_honour_an_in_repo_graphify_root(name, body, tmp_path, mo
     ns = {"Path": Path, "os": os}
     exec(compile(_extract_root_resolution(body), "<rebuild_body>", "exec"), ns)
     assert ns["_root"].resolve() == (repo / "backend").resolve(), f"{name} lost the scoped root"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink setup differs on Windows")
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_survive_a_graphify_root_symlink_loop(name, body, tmp_path, monkeypatch):
+    """A committed `.graphify_root` naming a path that resolves through a
+    symlink loop (two symlinks pointing at each other) must fall back to the
+    repo top rather than let `Path.resolve()`'s RuntimeError escape the #3265
+    guard uncaught -- the guard's own `except OSError` doesn't catch it, since
+    a symlink loop is a RuntimeError on this platform, not an OSError."""
+    repo = tmp_path / "repo"
+    (repo / "graphify-out").mkdir(parents=True)
+    (repo / "loop_a").symlink_to(repo / "loop_b")
+    (repo / "loop_b").symlink_to(repo / "loop_a")
+    (repo / "graphify-out" / ".graphify_root").write_text("loop_a", encoding="utf-8")
+    monkeypatch.chdir(repo)
+    ns = {"Path": Path, "os": os}
+    exec(compile(_extract_root_resolution(body), "<rebuild_body>", "exec"), ns)
+    assert ns["_root"].resolve() == repo.resolve(), f"{name} did not fall back on a symlink loop"
 
 
 @pytest.mark.parametrize(
