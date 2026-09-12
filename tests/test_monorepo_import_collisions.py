@@ -237,9 +237,25 @@ def test_shared_dependency_joins_manifests_through_one_module_node(tmp_path, mon
         n for n, a in G.nodes(data=True)
         if a.get("label") == "typescript" and n != ref
     }
-    proj_of = {
-        n: str(G.nodes[n].get("source_file", "")).split("/")[0] for n in ts_nodes
-    }
+
+    def _project_of(node_id: str) -> str:
+        # The project is the first path segment of the node's source_file.
+        # Normalize first: source_file can be stored absolute and/or with OS
+        # separators (Windows), and a naive `.split("/")[0]` would then collapse
+        # both projects onto the drive/root and make the check below vacuous.
+        sf = str(G.nodes[node_id].get("source_file", "")).replace("\\", "/")
+        rel = sf
+        base = str(tmp_path).replace("\\", "/").rstrip("/") + "/"
+        if rel.startswith(base):
+            rel = rel[len(base):]
+        return rel.split("/", 1)[0]
+
+    proj_of = {n: _project_of(n) for n in ts_nodes}
+    # Guard against a vacuous pass: the two typescript entries must resolve to
+    # two DISTINCT projects, or the direct-edge assertion proves nothing.
+    assert len(set(proj_of.values())) == 2, (
+        f"expected two distinct projects, got {proj_of}"
+    )
     direct = [
         (u, v) for u, v in G.edges()
         if u in ts_nodes and v in ts_nodes and proj_of[u] != proj_of[v]
