@@ -35,6 +35,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: when duplicate nodes merge, the richer (more complete) node is now kept as the survivor and the losers' non-empty fields are folded in, instead of a shorter-id passing mention winning and dropping content (#3372, thanks @abhay-codes07).
 - Fix: a C# generic call site with explicit type arguments — `Get<int>(...)`, unqualified or through `this` — now resolves to the method definition instead of capturing `Get<int>` as the callee and failing to match (#3406, thanks @abhay-codes07).
 - Fix: `this.X = function` / `this.X = () => …` members are now captured in every enclosing-function form (function expressions, arrows, IIFEs, callbacks), not just function declarations (#3408, thanks @abhay-codes07).
+- Fix: SQL `CREATE POLICY` statements now become nodes attached to the table they guard, so `graphify affected "<table>"` reaches the row-level-security policies on it; `--postgres` also reads `pg_catalog.pg_policy`. tree-sitter-sql has no rule for the statement at all, so every policy in an RLS schema was dropped silently (#3401, thanks @kwunyanlee-cmd).
 
 ## 0.9.56 (2026-09-07)
 
