@@ -6,6 +6,7 @@ directory then `os.replace`s it into place; on failure the original is untouched
 """
 import json
 import os
+import sys
 
 import pytest
 
@@ -190,6 +191,40 @@ def test_write_text_atomic_windows_winerror_17_fallback(tmp_path, monkeypatch):
     assert calls["n"] == 1
     assert p.read_text() == "new-content"
     assert sorted(x.name for x in tmp_path.iterdir()) == ["graph.json"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink setup differs on Windows")
+def test_os_replace_with_fallback_replaces_a_symlink_destination_in_place(tmp_path, monkeypatch):
+    """`os.replace` replaces a symlinked destination itself rather than
+    following it -- install.py relies on exactly this for managed skill
+    symlinks (#3286). A naive `shutil.copy2(src, dst)` does the opposite when
+    dst is a symlink: opening it for writing follows the link and overwrites
+    its TARGET's content instead. The #3508 fallback must preserve replace's
+    semantics, not copy2's, or a Windows quirk that triggers the fallback
+    would silently clobber whatever a managed symlink pointed at."""
+    from graphify.paths import os_replace_with_fallback
+
+    target = tmp_path / "shared_target.txt"
+    target.write_text("ORIGINAL SHARED CONTENT", encoding="utf-8")
+    link = tmp_path / "skill_link"
+    link.symlink_to(target)
+    src = tmp_path / "tmp_new.txt"
+    src.write_text("NEW CONTENT", encoding="utf-8")
+
+    def flaky_replace(a, b):
+        exc = OSError("cannot move to a different disk drive")
+        exc.winerror = 17
+        raise exc
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    os_replace_with_fallback(str(src), str(link))
+
+    assert not link.is_symlink(), "link must be replaced by a plain file, not left as a symlink"
+    assert link.read_text(encoding="utf-8") == "NEW CONTENT"
+    assert target.read_text(encoding="utf-8") == "ORIGINAL SHARED CONTENT", (
+        "the shared target must be untouched -- a copy2-through-the-link would have clobbered it"
+    )
+    assert not src.exists()
 
 
 def test_write_json_atomic_ensure_ascii_false_preserves_utf8(tmp_path):

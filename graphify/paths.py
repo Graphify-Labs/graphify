@@ -27,24 +27,52 @@ GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
 
 
 def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
-    """``os.replace(src, dst)``, falling back to copy-then-delete for a known
-    set of Windows quirks (#3508) that raise even when ``src``/``dst`` are the
-    same directory on the same drive: ``PermissionError`` (WinError 5/32 --
+    """``os.replace(src, dst)``, falling back to a copy for a known set of
+    Windows quirks (#3508) that raise even when ``src``/``dst`` are the same
+    directory on the same drive: ``PermissionError`` (WinError 5/32 --
     destination briefly locked by another handle, antivirus, an open reader)
     and WinError 17 ("cannot move to a different disk drive", observed on some
     Windows/filesystem combinations despite textbook same-volume semantics).
     WinError 17 maps to a plain ``OSError`` in Python, not ``PermissionError``,
     so it's checked via ``winerror`` rather than the exception type. Any other
     failure is a real one and is re-raised.
+
+    ``os.replace`` atomically swaps whatever sits at ``dst`` -- including a
+    symlink, which it REPLACES in place rather than following (some callers,
+    e.g. install.py's managed skill symlinks, #3286, rely on exactly this).
+    A naive ``shutil.copy2(src, dst)`` does the opposite when ``dst`` is a
+    symlink: opening it for writing follows the link and overwrites its
+    TARGET's content instead. So the fallback copies to a fresh temp file
+    in ``dst``'s directory first, then removes whatever is at ``dst`` (link
+    or file) and renames the temp copy into place -- matching replace's
+    "whatever was there is gone, a plain file replaces it" semantics, and
+    keeping the exposure window to two fast metadata operations rather than
+    however long the copy itself takes.
     """
     try:
         os.replace(src, dst)
+        return
     except OSError as exc:
         if not isinstance(exc, PermissionError) and getattr(exc, "winerror", None) != 17:
             raise
-        import shutil
-        shutil.copy2(src, dst)
-        os.unlink(src)
+    import shutil
+    dst = os.fspath(dst)
+    fd, tmp_copy = tempfile.mkstemp(dir=os.path.dirname(dst) or ".", prefix=".gfy-replace-", suffix=".tmp")
+    os.close(fd)
+    try:
+        shutil.copy2(src, tmp_copy)
+        try:
+            os.unlink(dst)
+        except FileNotFoundError:
+            pass
+        os.rename(tmp_copy, dst)
+    except BaseException:
+        try:
+            os.unlink(tmp_copy)
+        except OSError:
+            pass
+        raise
+    os.unlink(src)
 
 
 def _atomic_replace(path: "str | Path", write_fn) -> None:
