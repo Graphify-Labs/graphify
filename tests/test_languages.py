@@ -1209,6 +1209,36 @@ def test_php_call_edges_have_call_context():
     assert call_edges
     assert all(e.get("context") == "call" for e in call_edges)
 
+def test_php_relative_type_keywords_do_not_create_phantom_nodes(tmp_path):
+    """`: self` / `: static` / `: parent` are relative-scope keywords, not types.
+
+    Emitting them minted sourceless stubs that normalise to global `self` /
+    `static` / `parent` nodes, so every fluent setter and factory across the
+    corpus rewired onto three god nodes. PHP keywords are case-insensitive.
+    """
+    src = tmp_path / "builder.php"
+    src.write_text(
+        "<?php\n"
+        "class Builder {\n"
+        "    public function make(): self { return new Builder(); }\n"
+        "    public static function create(): STATIC { return new static(); }\n"
+        "    public function base(): parent { return $this; }\n"
+        "    public function real(): Response { return new Response(); }\n"
+        "}\n"
+    )
+    r = extract_php(src)
+    assert "error" not in r
+    labels = {l.casefold() for l in _labels(r)}
+    assert "self" not in labels
+    assert "static" not in labels
+    assert "parent" not in labels
+    assert not any(e["target"] in {"self", "static", "parent"} for e in r["edges"])
+    # A genuine class type in return position is still referenced.
+    assert ("real", "Response") in [
+        (s.strip("()").lstrip("."), t) for s, t, _ in _references(r)
+    ]
+
+
 def test_php_finds_static_property_access():
     r = extract_php(FIXTURES / "sample_php_static_prop.php")
     assert "uses_static_prop" in _relations(r)
@@ -1363,6 +1393,28 @@ def test_swift_no_dangling_edges():
         assert e["source"] in node_ids
         # #1327: targets must resolve to a node too, else build.py prunes the edge.
         assert e["target"] in node_ids, f"dangling target {e['target']} ({e['relation']})"
+
+
+def test_swift_self_return_type_does_not_create_phantom_node(tmp_path):
+    """`-> Self` on a Swift factory is the enclosing-type keyword, not a type.
+
+    Emitting it minted a sourceless stub normalising to a single global `self`
+    node that every `static func … -> Self` across the corpus rewired onto.
+    """
+    src = tmp_path / "shape.swift"
+    src.write_text(
+        "struct Circle {\n"
+        "    let r: Double\n"
+        "    static func unit() -> Self { return Circle(r: 1.0) }\n"
+        "    func grown() -> Circle { return Circle(r: r * 2) }\n"
+        "}\n"
+    )
+    r = extract_swift(src)
+    assert "error" not in r
+    assert "Self" not in _labels(r)
+    assert not any(e["target"] == "self" for e in r["edges"])
+    # A concrete return type is still referenced.
+    assert "Circle" in _labels(r)
 
 
 def test_swift_imports_survive_build():
