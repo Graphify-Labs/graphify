@@ -29,7 +29,6 @@ from graphify.interface_dispatch import (  # noqa: F401  (re-exported for caller
 
 _CSHARP_SUFFIXES = (".cs",)
 
-
 def resolve_csharp_interface_dispatch(
     per_file: list[dict],
     all_nodes: list[dict],
