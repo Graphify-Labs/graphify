@@ -624,7 +624,7 @@ graphify extract . --mode deep --token-budget 4000                # smaller inpu
 ```
 With a cloud gateway like OpenRouter, prefer `--backend openai` (set `OPENAI_BASE_URL`) over the Ollama shim — it's a cleaner OpenAI-compatible path. If the model has its own max-output ceiling, lowering `--token-budget` is the reliable lever.
 
-**Graph HTML is too large to open in a browser (>5000 nodes)**
+**Graph HTML is too large to open in a browser (>20000 nodes)**
 Skip HTML generation and use the JSON directly:
 ```bash
 graphify cluster-only ./my-project --no-viz

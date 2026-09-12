@@ -2812,7 +2812,8 @@ def dispatch_command(cmd: str) -> None:
         callflow_max_diagram_nodes = 18
         callflow_max_diagram_edges = 24
         analysis_path = Path(_GRAPHIFY_OUT) / ".graphify_analysis.json"
-        node_limit = 5000
+        from graphify.exporters.html import _viz_node_limit
+        node_limit = _viz_node_limit()
         no_viz = False
         obsidian_dir = Path(_GRAPHIFY_OUT) / "obsidian"
         # Shared push-connection settings for the graph-database sinks (neo4j,
