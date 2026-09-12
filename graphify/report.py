@@ -137,6 +137,21 @@ def generate(
             f"- {detection_result['total_files']} files · ~{detection_result['total_words']:,} words",
             "- Verdict: corpus is large enough that graph structure adds value.",
         ]
+        # #3511: files detect() saw but could not classify (no supported
+        # extension/shebang) were counted nowhere -- a corpus that is mostly
+        # an unsupported language reported the same "well covered" verdict as
+        # one that was actually extracted. Surface the count and its biggest
+        # extensions so a near-total miss (e.g. a Lean/Zig/whatever repo with
+        # no matching extractor) is visible here instead of silent.
+        unclassified = detection_result.get("unclassified") or []
+        if unclassified:
+            from collections import Counter as _Counter
+            ext_counts = _Counter(Path(p).suffix or "(none)" for p in unclassified)
+            top = ", ".join(f"{ext} {n}" for ext, n in ext_counts.most_common(3))
+            lines.append(
+                f"- Unclassified: {len(unclassified)} file(s) not represented in "
+                f"the graph (top: {top})"
+            )
 
     from .analyze import _is_file_node as _ifn
 
