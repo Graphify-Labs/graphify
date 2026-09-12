@@ -21,9 +21,9 @@ One ``key=value`` per line, ``#`` comments, blank lines ignored. Keys:
     depending on the project; ``.m`` is Objective-C or MATLAB; ``.h`` is C or
     C++) has no single correct global mapping, so the project declares it.
 
-The parser is deliberately free of heavy imports: :mod:`graphify.detect`
-and :mod:`graphify.extract` consult it on every scan, and the extraction
-worker processes re-import it under ``spawn``.
+The parser imports :mod:`graphify.detect` lazily only when it must validate
+an explicit extension.  This avoids a module-level import cycle while keeping
+typos from silently disabling classification.
 """
 from __future__ import annotations
 
@@ -95,6 +95,9 @@ def parse_language_value(value: str) -> str:
         ext = _normalise_ext(v)
         if len(ext) < 2 or any(ch.isspace() for ch in ext):
             raise ValueError(f"{value!r} is not an extension")
+        from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS
+        if ext not in CODE_EXTENSIONS and ext not in DOC_EXTENSIONS:
+            raise ValueError(f"unknown extension {value!r}")
         return ext
     try:
         return LANGUAGE_ALIASES[v.lower()]
