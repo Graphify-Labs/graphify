@@ -664,6 +664,77 @@ def _php_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[s
             if c.is_named:
                 _php_collect_type_refs(c, source, generic, out)
 
+def _php_declared_type_name(node, source: bytes) -> str | None:
+    """The single class name a PHP type annotation names, or None.
+
+    Only `Greeter` and `?Greeter` qualify: a union, an intersection or a primitive names
+    no one class, and binding a receiver to the first arm of `A|B` would be a guess.
+    """
+    if node is None:
+        return None
+    if node.type == "optional_type":
+        node = next((c for c in node.children if c.is_named), None)
+        if node is None:
+            return None
+    if node.type != "named_type":
+        return None
+    return next((_php_name_text(c, source) for c in node.children
+                 if c.type in ("name", "qualified_name")), None)
+
+
+def _php_variable_text(node, source: bytes) -> str | None:
+    """The bare name a PHP `variable_name` binds: `$greeter` -> `greeter`."""
+    if node is None or node.type != "variable_name":
+        return None
+    return next((_read_text(c, source) for c in node.children if c.type == "name"), None)
+
+
+def _php_first_declared_type(node, source: bytes) -> str | None:
+    """The first single-class type annotation among ``node``'s direct children."""
+    return next((name for name in (_php_declared_type_name(c, source) for c in node.children)
+                 if name), None)
+
+
+def _php_receiver_type_table(root, source: bytes, table: dict[str, str]) -> None:
+    """Collect ``name -> TypeName`` for every PHP receiver whose type is written down.
+
+    Four sources, all needed: a typed property (`private Greeter $g;`), a constructor
+    promotion (`__construct(private Greeter $g)`), a typed parameter, and
+    `$g = new Greeter()`. File-scoped and flat, first binding wins — a parameter
+    shadowing a property in another method must not retype the property's own calls.
+    Children are pushed reversed so the walk yields document order and "first" means
+    first in the file.
+    """
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        t = n.type
+        if t == "property_declaration":
+            type_name = _php_first_declared_type(n, source)
+            for element in n.children if type_name else ():
+                if element.type != "property_element":
+                    continue
+                name = next((_php_variable_text(c, source) for c in element.children
+                             if c.type == "variable_name"), None)
+                if name and name not in table:
+                    table[name] = type_name
+        elif t in ("property_promotion_parameter", "simple_parameter"):
+            type_name = _php_first_declared_type(n, source)
+            name = next((_php_variable_text(c, source) for c in n.children
+                         if c.type == "variable_name"), None)
+            if name and type_name and name not in table:
+                table[name] = type_name
+        elif t == "assignment_expression":
+            right = n.child_by_field_name("right")
+            if right is not None and right.type == "object_creation_expression":
+                name = _php_variable_text(n.child_by_field_name("left"), source)
+                type_name = next((_php_name_text(c, source) for c in right.children
+                                  if c.type in ("name", "qualified_name")), None)
+                if name and type_name and name not in table:
+                    table[name] = type_name
+        stack.extend(reversed(n.children))
+
+
 def _php_method_return_type_node(method_node):
     """Return the named_type/primitive_type node sitting after formal_parameters."""
     saw_params = False
@@ -5654,6 +5725,17 @@ def _extract_generic(
                     name_node = node.child_by_field_name("name")
                     if name_node:
                         callee_name = _read_text(name_node, source)
+                    # `$this->greeter->greet()` types the receiver by the property name,
+                    # `$greeter->greet()` by the variable; a longer chain names neither.
+                    obj = node.child_by_field_name("object")
+                    if obj is not None and obj.type == "variable_name":
+                        member_receiver = _php_variable_text(obj, source)
+                    elif obj is not None and obj.type == "member_access_expression":
+                        inner = obj.child_by_field_name("object")
+                        if inner is not None and inner.type == "variable_name" and (
+                                _php_variable_text(inner, source) == "this"):
+                            member_receiver = _read_text(
+                                obj.child_by_field_name("name"), source)
             elif config.ts_module == "tree_sitter_cpp":
                 # C++: function field, then field_expression/qualified_identifier
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
@@ -5828,9 +5910,14 @@ def _extract_generic(
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
+                # PHP never defers: the receiver's type is only ever usable once the
+                # bare callee name misses in this file, which already leaves tgt_nid
+                # None and routes the call to raw_calls.
+                _php_keeps_in_file = config.ts_module == "tree_sitter_php"
                 if _python_defer or _java_defer or _builtin_member_call or (
                     is_member_call
                     and member_receiver
+                    and not _php_keeps_in_file
                     and (
                         member_receiver[:1].isupper()
                         or is_this_field_call
@@ -5926,6 +6013,8 @@ def _extract_generic(
                             receiver_type = (receiver_types or {}).get(member_receiver or "")
                             if receiver_type:
                                 rc_entry["receiver_type"] = receiver_type
+                        if config.ts_module == "tree_sitter_php":
+                            rc_entry["lang"] = "php"
                         # Kotlin fully-qualified call (#2550): the dotted prefix +
                         # lang tag let _resolve_kotlin_qualified_calls claim it.
                         if kotlin_qualified_prefix:
@@ -6361,6 +6450,8 @@ def _extract_generic(
     # a name clash (first-binding-wins in the helper).
     if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
         _ts_receiver_type_table(root, source, type_table)
+    if config.ts_module == "tree_sitter_php":
+        _php_receiver_type_table(root, source, type_table)
     if config.ts_module == "tree_sitter_swift":
         if type_table or swift_factory_bindings:
             result["swift_type_table"] = {"path": str_path, "table": type_table}
@@ -6374,6 +6465,8 @@ def _extract_generic(
             result["ts_type_table"] = {"path": str_path, "table": type_table}
         elif config.ts_module == "tree_sitter_cpp":
             result["cpp_type_table"] = {"path": str_path, "table": type_table}
+        elif config.ts_module == "tree_sitter_php":
+            result["php_type_table"] = {"path": str_path, "table": type_table}
     return result
 
 def _python_decorator_name(deco_node, source: bytes) -> str | None:
