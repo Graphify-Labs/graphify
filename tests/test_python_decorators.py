@@ -225,3 +225,97 @@ def test_undecorated_function_emits_no_decorator_edge(tmp_path):
                "    pass\n")
     r = extract([f], cache_root=tmp_path)
     assert _deco_edges(r, _func_nid("pkg/plain.py", "plain")) == set()
+
+
+def test_attribute_decorator_local_receiver_targets_class_method(tmp_path):
+    # `app = _App()` then `@app.get(...)`: the receiver is a locally-
+    # instantiated local class, so the edge must land on `_App.get`, not a
+    # bare "get" stub free to collide with an unrelated same-named def
+    # elsewhere in the corpus (#2315).
+    routes = _write(tmp_path / "pkg" / "routes.py",
+                     "class _App:\n"
+                     "    def get(self, path):\n"
+                     "        pass\n"
+                     "\n"
+                     "app = _App()\n"
+                     "\n"
+                     "@app.get(\"/health\")\n"
+                     "def health():\n"
+                     "    pass\n"
+                     "\n"
+                     "@app.get(\"/status\")\n"
+                     "def status():\n"
+                     "    pass\n")
+    unrelated = _write(tmp_path / "pkg" / "settings_store.py",
+                        "def get(key):\n"
+                        "    pass\n")
+    r = extract([routes, unrelated], cache_root=tmp_path)
+    unrelated_nid = _func_nid("pkg/settings_store.py", "get")
+    method_nid = _method_nid("pkg/routes.py", "_App", "get")
+    # The edge must land on a node that actually exists, not a dangling id.
+    assert method_nid in {n["id"] for n in r["nodes"]}
+    for func in ("health", "status"):
+        targets = _deco_edges(r, _func_nid("pkg/routes.py", func))
+        assert unrelated_nid not in targets
+        assert method_nid in targets
+
+
+def test_attribute_decorator_local_receiver_same_file_unrelated_def(tmp_path):
+    # Same collision shape, but the unrelated `def get` lives in the SAME
+    # file as the decorated function, at the same (module) scope, which the
+    # scoped-id fast path in ensure_named_node would otherwise match directly.
+    f = _write(tmp_path / "pkg" / "mixed.py",
+               "class _App:\n"
+               "    def get(self, path):\n"
+               "        pass\n"
+               "\n"
+               "app = _App()\n"
+               "\n"
+               "def get(key):\n"
+               "    pass\n"
+               "\n"
+               "@app.get(\"/health\")\n"
+               "def health():\n"
+               "    pass\n")
+    r = extract([f], cache_root=tmp_path)
+    unrelated_nid = _func_nid("pkg/mixed.py", "get")
+    method_nid = _method_nid("pkg/mixed.py", "_App", "get")
+    # The edge must land on a node that actually exists, not a dangling id.
+    assert method_nid in {n["id"] for n in r["nodes"]}
+    targets = _deco_edges(r, _func_nid("pkg/mixed.py", "health"))
+    assert unrelated_nid not in targets
+    assert method_nid in targets
+
+
+def test_bare_decorator_still_emits_edge(tmp_path):
+    # Regression guard for #2154: a plain identifier decorator is unaffected
+    # by the attribute-receiver handling added for #2315.
+    f = _write(tmp_path / "pkg" / "bare.py",
+               "def my_decorator(fn):\n"
+               "    return fn\n"
+               "\n"
+               "@my_decorator\n"
+               "def business_logic():\n"
+               "    pass\n")
+    r = extract([f], cache_root=tmp_path)
+    assert _func_nid("pkg/bare.py", "my_decorator") in _deco_edges(
+        r, _func_nid("pkg/bare.py", "business_logic"))
+
+
+def test_deep_attribute_decorator_does_not_bind_unrelated_def(tmp_path):
+    # `@a.b.c(...)`: the receiver is a compound attribute chain, not a plain
+    # identifier, so it can't be resolved to a local class either. It must not
+    # bind to an unrelated module-level `def c` elsewhere in the corpus.
+    deep = _write(tmp_path / "pkg" / "deep.py",
+                  "import a\n"
+                  "\n"
+                  "@a.b.c(\"/x\")\n"
+                  "def handler():\n"
+                  "    pass\n")
+    unrelated = _write(tmp_path / "pkg" / "other.py",
+                        "def c():\n"
+                        "    pass\n")
+    r = extract([deep, unrelated], cache_root=tmp_path)
+    unrelated_nid = _func_nid("pkg/other.py", "c")
+    targets = _deco_edges(r, _func_nid("pkg/deep.py", "handler"))
+    assert unrelated_nid not in targets
