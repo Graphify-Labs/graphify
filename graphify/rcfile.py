@@ -28,6 +28,7 @@ worker processes re-import it under ``spawn``.
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 
 RC_FILENAME = ".graphifyrc"
@@ -167,20 +168,37 @@ def load_graphifyrc(root: Path) -> dict:
 # extraction pool forwards them to its workers (they do not inherit module
 # state under ``spawn``). Stored lower-cased on both sides.
 
-_ACTIVE: dict[str, str] = {}
-_warned_roots: set[str] = set()
+# Thread-local, not module-global: two extractions can run concurrently in one
+# process (an MCP server, a threaded harness) with different roots, and a shared
+# dict let one scan's `activate_language_overrides` clobber the other's while
+# `effective_suffix`/`classify_file`/`cache_salt` read it — cross-contaminating
+# which extractor a `.inc`/`.m`/`.h` file gets (#2961 review). Each thread now
+# carries its own overrides. The dominant paths are unaffected: the CLI runs on
+# the main thread, and a spawn pool worker sets its own copy in `_worker_init`
+# on its main thread, the same thread that then runs `_extract_single_file`.
+_local = threading.local()
+_warned_roots: set[str] = set()  # warning-dedup only; harmless to share
+
+
+def _active() -> dict[str, str]:
+    got = getattr(_local, "active", None)
+    if got is None:
+        got = {}
+        _local.active = got
+    return got
 
 
 def set_language_overrides(mapping: dict[str, str] | None) -> None:
-    """Replace the process-wide extension overrides (``{".inc": ".php"}``)."""
-    _ACTIVE.clear()
+    """Replace this thread's extension overrides (``{".inc": ".php"}``)."""
+    active = _active()
+    active.clear()
     if mapping:
         for ext, target in mapping.items():
-            _ACTIVE[_normalise_ext(ext)] = _normalise_ext(target)
+            active[_normalise_ext(ext)] = _normalise_ext(target)
 
 
 def get_language_overrides() -> dict[str, str]:
-    return dict(_ACTIVE)
+    return dict(_active())
 
 
 def activate_language_overrides(root: Path) -> dict[str, str]:
@@ -211,9 +229,10 @@ def effective_suffix(path: Path | str) -> str:
     ``.F90`` from ``.f90`` keep doing so).
     """
     suffix = Path(path).suffix
-    if not _ACTIVE:
+    active = _active()
+    if not active:
         return suffix
-    return _ACTIVE.get(suffix.lower(), suffix)
+    return active.get(suffix.lower(), suffix)
 
 
 def cache_salt(path: Path | str) -> str | None:
@@ -223,7 +242,8 @@ def cache_salt(path: Path | str) -> str | None:
     different graph under a different extractor — so a ``.inc`` cached as
     Pascal must not be served once the project declares it PHP.
     """
-    if not _ACTIVE:
+    active = _active()
+    if not active:
         return None
-    target = _ACTIVE.get(Path(path).suffix.lower())
+    target = active.get(Path(path).suffix.lower())
     return f"language={target}" if target else None
