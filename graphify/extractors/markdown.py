@@ -16,7 +16,7 @@ _MD_REF_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?')
 
 _MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]')
 
-_MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
+_MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt", ".adoc", ".asciidoc"}
 
 # A YAML frontmatter block is only frontmatter when the opening `---` is the
 # very first line of the file. A `---` further down is a horizontal rule and
