@@ -1991,11 +1991,13 @@ def _rebuild_code(
             from graphify.cluster import label_communities_by_hub
             labels.update(label_communities_by_hub(G, missing))
         if stale:
+            # Same reasoning as the `cli.py` message: the rename already happened
+            # above, so this reports it rather than demanding a repair (#RANK1).
             print(
-                f"[graphify watch] community set changed since labeling "
-                f"({len(raw)} saved labels, {len(communities)} communities now; "
-                f"renamed {len(stale)} community(ies) by their hub). "
-                f"Run `graphify label` to refresh names with the LLM.",
+                f"[graphify watch] renamed {len(stale)} of {len(communities)} "
+                f"communities after re-clustering ({len(raw)} saved labels); new names "
+                f"come from each community's hub. Optional: `graphify label` "
+                f"regenerates them with the LLM.",
                 file=sys.stderr,
             )
         questions = suggest_questions(G, communities, labels)
