@@ -3,13 +3,28 @@ from __future__ import annotations
 
 from typing import Any, Callable
 from pathlib import Path
-from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
+from graphify.extractors.models import (  # noqa: E402,F401
+    LanguageConfig,
+    _JS_CACHE_BYPASS_SUFFIXES,
+    _JSClassFactoryFact,
+    _JSFactoryApplicationFact,
+    _NamespaceExportFact,
+    _StarExportFact,
+    _SymbolAliasFact,
+    _SymbolDeclarationFact,
+    _SymbolExportFact,
+    _SymbolImportFact,
+    _SymbolResolutionFacts,
+    _SymbolUseFact,
+    _WORKSPACE_PACKAGE_CACHE,
+)
 from graphify.extractors.base import (  # noqa: F401
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
     _make_id,
     _read_text,
 )
+from graphify.ids import normalize_id
 import hashlib
 import json
 import os
@@ -980,6 +995,8 @@ def _apply_symbol_resolution_facts(
         or facts.namespace_exports
         or facts.uses
         or facts.module_imports
+        or facts.class_factories
+        or facts.factory_applications
     ):
         return
 
@@ -1344,6 +1361,71 @@ def _apply_symbol_resolution_facts(
             use_fact.file_path,
         )
 
+    # Phase 9D: Resolve JS/TS mixin factory applications and definition bases
+    if facts.factory_applications and facts.class_factories:
+        factories_by_file_and_name: dict[tuple[Path, str], _JSClassFactoryFact] = {}
+        for factory_fact in facts.class_factories:
+            fact_path = Path(factory_fact.file_path).resolve()
+            factories_by_file_and_name[(fact_path, factory_fact.factory_name)] = factory_fact
+
+        def _resolve_symbol_in_file(file_path: Path, sym_name: str) -> str | None:
+            origin = local_aliases_by_file.get(file_path, {}).get(sym_name)
+            if origin is not None:
+                origin_path, origin_symbol = resolve_exported_origin(*origin)
+                target_id = symbol_nodes.get((origin_path, origin_symbol))
+                if target_id is not None:
+                    return target_id
+            return symbol_nodes.get((file_path, sym_name))
+
+        for app_fact in facts.factory_applications:
+            app_path = Path(app_fact.file_path).resolve()
+
+            matched_factory = None
+            factory_origin = local_aliases_by_file.get(app_path, {}).get(app_fact.factory_name)
+            if factory_origin is not None:
+                origin_path, origin_symbol = resolve_exported_origin(*factory_origin)
+                matched_factory = factories_by_file_and_name.get((origin_path, origin_symbol))
+            if matched_factory is None:
+                matched_factory = factories_by_file_and_name.get((app_path, app_fact.factory_name))
+
+            if matched_factory is None:
+                continue
+
+            idx = matched_factory.base_param_index
+            if not (0 <= idx < len(app_fact.arg_names)):
+                continue
+
+            base_arg_name = app_fact.arg_names[idx]
+            base_nid = _resolve_symbol_in_file(app_path, base_arg_name)
+            if base_nid is None or base_nid not in owned:
+                continue
+
+            target_nid = app_fact.target_nid
+            returned_class_nid = matched_factory.returned_class_nid
+
+            if target_nid not in owned or returned_class_nid not in owned:
+                continue
+
+            # Target mixes in the returned factory class
+            add_edge(
+                target_nid,
+                returned_class_nid,
+                "mixes_in",
+                "mixin",
+                app_fact.line,
+                app_path,
+            )
+
+            # Returned factory class inherits from the resolved base argument
+            add_edge(
+                returned_class_nid,
+                base_nid,
+                "inherits",
+                "type",
+                app_fact.line,
+                app_path,
+            )
+
 def _parse_js_tree(path: Path):
     try:
         from tree_sitter import Language, Parser
@@ -1557,6 +1639,359 @@ def _js_call_identifier(node, source: bytes) -> str | None:
     if function_node is not None and function_node.type in ("identifier", "type_identifier"):
         return _read_text(function_node, source)
     return None
+
+
+def _extract_js_formal_parameter_names(
+    fn_node,
+    params_node,
+    source: bytes,
+) -> list[str | None]:
+    """Extract formal parameter names for JS/TS function or arrow function.
+
+    Returns None for any parameter that is destructured, rest, or not a simple identifier.
+    """
+    if params_node is None:
+        if fn_node.type == "arrow_function":
+            single_param = fn_node.child_by_field_name("parameter")
+            if single_param is not None and single_param.type == "identifier":
+                name = _read_text(single_param, source)
+                return [name] if name else [None]
+        return []
+
+    names: list[str | None] = []
+    for param in params_node.named_children:
+        if param.type == "identifier":
+            names.append(_read_text(param, source))
+        elif param.type in ("required_parameter", "optional_parameter"):
+            pattern = param.child_by_field_name("pattern")
+            if pattern is not None and pattern.type == "identifier":
+                names.append(_read_text(pattern, source))
+            else:
+                names.append(None)
+        elif param.type == "assignment_pattern":
+            left = param.child_by_field_name("left")
+            if left is not None and left.type == "identifier":
+                names.append(_read_text(left, source))
+            else:
+                names.append(None)
+        else:
+            names.append(None)
+    return names
+
+
+def _collect_function_returns(body_node) -> list[object]:
+    """Collect return_statement nodes belonging directly to body_node,
+    pruning nested functions, classes, and method scopes.
+    """
+    returns = []
+    stack = list(body_node.children)
+    while stack:
+        curr = stack.pop()
+        if curr.type == "return_statement":
+            returns.append(curr)
+            continue
+        if curr.type in (
+            "function_declaration",
+            "generator_function_declaration",
+            "function_expression",
+            "arrow_function",
+            "method_definition",
+            "class_declaration",
+            "abstract_class_declaration",
+            "class",
+        ):
+            continue
+        stack.extend(curr.children)
+    return returns
+
+
+def _unwrap_class_node(node) -> object | None:
+    """Unwrap parenthesized / cast expressions to find an inner class node."""
+    curr = node
+    while curr is not None and curr.type in (
+        "parenthesized_expression",
+        "as_expression",
+        "satisfies_expression",
+    ):
+        curr = curr.named_children[0] if curr.named_children else None
+    if curr is not None and curr.type == "class":
+        return curr
+    return None
+
+
+def _extract_class_extends_identifier(class_node, source: bytes) -> str | None:
+    """Extract the base identifier if the class extends a simple identifier.
+
+    Returns None if there is no heritage, or if the base is dynamic/complex (Rule C).
+    """
+    heritage_node = None
+    for ch in class_node.children:
+        if ch.type == "class_heritage":
+            heritage_node = ch
+            break
+    if heritage_node is None:
+        return None
+
+    # Check for TypeScript extends_clause
+    extends_clause = None
+    for ch in heritage_node.children:
+        if ch.type == "extends_clause":
+            extends_clause = ch
+            break
+
+    target_clause = extends_clause if extends_clause is not None else heritage_node
+    if not target_clause.named_children:
+        return None
+    base_expr = target_clause.named_children[0]
+    while base_expr is not None and base_expr.type in (
+        "parenthesized_expression",
+        "as_expression",
+        "satisfies_expression",
+    ):
+        base_expr = base_expr.named_children[0] if base_expr.named_children else None
+
+    if base_expr is None or base_expr.type not in ("identifier", "type_identifier"):
+        return None
+
+    base_name = _read_text(base_expr, source)
+    return base_name if base_name else None
+
+
+def _js_extract_factory_fact(
+    fn_name: str,
+    fn_node,
+    params_node,
+    body_node,
+    path: Path,
+    stem: str,
+    source: bytes,
+    line: int,
+) -> _JSClassFactoryFact | None:
+    """Qualify a function as a static class mixin factory and return a fact if qualified."""
+    if not fn_name or not normalize_id(fn_name):
+        return None
+    if body_node is None:
+        return None
+
+    param_names = _extract_js_formal_parameter_names(fn_node, params_node, source)
+    if not param_names:
+        return None
+
+    # Rule A: Exactly one return statement (or concise arrow return)
+    # Rule B: Return value must be a class
+    if body_node.type != "statement_block":
+        ret_class_node = _unwrap_class_node(body_node)
+        if ret_class_node is None:
+            return None
+    else:
+        returns = _collect_function_returns(body_node)
+        if len(returns) != 1:
+            return None
+        ret_stmt = returns[0]
+        if not ret_stmt.named_children:
+            return None
+        ret_class_node = _unwrap_class_node(ret_stmt.named_children[0])
+        if ret_class_node is None:
+            return None
+
+    # Rule C: Class must have static heritage extending a simple identifier
+    base_ident = _extract_class_extends_identifier(ret_class_node, source)
+    if base_ident is None:
+        return None
+
+    # Rule D: Base identifier must match exactly one formal parameter
+    matching_indices = [
+        i for i, name in enumerate(param_names)
+        if name is not None and name == base_ident
+    ]
+    if len(matching_indices) != 1:
+        return None
+    base_param_index = matching_indices[0]
+
+    factory_nid = _make_id(stem, fn_name)
+    name_node = ret_class_node.child_by_field_name("name")
+    class_name = _read_text(name_node, source) if name_node else None
+    if class_name and normalize_id(class_name):
+        returned_class_nid = _make_id(factory_nid, class_name)
+    else:
+        returned_class_nid = _make_id(factory_nid, f"{fn_name}@class")
+
+    return _JSClassFactoryFact(
+        file_path=str(path),
+        factory_name=fn_name,
+        factory_nid=factory_nid,
+        returned_class_nid=returned_class_nid,
+        base_param_index=base_param_index,
+        line=line,
+    )
+
+
+def _extract_factory_application_from_call(
+    target_nid: str,
+    call_expr,
+    path: Path,
+    source: bytes,
+    line: int,
+) -> _JSFactoryApplicationFact | None:
+    """Extract a factory application fact from a call expression if arguments are simple identifiers."""
+    fn_node = call_expr.child_by_field_name("function")
+    if fn_node is None:
+        for ch in call_expr.named_children:
+            if ch.type != "type_arguments":
+                fn_node = ch
+                break
+    if fn_node is None or fn_node.type not in ("identifier", "type_identifier"):
+        return None
+    factory_name = _read_text(fn_node, source)
+    if not factory_name or not normalize_id(factory_name):
+        return None
+
+    args_node = call_expr.child_by_field_name("arguments")
+    if args_node is None:
+        return None
+
+    arg_names: list[str] = []
+    for arg in args_node.named_children:
+        if arg.type not in ("identifier", "type_identifier"):
+            return None
+        arg_name = _read_text(arg, source)
+        if not arg_name or not normalize_id(arg_name):
+            return None
+        arg_names.append(arg_name)
+
+    return _JSFactoryApplicationFact(
+        file_path=str(path),
+        target_nid=target_nid,
+        factory_name=factory_name,
+        arg_names=tuple(arg_names),
+        line=line,
+    )
+
+
+def _collect_js_mixin_facts(
+    path: Path,
+    stem: str,
+    root_node,
+    source: bytes,
+    facts: _SymbolResolutionFacts,
+) -> None:
+    """Collect _JSClassFactoryFact and _JSFactoryApplicationFact (Phase 9C)."""
+    # 1. Top-level statements for factory definitions and Pattern A (variable-bound applications)
+    for top_node in root_node.children:
+        node = top_node
+        if node.type == "export_statement":
+            decl = node.child_by_field_name("declaration")
+            if decl is not None:
+                node = decl
+
+        if node.type == "function_declaration":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None and name_node.type == "identifier":
+                fn_name = _read_text(name_node, source)
+                if fn_name and normalize_id(fn_name):
+                    params_node = node.child_by_field_name("parameters")
+                    body_node = node.child_by_field_name("body")
+                    line = node.start_point[0] + 1
+                    factory_fact = _js_extract_factory_fact(
+                        fn_name, node, params_node, body_node, path, stem, source, line,
+                    )
+                    if factory_fact is not None:
+                        facts.class_factories.append(factory_fact)
+
+        elif node.type in ("lexical_declaration", "variable_declaration"):
+            for child in node.children:
+                if child.type != "variable_declarator":
+                    continue
+                name_node = child.child_by_field_name("name")
+                if name_node is None or name_node.type != "identifier":
+                    continue
+                var_name = _read_text(name_node, source)
+                if not var_name or not normalize_id(var_name):
+                    continue
+                value_node = child.child_by_field_name("value")
+                if value_node is None:
+                    continue
+                inner_val = value_node
+                while inner_val is not None and inner_val.type in (
+                    "as_expression", "satisfies_expression", "parenthesized_expression",
+                ):
+                    inner_val = inner_val.named_children[0] if inner_val.named_children else None
+                if inner_val is None:
+                    continue
+
+                line = child.start_point[0] + 1
+
+                # Check if it's a factory function: `const mixin = (Base) => { ... }`
+                if inner_val.type in ("arrow_function", "function_expression"):
+                    params_node = inner_val.child_by_field_name("parameters")
+                    body_node = inner_val.child_by_field_name("body")
+                    factory_fact = _js_extract_factory_fact(
+                        var_name, inner_val, params_node, body_node, path, stem, source, line,
+                    )
+                    if factory_fact is not None:
+                        facts.class_factories.append(factory_fact)
+
+                # Check Pattern A: `const Applied = mixin(Root);`
+                elif inner_val.type == "call_expression":
+                    target_nid = _make_id(stem, var_name)
+                    app_fact = _extract_factory_application_from_call(
+                        target_nid, inner_val, path, source, line,
+                    )
+                    if app_fact is not None:
+                        facts.factory_applications.append(app_fact)
+
+    # 2. Pattern B: `class Child extends mixin(Root) {}`
+    for node in _walk_js_tree(root_node):
+        if node.type not in ("class_declaration", "abstract_class_declaration"):
+            continue
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            continue
+        class_name = _read_text(name_node, source)
+        if not class_name or not normalize_id(class_name):
+            continue
+        target_nid = _make_id(stem, class_name)
+        line = node.start_point[0] + 1
+
+        # Look for call_expression in class_heritage
+        for child in node.children:
+            if child.type != "class_heritage":
+                continue
+            call_expr = None
+            saw_extends_clause = False
+            for clause in child.children:
+                if clause.type == "extends_clause":
+                    saw_extends_clause = True
+                    for sub in clause.children:
+                        expr = sub
+                        while expr is not None and expr.type in (
+                            "as_expression", "satisfies_expression", "parenthesized_expression",
+                        ):
+                            expr = expr.named_children[0] if expr.named_children else None
+                        if expr is not None and expr.type == "call_expression":
+                            call_expr = expr
+                            break
+                    if call_expr is not None:
+                        break
+
+            if not saw_extends_clause:
+                for sub in child.children:
+                    expr = sub
+                    while expr is not None and expr.type in (
+                        "as_expression", "satisfies_expression", "parenthesized_expression",
+                    ):
+                        expr = expr.named_children[0] if expr.named_children else None
+                    if expr is not None and expr.type == "call_expression":
+                        call_expr = expr
+                        break
+
+            if call_expr is not None:
+                app_fact = _extract_factory_application_from_call(
+                    target_nid, call_expr, path, source, line,
+                )
+                if app_fact is not None:
+                    facts.factory_applications.append(app_fact)
+
 
 _JS_PRIMITIVE_TYPES = frozenset({
     "string", "number", "boolean", "any", "unknown", "void", "never",
@@ -1937,6 +2372,8 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                 continue
             class_nid = _make_id(stem, class_name)
             _ts_walk_class_members(node, source, path, class_nid, facts)
+
+        _collect_js_mixin_facts(path, stem, root_node, source, facts)
 
 def _parse_python_tree(path: Path):
     try:

@@ -2094,11 +2094,16 @@ def _scan_js_nested_function_declarations(
     container_node, parent_nid: str, *, source: bytes, config,
     add_node, add_edge, callable_def_nids: set | None,
     local_bound_names: dict | None, function_bodies: list,
+    walk_fn: Any = None,
+    callable_class_nids: set | None = None,
+    seen_ids: set | None = None,
+    enclosing_fn_name: str | None = None,
 ) -> None:
     """Emit a node + `contains` edge for every named `function`/generator
-    declaration lexically nested inside *container_node*, scoped under
-    *parent_nid*, and track its body so calls made from inside it resolve
-    instead of dangling (#2653).
+    declaration, nested class declaration, or returned class expression
+    lexically nested inside *container_node*, scoped under *parent_nid*,
+    and track its body so calls made from inside it resolve instead of
+    dangling (#2653, #3349).
 
     Recurses through non-function children AND through the bodies of nested
     arrow / function expressions, so a `function` declared inside an arrow
@@ -2110,6 +2115,36 @@ def _scan_js_nested_function_declarations(
     """
     if container_node is None:
         return
+
+    if container_node.type == "class":
+        # Concise arrow function returning a class directly: `const mixin = (Base) => class extends Base {}`
+        name_node = container_node.child_by_field_name("name")
+        class_name = _read_text(name_node, source) if name_node else None
+        line = container_node.start_point[0] + 1
+        if class_name and normalize_id(class_name):
+            class_label = class_name
+            class_nid = _make_id(parent_nid, class_name)
+        else:
+            fn_name = enclosing_fn_name or "factory"
+            class_label = f"{fn_name}@class"
+            class_nid = _make_id(parent_nid, class_label)
+            if seen_ids is not None and class_nid in seen_ids:
+                class_label = f"{fn_name}@class@L{line}"
+                class_nid = _make_id(parent_nid, class_label)
+        add_node(class_nid, class_label, line)
+        add_edge(parent_nid, class_nid, "contains", line)
+        if callable_def_nids is not None:
+            callable_def_nids.add(class_nid)
+        if callable_class_nids is not None:
+            callable_class_nids.add(class_nid)
+        class_body = _find_body(container_node, config)
+        if class_body is None:
+            class_body = next((c for c in container_node.children if c.type == "class_body"), None)
+        if class_body and walk_fn is not None:
+            for bchild in class_body.children:
+                walk_fn(bchild, parent_class_nid=class_nid)
+        return
+
     for child in container_node.children:
         if child.type in ("function_declaration", "generator_function_declaration"):
             name_node = child.child_by_field_name(config.name_field)
@@ -2139,7 +2174,119 @@ def _scan_js_nested_function_declarations(
                         callable_def_nids=callable_def_nids,
                         local_bound_names=local_bound_names,
                         function_bodies=function_bodies,
+                        walk_fn=walk_fn,
+                        callable_class_nids=callable_class_nids,
+                        seen_ids=seen_ids,
+                        enclosing_fn_name=func_name,
                     )
+        elif child.type == "class_declaration":
+            name_node = child.child_by_field_name(config.name_field)
+            if name_node is None:
+                for c in child.children:
+                    if c.type in config.name_fallback_child_types:
+                        name_node = c
+                        break
+            class_name = _read_text(name_node, source) if name_node else None
+            if class_name and normalize_id(class_name):
+                line = child.start_point[0] + 1
+                nested_nid = _make_id(parent_nid, class_name)
+                add_node(nested_nid, class_name, line)
+                add_edge(parent_nid, nested_nid, "contains", line)
+                if callable_def_nids is not None:
+                    callable_def_nids.add(nested_nid)
+                if callable_class_nids is not None:
+                    callable_class_nids.add(nested_nid)
+                class_body = _find_body(child, config)
+                if class_body is None:
+                    class_body = next((c for c in child.children if c.type == "class_body"), None)
+                if class_body and walk_fn is not None:
+                    for bchild in class_body.children:
+                        walk_fn(bchild, parent_class_nid=nested_nid)
+        elif child.type == "return_statement":
+            ret_expr = child.named_children[0] if child.named_children else None
+            while ret_expr is not None and ret_expr.type in (
+                "parenthesized_expression", "as_expression", "satisfies_expression",
+            ):
+                ret_expr = ret_expr.named_children[0] if ret_expr.named_children else None
+            if ret_expr and ret_expr.type == "class":
+                name_node = ret_expr.child_by_field_name("name")
+                class_name = _read_text(name_node, source) if name_node else None
+                line = ret_expr.start_point[0] + 1
+                if class_name and normalize_id(class_name):
+                    class_label = class_name
+                    class_nid = _make_id(parent_nid, class_name)
+                else:
+                    fn_name = enclosing_fn_name or "factory"
+                    class_label = f"{fn_name}@class"
+                    class_nid = _make_id(parent_nid, class_label)
+                    if seen_ids is not None and class_nid in seen_ids:
+                        class_label = f"{fn_name}@class@L{line}"
+                        class_nid = _make_id(parent_nid, class_label)
+                add_node(class_nid, class_label, line)
+                add_edge(parent_nid, class_nid, "contains", line)
+                if callable_def_nids is not None:
+                    callable_def_nids.add(class_nid)
+                if callable_class_nids is not None:
+                    callable_class_nids.add(class_nid)
+                class_body = _find_body(ret_expr, config)
+                if class_body is None:
+                    class_body = next((c for c in ret_expr.children if c.type == "class_body"), None)
+                if class_body and walk_fn is not None:
+                    for bchild in class_body.children:
+                        walk_fn(bchild, parent_class_nid=class_nid)
+            else:
+                _scan_js_nested_function_declarations(
+                    child, parent_nid, source=source, config=config,
+                    add_node=add_node, add_edge=add_edge,
+                    callable_def_nids=callable_def_nids,
+                    local_bound_names=local_bound_names,
+                    function_bodies=function_bodies,
+                    walk_fn=walk_fn,
+                    callable_class_nids=callable_class_nids,
+                    seen_ids=seen_ids,
+                    enclosing_fn_name=enclosing_fn_name,
+                )
+        elif child.type in ("lexical_declaration", "variable_declaration"):
+            handled_class_decl = False
+            for decl in child.children:
+                if decl.type == "variable_declarator":
+                    val = decl.child_by_field_name("value")
+                    while val is not None and val.type in (
+                        "parenthesized_expression", "as_expression", "satisfies_expression",
+                    ):
+                        val = val.named_children[0] if val.named_children else None
+                    if val and val.type == "class":
+                        name_node = decl.child_by_field_name("name")
+                        if name_node and name_node.type == "identifier":
+                            cname = _read_text(name_node, source)
+                            if normalize_id(cname):
+                                line = decl.start_point[0] + 1
+                                cnid = _make_id(parent_nid, cname)
+                                add_node(cnid, cname, line)
+                                add_edge(parent_nid, cnid, "contains", line)
+                                if callable_def_nids is not None:
+                                    callable_def_nids.add(cnid)
+                                if callable_class_nids is not None:
+                                    callable_class_nids.add(cnid)
+                                cbody = _find_body(val, config)
+                                if cbody is None:
+                                    cbody = next((c for c in val.children if c.type == "class_body"), None)
+                                if cbody and walk_fn is not None:
+                                    for bchild in cbody.children:
+                                        walk_fn(bchild, parent_class_nid=cnid)
+                                handled_class_decl = True
+            if not handled_class_decl:
+                _scan_js_nested_function_declarations(
+                    child, parent_nid, source=source, config=config,
+                    add_node=add_node, add_edge=add_edge,
+                    callable_def_nids=callable_def_nids,
+                    local_bound_names=local_bound_names,
+                    function_bodies=function_bodies,
+                    walk_fn=walk_fn,
+                    callable_class_nids=callable_class_nids,
+                    seen_ids=seen_ids,
+                    enclosing_fn_name=enclosing_fn_name,
+                )
         elif child.type in _JS_FUNCTION_VALUE_TYPES:
             # An anonymous arrow/function expression is not itself a node, but a
             # `function` declared inside its body still belongs to the enclosing
@@ -2150,6 +2297,10 @@ def _scan_js_nested_function_declarations(
                 callable_def_nids=callable_def_nids,
                 local_bound_names=local_bound_names,
                 function_bodies=function_bodies,
+                walk_fn=walk_fn,
+                callable_class_nids=callable_class_nids,
+                seen_ids=seen_ids,
+                enclosing_fn_name=enclosing_fn_name,
             )
         else:
             _scan_js_nested_function_declarations(
@@ -2158,6 +2309,10 @@ def _scan_js_nested_function_declarations(
                 callable_def_nids=callable_def_nids,
                 local_bound_names=local_bound_names,
                 function_bodies=function_bodies,
+                walk_fn=walk_fn,
+                callable_class_nids=callable_class_nids,
+                seen_ids=seen_ids,
+                enclosing_fn_name=enclosing_fn_name,
             )
 
 
@@ -2367,7 +2522,9 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    callable_def_nids: set | None = None,
                    local_bound_names: dict | None = None,
                    closure_locals_by_body: dict | None = None,
-                   config=None) -> bool:
+                   config=None,
+                   walk_fn: Any = None,
+                   callable_class_nids: set | None = None) -> bool:
     """Handle lexical_declaration (arrow functions, CJS requires, module-level const literals) for JS/TS. Returns True if handled."""
     # CommonJS / prototype member assignments whose value is a function:
     #   exports.X = () => {}     → file-contained function  X()
@@ -2501,7 +2658,7 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
         # Arrow function declarations and module-level const literals (lexical_declaration only)
         arrow_found = False
         const_found = False
-        if node.type == "lexical_declaration" and is_module_level:
+        if node.type in ("lexical_declaration", "variable_declaration") and is_module_level:
             for child in node.children:
                 if child.type == "variable_declarator":
                     value = child.child_by_field_name("value")
@@ -2512,6 +2669,13 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                         and name_node.type == "identifier"
                         and bool(normalize_id(_read_text(name_node, source)))
                     )
+                    inner_val = value
+                    while inner_val is not None and inner_val.type in (
+                        "as_expression", "satisfies_expression", "parenthesized_expression",
+                    ):
+                        inner_val = (inner_val.named_children[0]
+                                     if inner_val.named_children else None)
+
                     if value and value.type in _JS_FUNCTION_VALUE_TYPES:
                         # `const f = () => {}` and `const f = function(){}`
                         if name_node:
@@ -2543,6 +2707,10 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                                     callable_def_nids=callable_def_nids,
                                     local_bound_names=local_bound_names,
                                     function_bodies=function_bodies,
+                                    walk_fn=walk_fn,
+                                    callable_class_nids=callable_class_nids,
+                                    seen_ids=seen_ids,
+                                    enclosing_fn_name=func_name,
                                 )
                                 # #3408: `this.X = fn` members were captured only
                                 # when the enclosing function was a DECLARATION;
@@ -2554,6 +2722,28 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                                     function_bodies=function_bodies,
                                 )
                             arrow_found = True
+                    elif inner_val and inner_val.type == "class":
+                        # Class expression: `const Foo = class Bar {}` or `const Foo = class {}` (#3349)
+                        if name_node and name_node.type == "identifier":
+                            class_name = _read_text(name_node, source)
+                            if not normalize_id(class_name):
+                                continue
+                            line = child.start_point[0] + 1
+                            class_nid = _make_id(stem, class_name)
+                            add_node_fn(class_nid, class_name, line)
+                            add_edge_fn(file_nid, class_nid, "contains", line)
+                            if callable_def_nids is not None:
+                                callable_def_nids.add(class_nid)
+                            if callable_class_nids is not None:
+                                callable_class_nids.add(class_nid)
+                            cbody = _find_body(inner_val, config) if config else None
+                            if cbody is None:
+                                cbody = next((c for c in inner_val.children if c.type == "class_body"), None)
+                            if cbody and walk_fn is not None:
+                                for bchild in cbody.children:
+                                    walk_fn(bchild, parent_class_nid=class_nid)
+                            const_found = True
+                            continue
                     elif value and (
                         is_exported_scalar_binding
                         or value.type in (
@@ -4877,6 +5067,10 @@ def _extract_generic(
                         callable_def_nids=callable_def_nids,
                         local_bound_names=local_bound_names,
                         function_bodies=function_bodies,
+                        walk_fn=walk,
+                        callable_class_nids=callable_class_nids,
+                        seen_ids=seen_ids,
+                        enclosing_fn_name=func_name,
                     )
                 if config.ts_module == "tree_sitter_python":
                     _scan_python_nested_function_declarations(
@@ -4980,7 +5174,9 @@ def _extract_generic(
                               nodes, edges, seen_ids, function_bodies,
                               parent_class_nid, add_node, add_edge,
                               callable_def_nids, local_bound_names,
-                              closure_locals_by_body, config=config):
+                              closure_locals_by_body, config=config,
+                              walk_fn=walk,
+                              callable_class_nids=callable_class_nids):
                 return
 
         # TS enum members, and namespace / module containers
