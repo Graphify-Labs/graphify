@@ -508,6 +508,13 @@ def classify_file(path: Path) -> FileType | None:
     from graphify.manifest_ingest import is_package_manifest_path
     if is_package_manifest_path(path):
         return FileType.CODE
+    # Salesforce metadata (`Account.object-meta.xml`) is parsed deterministically,
+    # so it takes the AST path like the manifests above. Its component kind sits in
+    # a compound suffix, and plain `.xml` is deliberately NOT in CODE_EXTENSIONS —
+    # claiming it would sweep every pom.xml/web.xml into the graph.
+    from graphify.extractors.salesforce_meta_xml import is_salesforce_meta_xml_path
+    if is_salesforce_meta_xml_path(path):
+        return FileType.CODE
     # Compound extensions must be checked before simple suffix lookup
     if path.name.lower().endswith(".blade.php"):
         return FileType.CODE
