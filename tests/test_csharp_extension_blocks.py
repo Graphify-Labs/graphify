@@ -272,6 +272,61 @@ def test_root_anchored_receiver_is_unqualified(tmp_path):
     assert "global" not in _labels(r)
 
 
+@pytest.mark.parametrize("header", [
+    "extension<T>(Acme.IFoo<System.Collections.Generic.List<T>> spec) where T : class",
+    "extension(Acme.IFoo<System.String> spec)",
+])
+def test_dotted_generic_argument_does_not_split_the_receiver_type(tmp_path, header):
+    """A qualified name splits on its own dots, never on one inside a type
+    argument: `Acme.IFoo<System.String>` is `IFoo` in `Acme`, not `String>`
+    in `Acme.IFoo<System`."""
+    calls, r = _calls(tmp_path, {"S.cs": (
+        "namespace Acme { public interface IFoo<T> { string? Next(); } }\n"
+        "public static class E\n"
+        "{\n"
+        f"    {header}\n"
+        "    {\n"
+        "        public string? Url() => spec.Next();\n"
+        "    }\n"
+        "}\n"
+    )})
+    e = _find(r, "E", "_e")
+    edge = next(x for x in r["edges"] if x["relation"] == "references" and x["source"] == e)
+    assert edge["metadata"]["ref_token"] == "IFoo"
+    assert edge["metadata"]["ref_qualifier"] == "Acme"
+    assert (_find(r, ".Url()", "_e_url"), _find(r, ".Next()", "ifoo")) in calls
+    assert not [lbl for lbl in _labels(r) if "<" in lbl or ">" in lbl or "&" in lbl]
+
+
+def test_dotted_generic_argument_does_not_split_a_field_or_base_type(tmp_path):
+    """The same rule serves every C# type reference through the shared
+    helpers — a field type and a base list here."""
+    _, r = _calls(tmp_path, {"S.cs": (
+        "namespace Acme { public interface IFoo<T> { } }\n"
+        "public class Holder { private Acme.IFoo<System.String> f; }\n"
+        "public class Impl : Acme.IFoo<System.String> { }\n"
+    )})
+    ifoo = _find(r, "IFoo", "ifoo")
+    assert (_find(r, "Holder", "holder"), ifoo) in _refs(r)
+    assert (_find(r, "Impl", "impl"), ifoo) in {
+        (e["source"], e["target"]) for e in r["edges"] if e["relation"] == "implements"
+    }
+    assert not [lbl for lbl in _labels(r) if "<" in lbl or ">" in lbl or "&" in lbl]
+
+
+def test_nested_type_of_a_generic_outer_keeps_its_own_name(tmp_path):
+    """`Outer<int>.Inner`: the type-argument list belongs to the qualifier and
+    must not eat the split — `Inner`, qualified by `Outer`."""
+    _, r = _calls(tmp_path, {"S.cs": (
+        "public class Outer<T> { public class Inner { } }\n"
+        "public class Holder { private Outer<int>.Inner f; }\n"
+    )})
+    holder = _find(r, "Holder", "holder")
+    edge = next(x for x in r["edges"] if x["relation"] == "references" and x["source"] == holder)
+    assert edge["metadata"]["ref_token"] == "Inner"
+    assert edge["metadata"]["ref_qualifier"] == "Outer"
+
+
 def test_alias_qualifier_is_not_a_type_on_the_shared_node_path(tmp_path):
     """The same `::` reading applies to every C# type reference, so the
     primary-constructor precedent stops fabricating a `global` type node."""

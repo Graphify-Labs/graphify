@@ -188,17 +188,33 @@ def _csharp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
         scope = scope.parent
     return frozenset(names)
 
-def _csharp_unalias(text: str) -> str:
-    """Fold a C# alias qualifier (``::``) into dotted form.
+def _csharp_dotted_name(text: str) -> str:
+    """Reduce a C# type name to its dotted path, ready for ``rpartition(".")``.
 
-    ``global::A.B`` is ``A.B`` anchored at the root namespace, which every scope
-    list already contains; a using/extern alias ``X::B`` names what ``X.B``
-    does. Either way the resolver's qualified lookup then applies unchanged,
-    instead of the alias being read as a type of its own (#3510).
+    Every ``<...>`` type-argument list goes, nesting included, so the split
+    lands on the name's own dots and never on one inside an argument
+    (``Acme.IFoo<System.String>`` -> ``Acme.IFoo``; ``Outer<T>.Inner`` ->
+    ``Outer.Inner``). An alias qualifier folds into dotted form: ``global::A.B``
+    is ``A.B`` anchored at the root namespace, which every scope list already
+    contains, and a using/extern alias ``X::B`` names what ``X.B`` does — so
+    the resolver's qualified lookup applies unchanged instead of the alias
+    being read as a type of its own (#3510).
     """
     if text.startswith("global::"):
-        return text[len("global::"):]
-    return text.replace("::", ".", 1)
+        text = text[len("global::"):]
+    text = text.replace("::", ".", 1)
+    if "<" not in text:
+        return text
+    kept: list[str] = []
+    depth = 0
+    for ch in text:
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth = max(depth - 1, 0)
+        elif depth == 0:
+            kept.append(ch)
+    return "".join(kept)
 
 def _csharp_collect_type_refs(
     node,
@@ -221,8 +237,7 @@ def _csharp_collect_type_refs(
             out.append((name, "generic_arg" if generic else "type", False, ""))
         return
     if t in ("qualified_name", "alias_qualified_name"):
-        prefix, _, text = _csharp_unalias(_read_text(node, source)).rpartition(".")
-        text = text.split("<", 1)[0]
+        prefix, _, text = _csharp_dotted_name(_read_text(node, source)).rpartition(".")
         if text and text not in skip:
             out.append((text, "generic_arg" if generic else "type", bool(prefix), prefix))
         return
@@ -2829,7 +2844,7 @@ def _csharp_extension_blocks(class_node, source: bytes):
             recv_name = parts[1] if len(parts) == 2 and parts[1].isidentifier() else None
             type_text = parts[0] if recv_name else inner
             outer = next((tok for tok in type_text.split() if tok not in _CSHARP_PARAMETER_MODIFIERS), "")
-            outer = _csharp_unalias(outer.split("<", 1)[0].split("[", 1)[0].rstrip("?"))
+            outer = _csharp_dotted_name(outer).split("[", 1)[0].rstrip("?")
             qualifier, _, outer = outer.rpartition(".")
             # Pascal-case only: a predefined type (`string`) is not a node
             # type here to tell apart, and never owns a resolvable member.
@@ -3102,8 +3117,7 @@ def _read_csharp_type_name(node, source: bytes) -> tuple[str, bool, str] | None:
     if node.type in ("identifier", "predefined_type"):
         return (_read_text(node, source), False, "")
     if node.type in ("qualified_name", "alias_qualified_name"):
-        prefix, _, tail = _csharp_unalias(_read_text(node, source)).rpartition(".")
-        tail = tail.split("<", 1)[0]
+        prefix, _, tail = _csharp_dotted_name(_read_text(node, source)).rpartition(".")
         return (tail, bool(prefix), prefix)
     if node.type == "generic_name":
         name_node = node.child_by_field_name("name")
