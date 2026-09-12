@@ -715,7 +715,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         )
 
     if platform == "opencode":
-        _install_opencode_plugin(project_dir if project else Path("."))
+        _install_opencode_plugin(project=project, project_dir=project_dir)
 
     if project:
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
@@ -1402,16 +1402,38 @@ export const GraphifyPlugin = async ({ directory }) => {
   };
 };
 """
-_OPENCODE_PLUGIN_PATH = Path(".opencode") / "plugins" / "graphify.js"
-_OPENCODE_CONFIG_PATH = Path(".opencode") / "opencode.json"
-def _install_opencode_plugin(project_dir: Path) -> None:
-    """Write graphify.js plugin and register it in opencode.json."""
-    plugin_file = project_dir / _OPENCODE_PLUGIN_PATH
+def _opencode_base(project: bool, project_dir: Path | None) -> tuple[Path, str]:
+    """Return (base_dir, plugin_entry_string) for the given install scope.
+
+    Project installs live at ``<project_dir>/.opencode/``; the plugin entry
+    stored in opencode.json is relative to the project root, e.g.
+    ``.opencode/plugins/graphify.js``.  Global installs target the XDG
+    config location ``~/.config/opencode/``; there is no extra ``.opencode``
+    nesting, so the entry is just ``plugins/graphify.js`` (#3398).
+    """
+    if project:
+        base = (project_dir or Path(".")) / ".opencode"
+        entry = ".opencode/plugins/graphify.js"
+    else:
+        base = Path.home() / ".config" / "opencode"
+        entry = "plugins/graphify.js"
+    return base, entry
+
+
+def _install_opencode_plugin(project: bool = False, project_dir: Path | None = None) -> None:
+    """Write graphify.js plugin and register it in opencode.json.
+
+    For a global (non-project) install, targets ``~/.config/opencode/``
+    directly; the extra ``.opencode/`` segment that is correct for a
+    project-scoped install must not appear in the global path (#3398).
+    """
+    base, entry = _opencode_base(project, project_dir)
+    plugin_file = base / "plugins" / "graphify.js"
+    config_file = base / "opencode.json"
     plugin_file.parent.mkdir(parents=True, exist_ok=True)
     plugin_file.write_text(_OPENCODE_PLUGIN_JS, encoding="utf-8")
-    print(f"  {_OPENCODE_PLUGIN_PATH}  ->  tool.execute.before hook written")
+    print(f"  {entry}  ->  tool.execute.before hook written")
 
-    config_file = project_dir / _OPENCODE_CONFIG_PATH
     if config_file.exists():
         try:
             config = json.loads(config_file.read_text(encoding="utf-8"))
@@ -1421,21 +1443,23 @@ def _install_opencode_plugin(project_dir: Path) -> None:
         config = {}
 
     plugins = config.setdefault("plugin", [])
-    entry = _OPENCODE_PLUGIN_PATH.as_posix()
     if entry not in plugins:
         plugins.append(entry)
         config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
-        print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin registered")
+        print(f"  {config_file}  ->  plugin registered")
     else:
-        print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin already registered (no change)")
-def _uninstall_opencode_plugin(project_dir: Path) -> None:
-    """Remove graphify.js plugin and deregister from opencode.json."""
-    plugin_file = project_dir / _OPENCODE_PLUGIN_PATH
+        print(f"  {config_file}  ->  plugin already registered (no change)")
+
+
+def _uninstall_opencode_plugin(project: bool = False, project_dir: Path | None = None) -> None:
+    """Remove graphify.js plugin and deregister from opencode.json (#3398)."""
+    base, entry = _opencode_base(project, project_dir)
+    plugin_file = base / "plugins" / "graphify.js"
+    config_file = base / "opencode.json"
     if plugin_file.exists():
         plugin_file.unlink()
-        print(f"  {_OPENCODE_PLUGIN_PATH}  ->  removed")
+        print(f"  {entry}  ->  removed")
 
-    config_file = project_dir / _OPENCODE_CONFIG_PATH
     if not config_file.exists():
         return
     try:
@@ -1443,13 +1467,12 @@ def _uninstall_opencode_plugin(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     plugins = config.get("plugin", [])
-    entry = _OPENCODE_PLUGIN_PATH.as_posix()
     if entry in plugins:
         plugins.remove(entry)
         if not plugins:
             config.pop("plugin")
         config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
-        print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin deregistered")
+        print(f"  {config_file}  ->  plugin deregistered")
 def _resolve_graphify_exe(project: bool = False) -> str:
     """Return the absolute path to the graphify executable, with forward slashes.
 
@@ -1560,7 +1583,7 @@ def _agents_install(project_dir: Path, platform: str, project: bool = False) -> 
     if platform == "codex":
         _install_codex_hook(project_dir or Path("."), project=project)
     elif platform == "opencode":
-        _install_opencode_plugin(project_dir or Path("."))
+        _install_opencode_plugin(project=False)
     elif platform == "kilo":
         _install_kilo_plugin(project_dir or Path("."))
 
@@ -1711,7 +1734,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
     if not target.exists():
         print("No AGENTS.md found in current directory - nothing to do")
         if platform == "opencode":
-            _uninstall_opencode_plugin(project_dir or Path("."))
+            _uninstall_opencode_plugin(project=True, project_dir=project_dir)
         elif platform == "kilo":
             _uninstall_kilo_plugin(project_dir or Path("."))
         return
@@ -1721,7 +1744,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
     if cleaned is None:
         print("graphify section not found in AGENTS.md - nothing to do")
         if platform == "opencode":
-            _uninstall_opencode_plugin(project_dir or Path("."))
+            _uninstall_opencode_plugin(project=True, project_dir=project_dir)
         elif platform == "kilo":
             _uninstall_kilo_plugin(project_dir or Path("."))
         return
@@ -1734,7 +1757,7 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
         print(f"AGENTS.md was empty after removal - deleted {target.resolve()}")
 
     if platform == "opencode":
-        _uninstall_opencode_plugin(project_dir or Path("."))
+        _uninstall_opencode_plugin(project=True, project_dir=project_dir)
     elif platform == "kilo":
         _uninstall_kilo_plugin(project_dir or Path("."))
 def _kilo_uninstall_global() -> list[str]:
@@ -1874,7 +1897,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # The generic agents platform's user-scope skill lives at ~/.agents/skills,
     # which neither the AGENTS.md cleanup nor amp's removal reaches.
     _remove_skill_file("agents")
-    _uninstall_opencode_plugin(pd)
+    _uninstall_opencode_plugin(project=True, project_dir=pd)
     _uninstall_codex_hook(pd)
 
     # Git hook
