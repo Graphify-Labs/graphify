@@ -674,6 +674,8 @@ fi
 
 Both are non-default subcommands. `--update` re-extracts only new or changed files; `--cluster-only` reruns clustering on the existing graph. See `references/update.md` for both flows.
 
+> **Re-extracting an already-graphed doc requires the mandatory-ID gate** (`references/update.md` → "REQUIRED: mandatory-ID gate for re-extracted docs"): snapshot that file's existing node IDs, pass them to the subagent as must-include, and refuse the merge if the node count drops below 90% of baseline or any ID is missing. Semantic re-extraction is non-deterministic and drops whole sections without it.
+
 ---
 
 ## For /graphify query
