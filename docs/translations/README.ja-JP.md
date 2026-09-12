@@ -208,9 +208,9 @@ graphify query "..." --graph path/to/graph.json
 
 | コーパス | ファイル数 | 削減率 | 出力 |
 |--------|-------|-----------|--------|
-| Karpathy リポジトリ + 論文5本 + 画像4枚 | 52 | **71.5x** | [`worked/karpathy-repos/`](worked/karpathy-repos/) |
-| graphify ソース + Transformer 論文 | 4 | **5.4x** | [`worked/mixed-corpus/`](worked/mixed-corpus/) |
-| httpx（合成 Python ライブラリ） | 6 | ~1x | [`worked/httpx/`](worked/httpx/) |
+| Karpathy リポジトリ + 論文5本 + 画像4枚 | 52 | **71.5x** | [`worked/karpathy-repos/`](../../worked/karpathy-repos/) |
+| graphify ソース + Transformer 論文 | 4 | **5.4x** | [`worked/mixed-corpus/`](../../worked/mixed-corpus/) |
+| httpx（合成 Python ライブラリ） | 6 | ~1x | [`worked/httpx/`](../../worked/httpx/) |
 
 トークン削減はコーパスサイズに応じてスケールします。6 ファイルはいずれにせよコンテキストウィンドウに収まるため、そこでのグラフの価値は圧縮ではなく構造的明瞭さです。52 ファイル（コード + 論文 + 画像）では 71 倍以上が得られます。各 `worked/` フォルダには生の入力ファイルと実際の出力（`GRAPH_REPORT.md`、`graph.json`）があり、自分で実行して数字を検証できます。
 
@@ -233,6 +233,6 @@ NetworkX + Leiden（graspologic） + tree-sitter + vis.js。意味的抽出は C
 
 **抽出バグ** - 入力ファイル、キャッシュエントリ（`graphify-out/cache/`）、何が見逃された/捏造されたかを添えて issue を開いてください。
 
-モジュールの責任と言語の追加方法については [ARCHITECTURE.md](ARCHITECTURE.md) を参照してください。
+モジュールの責任と言語の追加方法については [ARCHITECTURE.md](../../ARCHITECTURE.md) を参照してください。
 
 </details>
