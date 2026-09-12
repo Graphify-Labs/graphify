@@ -9,6 +9,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Performance: Python symbol resolution is roughly 47% faster — path resolution is memoized, each file parses once across both resolution passes, and the tree walk is iterative rather than recursive; extraction output is unchanged (#3500 / #3501 / #3502, thanks @abhay-codes07).
 - Fix: `graphify explain` now accepts a `path::Symbol` form to disambiguate a symbol that shares its name with its file, and the ambiguity hint now shows a form the resolver actually accepts (#3485, thanks @ayushcodes10).
 - Fix: the git hook now keeps its rebuild root inside the repository — a committed `.graphify_root` pointing outside the worktree is ignored and falls back to the repo top, so a checked-in marker can't steer the hook to scan or write outside the tree (#3265, thanks @ayushcodes10).
+- Fix: a valid C/C++ file that doesn't end in a newline is no longer reported as having a syntax error — not just headers, every C/C++-family extension (#3513, thanks @A-Levin).
 
 ## 0.9.58 (2026-09-10)
 
