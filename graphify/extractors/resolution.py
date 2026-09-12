@@ -806,6 +806,19 @@ def _cached_source_key(source_file: str, root_str: str, _cwd: str) -> str:
         return str(source_path)
 
 
+# Relations whose edges may carry a transient ``target_file`` stamp naming the
+# file the target id was minted from. Import-style edges (#1814/#1983), plus
+# the systemd unit edges (#2848): a `.timer` and its `.service` share the
+# extension-less file-node id, so without the stamp the timer's `activates`
+# edge would be disambiguated against the timer's own path — a self-loop.
+_TARGET_FILE_RELATIONS: frozenset[str] = frozenset({
+    "imports", "imports_from", "re_exports",
+    "activates", "runs", "documented_by",
+    "after", "before", "wants", "requires", "binds_to", "part_of", "conflicts",
+    "wanted_by", "required_by",
+})
+
+
 def _source_key(source_file: str, root: Path) -> str:
     if not source_file:
         return ""
@@ -928,7 +941,7 @@ def _disambiguate_colliding_node_ids(
         # every language and to re_exports. `pop` it as we consume it: this is the
         # hint's only reader, and its absolute path must not persist into graph.json.
         target_file = edge.pop("target_file", None)
-        if target_file and edge.get("relation") in ("imports", "imports_from", "re_exports"):
+        if target_file and edge.get("relation") in _TARGET_FILE_RELATIONS:
             target_edge_key = _source_key(str(target_file), root)
         else:
             target_edge_key = edge_source_key
