@@ -221,6 +221,37 @@ def test_save_cached_relativizes_source_file(tmp_path):
     assert edge_sources == {"src/foo.py"}
 
 
+def test_save_cached_survives_a_winerror_17_replace(tmp_path, monkeypatch):
+    """#3508: on some Windows/filesystem combinations, `os.replace` raises
+    WinError 17 ("cannot move to a different disk drive") even for a temp file
+    and destination in the same directory on the same drive -- reported for
+    exactly this AST cache write path. WinError 17 is a plain OSError, not a
+    PermissionError, so it must still trigger the copy-then-delete fallback."""
+    import os
+    from graphify.cache import save_cached, file_hash, cache_dir
+
+    src = tmp_path / "foo.py"
+    src.write_text("def x(): pass\n")
+
+    real_replace = os.replace
+
+    def flaky_replace(a, b):
+        exc = OSError("cannot move to a different disk drive")
+        exc.winerror = 17
+        raise exc
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    try:
+        save_cached(src, {"nodes": [], "edges": []}, root=tmp_path, kind="ast")
+    finally:
+        monkeypatch.setattr(os, "replace", real_replace)
+
+    h = file_hash(src, tmp_path)
+    entry = cache_dir(tmp_path, "ast") / f"{h}.json"
+    assert entry.exists()
+    assert not any(p.name.endswith(".tmp") for p in entry.parent.iterdir())
+
+
 def test_load_cached_absolutizes_source_file(tmp_path):
     """``load_cached`` returns the same absolute-path shape that a fresh
     extraction produces, so consumers don't need to special-case cache
