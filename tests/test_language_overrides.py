@@ -98,7 +98,7 @@ def test_the_extension_key_is_normalised(tmp_path, key):
 @pytest.mark.parametrize("value, expected", [
     ("php", ".php"), ("PHP", ".php"), ("pascal", ".pas"), ("delphi", ".pas"),
     ("typescript", ".ts"), ("c++", ".cpp"), (".php", ".php"), (".PHP", ".php"),
-    ("markdown", ".md"),
+    ("markdown", ".md"), (".md", ".md"),
 ])
 def test_values_accept_a_language_name_or_an_explicit_extension(value, expected):
     assert parse_language_value(value) == expected
@@ -108,6 +108,17 @@ def test_values_accept_a_language_name_or_an_explicit_extension(value, expected)
 def test_an_unknown_language_is_an_error_naming_the_alternatives(value):
     with pytest.raises(ValueError):
         parse_language_value(value)
+
+
+def test_an_unknown_explicit_extension_warns_and_keeps_the_default(tmp_path, capsys):
+    (tmp_path / ".graphifyrc").write_text(
+        "language.tpl=.ts\nlanguage.inc=.phhp\n",
+        encoding="utf-8",
+    )
+
+    assert activate_language_overrides(tmp_path) == {}
+    assert effective_suffix(Path("a.inc")) == ".inc"
+    assert "unknown extension '.phhp'" in capsys.readouterr().err
 
 
 def test_a_bad_language_line_reports_its_line_number(tmp_path):
