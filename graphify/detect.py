@@ -20,7 +20,7 @@ from graphify.google_workspace import (
     google_workspace_enabled,
 )
 from graphify.paths import GRAPHIFY_OUT, out_path
-from graphify.rcfile import activate_language_overrides, effective_suffix
+from graphify.rcfile import activate_language_overrides, cache_salt, effective_suffix
 
 
 class FileType(str, Enum):
@@ -2249,6 +2249,9 @@ def save_manifest(
     re-queues the file after the failure is fixed, without deleting
     graphify-out/.
     """
+    # Another root may have activated different overrides in this thread.
+    if root is not None:
+        activate_language_overrides(Path(root))
     existing = load_manifest(manifest_path, root=root)
 
     # Index both raw and NFC forms so scan/clear membership survives the
@@ -2369,12 +2372,19 @@ def save_manifest(
         mtime, h = hashed[f]
         key = _nfc(f)
         prev = _normalise_entry(existing.get(key, {})) or {}
+        # Hash workers do not inherit this thread's language overrides.
+        current_lang = cache_salt(f)
+        lang_changed = current_lang != prev.get("language")
         if kind in ("ast", "both"):
             ast_h = h
+        elif lang_changed:
+            ast_h = ""
         else:
             ast_h = prev.get("ast_hash", "")
         if kind in ("semantic", "both"):
             sem_h = h
+        elif lang_changed:
+            sem_h = ""
         else:
             # Preserve semantic_hash only when content is unchanged
             sem_h = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
@@ -2387,6 +2397,7 @@ def save_manifest(
             and mtime == prev.get("mtime")
             and (ast_h == prev.get("ast_hash", "") if kind in ("ast", "both") else True)
             and (sem_h == prev.get("semantic_hash", "") if kind in ("semantic", "both") else True)
+            and not lang_changed
             and not _in_clear_ast(f)
             and not _in_clear(f)
         )
@@ -2396,6 +2407,9 @@ def save_manifest(
             "ast_hash": ast_h,
             "semantic_hash": sem_h,
         }
+        if current_lang is not None:
+            # No override keeps legacy rows unchanged.
+            entry["language"] = current_lang
         manifest[key] = entry
     if root is not None:
         # Persist in portable form: forward-slash relative paths. Keys outside
@@ -2526,7 +2540,11 @@ def detect_incremental(
             # the graph drifted from disk (#1859). No stored hash means we
             # cannot verify content — any mtime delta forces a re-extract,
             # and the next save promotes the entry into the dict schema.
-            if isinstance(stored, (int, float)):
+            # A language change invalidates even identical bytes and legacy rows.
+            stored_lang = stored.get("language") if isinstance(stored, dict) else None
+            if stored is not None and cache_salt(f) != stored_lang:
+                changed = True
+            elif isinstance(stored, (int, float)):
                 changed = current_mtime != stored
             elif isinstance(stored, dict):
                 # Normalise legacy {mtime, hash} to new schema

@@ -459,7 +459,11 @@ language.tpl=.ts
 viz_node_limit=0
 ```
 
-The declaration applies everywhere graphify keys a decision on the extension — file classification, extractor dispatch, cross-file resolution, and the AST cache (a file re-parsed under a different language never reuses the old entry). It is read by `graphify extract`, `graphify update`, `watch`, the hooks, the MCP server, and the `/graphify` skill alike. A typo is reported once on stderr and the scan continues with graphify's defaults.
+The declaration controls file classification, extractor selection and language-specific grammar and resolution, and the AST cache: a file re-parsed under a different language never reuses the old entry. Original source paths and physical format conventions, such as Fortran `.F90` preprocessing and C/C++ header/implementation pairing, are preserved. Optional language backends must still be installed. A typo is reported once on stderr and the scan continues with graphify's defaults.
+
+Adding, changing, or removing a language declaration invalidates affected incremental manifest entries even when the source bytes have not changed. `graphify watch` recognizes declared source extensions and root `.graphifyrc` changes, including atomic replacement; configuration changes schedule an AST rebuild and flag semantic work for the next extraction. The same configuration is read by `graphify extract`, `graphify update`, the hooks, the MCP server, and the `/graphify` skill.
+
+Extensionless local JS/TS imports can also resolve declared suffixes. Native suffixes retain precedence within file and directory-index lookup, and file candidates are tried before directory indexes. Python module and package lookups also support declared Python suffixes, while retaining native `.py` precedence.
 
 ---
 

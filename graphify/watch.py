@@ -278,6 +278,12 @@ from graphify.detect import (
     _load_graphifyignore,
     _is_ignored,
 )
+from graphify.rcfile import (
+    RC_FILENAME,
+    activate_language_overrides,
+    effective_suffix,
+    set_language_overrides,
+)
 
 _WATCHED_EXTENSIONS = CODE_EXTENSIONS | DOC_EXTENSIONS | PAPER_EXTENSIONS | IMAGE_EXTENSIONS
 _CODE_EXTENSIONS = CODE_EXTENSIONS
@@ -2291,7 +2297,7 @@ def _notify_only(watch_path: Path) -> None:
 
 
 def _has_non_code(changed_paths: list[Path]) -> bool:
-    return any(p.suffix.lower() not in _CODE_EXTENSIONS for p in changed_paths)
+    return any(effective_suffix(p).lower() not in _CODE_EXTENSIONS for p in changed_paths)
 
 
 def _batch_triggers_rebuild(batch: list[Path]) -> bool:
@@ -2303,7 +2309,7 @@ def _batch_triggers_rebuild(batch: list[Path]) -> bool:
     this, a doc-only deletion batch would sit behind the needs_update flag
     until the next code event or a manual `graphify update` (#2580).
     """
-    has_code = any(p.suffix.lower() in _CODE_EXTENSIONS for p in batch)
+    has_code = any(effective_suffix(p).lower() in _CODE_EXTENSIONS for p in batch)
     has_deletion = any(not p.exists() for p in batch)
     return has_code or has_deletion
 
@@ -2370,9 +2376,14 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
         gitignore=_read_build_gitignore(watch_path / _GRAPHIFY_OUT),
     )
 
+    # Observer and dispatch threads need the same root-specific snapshot.
+    root_config_path = watch_root_for_ignore / RC_FILENAME
+    override_snapshot: dict[str, str] = activate_language_overrides(watch_root_for_ignore)
+    config_changed = False
+
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
-            nonlocal last_trigger, pending
+            nonlocal last_trigger, pending, override_snapshot, config_changed
             if event.is_directory or _is_read_only_event(event):
                 return
             path = Path(os.fsdecode(event.src_path))
@@ -2383,7 +2394,17 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             # relative_to guard, so a stray symlinked event won't raise.
             if ignore_patterns and _is_ignored(path, watch_root_for_ignore, ignore_patterns):
                 return
-            if path.suffix.lower() not in _WATCHED_EXTENSIONS:
+            # Atomic replacement reports the new root config in dest_path.
+            dest_raw = getattr(event, "dest_path", None)
+            dest_path = Path(os.fsdecode(dest_raw)) if dest_raw else None
+            if path == root_config_path or dest_path == root_config_path:
+                override_snapshot = activate_language_overrides(watch_root_for_ignore)
+                config_changed = True
+                last_trigger = time.monotonic()
+                pending = True
+                return
+            set_language_overrides(override_snapshot)
+            if effective_suffix(path).lower() not in _WATCHED_EXTENSIONS:
                 return
             try:
                 filter_parts = path.relative_to(watch_root_for_ignore).parts
@@ -2400,7 +2421,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     handler = Handler()
     # Use polling observer on macOS — FSEvents can miss rapid saves in some editors
     observer = PollingObserver() if sys.platform == "darwin" else Observer()
-    observer.schedule(handler, str(watch_path), recursive=True)
+    observer.schedule(handler, str(watch_root_for_ignore), recursive=True)
     observer.start()
 
     print(f"[graphify watch] Watching {watch_path.resolve()} - press Ctrl+C to stop")
@@ -2415,10 +2436,13 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 pending = False
                 batch = list(changed)
                 changed.clear()
+                config_event, config_changed = config_changed, False
                 print(f"\n[graphify watch] {len(batch)} file(s) changed")
-                if _batch_triggers_rebuild(batch):
+                # Reapply the observer's snapshot on the dispatch thread.
+                set_language_overrides(override_snapshot)
+                if config_event or _batch_triggers_rebuild(batch):
                     _rebuild_code(watch_path)
-                if _batch_needs_llm_flag(batch):
+                if config_event or _batch_needs_llm_flag(batch):
                     _notify_only(watch_path)
     except KeyboardInterrupt:
         print("\n[graphify watch] Stopped.")
