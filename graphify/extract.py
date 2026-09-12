@@ -107,6 +107,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _load_workspace_packages,
     _match_tsconfig_alias,
     _merge_decl_def_classes,
+    _merge_go_package_types,
     _node_disambiguation_source_key,
     _package_entry_candidates,
     _parse_js_tree,
@@ -6671,6 +6672,10 @@ def extract(
     # them (foo_h vs foo_cpp), so the collapse must happen first. Collapsing here
     # also means disambiguation sees one source_file per id and won't split them.
     _merge_decl_def_classes(all_nodes, all_edges)
+
+    # Same fold for a Go package's type, which every file declaring a method on it mints
+    # again under one id; also before disambiguation, which would otherwise split them.
+    _merge_go_package_types(all_nodes, all_edges)
 
     # Remap file node IDs from absolute-path-derived to the canonical
     # {parent_dir}_{stem} spec form so (a) graph.json edge endpoints are stable
