@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import heapq
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 import unicodedata
 
 import networkx as nx
@@ -31,6 +32,20 @@ DEFAULT_AFFECTED_RELATIONS = (
     "requires",
 )
 
+DEFAULT_RELATION_WEIGHTS: Mapping[str, float] = {
+    "calls": 1.0,
+    "references": 0.9,
+    "imports": 0.85,
+    "imports_from": 0.85,
+    "re_exports": 0.8,
+    "inherits": 0.75,
+    "extends": 0.75,
+    "implements": 0.75,
+    "uses": 1.0,
+    "mixes_in": 0.9,
+    "embeds": 0.7,
+}
+
 
 @dataclass(frozen=True)
 class AffectedHit:
@@ -42,6 +57,28 @@ class AffectedHit:
     # existing constructors/tests working; None falls back to the node's def line.
     via_file: "str | None" = None
     via_location: "str | None" = None
+
+
+@dataclass(frozen=True)
+class WeightedAffectedHit:
+    node_id: str
+    cost: float
+    via_relation: str
+    path: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WeightedAffectedResult:
+    hits: tuple[WeightedAffectedHit, ...]
+    proof_paths: dict[str, tuple[str, ...]]
+    metrics: dict[str, int | float]
+
+
+@dataclass(frozen=True)
+class PreparedAffectedGraph:
+    graph: nx.Graph
+    incoming: dict[str, tuple[tuple[str, str, str], ...]]
+    degree: dict[str, int]
 
 
 def _node_label(graph: nx.Graph, node_id: str) -> str:
@@ -185,6 +222,185 @@ def resolve_seed(graph: nx.Graph, query: str, root: Path | None = None) -> str |
     if len(contains_matches) == 1:
         return contains_matches[0]
     return None
+
+
+def prepare_affected_graph(graph: nx.Graph) -> PreparedAffectedGraph:
+    incoming: dict[str, list[tuple[str, str, str]]] = {}
+    for source, target, data in graph.edges(data=True):
+        source_id = str(source)
+        target_id = str(target)
+        relation = str(data.get("relation", ""))
+        incoming.setdefault(target_id, []).append((source_id, target_id, relation))
+    ordered = {
+        node_id: tuple(sorted(edges, key=lambda edge: (edge[0], edge[2])))
+        for node_id, edges in incoming.items()
+    }
+    degree = {str(node_id): int(deg) for node_id, deg in graph.degree()}
+    return PreparedAffectedGraph(graph=graph, incoming=ordered, degree=degree)
+
+
+def _path_to_seed(parent: Mapping[str, tuple[str, str]], seed: str, node_id: str) -> tuple[str, ...]:
+    path = [node_id]
+    current = node_id
+    for _ in range(500):
+        if current == seed:
+            return tuple(path)
+        nxt = parent.get(current)
+        if not nxt:
+            return tuple()
+        current = nxt[0]
+        path.append(current)
+    return tuple()
+
+
+def weighted_affected_details(
+    graph: nx.Graph,
+    seed: str,
+    *,
+    relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
+    relation_weights: Mapping[str, float] | None = None,
+    max_cost: float | None = None,
+    max_nodes: int = 200,
+    hub_degree: int | None = None,
+    hub_penalty: float = 2.0,
+    expand_hubs: bool = False,
+    proof_targets: Iterable[str] = (),
+) -> WeightedAffectedResult:
+    relation_set = set(relations)
+    weights = dict(DEFAULT_RELATION_WEIGHTS)
+    if relation_weights:
+        weights.update({str(k): float(v) for k, v in relation_weights.items()})
+    prepared = prepare_affected_graph(graph)
+    limit = max(1, int(max_nodes))
+    max_allowed_cost = float("inf") if max_cost is None else max(0.0, float(max_cost))
+    hub_threshold = None if hub_degree is None else max(1, int(hub_degree))
+    penalty = max(0.0, float(hub_penalty))
+
+    dist: dict[str, float] = {seed: 0.0}
+    parent: dict[str, tuple[str, str]] = {}
+    via: dict[str, str] = {}
+    queue: list[tuple[float, int, str]] = [(0.0, 0, seed)]
+    counter = 1
+    visited: set[str] = set()
+    hits: list[WeightedAffectedHit] = []
+    traversed_edges = 0
+    hub_skips = 0
+    max_seen_cost = 0.0
+
+    while queue and len(hits) < limit:
+        cost, _order, current = heapq.heappop(queue)
+        if current in visited:
+            continue
+        if cost != dist.get(current):
+            continue
+        visited.add(current)
+        max_seen_cost = max(max_seen_cost, cost)
+        if current != seed:
+            path = _path_to_seed(parent, seed, current)
+            hits.append(
+                WeightedAffectedHit(
+                    node_id=current,
+                    cost=round(cost, 6),
+                    via_relation=via.get(current, ""),
+                    path=path,
+                )
+            )
+
+        is_hub = hub_threshold is not None and prepared.degree.get(current, 0) >= hub_threshold
+        if current != seed and is_hub and not expand_hubs:
+            hub_skips += 1
+            continue
+
+        for source, _target, relation in prepared.incoming.get(current, ()):
+            if relation not in relation_set:
+                continue
+            traversed_edges += 1
+            if source in visited:
+                continue
+            relation_cost = max(0.01, float(weights.get(relation, 1.0)))
+            source_is_hub = hub_threshold is not None and prepared.degree.get(source, 0) >= hub_threshold
+            next_cost = cost + relation_cost + (penalty if source_is_hub and source != seed else 0.0)
+            if next_cost > max_allowed_cost:
+                continue
+            if next_cost < dist.get(source, float("inf")):
+                dist[source] = next_cost
+                parent[source] = (current, relation)
+                via[source] = relation
+                heapq.heappush(queue, (next_cost, counter, source))
+                counter += 1
+
+    proof_paths = {
+        target: _path_to_seed(parent, seed, target)
+        for target in proof_targets
+        if target == seed or target in visited
+    }
+    return WeightedAffectedResult(
+        hits=tuple(hits),
+        proof_paths=proof_paths,
+        metrics={
+            "visited_nodes": len(visited),
+            "traversed_edges": traversed_edges,
+            "hub_skips": hub_skips,
+            "max_cost": round(max_seen_cost, 6),
+        },
+    )
+
+
+def weighted_affected_nodes(
+    graph: nx.Graph,
+    seed: str,
+    *,
+    relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
+    relation_weights: Mapping[str, float] | None = None,
+    max_cost: float | None = None,
+    max_nodes: int = 200,
+    hub_degree: int | None = None,
+    hub_penalty: float = 2.0,
+    expand_hubs: bool = False,
+) -> list[WeightedAffectedHit]:
+    return list(
+        weighted_affected_details(
+            graph,
+            seed,
+            relations=relations,
+            relation_weights=relation_weights,
+            max_cost=max_cost,
+            max_nodes=max_nodes,
+            hub_degree=hub_degree,
+            hub_penalty=hub_penalty,
+            expand_hubs=expand_hubs,
+        ).hits
+    )
+
+
+def affected_proof_path(
+    graph: nx.Graph,
+    seed: str,
+    target: str,
+    *,
+    relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
+    relation_weights: Mapping[str, float] | None = None,
+    max_cost: float | None = None,
+    max_nodes: int = 200,
+    hub_degree: int | None = None,
+    hub_penalty: float = 2.0,
+    expand_hubs: bool = False,
+) -> tuple[str, ...]:
+    if target == seed:
+        return (seed,)
+    details = weighted_affected_details(
+        graph,
+        seed,
+        relations=relations,
+        relation_weights=relation_weights,
+        max_cost=max_cost,
+        max_nodes=max_nodes,
+        hub_degree=hub_degree,
+        hub_penalty=hub_penalty,
+        expand_hubs=expand_hubs,
+        proof_targets=(target,),
+    )
+    return details.proof_paths.get(target, tuple())
 
 
 def affected_nodes(
