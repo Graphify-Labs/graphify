@@ -473,18 +473,48 @@ graphify query "show the auth flow"
 graphify query "what connects DigestAuth to Response?" --graph graphify-out/graph.json
 
 # expose the graph as an MCP server (for repeated tool-call access)
-python -m graphify.serve graphify-out/graph.json
-python -m graphify.serve --graph graphify-out/graph.json  # --graph flag also accepted
+graphify-mcp graphify-out/graph.json
+graphify-mcp --graph graphify-out/graph.json  # --graph flag also accepted
 
 # register with Kimi Code:
-kimi mcp add --transport stdio graphify -- python -m graphify.serve graphify-out/graph.json
+kimi mcp add --transport stdio graphify -- graphify-mcp graphify-out/graph.json
 
 # or serve over HTTP so a whole team points at one URL (no local graphify needed):
-python -m graphify.serve graphify-out/graph.json --transport http --port 8080
-python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
+graphify-mcp graphify-out/graph.json --transport http --port 8080
+graphify-mcp graphify-out/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
+
+# running inside a venv where you pip-installed the package? python -m graphify.serve
+# also works there (see the Windows / uv / pipx note below for why the exe is preferred)
 ```
 
 The MCP server gives your assistant structured access: `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
+
+### Windows / uv / pipx: use `graphify-mcp`, not `python -m graphify.serve`
+
+`uv tool install graphifyy` and `pipx install graphifyy` isolate the package in their own virtual environment, so your default `python` cannot `import graphify` — `python -m graphify.serve …` fails with `ModuleNotFoundError: No module named 'graphify'` even though every other graphify command works. Those installs expose console scripts instead (`pyproject.toml` ships both `graphify` and `graphify-mcp`); the script knows which interpreter to use, so just run:
+
+```powershell
+graphify-mcp graphify-out/graph.json
+```
+
+GUI-launched MCP clients (Claude Desktop, Cursor, VS Code) don't inherit your shell's `PATH`, so point them at the absolute path of the exe. Both uv and pipx place tool scripts in `%USERPROFILE%\.local\bin` by default (confirm with `uv tool dir --bin` or `pipx environment`):
+
+```json
+// %APPDATA%\Claude\claude_desktop_config.json (same shape for other MCP clients)
+{
+  "mcpServers": {
+    "graphify": {
+      "command": "C:\\Users\\<you>\\.local\\bin\\graphify-mcp.exe",
+      "args": ["C:\\path\\to\\your\\project\\graphify-out\\graph.json"]
+    }
+  }
+}
+```
+
+- Escape backslashes (`\\`) in the JSON config.
+- Use an absolute graph path too — the server's working directory is whatever the client launches it with, not your project folder.
+- macOS/Linux clients use the same pattern with `~/.local/bin/graphify-mcp`.
+- `python -m graphify.serve` remains correct inside a project venv where you ran `pip install "graphifyy[mcp]"` (see the WSL/Linux note below).
 
 ### Shared HTTP server
 
@@ -597,6 +627,9 @@ Your shell's `PATH` doesn't include the bin directory the command was installed 
 
 **`/graphify .` causes "path not recognized" in PowerShell**
 PowerShell treats a leading `/` as a path separator. Use `graphify .` (no slash) on Windows.
+
+**`python -m graphify.serve` fails with `ModuleNotFoundError: No module named 'graphify'`**
+You installed via `uv tool install` / `pipx install`, which keep the package in an isolated env your default interpreter can't import from. Run the `graphify-mcp` console script instead (see "Windows / uv / pipx" under *Using the graph directly* above).
 
 **Graph has fewer nodes after `--update` or rebuild**
 If a refactor deleted files, the old nodes linger. Pass `--force` (or set `GRAPHIFY_FORCE=1`) to overwrite even when the rebuild has fewer nodes.
