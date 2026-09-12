@@ -13,6 +13,7 @@ from typing import Any
 from graphify.ids import make_id as _shared_make_id
 from graphify.paths import disambiguate_ambiguous_candidates
 from graphify.security import sanitize_metadata
+from graphify.rcfile import effective_suffix
 
 
 
@@ -242,14 +243,14 @@ def resolve_python_import_guided_calls(
     #     downstream `.get("raw_calls", [])` lookup never raises
     result_by_file: dict[str, dict[str, Any]] = {}
     for index, path in enumerate(paths):
-        if path.suffix != ".py":
+        if effective_suffix(path) != ".py":
             continue
         slot: Any = per_file[index] if index < len(per_file) else None
         result_by_file[str(path)] = slot if isinstance(slot, dict) else {"nodes": [], "edges": []}
     resolved_edges: list[dict[str, Any]] = []
 
     for path in paths:
-        if path.suffix != ".py":
+        if effective_suffix(path) != ".py":
             continue
         source_file = str(path)
         aliases = parse_python_import_aliases(path)

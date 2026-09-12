@@ -14,6 +14,7 @@ import html
 from pathlib import Path
 
 from graphify.extractors.base import _make_id
+from graphify.rcfile import effective_suffix
 
 
 def _build_csharp_type_def_index(all_nodes: list[dict]) -> dict[tuple[str, str], str]:
@@ -32,11 +33,7 @@ def _build_csharp_type_def_index(all_nodes: list[dict]) -> dict[tuple[str, str],
         if not (isinstance(nid, str) and nid and isinstance(label, str) and label):
             continue
         source_file = node.get("source_file")
-        if (
-            not isinstance(source_file, str)
-            or not source_file.endswith(".cs")
-            or node.get("file_type") != "code"
-        ):
+        if not _is_cs_file(source_file) or node.get("file_type") != "code":
             continue
         if label.endswith(")") or label.startswith(".") or "." in label:
             continue
@@ -153,11 +150,11 @@ _DOTNET_SOURCE_EXTS = (".cs", ".razor", ".cshtml")
 
 
 def _is_cs_file(value: object) -> bool:
-    return isinstance(value, str) and value.endswith(".cs")
+    return isinstance(value, str) and effective_suffix(value) == ".cs"
 
 
 def _is_dotnet_source_file(value: object) -> bool:
-    return isinstance(value, str) and value.endswith(_DOTNET_SOURCE_EXTS)
+    return isinstance(value, str) and effective_suffix(value) in _DOTNET_SOURCE_EXTS
 
 
 def _metadata(value: object) -> dict:
@@ -201,7 +198,7 @@ class CsharpNameResolver:
             if not (
                 source_node
                 and isinstance(source_node.get("label"), str)
-                and source_node.get("label", "").endswith(_DOTNET_SOURCE_EXTS)
+                and _is_dotnet_source_file(source_node.get("label"))
             ):
                 continue
             source_file = source_node.get("source_file")

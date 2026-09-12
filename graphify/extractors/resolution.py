@@ -10,6 +10,7 @@ from graphify.extractors.base import (  # noqa: F401
     _make_id,
     _read_text,
 )
+from graphify.rcfile import effective_suffix, get_language_overrides
 import functools
 import hashlib
 import json
@@ -34,6 +35,18 @@ _JS_RESOLVE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".svelte", ".js", ".jsx", ".m
 
 _JS_INDEX_FILES = ("index.ts", "index.tsx", "index.svelte", "index.js", "index.jsx", "index.mjs")
 
+def _declared_language_suffixes(target_exts: tuple[str, ...]) -> tuple[str, ...]:
+    """Return declared literal suffixes for these languages in deterministic order."""
+    # Mapping keys must be single suffixes, never relative path fragments.
+    suffixes = [
+        source_ext
+        for source_ext, target_ext in get_language_overrides().items()
+        if target_ext in target_exts
+        and Path(f"x{source_ext}").suffix == source_ext
+    ]
+    return tuple(sorted(suffixes))
+
+
 def _resolve_js_import_path(candidate: Path) -> Path:
     """Resolve a JS/TS/Svelte import target to a local file when it exists."""
     candidate = Path(os.path.normpath(candidate))
@@ -50,17 +63,25 @@ def _resolve_js_import_path(candidate: Path) -> Path:
         if tsx_candidate.is_file():
             return tsx_candidate
 
+    declared_exts = _declared_language_suffixes(_JS_RESOLVE_EXTS)
+
     # Append extensions to the full filename, which covers extensionless imports,
     # multi-dot helpers, and Svelte 5 rune files like Foo.svelte.ts.
-    for ext in _JS_RESOLVE_EXTS:
+    # Native suffixes retain precedence over declared ones.
+    for ext in _JS_RESOLVE_EXTS + declared_exts:
         with_ext = candidate.parent / f"{candidate.name}{ext}"
         if with_ext.is_file():
             return with_ext
 
-    # Only fall back to directory indexes after file candidates lose.
+    # Only fall back to directory indexes after file candidates lose, native
+    # index names before declared ones.
     if candidate.is_dir():
         for index_name in _JS_INDEX_FILES:
             index_candidate = candidate / index_name
+            if index_candidate.is_file():
+                return index_candidate
+        for ext in declared_exts:
+            index_candidate = candidate / f"index{ext}"
             if index_candidate.is_file():
                 return index_candidate
 
@@ -1564,17 +1585,17 @@ def _parse_js_tree(path: Path):
         # .vue embeds the script in non-JS markup; mask it out and parse the
         # <script> with TS.
         vue_lang: str | None = None
-        if path.suffix == ".vue":
+        if effective_suffix(path) == ".vue":
             masked, vue_lang = _vue_mask_non_script(
                 path.read_text(encoding="utf-8", errors="replace")
             )
             source = masked.encode("utf-8")
         else:
             source = path.read_bytes()
-        use_ts = path.suffix in (".ts", ".mts", ".cts") or (
-            path.suffix == ".vue" and vue_lang not in ("js", "jsx")
+        use_ts = effective_suffix(path) in (".ts", ".mts", ".cts") or (
+            effective_suffix(path) == ".vue" and vue_lang not in ("js", "jsx")
         )
-        if path.suffix == ".tsx":
+        if effective_suffix(path) == ".tsx":
             # .tsx must use the JSX-aware TSX grammar, mirroring the engine's
             # _TSX_CONFIG (ts_language_fn="language_tsx"). Parsing .tsx with
             # language_typescript misparses JSX, and tree-sitter's error
@@ -1970,7 +1991,7 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
 def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolutionFacts) -> None:
     js_paths = [
         path for path in paths
-        if path.suffix in _JS_CACHE_BYPASS_SUFFIXES
+        if effective_suffix(path) in _JS_CACHE_BYPASS_SUFFIXES
     ]
     if not js_paths:
         return
@@ -2256,9 +2277,30 @@ def _python_imported_names(node, source: bytes) -> list[tuple[str, str]]:
             names.append((name, local))
     return names
 
+def _is_python_package_dir(directory: Path, suffixes: tuple[str, ...] = (".py",)) -> bool:
+    if any((directory / f"__init__{suffix}").is_file() for suffix in suffixes):
+        return True
+    return any(
+        (directory / f"__init__{suffix}").is_file()
+        for suffix in _declared_language_suffixes(suffixes)
+        if suffix not in suffixes
+    )
+
+
+def _probe_declared_python_module_candidate(candidate: Path) -> Path | None:
+    for suffix in _declared_language_suffixes((".py",)):
+        init_path = candidate / f"__init__{suffix}"
+        if init_path.is_file():
+            return init_path
+        if candidate.name:
+            module_path = candidate.with_suffix(suffix)
+            if module_path.is_file():
+                return module_path
+    return None
+
+
 def _probe_python_module_candidate(candidate: Path) -> Path | None:
-    """Resolve one module-path candidate to a .py file (dir+__init__, exact, or
-    with a .py suffix), or None."""
+    """Resolve native Python modules and packages before declared suffixes."""
     if candidate.is_dir():
         init_path = candidate / "__init__.py"
         if init_path.is_file():
@@ -2266,11 +2308,11 @@ def _probe_python_module_candidate(candidate: Path) -> Path | None:
     if candidate.is_file():
         return candidate
     if not candidate.name:
-        return None
+        return _probe_declared_python_module_candidate(candidate)
     py_candidate = candidate.with_suffix(".py")
     if py_candidate.is_file():
         return py_candidate
-    return None
+    return _probe_declared_python_module_candidate(candidate)
 
 
 def _resolve_python_module_path(module_name: str, current_path: Path, root: Path, level: int) -> Path | None:
@@ -2304,7 +2346,7 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
         # implicit-relative semantics), fabricating edges to what may be an
         # external dependency (#2072 review). A src-layout root (src/, no
         # __init__.py) is still probed.
-        if (anc / "__init__.py").is_file():
+        if _is_python_package_dir(anc):
             continue
         cand = _probe_python_module_candidate(anc / rel)
         if cand is not None:
@@ -2323,7 +2365,7 @@ def _resolve_python_namespace_dir(module_name: str, current_path: Path, root: Pa
     scan root, then sys.path-root ancestors) and returns only a directory that
     exists inside the root."""
     def _namespace(candidate: Path) -> "Path | None":
-        if not candidate.is_dir() or (candidate / "__init__.py").is_file():
+        if not candidate.is_dir() or _is_python_package_dir(candidate):
             return None
         try:
             _resolve_cached(candidate).relative_to(_resolve_cached(root))
@@ -2347,7 +2389,7 @@ def _resolve_python_namespace_dir(module_name: str, current_path: Path, root: Pa
             anc.relative_to(root)
         except ValueError:
             break  # left the scan root; stop walking up
-        if anc == root or (anc / "__init__.py").is_file():
+        if anc == root or _is_python_package_dir(anc):
             continue  # root already probed; a package dir is not a sys.path root (#2072)
         hit = _namespace(anc / rel)
         if hit is not None:
@@ -2381,7 +2423,7 @@ def _collect_python_symbol_resolution_facts(
     ambiguous_python_modules: set[str] | None = None,
 ) -> None:
     ambiguous_python_modules = ambiguous_python_modules or set()
-    py_paths = [path for path in paths if path.suffix == ".py"]
+    py_paths = [path for path in paths if effective_suffix(path) == ".py"]
     if not py_paths:
         return
 
@@ -2408,7 +2450,11 @@ def _collect_python_symbol_resolution_facts(
                 # (__init__.py) and an imported name matches a submodule file on
                 # disk, emit a file-level import edge to that submodule rather
                 # than only to the package.
-                pkg_dir = target_path.parent if target_path.name == "__init__.py" else None
+                pkg_dir = (
+                    target_path.parent
+                    if target_path.stem == "__init__" and effective_suffix(target_path) == ".py"
+                    else None
+                )
             else:
                 # A PEP 420 namespace package: the module names a directory with
                 # no __init__.py, so there is no module file to resolve to, but
@@ -2424,6 +2470,8 @@ def _collect_python_symbol_resolution_facts(
                     sub_py = pkg_dir / f"{imported_name}.py"
                     sub_pkg = pkg_dir / imported_name / "__init__.py"
                     submodule = sub_py if sub_py.is_file() else (sub_pkg if sub_pkg.is_file() else None)
+                    if submodule is None:
+                        submodule = _probe_declared_python_module_candidate(pkg_dir / imported_name)
                     if submodule is not None:
                         imported_module = (
                             f"{module_name}.{imported_name}"
@@ -2441,7 +2489,7 @@ def _collect_python_symbol_resolution_facts(
                 facts.imports.append(
                     _SymbolImportFact(path, local_name, target_path, imported_name, line)
                 )
-                if path.name == "__init__.py":
+                if path.stem == "__init__":
                     facts.exports.append(
                         _SymbolExportFact(
                             path,
