@@ -30,6 +30,10 @@ Implementation notes:
     cap fires so very wide directories stay usable.
   - The first-level palette is auto-populated from the live top-level
     directories so each gets a stable accent colour.
+  - Expand All is bounded by ``DEFAULT_EXPAND_ALL_BUDGET`` nodes. A full
+    expansion of a large graph mounts every descendant in a single D3
+    join and wedges the renderer, so the button fills the budget
+    breadth-first and says how many nodes it left collapsed.
 """
 
 from __future__ import annotations
@@ -41,6 +45,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 DEFAULT_MAX_CHILDREN = 200
+# Expand All mounts every descendant in one D3 join. Past a few thousand
+# nodes that blocks the renderer for good, so the button expands
+# breadth-first up to this many nodes and reports what it left closed.
+DEFAULT_EXPAND_ALL_BUDGET = 5000
 
 
 # ── Tree builder (filesystem hierarchy → JSON) ──────────────────
@@ -216,6 +224,11 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     .controls {{
       margin: 20px 0 15px 24px;
     }}
+    #expand-status {{
+      margin-left: 4px;
+      font-size: 0.9rem;
+      color: #4a5b6b;
+    }}
     button {{
       margin-right: 10px;
       padding: 8px 18px;
@@ -274,6 +287,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     <button onclick="expandAll()">Expand All</button>
     <button onclick="collapseAll()">Collapse All</button>
     <button onclick="resetView()">Reset View</button>
+    <span id="expand-status"></span>
   </div>
   <div id="tree-container">
     <svg id="tree-svg" width="{svg_width}" height="{svg_height}"></svg>
@@ -281,6 +295,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <script>
+    const EXPAND_ALL_NODE_BUDGET = {expand_all_budget};
     const initialJsonData = {data_json};
 
     function transformData(jsonData) {{
@@ -377,7 +392,30 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
     function collapseBranch(d) {{ if (d.children) {{ d._children = d.children; d._children.forEach(collapseBranch); d.children = null; }} }}
     function expandBranch(d) {{ if (d._children) {{ d.children = d._children; d._children = null; }} if (d.children) {{ d.children.forEach(expandBranch); }} }}
-    window.expandAll = () => {{ expandBranch(rootNode); updateTree(rootNode); }};
+    function countExpanded(d) {{ const kids = d.children || d._children; if (!kids) return 1; let n = 1; for (const k of kids) {{ n += countExpanded(k); }} return n; }}
+    function expandWithinBudget(d, budget) {{
+      let mounted = 1;
+      const queue = [d];
+      let head = 0;
+      while (head < queue.length) {{
+        const cur = queue[head++];
+        const kids = cur.children || cur._children;
+        if (!kids || !kids.length) continue;
+        if (mounted + kids.length > budget) continue;
+        if (cur._children) {{ cur.children = cur._children; cur._children = null; }}
+        mounted += kids.length;
+        for (const k of cur.children) {{ queue.push(k); }}
+      }}
+      return mounted;
+    }}
+    function setExpandStatus(msg) {{ const el = document.getElementById("expand-status"); if (el) {{ el.textContent = msg; }} }}
+    window.expandAll = () => {{
+      const total = countExpanded(rootNode);
+      if (total <= EXPAND_ALL_NODE_BUDGET) {{ expandBranch(rootNode); updateTree(rootNode); setExpandStatus(""); return; }}
+      const mounted = expandWithinBudget(rootNode, EXPAND_ALL_NODE_BUDGET);
+      updateTree(rootNode);
+      setExpandStatus(`Expanded ${{mounted.toLocaleString()}} of ${{total.toLocaleString()}} nodes. Click any node to open the rest.`);
+    }};
     window.collapseAll = () => {{ if (rootNode.children) {{ rootNode.children.forEach(collapseBranch); }} updateTree(rootNode); }};
     window.resetView = () => {{ if (rootNode.children) {{ rootNode.children.forEach(d_child => {{ if (d_child.children || d_child._children) {{ collapseBranch(d_child); }} }}); }} if (rootNode._children && !rootNode.children) {{ rootNode.children = rootNode._children; rootNode._children = null; }} updateTree(rootNode); }};
 
@@ -567,6 +605,7 @@ def emit_html(
     header: str,
     svg_width: int = 6000,
     svg_height: int = 8000,
+    expand_all_budget: int = DEFAULT_EXPAND_ALL_BUDGET,
 ) -> str:
     # Escape </script> sequences so embedded JSON cannot break out of the
     # <script> tag, and HTML-escape values that land in <title>/<h1>.
@@ -576,6 +615,7 @@ def emit_html(
         header=_html.escape(header),
         svg_width=svg_width,
         svg_height=svg_height,
+        expand_all_budget=int(expand_all_budget),
         data_json=data_json,
     )
 
