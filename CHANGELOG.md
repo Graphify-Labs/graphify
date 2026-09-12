@@ -12,6 +12,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.58 (2026-09-10)
 
+- Feature: ship a native Oh My Pi guard package with `graphify omp install`; reuse the installed hook-guard policy for bounded tool-call denials and per-run context guidance without building indexes.
 - Fix: a call to a Python function defined nested inside another function now resolves to that inner definition per lexical scope, instead of leaking to a same-named function elsewhere; direct recursion is preserved as a self-loop (#3410, thanks @hopstreax).
 - Fix: submodule imports inside a PEP 420 namespace package (a directory with no `__init__.py`) now resolve to the target module instead of being dropped (#3429, thanks @flaukowski).
 - Fix: a bare-name import of a module sitting next to the importing file (a flat script dir with no package) now resolves to that sibling — matching CPython's `sys.path[0]` behavior — without over-resolving a genuine third-party name (#3430, thanks @hopstreax).

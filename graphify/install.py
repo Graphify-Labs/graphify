@@ -2079,6 +2079,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "kilo",
     "kiro",
     "opencode",
+    "omp",
     "pi",
     "skills",
     "trae",
@@ -2096,6 +2097,25 @@ def dispatch_install_cli(cmd: str) -> bool:
     """
     if cmd not in _CLI_INSTALL_COMMANDS:
         return False
+    if cmd == "omp":
+        # OMP owns package registration; do not duplicate its config/paths here.
+        args = sys.argv[2:]
+        if args not in (["path"], ["install"]):
+            print("Usage: graphify omp [path|install]", file=sys.stderr)
+            sys.exit(1)
+        package_path = Path(__file__).resolve().parent / "omp"
+        if args == ["path"]:
+            print(package_path)
+            return True
+        omp = shutil.which("omp")
+        if not omp:
+            print("error: install Oh My Pi (omp) and add it to PATH first", file=sys.stderr)
+            sys.exit(1)
+        import subprocess
+        result = subprocess.run([omp, "plugin", "install", str(package_path)], check=False)
+        if result.returncode:
+            sys.exit(result.returncode)
+        return True
     if cmd == "install":
         # Default to windows platform on Windows, claude elsewhere
         default_platform = "windows" if platform.system() == "Windows" else "claude"

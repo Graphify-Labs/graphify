@@ -517,7 +517,7 @@ def _run_cli() -> None:
     # Skip during install/uninstall (hook writes trigger a fresh check anyway).
     # Skip during hook-check — it runs on every editor tool use and must be silent.
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
-    _silent_cmds = {"install", "uninstall", "hook-check", "hook-guard"}
+    _silent_cmds = {"install", "uninstall", "hook-check", "hook-guard", "omp"}
     if not any(arg in _silent_cmds for arg in sys.argv):
         # Resolve each platform's real user-scope destination so per-platform
         # overrides (gemini, opencode, devin, antigravity, amp) check the dir
@@ -536,6 +536,7 @@ def _run_cli() -> None:
         print("  install [--platform P]  copy skill to platform config dir (claude|windows|codebuddy|codex|opencode|aider|amp|agents|claw|droid|trae|trae-cn|gemini|cursor|antigravity|hermes|kiro|pi|devin)")
         print("  uninstall               remove graphify from all detected platforms in one shot")
         print("    --purge                 also delete graphify-out/ directory")
+        print("  omp [install|path]      install the native Oh My Pi guard, or print its package path")
         print("  path \"A\" \"B\"            shortest path between two nodes in graph.json")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  explain \"X\"             plain-language explanation of a node and its neighbors")
