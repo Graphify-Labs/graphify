@@ -27,6 +27,15 @@ def _build_csharp_type_def_index(all_nodes: list[dict]) -> dict[tuple[str, str],
             metadata = {}
         if metadata.get("is_nested_type"):
             continue
+        # A member is not a type. Property nodes (#3006) and enum member nodes
+        # (#3063) are sourced `.cs` code nodes with a plain identifier label, so
+        # they entered this index and competed with real declarations for a
+        # `(namespace, name)` key. The winner is the first entry in a
+        # (source_file, source_location, id) sort, which made `public Widget
+        # Widget { get; set; }` in an earlier-sorting file capture every
+        # reference to the type `Widget` across the corpus.
+        if metadata.get("is_member"):
+            continue
         nid = node.get("id")
         label = node.get("label")
         if not (isinstance(nid, str) and nid and isinstance(label, str) and label):
