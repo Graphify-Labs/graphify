@@ -1838,6 +1838,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         for dirpath, dirnames, filenames in os.walk(
             scan_root, followlinks=follow_symlinks, onerror=_on_walk_error
         ):
+            dirnames.sort()
+            filenames.sort()
             dp = Path(dirpath)
             if follow_symlinks and os.path.islink(dirpath):
                 real = os.path.realpath(dirpath)
