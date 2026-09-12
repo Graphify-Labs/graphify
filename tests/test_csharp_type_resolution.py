@@ -252,7 +252,7 @@ def test_csharp_import_edges_resolve_internal_namespace_and_alias(tmp_path: Path
         (kind, fqn, target.get("type") if target else None)
         for kind, fqn, target in imports
     ]
-    assert ("namespace", "UnityEngine", None) in [
+    assert ("namespace", "UnityEngine", "module") in [
         (kind, fqn, target.get("type") if target else None)
         for kind, fqn, target in imports
     ]
@@ -260,11 +260,11 @@ def test_csharp_import_edges_resolve_internal_namespace_and_alias(tmp_path: Path
         (kind, fqn, target.get("label") if target else None)
         for kind, fqn, target in imports
     ]
-    assert ("alias", "System.Math", None) in [
+    assert ("alias", "System.Math", "system_math") in [
         (kind, fqn, target.get("label") if target else None)
         for kind, fqn, target in imports
     ]
-    assert ("static", "Game.Core.Damage", None) in [
+    assert ("static", "Game.Core.Damage", "game_core_damage") in [
         (kind, fqn, target.get("label") if target else None)
         for kind, fqn, target in imports
     ]

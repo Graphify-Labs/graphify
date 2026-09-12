@@ -136,6 +136,22 @@ def test_prune_repo_returns_zero_if_not_present():
     assert G.number_of_nodes() == 1
 
 
+def test_prune_repo_preserves_shared_external_node_until_last_repo():
+    from graphify.build import prune_repo_from_graph
+    G = nx.Graph()
+    G.add_node("repoA::userservice", repo="repoA", label="UserService")
+    G.add_node("typing", external=True, repos=["repoA", "repoB"], label="typing")
+
+    removed = prune_repo_from_graph(G, "repoA")
+    assert removed == 1  # only repoA::userservice; typing still referenced by repoB
+    assert "typing" in G.nodes
+    assert G.nodes["typing"]["repos"] == ["repoB"]
+
+    removed = prune_repo_from_graph(G, "repoB")
+    assert removed == 1
+    assert "typing" not in G.nodes
+
+
 # ── global_graph.py ───────────────────────────────────────────────────────────
 
 def test_global_add_creates_global_graph(tmp_path):
