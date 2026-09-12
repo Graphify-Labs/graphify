@@ -5,7 +5,6 @@ import sys
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
 import networkx as nx
 from networkx.readwrite import json_graph as _jg
 
