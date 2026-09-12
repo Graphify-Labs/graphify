@@ -56,11 +56,11 @@ def _resolve_js_import_path(candidate: Path) -> Path:
     # TS ESM convention: imports often spell .js/.jsx while source is .ts/.tsx.
     if candidate.suffix == ".js":
         ts_candidate = candidate.with_suffix(".ts")
-        if ts_candidate.is_file():
+        if ts_candidate.is_file() and effective_suffix(ts_candidate) in _JS_CACHE_BYPASS_SUFFIXES:
             return ts_candidate
     elif candidate.suffix == ".jsx":
         tsx_candidate = candidate.with_suffix(".tsx")
-        if tsx_candidate.is_file():
+        if tsx_candidate.is_file() and effective_suffix(tsx_candidate) in _JS_CACHE_BYPASS_SUFFIXES:
             return tsx_candidate
 
     declared_exts = _declared_language_suffixes(_JS_RESOLVE_EXTS)
@@ -70,7 +70,7 @@ def _resolve_js_import_path(candidate: Path) -> Path:
     # Native suffixes retain precedence over declared ones.
     for ext in _JS_RESOLVE_EXTS + declared_exts:
         with_ext = candidate.parent / f"{candidate.name}{ext}"
-        if with_ext.is_file():
+        if with_ext.is_file() and effective_suffix(with_ext) in _JS_CACHE_BYPASS_SUFFIXES:
             return with_ext
 
     # Only fall back to directory indexes after file candidates lose, native
@@ -78,7 +78,7 @@ def _resolve_js_import_path(candidate: Path) -> Path:
     if candidate.is_dir():
         for index_name in _JS_INDEX_FILES:
             index_candidate = candidate / index_name
-            if index_candidate.is_file():
+            if index_candidate.is_file() and effective_suffix(index_candidate) in _JS_CACHE_BYPASS_SUFFIXES:
                 return index_candidate
         for ext in declared_exts:
             index_candidate = candidate / f"index{ext}"
@@ -2278,7 +2278,11 @@ def _python_imported_names(node, source: bytes) -> list[tuple[str, str]]:
     return names
 
 def _is_python_package_dir(directory: Path, suffixes: tuple[str, ...] = (".py",)) -> bool:
-    if any((directory / f"__init__{suffix}").is_file() for suffix in suffixes):
+    if any(
+        (directory / f"__init__{suffix}").is_file()
+        and effective_suffix(directory / f"__init__{suffix}") in suffixes
+        for suffix in suffixes
+    ):
         return True
     return any(
         (directory / f"__init__{suffix}").is_file()
@@ -2303,14 +2307,14 @@ def _probe_python_module_candidate(candidate: Path) -> Path | None:
     """Resolve native Python modules and packages before declared suffixes."""
     if candidate.is_dir():
         init_path = candidate / "__init__.py"
-        if init_path.is_file():
+        if init_path.is_file() and effective_suffix(init_path) == ".py":
             return init_path
     if candidate.is_file():
         return candidate
     if not candidate.name:
         return _probe_declared_python_module_candidate(candidate)
     py_candidate = candidate.with_suffix(".py")
-    if py_candidate.is_file():
+    if py_candidate.is_file() and effective_suffix(py_candidate) == ".py":
         return py_candidate
     return _probe_declared_python_module_candidate(candidate)
 

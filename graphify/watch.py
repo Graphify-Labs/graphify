@@ -2387,13 +2387,6 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             if event.is_directory or _is_read_only_event(event):
                 return
             path = Path(os.fsdecode(event.src_path))
-            # Check .graphifyignore BEFORE the extension/dotfile/out filters so
-            # the cheapest short-circuit for users with broad ignore patterns
-            # (node_modules/, .venv/, build/, …) fires first. _is_ignored
-            # tolerates absolute paths outside watch_root via its internal
-            # relative_to guard, so a stray symlinked event won't raise.
-            if ignore_patterns and _is_ignored(path, watch_root_for_ignore, ignore_patterns):
-                return
             # Atomic replacement reports the new root config in dest_path.
             dest_raw = getattr(event, "dest_path", None)
             dest_path = Path(os.fsdecode(dest_raw)) if dest_raw else None
@@ -2402,6 +2395,13 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
                 config_changed = True
                 last_trigger = time.monotonic()
                 pending = True
+                return
+            # Check .graphifyignore BEFORE the extension/dotfile/out filters so
+            # the cheapest short-circuit for users with broad ignore patterns
+            # (node_modules/, .venv/, build/, …) fires first. _is_ignored
+            # tolerates absolute paths outside watch_root via its internal
+            # relative_to guard, so a stray symlinked event won't raise.
+            if ignore_patterns and _is_ignored(path, watch_root_for_ignore, ignore_patterns):
                 return
             set_language_overrides(override_snapshot)
             if effective_suffix(path).lower() not in _WATCHED_EXTENSIONS:

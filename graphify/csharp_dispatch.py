@@ -26,7 +26,7 @@ forced once there is a single implementer, but the source text never names it.
 """
 from __future__ import annotations
 
-_CSHARP_SUFFIXES = (".cs",)
+from graphify.extractors.csharp import _is_cs_file
 
 DISPATCH_RELATION = "dispatches_to"
 
@@ -44,7 +44,7 @@ def _is_csharp(node: dict | None) -> bool:
     if not node:
         return False
     source_file = node.get("source_file")
-    return bool(source_file) and str(source_file).endswith(_CSHARP_SUFFIXES)
+    return bool(source_file) and _is_cs_file(str(source_file))
 
 
 def _method_label(node: dict) -> str:
@@ -74,11 +74,11 @@ def resolve_csharp_interface_dispatch(
     place, since the call site really does name the interface.
     """
     if not any(
-        str(result.get("source_file", "")).endswith(_CSHARP_SUFFIXES)
+        _is_csharp(result)
         for result in per_file
         if isinstance(result, dict)
     ) and not any(
-        str(n.get("source_file", "")).endswith(_CSHARP_SUFFIXES) for n in all_nodes
+        _is_csharp(n) for n in all_nodes
     ):
         return
 
