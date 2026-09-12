@@ -4714,6 +4714,106 @@ def _resolve_kotlin_qualified_calls(
         })
 
 
+def _resolve_go_member_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve Go member calls (``g.Greet()``) through the receiver's declared type.
+
+    The shared cross-file pass skips member calls, so a method call on a receiver whose
+    type is declared in another file resolved to nothing. The per-file ``go_type_table``
+    names the declared type of every struct field, parameter (the method receiver
+    included), ``var x T`` and ``x := T{}`` binding; this pass looks the receiver up
+    there, takes the single declaration of that type, and emits the ``calls`` edge to its
+    method. Always INFERRED: the type comes from a declaration, never from the call site.
+
+    Names are matched case-sensitively, unlike the sibling resolvers. Go exports by
+    capitalisation, so `Run` and `run` on one type are two different methods with two
+    different visibilities, and folding them would pick whichever came last.
+
+    A receiver typed to a type this corpus declares nowhere is parked on the caller for
+    a merged graph to finish (#3152).
+    """
+    raw = [
+        rc
+        for result in per_file
+        for rc in result.get("raw_calls", [])
+        if rc.get("language") == "go" and rc.get("is_member_call")
+        and rc.get("member_receiver") and rc.get("callee") and rc.get("caller_nid")
+    ]
+    if not raw:
+        return
+    type_table_by_file: dict[str, dict[str, str]] = {}
+    for result in per_file:
+        tt = result.get("go_type_table")
+        if tt and tt.get("path"):
+            type_table_by_file[tt["path"]] = tt.get("table", {})
+
+    def _key(label: object) -> str:
+        return str(label or "").strip().removeprefix(".").removesuffix("()")
+
+    # A Go type node id folds in the package directory, so two packages declaring the
+    # same name stay two entries and the single-definition guard below bails: without
+    # import evidence neither one is the answer.
+    # Only Go declarations count: `_callable_class` is corpus-wide, so a same-named Java
+    # class would both answer a Go receiver and hide that nothing local declares it.
+    type_def_nids: dict[str, list[str]] = {}
+    node_by_id: dict[str, dict] = {}
+    for n in all_nodes:
+        node_by_id[n.get("id")] = n
+        if n.get("_callable_class") and _lang_family(n.get("source_file")) == "go":
+            type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
+
+    method_index: dict[tuple[str, str], list[str]] = {}
+    for e in all_edges:
+        if e.get("relation") != "method":
+            continue
+        tnode = node_by_id.get(e.get("target"))
+        if tnode is not None:
+            method_index.setdefault(
+                (e.get("source"), _key(tnode.get("label", ""))), []).append(e["target"])
+
+    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    for rc in raw:
+        receiver, callee, caller = rc["member_receiver"], rc["callee"], rc["caller_nid"]
+        # The enclosing method's own receiver is typed by its declaration, which beats the
+        # flat table: two types in one file may both name their receiver `s`.
+        type_name = rc.get("receiver_type") or type_table_by_file.get(
+            rc.get("source_file", ""), {}).get(receiver)
+        if not type_name or type_name in _LANGUAGE_BUILTIN_GLOBALS:
+            continue
+        type_defs = type_def_nids.get(_key(type_name), [])
+        if not type_defs:
+            # Declared nowhere here — usually "in a repo this build does not contain",
+            # so park it for the merge (#3152). The extractor's language tag already
+            # says who is asking, so no suffix sniff is needed.
+            _park_unresolved_member_call(node_by_id.get(caller), callee, type_name, "go", rc)
+            continue
+        if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
+            continue
+        targets = method_index.get((type_defs[0], _key(callee)), [])
+        if len(targets) != 1:
+            continue
+        target = targets[0]
+        if target == caller or (caller, target) in existing_pairs:
+            continue
+        existing_pairs.add((caller, target))
+        all_edges.append({
+            "source": caller,
+            "target": target,
+            "relation": "calls",
+            "context": "call",
+            "confidence": "INFERRED",
+            # The rubric's discrete INFERRED scale (references/extraction-spec.md):
+            # a single-definition type-table hit is the high-confidence rung.
+            "confidence_score": 0.85,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
 # Kotlin import-target resolution runs EARLY (directly in extract(), before the
 # shared call pass builds its import-evidence index) — registering it in the
 # tail registry would rewrite the targets after promotion already read them.
@@ -4788,6 +4888,12 @@ register_language_resolver(
     LanguageResolver(
         "kotlin_qualified_calls", frozenset({".kt", ".kts"}), _resolve_kotlin_qualified_calls
     )
+)
+# Go receiver-typed member-call resolution: `g.Greet()` where the method is declared in
+# another file. The shared pass skips member calls, so these had no edge unless the bare
+# method name happened to match a symbol in the caller's own file.
+register_language_resolver(
+    LanguageResolver("go_member_calls", frozenset({".go"}), _resolve_go_member_calls)
 )
 # C# qualified construction (#2997): `new A.B.Cache()` arrives as the bare name,
 # so a colliding `Cache` elsewhere makes it ambiguous. Runs in the tail registry
