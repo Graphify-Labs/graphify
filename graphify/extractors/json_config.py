@@ -91,11 +91,15 @@ def extract_json(path: Path) -> dict:
         "optionalDependencies", "bundleDependencies", "bundledDependencies",
     })
 
-    def add_node(nid: str, label: str, line: int, file_type: str = "code") -> None:
+    def add_node(nid: str, label: str, line: int, file_type: str = "code",
+                 node_type: str | None = None) -> None:
         if nid and nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({"id": nid, "label": label, "file_type": file_type,
-                          "source_file": str_path, "source_location": f"L{line}"})
+            node = {"id": nid, "label": label, "file_type": file_type,
+                    "source_file": str_path, "source_location": f"L{line}"}
+            if node_type:
+                node["type"] = node_type
+            nodes.append(node)
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  context: str | None = None) -> None:
@@ -217,9 +221,18 @@ def extract_json(path: Path) -> dict:
                     #    `types` could then be collapsed onto a same-named local
                     #    module by build.py's alias index -- the #1638 failure
                     #    mode reached through a different door.
+                    #
+                    # The ref node models the registry package itself, so it is
+                    # stamped `type="module"` (#3237): several manifests
+                    # declaring the same package share ONE anchor node under the
+                    # #1327 module exemption in _disambiguate_colliding_node_ids
+                    # instead of being salted apart per file, and a JS
+                    # `import ... from "<pkg>"` (which already targets
+                    # _make_id("ref", raw)) lands on it instead of dangling.
                     dep_nid = _make_id("ref", key)
                     if dep_nid:
-                        add_node(dep_nid, key, line, file_type="concept")
+                        add_node(dep_nid, key, line, file_type="concept",
+                                 node_type="module")
                         add_edge(file_nid, dep_nid, "imports", line, context="import")
 
     # Entry: find root document → object
