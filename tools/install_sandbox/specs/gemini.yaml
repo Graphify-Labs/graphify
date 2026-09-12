@@ -1,0 +1,45 @@
+universal_uninstall_scopes: [user, project]
+scopes:
+  user:
+    uninstall_mode: direct
+    effects:
+      - kind: skill
+        root: home
+        path: .gemini/skills/graphify/SKILL.md
+        source: graphify/skill.md
+        reference_bundle: claude
+      - kind: section
+        root: user_cwd
+        path: GEMINI.md
+        marker: "## graphify"
+        source: graphify/always_on/gemini-md.md
+      - kind: json
+        root: user_cwd
+        path: .gemini/settings.json
+        preserves_backup: true
+        entries:
+          hooks:
+            BeforeTool:
+              - matcher: read_file|list_directory
+        required_text: [graphify, hook-guard]
+  project:
+    effects:
+      - kind: skill
+        root: project
+        path: .gemini/skills/graphify/SKILL.md
+        source: graphify/skill.md
+        reference_bundle: claude
+      - kind: section
+        root: project
+        path: GEMINI.md
+        marker: "## graphify"
+        source: graphify/always_on/gemini-md.md
+      - kind: json
+        root: project
+        path: .gemini/settings.json
+        preserves_backup: true
+        entries:
+          hooks:
+            BeforeTool:
+              - matcher: read_file|list_directory
+        required_text: [graphify, hook-guard]

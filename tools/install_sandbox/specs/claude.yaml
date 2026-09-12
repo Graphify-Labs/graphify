@@ -1,0 +1,48 @@
+universal_uninstall_scopes: [user, project]
+scopes:
+  user:
+    uninstall_mode: direct
+    effects:
+      - kind: skill
+        root: home
+        path: .claude/skills/graphify/SKILL.md
+        source: graphify/skill.md
+        reference_bundle: claude
+      - kind: section
+        root: home
+        path: .claude/CLAUDE.md
+        marker: "# graphify"
+        required_text:
+          - "- **graphify**"
+          - "Trigger: `/graphify`"
+          - "~/.claude/skills/graphify/SKILL.md"
+  project:
+    effects:
+      - kind: skill
+        root: project
+        path: .claude/skills/graphify/SKILL.md
+        source: graphify/skill.md
+        reference_bundle: claude
+      - kind: section
+        root: project
+        path: .claude/CLAUDE.md
+        marker: "# graphify"
+        required_text:
+          - "- **graphify**"
+          - "Trigger: `/graphify`"
+          - ".claude/skills/graphify/SKILL.md"
+      - kind: section
+        root: project
+        path: CLAUDE.md
+        marker: "## graphify"
+        source: graphify/always_on/claude-md.md
+      - kind: json
+        root: project
+        path: .claude/settings.json
+        preserves_backup: true
+        entries:
+          hooks:
+            PreToolUse:
+              - matcher: Bash|Grep
+              - matcher: Read|Glob
+        required_text: [graphify, hook-guard]

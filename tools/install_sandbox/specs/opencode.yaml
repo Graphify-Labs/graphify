@@ -1,0 +1,41 @@
+universal_uninstall_scopes: [user]
+scopes:
+  user:
+    effects:
+      - kind: skill
+        root: home
+        path: .config/opencode/skills/graphify/SKILL.md
+        source: graphify/skill-opencode.md
+        reference_bundle: opencode
+      - kind: reminder_plugin
+        root: user_cwd
+        path: .opencode/plugins/graphify.js
+        required_text: ["[graphify]", "run graphify query with your question"]
+        forbidden_text: ["`", "$(", "&&"]
+      - kind: json
+        root: user_cwd
+        path: .opencode/opencode.json
+        entries:
+          plugin: [.opencode/plugins/graphify.js]
+  project:
+    effects:
+      - kind: skill
+        root: project
+        path: .opencode/skills/graphify/SKILL.md
+        source: graphify/skill-opencode.md
+        reference_bundle: opencode
+      - kind: section
+        root: project
+        path: AGENTS.md
+        marker: "## graphify"
+        source: graphify/always_on/agents-md.md
+      - kind: reminder_plugin
+        root: project
+        path: .opencode/plugins/graphify.js
+        required_text: ["[graphify]", "run graphify query with your question"]
+        forbidden_text: ["`", "$(", "&&"]
+      - kind: json
+        root: project
+        path: .opencode/opencode.json
+        entries:
+          plugin: [.opencode/plugins/graphify.js]
