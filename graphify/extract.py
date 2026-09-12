@@ -41,6 +41,7 @@ from graphify.extractors.csharp import (
     _resolve_cross_file_csharp_imports,
     _resolve_csharp_type_references,
 )
+from graphify.extractors.css import extract_css  # noqa: F401
 from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
@@ -5872,6 +5873,8 @@ _DISPATCH: dict[str, Any] = {
     ".vue": extract_vue,
     ".svelte": extract_svelte,
     ".astro": extract_astro,
+    ".css": extract_css,
+    ".scss": extract_css,
     ".dart": extract_dart,
     ".ml": extract_ocaml,
     ".mli": extract_ocaml,
@@ -6330,6 +6333,110 @@ def _extract_sequential(
         print(f"  AST extraction: {_done}/{_done} uncached files (100%)", flush=True)
 
 
+def _resolve_css_tokens(
+    raw_token_uses: list[dict],
+    resolution_nodes: list[dict],
+    all_edges: list[dict],
+    *,
+    resolution_context_edges: list[dict] | None = None,
+) -> None:
+    """Resolve CSS custom property references (var(--name)) to design-token definitions.
+
+    Emits:
+        consumer stylesheet -> uses_token -> token node
+    with confidence 'EXTRACTED'.
+
+    Resolution rules:
+    - same-file matching definition -> resolve;
+    - exactly one matching definition across available graph/resolution nodes -> resolve;
+    - multiple matching definitions -> emit nothing (conservative, no fan-out);
+    - no matching definition -> emit nothing.
+    """
+    if not raw_token_uses or not resolution_nodes:
+        return
+
+    def _norm_sf(sf: str | Path | None) -> str:
+        if not sf:
+            return ""
+        try:
+            return str(Path(sf).resolve())
+        except Exception:
+            return str(sf).replace("\\", "/")
+
+    # Map source_file -> file node id
+    sf_to_file_nid: dict[str, str] = {}
+    for n in resolution_nodes:
+        sf = n.get("source_file")
+        if sf and n.get("label") == Path(str(sf)).name:
+            norm = _norm_sf(sf)
+            sf_to_file_nid.setdefault(str(sf), n["id"])
+            sf_to_file_nid.setdefault(norm, n["id"])
+
+    # Index token definition nodes
+    tokens_by_label: dict[str, list[dict]] = {}
+    tokens_by_file_and_label: dict[tuple[str, str], list[dict]] = {}
+    for n in resolution_nodes:
+        if n.get("node_kind") == "token":
+            lbl = n.get("label", "")
+            if lbl.startswith("--"):
+                tokens_by_label.setdefault(lbl, []).append(n)
+                sf = n.get("source_file")
+                if sf:
+                    tokens_by_file_and_label.setdefault((_norm_sf(sf), lbl), []).append(n)
+
+    seen_edges = {
+        (e["source"], e["target"], e.get("relation"))
+        for e in (all_edges + list(resolution_context_edges or []))
+    }
+
+    for tu in raw_token_uses:
+        token_name = tu.get("token_name", "")
+        if not token_name:
+            continue
+
+        source_file = tu.get("source_file", "")
+        norm_sf = _norm_sf(source_file)
+
+        # 1. Check same-file match first
+        target_node: dict | None = None
+        same_file_matches = tokens_by_file_and_label.get((norm_sf, token_name), [])
+        if same_file_matches:
+            target_node = same_file_matches[0]
+        else:
+            # 2. Exactly one matching definition across available graph/resolution nodes
+            global_matches = tokens_by_label.get(token_name, [])
+            if len(global_matches) == 1:
+                target_node = global_matches[0]
+            else:
+                # 0 matches or multiple ambiguous matches -> emit nothing
+                continue
+
+        target_nid = target_node.get("id")
+        if not target_nid:
+            continue
+
+        consumer_nid = sf_to_file_nid.get(source_file) or sf_to_file_nid.get(norm_sf) or tu.get("source_nid")
+        if not consumer_nid:
+            continue
+
+        edge_key = (consumer_nid, target_nid, "uses_token")
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+
+        line = tu.get("line")
+        all_edges.append({
+            "source": consumer_nid,
+            "target": target_nid,
+            "relation": "uses_token",
+            "confidence": "EXTRACTED",
+            "confidence_score": 1.0,
+            "source_file": source_file,
+            "source_location": f"L{line}" if line else None,
+            "weight": 1.0,
+        })
+
+
 _PARALLEL_THRESHOLD = 20
 
 
@@ -6652,10 +6759,12 @@ def extract(
     all_nodes: list[dict] = []
     all_edges: list[dict] = []
     all_raw_calls: list[dict] = []
+    all_raw_token_uses: list[dict] = []
     for result in per_file:
         all_nodes.extend(result.get("nodes", []))
         all_edges.extend(result.get("edges", []))
         all_raw_calls.extend(result.get("raw_calls", []))
+        all_raw_token_uses.extend(result.get("raw_token_uses", []))
     # Function / method / class def ids for the cross-file indirect_call callable
     # guard. Built from the `_callable` node marker AFTER the id-remap / disambiguation
     # passes below (which rewrite node ids), so it can never go stale — see the
@@ -6876,6 +6985,10 @@ def extract(
             cn = rc.get("caller_nid")
             if cn in id_remap:
                 rc["caller_nid"] = id_remap[cn]
+        for tu in all_raw_token_uses:
+            sn = tu.get("source_nid")
+            if sn in id_remap:
+                tu["source_nid"] = id_remap[sn]
         # swift_extensions[].nid is the same kind of id carrier as caller_nid
         # above (cache.py remaps both), consumed by _merge_swift_extensions far
         # below. Left stale it matches no node, so whether the extension merge
@@ -6951,6 +7064,10 @@ def extract(
                 cn = rc.get("caller_nid")
                 if cn in sym_remap:
                     rc["caller_nid"] = sym_remap[cn]
+            for tu in all_raw_token_uses:
+                sn = tu.get("source_nid")
+                if sn in sym_remap:
+                    tu["source_nid"] = sym_remap[sn]
             # Same for swift_extensions[].nid (see the id_remap pass above).
             for result in per_file:
                 for ext in result.get("swift_extensions", []) or []:
@@ -7573,6 +7690,14 @@ def extract(
         all_edges.extend(_rl_edges[_e0:])
     else:
         run_language_resolvers(paths, per_file, all_nodes, all_edges)
+
+    if all_raw_token_uses:
+        _resolve_css_tokens(
+            all_raw_token_uses,
+            resolution_nodes,
+            all_edges,
+            resolution_context_edges=resolution_context_edges,
+        )
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a
