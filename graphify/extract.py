@@ -6252,7 +6252,21 @@ def _extract_parallel(
                     # "skipped" file would leave the graph silently partial.
                     # Drop the queued work and abort the run.
                     from graphify.memory_budget import budget_error
+                    # Abort NOW. `shutdown(wait=False)` cancels queued futures
+                    # but does not stop the other workers already running — and
+                    # because this raises out of the `with ProcessPoolExecutor`
+                    # block, the executor's __exit__ would then call
+                    # shutdown(wait=True) and block on those same workers, each
+                    # potentially churning the memory the budget just tripped
+                    # on (#3011 review). Terminate the live workers first so the
+                    # implicit exit-shutdown finds them already gone and returns
+                    # at once, surfacing the budget error promptly.
                     pool.shutdown(wait=False, cancel_futures=True)
+                    for _proc in list(getattr(pool, "_processes", {}).values()):
+                        try:
+                            _proc.terminate()
+                        except Exception:
+                            pass
                     raise budget_error(
                         exc, phase=f"AST extraction of {work_items[futures[future]][1]}"
                     ) from exc
