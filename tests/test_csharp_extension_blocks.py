@@ -223,6 +223,70 @@ def test_qualified_receiver_type_keeps_its_qualifier(tmp_path):
     assert "Acme" not in {n["label"] for n in r["nodes"] if n.get("type") != "namespace"}
 
 
+@pytest.mark.parametrize("header", [
+    "extension<T>(global::Acme.IFoo<T> spec) where T : class",   # ERROR shape, dotted
+    "extension<T>(Alias::IFoo<T> spec) where T : class",         # ERROR shape, using-alias
+    "extension(global::Acme.IFoo spec)",                          # constructor shape, dotted
+    "extension(Alias::IFoo spec)",                                # constructor shape, using-alias
+])
+def test_alias_qualified_receiver_resolves_to_the_real_type(tmp_path, header):
+    """`global::A.B` is `A.B` at the root and `X::B` is what `X.B` names, so the
+    receiver must reach the real definition — not a dangling stub, and never a
+    phantom `global` / `Alias` type node."""
+    calls, r = _calls(tmp_path, {"S.cs": (
+        "using Alias = Acme;\n"
+        "namespace Acme { public interface IFoo { string? Next(); } }\n"
+        "namespace Acme { public class Other { public string? Next() => null; } }\n"
+        "public static class E\n"
+        "{\n"
+        f"    {header}\n"
+        "    {\n"
+        "        public string? Url() => spec.Next();\n"
+        "    }\n"
+        "}\n"
+    )})
+    e = _find(r, "E", "_e")
+    ifoo = _find(r, "IFoo", "ifoo")
+    assert next(n for n in r["nodes"] if n["id"] == ifoo)["source_file"], "must be the real node"
+    assert (e, ifoo) in _refs(r)
+    assert (_find(r, ".Url()", "_e_url"), _find(r, ".Next()", "ifoo")) in calls
+    assert (_find(r, ".Url()", "_e_url"), _find(r, ".Next()", "other")) not in calls
+    assert not ({"global", "Alias"} & _labels(r))
+
+
+def test_root_anchored_receiver_is_unqualified(tmp_path):
+    """`global::IFoo` on a root-namespace type carries no qualifier at all."""
+    calls, r = _calls(tmp_path, {"S.cs": _TYPES + (
+        "public static class E\n"
+        "{\n"
+        "    extension<T>(global::IFoo<T> spec)\n"
+        "    {\n"
+        "        public string? Url() => spec.Next();\n"
+        "    }\n"
+        "}\n"
+    )})
+    _assert_receiver_recovered(calls, r)
+    e = _find(r, "E", "_e")
+    edge = next(x for x in r["edges"] if x["relation"] == "references" and x["source"] == e)
+    assert "qualified" not in edge["metadata"] and "ref_qualifier" not in edge["metadata"]
+    assert "global" not in _labels(r)
+
+
+def test_alias_qualifier_is_not_a_type_on_the_shared_node_path(tmp_path):
+    """The same `::` reading applies to every C# type reference, so the
+    primary-constructor precedent stops fabricating a `global` type node."""
+    calls, r = _calls(tmp_path, {"S.cs": _TYPES + (
+        "public class Holder(global::IFoo dep)\n"
+        "{\n"
+        "    public string? Run() => dep.Next();\n"
+        "}\n"
+    )})
+    holder = _find(r, "Holder", "holder")
+    assert (holder, _find(r, "IFoo", "ifoo")) in _refs(r)
+    assert (_find(r, ".Run()", "holder"), _find(r, ".Next()", "ifoo")) in calls
+    assert "global" not in _labels(r)
+
+
 def test_two_blocks_with_distinct_receivers_both_resolve(tmp_path):
     calls, r = _calls(tmp_path, {"S.cs": (
         "public interface IFoo { string? Next(); }\n"
