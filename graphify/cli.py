@@ -1605,6 +1605,11 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
+        # Let serve._get_trigram_index find its on-disk cache. This path does
+        # not go through serve._load_graph, which is where the stash normally
+        # happens, so without this the cache key is unresolvable and every CLI
+        # call rebuilds the index from scratch.
+        G.graph["_graph_path"] = str(gp)
         src_scored = _score_nodes(G, [t.lower() for t in source_label.split()])
         tgt_scored = _score_nodes(G, [t.lower() for t in target_label.split()])
         if not src_scored:
@@ -1740,6 +1745,11 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
+        # Let serve._get_trigram_index find its on-disk cache. This path does
+        # not go through serve._load_graph, which is where the stash normally
+        # happens, so without this the cache key is unresolvable and every CLI
+        # call rebuilds the index from scratch.
+        G.graph["_graph_path"] = str(gp)
         matches = _find_node(G, label)
         if not matches:
             print(f"No node matching '{label}' found.")
