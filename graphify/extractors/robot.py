@@ -6,6 +6,7 @@ import re
 
 from pathlib import Path
 from graphify.extractors.base import _file_stem, _make_id
+from graphify.rcfile import effective_suffix
 
 
 # Robot Framework standard libraries - imports of these are noise (like the
@@ -159,7 +160,7 @@ def extract_robot(path: Path) -> dict:
     add_node(file_nid, path.name, 1)
 
     try:
-        if path.suffix.lower() == ".resource":
+        if effective_suffix(path).lower() == ".resource":
             model = get_resource_model(str_path)
         else:
             model = get_model(str_path)

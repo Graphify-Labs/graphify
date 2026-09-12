@@ -36,6 +36,8 @@ from graphify.extract import (
     extract_pascal,
     extract_php,
 )
+from graphify.extractors.ocaml import extract_ocaml
+from graphify.extractors.robot import extract_robot
 
 try:
     from graphify.extract import _worker_init
@@ -407,3 +409,209 @@ def test_setting_overrides_on_one_thread_leaves_another_thread_clean():
     # main thread must still see the real suffix, not the other thread's map
     assert effective_suffix("x.inc") == ".inc"
     t.join()
+
+
+def _edges(result, relation):
+    return [e for e in result["edges"] if e["relation"] == relation]
+
+
+def test_a_declared_ts_file_keeps_its_implements_edge(tmp_path):
+    base_src = "export interface Base {\n    id: number;\n}\n"
+    consumer_src = (
+        "import { Base } from './base';\n\n"
+        "class Consumer implements Base {\n    id: number = 1;\n}\n"
+    )
+    declared = tmp_path / "declared"
+    declared.mkdir()
+    (declared / "base.ts").write_text(base_src, encoding="utf-8")
+    (declared / "consumer.tpl").write_text(consumer_src, encoding="utf-8")
+    (declared / ".graphifyrc").write_text("language.tpl=.ts\n", encoding="utf-8")
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "base.ts").write_text(base_src, encoding="utf-8")
+    (real / "consumer.ts").write_text(consumer_src, encoding="utf-8")
+
+    declared_result = _quiet_extract(
+        [declared / "base.ts", declared / "consumer.tpl"], cache_root=declared, root=declared
+    )
+    real_result = _quiet_extract(
+        [real / "base.ts", real / "consumer.ts"], cache_root=real, root=real
+    )
+    assert len(_edges(real_result, "implements")) == 1
+    assert len(_edges(declared_result, "implements")) == len(_edges(real_result, "implements"))
+
+
+def test_a_declared_java_file_disambiguates_implements_by_package(tmp_path):
+    pkg1 = "package com.pkg1;\npublic interface Base {\n    void run();\n}\n"
+    pkg2 = "package com.pkg2;\npublic interface Base {\n    void other();\n}\n"
+    impl_src = (
+        "package com.app;\nimport com.pkg1.Base;\n\n"
+        "public class Impl implements Base {\n    public void run() {}\n}\n"
+    )
+    declared = tmp_path / "declared"
+    (declared / "pkg1").mkdir(parents=True)
+    (declared / "pkg2").mkdir()
+    (declared / "pkg1" / "Base.java").write_text(pkg1, encoding="utf-8")
+    (declared / "pkg2" / "Base.java").write_text(pkg2, encoding="utf-8")
+    (declared / "Impl.jav").write_text(impl_src, encoding="utf-8")
+    (declared / ".graphifyrc").write_text("language.jav=java\n", encoding="utf-8")
+
+    result = _quiet_extract(
+        [declared / "pkg1" / "Base.java", declared / "pkg2" / "Base.java", declared / "Impl.jav"],
+        cache_root=declared, root=declared,
+    )
+    implements = _edges(result, "implements")
+    assert len(implements) == 1
+    target = implements[0]["target"]
+    target_node = next(n for n in result["nodes"] if n["id"] == target)
+    assert target_node.get("source_file", "").replace("\\", "/").endswith("pkg1/Base.java")
+
+
+def test_a_declared_python_file_repoints_a_nested_package_import(tmp_path):
+    mod_src = "def helper():\n    pass\n"
+    caller_src = "import pkg.mod\n\npkg.mod.helper()\n"
+    declared = tmp_path / "declared"
+    (declared / "src" / "pkg").mkdir(parents=True)
+    (declared / "src" / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (declared / "src" / "pkg" / "mod.pyx").write_text(mod_src, encoding="utf-8")
+    (declared / "src" / "app.py").write_text(caller_src, encoding="utf-8")
+    (declared / ".graphifyrc").write_text("language.pyx=python\n", encoding="utf-8")
+
+    result = _quiet_extract(
+        [
+            declared / "src" / "pkg" / "__init__.py",
+            declared / "src" / "pkg" / "mod.pyx",
+            declared / "src" / "app.py",
+        ],
+        cache_root=declared, root=declared,
+    )
+    imports = _edges(result, "imports")
+    mod_node_id = next(n["id"] for n in result["nodes"] if n["source_file"].endswith("mod.pyx"))
+    assert any(e["target"] == mod_node_id for e in imports)
+
+
+def test_a_declared_csharp_file_disambiguates_inherits_by_namespace(tmp_path):
+    ns1 = "namespace App.Pkg1 {\n    public interface Shape { }\n}\n"
+    ns2 = "namespace App.Pkg2 {\n    public interface Shape { }\n}\n"
+    main_src = (
+        "using App.Pkg1;\n\nnamespace App {\n    public class Wrapper : Shape {\n    }\n}\n"
+    )
+    declared = tmp_path / "declared"
+    (declared / "Pkg1").mkdir(parents=True)
+    (declared / "Pkg2").mkdir()
+    (declared / "Pkg1" / "Shape.cs").write_text(ns1, encoding="utf-8")
+    (declared / "Pkg2" / "Shape.cs").write_text(ns2, encoding="utf-8")
+    (declared / "Main.rzr").write_text(main_src, encoding="utf-8")
+    (declared / ".graphifyrc").write_text("language.rzr=csharp\n", encoding="utf-8")
+
+    result = _quiet_extract(
+        [declared / "Pkg1" / "Shape.cs", declared / "Pkg2" / "Shape.cs", declared / "Main.rzr"],
+        cache_root=declared, root=declared,
+    )
+    inherits = _edges(result, "inherits")
+    assert len(inherits) == 1
+    target = inherits[0]["target"]
+    target_node = next(n for n in result["nodes"] if n["id"] == target)
+    assert target_node.get("source_file", "").replace("\\", "/").endswith("Pkg1/Shape.cs")
+
+
+def test_a_declared_unsupported_language_still_warns_no_extractor(tmp_path, capsys):
+    (tmp_path / "a.tpl").write_text("helper <- function(x) x + 1\n", encoding="utf-8")
+    (tmp_path / ".graphifyrc").write_text("language.tpl=r\n", encoding="utf-8")
+    _quiet_extract([tmp_path / "a.tpl"], cache_root=tmp_path, root=tmp_path)
+    assert "no AST extractor" in capsys.readouterr().err
+
+
+def test_a_declared_mli_interface_is_parsed_as_an_interface_not_ml(tmp_path):
+    pytest.importorskip("tree_sitter_ocaml")
+    root = tmp_path
+    (root / ".graphifyrc").write_text("language.tpl4=.mli\n", encoding="utf-8")
+    activate_language_overrides(root)
+    impl_src = "let helper x =\n  x + 1\n\nlet main () =\n  helper 41\n"
+    declared_path = root / "a.tpl4"
+    declared_path.write_text(impl_src, encoding="utf-8")
+    real_mli = root / "a.mli"
+    real_mli.write_text(impl_src, encoding="utf-8")
+
+    declared_result = extract_ocaml(declared_path)
+    set_language_overrides(None)
+    real_result = extract_ocaml(real_mli)
+    assert real_result["edges"] == []  # real .mli: not valid interface syntax, nothing extracted
+    assert declared_result["edges"] == real_result["edges"]
+
+
+def test_a_declared_resource_file_excludes_test_cases_like_a_real_resource(tmp_path):
+    pytest.importorskip("robot")
+    root = tmp_path
+    (root / ".graphifyrc").write_text("language.tplr=.resource\n", encoding="utf-8")
+    content = (
+        "*** Test Cases ***\nMy Test\n    Log    hello\n\n"
+        "*** Keywords ***\nDo Something\n    Log    hi\n"
+    )
+    activate_language_overrides(root)
+    declared_path = root / "a.tplr"
+    declared_path.write_text(content, encoding="utf-8")
+    real_resource = root / "a.resource"
+    real_resource.write_text(content, encoding="utf-8")
+
+    declared_result = extract_robot(declared_path)
+    set_language_overrides(None)
+    real_result = extract_robot(real_resource)
+    declared_labels = {n["label"] for n in declared_result["nodes"]}
+    real_labels = {n["label"] for n in real_result["nodes"]}
+    assert "My Test" not in real_labels  # real .resource: Test Cases section dropped
+    assert "Do Something" in real_labels
+    assert declared_labels - {declared_path.name} == real_labels - {real_resource.name}
+
+
+def test_declared_typescript_preserves_symbols_and_original_source_paths(tmp_path):
+    (tmp_path / ".graphifyrc").write_text("language.tpl=typescript\n", encoding="utf-8")
+    source = tmp_path / "declarations.tpl"
+    source.write_text("""interface Point { x: number; y: number; }
+enum Color { Red, Green, Blue }
+class Shape<T> {
+  constructor(private kind: T) {}
+  describe(): string { return String(this.kind); }
+}
+""", encoding="utf-8")
+    result = _quiet_extract([source], root=tmp_path, cache_root=tmp_path)
+    expected = {"Point", "Color", "Red", "Green", "Blue", "Shape", ".constructor()", ".describe()"}
+    assert expected <= {node["label"] for node in result["nodes"]}
+    assert {node["source_file"] for node in result["nodes"] if node["label"] in expected} == {source.name}
+
+
+def test_declared_typescript_imports_follow_changed_tsconfig_without_source_edit(tmp_path):
+    import json
+
+    (tmp_path / ".graphifyrc").write_text("language.tpl=ts\n", encoding="utf-8")
+    caller, one, two = (tmp_path / name for name in ("consumer.tpl", "one.ts", "two.ts"))
+    caller.write_text("import { chosen } from '@target'; export function run() { return chosen(); }\n", encoding="utf-8")
+    one.write_text("export function chosen() { return 1; }\n", encoding="utf-8")
+    two.write_text("export function chosen() { return 2; }\n", encoding="utf-8")
+    config = tmp_path / "tsconfig.json"
+    for target in ("one.ts", "two.ts"):
+        config.write_text(json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@target": [target]}}}), encoding="utf-8")
+        result = _quiet_extract([caller, one, two], root=tmp_path, cache_root=tmp_path)
+        nodes = {node["id"]: node for node in result["nodes"]}
+        targets = {nodes[edge["target"]].get("source_file") for edge in _edges(result, "imports_from")
+                   if nodes.get(edge["source"], {}).get("source_file") == caller.name}
+        assert targets == {target}, (target, targets)
+
+
+def test_declared_go_resolves_qualified_type_among_same_named_packages(tmp_path):
+    (tmp_path / ".graphifyrc").write_text("language.gox=go\n", encoding="utf-8")
+    (tmp_path / "go.mod").write_text("module example.com/app\ngo 1.21\n", encoding="utf-8")
+    paths = []
+    for package in ("pkg1", "pkg2"):
+        directory = tmp_path / package
+        directory.mkdir()
+        source = directory / "shape.go"
+        source.write_text(f"package {package}\ntype Shape struct {{ Sides int }}\n", encoding="utf-8")
+        paths.append(source)
+    caller = tmp_path / "main.gox"
+    caller.write_text('package main\nimport "example.com/app/pkg1"\ntype Wrapper struct { S pkg1.Shape }\n', encoding="utf-8")
+    result = _quiet_extract([caller, *paths], root=tmp_path, cache_root=tmp_path)
+    nodes = {node["id"]: node for node in result["nodes"]}
+    targets = {nodes[edge["target"]].get("source_file") for edge in _edges(result, "references")
+               if nodes.get(edge["source"], {}).get("label") == "Wrapper"}
+    assert targets == {"pkg1/shape.go"}, targets
