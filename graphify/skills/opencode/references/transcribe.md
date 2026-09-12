@@ -25,8 +25,13 @@ Read the top god node labels from detect output or analysis, then compose a shor
 
 ```bash
 export GRAPHIFY_WHISPER_MODEL=base  # or whatever --whisper-model the user passed (must be exported)
-export GRAPHIFY_WHISPER_PROMPT="<the one-sentence domain hint you composed in Step 1>"
-$(cat graphify-out/.graphify_python) -c "
+# Single quotes keep the prompt literal — no expansion of $, `, or \ inside it.
+# If your domain hint itself contains a single quote, replace it with '\'' (close-quote, escaped-quote, open-quote)
+# or use a here-doc / printf %q pattern; the export must still happen for the child Python process to inherit it.
+GRAPHIFY_WHISPER_PROMPT='<the one-sentence domain hint you composed in Step 1>'
+export GRAPHIFY_WHISPER_PROMPT
+readarray -t GFY_PYTHON < graphify-out/.graphify_python
+"${GFY_PYTHON[@]}" -c "
 import json, os, sys
 from pathlib import Path
 from graphify.transcribe import transcribe_all
