@@ -4343,3 +4343,29 @@ def test_rebase_relative_source_files_rebases_definition_file(tmp_path):
     node = payload["nodes"][0]
     assert node["source_file"] == "pkg/src/Foo.h"
     assert node["definition_file"] == "pkg/src/Foo.cpp"
+
+
+def test_rebuild_surfaces_unclassified_files(tmp_path, capsys):
+    """A rebuild whose corpus is mostly an unsupported language must not report
+    success in silence. cli.py does this on the extract path (#1692); the
+    rebuild path used by `graphify update`, `graphify watch` and the git hook
+    dropped the count, and the synthesized detection dict it passes to the
+    report omitted the list entirely."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    for i in range(3):
+        (corpus / f"Proof{i}.lean").write_text(
+            "theorem t : True := trivial\n", encoding="utf-8"
+        )
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    printed = capsys.readouterr().out
+    assert "3 file(s) not classified" in printed
+    assert ".lean 3" in printed
+
+    report = (corpus / "graphify-out" / "GRAPH_REPORT.md").read_text(encoding="utf-8")
+    assert "Unclassified: 3 file(s) skipped" in report

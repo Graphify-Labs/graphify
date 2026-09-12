@@ -178,3 +178,23 @@ def test_report_hubs_use_wikilinks_when_obsidian():
     labels = {cid: f"Widget {cid}" for cid in communities}
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
     assert "[[_COMMUNITY_" in report
+
+
+def test_report_names_unclassified_files():
+    """#1692 surfaced unclassified files on the extract path only, so a corpus
+    whose bulk is an unsupported language got a Corpus Check describing just the
+    classified half. detect() already records them; the report must name them."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    detection = dict(detection)
+    detection["unclassified"] = [f"proof/Mod{i}.lean" for i in range(260)] + ["Dockerfile"]
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "Unclassified: 261 file(s) skipped" in report
+    assert ".lean 260" in report
+
+
+def test_report_silent_when_nothing_unclassified():
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    detection = dict(detection)
+    detection["unclassified"] = []
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "Unclassified:" not in report

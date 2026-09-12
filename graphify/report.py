@@ -138,6 +138,20 @@ def generate(
             "- Verdict: corpus is large enough that graph structure adds value.",
         ]
 
+    # A corpus whose bulk is an unsupported language produced a report that
+    # described only the classified half, with no hint the rest existed. detect()
+    # already records them; name them here so the verdict above is read against
+    # what was actually scanned.
+    unclassified = detection_result.get("unclassified") or []
+    if unclassified:
+        from collections import Counter as _Counter
+        _exts = _Counter(Path(p).suffix.lower() or "(no extension)" for p in unclassified)
+        _top = ", ".join(f"{e} {c}" for e, c in _exts.most_common(3))
+        lines.append(
+            f"- Unclassified: {len(unclassified)} file(s) skipped - no supported "
+            f"extension or shebang (top: {_top})"
+        )
+
     from .analyze import _is_file_node as _ifn
 
     def _real_count(nodes) -> int:

@@ -1428,6 +1428,21 @@ def _rebuild_code(
         )
         code_files = [Path(f) for f in detected['files']['code']]
 
+        # Surface files the scan saw but could not classify. cli.py already does
+        # this on the `extract` path (#1692); the rebuild path used by
+        # `graphify update`, `graphify watch` and the git hook did not, so a
+        # corpus that is mostly an unsupported language rebuilt silently and
+        # reported success. Same message shape as the extract path.
+        _unclassified = detected.get("unclassified", []) or []
+        if _unclassified:
+            from collections import Counter as _Counter
+            _exts = _Counter(Path(p).suffix.lower() or "(no extension)" for p in _unclassified)
+            _top = ", ".join(f"{e} {c}" for e, c in _exts.most_common(3))
+            print(
+                f"[graphify watch] {len(_unclassified)} file(s) not classified "
+                f"(no supported extension or shebang), skipped: {_top}"
+            )
+
         # #2495: hand reconcile the same ignore decisions the detect() call
         # above made, so a newly-ignored file that still exists on disk is
         # purged from the graph instead of preserved forever by the fail-closed
@@ -1876,6 +1891,10 @@ def _rebuild_code(
             "files": {"code": [str(f) for f in code_files], "document": [], "paper": [], "image": []},
             "total_files": len(code_files),
             "total_words": detected.get("total_words", 0),
+            # Without this the Corpus Check verdict is computed from the files
+            # that WERE classified and cannot mention the ones that were not
+            # (#1692 surfaced them on the extract path only).
+            "unclassified": detected.get("unclassified", []) or [],
         }
 
         # Inherit the existing graph's directed flag (#2342) so `graphify
