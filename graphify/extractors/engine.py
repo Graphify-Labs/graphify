@@ -3177,6 +3177,11 @@ def _extract_generic(
     try:
         parser = Parser(language)
         source = path.read_bytes() if source_override is None else source_override
+        # In C and C++, if the .h file does not end with a newline '\n' an error
+        # is throwed even if the file is valid. In order to avoid this, a new line
+        # char is added only if the original file does not end with it.
+        if source and not source.endswith(b"\n"):
+            source = source + b"\n"
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
