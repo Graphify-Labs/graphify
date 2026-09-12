@@ -1461,22 +1461,39 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "save-result":
         # graphify save-result --question Q --answer A [--type T] [--nodes N1 N2 ...]
         #                      [--outcome useful|dead_end|corrected] [--correction TEXT]
+        #
+        # --question-file/--answer-file/--correction-file read the value from a
+        # file instead of a command-line argument: skill instructions that build
+        # this command from free text (the user's verbatim question, an LLM's
+        # generated answer, of unbounded length and content) must not substitute
+        # that text directly into a shell command string, since embedded quotes,
+        # backticks, or $() would corrupt or escape the command entirely
+        # (#3439). Writing the value to a file first has no such injection
+        # surface at all.
         import argparse as _ap
 
         p = _ap.ArgumentParser(prog="graphify save-result")
-        p.add_argument("--question", required=True)
+        p.add_argument("--question", default=None)
+        p.add_argument("--question-file", dest="question_file", default=None)
         p.add_argument("--answer", default=None)
         p.add_argument("--answer-file", dest="answer_file", default=None)
         p.add_argument("--type", dest="query_type", default="query")
         p.add_argument("--nodes", nargs="*", default=[])
         p.add_argument("--outcome", choices=("useful", "dead_end", "corrected"), default=None)
         p.add_argument("--correction", default=None)
+        p.add_argument("--correction-file", dest="correction_file", default=None)
         p.add_argument("--memory-dir", default=str(Path(_GRAPHIFY_OUT) / "memory"))
         opts = p.parse_args(sys.argv[2:])
+        if opts.question_file:
+            opts.question = Path(opts.question_file).read_text(encoding="utf-8").strip()
+        elif not opts.question:
+            p.error("--question or --question-file is required")
         if opts.answer_file:
             opts.answer = Path(opts.answer_file).read_text(encoding="utf-8").strip()
         elif not opts.answer:
             p.error("--answer or --answer-file is required")
+        if opts.correction_file:
+            opts.correction = Path(opts.correction_file).read_text(encoding="utf-8").strip()
         from graphify.ingest import save_query_result as _sqr
 
         out = _sqr(
@@ -1945,32 +1962,76 @@ def dispatch_command(cmd: str) -> None:
             print(format_diagnostic_report(summary))
 
     elif cmd == "add":
-        if len(sys.argv) < 3:
-            print(
-                "Usage: graphify add <url> [--author Name] [--contributor Name] [--dir ./raw]",
-                file=sys.stderr,
-            )
+        # --from-file reads {"url": ..., "author": ..., "contributor": ..., "dir": ...}
+        # (author/contributor/dir optional) instead of taking url/--author/
+        # --contributor as command-line text: skill instructions that build this
+        # command from a user-supplied URL and name have no way to shell-quote
+        # values they cannot predict the content of, so substituting them
+        # directly into a command string risks corrupting or escaping it
+        # (#3439). Writing the payload to a file first has no such injection
+        # surface -- only the file's own (agent-controlled) path is a shell
+        # argument.
+        args = sys.argv[2:]
+        from_file = None
+        from_file_requested = False
+        for i, a in enumerate(args):
+            if a == "--from-file":
+                from_file_requested = True
+                if i + 1 < len(args):
+                    from_file = args[i + 1]
+                break
+        if from_file_requested and not from_file:
+            print("error: --from-file requires a path argument", file=sys.stderr)
             sys.exit(1)
+        if from_file:
+            try:
+                payload = json.loads(Path(from_file).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"error: could not read --from-file payload: {exc}", file=sys.stderr)
+                sys.exit(1)
+            if not isinstance(payload, dict):
+                print(
+                    "error: --from-file payload must be a JSON object with a "
+                    "'url' key, not " + type(payload).__name__,
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            try:
+                url = payload["url"]
+            except KeyError:
+                print("error: --from-file payload is missing required key 'url'", file=sys.stderr)
+                sys.exit(1)
+            author = payload.get("author")
+            contributor = payload.get("contributor")
+            target_dir = Path(payload.get("dir") or "raw")
+        else:
+            if len(sys.argv) < 3:
+                print(
+                    "Usage: graphify add <url> [--author Name] [--contributor Name] "
+                    "[--dir ./raw] | graphify add --from-file payload.json",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            url = sys.argv[2]
+            author = None
+            contributor = None
+            target_dir = Path("raw")
+            args = sys.argv[3:]
+            i = 0
+            while i < len(args):
+                if args[i] == "--author" and i + 1 < len(args):
+                    author = args[i + 1]
+                    i += 2
+                elif args[i] == "--contributor" and i + 1 < len(args):
+                    contributor = args[i + 1]
+                    i += 2
+                elif args[i] == "--dir" and i + 1 < len(args):
+                    target_dir = Path(args[i + 1])
+                    i += 2
+                else:
+                    i += 1
         from graphify.ingest import ingest as _ingest
 
-        url = sys.argv[2]
-        author: str | None = None
-        contributor: str | None = None
-        target_dir = Path("raw")
-        args = sys.argv[3:]
-        i = 0
-        while i < len(args):
-            if args[i] == "--author" and i + 1 < len(args):
-                author = args[i + 1]
-                i += 2
-            elif args[i] == "--contributor" and i + 1 < len(args):
-                contributor = args[i + 1]
-                i += 2
-            elif args[i] == "--dir" and i + 1 < len(args):
-                target_dir = Path(args[i + 1])
-                i += 2
-            else:
-                i += 1
         try:
             saved = _ingest(url, target_dir, author=author, contributor=contributor)
             print(f"Saved to {saved}")

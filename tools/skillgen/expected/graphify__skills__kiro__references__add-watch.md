@@ -6,25 +6,35 @@ Load this when the user ran `/graphify add <url>` or passed `--watch`. Neither i
 
 Fetch a URL and add it to the corpus, then update the graph.
 
-```bash
-$(cat graphify-out/.graphify_python) -c "
-import sys
-from graphify.ingest import ingest
-from pathlib import Path
+The URL and any author/contributor name are free text you do not control the
+content of - do not build a command or inline script by substituting them
+into a string; an embedded quote or shell character corrupts or escapes it.
+Reserve a unique file path first - a fixed, shared filename risks a
+concurrent graphify session overwriting or reading a stale payload:
 
-try:
-    out = ingest('URL', Path('./raw'), author='AUTHOR', contributor='CONTRIBUTOR')
-    print(f'Saved to {out}')
-except ValueError as e:
-    print(f'error: {e}', file=sys.stderr)
-    sys.exit(1)
-except RuntimeError as e:
-    print(f'error: {e}', file=sys.stderr)
-    sys.exit(1)
-"
+```bash
+mktemp /tmp/graphify_add_payload.XXXXXX.json
 ```
 
-Replace `URL` with the actual URL, `AUTHOR` with the user's name if provided, `CONTRIBUTOR` likewise. If the command exits with an error, tell the user what went wrong - do not silently continue. After a successful save, automatically run the `--update` pipeline on `./raw` to merge the new file into the existing graph.
+Using your file-write tool (not a shell heredoc, which has the same
+quoting problem one level down), write a JSON file with those values to
+the path that command printed, then pass only that path - not its content
+- to `graphify add`:
+
+```json
+{"url": "URL", "author": "AUTHOR", "contributor": "CONTRIBUTOR", "dir": "./raw"}
+```
+
+Replace `URL` with the actual URL, `AUTHOR` with the user's name if
+provided (omit the key entirely if not), `CONTRIBUTOR` likewise, then run:
+
+```bash
+$(cat graphify-out/.graphify_python) -m graphify add --from-file PAYLOAD_PATH
+```
+
+Replace `PAYLOAD_PATH` with the path `mktemp` printed. If the command exits with an error, tell the user what went wrong - do not
+silently continue. After a successful save, automatically run the `--update`
+pipeline on `./raw` to merge the new file into the existing graph.
 
 Supported URL types (auto-detected):
 - YouTube / any video URL → audio downloaded via yt-dlp, transcribed to `.txt` on next run (requires `pip install 'graphifyy[video]'`)
