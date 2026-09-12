@@ -3821,20 +3821,34 @@ def _resolve_cpp_member_calls(
         elif receiver[:1].isupper():
             # Foo::bar(): the type is named explicitly in source.
             type_defs = type_def_nids.get(_key(receiver), [])
-            if not type_defs:
-                # Declared nowhere here, which in a multi-repo setup usually means
-                # "in a repo this build does not contain" (#3152). `Foo::bar()` is
-                # also the shape of a namespace-qualified free function, so the
-                # merge side's guards do the deciding: it acts only when exactly
-                # one other repo declares a `Foo` owning exactly one `bar`.
-                _park_unresolved_member_call(
-                    node_by_id.get(caller), callee, receiver, "cpp", rc,
-                )
-                continue
-            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
-                continue
-            type_nid = type_defs[0]
-            type_qualified = True
+            if len(type_defs) == 1:
+                type_nid = type_defs[0]
+                type_qualified = True
+            else:
+                # A capitalized receiver is very often a VARIABLE - the
+                # parameter `T` in `ParamRef(const Thing& T)`, the field
+                # `Inner` - not a type name (#3215). When no unique type of
+                # that name exists, fall back to the file's var->type table
+                # exactly like the lowercase arm before giving up.
+                type_name = type_table_by_file.get(src_file, {}).get(receiver)
+                if not type_name:
+                    if not type_defs:
+                        # Declared nowhere here (and not a locally-typed
+                        # variable either), which in a multi-repo setup usually
+                        # means "in a repo this build does not contain" (#3152).
+                        # `Foo::bar()` is also the shape of a namespace-qualified
+                        # free function, so the merge side's guards do the
+                        # deciding: it acts only when exactly one other repo
+                        # declares a `Foo` owning exactly one `bar`.
+                        _park_unresolved_member_call(
+                            node_by_id.get(caller), callee, receiver, "cpp", rc,
+                        )
+                    continue  # ambiguous types, no local variable -> bail
+                type_defs = type_def_nids.get(_key(type_name), [])
+                if len(type_defs) != 1:  # ambiguous or absent -> bail
+                    continue
+                type_nid = type_defs[0]
+                type_qualified = False
         else:
             # f.bar() / f->bar(): type the receiver via the file's local table.
             type_name = type_table_by_file.get(src_file, {}).get(receiver)
