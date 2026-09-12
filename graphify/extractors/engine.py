@@ -3177,6 +3177,20 @@ def _extract_generic(
     try:
         parser = Parser(language)
         source = path.read_bytes() if source_override is None else source_override
+        # #3513: ISO C/C++ requires a translation unit to end in a newline,
+        # and tree-sitter-c/tree-sitter-cpp's preprocessor grammar relies on
+        # that newline to terminate a directive - without it, a file whose
+        # last line is a directive recovers with an ERROR node even though
+        # the directive is complete and legal, falsely flagging an
+        # otherwise-valid file as a syntax error. Supplying the byte the
+        # standard already requires only extends the buffer past the last
+        # real token, so no existing node's offsets change; it never
+        # introduces an error, so this isn't scoped further than "missing a
+        # trailing newline". Restricted to these two grammars because that is
+        # what has actually been verified safe here - not applied blanket to
+        # every language in the project.
+        if config.ts_module in ("tree_sitter_c", "tree_sitter_cpp") and not source.endswith(b"\n"):
+            source = source + b"\n"
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
