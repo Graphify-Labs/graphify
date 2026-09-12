@@ -1153,7 +1153,7 @@ _PHP_CONFIG = LanguageConfig(
         "enum_declaration",
         "trait_declaration",
     }),
-    function_types=frozenset({"function_definition", "method_declaration"}),
+    function_types=frozenset({"function_definition", "method_declaration", "anonymous_function_creation_expression", "arrow_function"}),
     import_types=frozenset({"namespace_use_clause"}),
     # object_creation_expression joins the dispatch set so `new Foo(...)` links
     # the constructing method to Foo (engine has a dedicated PHP branch: the
@@ -1171,7 +1171,7 @@ _PHP_CONFIG = LanguageConfig(
     # enums wrap their members in an enum_declaration_list rather than a
     # declaration_list, so the body walk needs it to reach enum methods/cases.
     body_fallback_child_types=("declaration_list", "compound_statement", "enum_declaration_list"),
-    function_boundary_types=frozenset({"function_definition", "method_declaration"}),
+    function_boundary_types=frozenset({"function_definition", "method_declaration", "anonymous_function_creation_expression", "arrow_function"}),
     import_handler=_import_php,
 )
 

@@ -3141,6 +3141,67 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
             del ruby_namespace[-len(const_segments):]
     return True
 
+_PHP_ROUTING_VERBS = frozenset({"get", "post", "put", "patch", "delete", "options", "any", "match", "map"})
+
+def _php_get_route_name(closure_node, src: bytes) -> str | None:
+    """Walk up the AST to extract grouped routing prefixes (#3409)."""
+    prefixes = []
+    verb = None
+    
+    curr = closure_node.parent
+    while curr is not None:
+        if curr.type in ("function_definition", "method_declaration", "class_declaration"):
+            break
+            
+        if curr.type == "argument":
+            arg_list = curr.parent
+            if arg_list is not None and arg_list.type == "argument_list":
+                call = arg_list.parent
+                if call is not None and call.type in ("member_call_expression", "function_call_expression", "scoped_call_expression"):
+                    name_node = call.child_by_field_name("name")
+                    if name_node is None:
+                        name_node = call.child_by_field_name("function")
+                        
+                    raw_method = (_read_text(name_node, src) if name_node else "").lower()
+                    path_text = None
+                    
+                    for sibling in arg_list.children:
+                        if sibling is curr:
+                            break
+                        if sibling.type in ("string", "encapsed_string"):
+                            path_text = _read_text(sibling, src).strip("'\"")
+                            break
+                            
+                    if verb is None:
+                        # The innermost call must be a routing verb with a path starting with '/'
+                        if path_text is not None and path_text.startswith("/") and raw_method in _PHP_ROUTING_VERBS:
+                            verb = raw_method.upper()
+                            prefixes.append(path_text)
+                        else:
+                            return None # Not a valid route closure
+                    else:
+                        # Outer calls (e.g. group(), prefix()) just contribute their prefix if it starts with '/'
+                        if path_text is not None and path_text.startswith("/"):
+                            prefixes.append(path_text)
+                            
+                    curr = call.parent
+                    continue
+                    
+        elif curr.type in ("anonymous_function_creation_expression", "arrow_function"):
+            # Jump across the closure boundary to its containing argument
+            curr = curr.parent
+            continue
+            
+        curr = curr.parent
+        
+    if verb and prefixes:
+        # prefixes are inside-out (innermost path is first)
+        # e.g. ['/users/{id}', '/api/v1'] -> '/api/v1/users/{id}'
+        full_path = "/" + "/".join(p.strip("/") for p in reversed(prefixes) if p.strip("/"))
+        return f"{verb} {full_path}"
+        
+    return None
+
 def _extract_generic(
     path: Path, config: LanguageConfig, *, source_override: bytes | None = None
 ) -> dict:
@@ -3233,7 +3294,11 @@ def _extract_generic(
     # walk_calls as extra_locals, so each closure sees only its own
     # params/locals instead of a shared union that over-suppresses siblings.
     closure_locals_by_body: dict[int, set[str]] = {}
+    # PHP only: ordinal counter for anonymous closures, keyed by scope id
+    # (parent_class_nid or stem). Stable across line-only edits (#3409).
+    php_closure_counts: dict[str, int] = {}
     pending_listen_edges: list[tuple[str, str, int]] = []
+
     # tree-sitter-swift parses both `class Foo` and `extension Foo` as
     # `class_declaration`. Same-file pairs collapse via seen_ids, but cross-file
     # extensions don't (file stem is part of the id), so they're collected here
@@ -4493,7 +4558,17 @@ def _extract_generic(
                 func_name = _read_text(name_node, source) if name_node else None
 
             if not func_name:
-                return
+                if t in ("anonymous_function_creation_expression", "arrow_function"):
+                    route_name = _php_get_route_name(node, source)
+                    if route_name:
+                        func_name = route_name
+                    else:
+                        # Stable ordinal scoped to the enclosing class/file (#3409)
+                        _scope_key = parent_class_nid or stem
+                        php_closure_counts[_scope_key] = php_closure_counts.get(_scope_key, 0) + 1
+                        func_name = "{closure#" + str(php_closure_counts[_scope_key]) + "}"
+                else:
+                    return
             sanitized_name = (
                 config.sanitize_symbol_name_fn(func_name)
                 if config.sanitize_symbol_name_fn is not None
