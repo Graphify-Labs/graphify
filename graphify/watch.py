@@ -1428,6 +1428,20 @@ def _rebuild_code(
         )
         code_files = [Path(f) for f in detected['files']['code']]
 
+        # #3511: `graphify extract` has surfaced files it saw but could not
+        # classify since #1692; this update/watch rebuild path never did,
+        # so a corpus in a language with no extractor (no supported
+        # extension or shebang) rebuilt "successfully" with those files
+        # silently absent from the graph. Same wording as the extract path.
+        _unclassified = detected.get("unclassified", []) if isinstance(detected, dict) else []
+        if _unclassified:
+            _names = ", ".join(sorted({Path(p).name for p in _unclassified})[:6])
+            _more = f" (+{len(_unclassified) - 6} more)" if len(_unclassified) > 6 else ""
+            print(
+                f"[graphify watch] {len(_unclassified)} file(s) not classified "
+                f"(no supported extension or shebang), skipped: {_names}{_more}"
+            )
+
         # #2495: hand reconcile the same ignore decisions the detect() call
         # above made, so a newly-ignored file that still exists on disk is
         # purged from the graph instead of preserved forever by the fail-closed
@@ -1876,6 +1890,7 @@ def _rebuild_code(
             "files": {"code": [str(f) for f in code_files], "document": [], "paper": [], "image": []},
             "total_files": len(code_files),
             "total_words": detected.get("total_words", 0),
+            "unclassified": detected.get("unclassified", []),
         }
 
         # Inherit the existing graph's directed flag (#2342) so `graphify

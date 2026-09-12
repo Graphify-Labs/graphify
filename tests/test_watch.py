@@ -133,6 +133,25 @@ def test_doc_only_deletion_full_rebuild_evicts_md_nodes(tmp_path):
     assert "run()" in labels
 
 
+def test_rebuild_code_reports_unclassified_files(tmp_path, capsys):
+    """#3511: `graphify extract` has surfaced files it saw but could not
+    classify (no supported extension/shebang) since #1692; the update/watch
+    rebuild path never did, so a corpus mostly in an unsupported language
+    (e.g. Lean, per the report) rebuilt "successfully" with those files
+    silently absent and nothing said about it."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    (corpus / "Main.lean").write_text("def main := 0\n", encoding="utf-8")
+    (corpus / "Util.lean").write_text("def util := 1\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    out = capsys.readouterr().out
+    assert "2 file(s) not classified" in out
+    assert "Main.lean" in out
+    assert "Util.lean" in out
+
+
 # --- watch() import error without watchdog ---
 
 def test_check_update_no_flag_returns_true(tmp_path):
