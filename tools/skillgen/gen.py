@@ -919,6 +919,42 @@ def _is_chunk_cleanup_line(line: str) -> bool:
     return ".graphify_chunk_*.json" in line or ("find " in line and "-name '.graphify_chunk_" in line)
 
 
+def _is_shell_free_cleanup_line(line: str) -> bool:
+    """Whether a line belongs to the shell-free rewrite of the temp-file cleanup.
+
+    The cleanup steps were the only part of the runbook that shelled out, using
+    ``rm -f`` and ``find ... -delete``. Hosts that gate the agent's shell deny
+    destructive verbs as a matter of policy, so the cleanup silently did nothing
+    and a stale ``.graphify_chunk_*.json`` survived into the next ``--update``,
+    where Part C reads it unconditionally (graphify #2790). That is the third
+    reported cause of the same symptom, after the fish/zsh glob (#1172, see
+    :func:`_is_chunk_cleanup_line`) and the Codex/Windows leftovers (#464).
+
+    The fix folds the cleanup into the tail of the Python program each block
+    already runs, so no shell verb is involved on any host and nothing new is
+    spawned. That deliberately adds no fence, no ``$(cat ...) -c`` invocation and
+    no import — only statements that name graphify's own intermediates — which is
+    what keeps this predicate narrow enough to be worth having.
+
+    Both sides are matched so the multiset diff classifies the change: the removed
+    ``rm -f`` (bare command or inside a prose code span) and the added Python.
+    """
+    s = line.strip()
+    if "rm -f " in s and (".graphify_" in s or ".needs_update" in s):
+        return True
+    if s == "_out = Path('graphify-out')" or s == "_chunk.unlink(missing_ok=True)":
+        return True
+    if s.startswith("for _tmp in [") and s.endswith("]:"):
+        return True
+    if s.startswith("for _chunk in ") and s.endswith("glob('.graphify_chunk_*.json'):"):
+        return True
+    if s.endswith(".unlink(missing_ok=True)") and (
+        "_tmp" in s or ".graphify_" in s or ".needs_update" in s
+    ):
+        return True
+    return False
+
+
 def _is_trigger_line(line: str) -> bool:
     """Whether a line is the non-spec ``trigger:`` frontmatter field (#1180).
 
@@ -1150,6 +1186,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_enum_line,
     _is_frontmatter_description_line,
     _is_chunk_cleanup_line,
+    _is_shell_free_cleanup_line,
     _is_directed_fix_line,
     _is_content_scope_fix_line,
     _is_cache_unlink_fix_line,
