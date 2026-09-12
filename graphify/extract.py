@@ -392,8 +392,24 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                 # imports the external package of that name, not itself, and
                 # must not gain a fabricated self-loop
                 # (tests/test_import_self_loops.py).
-                sibling = _probe_python_module_candidate(
-                    Path(str_path).parent / raw.replace(".", "/")
+                # Only a directory that is NOT itself a package can shadow an
+                # installed distribution: Python 3 removed implicit relative
+                # imports, so inside a package `from models import X` is
+                # absolute and means the installed `models`, not the sibling.
+                # A plain script directory is the case this probe exists for —
+                # there the interpreter puts the script's own directory on
+                # sys.path, so the sibling really does win.
+                importer_dir = Path(str_path).parent
+                try:
+                    in_package = (importer_dir / "__init__.py").is_file()
+                except OSError:
+                    in_package = True
+                sibling = (
+                    None
+                    if in_package
+                    else _probe_python_module_candidate(
+                        importer_dir / raw.replace(".", "/")
+                    )
                 )
                 try:
                     if sibling is not None and sibling.resolve() == Path(str_path).resolve():

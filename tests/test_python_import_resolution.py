@@ -226,3 +226,21 @@ def test_absolute_sibling_import_resolves_a_package_directory(tmp_path: Path):
 
     assert _has_edge(result, build_file, live_init, "imports_from")
     assert not _has_edge(result, build_file, vendored_init, "imports_from")
+
+
+def test_absolute_import_inside_a_package_is_not_taken_as_a_sibling(tmp_path: Path):
+    # Python 3 has no implicit relative imports: inside a package,
+    # `from models import Thing` means the installed distribution, not the
+    # sibling module. Only a non-package directory — a plain script directory,
+    # which the interpreter puts on sys.path — may resolve to its sibling.
+    _write(tmp_path / "pkg/__init__.py", "")
+    sibling = _write(tmp_path / "pkg/models.py", "class Thing:\n    pass\n")
+    consumer = _write(tmp_path / "pkg/service.py", "from models import Thing\n")
+
+    result = extract([sibling, consumer], cache_root=tmp_path)
+
+    service_file = _node_id(result, "service.py", "pkg/service.py")
+    sibling_file = _node_id(result, "models.py", "pkg/models.py")
+
+    assert not _has_edge(result, service_file, sibling_file, "imports_from")
+    assert _has_edge(result, service_file, _make_id("models"), "imports_from")
