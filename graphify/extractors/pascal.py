@@ -714,7 +714,15 @@ def extract_pascal(path: Path) -> dict:
 
     def _emit_or_report(caller_nid: str, name_lower: str, line: int,
                         receiver: str | None = None) -> None:
-        target = resolve_callee(caller_nid, name_lower)
+        # A qualified call `recv.Method` (a non-Self/inherited receiver) is a
+        # call ON recv, not on the caller's own class — so the caller-scoped,
+        # receiver-blind resolver must never bind it. Doing so let `om.Flush`
+        # resolve to the *caller's* `Flush` whenever the name collided in the
+        # caller's class/ancestors/module scope (#3101 review). Park it instead
+        # for the receiver-aware pass (graphify.pascal_resolution), which types
+        # the receiver via the global-singleton table before matching the
+        # method; an unresolvable one stays unresolved rather than mis-bound.
+        target = None if receiver else resolve_callee(caller_nid, name_lower)
         if target == caller_nid:
             return
         if not target:

@@ -188,3 +188,48 @@ def test_a_qualified_call_does_not_fall_back_to_the_callers_ancestors():
         {"source_file": "d.pas", "caller_nid": "derived_run", "callee": "prepare", "receiver": "other"}]}]
     resolve_pascal_inherited_calls(per_file, nodes, edges)
     assert not any(e.get("relation") == "calls" for e in edges)
+
+
+def test_qualified_call_does_not_bind_to_the_callers_own_method(tmp_path):
+    """A qualified call `om.Flush` must resolve through the receiver's type,
+    never to a same-named method in the caller's own class (#3101 review).
+
+    TFoo.Bar calls `om.Flush`, and TFoo *also* declares Flush. The
+    caller-scoped, receiver-blind resolver used to bind om.Flush to TFoo.Flush
+    on the name collision; it must instead type `om` as TBar (its global
+    declaration) and bind to TBar.Flush.
+    """
+    src = (
+        "unit u;\ninterface\n"
+        "type\n"
+        "  TBar = class\n    procedure Flush;\n  end;\n"
+        "  TFoo = class\n    procedure Flush;\n    procedure Bar;\n  end;\n"
+        "var\n  om: TBar;\n"
+        "implementation\n"
+        "procedure TBar.Flush; begin end;\n"
+        "procedure TFoo.Flush; begin end;\n"
+        "procedure TFoo.Bar; begin om.Flush; end;\n"
+        "end.\n"
+    )
+    p = tmp_path / "u.pas"
+    p.write_text(src, encoding="utf-8")
+    with redirect_stdout(io.StringIO()):
+        graph = extract([p], cache_root=tmp_path / ".cache", parallel=False)
+    calls = {(e["source"], e["target"]) for e in graph["edges"]
+             if e.get("relation") == "calls"}
+    labels = {n["id"]: n.get("label", "") for n in graph["nodes"]}
+    bar = next(n["id"] for n in graph["nodes"] if n.get("label") == "Bar()")
+    tbar_flush = next(n["id"] for n in graph["nodes"]
+                      if n.get("label") == "Flush()"
+                      and any(e["source"] == n2["id"] and e["target"] == n["id"]
+                              and e["relation"] == "method"
+                              for e in graph["edges"] for n2 in graph["nodes"]
+                              if n2.get("label") == "TBar"))
+    tfoo_flush = next(n["id"] for n in graph["nodes"]
+                      if n.get("label") == "Flush()"
+                      and any(e["source"] == n2["id"] and e["target"] == n["id"]
+                              and e["relation"] == "method"
+                              for e in graph["edges"] for n2 in graph["nodes"]
+                              if n2.get("label") == "TFoo"))
+    assert (bar, tbar_flush) in calls, sorted(calls)
+    assert (bar, tfoo_flush) not in calls, "om.Flush wrongly bound to the caller's own Flush"
