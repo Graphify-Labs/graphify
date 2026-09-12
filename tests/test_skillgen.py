@@ -750,15 +750,32 @@ def test_always_on_roundtrip_is_byte_faithful():
         "When the user types `/graphify`, use the installed graphify skill or instructions "
         "before doing anything else."
     )
-    # The sanctioned-edit registry holds exactly this single old->new substitution.
-    assert gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"] == (
-        (old_instruction, new_instruction),
+    # The sanctioned-edit registry still opens with the #1530 substitution...
+    assert gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"][0] == (
+        old_instruction, new_instruction,
     )
+    # ...and every constant now carries exactly one #3177 edit that adds the
+    # blast-radius verb without removing anything else (the new text embeds
+    # the old, so the substitution is purely additive).
+    for const_name in gen.ALWAYS_ON_BLOCKS.values():
+        pairs = gen.ALWAYS_ON_SANCTIONED_EDITS[const_name]
+        affected_pairs = [(o, n) for o, n in pairs if "graphify affected" in n]
+        assert len(affected_pairs) == 1, const_name
+        o, n = affected_pairs[0]
+        # Additive modulo line wrapping: the old text's words survive as the
+        # prefix of the new text's words.
+        assert n.split()[: len(o.split())] == o.split(), (
+            f"{const_name}: the #3177 edit must be additive"
+        )
     baseline_agents = gen._always_on_constants(gen.ALWAYS_ON_BASELINE_REF)["_AGENTS_MD_SECTION"]
-    # The ONLY divergence from the frozen baseline is the sanctioned sentence —
+    # The ONLY divergences from the frozen baseline are the sanctioned edits —
     # any other byte drift would have surfaced as a problem above.
     assert old_instruction in baseline_agents
-    assert baseline_agents.replace(old_instruction, new_instruction) == rendered_agents
+    expected_agents = baseline_agents
+    for o, n in gen.ALWAYS_ON_SANCTIONED_EDITS["_AGENTS_MD_SECTION"]:
+        assert o in expected_agents
+        expected_agents = expected_agents.replace(o, n)
+    assert expected_agents == rendered_agents
     assert "`skill` tool" not in rendered_agents
     assert 'skill: "graphify"' not in rendered_agents
 

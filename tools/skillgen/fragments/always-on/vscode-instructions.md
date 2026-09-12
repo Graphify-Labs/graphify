@@ -4,7 +4,8 @@ For any question about this repo's architecture, structure, components, or how t
 code, your first action should be `graphify query "<question>"` when `graphify-out/graph.json`
 exists. Use `graphify path "<A>" "<B>"` for relationship questions and `graphify explain "<concept>"`
 for focused-concept questions. These return a scoped subgraph, usually much smaller than the full
-report or raw grep output.
+report or raw grep output. Before modifying a symbol or assessing a change's impact, run
+`graphify affected "<symbol-or-file>"` for its blast radius (reverse dependencies).
 
 Triggers: "how do I…", "where is…", "what does … do", "add/modify a <component>",
 "explain the architecture", or anything that depends on how files or classes relate.
