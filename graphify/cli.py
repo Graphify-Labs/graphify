@@ -3129,7 +3129,7 @@ def dispatch_command(cmd: str) -> None:
             if tag and len(sources) > 1:
                 print("error: --as can only be used with a single graph path", file=sys.stderr)
                 sys.exit(1)
-            
+
             batch_sources = []
             if tag:
                 batch_sources.append((sources[0], tag))
