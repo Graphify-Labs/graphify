@@ -86,7 +86,8 @@ def test_fresh_query_stamp_suppresses_deny(tmp_path, monkeypatch):
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.write_text(str(time.time()), encoding="utf-8")
     out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
-    assert not _is_deny(out) and "MANDATORY" in out
+    # Recently oriented: neither the block nor the soft nudge (#3435).
+    assert not _is_deny(out) and out == ""
 
 
 def test_expired_query_stamp_still_denies(tmp_path, monkeypatch):
