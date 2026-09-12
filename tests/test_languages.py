@@ -3015,6 +3015,106 @@ def test_markdown_wikilink_fallback_unicode_normalization(tmp_path):
                for e in refs), f"NFD wikilink missed the NFC file: {refs}"
 
 
+# ── Anchored wikilinks (#3333) ───────────────────────────────────────────────
+
+
+def test_markdown_wikilink_regex_captures_page_and_fragment():
+    """The wikilink regex matches same-page anchors and captures page + heading."""
+    from graphify.extractors.markdown import _MD_WIKILINK_RE
+    m = _MD_WIKILINK_RE.search("[[Other Page#SomeHeading|alias]]")
+    assert m, "anchored cross-page wikilink did not match"
+    assert m.group(1) == "Other Page"
+    assert m.group(2) == "SomeHeading"
+    m = _MD_WIKILINK_RE.search("[[#SomeHeading]]")
+    assert m, "same-page anchor [[#Heading]] did not match"
+    assert m.group(1) == ""
+    assert m.group(2) == "SomeHeading"
+
+
+def test_markdown_wikilink_same_page_anchor_resolves():
+    """[[#Heading]] resolves to that heading's node in the same file (#3333)."""
+    r = _md_extract("# Note\n\n## Setup\n\nSteps here.\n\nSee [[#Setup]].\n")
+    file_id = next(n["id"] for n in r["nodes"] if n.get("node_kind") == "page")
+    refs = [e for e in r["edges"] if e["relation"] == "references"]
+    assert refs, "same-page anchor produced no reference edge"
+    heading_id = next(n["id"] for n in r["nodes"]
+                      if n.get("node_kind") == "heading" and n["label"] == "Setup")
+    assert any(e["source"] == file_id and e["target"] == heading_id
+               for e in refs), f"anchor did not resolve to the heading: {refs}"
+
+
+def test_markdown_wikilink_same_page_anchor_forward_reference():
+    """[[#Heading]] placed before the heading still resolves — anchors are
+    resolved after the scan, so a link may precede its target (#3333)."""
+    r = _md_extract("# Note\n\nSee [[#Setup]] below.\n\n## Setup\n\nSteps.\n")
+    file_id = next(n["id"] for n in r["nodes"] if n.get("node_kind") == "page")
+    refs = [e for e in r["edges"] if e["relation"] == "references"]
+    heading_id = next(n["id"] for n in r["nodes"]
+                      if n.get("node_kind") == "heading" and n["label"] == "Setup")
+    assert any(e["source"] == file_id and e["target"] == heading_id
+               for e in refs), f"forward anchor did not resolve: {refs}"
+
+
+def test_markdown_wikilink_anchored_cross_page(tmp_path):
+    """[[Page#Heading|alias]] resolves to the page's node — the same edge as
+    [[Page]] (anchor stripped before resolution, mirroring inline links) and
+    deduped with it (#3333)."""
+    from graphify.extractors.base import _make_id
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "Other Page.md").write_text("# Other Page\n\n## SomeHeading\n\nBody.\n")
+    src = pkg / "index.md"
+    src.write_text(
+        "# Index\n\nSee [[Other Page#SomeHeading|alias]] and [[Other Page]].\n")
+    r = extract_markdown(src)
+    refs = [e for e in r["edges"] if e["relation"] == "references"]
+    page_nid = _make_id(str(pkg / "Other Page.md"))
+    assert refs, "anchored cross-page link produced no reference edge"
+    assert len(refs) == 1, f"anchored and plain wikilinks were not deduped: {refs}"
+    targets = {e["target"] for e in refs}
+    assert targets == {page_nid}, (
+        f"expected exactly the page node, no heading-granular or ghost target: {refs}")
+
+
+def test_markdown_wikilink_same_page_anchor_missing_heading():
+    """[[#Missing]] with no such heading produces no edge — never a dangling
+    endpoint (#3333, R2)."""
+    r = _md_extract("# Note\n\n## Setup\n\nSee [[#Missing]].\n")
+    refs = [e for e in r["edges"] if e["relation"] == "references"]
+    assert refs == [], f"anchor to a missing heading produced edges: {refs}"
+
+
+def test_markdown_wikilink_degenerate_forms():
+    """[[]], [[#]] and [[|alias]] produce no edges and no exception (#3333, R5)."""
+    r = _md_extract("# Note\n\n## Setup\n\nA [[#]] B [[]] C [[|alias]] D.\n")
+    refs = [e for e in r["edges"] if e["relation"] == "references"]
+    assert refs == [], f"degenerate wikilinks produced edges: {refs}"
+
+
+def test_markdown_wikilink_duplicate_heading_resolves_first():
+    """A same-page anchor to a duplicated heading resolves to the first
+    occurrence's node (the un-disambiguated id), deterministically (#3333, R6)."""
+    r = _md_extract("# Note\n\n## Dup\n\nfirst\n\n## Dup\n\nsecond\n\nLink: [[#Dup]].\n")
+    refs = [e for e in r["edges"] if e["relation"] == "references"]
+    assert len(refs) == 1, f"expected one reference edge, got {refs}"
+    dups = sorted(
+        (n for n in r["nodes"]
+         if n.get("node_kind") == "heading" and n["label"] == "Dup"),
+        key=lambda n: n["source_location"],
+    )
+    assert refs[0]["target"] == dups[0]["id"], (
+        f"anchor must resolve to the first occurrence: {refs}")
+
+
+def test_markdown_wikilink_embeds_and_fenced_skipped():
+    """Embeds ![[...]] stay unmatched and fenced code is skipped (#3333, R4)."""
+    r = _md_extract(
+        "# Note\n\n![[logo.png]] embed stays unmatched.\n\n"
+        "```\n[[inside-fence]] is not a link.\n```\n")
+    refs = [e for e in r["edges"] if e["relation"] == "references"]
+    assert refs == [], f"embeds/fenced wikilinks produced edges: {refs}"
+
+
 # ── Groovy ───────────────────────────────────────────────────────────────────
 
 
