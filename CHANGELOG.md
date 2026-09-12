@@ -50,6 +50,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: when duplicate nodes merge, the richer (more complete) node is now kept as the survivor and the losers' non-empty fields are folded in, instead of a shorter-id passing mention winning and dropping content (#3372, thanks @abhay-codes07).
 - Fix: a C# generic call site with explicit type arguments — `Get<int>(...)`, unqualified or through `this` — now resolves to the method definition instead of capturing `Get<int>` as the callee and failing to match (#3406, thanks @abhay-codes07).
 - Fix: `this.X = function` / `this.X = () => …` members are now captured in every enclosing-function form (function expressions, arrows, IIFEs, callbacks), not just function declarations (#3408, thanks @abhay-codes07).
+- Fix: in `graph.html`, clicking a neighbor link or a search hit whose community is filtered out now reveals that one community and focuses the node, instead of updating only the NODE INFO panel and leaving the canvas untouched — a hidden node has no rendered position, so `focus()`/`selectNodes()` were silent no-ops (#3378, thanks @evaldnet).
 
 ## 0.9.56 (2026-09-07)
 
