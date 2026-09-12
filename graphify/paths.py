@@ -58,6 +58,12 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
             raise
     import shutil
     dst = os.fspath(dst)
+    if os.path.normcase(os.path.abspath(os.fspath(src))) == os.path.normcase(os.path.abspath(dst)):
+        # Replacing a path with itself needs no swap at all; the rename-aside-
+        # then-back sequence below would rename src out from under itself via
+        # the "back up dst" step and then crash unlinking a path that no
+        # longer exists at the end.
+        return
     dst_dir = os.path.dirname(dst) or "."
     fd, tmp_copy = tempfile.mkstemp(dir=dst_dir, prefix=".gfy-replace-", suffix=".tmp")
     os.close(fd)

@@ -268,6 +268,29 @@ def test_os_replace_with_fallback_restores_destination_on_final_rename_failure(t
     assert leftover == {"dst.json", "src.tmp"}, f"unexpected leftover files: {leftover}"
 
 
+def test_os_replace_with_fallback_is_a_noop_when_src_equals_dst(tmp_path, monkeypatch):
+    """Replacing a path with itself, if os.replace ever fails for that call,
+    must not crash. The swap sequence (back up dst, rename the copy into
+    place, unlink src) renames src out from under itself the moment src and
+    dst are the same path, then crashes trying to unlink a path that no
+    longer exists."""
+    from graphify.paths import os_replace_with_fallback
+
+    p = tmp_path / "x.json"
+    p.write_text("CONTENT", encoding="utf-8")
+
+    def flaky_replace(a, b):
+        exc = OSError("cannot move to a different disk drive")
+        exc.winerror = 17
+        raise exc
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    os_replace_with_fallback(str(p), str(p))
+
+    assert p.read_text(encoding="utf-8") == "CONTENT"
+    assert {x.name for x in tmp_path.iterdir()} == {"x.json"}
+
+
 def test_write_json_atomic_ensure_ascii_false_preserves_utf8(tmp_path):
     from graphify.paths import write_json_atomic
 
