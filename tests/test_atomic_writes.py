@@ -167,6 +167,31 @@ def test_write_text_atomic_windows_permission_fallback(tmp_path, monkeypatch):
     assert sorted(x.name for x in tmp_path.iterdir()) == ["graph.json"]
 
 
+def test_write_text_atomic_windows_winerror_17_fallback(tmp_path, monkeypatch):
+    """#3508: `os.replace` can raise WinError 17 ("cannot move to a different
+    disk drive") even when src/dst are the same directory on the same drive,
+    on some Windows/filesystem combinations. Unlike WinError 5/32, this is a
+    plain OSError rather than PermissionError, so the fallback must key off
+    winerror rather than the exception type alone."""
+    p = tmp_path / "graph.json"
+    p.write_text("original", encoding="utf-8")
+
+    calls = {"n": 0}
+
+    def flaky_replace(src, dst):
+        calls["n"] += 1
+        exc = OSError("cannot move to a different disk drive")
+        exc.winerror = 17
+        raise exc
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    write_text_atomic(p, "new-content")
+
+    assert calls["n"] == 1
+    assert p.read_text() == "new-content"
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["graph.json"]
+
+
 def test_write_json_atomic_ensure_ascii_false_preserves_utf8(tmp_path):
     from graphify.paths import write_json_atomic
 

@@ -26,6 +26,27 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
 
 
+def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
+    """``os.replace(src, dst)``, falling back to copy-then-delete for a known
+    set of Windows quirks (#3508) that raise even when ``src``/``dst`` are the
+    same directory on the same drive: ``PermissionError`` (WinError 5/32 --
+    destination briefly locked by another handle, antivirus, an open reader)
+    and WinError 17 ("cannot move to a different disk drive", observed on some
+    Windows/filesystem combinations despite textbook same-volume semantics).
+    WinError 17 maps to a plain ``OSError`` in Python, not ``PermissionError``,
+    so it's checked via ``winerror`` rather than the exception type. Any other
+    failure is a real one and is re-raised.
+    """
+    try:
+        os.replace(src, dst)
+    except OSError as exc:
+        if not isinstance(exc, PermissionError) and getattr(exc, "winerror", None) != 17:
+            raise
+        import shutil
+        shutil.copy2(src, dst)
+        os.unlink(src)
+
+
 def _atomic_replace(path: "str | Path", write_fn) -> None:
     """Atomically replace ``path`` with content written by ``write_fn(f)``.
 
@@ -63,15 +84,7 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
             os.chmod(tmp, mode)
         except OSError:
             pass
-        try:
-            os.replace(tmp, str(real))
-        except PermissionError:
-            # Windows: os.replace fails (WinError 5/32) when the destination is
-            # briefly locked by another handle (antivirus, an open reader). Fall
-            # back to copy-then-delete, matching graphify.cache's atomic writer.
-            import shutil
-            shutil.copy2(tmp, str(real))
-            os.unlink(tmp)
+        os_replace_with_fallback(tmp, str(real))
     except BaseException:
         try:
             os.unlink(tmp)
