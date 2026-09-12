@@ -227,6 +227,47 @@ def test_os_replace_with_fallback_replaces_a_symlink_destination_in_place(tmp_pa
     assert not src.exists()
 
 
+def test_os_replace_with_fallback_restores_destination_on_final_rename_failure(tmp_path, monkeypatch):
+    """The fallback removes the existing destination before renaming the new
+    content into place; if that final rename then fails for any reason, the
+    original content must be restored rather than leaving the destination
+    missing -- a bare unlink-then-rename with no recovery would silently
+    destroy the previous file on a mid-swap failure."""
+    from graphify.paths import os_replace_with_fallback
+
+    dst = tmp_path / "dst.json"
+    dst.write_text("ORIGINAL", encoding="utf-8")
+    src = tmp_path / "src.tmp"
+    src.write_text("NEW", encoding="utf-8")
+
+    def flaky_replace(a, b):
+        exc = OSError("cannot move to a different disk drive")
+        exc.winerror = 17
+        raise exc
+
+    real_rename = os.rename
+    calls = {"n": 0}
+
+    def flaky_rename(a, b):
+        calls["n"] += 1
+        # First rename swaps dst aside as a backup (must succeed so there's
+        # something to restore); force the second -- landing the new
+        # content -- to fail.
+        if calls["n"] == 2:
+            raise OSError("simulated failure landing the new content")
+        return real_rename(a, b)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    monkeypatch.setattr(os, "rename", flaky_rename)
+    with pytest.raises(OSError, match="simulated failure landing the new content"):
+        os_replace_with_fallback(str(src), str(dst))
+
+    assert dst.exists(), "destination must not be left missing after a failed swap"
+    assert dst.read_text(encoding="utf-8") == "ORIGINAL"
+    leftover = {p.name for p in tmp_path.iterdir()}
+    assert leftover == {"dst.json", "src.tmp"}, f"unexpected leftover files: {leftover}"
+
+
 def test_write_json_atomic_ensure_ascii_false_preserves_utf8(tmp_path):
     from graphify.paths import write_json_atomic
 

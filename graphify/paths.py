@@ -42,12 +42,13 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
     e.g. install.py's managed skill symlinks, #3286, rely on exactly this).
     A naive ``shutil.copy2(src, dst)`` does the opposite when ``dst`` is a
     symlink: opening it for writing follows the link and overwrites its
-    TARGET's content instead. So the fallback copies to a fresh temp file
-    in ``dst``'s directory first, then removes whatever is at ``dst`` (link
-    or file) and renames the temp copy into place -- matching replace's
-    "whatever was there is gone, a plain file replaces it" semantics, and
-    keeping the exposure window to two fast metadata operations rather than
-    however long the copy itself takes.
+    TARGET's content instead. So the fallback copies to a fresh temp file in
+    ``dst``'s directory first, renames whatever is currently at ``dst`` (link
+    or file) aside as a backup rather than deleting it outright, and only
+    then renames the temp copy into ``dst``'s place -- matching replace's
+    "whatever was there is gone, a plain file replaces it" semantics. If that
+    final rename fails, the backup is renamed straight back so a mid-swap
+    failure leaves the original in place rather than leaving ``dst`` missing.
     """
     try:
         os.replace(src, dst)
@@ -57,15 +58,31 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
             raise
     import shutil
     dst = os.fspath(dst)
-    fd, tmp_copy = tempfile.mkstemp(dir=os.path.dirname(dst) or ".", prefix=".gfy-replace-", suffix=".tmp")
+    dst_dir = os.path.dirname(dst) or "."
+    fd, tmp_copy = tempfile.mkstemp(dir=dst_dir, prefix=".gfy-replace-", suffix=".tmp")
     os.close(fd)
     try:
         shutil.copy2(src, tmp_copy)
+        backup = None
+        if os.path.lexists(dst):
+            bfd, backup = tempfile.mkstemp(dir=dst_dir, prefix=".gfy-replace-bak-", suffix=".tmp")
+            os.close(bfd)
+            os.unlink(backup)  # reserve the name only; rename needs it free on Windows
+            os.rename(dst, backup)  # a plain rename moves a symlink itself, never its target
         try:
-            os.unlink(dst)
-        except FileNotFoundError:
-            pass
-        os.rename(tmp_copy, dst)
+            os.rename(tmp_copy, dst)
+        except BaseException:
+            if backup is not None:
+                try:
+                    os.rename(backup, dst)
+                except OSError:
+                    pass  # best-effort restore; the swap failure below still propagates
+            raise
+        if backup is not None:
+            try:
+                os.unlink(backup)
+            except OSError:
+                pass
     except BaseException:
         try:
             os.unlink(tmp_copy)
