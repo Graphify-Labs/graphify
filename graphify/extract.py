@@ -3580,6 +3580,11 @@ def _resolve_python_member_calls(
             _emit_call(caller, children[0], rc)
 
 
+# Every suffix the TS/JS extractors claim, so a pure-ESM (`.mjs`) repo still activates
+# the member-call resolver below.
+_JS_TS_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+
+
 def _resolve_typescript_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -3603,6 +3608,10 @@ def _resolve_typescript_member_calls(
     defined in the caller's own file, a named import of the caller's file, or
     contained in a module the caller's file imports. Otherwise EMIT NOTHING —
     a false call edge is worse than a missing one (the C++ resolver's bar).
+
+    A receiver typed to a class this corpus declares nowhere is parked on the caller
+    for a merged graph to finish (#3152); the gate above never sees it, since it only
+    vets a name that did match locally.
     """
     type_table_by_file: dict[str, dict[str, str]] = {}
     for result in per_file:
@@ -3617,11 +3626,15 @@ def _resolve_typescript_member_calls(
 
     contained = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
 
+    # Only the JS/TS interop family declares a type this receiver can hold (SFC script
+    # blocks included). A same-named class in another language must neither answer nor
+    # hide from the parking branch that nothing local declares the name.
     type_def_nids: dict[str, list[str]] = {}
     node_by_id: dict[str, dict] = {}
     for n in all_nodes:
         node_by_id[n.get("id")] = n
-        if n.get("source_file") and n.get("id") in contained and _is_type_like_definition(n):
+        if (_lang_family(n.get("source_file")) == "jsts"
+                and n.get("id") in contained and _is_type_like_definition(n)):
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
@@ -3685,6 +3698,15 @@ def _resolve_typescript_member_calls(
         if type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
         type_defs = type_def_nids.get(_key(type_name), [])
+        if not type_defs:
+            # Table-typed only: an uppercase receiver also matches namespace aliases and
+            # default imports, and node_modules is unscanned, so those are npm names.
+            # The caller's family stands in for the `lang` tag TS raw_calls do not carry.
+            if not type_qualified and _lang_family(rc.get("source_file")) == "jsts":
+                _park_unresolved_member_call(
+                    node_by_id.get(caller), callee, type_name, "typescript", rc,
+                )
+            continue
         if len(type_defs) != 1:
             continue
         type_nid = type_defs[0]
@@ -4740,7 +4762,8 @@ register_language_resolver(
     LanguageResolver("ruby_member_calls", frozenset({".rb", ".rake"}), resolve_ruby_member_calls)
 )
 register_language_resolver(
-    LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx"}), _resolve_typescript_member_calls)
+    LanguageResolver("typescript_member_calls", frozenset(_JS_TS_SUFFIXES),
+                     _resolve_typescript_member_calls)
 )
 # C++ (#1547) and ObjC (#1556) receiver-typed member-call resolution. `.h` is in
 # both suffix sets because it routes to extract_cpp or extract_objc by content; the
