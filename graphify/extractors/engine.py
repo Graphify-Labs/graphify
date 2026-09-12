@@ -3352,6 +3352,14 @@ def _extract_generic(
     def walk(node, parent_class_nid: str | None = None) -> None:
         t = node.type
 
+        # Import-carrying call statements (Lua `require("m")` with no assignment).
+        # Unlike import_types this does not return: the node is an ordinary call
+        # expression, so class/function/call dispatch below still has to see it
+        # and its children (#3320). The handler decides whether the call is
+        # actually an import.
+        if t in config.import_call_types and config.import_handler:
+            config.import_handler(node, source, file_nid, stem, edges, str_path, scope_stack)
+
         # Import types
         if t in config.import_types:
             if config.import_handler:
@@ -5395,6 +5403,12 @@ def _extract_generic(
         if (config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
                 and node.type in ("lexical_declaration", "variable_declaration")):
             _require_imports_js(node, source, caller_nid, stem, edges, str_path)
+
+        # Lua's twin of the block above: a bare `require("m")` is valid at any
+        # depth, and lazy requires inside a function body are as common in Neovim
+        # config as the top-level form the module-level walk covers (#3320).
+        if node.type in config.import_call_types and config.import_handler:
+            config.import_handler(node, source, file_nid, stem, edges, str_path, scope_stack)
 
         if node.type in config.call_types:
             # JS/TS dynamic imports: await import('./foo.js')

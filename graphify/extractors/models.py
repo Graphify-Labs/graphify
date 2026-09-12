@@ -18,6 +18,12 @@ class LanguageConfig:
     class_types: frozenset = frozenset()
     function_types: frozenset = frozenset()
     import_types: frozenset = frozenset()
+    # Node types that may *also* carry an import (Lua's bare `require("m")`
+    # statement is a plain `function_call`), dispatched to import_handler but
+    # without the `return` that import_types performs — the node is still a call
+    # expression that may contain declarations and nested calls, so the walk has
+    # to continue into it (#3320).
+    import_call_types: frozenset = frozenset()
     call_types: frozenset = frozenset()
     static_prop_types: frozenset = frozenset()
     helper_fn_names: frozenset = frozenset()
