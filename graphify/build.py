@@ -2294,7 +2294,25 @@ def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
 
 
 def prune_repo_from_graph(G: nx.Graph, repo_tag: str) -> int:
-    """Remove all nodes tagged with repo_tag from G in-place. Returns count removed."""
-    to_remove = [n for n, d in G.nodes(data=True) if d.get("repo") == repo_tag]
+    """Remove all nodes tagged with repo_tag from G in-place. Returns count removed.
+
+    A node carrying "ref_repos" (set by global_add when it deduplicates a
+    shared external/library node across repos) is only dropped once every
+    referencing repo has released it; removing repo_tag just shrinks the
+    list. Nodes without "ref_repos" are uniquely owned by their "repo" and
+    removed outright, as before.
+    """
+    to_remove = []
+    for n, d in G.nodes(data=True):
+        ref_repos = d.get("ref_repos")
+        if ref_repos is not None:
+            if repo_tag in ref_repos:
+                remaining = [r for r in ref_repos if r != repo_tag]
+                if remaining:
+                    d["ref_repos"] = remaining
+                else:
+                    to_remove.append(n)
+        elif d.get("repo") == repo_tag:
+            to_remove.append(n)
     G.remove_nodes_from(to_remove)
     return len(to_remove)
