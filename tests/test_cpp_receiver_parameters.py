@@ -72,21 +72,30 @@ def test_a_class_field_receiver_resolves(tmp_path):
 
 
 def test_a_shadowing_local_beats_the_parameter(tmp_path):
-    """C++ name lookup: the innermost declaration wins. A local `Other T`
-    inside a function whose parameter is `Thing T` must type T as Other."""
+    """C++ name lookup: the innermost declaration wins. A function whose
+    parameter is `Thing T` but which redeclares a local `Other T` must type
+    the receiver `T` as Other, not Thing.
+
+    Thing and Other carry DIFFERENTLY-named methods so the outcome is
+    decisive: `T.Ready()` resolves only if `T` is typed Other (the local),
+    and yields nothing if the parameter type Thing had won — no empty-set
+    escape hatch. Locals are folded into the file table before parameters, so
+    the first-write-wins table must record `T -> Other`.
+    """
     files = {
-        "thing.h": THING_H,
+        "thing.h": THING_H,  # class Thing has IsOk(), not Ready()
         "other.h": ("#pragma once\nclass Other {\npublic:\n"
-                    "    bool IsOk() const { return false; }\n};\n"),
+                    "    bool Ready() const { return true; }\n};\n"),
         "use.cpp": ('#include "thing.h"\n#include "other.h"\nusing namespace NS;\n'
-                    "bool Shadow(Thing* T) { Other T2; return T2.IsOk(); }\n"),
+                    "bool Shadow(Thing T) { { Other T; return T.Ready(); } }\n"),
     }
-    calls, r = _calls(tmp_path, files)
-    edges = [(s, t) for s, t in calls if s == "Shadow"]
-    # T2 is a local typed Other; the edge must land on Other::IsOk, and the
-    # single-definition guard keeps it unambiguous only when one IsOk matches.
-    # Two same-named methods exist, so nothing may be guessed:
-    assert edges == [] or all(t == "IsOk" for _s, t in edges)
+    calls, _ = _calls(tmp_path, files)
+    shadow_edges = [(s, t) for s, t in calls if s == "Shadow"]
+    # The local Other T shadows the parameter Thing T: the receiver types as
+    # Other, so the call binds to Other::Ready.
+    assert ("Shadow", "Ready") in calls, shadow_edges
+    # And it must NOT have bound to anything on Thing (the shadowed parameter).
+    assert all(t == "Ready" for _s, t in shadow_edges), shadow_edges
 
 
 def test_builtin_typed_parameters_contribute_nothing(tmp_path):
