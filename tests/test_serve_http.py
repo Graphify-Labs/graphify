@@ -429,3 +429,106 @@ def test_get_node_and_get_neighbors_agree_on_ambiguous_label(tmp_path):
         # A unique label still resolves cleanly on get_node.
         unique = _call_tool(client, headers, "get_node", {"label": "unique_helper"}, rid=4)
         assert "Node: unique_helper" in unique, unique
+
+
+# --- graph_stats build provenance (MCP consumers cannot stat the file) -------
+
+_STATS_WITHOUT_PROVENANCE = (
+    "Nodes: 2\n"
+    "Edges: 1\n"
+    "Communities: 1\n"
+    "EXTRACTED: 100%\n"
+    "INFERRED: 0%\n"
+    "AMBIGUOUS: 0%\n"
+)
+
+
+def _graph_file_with(tmp_path: Path, name: str, **extra) -> str:
+    p = tmp_path / name
+    p.write_text(json.dumps({**SAMPLE_GRAPH, **extra}), encoding="utf-8")
+    return str(p)
+
+
+def test_graph_stats_output_is_unchanged_for_a_graph_without_provenance(tmp_path):
+    """Backward compatibility, pinned as a full-string equality rather than a
+    substring check: a graph built before these fields existed must render
+    exactly the six lines it always did, with no placeholder rows."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        out = _call_tool(client, headers, "graph_stats", {}, rid=2)
+    assert out == _STATS_WITHOUT_PROVENANCE
+
+
+def test_graph_stats_reports_build_stamp_and_commit(tmp_path):
+    """Both provenance fields reach the tool output verbatim and in full.
+
+    The commit is asserted as the whole 40-char SHA, not a prefix: an agent that
+    wants to check out the exact revision the graph describes needs all of it,
+    and a truncating regression would pass any `in`-style assertion.
+    """
+    sha = "d6ff04064219c45e6cb1aeda8e66c292b6650307"
+    graph = _graph_file_with(
+        tmp_path, "stamped.json",
+        built_at="2026-08-25T09:15:42Z", built_at_commit=sha,
+    )
+    app = serve_mod._build_http_app(graph, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        out = _call_tool(client, headers, "graph_stats", {}, rid=2)
+    assert out == (
+        _STATS_WITHOUT_PROVENANCE
+        + "Built at: 2026-08-25T09:15:42Z\n"
+        + f"Built from commit: {sha}\n"
+    )
+
+
+def test_graph_stats_reports_commit_alone_when_there_is_no_stamp(tmp_path):
+    """Every graph written by a released version already carries the commit but
+    not the stamp, so the commit line must not be gated on the stamp."""
+    sha = "0d8e8757fce5efc39ce2013d90de906765d48841"
+    graph = _graph_file_with(tmp_path, "commit-only.json", built_at_commit=sha)
+    app = serve_mod._build_http_app(graph, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        out = _call_tool(client, headers, "graph_stats", {}, rid=2)
+    assert out == _STATS_WITHOUT_PROVENANCE + f"Built from commit: {sha}\n"
+
+
+@pytest.mark.parametrize("junk", [None, 0, 12345, "", "   ", [], {"a": 1}, True])
+def test_graph_stats_ignores_non_string_provenance(tmp_path, junk):
+    """A hand-edited or foreign-tooling graph must not turn a stats call into a
+    crash or a line reading "Built at: None"."""
+    graph = _graph_file_with(tmp_path, f"junk-{abs(hash(repr(junk)))}.json",
+                             built_at=junk, built_at_commit=junk)
+    app = serve_mod._build_http_app(graph, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        out = _call_tool(client, headers, "graph_stats", {}, rid=2)
+    assert out == _STATS_WITHOUT_PROVENANCE
+
+
+def test_graph_stats_provenance_follows_project_path(tmp_path):
+    """Provenance is per-graph, so it must be read from the graph the call
+    selected — not leaked from the server's default graph."""
+    sha = "1111111111111111111111111111111111111111"
+    default_graph = _graph_file(tmp_path)            # no provenance
+    proj = tmp_path / "proj"
+    (proj / "graphify-out").mkdir(parents=True)
+    (proj / "graphify-out" / "graph.json").write_text(
+        json.dumps({**SAMPLE_GRAPH, "built_at": "2026-01-01T00:00:00Z",
+                    "built_at_commit": sha}),
+        encoding="utf-8",
+    )
+    app = serve_mod._build_http_app(default_graph, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        scoped = _call_tool(client, headers, "graph_stats",
+                            {"project_path": str(proj)}, rid=2)
+        default = _call_tool(client, headers, "graph_stats", {}, rid=3)
+    assert scoped == (
+        _STATS_WITHOUT_PROVENANCE
+        + "Built at: 2026-01-01T00:00:00Z\n"
+        + f"Built from commit: {sha}\n"
+    )
+    assert default == _STATS_WITHOUT_PROVENANCE
