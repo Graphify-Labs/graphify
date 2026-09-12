@@ -18,6 +18,13 @@ def _clear_backend_env(monkeypatch):
         "DEEPSEEK_API_KEY",
         "AZURE_OPENAI_API_KEY",
         "AZURE_OPENAI_ENDPOINT",
+        "GRAPHIFY_BACKEND",
+        "OLLAMA_BASE_URL",
+        "OLLAMA_HOST",
+        "AWS_PROFILE",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "AWS_ACCESS_KEY_ID",
     ):
         monkeypatch.delenv(env_key, raising=False)
 
@@ -82,6 +89,121 @@ def test_openai_backend_detected(monkeypatch):
 
     assert llm.detect_backend() == "openai"
     assert llm._get_backend_api_key("openai") == "openai-key"
+
+
+def test_detect_backend_ignores_ambient_aws_region(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    assert llm.detect_backend() is None
+
+
+def test_detect_backend_ignores_ambient_aws_profile(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("AWS_PROFILE", "my-profile")
+    assert llm.detect_backend() is None
+
+
+def test_detect_backend_ignores_ambient_aws_default_region(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
+    assert llm.detect_backend() is None
+
+
+def test_detect_backend_aws_vars_do_not_shadow_ollama(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_PROFILE", "default")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    assert llm.detect_backend() == "ollama"
+
+
+def test_detect_backend_aws_vars_do_not_shadow_custom_provider(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_PROFILE", "default")
+    monkeypatch.setattr(llm, "BACKENDS", {
+        **llm.BACKENDS,
+        "mycustom": {
+            "base_url": "http://localhost:8000/v1",
+            "default_model": "custom-model",
+            "env_key": "MYCUSTOM_API_KEY",
+            "pricing": {"input": 0.0, "output": 0.0},
+        }
+    })
+    monkeypatch.setenv("MYCUSTOM_API_KEY", "custom-key")
+    assert llm.detect_backend() == "mycustom"
+
+
+def test_detect_backend_graphify_backend_bedrock(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_BACKEND", "bedrock")
+    assert llm.detect_backend() == "bedrock"
+
+
+def test_detect_backend_graphify_backend_ollama(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_BACKEND", "ollama")
+    assert llm.detect_backend() == "ollama"
+
+
+def test_detect_backend_graphify_backend_custom_provider(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setattr(llm, "BACKENDS", {
+        **llm.BACKENDS,
+        "mycustom": {
+            "base_url": "http://localhost:8000/v1",
+            "default_model": "custom-model",
+            "env_key": "MYCUSTOM_API_KEY",
+            "pricing": {"input": 0.0, "output": 0.0},
+        }
+    })
+    monkeypatch.setenv("GRAPHIFY_BACKEND", "mycustom")
+    assert llm.detect_backend() == "mycustom"
+
+
+def test_detect_backend_graphify_backend_none(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("GRAPHIFY_BACKEND", "none")
+    assert llm.detect_backend() is None
+
+
+def test_detect_backend_graphify_backend_off(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("GRAPHIFY_BACKEND", "off")
+    assert llm.detect_backend() is None
+
+
+def test_detect_backend_graphify_backend_auto(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("GRAPHIFY_BACKEND", "auto")
+    assert llm.detect_backend() == "openai"
+
+
+def test_detect_backend_graphify_backend_invalid_raises(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_BACKEND", "nonexistent-provider")
+    with pytest.raises(ValueError) as excinfo:
+        llm.detect_backend()
+    assert "unknown backend 'nonexistent-provider' in GRAPHIFY_BACKEND" in str(excinfo.value)
+
+
+def test_extract_files_direct_explicit_bedrock_bypasses_detection(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    source = tmp_path / "note.md"
+    source.write_text("# Note\n")
+    fake_result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    def _fail_if_called():
+        raise AssertionError("detect_backend() should not have been called")
+
+    monkeypatch.setattr(llm, "detect_backend", _fail_if_called)
+    with patch("graphify.llm._call_bedrock", return_value=fake_result) as call:
+        res = llm.extract_files_direct([source], backend="bedrock", root=tmp_path)
+        assert res is fake_result
+        assert call.call_count == 1
 
 
 def test_extract_files_direct_routes_gemini_through_openai_compat(tmp_path, monkeypatch):

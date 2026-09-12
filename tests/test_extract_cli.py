@@ -693,6 +693,7 @@ def _clear_backend_keys(monkeypatch):
         "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ACCESS_KEY_ID",
         # ollama: a set OLLAMA_BASE_URL triggers backend detection
         "OLLAMA_BASE_URL",
+        "GRAPHIFY_BACKEND",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -1668,3 +1669,76 @@ def test_incremental_stray_attribution_preserves_undispatched_file(
     assert "phantom_ts" not in ids, (
         f"stray attributed to a nonexistent path became a phantom node: {ids}"
     )
+
+
+def test_cli_explicit_backend_overrides_graphify_backend(monkeypatch, tmp_path):
+    """Explicit --backend must override GRAPHIFY_BACKEND."""
+    corpus = _code_only_corpus(tmp_path)
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_BACKEND", "bedrock")
+
+    captured_backend = []
+    def fake_extract_parallel(*args, **kwargs):
+        captured_backend.append(kwargs.get("backend"))
+        on_chunk = kwargs.get("on_chunk_done")
+        chunk = {
+            "nodes": [{"id": "doc_a", "label": "Doc A", "file_type": "document", "source_file": "doc.md"}],
+            "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1,
+        }
+        if on_chunk:
+            on_chunk(0, 1, chunk)
+        return chunk
+
+    (corpus / "doc.md").write_text("# Doc\n")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", fake_extract_parallel)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--backend", "openai", "--out", str(out_dir)],
+    )
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0)
+    assert captured_backend == ["openai"]
+
+
+def test_cli_invalid_graphify_backend_exits_1(monkeypatch, tmp_path, capsys):
+    """Invalid GRAPHIFY_BACKEND must fail loudly with exit code 1 and a clean error."""
+    corpus = _make_corpus(tmp_path)  # includes markdown
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_BACKEND", "invalid-backend")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--out", str(out_dir)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "error: unknown backend 'invalid-backend' in GRAPHIFY_BACKEND" in err
+
+
+def test_extract_with_ambient_aws_env_does_not_select_bedrock(monkeypatch, tmp_path, capsys):
+    """Ambient AWS environment variables must not select Bedrock for semantic extraction."""
+    corpus = _make_corpus(tmp_path)  # includes markdown
+    out_dir = tmp_path / "out"
+    _clear_backend_keys(monkeypatch)
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_PROFILE", "default")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys, "argv",
+        ["graphify", "extract", str(corpus), "--out", str(out_dir)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "no LLM API key found" in err
