@@ -30,6 +30,7 @@ except Exception:
     __version__ = "unknown"
 
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
 
 
 def _write_version_stamp(skill_dst: Path, version: str) -> None:
@@ -45,7 +46,7 @@ def _write_version_stamp(skill_dst: Path, version: str) -> None:
     tmp = version_file.with_name(".graphify_version.tmp")
     try:
         tmp.write_text(version, encoding="utf-8")
-        os.replace(tmp, version_file)
+        _os_replace_with_fallback(tmp, version_file)
     except Exception:
         try:
             tmp.unlink(missing_ok=True)
@@ -250,7 +251,7 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
     tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
     try:
         shutil.copy(skill_src, tmp_dst)
-        os.replace(tmp_dst, skill_dst)
+        _os_replace_with_fallback(tmp_dst, skill_dst)
     except Exception:
         try:
             tmp_dst.unlink(missing_ok=True)
@@ -898,7 +899,7 @@ def vscode_install(project_dir: Path | None = None) -> None:
     tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
     try:
         shutil.copy(skill_src, tmp_dst)
-        os.replace(tmp_dst, skill_dst)
+        _os_replace_with_fallback(tmp_dst, skill_dst)
     except Exception:
         try:
             tmp_dst.unlink(missing_ok=True)

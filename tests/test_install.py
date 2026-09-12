@@ -40,6 +40,37 @@ def test_install_default_claude(tmp_path):
     assert (tmp_path / ".claude" / "skills" / "graphify" / "SKILL.md").exists()
 
 
+def test_install_survives_a_winerror_17_replace(tmp_path, monkeypatch):
+    """#3508: installing SKILL.md failed on some Windows setups with WinError
+    17 ("cannot move to a different disk drive") from `os.replace`, even with
+    the temp file and destination in the same directory on the same drive.
+    WinError 17 is a plain OSError, not PermissionError, so the install's
+    atomic replace must fall back to copy-then-delete for it too.
+
+    Uses "aider" (a monolith platform, no references/ sidecar) so the only
+    os.replace this install performs is the SKILL.md file replace under test
+    -- a progressive platform's separate directory replace for references/
+    isn't covered by the same fallback and would fail this test for an
+    unrelated reason.
+    """
+    real_replace = os.replace
+
+    def flaky_replace(src, dst):
+        exc = OSError("cannot move to a different disk drive")
+        exc.winerror = 17
+        raise exc
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    try:
+        _install(tmp_path, "aider")
+    finally:
+        monkeypatch.setattr(os, "replace", real_replace)
+
+    skill = tmp_path / ".aider" / "graphify" / "SKILL.md"
+    assert skill.exists()
+    assert not any(p.name.endswith(".tmp") for p in skill.parent.iterdir())
+
+
 def test_install_claude_md_honors_claude_config_dir(tmp_path, monkeypatch):
     """#2694: with CLAUDE_CONFIG_DIR set, the always-on registration lands in
     $CLAUDE_CONFIG_DIR/CLAUDE.md — not the default ~/.claude/CLAUDE.md, which the
