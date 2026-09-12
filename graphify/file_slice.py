@@ -38,6 +38,7 @@ from pathlib import Path
 _SPLITTABLE_TEXT_SUFFIXES = frozenset({
     ".md", ".mdx", ".markdown", ".txt", ".rst",
     ".qmd", ".skill", ".html", ".yaml", ".yml",
+    ".j2", ".jinja", ".jinja2",
 })
 
 # Document types whose BYTES are not what the model is shown. `llm._file_to_text`
