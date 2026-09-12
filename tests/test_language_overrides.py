@@ -344,3 +344,55 @@ def test_activating_a_root_without_rc_clears_a_previous_roots_overrides(tmp_path
     set_language_overrides({".inc": ".php"})
     activate_language_overrides(tmp_path)
     assert effective_suffix(Path("a.inc")) == ".inc"
+
+
+def test_overrides_do_not_leak_across_concurrent_threads():
+    """Two extractions in one process, on different threads with different
+    roots, must not clobber each other's overrides (#2961 review).
+
+    Thread A maps `.inc -> .php`, thread B maps `.inc -> .pas`. Each barrier-
+    synchronizes so both activations are live at once, then each re-reads its
+    own `effective_suffix('x.inc')`. With the old module-global dict, whichever
+    thread activated last won for BOTH; with thread-local state each keeps its
+    own.
+    """
+    import threading
+
+    barrier = threading.Barrier(2)
+    results: dict[str, str] = {}
+
+    def worker(name: str, target: str) -> None:
+        set_language_overrides({".inc": target})
+        barrier.wait()  # both activations now live simultaneously
+        results[name] = effective_suffix("x.inc")
+
+    ta = threading.Thread(target=worker, args=("php", ".php"))
+    tb = threading.Thread(target=worker, args=("pas", ".pas"))
+    ta.start(); tb.start()
+    ta.join(); tb.join()
+
+    assert results == {"php": ".php", "pas": ".pas"}, results
+
+
+def test_setting_overrides_on_one_thread_leaves_another_thread_clean():
+    """A thread that never activated overrides sees none, even while another
+    thread has them active."""
+    import threading
+
+    set_language_overrides(None)  # main thread: no overrides
+    seen: dict[str, str] = {}
+    started = threading.Event()
+
+    def other() -> None:
+        set_language_overrides({".inc": ".php"})
+        started.set()
+        # keep this thread's overrides live while main checks
+        import time
+        time.sleep(0.05)
+
+    t = threading.Thread(target=other)
+    t.start()
+    started.wait()
+    # main thread must still see the real suffix, not the other thread's map
+    assert effective_suffix("x.inc") == ".inc"
+    t.join()
