@@ -3141,6 +3141,15 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
             del ruby_namespace[-len(const_segments):]
     return True
 
+
+def _lua_is_require_call(node, source: bytes) -> bool:
+    """True if a Lua `function_call` node invokes `require`, parenthesized or not."""
+    name_node = node.child_by_field_name("name")
+    if name_node is None or name_node.type != "identifier":
+        return False
+    return _read_text(name_node, source) == "require"
+
+
 def _extract_generic(
     path: Path, config: LanguageConfig, *, source_override: bytes | None = None
 ) -> dict:
@@ -3346,6 +3355,20 @@ def _extract_generic(
 
     def walk(node, parent_class_nid: str | None = None) -> None:
         t = node.type
+
+        # Lua: `require("mod")` used as a bare statement (no assignment) is
+        # the dominant idiom in Neovim configs, but it doesn't fit any
+        # *_declaration node type — it is just a function_call. Adding
+        # function_call wholesale to import_types would swallow every plain
+        # call (e.g. `vim.keymap.set(.., function() ... end)`), skipping the
+        # walker's recursion into its callback and losing whatever is
+        # declared inside. So this only fires for a call that IS require,
+        # checked ahead of (and independently from) the import_types dispatch
+        # below (#3320).
+        if (config.ts_module == "tree_sitter_lua" and t == "function_call"
+                and config.import_handler and _lua_is_require_call(node, source)):
+            config.import_handler(node, source, file_nid, stem, edges, str_path, scope_stack)
+            return
 
         # Import types
         if t in config.import_types:
