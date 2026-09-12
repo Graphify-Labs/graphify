@@ -53,6 +53,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.56 (2026-09-07)
 
+- Fix: a bare `require("mod")` statement in Lua (the common Neovim/LazyVim `init.lua` idiom, with no `local x =` assignment) now emits an `imports` edge like the assigned form — previously only `variable_declaration` requires were dispatched, so side-effect requires produced no edge and Neovim configs graphed with almost no structure (#3320, thanks @artbylmz).
 - Fix: Rust trait method declarations (signature-only, and default-bodied) are now extracted as nodes — trait bodies were never walked, so both were silently dropped; a trait-declared method stays a distinct node from its impl definition (#3366, thanks @santoshpy).
 - Fix: the atomic-write temp filename is now bounded, so exporting to a path near the Windows MAX_PATH / 255-char component limit no longer fails with a temp-file `FileNotFoundError` (#3351, thanks @hopstreax).
 - Fix: when graphify's git hook decides to skip (no graph, rebase/merge/worktree, `GRAPHIFY_SKIP_HOOK`), it no longer terminates the whole hook — the block runs in a subshell so chained hooks and later steps still execute (#2986, thanks @abhay-codes07).

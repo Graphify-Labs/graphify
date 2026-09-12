@@ -1177,7 +1177,18 @@ _PHP_CONFIG = LanguageConfig(
 
 
 def _import_lua(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
-    """Extract require('module') from Lua variable_declaration nodes."""
+    """Extract require('module') from Lua require imports.
+
+    Fires on a `variable_declaration` (`local x = require("mod")`) and on a bare
+    `function_call` statement (`require("mod")` with no assignment, the common
+    Neovim/LazyVim idiom — #3320). For the bare form the callee is checked so a
+    same-named helper (`myrequire(...)`) or a string literal that merely contains
+    `require(...)` (e.g. `print("require(x)")`) does not mint a false import edge.
+    """
+    if node.type == "function_call":
+        name_node = node.child_by_field_name("name")
+        if name_node is None or _read_text(name_node, source) != "require":
+            return
     text = _read_text(node, source)
     import re
     m = re.search(r"""require\s*[\('"]\s*['"]?([^'")\s]+)""", text)
@@ -1204,7 +1215,14 @@ _LUA_CONFIG = LanguageConfig(
     ts_language_fn="language",
     class_types=frozenset(),
     function_types=frozenset({"function_declaration"}),
-    import_types=frozenset({"variable_declaration"}),
+    # A bare `require("mod")` statement (the common Neovim/LazyVim idiom) parses
+    # as a top-level `function_call`, not a `variable_declaration`, so it must be
+    # dispatched to _import_lua too — otherwise side-effect requires produce no
+    # `imports` edge (#3320). The assigned form (`local x = require(...)`) is a
+    # `variable_declaration`; the engine returns after handling an import node, so
+    # its nested `function_call` is never re-visited and no duplicate edge is
+    # emitted. Call edges come from the separate walk_calls pass, unaffected.
+    import_types=frozenset({"variable_declaration", "function_call"}),
     call_types=frozenset({"function_call"}),
     call_function_field="name",
     call_accessor_node_types=frozenset({"method_index_expression"}),
