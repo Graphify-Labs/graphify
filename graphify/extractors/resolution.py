@@ -1562,7 +1562,25 @@ def _js_default_export_name(node, source: bytes) -> str | None:
 def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
     bodies: list[tuple[str, object]] = []
     stem = _file_stem(path)
+    # A top-level `export function f(){}` / `export const g = () => {}` is an
+    # export_statement WRAPPING the declaration, not a bare program child, so
+    # scanning only direct children missed every exported function — and the
+    # calls inside them never became `uses` facts, so an aliased-import call
+    # (`import { bar as baz }; baz()`) never resolved through the import table
+    # (#3346). Unwrap a non-re-export export_statement to its inner declaration
+    # so exported and non-exported functions are treated identically.
+    top_nodes: list = []
     for node in root_node.children:
+        if node.type == "export_statement" and not any(
+            c.type == "string" for c in node.children  # `export ... from '...'` is a re-export
+        ):
+            top_nodes.extend(
+                c for c in node.children
+                if c.type in ("function_declaration", "lexical_declaration")
+            )
+        else:
+            top_nodes.append(node)
+    for node in top_nodes:
         if node.type == "function_declaration":
             name_node = node.child_by_field_name("name")
             body = node.child_by_field_name("body")
