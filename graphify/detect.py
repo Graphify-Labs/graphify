@@ -1968,7 +1968,15 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     skipped_sensitive.append(str(p) + f" [Google Workspace export failed: {exc}]")
                     continue
                 if md_path:
-                    if _ignored_for_scan(md_path):
+                    # #3504: the sidecar lands under converted_dir, which the
+                    # documented .gitignore advice puts inside a gitignored
+                    # graphify-out/ -- an ignore check here would reject the
+                    # tool's own output for the same reason it should be
+                    # gitignored in the first place, silently dropping the
+                    # source document from the corpus. The ignore check exists
+                    # to keep USER files out of the scan, not to filter output
+                    # this same pass just produced from an already-admitted file.
+                    if _ignored_for_scan(md_path) and not md_path.is_relative_to(converted_dir):
                         continue
                     files[ftype].append(str(md_path))
                     total_words += _wc(md_path)
@@ -1979,7 +1987,10 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             if p.suffix.lower() in OFFICE_EXTENSIONS:
                 md_path = convert_office_file(p, converted_dir, root=root)
                 if md_path:
-                    if _ignored_for_scan(md_path):
+                    # #3504: see the matching comment in the Google Workspace
+                    # branch above -- same sidecar-under-a-gitignored-output-dir
+                    # trap, same exemption.
+                    if _ignored_for_scan(md_path) and not md_path.is_relative_to(converted_dir):
                         continue
                     files[ftype].append(str(md_path))
                     total_words += _wc(md_path)

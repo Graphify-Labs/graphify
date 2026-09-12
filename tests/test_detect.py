@@ -872,6 +872,58 @@ def test_detect_converts_google_workspace_shortcuts_when_enabled(tmp_path, monke
     assert result["total_words"] > 0
 
 
+def test_detect_office_sidecar_survives_a_gitignored_output_dir(tmp_path, monkeypatch):
+    """#3504: the documented .gitignore advice puts graphify-out/ (and so
+    graphify-out/converted/, where Office sidecars land) inside a gitignored
+    tree. The ignore check exists to keep USER files out of the scan, not to
+    filter output this same pass just produced from an already-admitted
+    source file -- so a sidecar landing under converted/ must survive it,
+    or every .docx/.xlsx silently vanishes from the corpus the moment a repo
+    follows that advice."""
+    (tmp_path / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    src = tmp_path / "report.docx"
+    src.write_text("placeholder", encoding="utf-8")
+
+    def fake_convert(path, out_dir, root=None):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / "report_converted.md"
+        out.write_text("# Report\n\nConverted content.", encoding="utf-8")
+        return out
+
+    monkeypatch.setattr("graphify.detect.convert_office_file", fake_convert)
+
+    result = detect(tmp_path)
+
+    assert len(result["files"]["document"]) == 1, (
+        "the Office sidecar was dropped by the gitignore check on the tool's own output dir"
+    )
+    assert result["files"]["document"][0].endswith("report_converted.md")
+    assert result["total_words"] > 0
+
+
+def test_detect_google_workspace_sidecar_survives_a_gitignored_output_dir(tmp_path, monkeypatch):
+    """Same trap as the Office sidecar case (#3504), for the Google Workspace
+    conversion branch, which writes into the same converted/ directory."""
+    (tmp_path / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    shortcut = tmp_path / "notes.gdoc"
+    shortcut.write_text('{"doc_id":"doc-1"}', encoding="utf-8")
+
+    def fake_convert(path, out_dir, *, xlsx_to_markdown=None, root=None):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / "notes_converted.md"
+        out.write_text("# Notes\n\nA converted Google Doc.", encoding="utf-8")
+        return out
+
+    monkeypatch.setattr("graphify.detect.convert_google_workspace_file", fake_convert)
+
+    result = detect(tmp_path, google_workspace=True)
+
+    assert len(result["files"]["document"]) == 1, (
+        "the Google Workspace sidecar was dropped by the gitignore check on the tool's own output dir"
+    )
+    assert result["files"]["document"][0].endswith("notes_converted.md")
+
+
 def test_detect_includes_video_key(tmp_path):
     """detect() result always includes a 'video' key even with no video files."""
     (tmp_path / "main.py").write_text("x = 1")
