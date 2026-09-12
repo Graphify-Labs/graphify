@@ -1736,24 +1736,66 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
                 )
 
 def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolutionFacts) -> None:
-    js_paths = [
-        path for path in paths
-        if path.suffix in _JS_CACHE_BYPASS_SUFFIXES
-    ]
-    if not js_paths:
-        return
+    js_paths = [path for path in paths if path.suffix in _JS_CACHE_BYPASS_SUFFIXES]
+    groups: dict[Path, list[tuple[int, Path]]] = {}
+    for position, path in enumerate(js_paths):
+        groups.setdefault(path.resolve(), []).append((position, path))
 
-    trees: dict[Path, tuple[bytes, object]] = {}
+    pending: dict[int, _SymbolResolutionFacts] = {}
+    class_uses: list[_SymbolUseFact] = []
+    next_position = 0
+    for entries in groups.values():
+        # Only paths for one resolved file share a tree. Each occurrence keeps
+        # its own facts: grouping A, B, alias-of-A must not emit A, alias-of-A, B.
+        collected = _collect_js_file_group_facts([path for _, path in entries])
+        for (position, _), local in zip(entries, collected):
+            pending[position] = local
+        while next_position < len(js_paths):
+            local = pending.pop(next_position, None)
+            if local is None:
+                break
+            facts.declarations.extend(local.declarations)
+            facts.imports.extend(local.imports)
+            facts.aliases.extend(local.aliases)
+            facts.exports.extend(local.exports)
+            facts.star_exports.extend(local.star_exports)
+            facts.namespace_exports.extend(local.namespace_exports)
+            # Existing ordering is all function calls, then all class type uses.
+            for use in local.uses:
+                if use.relation == "calls":
+                    facts.uses.append(use)
+                else:
+                    class_uses.append(use)
+            next_position += 1
+    facts.uses.extend(class_uses)
 
-    for path in js_paths:
-        resolved_path = path.resolve()
+
+def _collect_js_file_group_facts(paths: list[Path]) -> list[_SymbolResolutionFacts]:
+    """Collect occurrences of one resolved file without retaining other files' trees."""
+    collected = [_SymbolResolutionFacts() for _ in paths]
+    last_parsed = None
+    for path, facts in zip(paths, collected):
         parsed = _parse_js_tree(path)
         if parsed is None:
             continue
         source, root_node = parsed
-        trees[resolved_path] = parsed
-
+        imports_exports, aliases, exports, classes = [], [], [], []
         for node in _walk_js_tree(root_node):
+            kind = node.type
+            if kind in ("import_statement", "export_statement"):
+                imports_exports.append(node)
+            if kind == "export_statement":
+                exports.append(node)
+            if kind == "lexical_declaration":
+                aliases.append(node)
+            if kind in ("class_declaration", "abstract_class_declaration", "interface_declaration"):
+                classes.append(node)
+        # First-pass facts use each occurrence's own grammar. Exports, calls,
+        # and class uses reuse the last successful parse, even if a later alias
+        # fails to parse. This preserves the original multi-pass contract.
+        last_parsed = source, root_node, exports, classes
+
+        for node in imports_exports:
             if node.type == "export_statement":
                 for name in _js_exported_declaration_names(node, source):
                     facts.declarations.append(
@@ -1791,23 +1833,18 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     )
                 )
 
-        for node in _walk_js_tree(root_node):
+        for node in aliases:
             for alias, target in _js_lexical_aliases(node, source):
                 facts.aliases.append(
                     _SymbolAliasFact(path, alias, target, node.start_point[0] + 1)
                 )
 
-    for path in js_paths:
-        resolved_path = path.resolve()
-        parsed = trees.get(resolved_path)
-        if parsed is None:
-            continue
-        source, root_node = parsed
+    if last_parsed is None:
+        return collected
+    source, root_node, exports, classes = last_parsed
 
-        for node in _walk_js_tree(root_node):
-            if node.type != "export_statement":
-                continue
-
+    for path, facts in zip(paths, collected):
+        for node in exports:
             raw_module = _js_module_specifier(node, source)
             export_clause = _js_export_clause(node)
             # `export type { X } from ...` / `export type * from ...`: the
@@ -1893,12 +1930,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     )
                 )
 
-    for path in js_paths:
-        resolved_path = path.resolve()
-        parsed = trees.get(resolved_path)
-        if parsed is None:
-            continue
-        source, root_node = parsed
+    for path, facts in zip(paths, collected):
         for source_id, body in _js_top_level_function_bodies(path, root_node, source):
             for node in _walk_js_tree(body):
                 imported_name = _js_call_identifier(node, source)
@@ -1915,20 +1947,9 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                     )
                 )
 
-    for path in js_paths:
-        resolved_path = path.resolve()
-        parsed = trees.get(resolved_path)
-        if parsed is None:
-            continue
-        source, root_node = parsed
+    for path, facts in zip(paths, collected):
         stem = _file_stem(path)
-        for node in _walk_js_tree(root_node):
-            if node.type not in (
-                "class_declaration",
-                "abstract_class_declaration",
-                "interface_declaration",
-            ):
-                continue
+        for node in classes:
             name_node = node.child_by_field_name("name")
             if name_node is None:
                 continue
@@ -1937,6 +1958,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                 continue
             class_nid = _make_id(stem, class_name)
             _ts_walk_class_members(node, source, path, class_nid, facts)
+    return collected
 
 def _parse_python_tree(path: Path):
     try:
