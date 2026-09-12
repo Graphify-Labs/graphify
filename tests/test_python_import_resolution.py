@@ -202,3 +202,27 @@ def test_absolute_import_without_sibling_keeps_bare_module_target(tmp_path: Path
     ]
 
     assert targets == [_make_id("requests")]
+
+
+def test_absolute_sibling_import_resolves_a_package_directory(tmp_path: Path):
+    # Same ambiguity as above, but the sibling is a package directory rather
+    # than a module file. Probing only for `pkg.py` missed it, so the edge fell
+    # back to the bare name and dangled whenever the basename was not unique.
+    live = _write(tmp_path / "live/pkg/__init__.py", "LAYOUTS = {'hero': (1080, 1080)}\n")
+    vendored = _write(tmp_path / "vendor/pkg/__init__.py", "LAYOUTS = {'legacy': (600, 600)}\n")
+    build = _write(
+        tmp_path / "live/build.py",
+        "import os\n"
+        "import sys\n\n"
+        "sys.path.insert(0, os.path.dirname(__file__))\n\n"
+        "from pkg import LAYOUTS\n",
+    )
+
+    result = extract([live, vendored, build], cache_root=tmp_path)
+
+    build_file = _node_id(result, "build.py", "live/build.py")
+    live_init = _node_id(result, "__init__.py", "live/pkg/__init__.py")
+    vendored_init = _node_id(result, "__init__.py", "vendor/pkg/__init__.py")
+
+    assert _has_edge(result, build_file, live_init, "imports_from")
+    assert not _has_edge(result, build_file, vendored_init, "imports_from")
