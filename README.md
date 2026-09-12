@@ -501,18 +501,75 @@ The MCP server gives your assistant structured access: `query_graph`, `get_node`
 | `--stateless` | off | No per-session state (for load-balanced / CI deployments) |
 | `--session-timeout` | `3600` | Reap idle stateful sessions after N seconds (`0` disables) |
 
-The default `127.0.0.1` bind is loopback-only. Set `--host 0.0.0.0` **and** `--api-key` together when exposing on a shared host. Run it in a container:
-
-```bash
-docker build -t graphify .
-docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
-  /data/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
-```
+The default `127.0.0.1` bind is loopback-only. Set `--host 0.0.0.0` **and** `--api-key` together when exposing on a shared host.
 
 > **WSL / Linux note:** Ubuntu ships `python3`, not `python`. Use a venv to avoid conflicts:
 > ```bash
 > python3 -m venv .venv && .venv/bin/pip install "graphifyy[mcp]"
 > ```
+
+### Running in a container
+
+A pre-built multi-platform image (`linux/amd64` + `linux/arm64`) is published to GHCR on every release — no local Python install required. Works with Docker and Podman.
+
+**Quick start with `make` (recommended):**
+
+```bash
+# Pull from GHCR — no build step needed
+make pull
+
+# Index a codebase (mounts current directory read-only)
+make index
+
+# Index a different directory
+make index SRC=/path/to/project
+
+# Start the MCP HTTP server
+GRAPHIFY_API_KEY=secret make up
+```
+
+**Or use `docker compose` / `podman compose` directly:**
+
+```bash
+# Pull the pre-built image
+docker compose pull        # or: podman compose pull
+
+# Code-only index (no API key needed)
+docker compose --profile cli run --rm graphify extract /src --code-only --output /data
+
+# Full semantic index (pass your LLM key)
+docker compose --profile cli run --rm \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  graphify extract /src --backend claude --output /data
+
+# Start the MCP HTTP server
+GRAPHIFY_API_KEY=secret docker compose up mcp
+```
+
+**Or bare `docker` / `podman` (no compose):**
+
+```bash
+# Code-only index
+docker run --rm \
+  -v "$(pwd):/src:ro" \
+  -v "$(pwd)/graphify-out:/data/graphify-out" \
+  ghcr.io/graphify-labs/graphify:latest \
+  extract /src --code-only --output /data
+
+# Serve
+docker run -p 8080:8080 \
+  -v "$(pwd)/graphify-out:/data:ro" \
+  -e GRAPHIFY_API_KEY="$SECRET" \
+  --entrypoint graphify-mcp \
+  ghcr.io/graphify-labs/graphify:latest \
+  /data/graph.json --transport http --host 0.0.0.0
+```
+
+Point your AI assistant at `http://localhost:8080/mcp` with the same key.
+
+> **Podman note:** `make` and `docker-compose.yaml` auto-detect `podman` when `docker` is not in `PATH`. On SELinux systems (RHEL, Fedora, CoreOS) append `:Z` to volume paths if you see permission errors.
+
+> **Override the image:** set `GRAPHIFY_IMAGE=ghcr.io/your-org/graphify:custom` to use a custom registry or tag in compose. Set `RUNTIME=podman` to force Podman in the Makefile.
 
 ---
 
