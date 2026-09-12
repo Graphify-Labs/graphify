@@ -2264,7 +2264,12 @@ def _build_server(graph_path: str):
         project_path = arguments.pop("project_path", None)
         handler = _handlers.get(name)
         if not handler:
-            return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
+            # An unknown tool name is as much a tool level failure as a
+            # handler raising ToolError, so it gets the same isError:true
+            # treatment via the same propagate and let the caller wrap it
+            # mechanism, rather than a bare success shaped return the SDK
+            # has no way to tell apart from a real answer (#2714).
+            raise ToolError(f"Unknown tool: {name}")
         try:
             _select_graph(project_path)  # bind G/communities to the target graph
             return [types.TextContent(type="text", text=handler(arguments))]
@@ -2274,7 +2279,12 @@ def _build_server(graph_path: str):
             # an error result; the 2.x path catches it in _on_call_tool).
             raise
         except Exception as exc:
-            return [types.TextContent(type="text", text=f"Error executing {name}: {exc}")]
+            # A bad project_path, a corrupt project graph, or any other
+            # unexpected failure reaching this far is the same kind of tool
+            # level failure ToolError exists for, so it gets marked
+            # isError:true too instead of coming back indistinguishable from
+            # success (#2714).
+            raise ToolError(f"Error executing {name}: {exc}") from exc
 
     if hasattr(Server, "list_tools"):
         # mcp 1.x: decorator-based registration. The SDK wraps the raw returns
