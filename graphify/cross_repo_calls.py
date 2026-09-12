@@ -42,6 +42,9 @@ _LANG_SUFFIXES: dict[str, frozenset[str]] = {
     "cpp": frozenset({".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".cu", ".cuh"}),
     "csharp": frozenset({".cs"}),
     "java": frozenset({".java"}),
+    # A Kotlin call may be answered by any JVM-family declaration: the classpath is one
+    # namespace, and a Kotlin module over a Java library is the common Android shape.
+    "kotlin": frozenset({".kt", ".kts", ".java", ".scala", ".groovy", ".gradle"}),
     "swift": frozenset({".swift"}),
 }
 

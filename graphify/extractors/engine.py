@@ -807,6 +807,142 @@ def _kotlin_function_return_type_node(func_node):
                 return c
     return None
 
+def _kotlin_property_name(property_node, source: bytes) -> str | None:
+    """Return the name a Kotlin ``val``/``var`` declaration binds."""
+    for c in property_node.children:
+        if c.type == "variable_declaration":
+            for sub in c.children:
+                if sub.type in ("simple_identifier", "identifier"):
+                    return _read_text(sub, source)
+        elif c.type in ("simple_identifier", "identifier"):
+            return _read_text(c, source)
+    return None
+
+def _kotlin_qualified_type_tail(type_node, source: bytes) -> str | None:
+    """Last segment of a dotted Kotlin type spelling, or ``None`` when it is not dotted.
+
+    `com.example.Greeter` names the type in its last segment while the reference collector
+    reports the first, so a receiver keyed on `com` matches no declaration.
+    """
+    if type_node is None:
+        return None
+    if type_node.type in ("nullable_type", "parenthesized_type", "type_reference"):
+        for c in type_node.children:
+            if c.is_named:
+                tail = _kotlin_qualified_type_tail(c, source)
+                if tail:
+                    return tail
+        return None
+    if type_node.type != "user_type":
+        return None
+    names: list[str] = []
+    for c in type_node.children:
+        if c.type in ("identifier", "type_identifier"):
+            names.append(_read_text(c, source))
+        elif c.type == "simple_user_type":
+            names.append(_kotlin_head_type_name(c, source) or "")
+    return names[-1] if len(names) > 1 and names[-1] else None
+
+def _kotlin_head_type_name(type_node, source: bytes) -> str | None:
+    """The declared type's own name from a Kotlin type node, generic arguments dropped."""
+    tail = _kotlin_qualified_type_tail(type_node, source)
+    if tail:
+        return (None if tail in _KOTLIN_BUILTIN_TYPES or tail in _JAVA_BUILTIN_TYPES
+                else tail)
+    refs: list[tuple[str, str]] = []
+    _kotlin_collect_type_refs(type_node, source, False, refs)
+    return next((name for name, role in refs if role == "type"), None)
+
+def _kotlin_navigation_tail(node, source: bytes) -> str | None:
+    """Last segment of a dotted expression (`com.example.Greeter` -> `Greeter`)."""
+    if node is None or node.type != "navigation_expression":
+        return None
+    for c in reversed(node.children):
+        if c.type in ("simple_identifier", "identifier", "type_identifier"):
+            return _read_text(c, source)
+        if c.type == "navigation_suffix":
+            for sub in reversed(c.children):
+                if sub.type in ("simple_identifier", "identifier", "type_identifier"):
+                    return _read_text(sub, source)
+    return None
+
+def _kotlin_constructor_type(property_node, source: bytes) -> str | None:
+    """Infer an unannotated Kotlin binding's type from its constructor call.
+
+    A constructor invocation is spelled exactly like a function call in this grammar, so
+    the capitalized head is the only evidence that `val c = Client()` binds a Client.
+    """
+    call = next((c for c in property_node.children if c.type == "call_expression"), None)
+    head = call.children[0] if call is not None and call.children else None
+    if head is None:
+        return None
+    if head.type in ("simple_identifier", "identifier"):
+        text = _read_text(head, source)
+    else:
+        text = _kotlin_navigation_tail(head, source)
+    if (text and text[:1].isupper() and text not in _KOTLIN_BUILTIN_TYPES
+            and text not in _JAVA_BUILTIN_TYPES):
+        return text
+    return None
+
+def _kotlin_binding_type(node, source: bytes) -> str | None:
+    """A Kotlin property/local's type: the annotation, else its constructor call."""
+    return (_kotlin_head_type_name(_kotlin_property_type_node(node), source)
+            or _kotlin_constructor_type(node, source))
+
+def _kotlin_constructor_param_types(class_node, source: bytes, table: dict[str, str],
+                                    plain: set[str]) -> None:
+    """Collect ``name -> Type`` from a Kotlin primary constructor's parameters.
+
+    `class App(private val greeter: Greeter)` is the idiomatic injection point and declares
+    no property_declaration, so nothing else in the walk ever names the receiver's type.
+
+    A parameter without `val`/`var` declares no member and is in scope only in initializers
+    and `init` blocks, so its name is reported in ``plain``: a body property of the same name
+    (`class App(raw: Raw) { val raw = Wrapper(raw) }`) owns every call written in a method.
+    """
+    for ctor in class_node.children:
+        if ctor.type != "primary_constructor":
+            continue
+        for params in ctor.children:
+            if params.type != "class_parameters":
+                continue
+            for cp in params.children:
+                if cp.type != "class_parameter":
+                    continue
+                name: str | None = None
+                cp_type: str | None = None
+                for sub in cp.children:
+                    if name is None and sub.type in ("simple_identifier", "identifier"):
+                        name = _read_text(sub, source)
+                    elif sub.type in ("user_type", "nullable_type", "type_reference"):
+                        cp_type = _kotlin_head_type_name(sub, source)
+                if name and cp_type and name not in table:
+                    table[name] = cp_type
+                    if not any(c.type in ("val", "var") for c in cp.children):
+                        plain.add(name)
+
+def _kotlin_local_var_types(body_node, source: bytes, table: dict[str, str]) -> None:
+    """Collect ``name -> Type`` from local ``val``/``var`` bindings in a Kotlin body.
+
+    A nested function's locals are scoped away, and the first binding for a name wins so a
+    shadowing local cannot retype a name the enclosing class already bound.
+    """
+    stack = [body_node]
+    while stack:
+        n = stack.pop()
+        if n.type == "function_declaration" and n is not body_node:
+            continue
+        if n.type == "property_declaration":
+            name = _kotlin_property_name(n, source)
+            if name and name not in table:
+                var_type = _kotlin_binding_type(n, source)
+                if var_type:
+                    table[name] = var_type
+        # Reversed so the LIFO stack pops in document order: the first binding written has to
+        # win, or a call loses its own branch's type to a sibling branch rebinding the name.
+        stack.extend(reversed(n.children))
+
 def _swift_declaration_keyword(node) -> str | None:
     """Return the leading kind token for a Swift class_declaration: class/struct/enum/extension/actor."""
     for c in node.children:
@@ -3251,6 +3387,14 @@ def _extract_generic(
     # threaded out as `swift_type_table` so member calls (`vm.update()`) can be
     # resolved to the receiver's real definition in _resolve_swift_member_calls.
     type_table: dict[str, str] = {}
+    # Names `type_table` owes to a plain Kotlin constructor parameter, which declares no
+    # member: a body property of the same name may take the name back.
+    kotlin_plain_ctor_params: set[str] = set()
+    # Kotlin function-scoped receiver types, caller_nid -> name -> type, holding what a
+    # single function's parameters and locals bind. Class-level bindings stay in
+    # `type_table`: they really are file-wide, while `svc` in two functions is two names,
+    # and a flat table hands the second function the first one's type.
+    kotlin_receiver_types: dict[str, dict[str, str]] = {}
     # #2561: pending factory bindings (`let x = Factory.make()`), name ->
     # (FactoryType, method). Label-only (no nids, so the per-file AST cache
     # stays valid); resolved corpus-side in _resolve_swift_member_calls against
@@ -3567,6 +3711,8 @@ def _extract_generic(
 
             # Kotlin-specific: delegation_specifiers → inherits (constructor_invocation) / implements (user_type)
             if config.ts_module == "tree_sitter_kotlin":
+                _kotlin_constructor_param_types(node, source, type_table,
+                                                kotlin_plain_ctor_params)
                 for child in node.children:
                     if child.type != "delegation_specifiers":
                         continue
@@ -4273,6 +4419,16 @@ def _extract_generic(
                         target_nid = ensure_named_node(ref_name, line)
                         if target_nid != parent_class_nid:
                             add_edge(parent_class_nid, target_nid, "references", line, context=ctx)
+            # Per-file receiver table, first binding wins: a method parameter or a
+            # shadowing local must not retype a name a property already bound. A plain
+            # constructor parameter is the exception — it declares no member.
+            prop_name = _kotlin_property_name(node, source)
+            if prop_name and (prop_name not in type_table
+                              or prop_name in kotlin_plain_ctor_params):
+                prop_type = _kotlin_binding_type(node, source)
+                if prop_type:
+                    type_table[prop_name] = prop_type
+                    kotlin_plain_ctor_params.discard(prop_name)
             # #2565: seed the initializer into initializer_nodes so walk_calls
             # collects its calls (`val repo = createRepo()`), which previously
             # died at the `return` below. Seeding the WHOLE expression (not just
@@ -4707,6 +4863,13 @@ def _extract_generic(
                             target_nid = ensure_named_node(ref_name, line)
                             if target_nid != func_nid:
                                 add_edge(func_nid, target_nid, "references", line, context=ctx)
+                        param_type = _kotlin_head_type_name(param_type_node, source)
+                        param_name = next(
+                            (_read_text(sub, source) for sub in p.children
+                             if sub.type in ("simple_identifier", "identifier")), None)
+                        if param_name and param_type:
+                            kotlin_receiver_types.setdefault(func_nid, {}).setdefault(
+                                param_name, param_type)
                 return_type_node = _kotlin_function_return_type_node(node)
                 if return_type_node is not None:
                     refs = []
@@ -5455,12 +5618,11 @@ def _extract_generic(
                         # EVERY chain segment is a plain identifier and there are
                         # >= 3 (a real dotted FQN, not `recv.method()`), stamp the
                         # dotted prefix for _resolve_kotlin_qualified_calls.
-                        # member_receiver is deliberately NOT set: an uppercase
-                        # receiver would trip the capitalized-receiver deferral
-                        # below and regress in-file `Foo.bar()` resolution.
                         segments = _kotlin_nav_identifier_segments(first, source)
                         if segments is not None and len(segments) >= 3:
                             kotlin_qualified_prefix = ".".join(segments[:-1])
+                        elif segments is not None and len(segments) == 2:
+                            member_receiver = segments[0]
             elif config.ts_module == "tree_sitter_scala":
                 # Scala: first child
                 first = node.children[0] if node.children else None
@@ -5828,9 +5990,14 @@ def _extract_generic(
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
+                # Kotlin never defers: `Foo.bar()` resolves in-file today, and the
+                # receiver type is only ever usable once the bare name misses locally,
+                # which already leaves tgt_nid None and routes the call to raw_calls.
+                _kotlin_keeps_in_file = config.ts_module == "tree_sitter_kotlin"
                 if _python_defer or _java_defer or _builtin_member_call or (
                     is_member_call
                     and member_receiver
+                    and not _kotlin_keeps_in_file
                     and (
                         member_receiver[:1].isupper()
                         or is_this_field_call
@@ -5928,9 +6095,14 @@ def _extract_generic(
                                 rc_entry["receiver_type"] = receiver_type
                         # Kotlin fully-qualified call (#2550): the dotted prefix +
                         # lang tag let _resolve_kotlin_qualified_calls claim it.
-                        if kotlin_qualified_prefix:
+                        if config.ts_module == "tree_sitter_kotlin":
                             rc_entry["lang"] = "kotlin"
-                            rc_entry["qualified_prefix"] = kotlin_qualified_prefix
+                            if kotlin_qualified_prefix:
+                                rc_entry["qualified_prefix"] = kotlin_qualified_prefix
+                            receiver_type = kotlin_receiver_types.get(caller_nid, {}).get(
+                                member_receiver or "")
+                            if receiver_type:
+                                rc_entry["receiver_type"] = receiver_type
                         raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
@@ -6176,6 +6348,13 @@ def _extract_generic(
             _swift_local_var_types(body_node, source, type_table,
                                    factory=swift_factory_bindings)
 
+    # Kotlin: the same for `val c = Client()` / `val c: Client = …` inside a body, kept
+    # under the owning function so a name bound in one body cannot type another's receiver.
+    if config.ts_module == "tree_sitter_kotlin":
+        for _caller_nid, body_node in function_bodies:
+            _kotlin_local_var_types(body_node, source,
+                                    kotlin_receiver_types.setdefault(_caller_nid, {}))
+
     # JS/TS: bodies already walked with their own caller_nid (const-assigned
     # arrows, methods). An INLINE/returned arrow or function-expression that is
     # NOT separately tracked (e.g. `return () => svc.doThing()`) is otherwise
@@ -6374,6 +6553,8 @@ def _extract_generic(
             result["ts_type_table"] = {"path": str_path, "table": type_table}
         elif config.ts_module == "tree_sitter_cpp":
             result["cpp_type_table"] = {"path": str_path, "table": type_table}
+        elif config.ts_module == "tree_sitter_kotlin":
+            result["kotlin_type_table"] = {"path": str_path, "table": type_table}
     return result
 
 def _python_decorator_name(deco_node, source: bytes) -> str | None:
