@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.extract import extract
+from graphify.extract import _make_id, extract
 from graphify.extractors.resolution import _resolve_python_module_path
 
 
@@ -150,3 +150,97 @@ def test_python_parameter_return_and_generic_contexts(tmp_path: Path):
     assert ("process()", "Payload", "parameter_type") in pairs
     assert ("process()", "Result", "return_type") in pairs
     assert ("process_many()", "Payload", "generic_arg") in pairs
+
+
+def test_absolute_sibling_import_resolves_to_importing_files_directory(tmp_path: Path):
+    # A script that puts its own directory on sys.path resolves
+    # `from layouts import LAYOUTS` against that directory. The bare module
+    # name only matches a file node when the basename is unique across the
+    # scan, so a vendored copy of the same module leaves the target matching
+    # nothing: the edge dangles, is pruned, and a real dependency vanishes.
+    # The importing file's own directory wins; the vendored twin never does.
+    live = _write(
+        tmp_path / "live/layouts.py",
+        "LAYOUTS = {'hero': (1080, 1080)}\n",
+    )
+    vendored = _write(
+        tmp_path / "vendor/layouts.py",
+        "LAYOUTS = {'legacy': (600, 600)}\n",
+    )
+    build = _write(
+        tmp_path / "live/build.py",
+        "import os\n"
+        "import sys\n\n"
+        "sys.path.insert(0, os.path.dirname(__file__))\n\n"
+        "from layouts import LAYOUTS\n\n"
+        "def render():\n"
+        "    return LAYOUTS\n",
+    )
+
+    result = extract([live, vendored, build], cache_root=tmp_path)
+
+    build_file = _node_id(result, "build.py", "live/build.py")
+    live_file = _node_id(result, "layouts.py", "live/layouts.py")
+    vendored_file = _node_id(result, "layouts.py", "vendor/layouts.py")
+
+    assert _has_edge(result, build_file, live_file, "imports_from")
+    assert not _has_edge(result, build_file, vendored_file, "imports_from")
+
+
+def test_absolute_import_without_sibling_keeps_bare_module_target(tmp_path: Path):
+    # No sibling on disk means the import is external (or unresolvable): the
+    # target stays the bare module name, exactly as before the sibling probe.
+    module = _write(tmp_path / "app/main.py", "from requests import Session\n")
+
+    result = extract([module], cache_root=tmp_path)
+
+    main_file = _node_id(result, "main.py", "app/main.py")
+    targets = [
+        edge["target"]
+        for edge in result["edges"]
+        if edge["source"] == main_file and edge["relation"] == "imports_from"
+    ]
+
+    assert targets == [_make_id("requests")]
+
+
+def test_absolute_sibling_import_resolves_a_package_directory(tmp_path: Path):
+    # Same ambiguity as above, but the sibling is a package directory rather
+    # than a module file. Probing only for `pkg.py` missed it, so the edge fell
+    # back to the bare name and dangled whenever the basename was not unique.
+    live = _write(tmp_path / "live/pkg/__init__.py", "LAYOUTS = {'hero': (1080, 1080)}\n")
+    vendored = _write(tmp_path / "vendor/pkg/__init__.py", "LAYOUTS = {'legacy': (600, 600)}\n")
+    build = _write(
+        tmp_path / "live/build.py",
+        "import os\n"
+        "import sys\n\n"
+        "sys.path.insert(0, os.path.dirname(__file__))\n\n"
+        "from pkg import LAYOUTS\n",
+    )
+
+    result = extract([live, vendored, build], cache_root=tmp_path)
+
+    build_file = _node_id(result, "build.py", "live/build.py")
+    live_init = _node_id(result, "__init__.py", "live/pkg/__init__.py")
+    vendored_init = _node_id(result, "__init__.py", "vendor/pkg/__init__.py")
+
+    assert _has_edge(result, build_file, live_init, "imports_from")
+    assert not _has_edge(result, build_file, vendored_init, "imports_from")
+
+
+def test_absolute_import_inside_a_package_is_not_taken_as_a_sibling(tmp_path: Path):
+    # Python 3 has no implicit relative imports: inside a package,
+    # `from models import Thing` means the installed distribution, not the
+    # sibling module. Only a non-package directory — a plain script directory,
+    # which the interpreter puts on sys.path — may resolve to its sibling.
+    _write(tmp_path / "pkg/__init__.py", "")
+    sibling = _write(tmp_path / "pkg/models.py", "class Thing:\n    pass\n")
+    consumer = _write(tmp_path / "pkg/service.py", "from models import Thing\n")
+
+    result = extract([sibling, consumer], cache_root=tmp_path)
+
+    service_file = _node_id(result, "service.py", "pkg/service.py")
+    sibling_file = _node_id(result, "models.py", "pkg/models.py")
+
+    assert not _has_edge(result, service_file, sibling_file, "imports_from")
+    assert _has_edge(result, service_file, _make_id("models"), "imports_from")

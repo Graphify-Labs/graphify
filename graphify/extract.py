@@ -481,7 +481,53 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                     target_path = base / rel
                 tgt_nid = _make_id(str(target_path))
             else:
-                tgt_nid = _make_id(raw)
+                # An absolute from-import resolves against the importing file's
+                # own directory when a script puts that directory on sys.path
+                # (`sys.path.insert(0, os.path.dirname(__file__))`), so probe
+                # the sibling module before falling back to the bare name.
+                # _probe_python_module_candidate is the same resolver the
+                # relative branch uses, so a sibling package directory lands on
+                # its __init__.py rather than being missed. The
+                # bare name only matches a file node when the basename is
+                # unique across the scan: with a vendored copy of the same
+                # module also in the scan the target matches nothing, the edge
+                # dangles and is pruned, and a real dependency disappears from
+                # the graph. Setting target_path lets the target_file stamp
+                # below canonicalize the id, exactly as the relative branch
+                # does. The self-resolution guard is required: a module named
+                # contracting.py doing `from contracting import constants`
+                # imports the external package of that name, not itself, and
+                # must not gain a fabricated self-loop
+                # (tests/test_import_self_loops.py).
+                # Only a directory that is NOT itself a package can shadow an
+                # installed distribution: Python 3 removed implicit relative
+                # imports, so inside a package `from models import X` is
+                # absolute and means the installed `models`, not the sibling.
+                # A plain script directory is the case this probe exists for —
+                # there the interpreter puts the script's own directory on
+                # sys.path, so the sibling really does win.
+                importer_dir = Path(str_path).parent
+                try:
+                    in_package = (importer_dir / "__init__.py").is_file()
+                except OSError:
+                    in_package = True
+                sibling = (
+                    None
+                    if in_package
+                    else _probe_python_module_candidate(
+                        importer_dir / raw.replace(".", "/")
+                    )
+                )
+                try:
+                    if sibling is not None and sibling.resolve() == Path(str_path).resolve():
+                        sibling = None
+                except OSError:
+                    sibling = None
+                if sibling is not None:
+                    target_path = sibling
+                    tgt_nid = _make_id(str(target_path))
+                else:
+                    tgt_nid = _make_id(raw)
             edge = {
                 "source": file_nid,
                 "target": tgt_nid,
