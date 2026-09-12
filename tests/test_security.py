@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from graphify.security import (
+    _MAX_FETCH_BYTES,
+    _MAX_GRAPH_FILE_BYTES,
+    _MAX_TEXT_BYTES,
+    _METADATA_MAX_LIST_ITEMS,
+    _METADATA_MAX_VALUE_LEN,
+    _max_graph_file_bytes,
+    _sanitize_metadata_string,
+    _sanitize_metadata_value,
+    build_safe_opener,
     check_graph_file_size_cap,
     sanitize_label,
     sanitize_metadata,
@@ -17,14 +27,6 @@ from graphify.security import (
     safe_fetch_text,
     validate_graph_path,
     validate_url,
-    _MAX_FETCH_BYTES,
-    _MAX_GRAPH_FILE_BYTES,
-    _MAX_TEXT_BYTES,
-    _max_graph_file_bytes,
-    _METADATA_MAX_LIST_ITEMS,
-    _METADATA_MAX_VALUE_LEN,
-    _sanitize_metadata_string,
-    _sanitize_metadata_value,
 )
 
 
@@ -78,9 +80,36 @@ def test_safe_fetch_rejects_ftp_url():
     with pytest.raises(ValueError, match="ftp"):
         safe_fetch("ftp://example.com/file.zip")
 
+
+def test_build_safe_opener_rejects_file_url():
+    with pytest.raises(ValueError, match="file"):
+        build_safe_opener().open("file:///etc/passwd")
+
+
+@pytest.mark.parametrize("header", ["Authorization", "Cookie", "Proxy-Authorization"])
+def test_credentialed_redirect_must_stay_on_same_origin(header):
+    from graphify.security import _NoFileRedirectHandler
+
+    request = urllib.request.Request(
+        "https://infranodus.com/api",
+        headers={header: "secret"},
+    )
+    handler = _NoFileRedirectHandler()
+    with patch("graphify.security.validate_url", return_value="https://example.com/"):
+        with pytest.raises(ValueError, match="cross-origin"):
+            handler.redirect_request(
+                request,
+                None,
+                302,
+                "Found",
+                {},
+                "https://example.com/redirect",
+            )
+
+
 def test_safe_fetch_returns_bytes(tmp_path):
     mock_resp = _make_mock_response(b"hello world")
-    with patch("graphify.security._build_opener") as mock_opener_fn:
+    with patch("graphify.security.build_safe_opener") as mock_opener_fn:
         mock_opener = MagicMock()
         mock_opener.open.return_value = mock_resp
         mock_opener_fn.return_value = mock_opener
@@ -89,7 +118,7 @@ def test_safe_fetch_returns_bytes(tmp_path):
 
 def test_safe_fetch_raises_on_non_2xx():
     mock_resp = _make_mock_response(b"Not Found", status=404)
-    with patch("graphify.security._build_opener") as mock_opener_fn:
+    with patch("graphify.security.build_safe_opener") as mock_opener_fn:
         mock_opener = MagicMock()
         mock_opener.open.return_value = mock_resp
         mock_opener_fn.return_value = mock_opener
@@ -107,7 +136,7 @@ def test_safe_fetch_raises_on_size_exceeded():
     # Return the chunk twice so total > max_bytes=65536
     mock_resp.read.side_effect = [big_chunk, big_chunk, b""]
 
-    with patch("graphify.security._build_opener") as mock_opener_fn:
+    with patch("graphify.security.build_safe_opener") as mock_opener_fn:
         mock_opener = MagicMock()
         mock_opener.open.return_value = mock_resp
         mock_opener_fn.return_value = mock_opener
@@ -122,7 +151,7 @@ def test_safe_fetch_raises_on_size_exceeded():
 def test_safe_fetch_text_decodes_utf8():
     content = "héllo wörld".encode("utf-8")
     mock_resp = _make_mock_response(content)
-    with patch("graphify.security._build_opener") as mock_opener_fn:
+    with patch("graphify.security.build_safe_opener") as mock_opener_fn:
         mock_opener = MagicMock()
         mock_opener.open.return_value = mock_resp
         mock_opener_fn.return_value = mock_opener
@@ -132,7 +161,7 @@ def test_safe_fetch_text_decodes_utf8():
 def test_safe_fetch_text_replaces_bad_bytes():
     bad = b"hello \xff world"
     mock_resp = _make_mock_response(bad)
-    with patch("graphify.security._build_opener") as mock_opener_fn:
+    with patch("graphify.security.build_safe_opener") as mock_opener_fn:
         mock_opener = MagicMock()
         mock_opener.open.return_value = mock_resp
         mock_opener_fn.return_value = mock_opener
