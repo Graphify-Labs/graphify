@@ -183,6 +183,13 @@ _GENERIC_KEYWORD_PATTERNS = [
 # stays excluded — see _is_prose_note.
 _PROSE_EXTS = frozenset({".md", ".markdown", ".rst", ".org", ".adoc", ".tex"})
 
+# Bare PLURAL "tokens" in a prose file (TOKENS.md) reads as a design-token
+# reference doc, not a credential dump — unlike every other generic keyword's
+# plural (secrets.md, passwords.md, credentials.md still read as dumps) and
+# unlike the singular "token.md", which stays excluded (#3527). Scoped to
+# prose extensions only: "tokens.txt" is still a plausible secret store.
+_BARE_PLURAL_TOKENS = re.compile(r'(?<![a-zA-Z0-9])tokens(?![a-zA-Z])', re.IGNORECASE)
+
 # Data/serialization extensions that commonly ARE secret stores when their name
 # hits a generic keyword (credentials.json, secrets.yaml, token.toml) or they sit
 # in an ambiguous sensitive dir (secrets/db.json). These stay subject to the
@@ -208,10 +215,14 @@ def _is_prose_note(path: Path) -> bool:
     """A prose/note file (.md/.rst/...) whose stem is a multi-word topic slug is
     exempt from the generic-keyword drop (#2106). A stem that IS exactly a bare
     keyword (secrets / token / passwords) is NOT exempt — that still reads as a
-    credential dump."""
+    credential dump. The one exception is bare plural "tokens" (TOKENS.md),
+    which reads as a design-token reference doc rather than a secret store
+    (#3527)."""
     if path.suffix.lower() not in _PROSE_EXTS:
         return False
     stem = Path(path.name).stem.lstrip('.') or Path(path.name).stem
+    if _BARE_PLURAL_TOKENS.fullmatch(stem):
+        return True
     return not any(p.fullmatch(stem) for p in _GENERIC_KEYWORD_PATTERNS)
 
 
