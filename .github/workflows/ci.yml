@@ -73,6 +73,12 @@ jobs:
       - name: Run tests
         run: uv run --frozen pytest tests/ -q --tb=short
 
+      - name: Check semantic provider extension
+        run: |
+          uv run --frozen ruff check graphify_semantic_providers tests/test_semantic_provider_*.py
+          uv run --frozen pyright graphify_semantic_providers
+          uv run --frozen graphify-semantic list
+
       - name: Verify install works end-to-end
         run: |
           uv run --frozen graphify --help
@@ -99,7 +105,7 @@ jobs:
 
       - name: bandit (static security analysis)
         continue-on-error: true
-        run: uv run --frozen bandit -r graphify -ll
+        run: uv run --frozen bandit -r graphify graphify_semantic_providers -ll
 
       - name: pip-audit (dependency vulnerabilities)
         continue-on-error: true
