@@ -405,6 +405,14 @@ def sanitize_label(text: str | None) -> str:
     return text
 
 
+def escape_graphml_text(text: str | None) -> str:
+    """Escape XML special characters and control characters for GraphML serialization."""
+    if text is None:
+        return ""
+    text = _CONTROL_CHAR_RE.sub("", str(text))
+    return html.escape(text, quote=True)
+
+
 # ---------------------------------------------------------------------------
 # Metadata sanitisation (recursive, bounded, HTML-safe)
 # ---------------------------------------------------------------------------
