@@ -2628,8 +2628,12 @@ def extract_corpus_parallel(
         "nodes": [], "edges": [], "hyperedges": [],
         "input_tokens": 0, "output_tokens": 0,
         "failed_chunks": 0,  # count of chunks that raised — loud failure on chunk errors
+        "chunks_total": 0,
+        "chunk_errors": [],
     }
     total = len(chunks)
+    merged["chunks_total"] = total
+    chunk_errors_by_idx: dict[int, str] = {}
 
     def _run_one(idx: int, chunk: list[Path]) -> tuple[int, dict | None, Exception | None]:
         t0 = time.time()
@@ -2711,6 +2715,7 @@ def extract_corpus_parallel(
             if exc is not None:
                 print(f"[graphify] chunk {idx + 1}/{total} failed: {exc}", file=sys.stderr)
                 merged["failed_chunks"] += 1
+                chunk_errors_by_idx[idx] = str(exc)[:2000]
                 continue
             assert result is not None
             _merge_into(merged, result)
@@ -2736,6 +2741,7 @@ def extract_corpus_parallel(
                         file=sys.stderr,
                     )
                     merged["failed_chunks"] += 1
+                    chunk_errors_by_idx[idx] = str(exc)[:2000]
                     continue
                 assert result is not None
                 results_by_idx[idx] = result
@@ -2744,6 +2750,12 @@ def extract_corpus_parallel(
                     on_chunk_done(idx, total, result)
         for idx in sorted(results_by_idx):
             _merge_into(merged, results_by_idx[idx])
+
+    # Keep diagnostics stable when concurrent requests finish in a different
+    # order. This preserves reproducible run-status artifacts and API results.
+    merged["chunk_errors"] = [
+        chunk_errors_by_idx[idx] for idx in sorted(chunk_errors_by_idx)
+    ]
 
     # Loud failure summary — surface chunk failures at end so they're never
     # buried mid-log. Exit 0 preserved for caller compatibility; the
