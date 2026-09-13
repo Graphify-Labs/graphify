@@ -237,9 +237,23 @@ def _csharp_collect_type_refs(
             out.append((name, "generic_arg" if generic else "type", False, ""))
         return
     if t in ("qualified_name", "alias_qualified_name"):
+        # A qualified_name keeps its top-level dot, so `prefix` is never empty
+        # there; only the undotted alias form (`global::IFoo`) is unqualified.
         prefix, _, text = _csharp_dotted_name(_read_text(node, source)).rpartition(".")
         if text and text not in skip:
             out.append((text, "generic_arg" if generic else "type", bool(prefix), prefix))
+        # Its type arguments are references too, at any depth of the name
+        # (`Acme.Box<Widget>` -> Box, and Widget as a generic_arg), the way the
+        # bare generic_name branch below already reads `Box<Widget>`.
+        pending = list(node.children)
+        while pending:
+            sub = pending.pop()
+            if sub.type == "type_argument_list":
+                for arg in sub.children:
+                    if arg.is_named:
+                        _csharp_collect_type_refs(arg, source, True, out, skip)
+            else:
+                pending.extend(sub.children)
         return
     if t == "generic_name":
         name_child = node.child_by_field_name("name")

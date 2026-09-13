@@ -314,6 +314,53 @@ def test_dotted_generic_argument_does_not_split_a_field_or_base_type(tmp_path):
     assert not [lbl for lbl in _labels(r) if "<" in lbl or ">" in lbl or "&" in lbl]
 
 
+def _generic_arg_refs(r, source_id):
+    return {e["target"] for e in r["edges"]
+            if e["relation"] == "references" and e["source"] == source_id
+            and e.get("context") == "generic_arg"}
+
+
+@pytest.mark.parametrize("type_expr", [
+    "Acme.IFoo<Bar>",                                        # qualified
+    "global::Acme.IFoo<Bar>",                                # alias-qualified, dotted
+    "global::IFoo2<Bar>",                                    # alias-qualified, undotted
+    "Acme.IFoo<System.Collections.Generic.List<Bar>>",       # nested, dotted argument
+])
+def test_qualified_generic_arguments_are_referenced(tmp_path, type_expr):
+    """A qualified or alias-qualified generic type references its type
+    arguments the way a bare `IFoo<Bar>` always has; `global::IFoo<Bar>` used
+    to reach `Bar` only by accident, next to a phantom `global` node."""
+    _, r = _calls(tmp_path, {"S.cs": (
+        "namespace Acme { public interface IFoo<T> { } }\n"
+        "public interface IFoo2<T> { }\n"
+        "public class Bar { }\n"
+        f"public class Holder {{ private {type_expr} f; }}\n"
+    )})
+    holder = _find(r, "Holder", "holder")
+    assert _find(r, "Bar", "bar") in _generic_arg_refs(r, holder), type_expr
+    assert "global" not in _labels(r)
+
+
+def test_extension_receiver_generic_arguments_are_referenced(tmp_path):
+    """The receiver of a constructor-shaped block goes through the same node
+    path, so `Acme.IFoo<Bar>` references Bar as well as IFoo."""
+    calls, r = _calls(tmp_path, {"S.cs": (
+        "namespace Acme { public interface IFoo<T> { string? Next(); } }\n"
+        "public class Bar { }\n"
+        "public static class E\n"
+        "{\n"
+        "    extension(Acme.IFoo<Bar> spec)\n"
+        "    {\n"
+        "        public string? Url() => spec.Next();\n"
+        "    }\n"
+        "}\n"
+    )})
+    e = _find(r, "E", "_e")
+    assert (e, _find(r, "IFoo", "ifoo")) in _refs(r)
+    assert _find(r, "Bar", "bar") in _generic_arg_refs(r, e)
+    assert (_find(r, ".Url()", "_e_url"), _find(r, ".Next()", "ifoo")) in calls
+
+
 def test_nested_type_of_a_generic_outer_keeps_its_own_name(tmp_path):
     """`Outer<int>.Inner`: the type-argument list belongs to the qualifier and
     must not eat the split — `Inner`, qualified by `Outer`."""
