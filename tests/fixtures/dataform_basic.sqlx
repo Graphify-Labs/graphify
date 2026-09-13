@@ -1,0 +1,14 @@
+config {
+  type: "table",
+  schema: "analytics",
+  tags: ["daily", "reporting"],
+  dependencies: ["stg_events"]
+}
+
+SELECT
+  user_id,
+  COUNT(*) AS event_count
+FROM ${ref("stg_events")}
+JOIN ${ref("analytics", "users")} USING (user_id)
+WHERE event_date >= CURRENT_DATE()
+  AND user_id IN (SELECT user_id FROM ${self()})
