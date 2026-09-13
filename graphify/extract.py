@@ -7484,6 +7484,12 @@ def extract(
                     if tgt is None:
                         continue
                     has_import_evidence = False
+        # A source-less candidate is an unresolved external stub, not a
+        # project-defined callable. It can remain a target of type/reference
+        # edges, but a name-only call must not turn it into a cross-file calls
+        # hub (#3156). Source-backed project definitions continue normally.
+        if not nid_to_source_file.get(tgt):
+            continue
         if rc.get("indirect"):
             # Cross-file indirect dispatch: a callback passed BY NAME
             # (`from .h import fn; pool.submit(fn)`, or listed in a dispatch
