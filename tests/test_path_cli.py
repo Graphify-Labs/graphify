@@ -56,6 +56,30 @@ def test_reverse_arrow(monkeypatch, tmp_path, capsys):
     assert "validateSanitySession() --calls [EXTRACTED]--> createPatchHandler()" not in out
 
 
+def test_exact_node_ids_bypass_fuzzy_endpoint_scoring(monkeypatch, tmp_path, capsys):
+    """Exact graph node IDs must resolve directly, even when labels are stronger fuzzy matches."""
+    graph_data = {
+        "directed": True, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "source_exact_id", "label": "Actual Source", "community": 0},
+            {"id": "target_exact_id", "label": "Actual Target", "community": 0},
+            {"id": "source_decoy", "label": "source exact id", "community": 1},
+            {"id": "target_decoy", "label": "target exact id", "community": 1},
+        ],
+        "links": [
+            {"source": "source_exact_id", "target": "target_exact_id",
+             "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(graph_data))
+
+    out = _run(monkeypatch, p, "source_exact_id", "target_exact_id", capsys)
+
+    assert "Shortest path (1 hops):" in out
+    assert "Actual Source --calls [EXTRACTED]--> Actual Target" in out
+
+
 def _write_misranking_graph(tmp_path):
     """Graph where IDF scoring ranks a partial-token decoy above the full match.
 
