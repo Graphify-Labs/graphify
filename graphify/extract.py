@@ -5530,12 +5530,13 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
         return idx, {"nodes": [], "edges": []}
 
     result = _safe_extract_with_xaml_root(extractor, path, root)
-    try:
-        content = path.read_text(encoding="utf-8", errors="ignore")
-        builder = GraphifyBuilderWrapper(result, str(path))
-        log_extractor.inject_logs_to_graph(str(path), content, builder)
-    except Exception as e:
-        print(f"[LogExtractor Hook Error] {e}", file=sys.stderr, flush=True)
+    if log_extractor.is_enabled():
+        try:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+            builder = GraphifyBuilderWrapper(result, str(path))
+            log_extractor.inject_logs_to_graph(str(path), content, builder)
+        except Exception as e:
+            print(f"[LogExtractor Hook Error] {e}", file=sys.stderr, flush=True)
     # Never cache a zero-node result for an extractable file. Every supported
     # source produces at least a file node, so an empty node list is anomalous
     # (e.g. a transient batch/parallel hiccup). Caching it makes the empty
@@ -5705,12 +5706,13 @@ def _extract_sequential(
         bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
         # XAML boundary anchors on `root` (the corpus), not the cache location.
         result = _safe_extract_with_xaml_root(extractor, path, root)
-        try:
-            content = path.read_text(encoding="utf-8", errors="ignore")
-            builder = GraphifyBuilderWrapper(result, str(path))
-            log_extractor.inject_logs_to_graph(str(path), content, builder)
-        except Exception as e:
-            print(f"[LogExtractor Hook Error] {e}", file=sys.stderr, flush=True)
+        if log_extractor.is_enabled():
+            try:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+                builder = GraphifyBuilderWrapper(result, str(path))
+                log_extractor.inject_logs_to_graph(str(path), content, builder)
+            except Exception as e:
+                print(f"[LogExtractor Hook Error] {e}", file=sys.stderr, flush=True)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666).
         if not bypass_cache and "error" not in result and result.get("nodes"):
             save_cached(path, result, root, cache_root=cache_location)
