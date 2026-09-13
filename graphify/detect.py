@@ -1794,12 +1794,94 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 ignore_patterns.append((root, line))
                 explicit_ignore_patterns.append((root, line))
 
-    def _ignored_for_scan(path: Path) -> bool:
+    # Keep the initial ancestor chain (including CLI excludes) immutable. The
+    # live walk below only needs rules from the current root-to-directory path;
+    # retaining rules from completed sibling subtrees makes every later ignore
+    # check scan an ever-growing list (#2834).
+    initial_ignore_patterns = tuple(ignore_patterns)
+    initial_explicit_patterns = tuple(explicit_ignore_patterns)
+    nested_patterns: dict[
+        Path, tuple[list[tuple[Path, str]], list[tuple[Path, str]]]
+    ] = {}
+    loaded_pattern_count = len(ignore_patterns)
+    active_scopes: list[tuple[Path, int, int]] = [(root, 0, 0)]
+
+    def _activate_walk_directory(dp: Path) -> None:
+        """Make ignore rules match the currently yielded ``os.walk`` branch."""
+        nonlocal loaded_pattern_count
+        if dp == root:
+            return
+
+        # os.walk(topdown=True) yields siblings after their previous subtree,
+        # so discard the trailing rows contributed by directories no longer in
+        # the current path. The root/ancestor rows loaded before the walk stay
+        # at the front of both lists.
+        while len(active_scopes) > 1:
+            current = active_scopes[-1][0]
+            try:
+                dp.relative_to(current)
+            except ValueError:
+                _, ignore_count, explicit_count = active_scopes.pop()
+                if ignore_count:
+                    del ignore_patterns[-ignore_count:]
+                if explicit_count:
+                    del explicit_ignore_patterns[-explicit_count:]
+                continue
+            break
+
+        own_patterns = _load_dir_own_ignore(dp, gitignore=gitignore)
+        own_explicit_patterns = _load_dir_own_ignore(dp, gitignore=False)
+        nested_patterns[dp] = (own_patterns, own_explicit_patterns)
+        ignore_patterns.extend(own_patterns)
+        explicit_ignore_patterns.extend(own_explicit_patterns)
+        loaded_pattern_count += len(own_patterns)
+        active_scopes.append(
+            (dp, len(own_patterns), len(own_explicit_patterns))
+        )
+
+    # ``detect()`` checks directories while walking and files afterwards. The
+    # latter need the same ancestor chain even though os.walk has moved on, so
+    # memoize the reconstructed chain by containing directory.
+    pattern_chain_cache: dict[
+        Path, tuple[list[tuple[Path, str]], list[tuple[Path, str]]]
+    ] = {
+        root: (list(initial_ignore_patterns), list(initial_explicit_patterns))
+    }
+
+    def _patterns_for_directory(
+        directory: Path,
+    ) -> tuple[list[tuple[Path, str]], list[tuple[Path, str]]]:
+        cached = pattern_chain_cache.get(directory)
+        if cached is not None:
+            return cached
+        try:
+            directory.relative_to(root)
+        except ValueError:
+            return pattern_chain_cache[root]
+        parent_patterns, parent_explicit_patterns = _patterns_for_directory(
+            directory.parent
+        )
+        own_patterns, own_explicit_patterns = nested_patterns.get(
+            directory, ([], [])
+        )
+        cached = (
+            [*parent_patterns, *own_patterns],
+            [*parent_explicit_patterns, *own_explicit_patterns],
+        )
+        pattern_chain_cache[directory] = cached
+        return cached
+
+    def _ignored_for_scan(
+        path: Path,
+        *,
+        patterns: list[tuple[Path, str]] | None = None,
+        explicit_patterns: list[tuple[Path, str]] | None = None,
+    ) -> bool:
         return _is_scan_ignored(
             path,
             root,
-            ignore_patterns,
-            explicit_ignore_patterns,
+            ignore_patterns if patterns is None else patterns,
+            explicit_ignore_patterns if explicit_patterns is None else explicit_patterns,
             tracked_files,
             tracked_dirs,
             cache=ignore_cache,
@@ -1853,10 +1935,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 # Load it now, before pruning dp's children, so a nested ignore
                 # file governs its own subtree the same way git honors it (#1206).
                 if dp != root:
-                    ignore_patterns.extend(_load_dir_own_ignore(dp, gitignore=gitignore))
-                    explicit_ignore_patterns.extend(
-                        _load_dir_own_ignore(dp, gitignore=False)
-                    )
+                    _activate_walk_directory(dp)
                 # Prune noise dirs in-place so os.walk never descends into them.
                 # Dot dirs are allowed — users often want .github/, .claude/, etc.
                 # Framework caches (.next, .nuxt, …) are caught by _is_noise_dir.
@@ -1914,6 +1993,12 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
 
     all_files.sort(key=lambda p: str(p))
 
+    # Results cached during directory pruning were computed against the active
+    # branch at that point. Rebuild the cache for the per-file pass, whose
+    # pattern list is reconstructed independently for each containing directory.
+    ignore_cache.clear()
+    explicit_ignore_cache.clear()
+
     out_base = Path(cache_root).resolve() if cache_root is not None else root
     converted_dir = out_base / GRAPHIFY_OUT / "converted"
 
@@ -1924,9 +2009,15 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             # Skip files inside our own converted/ dir (avoid re-processing sidecars)
             if str(p).startswith(str(converted_dir)):
                 continue
-        if not in_memory and _ignored_for_scan(p):
-            ignored.append(str(p))
-            continue
+        if not in_memory:
+            file_patterns, file_explicit_patterns = _patterns_for_directory(p.parent)
+            if _ignored_for_scan(
+                p,
+                patterns=file_patterns,
+                explicit_patterns=file_explicit_patterns,
+            ):
+                ignored.append(str(p))
+                continue
         if not _resolves_under_root(p, root):
             skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
             continue
@@ -2033,7 +2124,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         "walk_errors": walk_errors,
         "ignored": sorted(ignored),
         "pruned_noise_dirs": sorted(pruned_noise),
-        "graphifyignore_patterns": len(ignore_patterns),
+        "graphifyignore_patterns": loaded_pattern_count,
         "scan_root": str(root.resolve()),
     }
 

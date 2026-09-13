@@ -3114,6 +3114,47 @@ def test_nested_gitignore_does_not_govern_sibling_project(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# #2834: nested ignore rules must be scoped to the active walk branch.
+
+
+def test_nested_ignore_patterns_are_scoped_to_live_walk_branch(tmp_path, monkeypatch):
+    """Rules from completed sibling subtrees must not stay active (#2834)."""
+    import graphify.detect as det
+
+    sibling_count = 12
+    (tmp_path / ".graphifyignore").write_text("*.root-noise\n")
+    (tmp_path / "root.py").write_text("x = 1\n")
+    for index in range(sibling_count):
+        project = tmp_path / f"project_{index:02d}"
+        nested = project / "nested"
+        nested.mkdir(parents=True)
+        (project / ".graphifyignore").write_text("*.project-noise\n")
+        (nested / ".graphifyignore").write_text("*.nested-noise\n")
+        (project / "keep.py").write_text("x = 1\n")
+        (project / "drop.project-noise").write_text("x = 1\n")
+        (nested / "keep.py").write_text("x = 1\n")
+        (nested / "drop.nested-noise").write_text("x = 1\n")
+
+    active_pattern_counts: list[int] = []
+    real_scan = det._is_scan_ignored
+
+    def tracking_scan(path, root, patterns, explicit_patterns, *args, **kwargs):
+        active_pattern_counts.append(len(patterns))
+        return real_scan(
+            path, root, patterns, explicit_patterns, *args, **kwargs
+        )
+
+    monkeypatch.setattr(det, "_is_scan_ignored", tracking_scan)
+    result = det.detect(tmp_path, gitignore=False)
+
+    assert result["total_files"] == 1 + 2 * sibling_count
+    assert result["graphifyignore_patterns"] == 1 + 2 * sibling_count
+    # Root + one project + one nested directory. A sibling's rules must not
+    # increase the active list after os.walk backtracks to the next project.
+    assert max(active_pattern_counts) <= 3
+
+
+# ---------------------------------------------------------------------------
 # #1908: manifest must not retain scan-excluded files as permanent
 # "deleted" entries. Full-scan saves prune excluded-but-alive rows; subset
 # saves keep preserving untouched rows (#917); out-of-root rows never prune.
