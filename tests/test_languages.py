@@ -3391,6 +3391,43 @@ def test_apex_interface_extends(tmp_path):
     assert ("PaymentProcessor", "Processor") in inheritance
     assert ("PaymentProcessor", "Auditable") in inheritance
 
+def test_apex_qualified_heritage_uses_tail_type(tmp_path):
+    """A namespace-qualified base names a type *in* a namespace, not the
+    namespace itself. `implements Database.Batchable<sObject>, Schedulable` used
+    to stop at the dot, fabricating a `Database` node and losing `Schedulable`
+    with it. Resolve to the tail type name, as Kotlin (#1793) and Scala (#1794)
+    already do, and split the list on top-level commas only so a generic
+    argument (`Map<String, Object>`) is not shredded (#3277).
+    """
+    source = tmp_path / "Batch.cls"
+    source.write_text(
+        "public with sharing class Batch extends Outer.BaseThing "
+        "implements Database.Batchable<sObject>, Map<String, Object>, Schedulable {\n"
+        "    public void execute(Database.BatchableContext bc) { }\n"
+        "}\n"
+    )
+    result = extract_apex(source)
+    labels = _labels(result)
+    assert ("Batch", "BaseThing") in _edge_labels(result, "extends")
+    implements = _edge_labels(result, "implements")
+    assert ("Batch", "Batchable") in implements
+    assert ("Batch", "Map") in implements
+    assert ("Batch", "Schedulable") in implements
+    # the namespace is not a type, and a generic argument is not a base
+    assert "Database" not in labels
+    assert "Outer" not in labels
+    assert "sObject" not in labels
+    assert "Object" not in labels
+
+def test_apex_interface_qualified_extends_uses_tail_type(tmp_path):
+    source = tmp_path / "Combo.cls"
+    source.write_text("public interface Combo extends Pkg.Base, Auditable { }\n")
+    result = extract_apex(source)
+    extends = _edge_labels(result, "extends")
+    assert ("Combo", "Base") in extends
+    assert ("Combo", "Auditable") in extends
+    assert "Pkg" not in _labels(result)
+
 def test_apex_method_extraction():
     r = extract_apex(FIXTURES / "sample.cls")
     labels = _labels(r)
@@ -3398,6 +3435,56 @@ def test_apex_method_extraction():
     assert any("updateAccountsAsync" in l for l in labels)
     assert any("createAccounts" in l for l in labels)
     assert any("deleteOldAccounts" in l for l in labels)
+
+def test_apex_method_qualified_and_generic_return_types(tmp_path):
+    source = tmp_path / "Repro.cls"
+    source.write_text(
+        "public with sharing class Repro {\n"
+        "    public static String simpleReturn() { return ''; }\n"
+        "    public static Map<String, Object> commaGeneric() { return null; }\n"
+        "    public Database.QueryLocator dottedReturn(Database.BatchableContext bc) { return null; }\n"
+        "    private static List<Map<String, Id>> nestedGeneric() { return null; }\n"
+        "    global Set<Id> setReturn() { return null; }\n"
+        "    public String[] arrayReturn() { return null; }\n"
+        # Apex permits whitespace around the angle brackets themselves
+        "    public Map <String, Object> spaceBeforeAngle() { return null; }\n"
+        "    public List< Account > spacesInside() { return null; }\n"
+        "    public List < Map< String, Id > > roomy() { return null; }\n"
+        "}\n"
+    )
+    result = extract_apex(source)
+    labels = _labels(result)
+    assert ".simpleReturn()" in labels
+    assert ".commaGeneric()" in labels
+    assert ".dottedReturn()" in labels
+    assert ".nestedGeneric()" in labels
+    assert ".setReturn()" in labels
+    assert ".arrayReturn()" in labels
+    assert ".spaceBeforeAngle()" in labels
+    assert ".spacesInside()" in labels
+    assert ".roomy()" in labels
+
+def test_apex_statements_are_not_read_as_methods(tmp_path):
+    source = tmp_path / "Neg.cls"
+    source.write_text(
+        "public class Neg {\n"
+        "    public void real() {\n"
+        "        insert new Account(Name = 'x');\n"
+        "        System.assertEquals(1, ids.size());\n"
+        "        Map<String, Object> m = new Map<String, Object>();\n"
+        "        results.put('a', compute(x));\n"
+        "        this.helper(1, 2);\n"
+        "        Integer a = 1, b = compute();\n"
+        # a bare `<` / `>` is a comparison, not a generic argument list
+        "        if (a > b) { doIt(x); }\n"
+        "        while (i < list.size()) { next(); }\n"
+        "        String s = (Map<String, Object>) JSON.deserializeUntyped(raw);\n"
+        "    }\n"
+        "}\n"
+    )
+    result = extract_apex(source)
+    methods = {l for l in _labels(result) if l.startswith(".")}
+    assert methods == {".real()"}
 
 def test_apex_contains_and_method_relations():
     r = extract_apex(FIXTURES / "sample.cls")
