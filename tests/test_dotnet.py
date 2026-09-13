@@ -262,6 +262,12 @@ def test_xaml_keyed_resources_and_references(tmp_path: Path):
         ("Cards", "CardTemplate", "xaml_resource"),
         ("ConvertedText", "TextConverter", "xaml_resource"),
     }
+    converted_id = next(node_id for node_id, node in nodes.items() if node["label"] == "ConvertedText")
+    assert not any(
+        edge.get("context") == "binding_converter"
+        for edge in result["edges"]
+        if edge["source"] == converted_id
+    )
 
 
 def test_xaml_ambiguous_or_unresolved_resources_do_not_fabricate_edges(tmp_path: Path):

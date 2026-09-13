@@ -5816,6 +5816,11 @@ def extract_xaml(path: Path) -> dict:
             if binding_converter:
                 converter_targets = resource_nodes_by_key.get(binding_converter, [])
                 if len(converter_targets) != 1:
+                    # Keep the legacy synthetic concept only when the keyed
+                    # resource is unresolved or ambiguous. A unique resource
+                    # already has a source-backed node and receives an
+                    # `xaml_resource` edge below; emitting both would duplicate
+                    # the same converter in the graph.
                     converter_nid = _make_id("binding_converter", binding_converter)
                     add_node(converter_nid, binding_converter, line_for(value), file_type="concept")
                     add_edge(
