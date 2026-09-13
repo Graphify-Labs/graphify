@@ -103,6 +103,49 @@ def test_diagnose_extraction_categorizes_same_endpoint_collapse() -> None:
     assert summary["post_build_edge_count"] == 2
 
 
+def test_external_js_import_is_not_reported_as_dangling(tmp_path: Path) -> None:
+    """External ref_* imports are intentional extraction evidence, not corruption."""
+    from graphify.extract import extract
+
+    source = tmp_path / "main.js"
+    source.write_text('const fs = require("fs");\n', encoding="utf-8")
+    extraction = extract(
+        [source],
+        cache_root=tmp_path,
+        root=tmp_path,
+        parallel=False,
+    )
+
+    external_imports = [
+        edge
+        for edge in extraction["edges"]
+        if edge.get("relation") == "imports_from"
+        and str(edge.get("target", "")).startswith("ref_")
+    ]
+    assert len(external_imports) == 1
+
+    # Keep a genuinely invalid edge in the same fixture so the classification
+    # cannot hide arbitrary missing endpoints.
+    extraction["edges"].append(
+        {
+            "source": external_imports[0]["source"],
+            "target": "missing_internal_target",
+            "relation": "calls",
+            "confidence": "EXTRACTED",
+            "source_file": str(source),
+        }
+    )
+
+    summary = diagnose_extraction(extraction, directed=True, root=tmp_path)
+
+    assert summary["external_import_edges"] == 1
+    assert summary["dangling_endpoint_edges"] == 1
+    report = format_diagnostic_report(summary)
+    assert "external_import_edges: 1" in report
+    assert "dangling_endpoint_edges: 1" in report
+    assert "intentional out-of-corpus ref_* imports" in report
+
+
 def test_diagnose_extraction_accepts_node_link_links_key() -> None:
     extraction = _diagnostic_fixture()
     extraction["links"] = extraction.pop("edges")
