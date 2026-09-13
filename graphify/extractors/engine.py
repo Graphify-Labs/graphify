@@ -158,6 +158,8 @@ _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS = frozenset({
     "record_declaration",
     "struct_declaration",
     "method_declaration",
+    # C# 14 `extension<T>(...) { }` block; a grammar newer than 0.23.5 (#3510).
+    "extension_declaration",
 })
 
 def _csharp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
@@ -186,6 +188,34 @@ def _csharp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
         scope = scope.parent
     return frozenset(names)
 
+def _csharp_dotted_name(text: str) -> str:
+    """Reduce a C# type name to its dotted path, ready for ``rpartition(".")``.
+
+    Every ``<...>`` type-argument list goes, nesting included, so the split
+    lands on the name's own dots and never on one inside an argument
+    (``Acme.IFoo<System.String>`` -> ``Acme.IFoo``; ``Outer<T>.Inner`` ->
+    ``Outer.Inner``). An alias qualifier folds into dotted form: ``global::A.B``
+    is ``A.B`` anchored at the root namespace, which every scope list already
+    contains, and a using/extern alias ``X::B`` names what ``X.B`` does — so
+    the resolver's qualified lookup applies unchanged instead of the alias
+    being read as a type of its own (#3510).
+    """
+    if text.startswith("global::"):
+        text = text[len("global::"):]
+    text = text.replace("::", ".", 1)
+    if "<" not in text:
+        return text
+    kept: list[str] = []
+    depth = 0
+    for ch in text:
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth = max(depth - 1, 0)
+        elif depth == 0:
+            kept.append(ch)
+    return "".join(kept)
+
 def _csharp_collect_type_refs(
     node,
     source: bytes,
@@ -206,11 +236,24 @@ def _csharp_collect_type_refs(
         if name and name not in skip:
             out.append((name, "generic_arg" if generic else "type", False, ""))
         return
-    if t == "qualified_name":
-        prefix, _, text = _read_text(node, source).rpartition(".")
-        text = text.split("<", 1)[0]
+    if t in ("qualified_name", "alias_qualified_name"):
+        # A qualified_name keeps its top-level dot, so `prefix` is never empty
+        # there; only the undotted alias form (`global::IFoo`) is unqualified.
+        prefix, _, text = _csharp_dotted_name(_read_text(node, source)).rpartition(".")
         if text and text not in skip:
-            out.append((text, "generic_arg" if generic else "type", True, prefix))
+            out.append((text, "generic_arg" if generic else "type", bool(prefix), prefix))
+        # Its type arguments are references too, at any depth of the name
+        # (`Acme.Box<Widget>` -> Box, and Widget as a generic_arg), the way the
+        # bare generic_name branch below already reads `Box<Widget>`.
+        pending = list(node.children)
+        while pending:
+            sub = pending.pop()
+            if sub.type == "type_argument_list":
+                for arg in sub.children:
+                    if arg.is_named:
+                        _csharp_collect_type_refs(arg, source, True, out, skip)
+            else:
+                pending.extend(sub.children)
         return
     if t == "generic_name":
         name_child = node.child_by_field_name("name")
@@ -2712,6 +2755,117 @@ def _csharp_namespace_name(node, source: bytes) -> str:
             return _read_text(child, source).strip()
     return ""
 
+# C# 14 `extension(Receiver r) { … }` blocks (#3510). The bundled
+# tree-sitter-c-sharp 0.23.5 predates the feature, so a block reaches the tree
+# in one of two error-recovery shapes; upstream master parses it as a real
+# `extension_declaration`, which the `<0.25` pin picks up on its next release.
+# All three get one recovery: the receiver binds like a primary-constructor
+# parameter, and the members belong to the enclosing static class.
+_CSHARP_PARAMETER_MODIFIERS = frozenset({"ref", "in", "out", "this", "scoped", "readonly", "params"})
+
+def _csharp_is_static_class(node, source: bytes) -> bool:
+    return any(c.type == "modifier" and _read_text(c, source) == "static" for c in node.children)
+
+def _csharp_extension_body(node, source: bytes):
+    """Return the member list of a C# 14 ``extension`` block, or None.
+
+    With no type-parameter list, ``extension(IFoo x) { … }`` parses clean under
+    0.23.5 as a ``constructor_declaration`` named ``extension`` whose ``block``
+    holds the members as ``local_function_statement``s; a newer grammar gives
+    an ``extension_declaration`` with an ``extension_body``. A static class has
+    no instance constructor and its static one carries the class name, so the
+    constructor shape is unambiguous there; elsewhere it is left alone.
+    """
+    if node.type == "extension_declaration":
+        return next((c for c in node.children if c.type == "extension_body"), None)
+    if node.type == "constructor_declaration":
+        name_node = node.child_by_field_name("name")
+        enclosing = node.parent.parent if node.parent is not None else None
+        if (name_node is not None and _read_text(name_node, source) == "extension"
+                and enclosing is not None and _csharp_is_static_class(enclosing, source)):
+            return node.child_by_field_name("body")
+    return None
+
+def _csharp_extension_blocks(class_node, source: bytes):
+    """Yield ``(receiver_type, type_refs, receiver_name, line)`` per C# 14
+    ``extension`` block declared in ``class_node``.
+
+    ``receiver_type`` is the receiver's outer type name (None when it is a type
+    parameter), ``type_refs`` the ``_csharp_collect_type_refs`` tuples to
+    reference, ``receiver_name`` None for the unnamed ``extension(IFoo)`` form.
+
+    Beside the two shapes ``_csharp_extension_body`` recognises, 0.23.5 reads
+    the generic form ``extension<T>(IFoo<T> x) { … }`` as an ERROR node holding
+    a ``variable_declaration`` (``generic_name`` ``extension<T>`` plus a
+    ``tuple_pattern`` for the receiver) and adopts the block's ``{ }`` as the
+    class body, so the members are already class members. The ERROR sits
+    beside the class body when the block opens it and inside otherwise. Only
+    the receiver's outer name survives as text (its generic arguments are
+    dropped tokens), so that shape yields the outer name alone.
+    """
+    body = class_node.child_by_field_name("body")
+    candidates = list(class_node.children) + (list(body.children) if body is not None else [])
+    for child in candidates:
+        line = child.start_point[0] + 1
+        param = None
+        if child.type == "extension_declaration":
+            param = next((c for c in child.children if c.type == "receiver_parameter"), None)
+        elif child.type == "constructor_declaration" and _csharp_extension_body(child, source) is not None:
+            params = child.child_by_field_name("parameters")
+            if params is not None:
+                param = next((c for c in params.children if c.type == "parameter"), None)
+        if param is not None:
+            type_node = param.child_by_field_name("type")
+            name_node = param.child_by_field_name("name")
+            # `parameter` requires a name, so the unnamed `extension(IFoo)`
+            # form lands its type in the name field.
+            if type_node is None and child.type == "constructor_declaration":
+                type_node, name_node = name_node, None
+            if type_node is None:
+                continue
+            skip = _csharp_type_parameters_in_scope(type_node, source)
+            refs: list[tuple[str, str, bool, str]] = []
+            _csharp_collect_type_refs(type_node, source, False, refs, skip)
+            recv = _csharp_receiver_type_name(type_node, source)
+            yield (
+                recv if recv and recv not in skip else None,
+                refs,
+                _read_text(name_node, source) if name_node is not None else None,
+                line,
+            )
+            continue
+        if child.type != "ERROR":
+            continue
+        for decl in child.children:
+            if decl.type != "variable_declaration":
+                continue
+            generic = next((c for c in decl.children if c.type == "generic_name"), None)
+            if generic is None or not generic.children or _read_text(generic.children[0], source) != "extension":
+                continue
+            declarator = next((c for c in decl.children if c.type == "variable_declarator"), None)
+            receiver = (
+                next((c for c in declarator.children if c.type == "tuple_pattern"), None)
+                if declarator is not None else None
+            )
+            if receiver is None:
+                continue
+            skip = set(_csharp_type_parameters_in_scope(child, source))
+            for tal in generic.children:
+                if tal.type == "type_argument_list":
+                    skip.update(_read_text(a, source) for a in tal.children if a.type == "identifier")
+            inner = _read_text(receiver, source).strip()[1:-1].strip()
+            parts = inner.rsplit(None, 1)
+            recv_name = parts[1] if len(parts) == 2 and parts[1].isidentifier() else None
+            type_text = parts[0] if recv_name else inner
+            outer = next((tok for tok in type_text.split() if tok not in _CSHARP_PARAMETER_MODIFIERS), "")
+            outer = _csharp_dotted_name(outer).split("[", 1)[0].rstrip("?")
+            qualifier, _, outer = outer.rpartition(".")
+            # Pascal-case only: a predefined type (`string`) is not a node
+            # type here to tell apart, and never owns a resolvable member.
+            if not outer.isidentifier() or not outer[:1].isupper() or outer in skip:
+                continue
+            yield (outer, [(outer, "type", bool(qualifier), qualifier)], recv_name, line)
+
 def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                        nodes: list, edges: list, seen_ids: set, function_bodies: list,
                        parent_class_nid: str | None, add_node_fn, add_edge_fn,
@@ -2783,6 +2937,14 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
         for child in node.children:
             walk_fn(child, parent_class_nid)
         return True
+    if parent_class_nid and node.type in ("extension_declaration", "constructor_declaration"):
+        # A C# 14 `extension(...) { … }` block is likewise a container, not a
+        # scope: its members are members of the enclosing static class (#3510).
+        body = _csharp_extension_body(node, source)
+        if body is not None:
+            for child in body.children:
+                walk_fn(child, parent_class_nid)
+            return True
     return False
 
 def _swift_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
@@ -2968,10 +3130,9 @@ def _read_csharp_type_name(node, source: bytes) -> tuple[str, bool, str] | None:
         return None
     if node.type in ("identifier", "predefined_type"):
         return (_read_text(node, source), False, "")
-    if node.type == "qualified_name":
-        prefix, _, tail = _read_text(node, source).rpartition(".")
-        tail = tail.split("<", 1)[0]
-        return (tail, True, prefix)
+    if node.type in ("qualified_name", "alias_qualified_name"):
+        prefix, _, tail = _csharp_dotted_name(_read_text(node, source)).rpartition(".")
+        return (tail, bool(prefix), prefix)
     if node.type == "generic_name":
         name_node = node.child_by_field_name("name")
         if name_node is not None:
@@ -4030,6 +4191,41 @@ def _extract_generic(
                 finally:
                     if ruby_segments:
                         del ruby_namespace[-len(ruby_segments):]
+
+            # C# 14 `extension(IFoo spec) { … }` (#3510): the receiver is in
+            # scope for every member of the block the way a primary-constructor
+            # parameter is for the class, so it is referenced and bound by that
+            # rule — after the body walk, so a same-named field or property
+            # (recorded above) that disagrees on the type drops the name instead
+            # of being clobbered: no edge, never a guess. The bundled grammar
+            # predates the syntax; _csharp_extension_blocks covers its shapes.
+            if (config.ts_module == "tree_sitter_c_sharp" and t == "class_declaration"
+                    and _csharp_is_static_class(node, source)):
+                receivers: dict[str, str | None] = {}
+                for recv, recv_refs, recv_name, r_line in _csharp_extension_blocks(node, source):
+                    if recv_name and recv and recv[:1].isupper():
+                        # Two blocks binding one name to different types
+                        # (`extension(IFoo x)` + `extension(IBar x)`) are a
+                        # guess either way: drop the name.
+                        receivers[recv_name] = recv if receivers.get(recv_name, recv) == recv else None
+                    for ref_name, role, qualified, qualifier in recv_refs:
+                        ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
+                        target_nid = ensure_named_node(ref_name, r_line)
+                        if target_nid != class_nid:
+                            ref_metadata: dict = {"ref_token": ref_name}
+                            if qualified:
+                                ref_metadata["qualified"] = True
+                            if qualifier:
+                                ref_metadata["ref_qualifier"] = qualifier
+                            add_edge(class_nid, target_nid, "references",
+                                     r_line, context=ctx, metadata=ref_metadata)
+                if receivers:
+                    table = csharp_field_types.setdefault(class_nid, {})
+                    for recv_name, recv in receivers.items():
+                        if recv is not None and table.get(recv_name, recv) == recv:
+                            table[recv_name] = recv
+                        else:
+                            table.pop(recv_name, None)
             return
 
         # Event listener property arrays: $listen = [Event::class => [Listener::class]]
@@ -4470,6 +4666,14 @@ def _extract_generic(
                     add_edge(parent_class_nid, field_nid, "defines", line, context="field")
             return
 
+        # A C# 14 extension member the 0.23.5 grammar read as a
+        # `local_function_statement` (see _csharp_extension_body) is a method of
+        # the class it arrives with. An ordinary local function is only ever
+        # reached through the default recurse, with no class parent (#3510).
+        if (config.ts_module == "tree_sitter_c_sharp" and t == "local_function_statement"
+                and parent_class_nid):
+            t = "method_declaration"
+
         # Function types
         if t in config.function_types:
             # Swift deinit/subscript have no name field — resolve before generic fallback
@@ -4572,7 +4776,11 @@ def _extract_generic(
                                     metadata["ref_qualifier"] = qualifier
                                 add_edge(func_nid, target_nid, "references", line,
                                          context=ctx, metadata=metadata)
-                return_node = node.child_by_field_name("returns")
+                # `local_function_statement` (an extension member under 0.23.5,
+                # #3510) names its return type `type`; method_declaration has no
+                # such field, so the fallback is inert for it.
+                return_node = (node.child_by_field_name("returns")
+                               or node.child_by_field_name("type"))
                 if return_node is not None:
                     refs: list[tuple[str, str, bool, str]] = []
                     _csharp_collect_type_refs(
