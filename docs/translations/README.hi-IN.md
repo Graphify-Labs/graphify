@@ -14,7 +14,7 @@
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
 </p>
 
-**एक AI कोडिंग असिस्टेंट स्किल।** Claude Code, Codex, OpenCode, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro या Google Antigravity में `/graphify` टाइप करें — यह आपकी फ़ाइलें पढ़ता है, एक नॉलेज ग्राफ बनाता है, और आपको वह संरचना वापस देता है जो आप नहीं जानते थे कि मौजूद है। कोडबेस को तेज़ी से समझें। आर्किटेक्चरल निर्णयों के पीछे का "क्यों" खोजें।
+**एक AI कोडिंग असिस्टेंट स्किल।** Claude Code, Codex, OpenCode, Cursor, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro या Google Antigravity में `/graphify` टाइप करें — यह आपकी फ़ाइलें पढ़ता है, एक नॉलेज ग्राफ बनाता है, और आपको वह संरचना वापस देता है जो आप नहीं जानते थे कि मौजूद है। कोडबेस को तेज़ी से समझें। आर्किटेक्चरल निर्णयों के पीछे का "क्यों" खोजें।
 
 पूरी तरह मल्टीमोडल। कोड, PDFs, मार्कडाउन, स्क्रीनशॉट, डायग्राम, व्हाइटबोर्ड फोटो, अन्य भाषाओं में छवियां, या वीडियो और ऑडियो फ़ाइलें डालें — graphify इन सभी से अवधारणाएं और संबंध निकालता है और उन्हें एक ग्राफ में जोड़ता है। वीडियो को Whisper से स्थानीय रूप से ट्रांसक्राइब किया जाता है। 25 प्रोग्रामिंग भाषाएं tree-sitter AST के माध्यम से समर्थित हैं (Python, JS, TS, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Lua, Zig, PowerShell, Elixir, Objective-C, Julia, Verilog, SystemVerilog, Vue, Svelte, Dart)।
 
@@ -54,7 +54,7 @@ graphify तीन चरणों में चलता है। पहले
 
 ## इंस्टॉलेशन
 
-**आवश्यकताएं:** Python 3.10+ और निम्न में से एक: [Claude Code](https://claude.ai/code), [Codex](https://openai.com/codex), [OpenCode](https://opencode.ai), [Cursor](https://cursor.com), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli), [VS Code Copilot Chat](https://code.visualstudio.com/docs/copilot/overview), [Aider](https://aider.chat), [OpenClaw](https://openclaw.ai), [Factory Droid](https://factory.ai), [Trae](https://trae.ai), [Kiro](https://kiro.dev), Hermes या [Google Antigravity](https://antigravity.google)
+**आवश्यकताएं:** Python 3.10+ और निम्न में से एक: [Claude Code](https://claude.ai/code), [Codex](https://openai.com/codex), [OpenCode](https://opencode.ai), [Cursor](https://cursor.com), [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli), [VS Code Copilot Chat](https://code.visualstudio.com/docs/copilot/overview), [Aider](https://aider.chat), [OpenClaw](https://openclaw.ai), [Factory Droid](https://factory.ai), [Trae](https://trae.ai), [Kiro](https://kiro.dev), Hermes या [Google Antigravity](https://antigravity.google)
 
 ```bash
 # अनुशंसित — Mac और Linux पर PATH सेटअप के बिना काम करता है
@@ -81,7 +81,6 @@ pip install graphifyy && graphify install
 | OpenClaw | `graphify install --platform claw` |
 | Factory Droid | `graphify install --platform droid` |
 | Trae | `graphify install --platform trae` |
-| Gemini CLI | `graphify install --platform gemini` |
 | Hermes | `graphify install --platform hermes` |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Cursor | `graphify cursor install` |
