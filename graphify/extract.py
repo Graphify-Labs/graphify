@@ -5218,12 +5218,12 @@ def _xaml_split_markup_args(args: str) -> list[str]:
     return parts
 
 
-def _xaml_static_resource_key(value: str) -> str | None:
+def _xaml_resource_key(value: str, *, allow_dynamic: bool = True) -> str | None:
     markup = _xaml_markup_extension(value)
     if not markup:
         return None
     name, args = markup
-    if name != "StaticResource":
+    if name != "StaticResource" and (not allow_dynamic or name != "DynamicResource"):
         return None
     for part in _xaml_split_markup_args(args):
         if "=" not in part:
@@ -5232,6 +5232,32 @@ def _xaml_static_resource_key(value: str) -> str | None:
         if key.strip() == "ResourceKey":
             return resource.strip() or None
     return None
+
+
+def _xaml_static_resource_key(value: str) -> str | None:
+    return _xaml_resource_key(value, allow_dynamic=False)
+
+
+def _xaml_resource_keys(value: str) -> list[str]:
+    """Return resource keys used by a direct or binding markup extension."""
+    markup = _xaml_markup_extension(value)
+    if not markup:
+        return []
+    name, args = markup
+    direct_key = _xaml_resource_key(value)
+    if direct_key:
+        return [direct_key]
+    if name != "Binding":
+        return []
+
+    keys: list[str] = []
+    for part in _xaml_split_markup_args(args):
+        if "=" not in part:
+            continue
+        resource_key = _xaml_resource_key(part.split("=", 1)[1].strip())
+        if resource_key:
+            keys.append(resource_key)
+    return keys
 
 
 def _xaml_binding_refs(value: str) -> tuple[str | None, str | None]:
@@ -5706,6 +5732,31 @@ def extract_xaml(path: Path) -> dict:
             for member_edge in generated_member_edges:
                 add_existing_edge(member_edge)
 
+    resource_nodes_by_key: dict[str, list[str]] = {}
+    resource_owner_by_element: dict[int, str] = {}
+    resource_occurrences: dict[tuple[str, str], int] = {}
+    for elem in tree.iter():
+        elem_type = _xml_local_name(elem.tag)
+        resource_key = None
+        for key, value in elem.attrib.items():
+            if _xml_local_name(key) == "Key" and value:
+                resource_key = value.strip()
+                break
+        if not resource_key:
+            continue
+
+        identity = (elem_type, resource_key)
+        occurrence = resource_occurrences.get(identity, 0) + 1
+        resource_occurrences[identity] = occurrence
+        resource_parts = [stem, "resource", elem_type, resource_key]
+        if occurrence > 1:
+            resource_parts.append(str(occurrence))
+        resource_nid = _make_id(*resource_parts)
+        add_node(resource_nid, resource_key, line_for(resource_key))
+        add_edge(root_nid, resource_nid, "contains", line_for(resource_key))
+        resource_nodes_by_key.setdefault(resource_key, []).append(resource_nid)
+        resource_owner_by_element[id(elem)] = resource_nid
+
     for elem in tree.iter():
         elem_type = _xml_local_name(elem.tag)
         elem_name = None
@@ -5713,7 +5764,7 @@ def extract_xaml(path: Path) -> dict:
             if _xml_local_name(key) == "Name" and value:
                 elem_name = value.strip()
                 break
-        owner_nid = root_nid
+        owner_nid = resource_owner_by_element.get(id(elem), root_nid)
         if elem_name:
             owner_nid = _make_id(stem, elem_name)
             add_node(owner_nid, elem_name, line_for(elem_name))
@@ -5763,9 +5814,27 @@ def extract_xaml(path: Path) -> dict:
                         confidence="INFERRED",
                     )
             if binding_converter:
-                converter_nid = _make_id("binding_converter", binding_converter)
-                add_node(converter_nid, binding_converter, line_for(value), file_type="concept")
-                add_edge(owner_nid, converter_nid, "references", line_for(value), context="binding_converter")
+                converter_targets = resource_nodes_by_key.get(binding_converter, [])
+                if len(converter_targets) != 1:
+                    converter_nid = _make_id("binding_converter", binding_converter)
+                    add_node(converter_nid, binding_converter, line_for(value), file_type="concept")
+                    add_edge(
+                        owner_nid,
+                        converter_nid,
+                        "references",
+                        line_for(value),
+                        context="binding_converter",
+                    )
+            for resource_key in _xaml_resource_keys(value):
+                resource_targets = resource_nodes_by_key.get(resource_key, [])
+                if len(resource_targets) == 1:
+                    add_edge(
+                        owner_nid,
+                        resource_targets[0],
+                        "references",
+                        line_for(value),
+                        context="xaml_resource",
+                    )
             if elem_type == "Binding" and attr_local == "Path":
                 direct_path = value.strip()
                 if direct_path and "{" not in direct_path and "}" not in direct_path:
@@ -5774,10 +5843,16 @@ def extract_xaml(path: Path) -> dict:
                     add_edge(owner_nid, bind_nid, "references", line_for(value), context="binding_path")
             if elem_type == "Binding" and attr_local == "Converter":
                 direct_converter = _xaml_static_resource_key(value)
-                if direct_converter:
+                if direct_converter and len(resource_nodes_by_key.get(direct_converter, [])) != 1:
                     converter_nid = _make_id("binding_converter", direct_converter)
                     add_node(converter_nid, direct_converter, line_for(value), file_type="concept")
-                    add_edge(owner_nid, converter_nid, "references", line_for(value), context="binding_converter")
+                    add_edge(
+                        owner_nid,
+                        converter_nid,
+                        "references",
+                        line_for(value),
+                        context="binding_converter",
+                    )
 
     return {"nodes": nodes, "edges": edges}
 
