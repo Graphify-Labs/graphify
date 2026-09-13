@@ -46,6 +46,8 @@ def _html_styles() -> str:
   #info-content { font-size: 13px; color: #ccc; line-height: 1.6; }
   #info-content .field { margin-bottom: 5px; }
   #info-content .field b { color: #e0e0e0; }
+  #info-content .field a.source-link { color: #6fb3ff; text-decoration: none; word-break: break-all; }
+  #info-content .field a.source-link:hover { text-decoration: underline; }
   #info-content .empty { color: #555; font-style: italic; }
   .neighbor-link { display: block; padding: 2px 6px; margin: 2px 0; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid #333; }
   .neighbor-link:hover { background: #2a2a4e; }
@@ -147,12 +149,25 @@ function esc(s) {{
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }}
 
+// URL allowlist — esc() is enough for text but NOT for an href. source_url is
+// ingested content, and `javascript:alert(1)` contains no HTML metacharacters,
+// so it would survive esc() intact as a live link. Only http(s) is linkified.
+// No base is passed to URL(), so relative values are rejected too and a
+// source_url can never resolve against the viewer's own origin.
+function safeUrl(u) {{
+  if (!u) return '';
+  try {{
+    const parsed = new URL(String(u));
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') ? parsed.href : '';
+  }} catch (e) {{ return ''; }}
+}}
+
 // Build vis datasets
 const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
   id: n.id, label: n.label, color: n.color, size: n.size,
   font: n.font, title: n.title,
   _community: n.community, _community_name: n.community_name,
-  _source_file: n.source_file, _file_type: n.file_type, _degree: n.degree,
+  _source_file: n.source_file, _source_url: n.source_url, _file_type: n.file_type, _degree: n.degree,
 }})));
 
 const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
@@ -209,6 +224,7 @@ function showInfo(nodeId) {{
     <div class="field">Type: ${{esc(n._file_type || 'unknown')}}</div>
     <div class="field">Community: ${{esc(n._community_name)}}</div>
     <div class="field">Source: ${{esc(n._source_file || '-')}}</div>
+    ${{safeUrl(n._source_url) ? `<div class="field">Link: <a class="source-link" href="${{esc(safeUrl(n._source_url))}}" target="_blank" rel="noopener noreferrer">${{esc(n._source_url)}}</a></div>` : ''}}
     <div class="field">Degree: ${{n._degree}}</div>
     ${{neighborIds.length ? `<div class="field" style="margin-top:8px;color:#aaa;font-size:11px">Neighbors (${{neighborIds.length}})</div><div id="neighbors-list">${{neighborItems}}</div>` : ''}}
   `;
@@ -523,6 +539,7 @@ def to_html(
             "community": cid,
             "community_name": sanitize_label((community_labels or {}).get(cid, f"Community {cid}")),
             "source_file": sanitize_label(str(data.get("source_file") or "")),
+            "source_url": str(data.get("source_url") or ""),
             "file_type": data.get("file_type", ""),
             "degree": deg,
         }
