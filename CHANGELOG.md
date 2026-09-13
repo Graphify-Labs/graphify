@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.61 (unreleased)
 
+- Fix: Swift extraction no longer aborts on an `if let`/`while let` binding whose `await` operand is not a direct call. tree-sitter-swift parses `if let r = await pending`, `if let r = await box.rings` and `if let r = try await mint()` as syntax errors — all valid Swift 6, and all reported the file as partially extracted. The `await` is blanked with spaces before the retry parse, so the repaired source is the same byte length and every offset, line and column still points where it did (#3540).
 - Fix: `graphify.serve` now imports cleanly on Python 3.12 and 3.13. The `chinese` extra pins `jieba-py` from 3.12 onward (0.9.60 mistakenly kept the old `jieba` until 3.14, and its invalid regex escapes are a hard error on 3.12+), and the jieba import now suppresses the tokenizer's `SyntaxWarning` regardless of message or line so it never escalates under `-W error`.
 - Fix: the git hook's rebuild-root guard now rejects a symlink-loop or dangling `.graphify_root` on Python 3.13, whose `Path.resolve()` no longer raises on a loop — the saved root must resolve to a real directory inside the repo before it is adopted.
 
