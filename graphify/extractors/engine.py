@@ -2397,6 +2397,22 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                         add_node_fn=add_node_fn, add_edge_fn=add_edge_fn,
                         function_bodies=function_bodies,
                     )
+                    # #3124: calls made directly inside this closure (not just
+                    # `this.X = fn` member assignments) were dropped entirely,
+                    # since walk_calls only ever runs on function_bodies
+                    # entries and this closure has no named owner to seed one.
+                    # `it("...", async () => { register(...) })` is exactly
+                    # this shape: the nearest enclosing scope is anonymous, so
+                    # #1740's "attribute to the enclosing function" fix never
+                    # applies and nothing is emitted, not even to the file
+                    # node #1740 itself named as the fallback. Attribute calls
+                    # here to the file node instead, mirroring the member
+                    # assignment attribution just above -- a nested member
+                    # function's own body is appended with its own real id by
+                    # `_js_scan_member_assignments`, so it lands in
+                    # `_tracked_body_ids` and walk_calls' own boundary check
+                    # skips re-descending into it from here.
+                    function_bodies.append((file_nid, closure_body))
         assign = next((c for c in node.children
                        if c.type == "assignment_expression"), None)
         if assign is not None:
