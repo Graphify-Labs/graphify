@@ -48,11 +48,20 @@ def _literal_string(raw: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _matching_delimiter(text: str, start: int, opening: str, closing: str) -> int | None:
+def _matching_delimiter(
+    text: str,
+    start: int,
+    opening: str,
+    closing: str,
+    *,
+    limit: int | None = None,
+) -> int | None:
     depth = 0
     quote: str | None = None
     escaped = False
-    for index in range(start, len(text)):
+    end = len(text) if limit is None else min(limit, len(text))
+    index = start
+    while index < end:
         char = text[index]
         if quote is not None:
             if escaped:
@@ -61,6 +70,7 @@ def _matching_delimiter(text: str, start: int, opening: str, closing: str) -> in
                 escaped = True
             elif char == quote:
                 quote = None
+            index += 1
             continue
         if char in "'\"`":
             quote = char
@@ -70,23 +80,34 @@ def _matching_delimiter(text: str, start: int, opening: str, closing: str) -> in
             depth -= 1
             if depth == 0:
                 return index
+        elif text.startswith("--", index) or text.startswith("//", index):
+            newline = text.find("\n", index + 2, end)
+            index = end if newline < 0 else newline
+            continue
+        elif text.startswith("/*", index):
+            comment_end = text.find("*/", index + 2, end)
+            index = end if comment_end < 0 else min(comment_end + 2, end)
+            continue
+        index += 1
     return None
 
 
 def _config_body(text: str) -> tuple[str, int] | None:
-    match = _CONFIG_HEADER_RE.search(text)
+    comment_masked = _mask_comments(text)
+    header_source = _mask_string_contents(comment_masked)
+    match = _CONFIG_HEADER_RE.search(header_source)
     if match is None:
         return None
-    opening = text.find("{", match.start(), match.end())
-    closing = _matching_delimiter(text, opening, "{", "}")
+    opening = header_source.find("{", match.start(), match.end())
+    closing = _matching_delimiter(comment_masked, opening, "{", "}")
     if closing is None:
         return None
     return text[opening + 1 : closing], opening + 1
 
 
-def _value_end(text: str, start: int, opening: str, closing: str) -> int:
-    end = _matching_delimiter(text, start, opening, closing)
-    return len(text) if end is None else end + 1
+def _value_end(text: str, start: int, opening: str, closing: str, limit: int) -> int:
+    end = _matching_delimiter(text, start, opening, closing, limit=limit)
+    return limit if end is None else end + 1
 
 
 def _mask_string_contents(text: str) -> str:
@@ -128,7 +149,7 @@ def _parse_config(body: str) -> dict[str, Any]:
         if start >= limit:
             continue
         if body[start] == "[":
-            end = min(_value_end(body, start, "[", "]"), limit)
+            end = _value_end(body, start, "[", "]", limit)
             values = [
                 value
                 for string_match in _STRING_RE.finditer(_mask_comments(body[start:end]))
@@ -220,6 +241,40 @@ def _call_target(kind: str, args: str, model_name: str) -> str | None:
     return None
 
 
+def _quoted_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    quote: str | None = None
+    escaped = False
+    start = 0
+    for index, char in enumerate(text):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                spans.append((start, index + 1))
+                quote = None
+            continue
+        if char in "'\"`":
+            quote = char
+            start = index
+    if quote is not None:
+        spans.append((start, len(text)))
+    return spans
+
+
+def _calls_outside_strings(text: str):
+    spans = _quoted_spans(text)
+    span_index = 0
+    for match in _CALL_RE.finditer(text):
+        while span_index < len(spans) and spans[span_index][1] <= match.start():
+            span_index += 1
+        if span_index < len(spans) and spans[span_index][0] <= match.start() < spans[span_index][1]:
+            continue
+        yield match
+
+
 def extract_dataform(path: Path) -> dict:
     """Extract one Dataform model, its config, and explicit model dependencies.
 
@@ -291,7 +346,7 @@ def extract_dataform(path: Path) -> dict:
             )
 
     masked = _mask_comments(text)
-    for match in _CALL_RE.finditer(masked):
+    for match in _calls_outside_strings(masked):
         target_name = _call_target(match.group("kind"), match.group("args"), model_name)
         if target_name:
             add_dependency(target_name, _line_number(text, match.start()), "dataform_ref")

@@ -68,6 +68,36 @@ def test_refs_in_comments_and_nonliteral_calls_are_ignored(tmp_path):
     assert result["edges"] == []
 
 
+def test_refs_in_sql_string_literals_and_commented_config_are_ignored(tmp_path):
+    model = tmp_path / "literal.sqlx"
+    model.write_text(
+        '// config { type: "table" }\n'
+        "SELECT 'ref(\"inside_sql\")' AS example, ${ref(\"real_model\")};\n",
+        encoding="utf-8",
+    )
+
+    result = extract_dataform(model)
+
+    assert "dataform_config" not in result["nodes"][0]
+    assert [edge["target"] for edge in result["edges"]] == ["dataform_real_model"]
+
+
+def test_config_array_delimiter_ignores_comments_and_stays_within_field(tmp_path):
+    model = tmp_path / "array_config.sqlx"
+    model.write_text(
+        'config { tags: ["daily /* ] */", /* ] */ "reporting"], '
+        'dependencies: ["upstream"] }\n',
+        encoding="utf-8",
+    )
+
+    result = extract_dataform(model)
+
+    assert result["nodes"][0]["dataform_config"] == {
+        "tags": ["daily /* ] */", "reporting"],
+        "dependencies": ["upstream"],
+    }
+
+
 def test_config_parser_handles_inline_fields_without_reading_description_text(tmp_path):
     model = tmp_path / "inline_config.sqlx"
     model.write_text(
