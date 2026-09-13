@@ -468,7 +468,11 @@ def extract_commonlisp(path: Path) -> dict:
                     current_package = _text(child)
                     break
             return True
-        if first_lower == "defclass":
+        if first_lower in ("defclass", "define-condition"):
+            # define-condition shares defclass's shape, (NAME (PARENTS) (SLOTS) ...),
+            # so the same handler reads the parent list the generic definer path
+            # never looks at. A condition hierarchy is inheritance and belongs in
+            # the graph as such.
             _handle_defclass(top)
             return True
         if first_lower in ("require", "ql:quickload"):
