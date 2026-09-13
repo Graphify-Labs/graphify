@@ -285,6 +285,11 @@ def _parse_gomod(text: str) -> dict | None:
 
 
 def _parse_pom(text: str) -> dict | None:
+    # ElementTree does not cap entity expansion, so reject declarations before
+    # parsing rather than allowing a crafted POM to consume excessive memory.
+    lowered = text.lower()
+    if "<!doctype" in lowered or "<!entity" in lowered:
+        raise ValueError("refusing XML with DOCTYPE/ENTITY declaration")
     # Drop the default namespace so findtext/findall don't need the {uri} prefix.
     text = re.sub(r'\sxmlns="[^"]*"', '', text, count=1)
     root = ET.fromstring(text)
