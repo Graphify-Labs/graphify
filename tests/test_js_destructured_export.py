@@ -39,3 +39,23 @@ def test_exported_destructure_emits_one_node_per_name(tmp_path):
     assert not any(label.startswith("{") for label in labels), (
         f"a combined-pattern label survived: {sorted(labels)}"
     )
+
+
+def test_single_name_import_resolves_to_its_own_node(tmp_path):
+    r, lbl = _extract(tmp_path, {
+        "auth.ts": _NEXTAUTH_HELPER
+        + "export const { auth, handlers } = NextAuth({});\n",
+        "consumer.ts": (
+            "import { auth } from './auth';\n"
+            "export function useAuth() { return auth(); }\n"
+        ),
+    })
+    imports = [(lbl.get(e["source"]), lbl.get(e["target"]))
+               for e in r["edges"] if e["relation"] == "imports"]
+    assert ("consumer.ts", "auth") in imports, \
+        f"import {{'auth'}} did not resolve to its own node; imports={imports}"
+
+    calls = [(lbl.get(e["source"]), lbl.get(e["target"]))
+             for e in r["edges"] if e["relation"] == "calls"]
+    assert ("useAuth()", "auth") in calls, \
+        f"call through the destructured import did not resolve; calls={calls}"
