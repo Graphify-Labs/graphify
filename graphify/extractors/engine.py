@@ -2564,7 +2564,57 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                     ):
                         # Simple exported identifiers are part of the module API
                         # regardless of initializer shape. Keep other scalar noise suppressed.
-                        if name_node:
+                        if name_node is not None and name_node.type == "object_pattern" and is_exported:
+                            # #2604 Class 2: `export const { auth, handlers } =
+                            # NextAuth(config)` (NextAuth v5's own documented
+                            # boilerplate; next-intl's createNavigation() is the
+                            # same shape) used to fall through to the generic
+                            # branch below, which reads the WHOLE pattern as one
+                            # combined node -- id `..._auth_handlers`, label
+                            # "{ auth, handlers }". A single-name import
+                            # (`import { auth } from './auth'`) looks for a node
+                            # named `auth` alone, which never exists, so the
+                            # import edge dangles. Emit one node per exported
+                            # name instead, all sharing this statement's line, so
+                            # each import resolves to its own node the way it
+                            # would if the export had been written as N separate
+                            # `export const auth = ...` statements.
+                            #
+                            # Gated on `is_exported`: an UN-exported destructure
+                            # of the same shape (`const { doWork } = require(...)`)
+                            # is a LOCAL import binding, not a module export. The
+                            # old combined-node label ("{ doWork }") never matched
+                            # the bare-name index cross-file resolution builds, so
+                            # it was silently inert; giving it a bare-name node
+                            # here (id `caller_dowork`, label "doWork") would make
+                            # it collide with the real `doWork` definition it is
+                            # ONLY importing, turning a clean single-candidate
+                            # resolution into a false "ambiguous name" and losing
+                            # the real calls edge (caught by
+                            # test_cross_file_call_promoted_to_extracted_with_import_evidence).
+                            line = child.start_point[0] + 1
+                            for prop in name_node.named_children:
+                                if prop.type == "shorthand_property_identifier_pattern":
+                                    export_name = _read_text(prop, source)
+                                elif prop.type == "pair_pattern":
+                                    # `handlers: h` exports as `handlers` (the
+                                    # key) -- `import { handlers }` binds by the
+                                    # property name, never by the local alias.
+                                    key_node = prop.child_by_field_name("key")
+                                    export_name = _read_text(key_node, source) if key_node else None
+                                else:
+                                    # `...rest` and default-valued patterns
+                                    # (`{ auth = fallback }`) don't correspond to
+                                    # one discrete exported name; skip rather
+                                    # than guess.
+                                    export_name = None
+                                if not export_name or not normalize_id(export_name):
+                                    continue
+                                prop_nid = _make_id(stem, export_name)
+                                add_node_fn(prop_nid, export_name, line)
+                                add_edge_fn(file_nid, prop_nid, "contains", line)
+                            const_found = True
+                        elif name_node:
                             const_name = _read_text(name_node, source)
                             line = child.start_point[0] + 1
                             const_nid = _make_id(stem, const_name)
