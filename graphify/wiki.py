@@ -57,7 +57,7 @@ def _safe_filename(name: str, limit: int = 200) -> str:
 
 
 def _escape_md_brackets(text: object) -> str:
-    """Escape `[`/`]` so raw text embedded in a generated article can never be
+    r"""Escape `[`/`]` so raw text embedded in a generated article can never be
     misread as markdown/Obsidian link syntax (#3547).
 
     A node's own label is source content (an extracted heading, identifier, or
@@ -71,8 +71,22 @@ def _escape_md_brackets(text: object) -> str:
     and a networkx node id is not always a string (an int or a tuple id is
     legal). ``str()`` first so that fallback stringifies exactly like the
     plain f-interpolation this call replaced, instead of raising.
+
+    Backslashes in the SOURCE text are escaped first, before brackets. Source
+    content occasionally already contains a literal backslash right before a
+    bracket (a doc excerpt showing a regex character class, ``\]+``, for
+    example). Escaping brackets alone turns that into ``\\]`` — two
+    backslashes then a bare bracket — and CommonMark reads a doubled
+    backslash as one literal backslash, which un-escapes the bracket right
+    back into live link syntax. Escaping the backslash itself first keeps the
+    bracket's own escape intact regardless of what already preceded it.
     """
-    return str(text).replace("[", r"\[").replace("]", r"\]")
+    return (
+        str(text)
+        .replace("\\", "\\\\")
+        .replace("[", r"\[")
+        .replace("]", r"\]")
+    )
 
 
 def _md_link(label: str, resolver: dict[str, str]) -> str:
