@@ -84,3 +84,34 @@ def test_rest_pattern_is_skipped_not_mangled(tmp_path):
     assert "auth" in labels
     assert "rest" not in labels
     assert not any("rest" in label for label in labels)
+
+
+def test_unexported_require_destructure_does_not_create_a_colliding_node(tmp_path):
+    """The gate that gives an EXPORTED destructure one node per name must not
+    fire for an un-exported destructure of the same shape -- CommonJS
+    `const { doWork } = require('./lib')` is a local IMPORT binding, not a
+    module export. Splitting it would emit a bare-named node in the
+    IMPORTING file that collides with the real definition it merely imports,
+    turning a clean cross-file call resolution into a false "ambiguous name"
+    (this reproduces the #2604 fix regressing
+    test_cross_file_call_promoted_to_extracted_with_import_evidence)."""
+    r, lbl = _extract(tmp_path, {
+        "lib.js": (
+            "function doWork() { return 1; }\n"
+            "module.exports = { doWork };\n"
+        ),
+        "caller.js": (
+            "const { doWork } = require('./lib');\n"
+            "function run() { doWork(); }\n"
+        ),
+    })
+    calls = [
+        (lbl.get(e["source"]), lbl.get(e["target"]), e.get("confidence"))
+        for e in r["edges"] if e["relation"] == "calls"
+    ]
+    matches = [c for c in calls if c[0] == "run()" and c[1] == "doWork()"]
+    assert len(matches) == 1, (
+        f"expected exactly one run() -> doWork() calls edge, got {matches}; "
+        f"all calls={calls}"
+    )
+    assert matches[0][2] == "EXTRACTED"
