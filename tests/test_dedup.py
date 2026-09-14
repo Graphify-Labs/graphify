@@ -557,6 +557,21 @@ def test_defines_id_recognizes_a_non_latin_path():
     assert not _defines_id(_KOREAN_REFERENCING)
 
 
+@pytest.mark.parametrize("nodes", [
+    [_KOREAN_DEFINING, _KOREAN_REFERENCING],
+    [_KOREAN_REFERENCING, _KOREAN_DEFINING],
+], ids=["definition-first", "reference-first"])
+def test_korean_defining_file_wins_over_referencing_file(nodes):
+    """The issue's own repro shape: the page that defines a concept must keep
+    its own node instead of losing it to a page that merely mentions it."""
+    result_nodes, _ = deduplicate_entities(list(nodes), [], communities={})
+
+    assert len(result_nodes) == 1
+    assert result_nodes[0]["source_file"] == (
+        "concepts/작업 단위 폴더 + README 진입점 컨벤션.md"
+    )
+
+
 def test_same_file_relabel_is_noted(capsys):
     """Two labels for one ID from one file: the loser's label is discarded, which is
     the one drop that used to be silent. It is a note, not a collision warning."""
