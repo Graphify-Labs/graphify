@@ -1854,9 +1854,14 @@ def _rebuild_code(
                 _backup(out)
                 # Atomic replace via tmp file, matching the clustered path: a
                 # crash mid-write must not leave a truncated graph.json.
+                # os_replace_with_fallback, not a plain Path.replace (#2689):
+                # this function just read existing_graph a few lines up, and
+                # on a VMware HGFS shared folder a replace over a destination
+                # read earlier in the same process raises PermissionError
+                # even on the same drive.
                 graph_tmp = out / ".graph.tmp.json"
                 graph_tmp.write_text(candidate_graph_text, encoding="utf-8")
-                graph_tmp.replace(existing_graph)
+                os_replace_with_fallback(graph_tmp, existing_graph)
 
             # Write the user-supplied path only after the candidate graph is
             # accepted, so a refused shrink cannot mismatch graph and marker.
