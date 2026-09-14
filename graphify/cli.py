@@ -2983,17 +2983,23 @@ def dispatch_command(cmd: str) -> None:
         # per-node attribute had the right data all along. Reconstruct from
         # the graph itself so downstream subcommands (html, obsidian, wiki,
         # svg, graphml, neo4j) don't silently produce a degraded artifact.
+        #
+        # Computed unconditionally now (#2386), not just when the sidecar is
+        # missing: the sidecar can also be STALE (present but describing an
+        # earlier clustering pass, since update/watch never regenerate it),
+        # which looks identical from the outside but used to take the other
+        # branch below and silently keep the fossil.
+        reconstructed: dict[int, list[str]] = {}
+        for node_id, data in G.nodes(data=True):
+            cid_raw = data.get("community")
+            if cid_raw is None:
+                continue
+            try:
+                cid = int(cid_raw)
+            except (TypeError, ValueError):
+                continue
+            reconstructed.setdefault(cid, []).append(str(node_id))
         if not communities:
-            reconstructed: dict[int, list[str]] = {}
-            for node_id, data in G.nodes(data=True):
-                cid_raw = data.get("community")
-                if cid_raw is None:
-                    continue
-                try:
-                    cid = int(cid_raw)
-                except (TypeError, ValueError):
-                    continue
-                reconstructed.setdefault(cid, []).append(str(node_id))
             if reconstructed:
                 communities = reconstructed
 
