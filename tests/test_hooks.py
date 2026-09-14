@@ -154,6 +154,17 @@ def test_status_shows_both_hooks(tmp_path):
     assert result.count("installed") >= 2
 
 
+def test_status_shows_post_merge_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    result = status(repo)
+    assert "post-merge: installed" in result
+
+    uninstall(repo)
+    result = status(repo)
+    assert "post-merge: not installed" in result
+
+
 
 def test_hooks_dir_resolves_relative_git_hooks_path(tmp_path, monkeypatch):
     repo = _make_git_repo(tmp_path)
