@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.61 (unreleased)
 
+- Fix: `save_semantic_cache` now recovers a group whose reported `source_file` never resolves to a real file, by an unambiguous basename match against the already dispatched allowlist, instead of silently dropping it — an incremental run driven by a weak or local backend no longer redoes already processed chunks forever when the adaptive-retry split path loses track of a source file (#2973, thanks @ayushcodes10).
 - Fix: `graphify.serve` now imports cleanly on Python 3.12 and 3.13. The `chinese` extra pins `jieba-py` from 3.12 onward (0.9.60 mistakenly kept the old `jieba` until 3.14, and its invalid regex escapes are a hard error on 3.12+), and the jieba import now suppresses the tokenizer's `SyntaxWarning` regardless of message or line so it never escalates under `-W error`.
 - Fix: the git hook's rebuild-root guard now rejects a symlink-loop or dangling `.graphify_root` on Python 3.13, whose `Path.resolve()` no longer raises on a loop — the saved root must resolve to a real directory inside the repo before it is adopted.
 
