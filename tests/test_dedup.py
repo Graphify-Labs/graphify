@@ -540,6 +540,23 @@ def test_id_prefixes_preserves_non_latin_segments():
     assert "작업_단위_폴더_readme_진입점_컨벤션" in prefixes
 
 
+_KOREAN_DEFINING = {
+    "id": "concepts_작업_단위_폴더_readme_진입점_컨벤션",
+    "label": "README 진입점 컨벤션", "file_type": "concept",
+    "source_file": "concepts/작업 단위 폴더 + README 진입점 컨벤션.md",
+}
+_KOREAN_REFERENCING = {
+    "id": "concepts_작업_단위_폴더_readme_진입점_컨벤션",
+    "label": "README 진입점 컨벤션", "file_type": "concept",
+    "source_file": "concepts/LLM Schema - CLAUDE.md를 가이드로 활용하기.md",
+}
+
+
+def test_defines_id_recognizes_a_non_latin_path():
+    assert _defines_id(_KOREAN_DEFINING)
+    assert not _defines_id(_KOREAN_REFERENCING)
+
+
 def test_same_file_relabel_is_noted(capsys):
     """Two labels for one ID from one file: the loser's label is discarded, which is
     the one drop that used to be silent. It is a note, not a collision warning."""
