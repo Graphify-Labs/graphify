@@ -20,6 +20,34 @@ def test_escape_md_brackets_escapes_both_brackets():
     assert _escape_md_brackets("plain text") == "plain text"
 
 
+def _bracket_is_live_after_escaping(text: str) -> bool:
+    """True if unwinding CommonMark backslash-escapes left to right (a `\\X`
+    pair consumes both characters and yields one INERT literal `X`) leaves any
+    `[`/`]` reachable as a BARE, unpaired character -- i.e. still able to act
+    as link syntax rather than literal text."""
+    i = 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text):
+            i += 2  # the pair is consumed together; its second char is inert
+            continue
+        if text[i] in "[]":
+            return True
+        i += 1
+    return False
+
+
+def test_escape_md_brackets_escapes_a_pre_existing_backslash_before_a_bracket():
+    # A source label can already contain a literal backslash right before a
+    # bracket (a doc excerpt showing a regex character class, `\]+`, for
+    # example). Escaping the bracket alone would turn it into `\\]` -- CommonMark
+    # reads the doubled backslash as one literal backslash, which un-escapes
+    # the bracket right back into live syntax. The backslash must be escaped
+    # first so the bracket's own escape survives.
+    escaped = _escape_md_brackets("regex: \\]+")
+    assert escaped == "regex: \\\\\\]+"
+    assert not _bracket_is_live_after_escaping(escaped)
+
+
 def test_escape_md_brackets_stringifies_a_non_string_node_id_fallback():
     # A networkx node id is not always a string (int and tuple ids are
     # legal). The label callers fall back to a node's own id when it has no
