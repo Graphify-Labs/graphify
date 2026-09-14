@@ -71,3 +71,16 @@ def test_renamed_property_exports_under_its_key_not_its_local_alias(tmp_path):
     labels = set(lbl.values())
     assert "handlers" in labels
     assert "h" not in labels
+
+
+def test_rest_pattern_is_skipped_not_mangled(tmp_path):
+    # `...rest` does not correspond to one discrete exported name; it must
+    # not produce a node, and must not break extraction of its siblings.
+    r, lbl = _extract(tmp_path, {
+        "auth.ts": _NEXTAUTH_HELPER
+        + "export const { auth, ...rest } = NextAuth({});\n",
+    })
+    labels = set(lbl.values())
+    assert "auth" in labels
+    assert "rest" not in labels
+    assert not any("rest" in label for label in labels)
