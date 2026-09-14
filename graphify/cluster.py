@@ -358,7 +358,14 @@ def cohesion_score(G: nx.Graph, community_nodes: list[str]) -> float:
     if n <= 1:
         return 1.0
     subgraph = G.subgraph(community_nodes)
-    actual = subgraph.number_of_edges()
+    # Exclude self-loops. ``build_from_json`` deliberately keeps recursive
+    # ``calls`` self-edges ("real program structure rather than
+    # import-resolution artifacts"), but ``possible`` below counts distinct
+    # node PAIRS only, so a self-loop adds to the numerator without adding to
+    # the denominator and pushes the ratio past 1.0 -- a two-node community
+    # holding one recursive function scores 2.0. Drop them so numerator and
+    # denominator measure the same thing.
+    actual = subgraph.number_of_edges() - nx.number_of_selfloops(subgraph)
     possible = n * (n - 1) / 2
     return actual / possible if possible > 0 else 0.0
 
