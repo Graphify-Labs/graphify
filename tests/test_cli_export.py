@@ -682,6 +682,26 @@ def test_export_html_prefers_fresh_data_when_sidecar_is_stale(tmp_path):
     assert (out / "graph.html").exists()
 
 
+def test_export_wiki_recomputes_cohesion_when_sidecar_is_stale(tmp_path):
+    out = _make_graph(tmp_path)
+    analysis_path = out / ".graphify_analysis.json"
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    analysis["communities"] = {"0": ["a_ghost_node_id_not_in_the_graph"]}
+    # A cohesion value that could never be a real score (score_all returns
+    # values in a bounded range), so if it survives into the wiki output
+    # unchanged, the stale sidecar won instead of being recomputed.
+    analysis["cohesion"] = {"0": 999999.0}
+    analysis_path.write_text(json.dumps(analysis))
+
+    r = _run(["export", "wiki"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "is stale" in r.stderr
+    wiki_dir = out / "wiki"
+    assert wiki_dir.exists()
+    combined = "\n".join(p.read_text(encoding="utf-8") for p in wiki_dir.glob("*.md"))
+    assert "999999" not in combined, "stale cohesion value leaked into the wiki export"
+
+
 def test_graph_json_node_ids_are_portable_across_checkout_paths(tmp_path):
     """#1789: the committed graph.json's node ids must be relative to the scan
     root — not embed the absolute path — so the same repo yields identical ids
