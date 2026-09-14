@@ -23,6 +23,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.61 (2026-09-12)
 
+- Fix: `graphify export html/wiki/obsidian/...` now detects a stale `.graphify_analysis.json` (written only by `extract`/`cluster-only`, never by `update`/watch) and reconstructs communities and cohesion from the fresh data already in `graph.json` instead of silently exporting against a fossil partition, with a warning naming the exact command to refresh the sidecar (#2386, thanks @ayushcodes10).
 - Fix: `graphify.serve` now imports cleanly on Python 3.12 and 3.13. The `chinese` extra pins `jieba-py` from 3.12 onward (0.9.60 mistakenly kept the old `jieba` until 3.14, and its invalid regex escapes are a hard error on 3.12+), and the jieba import now suppresses the tokenizer's `SyntaxWarning` regardless of message or line so it never escalates under `-W error`.
 - Fix: the git hook's rebuild-root guard now rejects a symlink-loop or dangling `.graphify_root` on Python 3.13, whose `Path.resolve()` no longer raises on a loop — the saved root must resolve to a real directory inside the repo before it is adopted.
 
