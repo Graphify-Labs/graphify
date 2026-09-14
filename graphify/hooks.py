@@ -1015,9 +1015,13 @@ def status(path: Path = Path(".")) -> str:
 
     commit = _check("post-commit", _HOOK_MARKER)
     checkout = _check("post-checkout", _CHECKOUT_MARKER)
+    post_merge = _check("post-merge", _MERGE_HOOK_MARKER)
     merge = _merge_driver_status(root)
 
-    res = f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"
+    res = (
+        f"post-commit: {commit}\npost-checkout: {checkout}\n"
+        f"post-merge: {post_merge}\nmerge driver: {merge}"
+    )
     if cfg_limit is not None:
         res += f"\nviz node limit: {cfg_limit}"
     return res
