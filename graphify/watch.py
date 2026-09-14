@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Callable
 
 # Single source of truth in graphify.paths (#1423); re-exported as _GRAPHIFY_OUT.
-from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT, is_absolute_any_platform
+from graphify.paths import (
+    GRAPHIFY_OUT as _GRAPHIFY_OUT,
+    is_absolute_any_platform,
+    os_replace_with_fallback,
+)
 
 logger = logging.getLogger(__name__)
 _PENDING_FILENAME = ".pending_changes"
