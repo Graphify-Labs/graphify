@@ -702,6 +702,17 @@ def test_export_wiki_recomputes_cohesion_when_sidecar_is_stale(tmp_path):
     assert "999999" not in combined, "stale cohesion value leaked into the wiki export"
 
 
+def test_export_html_uses_sidecar_when_it_still_matches(tmp_path):
+    """Negative control: an up to date sidecar must not trigger the stale
+    path or its warning."""
+    out = _make_graph(tmp_path)
+
+    r = _run(["export", "html"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "is stale" not in r.stderr
+    assert (out / "graph.html").exists()
+
+
 def test_graph_json_node_ids_are_portable_across_checkout_paths(tmp_path):
     """#1789: the committed graph.json's node ids must be relative to the scan
     root — not embed the absolute path — so the same repo yields identical ids
