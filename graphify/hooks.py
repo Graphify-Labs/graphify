@@ -955,7 +955,7 @@ def install(path: Path = Path(".")) -> str:
 
 
 def uninstall(path: Path = Path(".")) -> str:
-    """Remove graphify post-commit and post-checkout hooks."""
+    """Remove graphify's post-commit, post-checkout, and post-merge hooks."""
     root = _git_root(path)
     if root is None:
         raise RuntimeError(f"No git repository found at or above {path.resolve()}")
@@ -963,9 +963,15 @@ def uninstall(path: Path = Path(".")) -> str:
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
     commit_msg = _uninstall_hook(hooks_dir, "post-commit", _HOOK_MARKER, _HOOK_MARKER_END)
     checkout_msg = _uninstall_hook(hooks_dir, "post-checkout", _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
+    post_merge_msg = _uninstall_hook(
+        hooks_dir, "post-merge", _MERGE_HOOK_MARKER, _MERGE_HOOK_MARKER_END
+    )
     merge_msg = _unregister_merge_driver(root)
 
-    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
+    return (
+        f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\n"
+        f"post-merge: {post_merge_msg}\nmerge driver: {merge_msg}"
+    )
 
 
 def status(path: Path = Path(".")) -> str:
