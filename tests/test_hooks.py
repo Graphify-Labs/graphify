@@ -271,12 +271,17 @@ import re  # noqa: E402
 from graphify.hooks import (  # noqa: E402
     _HOOK_SCRIPT,
     _CHECKOUT_SCRIPT,
+    _MERGE_SCRIPT,
     _REBUILD_BODY_COMMIT,
     _REBUILD_BODY_CHECKOUT,
     _detached_launch,
 )
 
-_HOOK_SCRIPTS = [("post-commit", _HOOK_SCRIPT), ("post-checkout", _CHECKOUT_SCRIPT)]
+_HOOK_SCRIPTS = [
+    ("post-commit", _HOOK_SCRIPT),
+    ("post-checkout", _CHECKOUT_SCRIPT),
+    ("post-merge", _MERGE_SCRIPT),
+]
 
 
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
