@@ -116,6 +116,35 @@ def test_uninstall_removes_post_checkout_hook(tmp_path):
     assert not hook.exists()
 
 
+def test_install_creates_post_merge_hook(tmp_path):
+    # #2418: a merge hook is needed to heal a symbol the union merge driver
+    # resurrects on one side of a merge, since nothing else ever
+    # re-extracts that file's nodes unless it is touched again.
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    assert hook.exists()
+    assert _MERGE_HOOK_MARKER in hook.read_text()
+
+
+def test_install_post_merge_is_executable(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    if os.name == "nt":
+        assert hook.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+    else:
+        assert hook.stat().st_mode & 0o111
+
+
+def test_uninstall_removes_post_merge_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    uninstall(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    assert not hook.exists()
+
+
 def test_status_shows_both_hooks(tmp_path):
     repo = _make_git_repo(tmp_path)
     install(repo)
