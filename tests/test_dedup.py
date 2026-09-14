@@ -525,6 +525,21 @@ def test_absolute_source_path_still_defines_id(capsys):
     assert "WARNING" not in capsys.readouterr().err
 
 
+# ── #3352: non-Latin source paths must still define their own id ─────────────
+# _id_prefixes reimplemented id slugification with an ASCII-only regex instead
+# of the canonical normalize_id every real extractor mints an id with, so a
+# path segment made of Korean, CJK, or Cyrillic characters collapsed to
+# nothing instead of being preserved. The reconstructed prefix then never
+# matched the id actually minted for that file, so the defining page lost the
+# definer-wins tiebreak to a page that merely references the same entity.
+
+def test_id_prefixes_preserves_non_latin_segments():
+    from graphify.dedup import _id_prefixes
+    prefixes = _id_prefixes("concepts/작업 단위 폴더 + README 진입점 컨벤션.md")
+    assert "concepts_작업_단위_폴더_readme_진입점_컨벤션" in prefixes
+    assert "작업_단위_폴더_readme_진입점_컨벤션" in prefixes
+
+
 def test_same_file_relabel_is_noted(capsys):
     """Two labels for one ID from one file: the loser's label is discarded, which is
     the one drop that used to be silent. It is a note, not a collision warning."""
