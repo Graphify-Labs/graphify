@@ -1592,6 +1592,24 @@ def save_semantic_cache(
     for fpath, result in by_file.items():
         cache_path, p = _recover_group_path(fpath)
         if p.is_file():
+            if cache_path != source_path(fpath):
+                # #2973: recovery only redirected the WRITE KEY. Each item in
+                # this group still carries the original unresolvable
+                # source_file string, and _semantic_entry_matches_path
+                # rejects an entry on read if any item's source_file doesn't
+                # match the path it was loaded under -- so leaving the old
+                # value in place would write a "successful" entry that can
+                # never actually be read back, silently reproducing the same
+                # loss this recovery exists to fix.
+                corrected = _normalize_value(str(cache_path))
+                result = {
+                    **result,
+                    "nodes": [{**n, "source_file": corrected} for n in result["nodes"]],
+                    "edges": [{**e, "source_file": corrected} for e in result["edges"]],
+                    "hyperedges": [
+                        {**h, "source_file": corrected} for h in result["hyperedges"]
+                    ],
+                }
             if allowed_paths is not None and cache_path not in allowed_paths:
                 warnings.warn(
                     "semantic cache skipped out-of-scope source_file "
