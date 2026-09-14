@@ -7,7 +7,9 @@ import textwrap
 from types import SimpleNamespace
 from pathlib import Path
 import pytest
-from graphify.hooks import install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER
+from graphify.hooks import (
+    install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER, _MERGE_HOOK_MARKER,
+)
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
