@@ -4362,3 +4362,27 @@ def test_rebase_relative_source_files_rebases_definition_file(tmp_path):
     node = payload["nodes"][0]
     assert node["source_file"] == "pkg/src/Foo.h"
     assert node["definition_file"] == "pkg/src/Foo.cpp"
+
+
+def test_no_cluster_rebuild_survives_a_permission_error_on_replace(tmp_path, monkeypatch):
+    """#2689: on a VMware HGFS shared folder, os.replace over a graph.json
+    read earlier in the same process raises PermissionError even on the same
+    drive. The no_cluster incremental rebuild path must fall back instead of
+    aborting the whole run."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    (corpus / "app.py").write_text("def run(): pass\ndef added(): pass\n", encoding="utf-8")
+
+    monkeypatch.setattr(os, "replace", lambda src, dst: (_ for _ in ()).throw(
+        PermissionError("simulated HGFS WinError 5")
+    ))
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "added()" in labels, "the fallback must still land the new content"
