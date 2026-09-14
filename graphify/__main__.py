@@ -664,7 +664,7 @@ def _run_cli() -> None:
         print("                          (or set NEO4J_PASSWORD instead of --password to keep it off argv)")
         print("  export falkordb         emit Cypher or push to FalkorDB [--graph PATH] [--push URI] [--user U] [--password P]")
         print("                          (or set FALKORDB_PASSWORD instead of --password to keep it off argv)")
-        print("  hook install            install post-commit/post-checkout git hooks (all platforms)")
+        print("  hook install            install post-commit/post-checkout/post-merge git hooks (all platforms)")
         print("  hook uninstall          remove git hooks")
         print("  hook status             check if git hooks are installed")
         print(
