@@ -28,3 +28,19 @@ def test_malformed_but_basename_unique_path_recovers(tmp_path):
     cached = load_cached(real, root=tmp_path, kind="semantic")
     assert cached is not None
     assert {n["id"] for n in cached["nodes"]} == {"n1"}
+
+
+def test_ambiguous_basename_stays_skipped(tmp_path):
+    a = tmp_path / "pkg_a" / "shared.py"
+    b = tmp_path / "pkg_b" / "shared.py"
+    a.parent.mkdir(parents=True)
+    b.parent.mkdir(parents=True)
+    a.write_text("def f(): pass\n")
+    b.write_text("def g(): pass\n")
+
+    nodes = [{"id": "n1", "label": "f", "source_file": "lost_dir/shared.py"}]
+    with pytest.warns(RuntimeWarning, match="do not resolve to real files"):
+        saved = save_semantic_cache(nodes, [], root=tmp_path, allowed_source_files=[a, b])
+    assert saved == 0
+    assert load_cached(a, root=tmp_path, kind="semantic") is None
+    assert load_cached(b, root=tmp_path, kind="semantic") is None
