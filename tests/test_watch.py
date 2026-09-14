@@ -443,6 +443,40 @@ def test_rebuild_code_keeps_hub_fallback_labels_out_of_the_tracked_file(tmp_path
         )
 
 
+def test_rebuild_code_reuses_pending_labels_without_regenerating(tmp_path):
+    """A hub-fallback name, once written to the pending sidecar, must be
+    REUSED on the next rebuild (not silently regenerated every run) as long
+    as the community's membership hasn't changed -- matching the existing
+    reuse guarantee already given to curated labels."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    out = corpus / "graphify-out"
+    pending_file = out / ".graphify_labels.pending.json"
+    first = json.loads(pending_file.read_text(encoding="utf-8"))
+    assert first
+
+    # Hand-edit the pending sidecar to a distinguishable value, then force a
+    # real rebuild (unrelated file added, so the topology fast path is
+    # skipped and the label merge logic actually runs) without touching the
+    # community's own membership.
+    pending_file.write_text(
+        json.dumps({cid: "Reused Fallback Name" for cid in first}), encoding="utf-8"
+    )
+    (corpus / "unrelated.py").write_text("x = 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    second = json.loads(pending_file.read_text(encoding="utf-8"))
+    assert "Reused Fallback Name" in second.values(), (
+        f"pending label was regenerated instead of reused; got {second}"
+    )
+
+
 def test_rebuild_code_keeps_a_visualization_when_over_the_viz_cap(tmp_path, monkeypatch):
     """Crossing the viz node limit must not leave the project with no graph.html.
     _rebuild_code used to unlink the existing file and write nothing, so a repo
