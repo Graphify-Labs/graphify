@@ -1490,6 +1490,31 @@ def save_semantic_cache(
     if allowed_source_files is not None:
         allowed_paths = {source_path(path) for path in allowed_source_files}
 
+    def _recover_group_path(fpath: str) -> tuple[Path, Path]:
+        """Return ``(cache_path, resolved_path)`` for one ``by_file`` group,
+        recovering an unresolvable ``source_file`` via an unambiguous
+        basename match against ``allowed_paths`` when one is available (#2973).
+
+        The adaptive-retry split path (``llm.py``'s bisect-and-retry on a
+        chunk that overflowed a weak/local backend's context) sometimes
+        re-prompts with a reduced file subset and loses track of which of
+        the original chunk's files a given node came from, so its
+        ``source_file`` never resolves to a real path at all. Recovering it
+        against the known-good, already-dispatched allowlist -- and ONLY
+        when the basename is unambiguous there -- lets that group's nodes
+        and edges reach the cache instead of silently vanishing on every
+        incremental run. A genuinely bogus or ambiguous basename still
+        falls through unrecovered to the existing skip behavior below.
+        """
+        cache_path = source_path(fpath)
+        resolved = resolved_source_path(fpath)
+        if not resolved.is_file() and allowed_paths is not None:
+            candidates = [ap for ap in allowed_paths if ap.name == cache_path.name]
+            if len(candidates) == 1:
+                cache_path = candidates[0]
+                resolved = candidates[0]
+        return cache_path, resolved
+
     partial_paths = None
     if partial_source_files is not None:
         partial_paths = {source_path(path) for path in partial_source_files}
