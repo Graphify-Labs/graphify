@@ -13,7 +13,7 @@
 <div align="center">
 <details><summary><b>다른 언어로 읽기</b></summary>
 
-🇺🇸 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/README.md">English</a> | 🇨🇳 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.zh-CN.md">简体中文</a> | 🇯🇵 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.ja-JP.md">日本語</a> | 🇰🇷 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.ko-KR.md">한국어</a> | 🇩🇪 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.de-DE.md">Deutsch</a> | 🇫🇷 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.fr-FR.md">Français</a> | 🇪🇸 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.es-ES.md">Español</a> | 🇮🇳 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.hi-IN.md">हिन्दी</a> | 🇧🇷 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.pt-BR.md">Português</a> | 🇷🇺 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.ru-RU.md">Русский</a> | 🇸🇦 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.ar-SA.md">العربية</a> | 🇮🇷 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.fa-IR.md">فارسی</a> | 🇮🇹 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.it-IT.md">Italiano</a> | 🇵🇱 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.pl-PL.md">Polski</a> | 🇳🇱 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.nl-NL.md">Nederlands</a> | 🇹🇷 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.tr-TR.md">Türkçe</a> | 🇺🇦 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.uk-UA.md">Українська</a> | 🇻🇳 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.vi-VN.md">Tiếng Việt</a> | 🇮🇩 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.id-ID.md">Bahasa Indonesia</a> | 🇸🇪 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.sv-SE.md">Svenska</a> | 🇬🇷 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.el-GR.md">Ελληνικά</a> | 🇷🇴 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.ro-RO.md">Română</a> | 🇨🇿 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.cs-CZ.md">Čeština</a> | 🇫🇮 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.fi-FI.md">Suomi</a> | 🇩🇰 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.da-DK.md">Dansk</a> | 🇳🇴 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.no-NO.md">Norsk</a> | 🇭🇺 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.hu-HU.md">Magyar</a> | 🇹🇭 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.th-TH.md">ภาษาไทย</a> | 🇺🇿 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.uz-UZ.md">Oʻzbekcha</a> | 🇹🇼 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.zh-TW.md">繁體中文</a> | 🇵🇭 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.fil-PH.md">Filipino</a> | 🇮🇱 <a href="https://github.com/Graphify-Labs/graphify/blob/v8/docs/translations/README.he-IL.md">עברית</a>
+🇺🇸 <a href="../../README.md">English</a> | 🇨🇳 <a href="README.zh-CN.md">简体中文</a> | 🇯🇵 <a href="README.ja-JP.md">日本語</a> | 🇰🇷 <a href="README.ko-KR.md">한국어</a> | 🇩🇪 <a href="README.de-DE.md">Deutsch</a> | 🇫🇷 <a href="README.fr-FR.md">Français</a> | 🇪🇸 <a href="README.es-ES.md">Español</a> | 🇮🇳 <a href="README.hi-IN.md">हिन्दी</a> | 🇧🇷 <a href="README.pt-BR.md">Português</a> | 🇷🇺 <a href="README.ru-RU.md">Русский</a> | 🇸🇦 <a href="README.ar-SA.md">العربية</a> | 🇮🇷 <a href="README.fa-IR.md">فارسی</a> | 🇮🇹 <a href="README.it-IT.md">Italiano</a> | 🇵🇱 <a href="README.pl-PL.md">Polski</a> | 🇳🇱 <a href="README.nl-NL.md">Nederlands</a> | 🇹🇷 <a href="README.tr-TR.md">Türkçe</a> | 🇺🇦 <a href="README.uk-UA.md">Українська</a> | 🇻🇳 <a href="README.vi-VN.md">Tiếng Việt</a> | 🇮🇩 <a href="README.id-ID.md">Bahasa Indonesia</a> | 🇸🇪 <a href="README.sv-SE.md">Svenska</a> | 🇬🇷 <a href="README.el-GR.md">Ελληνικά</a> | 🇷🇴 <a href="README.ro-RO.md">Română</a> | 🇨🇿 <a href="README.cs-CZ.md">Čeština</a> | 🇫🇮 <a href="README.fi-FI.md">Suomi</a> | 🇩🇰 <a href="README.da-DK.md">Dansk</a> | 🇳🇴 <a href="README.no-NO.md">Norsk</a> | 🇭🇺 <a href="README.hu-HU.md">Magyar</a> | 🇹🇭 <a href="README.th-TH.md">ภาษาไทย</a> | 🇺🇿 <a href="README.uz-UZ.md">Oʻzbekcha</a> | 🇹🇼 <a href="README.zh-TW.md">繁體中文</a> | 🇵🇭 <a href="README.fil-PH.md">Filipino</a> | 🇮🇱 <a href="README.he-IL.md">עברית</a>
 
 </details>
 </div>
@@ -33,14 +33,14 @@
 
 AI 코딩 도우미에서 `/graphify`를 입력하면 프로젝트 전체(코드, 문서, PDF, 이미지, 동영상)를 **지식 그래프**로 만들어 줍니다. 이제 파일을 일일이 grep으로 검색하는 대신 **그래프에 질문**할 수 있습니다.
 
-- **코드 그래프는 무료로, 모든 처리는 로컬에서.** 코드는 tree-sitter의 추상 구문 트리(AST)로 파싱합니다. 같은 입력에는 같은 결과를 내며, LLM을 사용하지 않고 데이터도 컴퓨터 밖으로 전송하지 않습니다. (문서, PDF, 이미지, 동영상은 도우미의 모델이나 설정한 API 키를 사용해 의미를 분석합니다.)
+- **코드는 무료로, 로컬에서만 그래프로 변환합니다.** 코드는 tree-sitter의 추상 구문 트리(AST)로 파싱합니다. 같은 입력에는 같은 결과를 내며, LLM을 사용하지 않고 데이터도 컴퓨터 밖으로 전송하지 않습니다. (문서, PDF, 이미지, 동영상은 도우미의 모델이나 설정한 API 키를 사용해 의미를 분석합니다.)
 - **모든 연결에는 근거가 있습니다.** 각 연결에는 `EXTRACTED`(소스에 명시됨) 또는 `INFERRED`(graphify가 관계를 해석해 도출함) 태그가 붙어, 직접 추출한 정보와 추론한 정보를 구분할 수 있습니다.
 - **벡터 인덱스가 아닌 실제 그래프입니다.** 임베딩이나 벡터 저장소 없이 그래프를 직접 탐색합니다. 질문을 하거나, 두 요소 사이의 경로를 추적하거나, 특정 개념에 대한 설명을 확인할 수 있습니다.
 
 > 필요할 때만 실행하는 데서 나아가, 코드·문서·회의 전반의 정보를 백그라운드에서 계속 갱신하고 싶으신가요? **[graphify.com](https://graphify.com)**에서 바로 그런 서비스를 만들고 있습니다. 지금 **[app.graphify.com](https://app.graphify.com/login)**에서 얼리 액세스를 이용할 수 있습니다.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="FastAPI 코드베이스를 힘 기반 레이아웃의 지식 그래프로 보여 주는 graphify의 대화형 graph.html. 탐지된 커뮤니티의 범례도 표시됩니다." width="900">
+  <img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graph-hero.png" alt="FastAPI 코드베이스를 힘 기반 배치 방식의 지식 그래프로 보여 주는 graphify의 대화형 graph.html. 탐지된 커뮤니티의 범례도 표시됩니다." width="900">
 </p>
 <p align="center">
   <em>graphify로 시각화한 FastAPI 코드베이스입니다. 각 노드는 하나의 개념을, 색상은 탐지된 커뮤니티를 나타냅니다. graph.html에서 모든 요소를 클릭해 살펴볼 수 있습니다.</em>
@@ -128,7 +128,7 @@ Shortest path (3 hops):
 | LongMemEval-S (n=50) | 질의응답 정확도 | **76%** | dense RAG와 동률 |
 | 그래프 구축 | LLM 크레딧 | **0** | 대부분의 시스템은 토큰별 과금 |
 
-모든 시스템을 동일한 테스트 환경에서 같은 모델과 예산으로 실행했습니다. 평가는 별도의 두 번째 평가자와 블라인드 방식으로 대조 검증했습니다(일치율 90.6%, Cohen's kappa 0.81). 시스템별 전체 결과표, 코드 이해 성능 결과, 재현 명령어는 **[BENCHMARKS.md](https://github.com/Graphify-Labs/graphify/blob/v8/BENCHMARKS.md)**에서 확인할 수 있습니다.
+모든 시스템을 동일한 평가 환경에서 같은 모델과 예산으로 실행했습니다. 평가자가 결과를 채점했으며, 그 판정을 두 번째 평가자의 판정과 블라인드 방식으로 대조해 검증했습니다(일치율 90.6%, Cohen's kappa 0.81). 시스템별 전체 결과표, 코드 이해 성능 결과, 재현 명령어는 **[BENCHMARKS.md](../../BENCHMARKS.md)**에서 확인할 수 있습니다.
 
 ---
 
@@ -253,7 +253,7 @@ Codex에서 병렬 추출을 사용하려면 `~/.codex/config.toml`의 `[feature
 | `pdf` | PDF 추출 | `uv tool install "graphifyy[pdf]"` |
 | `office` | `.docx` 및 `.xlsx` 지원 | `uv tool install "graphifyy[office]"` |
 | `google` | Google Sheets 렌더링 | `uv tool install "graphifyy[google]"` |
-| `video` | 동영상·오디오 전사(faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
+| `video` | 동영상·오디오 전사(음성을 텍스트로 변환, faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
 | `mcp` | MCP stdio 서버 | `uv tool install "graphifyy[mcp]"` |
 | `neo4j` | Neo4j로 전송 지원 | `uv tool install "graphifyy[neo4j]"` |
 | `falkordb` | FalkorDB로 전송 지원 | `uv tool install "graphifyy[falkordb]"` |
@@ -273,7 +273,7 @@ Codex에서 병렬 추출을 사용하려면 `~/.codex/config.toml`의 `[feature
 | `ocaml` | OCaml `.ml`/`.mli` AST 추출 | `uv tool install "graphifyy[ocaml]"` |
 | `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST 추출 | `uv tool install "graphifyy[commonlisp]"` |
 | `robot` | Robot Framework `.robot`/`.resource` 추출(스위트, 테스트 케이스, 키워드, 키워드 호출 및 리소스·라이브러리 가져오기 관계) | `uv tool install "graphifyy[robot]"` |
-| `chinese` | 중국어 질의 분절(jieba) | `uv tool install "graphifyy[chinese]"` |
+| `chinese` | 중국어 질의의 단어 분리(jieba) | `uv tool install "graphifyy[chinese]"` |
 | `all` | 위의 모든 기능 | `uv tool install "graphifyy[all]"` |
 
 </details>
@@ -332,19 +332,18 @@ Codex에서 병렬 추출을 사용하려면 `~/.codex/config.toml`의 `[feature
 
 - **핵심 허브 노드(God nodes)** — 프로젝트에서 가장 많은 연결을 가진 개념입니다. 주요 흐름이 이 노드들을 거칩니다.
 - **의외의 연결 관계** — 서로 다른 파일이나 모듈에 있는 요소 사이의 연결입니다. 예상하기 어려운 관계일수록 높은 순위에 표시됩니다.
-- **설계의 이유** — 인라인 주석(`# NOTE:`, `# WHY:`, `# HACK:`), 독스트링, 문서에 담긴 설계 근거를 별도 노드로 추출하고, 해당 내용이 설명하는 코드에 연결합니다.
+- **설계의 이유** — 인라인 주석(`# NOTE:`, `# WHY:`, `# HACK:`), 독스트링(docstring), 문서에 담긴 설계 근거를 별도 노드로 추출하고, 해당 내용이 설명하는 코드에 연결합니다.
 - **추천 질문** — 그래프를 활용하면 특히 잘 답할 수 있는 질문 4~5개를 제안합니다.
 - **신뢰도 태그** — 추론된 모든 관계에 `EXTRACTED`, `INFERRED`, `AMBIGUOUS` 중 하나를 표시합니다. 확인된 사실과 추정을 언제나 구분할 수 있습니다.
 
 ---
-
 
 ## 지원하는 파일
 
 | 유형 | 확장자 |
 |------|-----------|
 | 코드(tree-sitter 문법 37종) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .ml .mli .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme`는 `uv tool install graphifyy[dm]`, `.ml`/`.mli`는 `uv tool install graphifyy[ocaml]` 필요. `.mts`/`.cts`는 TypeScript 문법을, `.cc`/`.cxx`, CUDA의 `.cu`/`.cuh`, Metal의 `.metal`은 C++ 문법을 재사용) |
-| Salesforce Apex | `.cls .trigger` (정규식 기반. 클래스, 인터페이스, 열거형, 메서드, 트리거, SOQL/DML 관계 추출) |
+| Salesforce Apex | `.cls .trigger` (정규식 기반. 클래스, 인터페이스, 열거형, 메서드, 트리거 및 SOQL/DML 연결 관계 추출) |
 | Terraform / HCL | `.tf .tfvars .hcl` (`uv tool install graphifyy[terraform]` 필요) |
 | OCaml | `.ml .mli` (`uv tool install graphifyy[ocaml]` 필요) |
 | Common Lisp | `.lisp .cl .lsp .asd` (`uv tool install graphifyy[commonlisp]` 필요) |
@@ -380,7 +379,7 @@ graphify extract ./docs --google-workspace
 /graphify ./docs --update          # 변경된 파일만 다시 추출
 /graphify . --cluster-only         # 재추출 없이 클러스터링만 다시 실행
 /graphify . --cluster-only --resolution 1.5      # 커뮤니티를 더 세밀하게 분할
-/graphify . --cluster-only --exclude-hubs 99     # 핵심 허브 순위에서 연결이 지나치게 많은 유틸리티 허브를 억제
+/graphify . --cluster-only --exclude-hubs 99     # 핵심 허브 순위에서 연결이 지나치게 많은 유틸리티 노드의 비중을 줄임
 /graphify . --no-viz               # HTML 없이 보고서와 JSON만 생성
 /graphify . --wiki                 # 그래프에서 Markdown 위키 생성
 graphify export callflow-html      # Mermaid 아키텍처·호출 흐름 HTML 생성 (훅 설치 시 Git 커밋마다 자동 재생성)
@@ -395,7 +394,7 @@ graphify export callflow-html      # Mermaid 아키텍처·호출 흐름 HTML �
 graphify hook install              # 커밋·브랜치 체크아웃 시 자동 재생성 (git pull 후에는 graphify update . 실행 — 아래 권장 작업 흐름 참고)
 graphify merge-graphs a.json b.json              # 두 그래프 병합
 
-graphify prs                       # PR 대시보드: CI 상태, 리뷰 상태, worktree 연결 정보
+graphify prs                       # PR 대시보드: CI 상태, 리뷰 상태, 워크트리(worktree) 연결 정보
 graphify prs 42                    # 그래프에 미치는 영향을 포함해 PR #42 상세 분석
 graphify prs --triage              # AI가 리뷰 대기 목록의 우선순위 지정 (설정된 백엔드 사용)
 graphify prs --conflicts           # 같은 그래프 커뮤니티를 수정하는 PR 확인 — 병합 순서에 따른 위험
@@ -409,7 +408,7 @@ graphify prs --conflicts           # 같은 그래프 커뮤니티를 수정하�
 
 프로젝트 루트에 `.graphifyignore`를 만드세요. `!`를 사용하는 제외 규칙의 반전까지 포함해 `.gitignore`와 같은 문법을 사용합니다.
 
-**`.gitignore`는 자동으로 적용됩니다.** graphify는 각 디렉터리의 `.gitignore`를 읽습니다. `.graphifyignore`도 있으면 두 파일의 규칙을 **합쳐서** 적용합니다. `.graphifyignore` 패턴을 마지막에 평가하므로 규칙이 충돌하면 이쪽이 우선합니다(`!` 반전 규칙 포함). `.graphifyignore`를 추가하면 제외 대상이 늘어날 뿐, `.gitignore`가 이미 제외한 파일을 다시 포함하지는 않습니다. 하위 디렉터리 범위는 Git과 같은 방식으로 처리합니다. 각 ignore 파일은 자신이 속한 디렉터리와 그 하위에만 영향을 줍니다.
+**`.gitignore`는 자동으로 적용됩니다.** graphify는 각 디렉터리의 `.gitignore`를 읽습니다. `.graphifyignore`도 있으면 두 파일의 규칙을 **합쳐서** 적용합니다. `.graphifyignore` 패턴을 마지막에 평가하므로 규칙이 충돌하면 이쪽이 우선합니다(`!` 반전 규칙 포함). 다만 Git과 마찬가지로, 상위 디렉터리가 제외되어 있으면 `!` 규칙만으로 그 안의 파일을 다시 포함할 수 없습니다. 해당 디렉터리도 먼저 제외 대상에서 해제해야 합니다. 하위 디렉터리 범위는 Git과 같은 방식으로 처리합니다. 각 ignore 파일은 자신이 속한 디렉터리와 그 하위에만 영향을 줍니다.
 
 Git에서 제외한 생성 코드나 트랜스파일된 코드도 그래프에 포함하려면 `graphify extract`에 `--no-gitignore`를 전달하세요. 이 옵션은 `.gitignore`와 `.git/info/exclude`를 비활성화합니다. `.graphifyignore`는 계속 적용됩니다.
 
@@ -505,7 +504,7 @@ MCP 서버는 도우미가 구조화된 방식으로 접근할 수 있는 다음
 | `--stateless` | 꺼짐 | 세션별 상태를 유지하지 않음(로드 밸런싱·CI 배포용) |
 | `--session-timeout` | `3600` | 상태를 유지하는 세션이 N초 동안 유휴 상태이면 정리(`0`이면 비활성화) |
 
-기본 바인딩 주소 `127.0.0.1`은 루프백 연결만 허용합니다. 공유 호스트에서 외부에 공개할 때는 `--host 0.0.0.0`**과** `--api-key`를 함께 설정하세요. 컨테이너에서 실행하는 예시는 다음과 같습니다.
+기본 바인딩 주소 `127.0.0.1`은 루프백 연결만 허용합니다. 공유 호스트에서 외부에 공개할 때는 **`--host 0.0.0.0`과 `--api-key`를 함께** 설정하세요. 컨테이너에서 실행하는 예시는 다음과 같습니다.
 
 ```bash
 docker build -t graphify .
@@ -548,7 +547,7 @@ docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | 정보 밀도가 높은 자료 모음의 출력 한도 상향 | 선택 사항 — 큰 파일의 경우 예: `32768` |
 | `GRAPHIFY_API_TIMEOUT` | HTTP, claude-cli, Anthropic SDK, Bedrock 백엔드의 호출별 제한 시간(초, 기본값: 600) | 선택 사항 — `--api-timeout` 플래그로도 설정 가능 |
 | `GRAPHIFY_MAX_RETRIES` | 요청 한도 초과(429) 시 포기하기 전 재시도 횟수(기본값: 6, `Retry-After` 준수) | 선택 사항 — 조직별 한도가 엄격한 경우(예: kimi) 늘릴 수 있음. `0`이면 비활성화 |
-| `GRAPHIFY_MAX_RETRY_DEPTH` | 응답이 잘린 청크를 이분할해 재추출할 최대 깊이(기본값: 3, 청크 하나당 하위 호출이 최대 8배까지 증가) | 선택 사항 — 최악의 경우 비용을 제한하려면 낮게 설정. `0`이면 모든 재시도(이분할 및 내용 없는 응답의 재시도)를 비활성화하여 청크당 정확히 한 번만 호출 |
+| `GRAPHIFY_MAX_RETRY_DEPTH` | 응답이 잘린 청크를 이분할해 재추출할 최대 깊이(기본값: 3, 청크 하나가 최대 8개의 하위 청크로 나뉘어 각각 재호출됨) | 선택 사항 — 최악의 경우 비용을 제한하려면 낮게 설정. `0`이면 모든 재시도(이분할 및 내용 없는 응답의 재시도)를 비활성화하여 청크당 정확히 한 번만 호출 |
 | `GRAPHIFY_FORCE` | 노드 수가 줄어도 그래프 강제 재생성 | 선택 사항 — `--force` 플래그로도 설정 가능 |
 | `GRAPHIFY_GOOGLE_WORKSPACE` | Google Workspace 내보내기 자동 활성화 | 선택 사항 — `1`로 설정 |
 | `GRAPHIFY_TRIAGE_BACKEND` | `graphify prs --triage`에 사용할 백엔드 | 선택 사항 — 사용 가능한 키에서 자동 감지 |
@@ -570,10 +569,9 @@ docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
 - **문서, PDF, 이미지** — 의미 추출을 위해 AI 도우미로 전송합니다(`/graphify` 스킬을 통해 IDE 세션에서 사용 중인 모델을 이용). 헤드리스 방식의 `graphify extract`에는 `GEMINI_API_KEY` / `GOOGLE_API_KEY`(Gemini), `MOONSHOT_API_KEY`(Kimi), `ANTHROPIC_API_KEY`(Claude), `OPENAI_API_KEY`(OpenAI), `DEEPSEEK_API_KEY`(DeepSeek), 실행 중인 Ollama 인스턴스(`OLLAMA_BASE_URL`), 표준 공급자 체인의 AWS 자격 증명(Bedrock — API 키 없이 IAM 사용), 또는 `claude` CLI 실행 파일(Claude Code — API 키 없이 Claude 구독 사용) 중 하나가 필요합니다. `--dedup-llm` 플래그도 같은 키를 사용합니다.
 - **데이터 처리 위치** — `graphify extract`는 설정된 API 키를 기준으로 공급자를 자동 감지합니다(우선순위: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). 데이터 처리 위치에 관한 요구 사항이 있는 코드에는 `--backend ollama`(완전한 로컬 처리)를 사용하거나 `--backend` 플래그로 백엔드를 명시하세요. Kimi(`MOONSHOT_API_KEY`)는 중국에 있는 Moonshot AI 서버로 요청을 보냅니다.
 - **텔레메트리 없음** — 사용 추적이나 분석 데이터를 수집하지 않습니다.
-- **질의 로그** — 모든 `graphify query`, `graphify path`, `graphify explain`, MCP `query_graph` 호출을 `~/.cache/graphify-queries.log`에 JSON Lines 형식으로 기록합니다(타임스탬프, 질문, 자료 모음, 반환된 노드, 소요 시간). 전체 부분 그래프 응답은 기본적으로 저장하지 **않습니다**. 기록을 끄려면 `GRAPHIFY_QUERY_LOG_DISABLE=1`을 설정하세요. 로깅 코드 경로를 비활성화하지 않고 출력을 버리려면 `GRAPHIFY_QUERY_LOG=/dev/null`을 사용하세요.
+- **질의 로그** — 기본적으로 꺼져 있으며, 명시적으로 활성화하지 않으면 기록하지 않습니다. `GRAPHIFY_QUERY_LOG_ENABLE=1`을 설정하면 `graphify query`, `graphify path`, `graphify explain`, MCP `query_graph` 호출을 `~/.cache/graphify-queries.log`에 JSON Lines 형식으로 기록합니다(타임스탬프, 질문, 자료 모음, 반환된 노드 수, 소요 시간). `GRAPHIFY_QUERY_LOG`에 경로를 지정하면 로깅을 활성화하고 해당 경로에 기록합니다. 전체 부분 그래프 응답은 기본적으로 저장하지 **않으며**, 로깅이 활성화된 상태에서 `GRAPHIFY_QUERY_LOG_RESPONSES=1`을 설정해야 함께 기록됩니다. `GRAPHIFY_QUERY_LOG_DISABLE=1`은 다른 활성화 설정보다 우선하며 로깅을 강제로 끕니다. 로깅 코드 경로를 비활성화하지 않고 출력을 버리려면 `GRAPHIFY_QUERY_LOG=/dev/null`을 사용하세요.
 
 ---
-
 
 ## 문제 해결
 
@@ -848,7 +846,7 @@ graphify cluster-only ./my-project
 graphify cluster-only ./my-project --graph path/to/graph.json  # 그래프 위치 직접 지정
 graphify cluster-only ./my-project --max-concurrency 16 --batch-size 200  # 커뮤니티 이름을 병렬로 지정 (대형 그래프용)
 graphify cluster-only ./my-project --resolution 1.5            # 더 작고 많은 커뮤니티로 분할
-graphify cluster-only ./my-project --exclude-hubs 99           # 연결 차수가 99백분위인 노드를 분할에서 제외
+graphify cluster-only ./my-project --exclude-hubs 99           # 연결 차수의 99백분위수를 기준으로 허브 노드를 분할에서 제외
 graphify cluster-only ./my-project --no-label                  # 임시 이름 "Community N" 유지
 graphify cluster-only ./my-project --backend=gemini            # 커뮤니티 이름 지정에 사용할 백엔드
 graphify cluster-only ./my-project --backend=gemini --model gemini-2.5-pro  # 특정 모델 지정
@@ -860,12 +858,11 @@ graphify label ./my-project --backend=openai --model gpt-4o   # 특정 백엔드
 
 ---
 
-
 ## 더 알아보기
 
-- [작동 원리](https://github.com/Graphify-Labs/graphify/blob/v8/docs/how-it-works.md) — 추출 파이프라인, 커뮤니티 탐지, 신뢰도 평가, 벤치마크
-- [ARCHITECTURE.md](https://github.com/Graphify-Labs/graphify/blob/v8/ARCHITECTURE.md) — 모듈 구성과 언어 추가 방법
-- [선택적 연동](https://github.com/Graphify-Labs/graphify/blob/v8/docs/docker-mcp-sqlite.md) — Docker MCP Toolkit + SQLite
+- [작동 원리](../../docs/how-it-works.md) — 추출 파이프라인, 커뮤니티 탐지, 신뢰도 평가, 벤치마크
+- [ARCHITECTURE.md](../../ARCHITECTURE.md) — 모듈 구성과 언어 추가 방법
+- [선택적 연동](../../docs/docker-mcp-sqlite.md) — Docker MCP Toolkit + SQLite
 - [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo) — graphify의 바탕이 된 아이디어와 전체 아키텍처를 설명하는 책
 
 ---
@@ -898,7 +895,7 @@ git checkout v8                        # 현재 개발이 진행되는 브랜치
 uv sync --all-extras
 ```
 
-소스 수정 사항이 바로 반영되는 편집 가능 설치가 되었는지 확인하세요.
+소스 수정 사항이 바로 반영되는 개발용 설치(editable install)가 정상적으로 되었는지 확인하세요.
 
 ```bash
 uv run graphify --version
@@ -915,7 +912,7 @@ uv run pytest tests/ -q -k "python"    # 이름으로 필터링
 
 ### CI와 동일한 조건으로 검사하기
 
-기준이 되는 CI 명령어는 [`.github/workflows/`](https://github.com/Graphify-Labs/graphify/tree/v8/.github/workflows/)에 있습니다. 로컬에서 CI와 같은 방식으로 검증하려면 Python 3.10, 3.12, 3.13 또는 3.14를 사용해 다음을 실행하세요.
+기준이 되는 CI 명령어는 [`.github/workflows/`](../../.github/workflows/)에 있습니다. 로컬에서 CI와 같은 방식으로 검증하려면 Python 3.10, 3.12, 3.13 또는 3.14를 사용해 다음을 실행하세요.
 
 ```bash
 uv sync --all-extras --frozen
@@ -948,7 +945,7 @@ Ruff는 추가 로컬 검사(`uv run --frozen ruff check .`)에 유용하지만,
 
 **추출 버그** — 입력 파일, 캐시 항목(`graphify-out/cache/`), 누락되거나 잘못된 내용을 첨부해 이슈를 등록하세요.
 
-모듈별 역할과 언어 추가 방법은 [ARCHITECTURE.md](https://github.com/Graphify-Labs/graphify/blob/v8/ARCHITECTURE.md)를 참고하세요.
+모듈별 역할과 언어 추가 방법은 [ARCHITECTURE.md](../../ARCHITECTURE.md)를 참고하세요.
 
 </details>
 
