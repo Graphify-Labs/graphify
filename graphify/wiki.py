@@ -56,7 +56,7 @@ def _safe_filename(name: str, limit: int = 200) -> str:
     return s[:limit] if s else 'unnamed'
 
 
-def _escape_md_brackets(text: str) -> str:
+def _escape_md_brackets(text: object) -> str:
     """Escape `[`/`]` so raw text embedded in a generated article can never be
     misread as markdown/Obsidian link syntax (#3547).
 
@@ -66,8 +66,13 @@ def _escape_md_brackets(text: str) -> str:
     unescaped, that string renders as a real (and always dead — the wiki
     export never writes bracket-style links, see ``_md_link``) wikilink
     instead of the plain text it actually is.
+
+    Callers fall back to a node's own id when it has no ``label`` attribute,
+    and a networkx node id is not always a string (an int or a tuple id is
+    legal). ``str()`` first so that fallback stringifies exactly like the
+    plain f-interpolation this call replaced, instead of raising.
     """
-    return text.replace("[", r"\[").replace("]", r"\]")
+    return str(text).replace("[", r"\[").replace("]", r"\]")
 
 
 def _md_link(label: str, resolver: dict[str, str]) -> str:

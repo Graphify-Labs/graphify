@@ -20,6 +20,23 @@ def test_escape_md_brackets_escapes_both_brackets():
     assert _escape_md_brackets("plain text") == "plain text"
 
 
+def test_escape_md_brackets_stringifies_a_non_string_node_id_fallback():
+    # A networkx node id is not always a string (int and tuple ids are
+    # legal). The label callers fall back to a node's own id when it has no
+    # `label` attribute, so this must stringify instead of raising.
+    assert _escape_md_brackets(1) == "1"
+    assert _escape_md_brackets(("a", "b")) == "('a', 'b')"
+
+
+def test_community_article_handles_a_node_with_no_label_and_a_non_string_id():
+    G = nx.Graph()
+    G.add_nodes_from([(1, {}), (2, {}), (3, {})])
+    G.add_edges_from([(1, 2, {}), (1, 3, {}), (2, 3, {})])
+    article = _community_article(G, 0, [1, 2, 3], "hello world", {0: "hello world"},
+                                  None, {1: 0, 2: 0, 3: 0}, {})
+    assert "**1**" in article
+
+
 def test_community_title_escapes_bracket_label():
     G = nx.Graph()
     G.add_node("n1", label="sym", file_type="code", source_file="a.py")
