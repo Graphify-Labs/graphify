@@ -12,6 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from graphify._minhash import MinHash, MinHashLSH
+from graphify.ids import normalize_id
 from rapidfuzz.distance import DamerauLevenshtein, Jaro, JaroWinkler
 
 
