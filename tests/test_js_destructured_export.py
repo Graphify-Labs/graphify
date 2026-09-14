@@ -59,3 +59,15 @@ def test_single_name_import_resolves_to_its_own_node(tmp_path):
              for e in r["edges"] if e["relation"] == "calls"]
     assert ("useAuth()", "auth") in calls, \
         f"call through the destructured import did not resolve; calls={calls}"
+
+
+def test_renamed_property_exports_under_its_key_not_its_local_alias(tmp_path):
+    # `handlers: h` is imported elsewhere as `handlers` (the property key) --
+    # the local alias `h` is never a valid import name for it.
+    r, lbl = _extract(tmp_path, {
+        "auth.ts": _NEXTAUTH_HELPER
+        + "export const { handlers: h } = NextAuth({});\n",
+    })
+    labels = set(lbl.values())
+    assert "handlers" in labels
+    assert "h" not in labels
