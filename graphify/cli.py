@@ -3002,6 +3002,30 @@ def dispatch_command(cmd: str) -> None:
         if not communities:
             if reconstructed:
                 communities = reconstructed
+        elif reconstructed:
+            # #2386: the sidecar EXISTS but can still be stale, since
+            # update/watch advance graph.json's per-node community attribute
+            # without ever regenerating .graphify_analysis.json. Cheap,
+            # unambiguous signal: compare the node-id set each side covers,
+            # not the community ids themselves (those can renumber run to
+            # run even for the same partition, #1667). A mismatch means the
+            # sidecar was written by an earlier clustering pass, so prefer
+            # the fresh reconstruction instead of silently exporting a
+            # degraded artifact against nodes that no longer agree with it.
+            sidecar_nodes = {str(n) for nodes in communities.values() for n in nodes}
+            fresh_nodes = {n for nodes in reconstructed.values() for n in nodes}
+            if sidecar_nodes != fresh_nodes:
+                print(
+                    f"warning: {analysis_path} is stale ({len(sidecar_nodes)} node(s) "
+                    f"recorded vs {len(fresh_nodes)} in graph.json) — reconstructing "
+                    "communities from graph.json instead. Run `graphify cluster-only .` "
+                    "to refresh the sidecar and its cohesion/god-node data.",
+                    file=sys.stderr,
+                )
+                communities = reconstructed
+                from graphify.cluster import score_all as _score_all_export
+                cohesion = _score_all_export(G, communities)
+                gods_data = []
 
         labels: dict[int, str] = {}
         if labels_path.exists():
