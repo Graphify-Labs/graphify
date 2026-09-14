@@ -9,6 +9,8 @@ _HOOK_MARKER = "# graphify-hook-start"
 _HOOK_MARKER_END = "# graphify-hook-end"
 _CHECKOUT_MARKER = "# graphify-checkout-hook-start"
 _CHECKOUT_MARKER_END = "# graphify-checkout-hook-end"
+_MERGE_HOOK_MARKER = "# graphify-merge-hook-start"
+_MERGE_HOOK_MARKER_END = "# graphify-merge-hook-end"
 
 # __PINNED_PYTHON__ is replaced at install time with the absolute path of the
 # Python interpreter that ran `graphify hook install`.  For uv-tool and pipx
