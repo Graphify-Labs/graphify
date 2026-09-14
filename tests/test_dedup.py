@@ -572,6 +572,15 @@ def test_korean_defining_file_wins_over_referencing_file(nodes):
     )
 
 
+def test_id_prefixes_ascii_path_unchanged():
+    """Negative control: an ordinary ASCII path's reconstructed prefixes must
+    be identical to what the old ASCII only regex produced."""
+    from graphify.dedup import _id_prefixes
+    assert _id_prefixes("docs/v1/api/README.md") == {
+        "readme", "api_readme", "v1_api_readme", "docs_v1_api_readme",
+    }
+
+
 def test_same_file_relabel_is_noted(capsys):
     """Two labels for one ID from one file: the loser's label is discarded, which is
     the one drop that used to be silent. It is a note, not a collision warning."""
