@@ -888,7 +888,7 @@ graphify label ./my-project --backend=openai --model gpt-4o   # 특정 백엔드
 이 프로젝트는 개발 작업에 [uv](https://docs.astral.sh/uv/)를 사용합니다. uv를 한 번 설치한 뒤 다음을 실행하세요.
 
 ```bash
-git clone https://github.com/safishamsi/graphify.git
+git clone https://github.com/Graphify-Labs/graphify.git
 cd graphify
 git checkout v8                        # 현재 개발이 진행되는 브랜치
 
