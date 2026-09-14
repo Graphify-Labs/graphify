@@ -918,7 +918,7 @@ def _user_hooks_dir(hooks_dir: Path) -> Path:
 
 
 def install(path: Path = Path(".")) -> str:
-    """Install graphify post-commit and post-checkout hooks in the nearest git repo."""
+    """Install graphify's post-commit, post-checkout, and post-merge hooks in the nearest git repo."""
     root = _git_root(path)
     if root is None:
         raise RuntimeError(f"No git repository found at or above {path.resolve()}")
@@ -939,12 +939,19 @@ def install(path: Path = Path(".")) -> str:
     pinned = _pinned_python()
     hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
     checkout = _CHECKOUT_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
+    merge_hook = _MERGE_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
 
     commit_msg = _install_hook(hooks_dir, "post-commit", hook, _HOOK_MARKER, _HOOK_MARKER_END)
     checkout_msg = _install_hook(hooks_dir, "post-checkout", checkout, _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
+    post_merge_msg = _install_hook(
+        hooks_dir, "post-merge", merge_hook, _MERGE_HOOK_MARKER, _MERGE_HOOK_MARKER_END
+    )
     merge_msg = _register_merge_driver(root)
 
-    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
+    return (
+        f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\n"
+        f"post-merge: {post_merge_msg}\nmerge driver: {merge_msg}"
+    )
 
 
 def uninstall(path: Path = Path(".")) -> str:
