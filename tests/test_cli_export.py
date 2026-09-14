@@ -659,6 +659,29 @@ def test_export_html_no_community_data_at_all_still_succeeds(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
+# ── #2386: sidecar exists but is STALE, not just absent ──────────────────────
+# update/watch advance graph.json's per-node community attribute but never
+# regenerate .graphify_analysis.json, so it can describe an earlier
+# clustering pass while still being present. That looked identical to a
+# fresh sidecar from the outside and kept winning over the correct data
+# sitting in graph.json.
+
+def test_export_html_prefers_fresh_data_when_sidecar_is_stale(tmp_path):
+    out = _make_graph(tmp_path)
+    analysis_path = out / ".graphify_analysis.json"
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    # Simulate staleness the way the issue describes: the sidecar's node id
+    # set no longer matches graph.json's (a node the sidecar never saw, or
+    # one it references that graph.json no longer has).
+    analysis["communities"] = {"0": ["a_ghost_node_id_not_in_the_graph"]}
+    analysis_path.write_text(json.dumps(analysis))
+
+    r = _run(["export", "html"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "is stale" in r.stderr
+    assert (out / "graph.html").exists()
+
+
 def test_graph_json_node_ids_are_portable_across_checkout_paths(tmp_path):
     """#1789: the committed graph.json's node ids must be relative to the scan
     root — not embed the absolute path — so the same repo yields identical ids
