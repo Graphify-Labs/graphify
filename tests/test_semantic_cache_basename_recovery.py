@@ -44,3 +44,23 @@ def test_ambiguous_basename_stays_skipped(tmp_path):
     assert saved == 0
     assert load_cached(a, root=tmp_path, kind="semantic") is None
     assert load_cached(b, root=tmp_path, kind="semantic") is None
+
+
+def test_unscoped_call_with_no_allowlist_is_unaffected(tmp_path):
+    # No allowed_source_files at all: recovery must never run, so a
+    # genuinely bogus path is skipped exactly as before this fix, and a
+    # normal well formed path still resolves and saves.
+    real = tmp_path / "sub" / "weird_named_file.py"
+    real.parent.mkdir(parents=True)
+    real.write_text("def f(): pass\n")
+
+    nodes = [
+        {"id": "n1", "label": "f", "source_file": "sub/weird_named_file.py"},
+        {"id": "n2", "label": "g", "source_file": "totally/does/not/exist.py"},
+    ]
+    saved = save_semantic_cache(nodes, [], root=tmp_path)
+    assert saved == 1
+
+    cached = load_cached(real, root=tmp_path, kind="semantic")
+    assert cached is not None
+    assert {n["id"] for n in cached["nodes"]} == {"n1"}
