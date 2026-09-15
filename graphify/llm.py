@@ -1119,6 +1119,96 @@ def _json_fragment_candidates(text: str) -> "Iterator[str]":
             yield blob
 
 
+# --- Repair pass for near-valid replies -------------------------------------
+# One stray token in an otherwise clean reply currently loses the whole chunk.
+# Measured with a local gemma4:26b extractor: a 15 KB response carrying one
+# bare string where an object member belonged (`{"x", "id": ...`) fell through
+# every candidate above to a single inner node object and scored zero, with
+# 35 nodes recoverable. This runs ONLY after the strict parse and the
+# candidate ladder have both failed to find a fragment with content, so any
+# reply that parses today is untouched. Two stages:
+#   1. drop a bare string token sitting where an object member belongs and
+#      retry the strict parse over the same fence/brace ladder -- the exact
+#      defect measured, recovered losslessly;
+#   2. json_repair over the pruned text, then the raw text, each also through
+#      the candidate ladder -- the general net. Optional: without the package
+#      stage 1 still runs.
+# A stage counts only if it yields a dict carrying a fragment key with at least
+# one node/edge/hyperedge after sanitising. Truncated replies (finish_reason
+# == "length") are still bisected by the caller, so repairing them changes
+# nothing there. Recovery is logged to stderr so a run that leans on repair is
+# visible in the extraction log.
+try:
+    import json_repair as _json_repair
+except ImportError:  # pragma: no cover - optional dependency
+    _json_repair = None
+
+_STRAY_MEMBER_RE = re.compile(r'([{,])\s*"[^"\\]*"\s*,(?=\s*"[^"\\]*"\s*:)')
+
+
+def _item_has_substance(kind: str, item) -> bool:
+    """True for a node with an id, an edge with both ends, a hyperedge with members.
+
+    json_repair closes whatever it is handed, so a half-generated reply such as
+    `{"nodes": [{"id":` comes back as `{"nodes": [{"id": ""}]}` -- a fragment
+    that is not empty but carries nothing. Counting it as recovered would turn a
+    hollow response into one phantom node, so only well-formed items count.
+    """
+    if not isinstance(item, dict):
+        return False
+    if kind == "nodes":
+        return bool(item.get("id"))
+    if kind == "edges":
+        return bool(item.get("source")) and bool(item.get("target"))
+    return any(item.get(k) for k in ("members", "node_ids"))
+
+
+def _fragment_with_content(parsed) -> dict | None:
+    """Sanitised fragment if `parsed` carries a fragment key with real content, else None."""
+    if not isinstance(parsed, dict) or not any(k in parsed for k in _FRAGMENT_KEYS):
+        return None
+    cand = _sanitize_fragment(parsed)
+    if any(_item_has_substance(k, it) for k in _FRAGMENT_KEYS for it in (cand.get(k) or [])):
+        return cand
+    return None
+
+
+def _repair_llm_json(text: str) -> dict | None:
+    """Recover a fragment from a reply that strict parsing and candidate scanning both rejected."""
+    result: dict | None = None
+    stage = ""
+    pruned, n = _STRAY_MEMBER_RE.subn(r"\1", text)
+    if n:
+        # Same fence/brace ladder strict parsing uses, run over the pruned text.
+        for candidate in (pruned, *_json_fragment_candidates(pruned)):
+            try:
+                result = _fragment_with_content(json.loads(candidate))
+            except json.JSONDecodeError:
+                continue
+            if result is not None:
+                stage = f"stray-member prune ({n} token{'s' if n != 1 else ''})"
+                break
+    if result is None and _json_repair is not None:
+        # Pruned text first: json_repair on the raw stray token swallows a node id.
+        for candidate in (pruned, *_json_fragment_candidates(pruned), text, *_json_fragment_candidates(text)):
+            try:
+                repaired = _json_repair.loads(candidate)
+            except Exception:  # noqa: BLE001 - repair is best-effort
+                continue
+            result = _fragment_with_content(repaired)
+            if result is not None:
+                stage = "json_repair"
+                break
+    if result is None:
+        return None
+    print(
+        f"[graphify] LLM JSON repaired via {stage}: "
+        f"{len(result.get('nodes', []))} nodes / {len(result.get('edges', []))} edges recovered",
+        file=sys.stderr,
+    )
+    return result
+
+
 def _parse_llm_json(raw: str) -> dict:
     """Strip optional markdown fences and parse JSON. Returns empty fragment on failure.
 
@@ -1182,6 +1272,12 @@ def _parse_llm_json(raw: str) -> dict:
                 empty_fragment = cand
         elif fallback is None:
             fallback = parsed
+
+    # Repair before settling for a weaker tier; see _repair_llm_json above.
+    # Only reached when nothing above carried content.
+    repaired = _repair_llm_json(stripped)
+    if repaired is not None:
+        return repaired
 
     # A genuinely empty extraction is still a valid answer, and still reads as
     # hollow downstream, so it outranks an object that is not a fragment at all.
