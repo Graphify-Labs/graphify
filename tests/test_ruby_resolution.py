@@ -780,6 +780,38 @@ def test_inherited_call_stays_inferred_for_superclass_constant_alias(
     assert _only_call(graph)["confidence"] == "INFERRED"
 
 
+def test_inherited_call_stays_inferred_for_dynamic_superclass_constant_write(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def helper; :stale; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "Base = resolve_base()\nclass Child < Base\n"
+        "  def call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_inherited_call_stays_inferred_for_multiple_constant_write(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def helper; :stale; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "Base, Spare = ExternalBase, Object\nclass Child < Base\n"
+        "  def call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
 def test_inherited_call_stays_inferred_under_enclosing_refinement(
     tmp_path: Path,
 ) -> None:
@@ -856,6 +888,48 @@ def test_external_owner_mutator_inside_singleton_class_stays_inferred(
         "override.rb",
         "module Installer\n  class << self\n"
         "    Child.define_singleton_method(:helper) { :child }\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_external_owner_mutator_inside_external_eigenclass_stays_inferred(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "class Installer; end\nclass << Installer\n"
+        "  Child.define_singleton_method(:helper) { :child }\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_external_owner_mutator_through_constant_alias_stays_inferred(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "AliasChild = Child\n"
+        "AliasChild.define_singleton_method(:helper) { :child }\n",
     )
 
     graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)

@@ -3141,21 +3141,28 @@ def _ruby_external_method_owners(root_node, source: bytes) -> list[str]:
     """Return explicit constant owners modified outside their class body."""
     owners: set[str] = set()
 
+    def collect_constant_refs(node) -> None:
+        if node.type in {"constant", "scope_resolution"}:
+            raw = _ruby_const_full_name(node, source)
+            if raw:
+                owners.add(raw)
+            return
+        for child in node.children:
+            if child.is_named:
+                collect_constant_refs(child)
+
     def visit(node) -> None:
-        if node.type == "assignment":
+        if node.type in {"assignment", "operator_assignment"}:
             left = node.child_by_field_name("left")
+            if left is not None:
+                # Any write can change which superclass a constant reference
+                # denotes, including dynamic RHS and multiple assignment.
+                collect_constant_refs(left)
             right = node.child_by_field_name("right")
-            if (
-                left is not None
-                and left.type in {"constant", "scope_resolution"}
-                and right is not None
-                and right.type in {"constant", "scope_resolution"}
-            ):
-                raw = _ruby_const_full_name(left, source)
-                if raw:
-                    # Constant aliases can change which superclass an
-                    # unqualified reference denotes without changing its text.
-                    owners.add(raw)
+            if node.type == "assignment" and right is not None:
+                # Treat both ends of a potential constant alias as unsafe.  A
+                # later mutation through the alias affects the original owner.
+                collect_constant_refs(right)
         if node.type in {"class", "module"}:
             name = node.child_by_field_name("name")
             if name is not None and name.type == "scope_resolution":
@@ -3178,7 +3185,6 @@ def _ruby_external_method_owners(root_node, source: bytes) -> list[str]:
                 raw = _ruby_const_full_name(owner, source)
                 if raw:
                     owners.add(raw)
-                return
         if node.type == "call":
             receiver = node.child_by_field_name("receiver")
             method = node.child_by_field_name("method")
