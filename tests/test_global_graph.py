@@ -198,6 +198,44 @@ def test_global_add_two_repos_no_collision(tmp_path):
     assert G.number_of_nodes() == 2  # no silent merge
 
 
+# ── #3100: community offset and shared type linking parity with merge-graphs ──
+
+def test_global_add_offsets_community_ids_across_repos(tmp_path):
+    """merge-graphs already offsets each input's community ids into a shared
+    id space (#3014); global_add builds the same kind of store with the same
+    prefixer but kept the default (no) offset, so two repos both numbering
+    their own communities from 0 collided in the merged store -- worst of
+    all at id 0, which every repo starts numbering from."""
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+    G1 = _make_graph([
+        {"id": "a", "label": "A", "source_file": "a.py", "community": 0},
+        {"id": "b", "label": "B", "source_file": "b.py", "community": 1},
+    ])
+    G2 = _make_graph([
+        {"id": "c", "label": "C", "source_file": "c.py", "community": 0},
+        {"id": "d", "label": "D", "source_file": "d.py", "community": 1},
+    ])
+    _graph_to_json(G1, g1)
+    _graph_to_json(G2, g2)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add, _load_global_graph
+        global_add(g1, "repoA")
+        global_add(g2, "repoB")
+        G = _load_global_graph()
+
+    by_repo: dict[str, set[int]] = {}
+    for _, data in G.nodes(data=True):
+        by_repo.setdefault(data["repo"], set()).add(data["community"])
+    assert by_repo["repoA"].isdisjoint(by_repo["repoB"]), (
+        f"community ids collide across repos: {by_repo}"
+    )
+
+
 def test_global_remove(tmp_path):
     src_graph = tmp_path / "graph.json"
     G = _make_graph([{"id": "userservice", "label": "UserService", "source_file": "src/user.py"}])
