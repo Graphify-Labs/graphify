@@ -451,7 +451,7 @@ Replace INPUT_PATH with the actual path.
 
 ### Step 4.5 - Graph health check (read-only integrity gate)
 
-A non-destructive diagnostic on the extraction, before labeling. It surfaces edge collapse, dangling/missing endpoints, and self-loops — the silent-corruption modes of incremental updates and AST/LLM id mismatches. Read-only; never aborts.
+A non-destructive diagnostic on the extraction, before labeling. It surfaces edge collapse, dangling/missing endpoints, self-loops, schema errors, likely-reversed citation edges, and probable duplicate whole-file nodes (canonical-identity violations) — the silent-corruption modes of incremental updates and AST/LLM id mismatches. Read-only; never aborts.
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -470,10 +470,18 @@ flags = [f'{summary[k]} {label}' for k, label in (
     ('undirected_same_endpoint_collapsed_edges', 'collapsed (undirected) edges'),
 ) if summary.get(k, 0)]
 print('GRAPH HEALTH WARNING: ' + '; '.join(flags) + ' - graph may be incomplete/corrupt.' if flags else 'Graph health: OK (no dangling/missing/collapsed edges).')
+is_canonical = summary.get('canonical', True)
+issues_text = '; '.join(summary.get('canonical_issues', []))
+canonical_line = 'CANONICAL: ' + str(is_canonical)
+if not is_canonical:
+    canonical_line += ' - ' + issues_text
+print(canonical_line)
 "
 ```
 
 Substitute `IS_DIRECTED` and `INPUT_PATH` as in Step 4. If a `GRAPH HEALTH WARNING` prints, surface it in the final summary (do not abort — the graph is still usable, but the integrity issue must be visible, per the Honesty Rules).
+
+**If `CANONICAL: False`:** the graph has a structural defect stronger than a collapse warning — a schema error, a dangling/missing edge endpoint, a references/cites edge that is very likely drawn backwards, or two nodes that are probably the same real file under two different ids (see `duplicate_node_candidates` in the report). Say so plainly in the final summary, and while it stays non-canonical: treat god-node/centrality rankings, community/clustering results, and dependency-direction claims as **informational only**, not settled fact — a node's inflated apparent importance may be an artifact of exactly this kind of split, not real architectural coupling. Do not silently present god-node degree or "X is the most central node" as fact against a non-canonical graph; name the specific defect instead. `duplicate_node_candidates_soft` (label-prefix matches without the id-suffix pattern) does not by itself flip `canonical` to False — treat it as a lead worth a glance, not a proven defect.
 
 ### Step 5 - Label communities
 
