@@ -2194,6 +2194,31 @@ def _probe_python_module_candidate(candidate: Path) -> Path | None:
     return None
 
 
+def _resolved_or_self(path: Path) -> Path:
+    """`path` with symlinks resolved, or unchanged when it cannot be resolved.
+
+    A broken symlink or an unreadable parent must never abort import resolution.
+    """
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _is_within(candidate: Path, local_root: Path, root_key: Path) -> bool:
+    """True when `candidate` lies inside the scan root, in either spelling."""
+    try:
+        candidate.relative_to(local_root)
+        return True
+    except ValueError:
+        pass
+    try:
+        _resolved_or_self(candidate).relative_to(root_key)
+        return True
+    except ValueError:
+        return False
+
+
 def _resolve_python_module_path(module_name: str, current_path: Path, root: Path, level: int) -> Path | None:
     if level > 0:
         base = current_path.parent
@@ -2209,16 +2234,28 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
     # src/pkg/mod.py whether the scan root is the repo or src/ (#2072). Mirrors
     # the upward walk already used for Lua (_resolve_lua_import_target, #1075).
     rel = module_name.replace(".", "/")
-    hit = _probe_python_module_candidate(root / rel)
+    # extract() resolves `root`, but the caller's paths keep whatever spelling they
+    # were collected with. When the corpus is reached through a symlink (macOS
+    # /tmp -> /private/tmp, a symlinked workspace, a bind mount in CI) the two
+    # disagree, `anc.relative_to(root)` raises on the very first ancestor, the walk
+    # breaks, and a src-layout import silently resolves to nothing — the same corpus
+    # reached by its real path produces strictly more edges at an identical node
+    # count. Re-derive the root as the CALLER spelled it and probe with that, so
+    # every path this function returns matches the ids built elsewhere.
+    root_key = _resolved_or_self(root)
+    local_root = root
+    for anc in current_path.parents:
+        if _resolved_or_self(anc) == root_key:
+            local_root = anc
+            break
+    hit = _probe_python_module_candidate(local_root / rel)
     if hit is not None:
         return hit
     for anc in current_path.parents:
-        try:
-            anc.relative_to(root)
-        except ValueError:
+        if _resolved_or_self(anc) != root_key and not _is_within(anc, local_root, root_key):
             break  # left the scan root; stop walking up
-        if anc == root:
-            continue  # already probed root/rel above
+        if anc == local_root or _resolved_or_self(anc) == root_key:
+            continue  # already probed local_root/rel above
         # Only probe sys.path-root candidates — dirs that are NOT themselves part
         # of a package. Probing a package dir would resolve an absolute
         # `from helpers import x` to a sibling in the current package (Python-2
