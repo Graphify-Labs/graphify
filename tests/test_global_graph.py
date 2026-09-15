@@ -236,6 +236,37 @@ def test_global_add_offsets_community_ids_across_repos(tmp_path):
     )
 
 
+def test_global_add_links_shared_type_declarations(tmp_path):
+    """merge-graphs already links identically declared types across repos so
+    a traversal can cross the repo boundary (#3007); global_add never called
+    that pass, so an incrementally built store held zero same_type_as edges
+    no matter how many repos actually shared a type."""
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+    shared = {
+        "id": "contracttype", "label": "ContractType", "source_file": "models.cs",
+        "_callable_class": True, "metadata": {"namespace": "Acme.Contracts"},
+    }
+    G1 = _make_graph([shared])
+    G2 = _make_graph([shared])
+    _graph_to_json(G1, g1)
+    _graph_to_json(G2, g2)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add, _load_global_graph
+        first = global_add(g1, "repoA")
+        second = global_add(g2, "repoB")
+        G = _load_global_graph()
+
+    assert first["shared_type_links"] == 0  # nothing to link against yet
+    assert second["shared_type_links"] == 1
+    assert G.has_edge("repoA::contracttype", "repoB::contracttype")
+    assert G["repoA::contracttype"]["repoB::contracttype"]["relation"] == "same_type_as"
+
+
 def test_global_remove(tmp_path):
     src_graph = tmp_path / "graph.json"
     G = _make_graph([{"id": "userservice", "label": "UserService", "source_file": "src/user.py"}])
