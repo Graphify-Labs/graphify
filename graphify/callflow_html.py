@@ -478,8 +478,14 @@ def truncate_text(text: str, limit: int) -> str:
     return text[: max(0, limit - 3)].rstrip() + "..."
 
 
-def humanize_label(label: str, source_file: str = "") -> str:
-    """Convert graph labels into short labels people can scan in a diagram."""
+def humanize_label(label: str, source_file: str = "", compact_over: int = 28) -> str:
+    """Convert graph labels into short labels people can scan in a diagram.
+
+    ``compact_over`` is the length past which a snake_case name is reduced to
+    its last three words. It defaults to the historical 28 so Mermaid node
+    boxes keep their current width; callers that render into flowing HTML,
+    where width is not scarce, pass the full render width instead.
+    """
     label = str(label or "").strip()
     if not label:
         return Path(source_file).name if source_file else "Unknown"
@@ -487,10 +493,18 @@ def humanize_label(label: str, source_file: str = "") -> str:
         return label[1:]
     if label.endswith((".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".rb")):
         return Path(label).name
-    if "_" in label and " " not in label and len(label) > 28:
+    # Compaction drops *leading* words, which silently reverses meaning when the
+    # head carries a negation, and left no ellipsis to signal that anything had
+    # been removed:
+    #   api_list_non_ai_email_templates -> "ai email templates"
+    #   skip_company_content_too_short  -> "content too short"
+    # Both read as complete, correct identifiers of a different function. The
+    # leading ellipsis marks the result as truncated, matching what
+    # truncate_text already does at the other end.
+    if "_" in label and " " not in label and len(label) > compact_over:
         parts = [p for p in label.split("_") if p]
         if parts:
-            label = " ".join(parts[-3:])
+            label = "..." + " ".join(parts[-3:])
     return truncate_text(label, 42)
 
 
@@ -1195,7 +1209,9 @@ def node_display_name(node: dict | None, fallback: str = "") -> str:
     if not node:
         return str(fallback or "")
     label = str(node.get("label") or node.get("id") or fallback or "")
-    return humanize_label(label, node.get("source_file", ""))
+    # Table cells are flowing HTML, not fixed-width Mermaid boxes, so compact
+    # only what the 42-char render width will actually cut.
+    return humanize_label(label, node.get("source_file", ""), compact_over=42)
 
 
 def format_node_refs(node_ids: set, node_by_id: dict, lang: str, empty_text: str, limit: int = 3) -> str:
