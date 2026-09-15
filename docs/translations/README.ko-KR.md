@@ -248,9 +248,9 @@ graphify query "..." --graph path/to/graph.json
 
 | 코퍼스 | 파일 수 | 축소율 | 결과 |
 |--------|---------|--------|------|
-| Karpathy 리포지토리 + 논문 5편 + 이미지 4장 | 52 | **71.5x** | [`worked/karpathy-repos/`](worked/karpathy-repos/) |
-| graphify 소스 + Transformer 논문 | 4 | **5.4x** | [`worked/mixed-corpus/`](worked/mixed-corpus/) |
-| httpx (합성 Python 라이브러리) | 6 | ~1x | [`worked/httpx/`](worked/httpx/) |
+| Karpathy 리포지토리 + 논문 5편 + 이미지 4장 | 52 | **71.5x** | [`worked/karpathy-repos/`](../../worked/karpathy-repos/) |
+| graphify 소스 + Transformer 논문 | 4 | **5.4x** | [`worked/mixed-corpus/`](../../worked/mixed-corpus/) |
+| httpx (합성 Python 라이브러리) | 6 | ~1x | [`worked/httpx/`](../../worked/httpx/) |
 
 토큰 축소는 코퍼스 크기에 비례하여 확장됩니다. 6개 파일은 어차피 컨텍스트 윈도우에 들어가므로, 그래프의 가치는 압축이 아닌 구조적 명확성에 있습니다. 52개 파일(코드 + 논문 + 이미지)에서는 71배 이상을 달성합니다. 각 `worked/` 폴더에는 원본 입력 파일과 실제 출력(`GRAPH_REPORT.md`, `graph.json`)이 있어 직접 실행하여 수치를 검증할 수 있습니다.
 
@@ -277,6 +277,6 @@ graphify는 그래프 레이어입니다. 그 위에 [Penpax](https://safishamsi
 
 **추출 버그** - 입력 파일, 캐시 엔트리(`graphify-out/cache/`), 그리고 누락되거나 날조된 내용과 함께 이슈를 열어주세요.
 
-모듈 책임과 언어 추가 방법은 [ARCHITECTURE.md](ARCHITECTURE.md)를 참조하세요.
+모듈 책임과 언어 추가 방법은 [ARCHITECTURE.md](../../ARCHITECTURE.md)를 참조하세요.
 
 </details>
