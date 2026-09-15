@@ -677,13 +677,13 @@ def _run_cli() -> None:
         print("  claude uninstall        remove graphify section from CLAUDE.md + PreToolUse hook")
         print("  codebuddy install       write graphify section to CODEBUDDY.md + PreToolUse hook (CodeBuddy)")
         print("  codebuddy uninstall     remove graphify section from CODEBUDDY.md + PreToolUse hook")
-        print("  codex install           write graphify section to AGENTS.md (Codex)")
-        print("  codex uninstall         remove graphify section from AGENTS.md")
+        print("  codex install           copy skill + write graphify section to AGENTS.md (Codex)")
+        print("  codex uninstall         remove skill + graphify section from AGENTS.md")
         print(
-            "  opencode install        write graphify section to AGENTS.md + tool.execute.before plugin (OpenCode)"
+            "  opencode install        copy skill + write AGENTS.md + tool.execute.before plugin (OpenCode)"
         )
         print(
-            "  opencode uninstall      remove graphify section from AGENTS.md + plugin"
+            "  opencode uninstall      remove skill + AGENTS.md section + plugin"
         )
         print(
             "  kilo install            install native Kilo skill + command + AGENTS.md + .kilo plugin"
