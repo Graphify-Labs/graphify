@@ -3142,6 +3142,20 @@ def _ruby_external_method_owners(root_node, source: bytes) -> list[str]:
     owners: set[str] = set()
 
     def visit(node) -> None:
+        if node.type == "assignment":
+            left = node.child_by_field_name("left")
+            right = node.child_by_field_name("right")
+            if (
+                left is not None
+                and left.type in {"constant", "scope_resolution"}
+                and right is not None
+                and right.type in {"constant", "scope_resolution"}
+            ):
+                raw = _ruby_const_full_name(left, source)
+                if raw:
+                    # Constant aliases can change which superclass an
+                    # unqualified reference denotes without changing its text.
+                    owners.add(raw)
         if node.type in {"class", "module"}:
             name = node.child_by_field_name("name")
             if name is not None and name.type == "scope_resolution":
@@ -3164,7 +3178,7 @@ def _ruby_external_method_owners(root_node, source: bytes) -> list[str]:
                 raw = _ruby_const_full_name(owner, source)
                 if raw:
                     owners.add(raw)
-            return
+                return
         if node.type == "call":
             receiver = node.child_by_field_name("receiver")
             method = node.child_by_field_name("method")
@@ -3570,6 +3584,9 @@ def _extract_generic(
             if not name_node:
                 return
             class_name = _read_text(name_node, source)
+            ruby_absolute_declaration = (
+                config.ts_module == "tree_sitter_ruby" and class_name.startswith("::")
+            )
             # Ruby: fully qualify the module/class label with its enclosing
             # scope, splitting compact `Foo::Bar` names into segments so both
             # declaration styles converge on one `Foo::Bar` label (#2302).
@@ -3604,11 +3621,13 @@ def _extract_generic(
                     metadata["is_partial"] = True
             if config.ts_module == "tree_sitter_ruby":
                 ruby_body = _find_body(node, config)
-                if ruby_reopened or (
+                if ruby_absolute_declaration or ruby_reopened or (
                     ruby_body is not None
                     and _ruby_body_has_lookup_barrier(ruby_body, source)
                 ):
                     metadata = dict(metadata or {})
+                    if ruby_absolute_declaration:
+                        metadata["ruby_lookup_unsafe"] = True
                     if ruby_reopened:
                         metadata["ruby_reopened"] = True
                     if ruby_body is not None and _ruby_body_has_lookup_barrier(

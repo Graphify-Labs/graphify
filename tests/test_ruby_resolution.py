@@ -759,6 +759,27 @@ def test_inherited_constant_lookup_does_not_fall_back_past_lexical_owner(
     assert _only_call(graph)["confidence"] == "INFERRED"
 
 
+def test_inherited_call_stays_inferred_for_superclass_constant_alias(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :wrong; end\nend\n")
+    _write(
+        tmp_path,
+        "other.rb",
+        "class Other\n  class << self\n    attr_reader :helper\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "Base = Other\nclass Child < Base\n"
+        "  def self.call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
 def test_inherited_call_stays_inferred_under_enclosing_refinement(
     tmp_path: Path,
 ) -> None:
@@ -821,6 +842,27 @@ def test_inherited_call_stays_inferred_for_external_owner_eval(
     assert _only_call(graph)["confidence"] == "INFERRED"
 
 
+def test_external_owner_mutator_inside_singleton_class_stays_inferred(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "module Installer\n  class << self\n"
+        "    Child.define_singleton_method(:helper) { :child }\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
 def test_inherited_call_stays_inferred_for_compact_reopening(
     tmp_path: Path,
 ) -> None:
@@ -836,6 +878,27 @@ def test_inherited_call_stays_inferred_for_compact_reopening(
         "override.rb",
         "module Wrapper\n  class Namespace::Child\n"
         "    attr_reader :helper\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_absolute_class_declaration_inside_namespace_stays_inferred(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "module Wrapper\n  class ::Child < ::Base\n"
+        "    def call\n      helper()\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "class Child\n  attr_reader :helper\nend\n",
     )
 
     graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
