@@ -3595,6 +3595,40 @@ def test_incremental_ruby_inherited_call_matches_full_build(
     assert incremental_target.get("source_file") == target_file
 
 
+def test_incremental_ruby_unsafe_owner_survives_duplicate_file_labels(tmp_path):
+    """Qualified persisted labels must retain unchanged Ruby safety metadata."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    (corpus / "a").mkdir(parents=True)
+    (corpus / "b").mkdir()
+    (corpus / "base.rb").write_text(
+        "class Base\n  def self.helper; :base; end\nend\n", encoding="utf-8"
+    )
+    caller = corpus / "child.rb"
+    caller.write_text(
+        "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+        encoding="utf-8",
+    )
+    (corpus / "a" / "patch.rb").write_text(
+        "Child.instance_eval { define_singleton_method(:helper) { :child } }\n",
+        encoding="utf-8",
+    )
+    (corpus / "b" / "patch.rb").write_text("class Other; end\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    assert _3567_call(_2406_graph(corpus))[0].get("confidence") == "INFERRED"
+
+    caller.write_text(
+        "class Child < Base\n  def self.call\n    marker = 1\n    helper()\n  end\nend\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert _3567_call(_2406_graph(corpus))[0].get("confidence") == "INFERRED"
+
+
 # --- #2437 / #2438: member + indirect calls into unchanged files -------------
 # The #2406 resolution context now also carries the unchanged corpus's
 # contains/method edges (member-call resolvers, #2437) and the persisted

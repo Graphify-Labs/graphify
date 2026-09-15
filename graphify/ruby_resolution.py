@@ -22,8 +22,9 @@ disambiguation, so node ids and raw_call caller_nids are final.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
+
+from .build import _is_file_node_label
 
 
 def _key(label: str) -> str:
@@ -91,7 +92,7 @@ def resolve_ruby_member_calls(
         node
         for node in all_nodes
         if str(node.get("source_file", "")).endswith((".rb", ".rake"))
-        and node.get("label") == Path(str(node.get("source_file"))).name
+        and _is_file_node_label(node.get("label"), node.get("source_file"))
     ]
     ruby_context_complete = bool(ruby_file_nodes) and all(
         isinstance(node.get("metadata"), dict)
@@ -278,6 +279,8 @@ def resolve_ruby_member_calls(
     def _has_external_method_owner(label: str) -> bool:
         label_parts = tuple(part for part in label.split("::") if part)
         for raw_owner in external_method_owners:
+            if raw_owner == "*":
+                return True
             is_prefix = raw_owner.endswith("::*")
             owner_ref = raw_owner.removesuffix("::*") if is_prefix else raw_owner
             owner_parts = tuple(

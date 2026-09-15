@@ -3586,7 +3586,14 @@ def _extract_generic(
         external_owners = _ruby_external_method_owners(root, source)
         if external_owners:
             file_metadata["ruby_external_method_owners"] = external_owners
-        file_node["metadata"] = sanitize_metadata(file_metadata)
+        sanitized_metadata = sanitize_metadata(file_metadata)
+        sanitized_owners = sanitized_metadata.get("ruby_external_method_owners")
+        if isinstance(sanitized_owners, list) and len(sanitized_owners) < len(
+            external_owners
+        ):
+            # A truncated safety set cannot prove any inherited owner safe.
+            sanitized_metadata["ruby_external_method_owners"] = ["*"]
+        file_node["metadata"] = sanitized_metadata
 
     def walk(node, parent_class_nid: str | None = None) -> None:
         nonlocal ruby_singleton_context_depth
