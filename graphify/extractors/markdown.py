@@ -6,6 +6,7 @@ import os
 import unicodedata
 
 from pathlib import Path
+from graphify.detect import CODE_EXTENSIONS
 from graphify.extractors.base import _file_stem, _make_id
 from graphify.security import sanitize_metadata
 
@@ -17,6 +18,22 @@ _MD_REF_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?')
 _MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]')
 
 _MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
+
+# Inline code spans, single or double backtick delimited. Fenced blocks are
+# skipped before this runs, so a span here is prose citing a symbol by name.
+_MD_CODE_SPAN_RE = re.compile(r'(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)')
+
+# The two mention grammars a code span can carry. A path-qualified mention
+# (``src/pkg/mod.py::Widget::render``) names the defining file and a
+# ``::``-separated symbol chain, exactly as pytest node ids and cite-lint
+# citations do. A bare mention (``Widget``, ``render()``, ``pkg.Widget``) names
+# a symbol with no file evidence, so it resolves only on a unique match.
+_MD_PATH_MENTION_RE = re.compile(
+    r'^([A-Za-z0-9_./\-]+\.[A-Za-z0-9]+)::([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)(?:\(\))?$'
+)
+_MD_BARE_MENTION_RE = re.compile(
+    r'^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\(\))?$'
+)
 
 # A YAML frontmatter block is only frontmatter when the opening `---` is the
 # very first line of the file. A `---` further down is a horizontal rule and
@@ -235,6 +252,33 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
                     return Path(os.path.normpath(str(hit)))
     return resolved
 
+def _code_span_mention(span: str) -> "tuple[str | None, list[str]] | None":
+    """Classify one inline code span as a symbol mention, or None.
+
+    Returns ``(path, names)``: ``path`` is the cited file for the
+    ``path::Name`` form and None for a bare or dotted mention; ``names`` is the
+    symbol chain, outermost first. A trailing ``()`` is dropped from the last
+    name so ``render()`` and ``render`` cite the same symbol. Spans that read
+    as a file (``setup.py``), a shell command, an expression or prose are not
+    mentions and yield None.
+    """
+    text = span.strip()
+    if not text or " " in text:
+        return None
+    m = _MD_PATH_MENTION_RE.match(text)
+    if m:
+        return m.group(1), m.group(2).split("::")
+    m = _MD_BARE_MENTION_RE.match(text)
+    if not m:
+        return None
+    if "." in text:
+        # ``a.b.Name`` is a qualified symbol; ``setup.py`` is a file. A dotted
+        # span whose last segment is a code extension is the latter.
+        if "." + m.group(1) in CODE_EXTENSIONS:
+            return None
+    return None, [m.group(1)]
+
+
 def extract_markdown(path: Path) -> dict:
     """Extract structural nodes and edges from a Markdown file.
 
@@ -253,7 +297,6 @@ def extract_markdown(path: Path) -> dict:
     Produces edges for:
     - file --contains--> heading
     - parent heading --contains--> child heading (nesting by level)
-    - heading --references--> other node (when backtick `Name` matches a known pattern)
     - file --references--> linked document, for inline ``[text](./other.md)``,
       reference-style ``[label]: ./other.md`` and ``[[wikilink]]`` links, so a
       hub doc (``index.md`` / ``table-of-contents.md``) becomes a real hub node
@@ -261,6 +304,19 @@ def extract_markdown(path: Path) -> dict:
       from the resolved target path with the same recipe as the target file's
       own node, so the edge merges into that node (no ghost node). External
       URLs, in-page anchors, images and non-document targets are skipped.
+
+    Inline code spans on heading and body lines (backtick-quoted ``Widget``,
+    ``render()``, ``pkg.Widget`` or ``src/mod.py::Widget::render``) are
+    collected as ``raw_calls`` tagged ``language: "markdown"`` rather than
+    edges: the symbol they cite lives in another file, so the match is made
+    once every file is extracted and ids are final, by the
+    ``markdown_mentions`` language resolver (see
+    ``graphify.markdown_resolution``). That pass emits
+    heading --references--> code symbol (page --references--> symbol for a
+    mention above the first heading): EXTRACTED for the path-qualified form,
+    INFERRED for a bare name that matches exactly one code symbol. The shared
+    cross-file call pass skips these raw_calls, so a mention never becomes a
+    ``calls`` edge.
 
     Fenced code blocks (``` ... ```) are skipped during parsing so their
     contents don't get treated as headings, but no node is emitted for
@@ -283,7 +339,33 @@ def extract_markdown(path: Path) -> dict:
     str_path = str(path)
     nodes: list[dict] = []
     edges: list[dict] = []
+    raw_calls: list[dict] = []
     seen_ids: set[str] = set()
+    seen_mentions: set[tuple[str, "str | None", tuple[str, ...]]] = set()
+
+    def add_mention(caller_nid: str, span: str, line: int) -> None:
+        mention = _code_span_mention(span)
+        if mention is None:
+            return
+        cited_path, names = mention
+        key = (caller_nid, cited_path, tuple(names))
+        if key in seen_mentions:
+            return
+        seen_mentions.add(key)
+        raw_call = {
+            "caller_nid": caller_nid,
+            "callee": names[-1],
+            "is_member_call": False,
+            "language": "markdown",
+            "context": span.strip(),
+            "source_file": str_path,
+            "source_location": f"L{line}",
+        }
+        if cited_path is not None:
+            raw_call["path"] = cited_path
+        if len(names) > 1:
+            raw_call["qualifiers"] = names[:-1]
+        raw_calls.append(raw_call)
 
     def add_node(nid: str, label: str, line: int, file_type: str = "document",
                  node_kind: str = "heading", extra: "dict | None" = None) -> None:
@@ -403,6 +485,16 @@ def extract_markdown(path: Path) -> dict:
             add_edge(parent, h_nid, "contains", line_num)
 
             heading_stack.append((level, h_nid))
+            # A code span in the heading itself is that heading's mention.
+            for m in _MD_CODE_SPAN_RE.finditer(title):
+                add_mention(h_nid, m.group(2), line_num)
             continue
 
-    return {"nodes": nodes, "edges": edges, "input_tokens": 0, "output_tokens": 0}
+        # Body prose: a code span cites a symbol on behalf of the enclosing
+        # heading (the page when the text precedes the first heading).
+        owner = heading_stack[-1][1] if heading_stack else file_nid
+        for m in _MD_CODE_SPAN_RE.finditer(line_text):
+            add_mention(owner, m.group(2), line_num)
+
+    return {"nodes": nodes, "edges": edges, "raw_calls": raw_calls,
+            "input_tokens": 0, "output_tokens": 0}

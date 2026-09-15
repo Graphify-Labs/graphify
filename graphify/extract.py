@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import textwrap
+from bisect import bisect_right
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
@@ -24,6 +25,7 @@ from .resolver_registry import (
 from .ruby_resolution import resolve_ruby_member_calls
 from .csharp_dispatch import resolve_csharp_interface_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
+from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
 from graphify.extractors.base import (  # noqa: F401
@@ -56,7 +58,7 @@ from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
-from graphify.extractors.terraform import extract_terraform  # noqa: F401
+from graphify.extractors.terraform import extract_terraform, prepare_terraform, resolve_terraform_modules  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
@@ -71,6 +73,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _JS_INDEX_FILES,
     _JS_PRIMITIVE_TYPES,
     _JS_RESOLVE_EXTS,
+    _PACKAGE_IMPORTS_CACHE,
     _TSCONFIG_ALIAS_CACHE,
     _TSCONFIG_BASEURL_CACHE,
     _VUE_SCRIPT_LANG_RE,
@@ -78,6 +81,8 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _WORKSPACE_MANIFEST_NAMES,
     _apply_symbol_resolution_facts,
     _augment_symbol_resolution_edges,
+    _cached_realpath,
+    _cached_source_key,
     _collect_js_symbol_resolution_facts,
     _collect_python_symbol_resolution_facts,
     _contained_in_package,
@@ -262,6 +267,111 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
             tgt = e.get("target")
             if tgt in alias_map:
                 e["target"] = alias_map[tgt]
+
+
+def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
+    """Repoint Python sibling-import edges to the real file node in directories
+    without an __init__.py (#3430).
+
+    When a Python file below the scan root lives in a non-package directory
+    (no __init__.py in its immediate parent), plain imports of same-directory
+    modules (e.g. `scripts/main.py: import greeter`) target a bare name (`greeter`),
+    while the real file node is scan-root-relative (`scripts_greeter`). Because
+    the directory is not a package, `_repoint_python_package_imports` skips it
+    (levels == 0), leaving the edge dangling and causing downstream member calls
+    (`greeter.greet()`) to be dropped.
+
+    This pass is strictly importer-directory-local:
+    - Only applies when the importing file's parent directory has no __init__.py.
+    - Resolves only to unambiguous same-directory candidate modules in the scanned corpus.
+    - Never builds a global alias map and never searches outside the importer's directory.
+    - Preserves local aliases (e.g. `import greeter as g`).
+    """
+    try:
+        root = Path(root).resolve()
+    except OSError:
+        root = Path(root)
+
+    node_ids = {n.get("id") for n in all_nodes if isinstance(n, dict)}
+
+    # Index corpus modules by directory for non-package directories only.
+    # dir_path -> {module_name_id: set_of_file_node_ids}
+    dir_siblings: dict[Path, dict[str, set[str]]] = {}
+    for p in paths:
+        if p.suffix.lower() not in (".py", ".pyi"):
+            continue
+        try:
+            p_res = Path(p).resolve()
+            rel = p_res.relative_to(root)
+        except (ValueError, OSError):
+            continue
+
+        file_node = _file_node_id(rel)
+        if file_node not in node_ids:
+            continue
+
+        if p_res.name in ("__init__.py", "__init__.pyi"):
+            # Sibling package directory inside parent_dir (parent_dir / subpkg / __init__.py)
+            pkg_dir = p_res.parent
+            parent_dir = pkg_dir.parent
+            if not (parent_dir / "__init__.py").is_file() and not (parent_dir / "__init__.pyi").is_file():
+                mod_key = _make_id(pkg_dir.name)
+                dir_siblings.setdefault(parent_dir, {}).setdefault(mod_key, set()).add(file_node)
+            continue
+
+        d = p_res.parent
+        # PEP 328 guard: if the directory is a package, implicit relative imports
+        # are forbidden in Python 3. Do not index packages as loose sibling directories.
+        if (d / "__init__.py").is_file() or (d / "__init__.pyi").is_file():
+            continue
+
+        mod_key = _make_id(p_res.stem)
+        dir_siblings.setdefault(d, {}).setdefault(mod_key, set()).add(file_node)
+
+    # Require an unambiguous single candidate per module name in that directory.
+    dir_alias_map: dict[Path, dict[str, str]] = {
+        d: {
+            mod: next(iter(fns))
+            for mod, fns in mod_map.items()
+            if len(fns) == 1
+        }
+        for d, mod_map in dir_siblings.items()
+    }
+
+    if not dir_alias_map:
+        return
+
+    for e in all_edges:
+        if not (
+            isinstance(e, dict)
+            and e.get("relation") in ("imports", "imports_from")
+            and str(e.get("source_file", "")).lower().endswith((".py", ".pyi"))
+        ):
+            continue
+
+        sf = e.get("source_file")
+        if not sf:
+            continue
+        try:
+            sf_path = Path(sf)
+            if not sf_path.is_absolute():
+                sf_path = (root / sf_path).resolve()
+            else:
+                sf_path = sf_path.resolve()
+        except OSError:
+            continue
+
+        imp_dir = sf_path.parent
+        aliases = dir_alias_map.get(imp_dir)
+        if not aliases:
+            continue
+
+        tgt = e.get("target")
+        if tgt in aliases:
+            repointed = aliases[tgt]
+            if repointed != e.get("source"):
+                e["target"] = repointed
+
 
 
 SEMANTIC_RELATIONS = frozenset({
@@ -726,23 +836,46 @@ def _import_scala(node, source: bytes, file_nid: str, stem: str, edges: list, st
 
 
 def _import_php(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
+    # `node` is a namespace_use_clause: `Client` or `Client as HttpClient`,
+    # whose children are the qualified/bare name, then (if present) `as`
+    # and the alias name, in that order. An aliased clause used to always
+    # target the bare imported name ("Client"), ignoring the alias
+    # entirely -- so two files importing the SAME external class under
+    # DIFFERENT local aliases (a real pattern: disambiguating two
+    # same-named classes from different namespaces) produced two
+    # DIFFERENT stub targets for one class, and _resolve_php_type_references
+    # (which resolves a stub via the file's own alias -> FQN map, keyed by
+    # the alias when the import has one) could never find this one under
+    # its bare-name-derived key, leaving the edge stuck on an unresolved,
+    # never-repointed stub (#3421). The alias, when present, is also what
+    # the rest of the file actually references (a parameter typed
+    # `HttpClient`, not `Client`), so preferring it here keeps this edge's
+    # target consistent with those reference edges too.
+    saw_as = False
+    module_name = None
     for child in node.children:
+        if child.type == "as":
+            saw_as = True
+            continue
         if child.type in ("qualified_name", "name", "identifier"):
-            raw = _read_text(child, source)
-            module_name = raw.split("\\")[-1].strip()
-            if module_name:
-                tgt_nid = _make_id(module_name)
-                edges.append({
-                    "source": file_nid,
-                    "target": tgt_nid,
-                    "relation": "imports",
-                    "context": "import",
-                    "confidence": "EXTRACTED",
-                    "source_file": str_path,
-                    "source_location": f"L{node.start_point[0] + 1}",
-                    "weight": 1.0,
-                })
-            break
+            bare = _read_text(child, source).split("\\")[-1].strip()
+            if saw_as:
+                module_name = bare
+                break  # the alias name always comes last; nothing more to see
+            if module_name is None:
+                module_name = bare
+    if module_name:
+        tgt_nid = _make_id(module_name)
+        edges.append({
+            "source": file_nid,
+            "target": tgt_nid,
+            "relation": "imports",
+            "context": "import",
+            "confidence": "EXTRACTED",
+            "source_file": str_path,
+            "source_location": f"L{node.start_point[0] + 1}",
+            "weight": 1.0,
+        })
 
 
 # ── C/C++ function name helpers ───────────────────────────────────────────────
@@ -1205,9 +1338,22 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
     file_nid = _make_id(str(path))
 
     def _get_docstring(body_node) -> tuple[str, int] | None:
+        """A docstring is the first STATEMENT in a module/class/function body.
+
+        A leading `comment` node — the shebang line essentially every
+        executable script starts with, a coding-declaration or license
+        header, or any ordinary comment — is not a statement: tree-sitter
+        still parses it as a sibling child of the body, but Python's own
+        docstring rule skips right over it. The old unconditional `break`
+        after the first loop iteration stopped at that comment instead of
+        looking past it, so a module docstring behind a shebang (or any
+        leading comment) was silently never found (#3312).
+        """
         if not body_node:
             return None
         for child in body_node.children:
+            if child.type == "comment":
+                continue
             if child.type == "expression_statement":
                 for sub in child.children:
                     if sub.type in ("string", "concatenated_string"):
@@ -1303,33 +1449,237 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
 _TS_IMPORT_CALL_RE = re.compile(
     rb"\bimport\s*\(\s*['\"][^'\"\r\n]+['\"]\s*\)"
 )
-_TS_IMPORT_TYPE_CALL_RE = re.compile(
-    rb"<((?:[^;{}]*?\bimport\s*\([^()]+\)[^;{}]*?)+)>(?=\s*\()"
-)
 
 
-def _normalize_ts_import_types(source: bytes) -> bytes | None:
-    """Rewrite TypeScript `import(...)` type arguments in call expressions
-    to standard type identifiers of identical byte length (#3154).
+def _ts_import_is_code(root: Any, start: int) -> bool:
+    """Return whether an import-call match starts in executable source.
 
-    Preserves byte length, newlines, and source offsets so all downstream node
-    source_location metadata remains 100% accurate.
+    Regex matching is only used to locate a literal specifier; comments,
+    strings, regular expressions, and template text must never be fed into the
+    structural masking pass.  A template substitution is executable again, so
+    it is the one exception to the ``template_string`` guard.
     """
-    if rb"import(" not in source and rb"import (" not in source:
+    node = root.descendant_for_byte_range(start, start + 1)
+    if node is None:
+        # A malformed tree can leave a byte range uncovered. Treat it as code
+        # and let the structural pass decide whether it belongs to a type list;
+        # never turn an uncertain lexical result into a crash.
+        return True
+    in_template_substitution = False
+    while node is not None:
+        if node.type == "comment" or node.type in ("string", "regex", "regex_pattern"):
+            return False
+        if node.type == "template_substitution":
+            in_template_substitution = True
+        elif node.type == "template_string" and not in_template_substitution:
+            return False
+        node = node.parent
+    return True
+
+
+def _ts_type_argument_ranges(root: Any, *, call_only: bool) -> list[tuple[int, int]]:
+    """Collect byte ranges tree-sitter already parsed as type arguments."""
+    ranges: list[tuple[int, int]] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "type_arguments":
+            parent = node.parent
+            if not call_only or (
+                parent is not None and parent.type in ("call_expression", "new_expression")
+            ):
+                ranges.append((node.start_byte, node.end_byte))
+        stack.extend(node.children)
+    return ranges
+
+
+# Sorted type-argument ranges prepared for lookup: (starts, spans, prefix_max_end).
+# See _ts_build_range_index. A real alias, not a string: quoting the right-hand
+# side would make this a `str` value, which type checkers reject as a type.
+_TsRangeIndex = tuple[list[int], list[tuple[int, int]], list[int]]
+
+
+def _ts_ranges_containing(
+    ranges: _TsRangeIndex, offset: int
+) -> list[tuple[int, int]]:
+    """Return the ranges in ``ranges`` that contain ``offset``.
+
+    Scanning the full range list for every match made
+    :func:`_normalize_ts_import_types` O(matches x ranges); on a large monorepo
+    file with thousands of generic calls and thousands of ``import(...)`` types
+    that quadratic blowup pinned a worker at 100% CPU with no output and no file
+    I/O, so extraction never finished (#3359).
+
+    Every range containing ``offset`` must start at or before it, so binary-search
+    to the last such start and walk left. A range that ends before ``offset`` is
+    not itself a hit but must not stop the walk -- a closed sibling can sit inside
+    an enclosing range that does contain ``offset``. The index's running maximum of
+    ends (``prefix_max_end``) gives the correct stop: once no range at or before
+    this position reaches past ``offset``, none of the remaining ones can.
+    """
+    starts, spans, prefix_max_end = ranges
+    hits: list[tuple[int, int]] = []
+    index = bisect_right(starts, offset) - 1
+    while index >= 0 and prefix_max_end[index] > offset:
+        start, end = spans[index]
+        if end > offset:
+            hits.append((start, end))
+        index -= 1
+    hits.reverse()
+    return hits
+
+
+def _ts_build_range_index(root: Any, *, call_only: bool) -> _TsRangeIndex:
+    """Index :func:`_ts_type_argument_ranges` for :func:`_ts_ranges_containing`.
+
+    Returns the ranges sorted by start, split into a bare ``starts`` list for
+    :func:`bisect_right`, plus a prefix-maximum of ``end`` values so a lookup can
+    tell when no earlier range can still reach a given offset.
+    """
+    spans = sorted(_ts_type_argument_ranges(root, call_only=call_only))
+    starts = [start for start, _ in spans]
+    prefix_max_end: list[int] = []
+    running = -1
+    for _, end in spans:
+        running = max(running, end)
+        prefix_max_end.append(running)
+    return starts, spans, prefix_max_end
+
+
+def _ts_error_nodes(root: Any) -> list[Any]:
+    """Return parser error nodes without depending on a grammar's error name."""
+    errors: list[Any] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "ERROR" or node.is_error:
+            errors.append(node)
+        stack.extend(node.children)
+    return errors
+
+
+def _ts_mask_candidate_is_malformed(
+    original_root: Any,
+    masked_range: tuple[int, int],
+    errors: list[Any],
+) -> bool:
+    """Tell whether a masked generic is backed by an actual parse failure.
+
+    A valid runtime comparison can have the same token shape as a generic call
+    after the import is replaced (``a < import("x") > (a)``).  Tree-sitter
+    exposes the opening ``<`` as a binary operator in the original tree for
+    both forms, so the structural second pass alone cannot distinguish them.
+    Only repair that ambiguity when the original parser has an error adjacent
+    to the candidate's closing angle; that is the signature of the known
+    ``import(...)``-type grammar failure.  Valid comparisons, including ones
+    nested in another call's arguments, remain byte-for-byte untouched.
+    """
+    start, end = masked_range
+    opener = original_root.descendant_for_byte_range(start, start + 1)
+    if opener is None or opener.type != "<":
+        # A grammar that already gives us a structural type_arguments node is
+        # safe to normalize; no binary/comparison ambiguity is present.
+        return True
+    if opener.parent is None or opener.parent.type != "binary_expression":
+        return True
+
+    # A malformed generic's ERROR starts at the closing `>` (or at the call
+    # punctuation immediately following it). Keep this window deliberately
+    # narrow so an unrelated syntax error elsewhere cannot authorize masking a
+    # valid runtime comparison.
+    for error in errors:
+        if error.start_byte <= end + 2 and error.end_byte >= end - 1:
+            return True
+    return False
+
+
+def _normalize_ts_import_types(source: bytes, *, tsx: bool = False) -> bytes | None:
+    """Rewrite only syntactic TypeScript ``import(...)`` type arguments.
+
+    The first implementation of #3154 used a ``<...>`` regular expression.
+    In semicolon-less code that expression could span two comparison
+    operators, so a *runtime* dynamic import was blanked before parsing.  A
+    temporary, byte-preserving mask lets tree-sitter identify the actual
+    ``type_arguments`` node without asking it to parse the known-invalid
+    ``import(...)`` call-site form.  We then rewrite only placeholders inside
+    call/new-expression type arguments.  Keeping every replacement the same
+    byte length preserves source offsets and line locations.
+    """
+    raw_matches = list(_TS_IMPORT_CALL_RE.finditer(source))
+    if not raw_matches:
         return None
 
-    def repl_type_args(m: "re.Match[bytes]") -> bytes:
-        type_arg_content = m.group(1)
+    # tree-sitter is already a required TypeScript dependency for extraction.
+    # If it cannot be loaded here, leave the source untouched; the normal AST
+    # path will report its own dependency/parser error rather than applying an
+    # unsafe textual guess.
+    try:
+        import tree_sitter_typescript as ts_typescript
+        from tree_sitter import Language, Parser
 
-        def repl_import(im: "re.Match[bytes]") -> bytes:
-            matched = im.group(0)
-            return b"T" + re.sub(rb"[^\r\n]", b" ", matched[1:])
+        language_factory = (
+            ts_typescript.language_tsx if tsx else ts_typescript.language_typescript
+        )
+        parser = Parser(Language(language_factory()))
+        original_root = parser.parse(source).root_node
+    except Exception:
+        return None
 
-        new_content = _TS_IMPORT_CALL_RE.sub(repl_import, type_arg_content)
-        return b"<" + new_content + b">"
+    matches = [
+        match for match in raw_matches
+        if _ts_import_is_code(original_root, match.start())
+    ]
+    if not matches:
+        return None
 
-    norm = _TS_IMPORT_TYPE_CALL_RE.sub(repl_type_args, source)
-    return norm if norm != source else None
+    # If the original tree already has a type_arguments node around a match,
+    # its syntax is parseable as written. This includes the grammar's deliberate
+    # comparison-vs-generic ambiguity (`a < b, import("...") > (d)`); retaining
+    # that source is essential because it is a runtime expression, not a type.
+    original_type_ranges = _ts_build_range_index(original_root, call_only=False)
+    matches = [
+        match for match in matches
+        if not _ts_ranges_containing(original_type_ranges, match.start())
+    ]
+    if not matches:
+        return None
+
+    def placeholder(match: "re.Match[bytes]") -> bytes:
+        # Keep CR/LF bytes intact. The first byte becomes an ordinary type
+        # identifier and the remaining bytes are padding, so every downstream
+        # byte offset remains identical to the user's source.
+        matched = match.group(0)
+        return b"T" + re.sub(rb"[^\r\n]", b" ", matched[1:])
+
+    masked = bytearray(source)
+    for match in matches:
+        masked[match.start():match.end()] = placeholder(match)
+
+    root = parser.parse(bytes(masked)).root_node
+
+    # Only call/new-expression type arguments need this workaround. Ordinary
+    # type annotations already parse ``import(...)`` correctly and should keep
+    # their native AST shape. A range from an outer call's type_arguments also
+    # covers nested generic arguments.
+    type_argument_ranges = _ts_build_range_index(root, call_only=True)
+    errors = _ts_error_nodes(original_root)
+
+    # `type_argument_ranges` is an index tuple, so test the spans it holds --
+    # the tuple itself is always truthy.
+    if not type_argument_ranges[1]:
+        return None
+
+    norm = bytearray(source)
+    changed = False
+    for match in matches:
+        containing_ranges = _ts_ranges_containing(type_argument_ranges, match.start())
+        if containing_ranges and any(
+            _ts_mask_candidate_is_malformed(original_root, candidate, errors)
+            for candidate in containing_ranges
+        ):
+            norm[match.start():match.end()] = placeholder(match)
+            changed = True
+    return bytes(norm) if changed else None
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -1356,7 +1706,7 @@ def extract_js(path: Path) -> dict:
     if is_ts:
         try:
             source = path.read_bytes()
-            source_override = _normalize_ts_import_types(source)
+            source_override = _normalize_ts_import_types(source, tsx=suffix == ".tsx")
         except OSError:
             pass
     result = _extract_generic(path, config, source_override=source_override)
@@ -1394,7 +1744,7 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
     try:
         import re as _re
         src = path.read_text(encoding="utf-8", errors="replace")
-        if "import(" not in src:  # cheap bail — most files have none
+        if not _re.search(r"(?<!\w)import\s*\(", src):  # cheap bail — most files have none
             return
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         file_node_id = _make_id(str(path))
@@ -1436,7 +1786,7 @@ def _rescue_js_dynamic_imports(path: Path, result: dict) -> None:
         # handling: a literal `import(`./x`)` resolves, `${`-substituted ones
         # are excluded (no `$` in the class) as statically unresolvable.
         for m in _re.finditer(
-            r"""(?<!\w)import\(\s*(?:'([^'\n]+)'|"([^"\n]+)"|`([^`$\n]+)`)\s*\)""",
+            r"""(?<!\w)import\s*\(\s*(?:'([^'\n]+)'|"([^"\n]+)"|`([^`$\n]+)`)\s*\)""",
             src,
         ):
             raw = m.group(1) or m.group(2) or m.group(3)
@@ -1617,6 +1967,11 @@ def _resolve_rescued_specifier(
         resolved_file = (resolved_alias if resolved_alias is not None
                          and resolved_alias.is_file() else None)
         return _make_id(str(resolved_alias)), str(resolved_alias), resolved_file
+    # Unmapped `@/` project-root convention fallback (#3357).
+    if raw.startswith("@/"):
+        resolved_unmapped = _resolve_js_module_path(raw, path.parent)
+        if resolved_unmapped is not None and resolved_unmapped.is_file():
+            return _make_id(str(resolved_unmapped)), str(resolved_unmapped), resolved_unmapped
     # Bare/scoped import (node_modules) - use last segment;
     # build_from_json drops as external if no matching node exists.
     module_name = raw.split("/")[-1]
@@ -1826,7 +2181,9 @@ def extract_vue(path: Path) -> dict:
         config = _TS_CONFIG
     masked_bytes = masked.encode("utf-8")
     if config in (_TS_CONFIG, _TSX_CONFIG):
-        masked_bytes = _normalize_ts_import_types(masked_bytes) or masked_bytes
+        masked_bytes = _normalize_ts_import_types(
+            masked_bytes, tsx=config is _TSX_CONFIG
+        ) or masked_bytes
 
     result = _extract_generic(path, config, source_override=masked_bytes)
 
@@ -2861,6 +3218,52 @@ def _merge_csharp_partial_class_nodes(
                 rc["caller_nid"] = remap[cn]
 
 
+UNRESOLVED_CALLS_KEY = "unresolved_calls"
+_MAX_PARKED_CALLS_PER_NODE = 64
+
+
+def _park_unresolved_member_call(
+    caller_node: dict | None,
+    callee: str,
+    receiver_type: str,
+    lang: str,
+    raw_call: dict,
+) -> None:
+    """Keep a member call whose receiver type is declared nowhere in this corpus.
+
+    A single-repo build can only bind ``obj.method()`` when the receiver's type is
+    declared in the same build, so a call into another repository is dropped with
+    the receiver type already in hand and nothing about it reaches ``graph.json``
+    — the one artifact ``merge-graphs`` and ``global add`` consume. Parking the
+    pair on the caller node lets a merged graph finish the edge (#3152).
+
+    The payload carries names only, never node ids: ids are rewritten by the
+    remaps and again by the repo prefixing, and a stale id inside metadata would
+    fail silently (#3150 was that bug). Names survive every rewrite.
+    """
+    if not caller_node or not callee or not receiver_type:
+        return
+    metadata = caller_node.setdefault("metadata", {})
+    if not isinstance(metadata, dict):
+        return
+    parked = metadata.setdefault(UNRESOLVED_CALLS_KEY, [])
+    if not isinstance(parked, list) or len(parked) >= _MAX_PARKED_CALLS_PER_NODE:
+        return
+    callee, receiver_type = str(callee), str(receiver_type)
+    for previous in parked:
+        if (
+            isinstance(previous, dict)
+            and previous.get("callee") == callee
+            and previous.get("receiver_type") == receiver_type
+        ):
+            return
+    entry = {"callee": callee, "receiver_type": receiver_type, "lang": lang}
+    location = raw_call.get("source_location")
+    if location:
+        entry["line"] = str(location)
+    parked.append(entry)
+
+
 def _resolve_swift_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -2977,7 +3380,8 @@ def _resolve_swift_member_calls(
             continue
         receiver = rc.get("receiver")
         callee = rc.get("callee")
-        if not receiver or not callee:
+        caller = rc.get("caller_nid")
+        if not receiver or not callee or not caller:
             continue
         # Determine the receiver's type. An upper-cased receiver is itself a type
         # (Type.staticMethod(), Singleton.shared.x()); otherwise look it up in the
@@ -2997,12 +3401,20 @@ def _resolve_swift_member_calls(
         if type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
         type_defs = type_def_nids.get(_key(type_name), [])
-        if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
+        if not type_defs:
+            # Declared nowhere here — in a multi-repo setup that usually means "in
+            # a repo this build does not contain", so park it for the merge
+            # (#3152). This resolver shares `all_raw_calls` with every other
+            # language and Swift raw_calls carry no `lang` tag, so the parked
+            # entry's language comes from the declaring file's suffix.
+            if str(rc.get("source_file", "")).lower().endswith(".swift"):
+                _park_unresolved_member_call(
+                    node_by_id.get(caller), callee, type_name, "swift", rc,
+                )
+            continue
+        if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
             continue
         type_nid = type_defs[0]
-        caller = rc.get("caller_nid")
-        if not caller:
-            continue
         method_nid = method_index.get((type_nid, _key(callee)))
         target = method_nid or type_nid
         relation = "calls" if method_nid else "references"
@@ -3410,7 +3822,17 @@ def _resolve_cpp_member_calls(
         elif receiver[:1].isupper():
             # Foo::bar(): the type is named explicitly in source.
             type_defs = type_def_nids.get(_key(receiver), [])
-            if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
+            if not type_defs:
+                # Declared nowhere here, which in a multi-repo setup usually means
+                # "in a repo this build does not contain" (#3152). `Foo::bar()` is
+                # also the shape of a namespace-qualified free function, so the
+                # merge side's guards do the deciding: it acts only when exactly
+                # one other repo declares a `Foo` owning exactly one `bar`.
+                _park_unresolved_member_call(
+                    node_by_id.get(caller), callee, receiver, "cpp", rc,
+                )
+                continue
+            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
                 continue
             type_nid = type_defs[0]
             type_qualified = True
@@ -3420,7 +3842,12 @@ def _resolve_cpp_member_calls(
             if not type_name:
                 continue
             type_defs = type_def_nids.get(_key(type_name), [])
-            if len(type_defs) != 1:  # ambiguous or absent -> bail (god-node guard)
+            if not type_defs:
+                _park_unresolved_member_call(
+                    node_by_id.get(caller), callee, type_name, "cpp", rc,
+                )
+                continue
+            if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
                 continue
             type_nid = type_defs[0]
             type_qualified = False
@@ -3584,6 +4011,18 @@ def _resolve_csharp_member_calls(
         type_defs = type_def_nids.get(_key(type_name), [])
         return type_defs[0] if len(type_defs) == 1 else None
 
+    def _park_if_absent(type_name: str | None, caller_node: dict | None, rc: dict) -> None:
+        """Park a call whose receiver type is declared nowhere in this corpus (#3152).
+
+        ``_resolve_type_name_nid`` collapses "absent", "ambiguous" and "scoping was
+        decisive" into one ``None``, and only the first is a cross-repo candidate,
+        so re-check the bare-name index instead of trusting the ``None``.
+        """
+        if type_name and not type_def_nids.get(_key(type_name)):
+            _park_unresolved_member_call(
+                caller_node, rc.get("callee"), type_name, "csharp", rc,
+            )
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
@@ -3622,6 +4061,7 @@ def _resolve_csharp_member_calls(
                 type_name = rc.get("receiver_type")
                 type_nid = _resolve_type_name_nid(type_name, caller_node, src_file)
                 if not type_nid:
+                    _park_if_absent(type_name or receiver, caller_node, rc)
                     continue
             type_qualified = True
         else:
@@ -3630,6 +4070,7 @@ def _resolve_csharp_member_calls(
                 continue
             type_nid = _resolve_type_name_nid(type_name, caller_node, src_file)
             if not type_nid:  # ambiguous or absent -> bail (god-node guard)
+                _park_if_absent(type_name, caller_node, rc)
                 continue
             type_qualified = False
         method_nid = _method_on_type_or_bases(type_nid, _key(callee))
@@ -3796,6 +4237,17 @@ def _resolve_java_member_calls(
                 if not type_name:
                     continue
                 type_defs = type_def_nids.get(key(type_name), [])
+                if not type_defs:
+                    # The type is declared nowhere in this corpus, which in a
+                    # multi-repo setup usually means "in a repo this build does
+                    # not contain" rather than "does not exist" — park it for the
+                    # merge (#3152). An ambiguous name (>1 declaration) is a
+                    # local ambiguity that merging only widens, so it stays
+                    # dropped, exactly as the guard below already decided.
+                    _park_unresolved_member_call(
+                        node_by_id.get(caller), callee, type_name, "java", raw_call,
+                    )
+                    continue
                 if len(type_defs) != 1:
                     continue
                 type_nid = type_defs[0]
@@ -4278,6 +4730,9 @@ _KOTLIN_IMPORT_TARGET_RESOLVER = LanguageResolver(
 # by adding one register() call below — no edits to extract()'s body. Order
 # preserved from the prior inlined wiring: Swift (#1356) before Python (#1446).
 register_language_resolver(
+    LanguageResolver("terraform_modules", frozenset({".tf"}), resolve_terraform_modules)
+)
+register_language_resolver(
     LanguageResolver("swift_member_calls", frozenset({".swift"}), _resolve_swift_member_calls)
 )
 register_language_resolver(
@@ -4353,6 +4808,15 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "csharp_interface_dispatch", frozenset({".cs"}), resolve_csharp_interface_dispatch
+    )
+)
+# Markdown code-span mentions (`Widget`, `mod.py::Widget::render`) become
+# heading --references--> symbol edges once every file is extracted and ids are
+# final. Lives in graphify.markdown_resolution; the shared call pass above skips
+# these raw_calls so a mention is never mistaken for a call.
+register_language_resolver(
+    LanguageResolver(
+        "markdown_mentions", MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
     )
 )
 
@@ -5810,6 +6274,16 @@ def _extract_parallel(
             flush=True,
         )
         return False
+    except OSError as exc:
+        # The pool could not even start. On macOS, leaked POSIX semaphores
+        # exhaust kern.posix.sem.max and sem_open fails with ENOSPC ("No space
+        # left on device", disk nowhere near full). Sequential needs no pool.
+        print(
+            f"  warning: parallel extraction unavailable ({exc}); "
+            "falling back to sequential.",
+            flush=True,
+        )
+        return False
     if failed:
         # #2445: retry per-future failures once, in-process, instead of leaving
         # their per_file slots None (which the defensive fill downstream turned
@@ -5914,11 +6388,10 @@ def extract(
             unchanged callee. They are never parsed, mutated, or returned;
             raw_calls come only from `paths`, so only edges sourced by the
             re-extracted files are emitted.
-        resolution_context_edges: the `contains`/`method` edges of the same
-            unchanged corpus (#2437). The member-call resolvers walk these to
-            map a receiver type to the single class owning the called method;
-            without them an unchanged callee's class never passes the
-            single-definition guard. Read-only, same contract as
+        resolution_context_edges: structural resolver edges from the same
+            unchanged corpus (#2437). These map receiver types to their methods
+            and preserve inheritance evidence for language-specific resolvers.
+            Read-only, same contract as
             resolution_context_nodes: they widen the resolvers' view but only
             fresh results are appended to the returned nodes/edges.
     """
@@ -5936,8 +6409,15 @@ def extract(
     # Clearing per run, not per file, leaves within-run caching intact.
     _TSCONFIG_ALIAS_CACHE.clear()
     _TSCONFIG_BASEURL_CACHE.clear()
+    _PACKAGE_IMPORTS_CACHE.clear()
     _XAML_CSHARP_CLASS_CACHE.clear()
     _MD_LINK_INDEX_CACHE.clear()
+    # Path-resolution memoization (#3500) is keyed by (path, cwd) with no mtime
+    # component, so — like the alias caches above — a symlink repoint or a path
+    # that starts/stops existing between rebuilds in a long-lived `graphify
+    # watch` / MCP process would otherwise replay a stale result. Clear per run.
+    _cached_realpath.cache_clear()
+    _cached_source_key.cache_clear()
 
     # Infer a common root for cache keys (use first diverging segment, not sum of all matches)
     try:
@@ -6180,6 +6660,10 @@ def extract(
             f"may be partially extracted: {_shown}{_more}",
             file=sys.stderr, flush=True,
         )
+
+    for path, result in zip(paths, per_file):
+        if path.suffix in (".tf", ".tfvars", ".hcl"):
+            prepare_terraform(result, path, root)
 
     all_nodes: list[dict] = []
     all_edges: list[dict] = []
@@ -6614,6 +7098,7 @@ def extract(
     # (src/) package root before the resolver/import-evidence passes run, so the
     # graph is identical regardless of scan root (#2072).
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
+    _repoint_python_sibling_imports(paths, all_nodes, all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
@@ -6664,18 +7149,17 @@ def extract(
             logging.getLogger(__name__).warning(
                 "Go type-reference resolution failed, skipping: %s", exc
             )
-    _rewire_unique_stub_nodes(all_nodes, all_edges)
-
-    # Add cross-file class-level edges (Python only - uses Python parser internally)
+    # Cross-file Python import resolution and type-reference repointing (#3252)
     py_paths = [p for p in paths if p.suffix == ".py"]
     if py_paths:
         py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
         try:
-            cross_file_edges = _resolve_cross_file_imports(py_results, py_paths)
+            cross_file_edges = _resolve_cross_file_imports(py_results, py_paths, all_nodes, all_edges)
             all_edges.extend(cross_file_edges)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
+    _rewire_unique_stub_nodes(all_nodes, all_edges)
 
     # Cross-file Java import resolution
     java_paths = [p for p in paths if p.suffix == ".java"]
@@ -6907,6 +7391,12 @@ def extract(
         # in the corpus — exactly what #2141 must not do.
         if rc.get("language") == "bash":
             continue
+        # A Markdown code span names a symbol, it does not call one. The
+        # markdown_mentions resolver turns it into a `references` edge with the
+        # cited file as evidence; a global name match here would mint a `calls`
+        # edge from a heading to whatever shares the name.
+        if rc.get("language") == "markdown":
+            continue
         # A Go predeclared function is never a cross-file call: the extractor
         # already drops bare `append(s, x)` (extractors/go.py), so this is the
         # backstop for Go raw_calls minted on any other path. Language-gated
@@ -7016,6 +7506,12 @@ def extract(
                     if tgt is None:
                         continue
                     has_import_evidence = False
+        # A source-less candidate is an unresolved external stub, not a
+        # project-defined callable. It can remain a target of type/reference
+        # edges, but a name-only call must not turn it into a cross-file calls
+        # hub (#3156). Source-backed project definitions continue normally.
+        if not nid_to_source_file.get(tgt):
+            continue
         if rc.get("indirect"):
             # Cross-file indirect dispatch: a callback passed BY NAME
             # (`from .h import fn; pool.submit(fn)`, or listed in a dispatch
@@ -7168,24 +7664,28 @@ def extract(
 
     for item in all_nodes + all_edges:
         sf = item.get("source_file")
-        if not sf:
-            continue
-        sf_path = Path(sf)
-        if not sf_path.is_absolute():
-            continue
-        new_sf, canonical_id, keys = _sf_entry(str(sf), sf_path)
-        if "id" in item:
-            for key in keys:
-                if key == canonical_id or key in ext_id_remap:
-                    continue
-                if key in owned_ids and item.get("id") != key:
-                    # The key is a real node's id minted some other way —
-                    # renaming it (or edges onto it) would corrupt the graph.
-                    # The node that owns it registers it itself when its own
-                    # id IS the absolute-derived form (#2195 stub).
-                    continue
-                ext_id_remap[key] = canonical_id
-        item["source_file"] = new_sf
+        if sf:
+            sf_path = Path(sf)
+            if sf_path.is_absolute():
+                new_sf, canonical_id, keys = _sf_entry(str(sf), sf_path)
+                if "id" in item:
+                    for key in keys:
+                        if key == canonical_id or key in ext_id_remap:
+                            continue
+                        if key in owned_ids and item.get("id") != key:
+                            # The key is a real node's id minted some other way —
+                            # renaming it (or edges onto it) would corrupt the graph.
+                            # The node that owns it registers it itself when its own
+                            # id IS the absolute-derived form (#2195 stub).
+                            continue
+                        ext_id_remap[key] = canonical_id
+                item["source_file"] = new_sf
+        df = item.get("definition_file")
+        if df:
+            df_path = Path(df)
+            if df_path.is_absolute():
+                new_df, _, _ = _sf_entry(str(df), df_path)
+                item["definition_file"] = new_df
 
     if ext_id_remap:
         # Bash entrypoint ids are the file-level id + "__entry"
@@ -7289,6 +7789,9 @@ def extract(
         _sf = _item.get("source_file")
         if _sf and "\\" in str(_sf):
             _item["source_file"] = PurePath(_sf).as_posix()
+        _df = _item.get("definition_file")
+        if _df and "\\" in str(_df):
+            _item["definition_file"] = PurePath(_df).as_posix()
 
     return {
         "nodes": all_nodes,
@@ -7299,6 +7802,10 @@ def extract(
         # manifest does not freeze them as processed (#2543). Callers that
         # only read nodes/edges ignore this key.
         "failed_sources": _failed_sources,
+        # Surfaces the actual dispatched source paths so build_merge /
+        # merge_raw_extraction know which files were genuinely re-extracted
+        # rather than guessing ownership from node["source_file"] (#3411).
+        "extracted_sources": [str(p) for p in paths],
     }
 
 
