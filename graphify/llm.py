@@ -272,8 +272,19 @@ def _load_custom_providers() -> dict[str, dict]:
     # the user's own global ~/.graphify/providers.json stays trusted.
     local_path = _custom_providers_path(global_=False)
     global_path = _custom_providers_path(global_=True)
+    # Running from $HOME makes the relative project-local path resolve to the
+    # global file itself. That is the user's own trusted config, not config
+    # injected by a repo, so it is not "local": warning about it is a false
+    # positive that only teaches people to export the bypass. On any stat
+    # error, resolve to "distinct" so the gate never silently relaxes.
+    try:
+        local_is_distinct = local_path.is_file() and not (
+            global_path.is_file() and local_path.samefile(global_path)
+        )
+    except OSError:
+        local_is_distinct = True
     allow_local = os.environ.get("GRAPHIFY_ALLOW_LOCAL_PROVIDERS", "").strip().lower() in ("1", "true", "yes")
-    if local_path.is_file() and not allow_local:
+    if local_is_distinct and not allow_local:
         print(
             f"[graphify] WARNING: ignoring project-local {local_path} (custom providers control "
             "where your corpus and API key are sent). Set GRAPHIFY_ALLOW_LOCAL_PROVIDERS=1 to load it.",
@@ -281,7 +292,7 @@ def _load_custom_providers() -> dict[str, dict]:
         )
 
     providers: dict[str, dict] = {}
-    paths = [local_path, global_path] if allow_local else [global_path]
+    paths = [local_path, global_path] if (allow_local and local_is_distinct) else [global_path]
     for path in paths:
         if path.is_file():
             try:
