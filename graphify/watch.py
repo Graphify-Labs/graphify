@@ -1130,6 +1130,7 @@ def _check_shrink(
     had_explicit_deletions: bool = False,
     rebuilt_sources: "set[str] | None" = None,
     failed_sources: "set[str] | None" = None,
+    deleted_sources: "set[str] | None" = None,
 ) -> bool:
     """Return True (ok to proceed) or False (shrink refused).
 
@@ -1151,6 +1152,17 @@ def _check_shrink(
     ``--force`` (#1116 left stale nodes write-blocked even though build dropped them).
     Files in ``failed_sources`` never account for lost nodes: extraction did not
     complete, so their disappearance is the silent shrink this guard protects.
+
+    Membership in ``rebuilt_sources`` alone is not evidence that a loss was
+    intended. On a full rebuild it is every file in the corpus, so the check
+    below degenerated to "always allow" on exactly the path the refusal
+    message recommends as the remedy (#3579). A re-extracted source therefore
+    accounts for its own lost nodes only while it still contributes something
+    to the new graph: a source that goes from N nodes to none while still on
+    disk is the silent shrink, not a refactor. Files named in
+    ``deleted_sources`` are exempt — they are gone, so contributing nothing is
+    the correct outcome. An emptied-but-present file keeps its file node, so
+    this does not refuse a legitimate "removed every symbol" edit.
     """
     if force or not existing_data:
         return True
@@ -1173,13 +1185,23 @@ def _check_shrink(
         new_ids = {n.get("id") for n in new_nodes}
         lost = [n for n in existing_nodes if n.get("id") not in new_ids]
 
+        surviving_sources = {
+            _norm_source_file(sf)
+            for n in new_nodes
+            if (sf := n.get("source_file"))
+        }
+        gone = {_norm_source_file(sf) for sf in (deleted_sources or set())}
+
         def _accounted(n: dict) -> bool:
             sf = n.get("source_file")
-            if sf and failed_sources and _norm_source_file(sf) in failed_sources:
+            if not sf:
+                return True
+            norm = _norm_source_file(sf)
+            if failed_sources and norm in failed_sources:
                 return False
-            return (not sf
-                    or sf in rebuilt_sources
-                    or _norm_source_file(sf) in rebuilt_sources)
+            if sf not in rebuilt_sources and norm not in rebuilt_sources:
+                return False
+            return norm in surviving_sources or norm in gone
         if all(_accounted(n) for n in lost):
             return True
     if tmp is not None:
@@ -1888,6 +1910,7 @@ def _rebuild_code(
                     had_explicit_deletions=bool(deleted_paths),
                     rebuilt_sources=rebuilt_sources,
                     failed_sources=failed_sources,
+                    deleted_sources=set(deleted_paths),
                 ):
                     return False
                 from graphify.export import backup_if_protected as _backup
@@ -2099,6 +2122,7 @@ def _rebuild_code(
                 had_explicit_deletions=bool(deleted_paths),
                 rebuilt_sources=rebuilt_sources,
                 failed_sources=failed_sources,
+                deleted_sources=set(deleted_paths),
             ):
                 return False
             from graphify.exporters.html import _HTML_STALE_MARKER
