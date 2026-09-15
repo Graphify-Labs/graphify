@@ -3056,13 +3056,98 @@ def _ruby_const_full_name(node, source: bytes) -> str:
         return ""
     return _read_text(node, source).strip()
 
+
+_RUBY_LOOKUP_MUTATORS = frozenset(
+    {
+        "alias_method",
+        "attr",
+        "attr_accessor",
+        "attr_reader",
+        "attr_writer",
+        "define_method",
+        "define_singleton_method",
+        "include",
+        "extend",
+        "module_function",
+        "prepend",
+        "refine",
+        "remove_method",
+        "undef_method",
+        "using",
+    }
+)
+
+
+def _ruby_body_has_lookup_barrier(body_node, source: bytes) -> bool:
+    """Whether a lexical body can alter Ruby method lookup dynamically."""
+    method_scopes = {"method", "singleton_method"}
+
+    def visit(node, *, direct: bool = False) -> bool:
+        for child in node.children:
+            if child.type in {"class", "module"}:
+                continue
+            if child.type == "singleton_class":
+                if not direct:
+                    return True
+                continue
+            if child.type in method_scopes:
+                # A normal direct method declaration is modelled explicitly.
+                # A conditional/nested declaration is not guaranteed to exist.
+                if not direct:
+                    return True
+                continue
+            if child.type in {"alias", "undef"}:
+                return True
+            if child.type == "call":
+                receiver = child.child_by_field_name("receiver")
+                method = child.child_by_field_name("method")
+                if (
+                    (receiver is None or _read_text(receiver, source) == "self")
+                    and method is not None
+                    and _read_text(method, source) in _RUBY_LOOKUP_MUTATORS
+                ):
+                    return True
+            if visit(child):
+                return True
+        return False
+
+    return visit(body_node, direct=True)
+
+
+def _ruby_external_method_owners(root_node, source: bytes) -> list[str]:
+    """Return explicit constant owners modified outside their class body."""
+    owners: set[str] = set()
+
+    def visit(node) -> None:
+        if node.type == "singleton_method":
+            owner = node.child_by_field_name("object")
+            if owner is not None and _read_text(owner, source) != "self":
+                raw = _ruby_const_full_name(owner, source)
+                if raw:
+                    owners.add(raw)
+            return
+        if node.type == "singleton_class":
+            owner = node.child_by_field_name("value")
+            if owner is not None and _read_text(owner, source) != "self":
+                raw = _ruby_const_full_name(owner, source)
+                if raw:
+                    owners.add(raw)
+                return
+        if node.type == "method":
+            return
+        for child in node.children:
+            visit(child)
+
+    visit(root_node)
+    return sorted(owners)
+
 _RUBY_CLASS_FACTORIES = frozenset({("Struct", "new"), ("Class", "new"), ("Data", "define")})
 
 def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                      nodes: list, edges: list, seen_ids: set, function_bodies: list,
                      parent_class_nid: str | None, add_node, add_edge, walk,
                      callable_def_nids: set, callable_class_nids: set,
-                     ruby_namespace: list) -> bool:
+                     ruby_namespace: list, ruby_lexical_scopes: list) -> bool:
     """Ruby: a constant assignment whose RHS is ``Struct.new(...)``,
     ``Class.new(Super)`` or ``Data.define(...)`` defines a class named after the
     constant (#1640). Synthesize the class node, attach block-defined methods via
@@ -3092,7 +3177,14 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
     const_name = "::".join(ruby_namespace + const_segments)
     line = node.start_point[0] + 1
     class_nid = _make_id(stem, const_name)
-    add_node(class_nid, const_name, line)
+    # Class factories can install methods through block/runtime behavior that
+    # the narrow inherited-call proof does not model.
+    add_node(
+        class_nid,
+        const_name,
+        line,
+        metadata={"ruby_lookup_unsafe": True},
+    )
     callable_def_nids.add(class_nid)  # a class is callable (its constructor)
     callable_class_nids.add(class_nid)  # ...but only via its constructor (#2137)
     # Mirror the generic class branch: containment always hangs off the file node.
@@ -3105,6 +3197,7 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
             for arg in args.children:
                 if arg.type in ("constant", "scope_resolution"):
                     base = _ruby_const_last_name(arg, source)
+                    raw_base = _ruby_const_full_name(arg, source)
                     if base:
                         base_nid = _make_id(stem, base)
                         if base_nid not in seen_ids:
@@ -3122,7 +3215,18 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
                                     "source_location": "", "origin_file": str_path,
                                 })
                                 seen_ids.add(base_nid)
-                        add_edge(class_nid, base_nid, "inherits", line)
+                        add_edge(
+                            class_nid,
+                            base_nid,
+                            "inherits",
+                            line,
+                            metadata={
+                                "ruby_superclass_ref": raw_base,
+                                "ruby_lexical_scopes": list(
+                                    reversed(ruby_lexical_scopes)
+                                ),
+                            },
+                        )
                     break
 
     # Recurse the do/brace block so block-defined methods attach to the class.
@@ -3134,10 +3238,12 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
     if block is not None:
         body = next((c for c in block.children if c.type == "body_statement"), block)
         ruby_namespace.extend(const_segments)
+        ruby_lexical_scopes.append(const_name)
         try:
             for child in body.children:
                 walk(child, parent_class_nid=class_nid)
         finally:
+            ruby_lexical_scopes.pop()
             del ruby_namespace[-len(const_segments):]
     return True
 
@@ -3206,6 +3312,9 @@ def _extract_generic(
     # `include Foo::Bar` resolves for both spellings (#2302). Kept separate from
     # namespace_stack so Ruby method ids/labels are unchanged.
     ruby_namespace: list[str] = []
+    # Exact Ruby Module.nesting frames. Compact `module A::B` contributes one
+    # frame, unlike nested `module A; module B`, which contributes two.
+    ruby_lexical_scopes: list[str] = []
     scope_stack: list[str] = []
     function_bodies: list[tuple[str, object]] = []
     # nids of function / method / class definitions in this file. The indirect-
@@ -3247,6 +3356,12 @@ def _extract_generic(
     # merged into raw_calls after the call-walk populates it (raw_calls does not
     # exist yet while walk() runs). Resolved cross-file by the Ruby resolver.
     _ruby_mixin_calls: list[dict] = []
+    # Ruby method declarations share one graph shape, even though instance and
+    # singleton dispatch are distinct. Persist the parser-known kind so the
+    # corpus resolver can fail closed instead of guessing across that boundary.
+    ruby_singleton_context_depth = 0
+    ruby_method_kinds: dict[str, set[str]] = {}
+    ruby_method_counts: dict[str, int] = {}
     # #1356: per-file map of local name -> declared type (properties + params),
     # threaded out as `swift_type_table` so member calls (`vm.update()`) can be
     # resolved to the receiver's real definition in _resolve_swift_member_calls.
@@ -3348,8 +3463,18 @@ def _extract_generic(
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
+    if config.ts_module == "tree_sitter_ruby":
+        file_node = next(n for n in nodes if n["id"] == file_nid)
+        file_metadata = {"ruby_resolution_schema": 1}
+        if _ruby_body_has_lookup_barrier(root, source):
+            file_metadata["ruby_lookup_unsafe"] = True
+        external_owners = _ruby_external_method_owners(root, source)
+        if external_owners:
+            file_metadata["ruby_external_method_owners"] = external_owners
+        file_node["metadata"] = sanitize_metadata(file_metadata)
 
     def walk(node, parent_class_nid: str | None = None) -> None:
+        nonlocal ruby_singleton_context_depth
         t = node.type
 
         # Import types
@@ -3409,6 +3534,9 @@ def _extract_generic(
             class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
             line = node.start_point[0] + 1
             metadata = None
+            ruby_reopened = (
+                config.ts_module == "tree_sitter_ruby" and class_nid in seen_ids
+            )
             if config.ts_module == "tree_sitter_c_sharp":
                 if parent_class_nid:
                     metadata = {"is_nested_type": True}
@@ -3428,7 +3556,27 @@ def _extract_generic(
                 ):
                     metadata = dict(metadata or {})
                     metadata["is_partial"] = True
+            if config.ts_module == "tree_sitter_ruby":
+                ruby_body = _find_body(node, config)
+                if ruby_reopened or (
+                    ruby_body is not None
+                    and _ruby_body_has_lookup_barrier(ruby_body, source)
+                ):
+                    metadata = dict(metadata or {})
+                    if ruby_reopened:
+                        metadata["ruby_reopened"] = True
+                    if ruby_body is not None and _ruby_body_has_lookup_barrier(
+                        ruby_body, source
+                    ):
+                        metadata["ruby_lookup_unsafe"] = True
             add_node(class_nid, class_name, line, metadata=metadata)
+            if config.ts_module == "tree_sitter_ruby" and metadata:
+                # Reopened declarations collapse onto the same file-local id;
+                # merge fail-closed markers that add_node intentionally skips.
+                class_node = next(n for n in nodes if n["id"] == class_nid)
+                class_metadata = dict(class_node.get("metadata") or {})
+                class_metadata.update(metadata)
+                class_node["metadata"] = sanitize_metadata(class_metadata)
             callable_def_nids.add(class_nid)  # a class is callable (constructor)
             callable_class_nids.add(class_nid)  # ...but only via its constructor (#2137)
             # A nested class/object/trait is contained by its ENCLOSING type, not
@@ -3626,18 +3774,32 @@ def _extract_generic(
                 sup = node.child_by_field_name("superclass")
                 if sup is not None:
                     base = ""
+                    raw_base = ""
                     for sub in sup.children:
                         if sub.type == "constant":
                             base = _read_text(sub, source)
+                            raw_base = base
                             break
                         if sub.type == "scope_resolution":
+                            raw_base = _read_text(sub, source).strip()
                             consts = [c for c in sub.children if c.type == "constant"]
                             if consts:
                                 base = _read_text(consts[-1], source)
                             break
                     if base:
                         base_nid = ensure_named_node(base, line)
-                        add_edge(class_nid, base_nid, "inherits", line)
+                        add_edge(
+                            class_nid,
+                            base_nid,
+                            "inherits",
+                            line,
+                            metadata={
+                                "ruby_superclass_ref": raw_base,
+                                "ruby_lexical_scopes": list(
+                                    reversed(ruby_lexical_scopes)
+                                ),
+                            },
+                        )
 
                 # `include`/`extend`/`prepend <Const>` in the class/module body ->
                 # a `mixes_in` edge to the module (#1668). The module usually lives
@@ -4024,10 +4186,18 @@ def _extract_generic(
             body = _find_body(node, config)
             if body:
                 ruby_namespace.extend(ruby_segments)
+                if config.ts_module == "tree_sitter_ruby":
+                    ruby_lexical_scopes.append(class_name)
+                previous_singleton_depth = ruby_singleton_context_depth
+                if config.ts_module == "tree_sitter_ruby":
+                    ruby_singleton_context_depth = 0
                 try:
                     for child in body.children:
                         walk(child, parent_class_nid=class_nid)
                 finally:
+                    ruby_singleton_context_depth = previous_singleton_depth
+                    if config.ts_module == "tree_sitter_ruby":
+                        ruby_lexical_scopes.pop()
                     if ruby_segments:
                         del ruby_namespace[-len(ruby_segments):]
             return
@@ -4470,6 +4640,31 @@ def _extract_generic(
                     add_edge(parent_class_nid, field_nid, "defines", line, context="field")
             return
 
+        # Ruby's `class << self` contains ordinary `method` nodes. Keep them
+        # attached to the lexical class and record singleton dispatch kind.
+        if (
+            config.ts_module == "tree_sitter_ruby"
+            and t == "singleton_class"
+            and parent_class_nid
+        ):
+            value = node.child_by_field_name("value")
+            body = node.child_by_field_name("body")
+            if value is not None and _read_text(value, source) == "self" and body:
+                if _ruby_body_has_lookup_barrier(body, source):
+                    class_node = next(
+                        n for n in nodes if n["id"] == parent_class_nid
+                    )
+                    class_metadata = dict(class_node.get("metadata") or {})
+                    class_metadata["ruby_lookup_unsafe"] = True
+                    class_node["metadata"] = sanitize_metadata(class_metadata)
+                ruby_singleton_context_depth += 1
+                try:
+                    for child in body.children:
+                        walk(child, parent_class_nid=parent_class_nid)
+                finally:
+                    ruby_singleton_context_depth -= 1
+                return
+
         # Function types
         if t in config.function_types:
             # Swift deinit/subscript have no name field — resolve before generic fallback
@@ -4506,13 +4701,56 @@ def _extract_generic(
                 return
 
             line = node.start_point[0] + 1
+            ruby_method_kind = None
+            if config.ts_module == "tree_sitter_ruby" and parent_class_nid:
+                if t == "singleton_method":
+                    singleton_object = node.child_by_field_name("object")
+                    if (
+                        ruby_singleton_context_depth == 0
+                        and singleton_object is not None
+                        and _read_text(singleton_object, source) == "self"
+                    ):
+                        ruby_method_kind = "singleton"
+                    else:
+                        ruby_method_kind = "ambiguous"
+                elif ruby_singleton_context_depth == 1:
+                    ruby_method_kind = "singleton"
+                elif ruby_singleton_context_depth == 0:
+                    ruby_method_kind = "instance"
+                else:
+                    ruby_method_kind = "ambiguous"
             if parent_class_nid:
                 func_nid = _make_id(parent_class_nid, sanitized_name)
                 if config.ts_module == "tree_sitter_python":
                     func_nid = _python_underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
                     )
-                add_node(func_nid, f".{func_name}()", line)
+                ruby_method_metadata = None
+                if ruby_method_kind is not None:
+                    kinds = ruby_method_kinds.setdefault(func_nid, set())
+                    kinds.add(ruby_method_kind)
+                    ruby_method_counts[func_nid] = ruby_method_counts.get(func_nid, 0) + 1
+                    stored_kind = (
+                        next(iter(kinds))
+                        if len(kinds) == 1
+                        and ruby_method_counts[func_nid] == 1
+                        and next(iter(kinds)) in {"instance", "singleton"}
+                        else "ambiguous"
+                    )
+                    ruby_method_metadata = {"ruby_method_kind": stored_kind}
+                    existing_method = next(
+                        (n for n in nodes if n["id"] == func_nid), None
+                    )
+                    if existing_method is not None:
+                        existing_metadata = dict(existing_method.get("metadata") or {})
+                        existing_metadata.update(ruby_method_metadata)
+                        existing_method["metadata"] = sanitize_metadata(existing_metadata)
+                add_node(
+                    func_nid,
+                    f".{func_name}()",
+                    line,
+                    metadata=ruby_method_metadata,
+                )
                 add_edge(parent_class_nid, func_nid, "method", line)
             else:
                 func_nid = _make_id(stem, sanitized_name)
@@ -5026,7 +5264,7 @@ def _extract_generic(
                                 nodes, edges, seen_ids, function_bodies,
                                 parent_class_nid, add_node, add_edge, walk,
                                 callable_def_nids, callable_class_nids,
-                                ruby_namespace):
+                                ruby_namespace, ruby_lexical_scopes):
                 return
 
         # Python's `@property` / `@staticmethod` / `@classmethod` wrap the

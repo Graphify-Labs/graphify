@@ -3759,9 +3759,9 @@ def dispatch_command(cmd: str) -> None:
             # cross-file resolvers cannot see a callee living in an unchanged
             # file and every changed->unchanged call edge silently vanished on
             # merge. Hand extract() read-only resolution context from the
-            # persisted graph: its AST-tier nodes (with their `_callable`/
-            # `_callable_class` markers, #2438) plus the contains/method edges
-            # the member-call resolvers walk (#2437), scoped to the UNCHANGED
+            # persisted graph: its AST-tier nodes (including bounded resolver
+            # metadata) plus the structural edges the resolvers walk, scoped to
+            # the UNCHANGED
             # live corpus — never a re-extracted, deleted, or excluded file, so
             # stale symbols cannot resurrect. Fails open (changed-batch-only
             # resolution, the pre-fix behavior) on an unreadable graph.
@@ -3813,23 +3813,63 @@ def dispatch_command(cmd: str) -> None:
                         for _marker in ("_callable", "_callable_class"):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
+                        _metadata = _node.get("metadata")
+                        if isinstance(_metadata, dict):
+                            _ruby_metadata = {
+                                key: _metadata[key]
+                                for key in (
+                                    "ruby_resolution_schema",
+                                    "ruby_method_kind",
+                                    "ruby_lookup_unsafe",
+                                    "ruby_reopened",
+                                    "ruby_external_method_owners",
+                                )
+                                if key in _metadata
+                            }
+                            if _ruby_metadata:
+                                _ctx_node["metadata"] = _ruby_metadata
                         _ctx_nodes.append(_ctx_node)
                     for _edge in _ctx_graph.get(
                         "links", _ctx_graph.get("edges", [])
                     ):
-                        if _edge.get("relation") not in ("contains", "method"):
+                        if _edge.get("relation") not in (
+                            "contains", "method", "inherits"
+                        ):
                             continue
                         if not _ctx_is_ast_tier(_edge):
                             continue
                         _sf = _edge.get("source_file")
                         if not _sf or _ctx_identity(_sf) not in _ctx_live:
                             continue
-                        _ctx_edges.append({
+                        _ctx_edge = {
                             "source": _edge.get("source"),
                             "target": _edge.get("target"),
                             "relation": _edge.get("relation"),
                             "source_file": _sf,
-                        })
+                        }
+                        _edge_metadata = _edge.get("metadata")
+                        if (
+                            isinstance(_edge_metadata, dict)
+                            and isinstance(
+                                _edge_metadata.get("ruby_superclass_ref"), str
+                            )
+                        ):
+                            _ctx_edge["metadata"] = {
+                                "ruby_superclass_ref": _edge_metadata[
+                                    "ruby_superclass_ref"
+                                ]
+                            }
+                            _lexical_scopes = _edge_metadata.get(
+                                "ruby_lexical_scopes"
+                            )
+                            if isinstance(_lexical_scopes, list) and all(
+                                isinstance(_scope, str)
+                                for _scope in _lexical_scopes
+                            ):
+                                _ctx_edge["metadata"]["ruby_lexical_scopes"] = list(
+                                    _lexical_scopes
+                                )
+                        _ctx_edges.append(_ctx_edge)
                 except Exception:
                     _ctx_nodes, _ctx_edges = [], []
                 if _ctx_nodes:

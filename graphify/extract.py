@@ -6375,11 +6375,10 @@ def extract(
             unchanged callee. They are never parsed, mutated, or returned;
             raw_calls come only from `paths`, so only edges sourced by the
             re-extracted files are emitted.
-        resolution_context_edges: the `contains`/`method` edges of the same
-            unchanged corpus (#2437). The member-call resolvers walk these to
-            map a receiver type to the single class owning the called method;
-            without them an unchanged callee's class never passes the
-            single-definition guard. Read-only, same contract as
+        resolution_context_edges: structural resolver edges from the same
+            unchanged corpus (#2437). These map receiver types to their methods
+            and preserve inheritance evidence for language-specific resolvers.
+            Read-only, same contract as
             resolution_context_nodes: they widen the resolvers' view but only
             fresh results are appended to the returned nodes/edges.
     """

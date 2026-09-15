@@ -3514,6 +3514,87 @@ def test_incremental_rebuild_preserves_python_call_to_unchanged_target(tmp_path)
     assert sorted(_2406_calls(_2406_graph(corpus))) == sorted(full)
 
 
+# --- #3567: inherited Ruby calls into unchanged ancestry --------------------
+
+
+def _3567_seed(tmp_path, *, singleton=False, grandparent=False):
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir(parents=True)
+    helper = (
+        "  class << self\n    def helper(value); value; end\n  end\n"
+        if singleton
+        else "  def helper(value); value; end\n"
+    )
+    if grandparent:
+        (corpus / "grand.rb").write_text(
+            f"class Grand\n{helper}end\n", encoding="utf-8"
+        )
+        (corpus / "base.rb").write_text(
+            "class Base < Grand\nend\n", encoding="utf-8"
+        )
+    else:
+        (corpus / "base.rb").write_text(
+            f"class Base\n{helper}end\n", encoding="utf-8"
+        )
+    declaration = "def self.call" if singleton else "def call"
+    (corpus / "child.rb").write_text(
+        f"class Child < Base\n  {declaration}\n"
+        "    helper(1)\n  end\nend\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    return corpus
+
+
+def _3567_call(graph):
+    nodes = {node["id"]: node for node in graph.get("nodes", [])}
+    matches = [
+        (edge, nodes.get(edge.get("target"), {}))
+        for edge in graph.get("links", graph.get("edges", []))
+        if edge.get("relation") == "calls"
+        and nodes.get(edge.get("source"), {}).get("label") == ".call()"
+        and nodes.get(edge.get("target"), {}).get("label") == ".helper()"
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+@pytest.mark.parametrize(
+    ("singleton", "grandparent", "target_file"),
+    [(False, True, "grand.rb"), (True, False, "base.rb")],
+)
+def test_incremental_ruby_inherited_call_matches_full_build(
+    tmp_path, singleton, grandparent, target_file
+):
+    """A changed caller keeps the full-build confidence and target."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _3567_seed(
+        tmp_path, singleton=singleton, grandparent=grandparent
+    )
+    full_edge, full_target = _3567_call(_2406_graph(corpus))
+    assert full_edge.get("confidence") == "EXTRACTED"
+    assert full_target.get("source_file") == target_file
+
+    caller = corpus / "child.rb"
+    declaration = "def self.call" if singleton else "def call"
+    caller.write_text(
+        f"class Child < Base\n  {declaration}\n"
+        "    marker = 1\n    helper(1)\n  end\nend\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+
+    incremental_edge, incremental_target = _3567_call(_2406_graph(corpus))
+    assert incremental_edge.get("confidence") == "EXTRACTED"
+    assert incremental_edge.get("confidence_score") == 1.0
+    assert incremental_target.get("source_file") == target_file
+
+
 # --- #2437 / #2438: member + indirect calls into unchanged files -------------
 # The #2406 resolution context now also carries the unchanged corpus's
 # contains/method edges (member-call resolvers, #2437) and the persisted

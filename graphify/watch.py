@@ -1615,9 +1615,8 @@ def _rebuild_code(
         # evicts the old one as AST-tier output of a re-extracted source, and
         # nothing regenerates it). Hand extract() read-only resolution context:
         # the persisted AST nodes of files this run is NOT re-extracting —
-        # including their `_callable`/`_callable_class` markers, so the
-        # indirect_call guard keeps working (#2438) — plus their contains/method
-        # edges, which the member-call resolvers walk (#2437).
+        # including bounded resolver metadata and callability markers — plus
+        # the structural edges needed to resolve against unchanged types.
         #
         # Scoping rules, in order of importance:
         #   * AST-tier only — semantic/LLM nodes are not symbol definitions.
@@ -1667,25 +1666,64 @@ def _rebuild_code(
                     for marker in ("_callable", "_callable_class"):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
+                    metadata = node.get("metadata")
+                    if isinstance(metadata, dict):
+                        ruby_metadata = {
+                            key: metadata[key]
+                            for key in (
+                                "ruby_resolution_schema",
+                                "ruby_method_kind",
+                                "ruby_lookup_unsafe",
+                                "ruby_reopened",
+                                "ruby_external_method_owners",
+                            )
+                            if key in metadata
+                        }
+                        if ruby_metadata:
+                            ctx_node["metadata"] = ruby_metadata
                     resolution_context_nodes.append(ctx_node)
                 # #2437: the member-call resolvers map receiver type -> owning
                 # class -> method through contains/method edges; hand over the
                 # unchanged corpus's, scoped exactly like the nodes above so a
                 # deleted/re-extracted file's edges can never resurrect.
                 for edge in ctx_graph.get("links", ctx_graph.get("edges", [])):
-                    if edge.get("relation") not in ("contains", "method"):
+                    if edge.get("relation") not in (
+                        "contains", "method", "inherits"
+                    ):
                         continue
                     if not _is_ast_tier(edge):
                         continue
                     source_file = edge.get("source_file")
                     if not source_file or ctx_paths.identity(source_file) not in ctx_live:
                         continue
-                    resolution_context_edges.append({
+                    context_edge = {
                         "source": edge.get("source"),
                         "target": edge.get("target"),
                         "relation": edge.get("relation"),
                         "source_file": source_file,
-                    })
+                    }
+                    edge_metadata = edge.get("metadata")
+                    if (
+                        isinstance(edge_metadata, dict)
+                        and isinstance(
+                            edge_metadata.get("ruby_superclass_ref"), str
+                        )
+                    ):
+                        context_edge["metadata"] = {
+                            "ruby_superclass_ref": edge_metadata[
+                                "ruby_superclass_ref"
+                            ]
+                        }
+                        lexical_scopes = edge_metadata.get(
+                            "ruby_lexical_scopes"
+                        )
+                        if isinstance(lexical_scopes, list) and all(
+                            isinstance(scope, str) for scope in lexical_scopes
+                        ):
+                            context_edge["metadata"]["ruby_lexical_scopes"] = list(
+                                lexical_scopes
+                            )
+                    resolution_context_edges.append(context_edge)
             except Exception:
                 # Unreadable/oversized graph: resolve with the changed batch only
                 # (pre-#2406 behavior). Reconcile below still fails closed on it.
