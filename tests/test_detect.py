@@ -2591,8 +2591,16 @@ def test_save_manifest_legacy_case_variant_key_does_not_duplicate(tmp_path):
     (root / "pkg").mkdir(parents=True)
     mod = root / "pkg" / "mod.py"
     mod.write_text("def x(): pass\n")
-    variant_key = str(tmp_path / "repo" / "pkg" / "mod.py")
-    case_insensitive = (tmp_path / "repo").exists()
+    variant_root = tmp_path / "repo"
+    variant_key = str(variant_root / "pkg" / "mod.py")
+    case_insensitive = variant_root.exists()
+    if not case_insensitive:
+        # On a case-sensitive filesystem the variant names a file that is simply
+        # absent, and save_manifest drops rows whose file is gone before it
+        # relativizes anything. Give it a real file, so what the assertion below
+        # measures is the anchoring decision rather than that prune.
+        (variant_root / "pkg").mkdir(parents=True)
+        (variant_root / "pkg" / "mod.py").write_text("def y(): pass\n")
 
     manifest_path = tmp_path / "graphify-out" / "manifest.json"
     manifest_path.parent.mkdir(parents=True)
