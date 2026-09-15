@@ -8,6 +8,11 @@ import pytest
 
 from graphify.install import dispatch_install_cli
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib  # type: ignore[no-redef]
+
 
 def test_omp_path_is_a_complete_native_package(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["graphify", "omp", "path"])
@@ -15,6 +20,8 @@ def test_omp_path_is_a_complete_native_package(monkeypatch, capsys):
     package = Path(capsys.readouterr().out.strip())
     manifest = json.loads((package / "package.json").read_text(encoding="utf-8"))
     assert manifest["omp"]["extensions"]
+    pyproject = tomllib.loads((package.parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+    assert manifest["version"] == pyproject["project"]["version"]
     for entry in manifest["omp"]["extensions"]:
         assert (package / entry).is_file()
         assert (package / entry).resolve().is_relative_to(package)
