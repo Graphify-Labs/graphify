@@ -1087,3 +1087,73 @@ console.log(bad);
         proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "0", f"geometry violations: {proc.stdout.strip()}"
+
+
+# --- .gitattributes for a committed output directory (#3413) ---
+
+
+def _out_dir(tmp_path):
+    from graphify.paths import GRAPHIFY_OUT_NAME
+
+    out = tmp_path / GRAPHIFY_OUT_NAME
+    out.mkdir()
+    return out
+
+
+def test_to_json_gives_the_output_directory_diff_attributes(tmp_path):
+    """A rebuild must not cost the whole pull request its diff.
+
+    graph.json is pretty-printed and its node ordering shifts between rebuilds,
+    so a rebuild can present a million changed lines. GitHub answers 422 for a
+    diff that size and then reports zero changed files for every file in the
+    pull request, not only this one.
+    """
+    out = _out_dir(tmp_path)
+    assert to_json(_mkG(2), {}, str(out / "graph.json")) is True
+
+    attributes = (out / ".gitattributes").read_text(encoding="utf-8")
+    assert "graph.json -diff" in attributes
+    assert "* linguist-generated" in attributes
+
+
+def test_to_json_leaves_a_directory_it_was_only_pointed_at_alone(tmp_path):
+    """`--graph` can name any path; that is not an invitation to write beside it."""
+    assert to_json(_mkG(2), {}, str(tmp_path / "graph.json")) is True
+
+    assert not (tmp_path / ".gitattributes").exists()
+
+
+def test_existing_gitattributes_is_never_overwritten(tmp_path):
+    from graphify.export import ensure_output_gitattributes
+
+    out = _out_dir(tmp_path)
+    (out / ".gitattributes").write_text("* -text\n", encoding="utf-8")
+
+    assert ensure_output_gitattributes(out) is None
+    assert (out / ".gitattributes").read_text(encoding="utf-8") == "* -text\n"
+
+
+def test_gitattributes_env_disable(tmp_path, monkeypatch):
+    """GRAPHIFY_NO_GITATTRIBUTES=1 disables it, the way GRAPHIFY_NO_BACKUP does."""
+    from graphify.export import ensure_output_gitattributes
+
+    monkeypatch.setenv("GRAPHIFY_NO_GITATTRIBUTES", "1")
+    out = _out_dir(tmp_path)
+
+    assert ensure_output_gitattributes(out) is None
+    assert not (out / ".gitattributes").exists()
+
+
+def test_gitattributes_failure_never_breaks_the_build(tmp_path, monkeypatch):
+    """A read-only output directory costs the attributes file, not the graph."""
+    from pathlib import Path as _Path
+
+    from graphify.export import ensure_output_gitattributes
+
+    out = _out_dir(tmp_path)
+
+    def _refuse(self, *args, **kwargs):
+        raise PermissionError(f"read-only: {self}")
+
+    monkeypatch.setattr(_Path, "write_text", _refuse)
+    assert ensure_output_gitattributes(out) is None

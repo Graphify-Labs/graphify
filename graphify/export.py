@@ -38,6 +38,42 @@ _BACKUP_ARTIFACTS = [
 ]
 
 
+_GITATTRIBUTES = """\
+# Written by graphify. Delete this file, or set GRAPHIFY_NO_GITATTRIBUTES=1, to
+# stop it coming back.
+#
+# graph.json is pretty-printed and node ordering shifts between rebuilds, so a
+# rebuild can present a million changed lines. GitHub gives up computing a diff
+# that size and answers 422, and the pull request then reports zero changed
+# files for every file in it, not only this one. `-diff` makes git treat these
+# artifacts as opaque so the diff is never computed; `linguist-generated` only
+# collapses the rendered result, which is too late to help.
+* linguist-generated
+graph.json -diff
+manifest.json -diff
+GRAPH_REPORT.md -diff
+.graphify_labels.json -diff
+"""
+
+
+def ensure_output_gitattributes(out_dir: Path) -> "Path | None":
+    """Give a committed output directory the diff attributes it needs.
+
+    Returns the path written, or None when there was nothing to do. Never
+    raises: a read-only output directory must not fail a build over this.
+    """
+    if os.environ.get("GRAPHIFY_NO_GITATTRIBUTES"):
+        return None
+    path = Path(out_dir) / ".gitattributes"
+    if path.exists():
+        return None
+    try:
+        path.write_text(_GITATTRIBUTES, encoding="utf-8")
+    except OSError:
+        return None
+    return path
+
+
 def backup_if_protected(out_dir: Path) -> "Path | None":
     """Snapshot graph artifacts to a dated subfolder before an overwrite.
 
@@ -410,9 +446,15 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     commit = built_at_commit if built_at_commit is not None else _git_head(Path(output_path).resolve().parent)
     if commit:
         data["built_at_commit"] = commit
-    from graphify.paths import write_json_atomic
+    from graphify.paths import GRAPHIFY_OUT_NAME, write_json_atomic
     # Atomic write: a crash/ENOSPC mid-write must not truncate a good graph.json.
     write_json_atomic(output_path, data, indent=2)
+    # Only for the output directory itself: `--graph` can point anywhere, and
+    # dropping a .gitattributes into a directory the user chose for one file
+    # would be writing somewhere we were not invited.
+    written_into = Path(output_path).resolve().parent
+    if written_into.name == GRAPHIFY_OUT_NAME:
+        ensure_output_gitattributes(written_into)
     return True
 
 
