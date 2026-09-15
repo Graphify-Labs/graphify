@@ -223,6 +223,18 @@ def resolve_ruby_member_calls(
                 return next(iter(candidates))
             if len(candidates) > 1:
                 return None
+            if scope and len(ref_parts) > 1:
+                prefix_label = "::".join(
+                    [
+                        *[part for part in scope.split("::") if part],
+                        *ref_parts[:-1],
+                    ]
+                )
+                if class_labels.get(prefix_label):
+                    # Ruby bound the qualified prefix in this nearer lexical
+                    # scope.  Its inherited constants are not modelled, so do
+                    # not retry the same prefix in an outer scope.
+                    return None
         return None
 
     inheritance: dict[str, set[str]] = {}
@@ -266,14 +278,26 @@ def resolve_ruby_member_calls(
     def _has_external_method_owner(label: str) -> bool:
         label_parts = tuple(part for part in label.split("::") if part)
         for raw_owner in external_method_owners:
+            is_prefix = raw_owner.endswith("::*")
+            owner_ref = raw_owner.removesuffix("::*") if is_prefix else raw_owner
             owner_parts = tuple(
-                part for part in raw_owner.removeprefix("::").split("::") if part
+                part for part in owner_ref.removeprefix("::").split("::") if part
             )
             if not owner_parts:
                 continue
-            if raw_owner.startswith("::") and label_parts == owner_parts:
+            if is_prefix:
+                if owner_ref.startswith("::"):
+                    if label_parts[: len(owner_parts)] == owner_parts:
+                        return True
+                elif any(
+                    label_parts[index : index + len(owner_parts)] == owner_parts
+                    for index in range(len(label_parts) - len(owner_parts) + 1)
+                ):
+                    return True
+                continue
+            if owner_ref.startswith("::") and label_parts == owner_parts:
                 return True
-            if not raw_owner.startswith("::") and label_parts[-len(owner_parts):] == owner_parts:
+            if not owner_ref.startswith("::") and label_parts[-len(owner_parts):] == owner_parts:
                 return True
         return False
 

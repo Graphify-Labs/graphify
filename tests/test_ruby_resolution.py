@@ -937,6 +937,55 @@ def test_external_owner_mutator_through_constant_alias_stays_inferred(
     assert _only_call(graph)["confidence"] == "INFERRED"
 
 
+def test_qualified_external_owner_through_namespace_alias_stays_inferred(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "module Namespace\n  class Child < Base\n"
+        "    def self.call\n      helper()\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "AliasNS = Namespace\n"
+        "AliasNS::Child.define_singleton_method(:helper) { :child }\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_qualified_superclass_under_rebound_namespace_stays_inferred(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "base.rb",
+        "module Namespace\n  class Base\n"
+        "    def self.helper; :wrong; end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "other.rb",
+        "module Other\n  class Base\n    class << self\n"
+        "      attr_reader :helper\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "Namespace = Other\nclass Child < Namespace::Base\n"
+        "  def self.call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
 def test_inherited_call_stays_inferred_for_compact_reopening(
     tmp_path: Path,
 ) -> None:
@@ -973,6 +1022,36 @@ def test_absolute_class_declaration_inside_namespace_stays_inferred(
         tmp_path,
         "override.rb",
         "class Child\n  attr_reader :helper\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_qualified_superclass_stops_at_nearer_lexical_prefix(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "base.rb",
+        "module Outer\n  module Services\n    class Base\n"
+        "      def self.helper; :wrong; end\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "provider.rb",
+        "class Provider\n  class Base\n    class << self\n"
+        "      attr_reader :helper\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "module Outer\n  module Inner\n"
+        "    class Services < ::Provider; end\n"
+        "    class Child < Services::Base\n"
+        "      def self.call\n        helper()\n      end\n    end\n"
+        "  end\nend\n",
     )
 
     graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)

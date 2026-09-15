@@ -3141,28 +3141,56 @@ def _ruby_external_method_owners(root_node, source: bytes) -> list[str]:
     """Return explicit constant owners modified outside their class body."""
     owners: set[str] = set()
 
-    def collect_constant_refs(node) -> None:
+    def constant_refs(node) -> set[str]:
         if node.type in {"constant", "scope_resolution"}:
             raw = _ruby_const_full_name(node, source)
-            if raw:
-                owners.add(raw)
-            return
+            return {raw} if raw else set()
+        if node.type not in {
+            "left_assignment_list",
+            "parenthesized_statements",
+            "splat_argument",
+        }:
+            # Attribute/index writes such as `Namespace.config = value`
+            # contain a constant receiver but do not rebind that constant.
+            return set()
+        refs: set[str] = set()
         for child in node.children:
             if child.is_named:
-                collect_constant_refs(child)
+                refs.update(constant_refs(child))
+        return refs
+
+    def alias_rhs_refs(node) -> set[str]:
+        if node.type in {"constant", "scope_resolution"}:
+            raw = _ruby_const_full_name(node, source)
+            return {raw} if raw else set()
+        if node.type in {"parenthesized_statements", "right_assignment_list"}:
+            refs: set[str] = set()
+            for child in node.children:
+                if child.is_named:
+                    refs.update(alias_rhs_refs(child))
+            return refs
+        return set()
+
+    def prefix_marker(raw: str) -> str:
+        return f"{raw}::*"
 
     def visit(node) -> None:
         if node.type in {"assignment", "operator_assignment"}:
             left = node.child_by_field_name("left")
-            if left is not None:
+            lhs_refs = constant_refs(left) if left is not None else set()
+            if lhs_refs:
                 # Any write can change which superclass a constant reference
                 # denotes, including dynamic RHS and multiple assignment.
-                collect_constant_refs(left)
+                owners.update(prefix_marker(raw) for raw in lhs_refs)
             right = node.child_by_field_name("right")
-            if node.type == "assignment" and right is not None:
+            if node.type == "assignment" and lhs_refs and right is not None:
                 # Treat both ends of a potential constant alias as unsafe.  A
-                # later mutation through the alias affects the original owner.
-                collect_constant_refs(right)
+                # later mutation through the alias affects descendant owners
+                # too.  Only direct/parenthesized constant RHS forms qualify;
+                # ordinary values containing constant references do not.
+                owners.update(
+                    prefix_marker(raw) for raw in alias_rhs_refs(right)
+                )
         if node.type in {"class", "module"}:
             name = node.child_by_field_name("name")
             if name is not None and name.type == "scope_resolution":
