@@ -13,6 +13,12 @@ _CONFIG_JSON_NAMES = frozenset({
     "app.json", "now.json", "vercel.json", "angular.json", "nest-cli.json",
     "biome.json", "biome.jsonc", "renovate.json", ".babelrc", ".babelrc.json",
     ".eslintrc.json", ".prettierrc.json", ".prettierrc", "babel.config.json",
+    # The WordPress block manifest. It carries the nesting relationships that
+    # make a block graph worth having: parent, ancestor, allowedBlocks,
+    # providesContext / usesContext, and the editorScript / style handles. Only
+    # the blocks that happen to declare "$schema" reached the key probe, so a
+    # repo of blocks indexed as almost nothing.
+    "block.json",
 })
 
 _CONFIG_JSON_KEYS = frozenset({

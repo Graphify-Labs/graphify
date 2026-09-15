@@ -4687,3 +4687,26 @@ def test_3252_metadata_preservation(tmp_path):
     assert param_ref["source_location"] == "L2"
     assert node_by_id[param_ref["target"]]["label"] == "User"
     assert node_by_id[param_ref["target"]]["source_file"] == "models.py"
+
+
+def test_extract_json_wordpress_block_manifest(tmp_path):
+    """#3574: block.json is a manifest, not data JSON.
+
+    It was in neither the filename allowlist nor the key probe, so a block that
+    did not happen to declare "$schema" produced no nodes at all.
+    """
+    block = tmp_path / "block.json"
+    block.write_text(
+        json.dumps(
+            {
+                "apiVersion": 3,
+                "name": "acme/card",
+                "title": "Card",
+                "parent": ["acme/deck"],
+                "editorScript": "file:./index.js",
+            }
+        )
+    )
+    result = extract_json(block)
+    assert len(result["nodes"]) > 0
+    assert "skipped" not in result
