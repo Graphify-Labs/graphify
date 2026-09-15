@@ -83,8 +83,19 @@ def _md_link(label: str, resolver: dict[str, str]) -> str:
     god nodes get article files — render as plain text instead of a dead link
     that points nowhere even inside Obsidian.
     """
+    return _md_link_to(label, resolver.get(label))
+
+
+def _md_link_to(label: str, slug: str | None) -> str:
+    """Render ``[label](slug.md)`` for a slug that is already known.
+
+    Same output as :func:`_md_link`, minus the label lookup. The index knows the
+    exact slug of every article it lists — two same-labelled articles have
+    distinct slugs — so it links by that slug instead of re-deriving one from the
+    label, which collapses duplicates onto whichever was registered first
+    (#3032/#3033). ``None`` means no article exists, rendered as plain text.
+    """
     text = label.replace("[", r"\[").replace("]", r"\]")
-    slug = resolver.get(label)
     if slug is None:
         return text
     return f"[{text}]({slug}.md)"
@@ -234,9 +245,21 @@ def _index_md(
     god_nodes_data: list[dict],
     total_nodes: int,
     total_edges: int,
-    resolver: dict[str, str] | None = None,
+    community_slugs: dict[int, str],
+    god_articles: list[tuple[str, str]],
 ) -> str:
-    resolver = resolver or {}
+    """Render index.md.
+
+    Takes the slugs the articles were actually written under —
+    ``community_slugs`` (cid -> slug) and ``god_articles`` ((node_id, slug)) —
+    rather than the label -> slug resolver the articles use for prose links.
+    Two communities, or two god nodes, can share a label while owning separate
+    files, and a label lookup cannot tell them apart: it points every row at
+    whichever was registered first and orphans the rest (#3032/#3033).
+    """
+    # A node with no article of its own is absent here, so it renders as plain
+    # text rather than linking to a same-labelled article that isn't it.
+    god_slugs = dict(god_articles)
     lines: list[str] = [
         "# Knowledge Graph Index",
         "",
@@ -253,13 +276,15 @@ def _index_md(
 
     for cid, nodes in sorted(communities.items(), key=lambda x: -len(x[1])):
         label = labels.get(cid, f"Community {cid}")
-        lines.append(f"- {_md_link(label, resolver)} — {len(nodes)} nodes")
+        slug = community_slugs.get(cid)
+        lines.append(f"- {_md_link_to(label, slug)} — {len(nodes)} nodes")
     lines.append("")
 
     if god_nodes_data:
         lines += ["## God Nodes", "(most connected concepts — the load-bearing abstractions)", ""]
         for node in god_nodes_data:
-            lines.append(f"- {_md_link(node['label'], resolver)} — {node['degree']} connections")
+            slug = god_slugs.get(node.get("id"))
+            lines.append(f"- {_md_link_to(node['label'], slug)} — {node['degree']} connections")
         lines.append("")
 
     lines += [
@@ -398,7 +423,11 @@ def to_wiki(
 
     # Index
     (out / "index.md").write_text(
-        _index_md(communities, labels, god_nodes_data, G.number_of_nodes(), G.number_of_edges(), resolver),
+        _index_md(
+            communities, labels, god_nodes_data,
+            G.number_of_nodes(), G.number_of_edges(),
+            community_slugs, god_articles,
+        ),
         encoding="utf-8",
     )
 
