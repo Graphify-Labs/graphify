@@ -118,7 +118,7 @@ def resolve_ruby_member_calls(
     class_def_nids: dict[str, list[str]] = {}
     method_index: dict[tuple[str, str], str] = {}
     method_owners: dict[str, set[str]] = {}
-    inheritance_edges: list[tuple[str, str | None, list[str] | None]] = []
+    inheritance_edges: list[tuple[str, str, str | None, list[str] | None]] = []
     for e in all_edges:
         if e.get("relation") == "inherits":
             src, tgt = e.get("source"), e.get("target")
@@ -141,7 +141,9 @@ def resolve_ruby_member_calls(
                     and all(isinstance(scope, str) for scope in candidate_scopes)
                     else None
                 )
-                inheritance_edges.append((str(src), raw_base, lexical_scopes))
+                inheritance_edges.append(
+                    (str(src), str(tgt), raw_base, lexical_scopes)
+                )
             continue
         if e.get("relation") != "method":
             continue
@@ -203,8 +205,16 @@ def resolve_ruby_member_calls(
         ref_parts = [part for part in reference.split("::") if part]
         if not ref_parts:
             return None
-        scopes = [] if raw_base.startswith("::") else lexical_scopes
-        for scope in [*scopes, ""]:
+        if raw_base.startswith("::"):
+            lookup_scopes = [""]
+        elif lexical_scopes:
+            # A miss here is unsafe: Ruby searches inherited constants of the
+            # innermost lexical owner before any root fallback, and that lookup
+            # is not represented in the graph.
+            lookup_scopes = lexical_scopes
+        else:
+            lookup_scopes = [""]
+        for scope in lookup_scopes:
             candidate_label = "::".join(
                 [*[part for part in scope.split("::") if part], *ref_parts]
             )
@@ -216,11 +226,27 @@ def resolve_ruby_member_calls(
         return None
 
     inheritance: dict[str, set[str]] = {}
-    for source, raw_base, lexical_scopes in inheritance_edges:
+    for source, edge_target, raw_base, lexical_scopes in inheritance_edges:
         if source not in ruby_class_nids:
             continue
         resolved = _resolve_base(raw_base, lexical_scopes)
-        if resolved is not None:
+        target_node = node_by_id.get(edge_target)
+        target_label = str(target_node.get("label", "")) if target_node else ""
+        target_source = str(target_node.get("source_file", "")) if target_node else ""
+        raw_tail = str(raw_base or "").removeprefix("::").split("::")[-1]
+        edge_matches_reference = bool(
+            target_node
+            and raw_tail
+            and _key(target_label.split("::")[-1]) == _key(raw_tail)
+        )
+        # The structural target is independent evidence.  A normal unresolved
+        # Ruby superclass remains a source-less last-segment stub after corpus
+        # disambiguation, so accept that representation only when its label
+        # agrees with the raw reference.  Conflicting edge/metadata pairs bail.
+        if resolved is not None and (
+            resolved == edge_target
+            or (not target_source and edge_matches_reference)
+        ):
             inheritance.setdefault(source, set()).add(resolved)
 
     methods_by_kind: dict[tuple[str, str, str], set[str]] = {}

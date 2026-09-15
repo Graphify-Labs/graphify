@@ -3077,6 +3077,10 @@ _RUBY_LOOKUP_MUTATORS = frozenset(
     }
 )
 
+_RUBY_EXTERNAL_OWNER_MUTATORS = _RUBY_LOOKUP_MUTATORS | frozenset(
+    {"class_eval", "class_exec", "module_eval", "module_exec"}
+)
+
 
 def _ruby_body_has_lookup_barrier(body_node, source: bytes) -> bool:
     """Whether a lexical body can alter Ruby method lookup dynamically."""
@@ -3114,11 +3118,39 @@ def _ruby_body_has_lookup_barrier(body_node, source: bytes) -> bool:
     return visit(body_node, direct=True)
 
 
+def _ruby_file_has_refinement_barrier(root_node, source: bytes) -> bool:
+    """Whether any lexical scope in a file activates or defines a refinement.
+
+    ``using`` affects method lookup for definitions in its lexical scope, while
+    ``refine`` can hide method bodies behind a dynamic lookup layer.  The
+    extractor does not model that lexical activation precisely, so inherited
+    implicit-self promotion fails closed for the whole file.
+    """
+
+    def visit(node) -> bool:
+        if node.type == "call":
+            method = node.child_by_field_name("method")
+            if method is not None and _read_text(method, source) in {"refine", "using"}:
+                return True
+        return any(visit(child) for child in node.children)
+
+    return visit(root_node)
+
+
 def _ruby_external_method_owners(root_node, source: bytes) -> list[str]:
     """Return explicit constant owners modified outside their class body."""
     owners: set[str] = set()
 
     def visit(node) -> None:
+        if node.type in {"class", "module"}:
+            name = node.child_by_field_name("name")
+            if name is not None and name.type == "scope_resolution":
+                raw = _ruby_const_full_name(name, source)
+                if raw:
+                    # Compact declarations resolve a constant path rather than
+                    # introducing every segment lexically.  Until that lookup
+                    # is modelled, guard every matching real owner.
+                    owners.add(raw)
         if node.type == "singleton_method":
             owner = node.child_by_field_name("object")
             if owner is not None and _read_text(owner, source) != "self":
@@ -3132,7 +3164,19 @@ def _ruby_external_method_owners(root_node, source: bytes) -> list[str]:
                 raw = _ruby_const_full_name(owner, source)
                 if raw:
                     owners.add(raw)
-                return
+            return
+        if node.type == "call":
+            receiver = node.child_by_field_name("receiver")
+            method = node.child_by_field_name("method")
+            if (
+                receiver is not None
+                and receiver.type in {"constant", "scope_resolution"}
+                and method is not None
+                and _read_text(method, source) in _RUBY_EXTERNAL_OWNER_MUTATORS
+            ):
+                raw = _ruby_const_full_name(receiver, source)
+                if raw:
+                    owners.add(raw)
         if node.type == "method":
             return
         for child in node.children:
@@ -3466,7 +3510,9 @@ def _extract_generic(
     if config.ts_module == "tree_sitter_ruby":
         file_node = next(n for n in nodes if n["id"] == file_nid)
         file_metadata = {"ruby_resolution_schema": 1}
-        if _ruby_body_has_lookup_barrier(root, source):
+        if _ruby_body_has_lookup_barrier(
+            root, source
+        ) or _ruby_file_has_refinement_barrier(root, source):
             file_metadata["ruby_lookup_unsafe"] = True
         external_owners = _ruby_external_method_owners(root, source)
         if external_owners:
