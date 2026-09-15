@@ -3145,6 +3145,9 @@ def dispatch_command(cmd: str) -> None:
                     if result.get("cross_repo_calls"):
                         print(f"  resolved {result['cross_repo_calls']} "
                               f"member call(s) across repos")
+                    if result.get("shared_type_links"):
+                        print(f"  linked {result['shared_type_links']} "
+                              f"type declaration(s) shared across repos")
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr); sys.exit(1)
         elif subcmd == "remove":
