@@ -1087,3 +1087,48 @@ console.log(bad);
         proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "0", f"geometry violations: {proc.stdout.strip()}"
+
+
+def _html_with_source_url(url):
+    """Render a one-node graph whose node carries the given source_url."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label="Doc Node", file_type="concept",
+               source_file="notes.md", source_url=url)
+    G.add_node("n2", label="Other", file_type="concept", source_file="other.md")
+    G.add_edge("n1", "n2", relation="references", confidence="EXTRACTED")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, {0: ["n1", "n2"]}, str(out))
+        return out.read_text()
+
+
+def test_to_html_emits_source_url_in_node_payload():
+    html = _html_with_source_url("https://example.com/page")
+    assert '"source_url": "https://example.com/page"' in html
+
+
+def test_to_html_omits_source_url_when_absent():
+    """A node without source_url still renders, with an empty payload value."""
+    html = _html_with_source_url("")
+    assert '"source_url": ""' in html
+
+
+def test_to_html_ships_url_scheme_allowlist():
+    """The viewer must gate hrefs on scheme: esc() alone would let
+    javascript: through, since it contains no HTML metacharacters."""
+    html = _html_with_source_url("https://example.com/page")
+    assert "function safeUrl" in html
+    assert "parsed.protocol === 'http:'" in html
+    assert "parsed.protocol === 'https:'" in html
+    # the anchor is built through safeUrl, never from the raw value
+    assert 'href="${esc(safeUrl(n._source_url))}"' in html
+    assert 'rel="noopener noreferrer"' in html
+
+
+def test_to_html_does_not_emit_raw_javascript_href():
+    """A hostile source_url reaches the payload as data, but must never be
+    written into the document as an href by the generator."""
+    html = _html_with_source_url("javascript:alert(1)")
+    assert 'href="javascript:' not in html
+    assert "href='javascript:" not in html
