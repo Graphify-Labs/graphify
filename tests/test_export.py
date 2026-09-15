@@ -1087,3 +1087,230 @@ console.log(bad);
         proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "0", f"geometry violations: {proc.stdout.strip()}"
+
+
+# ---------------------------------------------------------------------------
+# #3378 — clicking into a filtered-out community
+# ---------------------------------------------------------------------------
+
+# A stub DOM + vis just rich enough to evaluate the emitted viewer script in
+# node. `focus` is modelled the way the real vis behaves for a hidden node —
+# there is no rendered position, so the call is a silent no-op — which is what
+# made the reported click read as dead. Everything the harness asserts is
+# therefore observable state the browser would show: which nodes are hidden,
+# what the camera focused, what is selected, and the legend's own widgets.
+_DOM_STUB_JS = r"""
+class Elem {
+  constructor(tag) {
+    this.tagName = tag; this.children = []; this.style = {}; this.dataset = {};
+    this.checked = false; this.indeterminate = false; this.innerHTML = '';
+    this.value = ''; this.textContent = ''; this.type = '';
+    this._cls = new Set(); this._listeners = {}; this.parent = null; this.onclick = null;
+    const cls = this._cls;
+    this.classList = {
+      add: c => cls.add(c), remove: c => cls.delete(c), contains: c => cls.has(c),
+    };
+  }
+  get className() { return [...this._cls].join(' '); }
+  set className(v) { this._cls = new Set(String(v).split(/\s+/).filter(Boolean)); }
+  addEventListener(t, f) { (this._listeners[t] = this._listeners[t] || []).push(f); }
+  dispatchEvent(ev) {
+    if (!ev.target) ev.target = this;
+    (this._listeners[ev.type] || []).forEach(f => f(ev));
+    return true;
+  }
+  appendChild(c) { c.parent = this; this.children.push(c); return c; }
+  prepend(c) { c.parent = this; this.children.unshift(c); return c; }
+  contains(n) { for (let p = n; p; p = p.parent) if (p === this) return true; return false; }
+  closest(sel) {
+    for (let p = this; p; p = p.parent) if (p._cls.has(sel.slice(1))) return p;
+    return null;
+  }
+  descendants() { return this.children.flatMap(c => [c, ...c.descendants()]); }
+}
+class Event { constructor(type) { this.type = type; } stopPropagation() {} }
+const IDS = {};
+for (const id of ['graph', 'info-content', 'select-all-cb', 'legend', 'search', 'search-results'])
+  IDS[id] = new Elem('div');
+const documentRoot = new Elem('html');
+documentRoot.appendChild(IDS['legend']);
+const document = {
+  getElementById: id => IDS[id],
+  createElement: tag => new Elem(tag),
+  addEventListener: (t, f) => documentRoot.addEventListener(t, f),
+  querySelectorAll: sel => documentRoot.descendants().filter(e => e._cls.has(sel.slice(1))),
+  _click: el => documentRoot.dispatchEvent(Object.assign(new Event('click'), { target: el })),
+};
+const vis = {
+  DataSet: class {
+    constructor(items) { this.map = new Map(items.map(i => [i.id, i])); }
+    get(id) { return id === undefined ? [...this.map.values()] : (this.map.get(id) || null); }
+    update(items) {
+      (Array.isArray(items) ? items : [items]).forEach(u => Object.assign(this.map.get(u.id), u));
+    }
+  },
+  Network: class {
+    constructor(container, data) {
+      this.ds = data.nodes; this.focused = null; this.selected = []; this.focusRefused = [];
+    }
+    once() {} on() {} setOptions() {}
+    focus(id) {
+      const n = this.ds.get(id);
+      if (!n || n.hidden) { this.focusRefused.push(id); return; }  // real vis: no position
+      this.focused = id;
+    }
+    selectNodes(ids) { this.selected = ids.slice(); }
+    getConnectedNodes(id) {
+      return RAW_EDGES.flatMap(e => e.from === id ? [e.to] : (e.to === id ? [e.from] : []));
+    }
+  },
+};
+"""
+
+
+def _viewer_harness(body: str) -> str:
+    """The emitted viewer script under the stub DOM, followed by ``body``."""
+    from graphify.exporters.html import _html_script
+
+    nodes = [
+        {"id": "a", "label": "A", "color": {"background": "#111", "border": "#111"},
+         "size": 10, "font": {"color": "#fff"}, "title": "A", "community": 0,
+         "community_name": "Alpha", "source_file": "a.py", "file_type": "code", "degree": 1},
+        {"id": "b", "label": "B", "color": {"background": "#222", "border": "#222"},
+         "size": 10, "font": {"color": "#fff"}, "title": "B", "community": 1,
+         "community_name": "Beta", "source_file": "b.py", "file_type": "code", "degree": 2},
+        {"id": "c", "label": "C", "color": {"background": "#333", "border": "#333"},
+         "size": 10, "font": {"color": "#fff"}, "title": "C", "community": 2,
+         "community_name": "Gamma", "source_file": "c.py", "file_type": "code", "degree": 1},
+    ]
+    edges = [
+        {"from": "a", "to": "b", "title": "contains", "dashes": False, "width": 1, "color": "#555"},
+        {"from": "b", "to": "c", "title": "contains", "dashes": False, "width": 1, "color": "#555"},
+    ]
+    legend = [
+        {"cid": 0, "color": "#111", "label": "Alpha", "count": 1},
+        {"cid": 1, "color": "#222", "label": "Beta", "count": 1},
+        {"cid": 2, "color": "#333", "label": "Gamma", "count": 1},
+    ]
+    script = _html_script(json.dumps(nodes), json.dumps(edges), json.dumps(legend))
+    script = script[len("<script>"):-len("</script>")]
+    # The legend checkboxes are addressed through the DOM, not through the map
+    # the fix introduces, so a test's *setup* works on unpatched code too and
+    # the pre-fix failure is the reported symptom rather than a ReferenceError.
+    # LEGEND is emitted in cid order, so cbs[cid] is that community's checkbox.
+    prelude = "\nconst cbs = [...document.querySelectorAll('.legend-cb')];\n"
+    return _DOM_STUB_JS + script + prelude + body
+
+
+def _run_node(js: str):
+    import shutil
+    import subprocess
+
+    import pytest
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Path(tmp) / "viewer_check.js"
+        f.write_text(js, encoding="utf-8")
+        proc = subprocess.run([node, str(f)], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_html_focus_node_reveals_a_filtered_out_community():
+    """#3378: with a community filtered out, clicking a neighbor in it updated
+    the NODE INFO panel and did nothing else — the hidden node has no rendered
+    position, so network.focus() and selectNodes() were silent no-ops and the
+    click read as dead. focusNode must reveal the target's community first, and
+    reveal only that one, leaving the rest of the user's filter intact."""
+    out = _run_node(_viewer_harness(r"""
+      // the repro: hide everything, then tick Alpha alone and click its node
+      toggleAllCommunities(true);
+      cbs[0].checked = true;
+      cbs[0].dispatchEvent(new Event('change'));
+      showInfo('a');
+      // click B in the NODE INFO neighbor list — Beta is still unticked
+      const link = new Elem('span');
+      link.className = 'neighbor-link';
+      link.dataset.nid = 'b';
+      document._click(link);
+      console.log(JSON.stringify({
+        focused: network.focused,
+        selected: network.selected,
+        refused: network.focusRefused,
+        hiddenFlags: ['a', 'b', 'c'].map(id => !!nodesDS.get(id).hidden),
+        hiddenCommunities: [...hiddenCommunities].sort(),
+        legendChecked: cbs.map(cb => cb.checked),
+        dimmed: [...document.querySelectorAll('.legend-item')].map(i => i.classList.contains('dimmed')),
+        selectAll: { checked: selectAllCb.checked, indeterminate: selectAllCb.indeterminate },
+        panelHasB: document.getElementById('info-content').innerHTML.includes('<b>B</b>'),
+      }));
+    """))
+    # The click is no longer inert: the camera moved and B is selected.
+    assert out["focused"] == "b", "focus() was still refused — the node stayed hidden"
+    assert out["selected"] == ["b"]
+    assert out["refused"] == []
+    # B is visible; only its community was revealed. C stays hidden.
+    assert out["hiddenFlags"] == [False, False, True]
+    assert out["hiddenCommunities"] == [2]
+    assert out["legendChecked"] == [True, True, False]
+    assert out["dimmed"] == [False, False, True]
+    # The one shared code path kept the legend's tri-state honest.
+    assert out["selectAll"] == {"checked": False, "indeterminate": True}
+    assert out["panelHasB"] is True
+
+
+def test_html_focus_node_leaves_the_filter_alone_for_a_visible_node():
+    """The reveal is conditional: focusing a node whose community is already
+    shown must not touch hiddenCommunities, the checkboxes or the dimming."""
+    out = _run_node(_viewer_harness(r"""
+      cbs[2].checked = false;
+      cbs[2].dispatchEvent(new Event('change'));  // hide Gamma only
+      focusNode('a');                                       // Alpha is visible
+      console.log(JSON.stringify({
+        focused: network.focused,
+        hiddenCommunities: [...hiddenCommunities].sort(),
+        legendChecked: cbs.map(cb => cb.checked),
+        hiddenFlags: ['a', 'b', 'c'].map(id => !!nodesDS.get(id).hidden),
+      }));
+    """))
+    assert out["focused"] == "a"
+    assert out["hiddenCommunities"] == [2], "focusing a visible node changed the filter"
+    assert out["legendChecked"] == [True, True, False]
+    assert out["hiddenFlags"] == [False, False, True]
+
+
+def test_html_search_result_click_also_reveals_its_community():
+    """A search hit can land in a filtered-out community exactly as a neighbor
+    link can, and that click was inert for the same reason. It goes through
+    focusNode now instead of carrying a copy of its body — keeping the 1.5
+    scale search has always used."""
+    out = _run_node(_viewer_harness(r"""
+      toggleAllCommunities(true);
+      const input = document.getElementById('search');
+      input.value = 'C';
+      input.dispatchEvent(new Event('input'));
+      const results = document.getElementById('search-results');
+      results.children[0].onclick();
+      console.log(JSON.stringify({
+        focused: network.focused,
+        hidden: !!nodesDS.get('c').hidden,
+        hiddenCommunities: [...hiddenCommunities].sort(),
+      }));
+    """))
+    assert out["focused"] == "c"
+    assert out["hidden"] is False
+    assert out["hiddenCommunities"] == [0, 1]
+
+
+def test_html_focus_node_scale_default_and_search_override():
+    """The emitted source keeps the two zoom levels the viewer has always used:
+    1.4 for a neighbor/panel focus, 1.5 for a search hit."""
+    from graphify.exporters.html import _html_script
+
+    script = _html_script("[]", "[]", "[]")
+    assert "function focusNode(nodeId, scale = 1.4)" in script
+    assert "focusNode(n.id, 1.5);" in script
+    # and search no longer carries its own copy of focusNode's body
+    assert "network.focus(n.id," not in script
