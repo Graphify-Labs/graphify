@@ -102,7 +102,7 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         )
     if existing.get("source_hash") == src_hash:
         return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
-                "cross_repo_calls": 0}
+                "cross_repo_calls": 0, "shared_type_links": 0}
 
     # Load source graph
     from graphify.security import check_graph_file_size_cap
@@ -169,6 +169,19 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     from graphify.cross_repo_calls import link_cross_repo_member_calls
 
     cross_repo_calls = link_cross_repo_member_calls(G)
+
+    # A type both this repo and an earlier one declare arrives as two
+    # unconnected nodes, since every id is repo prefixed. The CLI batch
+    # merge command already links them so a traversal can cross the repo
+    # boundary (#3007); global_add never called this pass, so an
+    # incrementally built store held zero same_type_as edges no matter how
+    # many repos actually shared a type. Re-run over the whole store on
+    # every add, same as the member call pass above: it only adds an edge
+    # where none exists yet, so repeated calls across successive adds stay
+    # cheap and cannot double an edge.
+    from graphify.cross_repo_types import link_shared_type_declarations
+
+    shared_type_links = link_shared_type_declarations(G)
     _save_global_graph(G)
 
     manifest["repos"][repo_tag] = {
@@ -181,7 +194,8 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     _save_manifest(manifest)
 
     return {"repo_tag": repo_tag, "nodes_added": added, "nodes_removed": removed,
-            "skipped": False, "cross_repo_calls": cross_repo_calls}
+            "skipped": False, "cross_repo_calls": cross_repo_calls,
+            "shared_type_links": shared_type_links}
 
 
 def global_remove(repo_tag: str) -> int:
