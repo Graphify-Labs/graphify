@@ -182,6 +182,29 @@ def _parse_config(body: str) -> dict[str, Any]:
     return config
 
 
+def _config_string_offsets(body: str, key: str) -> list[int]:
+    """Return offsets of string values in one config array field."""
+    key_source = _mask_string_contents(_mask_comments(body))
+    matches = list(_CONFIG_KEY_RE.finditer(key_source))
+    for index, match in enumerate(matches):
+        if match.group("key") != key:
+            continue
+        start = match.end()
+        limit = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        while start < limit and body[start].isspace():
+            start += 1
+        if start >= limit or body[start] != "[":
+            return []
+        end = _value_end(body, start, "[", "]", limit)
+        masked = _mask_comments(body[start:end])
+        return [
+            start + string_match.start()
+            for string_match in _STRING_RE.finditer(masked)
+            if _literal_string(string_match.group(0)) is not None
+        ]
+    return []
+
+
 def _mask_comments(text: str) -> str:
     """Blank SQL/JavaScript comments while preserving offsets and strings."""
     chars = list(text)
@@ -334,11 +357,18 @@ def extract_dataform(path: Path) -> dict:
             }
         )
 
-    for dependency in node.get("dataform_config", {}).get("dependencies", []):
+    dependency_offsets = (
+        _config_string_offsets(config, "dependencies") if config_info is not None else []
+    )
+    for dependency_index, dependency in enumerate(
+        node.get("dataform_config", {}).get("dependencies", [])
+    ):
         if isinstance(dependency, str) and dependency.strip():
-            dependency_offset = text.find(dependency)
-            if dependency_offset < 0:
-                dependency_offset = config_body_offset
+            dependency_offset = (
+                config_body_offset + dependency_offsets[dependency_index]
+                if dependency_index < len(dependency_offsets)
+                else config_body_offset
+            )
             add_dependency(
                 dependency.strip(),
                 _line_number(text, dependency_offset),

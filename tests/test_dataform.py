@@ -114,3 +114,27 @@ def test_config_parser_handles_inline_fields_without_reading_description_text(tm
         "type": "table",
         "schema": "analytics",
     }
+
+
+def test_config_dependency_edge_uses_dependency_value_location(tmp_path):
+    model = tmp_path / "line_location.sqlx"
+    model.write_text(
+        "config {\n"
+        '  description: "upstream",\n'
+        "  dependencies: [\n"
+        '    "upstream",\n'
+        "  ]\n"
+        "}\n"
+        "SELECT 'upstream' AS repeated_name;\n",
+        encoding="utf-8",
+    )
+
+    result = extract_dataform(model)
+
+    config_edges = [
+        edge
+        for edge in result["edges"]
+        if edge["context"] == "dataform_config"
+    ]
+    assert len(config_edges) == 1
+    assert config_edges[0]["source_location"] == "L4"
