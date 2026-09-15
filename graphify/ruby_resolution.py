@@ -224,13 +224,13 @@ def resolve_ruby_member_calls(
             if len(candidates) > 1:
                 return None
             if scope and len(ref_parts) > 1:
-                prefix_label = "::".join(
+                first_prefix_label = "::".join(
                     [
                         *[part for part in scope.split("::") if part],
-                        *ref_parts[:-1],
+                        ref_parts[0],
                     ]
                 )
-                if class_labels.get(prefix_label):
+                if class_labels.get(first_prefix_label):
                     # Ruby bound the qualified prefix in this nearer lexical
                     # scope.  Its inherited constants are not modelled, so do
                     # not retry the same prefix in an outer scope.

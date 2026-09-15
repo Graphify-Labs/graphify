@@ -3159,15 +3159,18 @@ def _ruby_external_method_owners(root_node, source: bytes) -> list[str]:
                 refs.update(constant_refs(child))
         return refs
 
-    def alias_rhs_refs(node) -> set[str]:
+    def alias_rhs_refs(node, *, allow_array: bool = False) -> set[str]:
         if node.type in {"constant", "scope_resolution"}:
             raw = _ruby_const_full_name(node, source)
             return {raw} if raw else set()
-        if node.type in {"parenthesized_statements", "right_assignment_list"}:
+        if node.type in {
+            "parenthesized_statements",
+            "right_assignment_list",
+        } or (allow_array and node.type == "array"):
             refs: set[str] = set()
             for child in node.children:
                 if child.is_named:
-                    refs.update(alias_rhs_refs(child))
+                    refs.update(alias_rhs_refs(child, allow_array=allow_array))
             return refs
         return set()
 
@@ -3189,7 +3192,12 @@ def _ruby_external_method_owners(root_node, source: bytes) -> list[str]:
                 # too.  Only direct/parenthesized constant RHS forms qualify;
                 # ordinary values containing constant references do not.
                 owners.update(
-                    prefix_marker(raw) for raw in alias_rhs_refs(right)
+                    prefix_marker(raw)
+                    for raw in alias_rhs_refs(
+                        right,
+                        allow_array=left is not None
+                        and left.type == "left_assignment_list",
+                    )
                 )
         if node.type in {"class", "module"}:
             name = node.child_by_field_name("name")

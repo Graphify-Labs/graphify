@@ -812,6 +812,25 @@ def test_inherited_call_stays_inferred_for_multiple_constant_write(
     assert _only_call(graph)["confidence"] == "INFERRED"
 
 
+def test_destructured_constant_alias_owner_stays_inferred(tmp_path: Path) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :wrong; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "AliasChild, Spare = [Child, Object]\n"
+        "AliasChild.define_singleton_method(:helper) { :child }\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
 def test_inherited_call_stays_inferred_under_enclosing_refinement(
     tmp_path: Path,
 ) -> None:
@@ -1050,6 +1069,36 @@ def test_qualified_superclass_stops_at_nearer_lexical_prefix(
         "module Outer\n  module Inner\n"
         "    class Services < ::Provider; end\n"
         "    class Child < Services::Base\n"
+        "      def self.call\n        helper()\n      end\n    end\n"
+        "  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_deep_qualified_superclass_stops_at_first_lexical_segment(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "base.rb",
+        "module Outer\n  module Services\n    module API\n      class Base\n"
+        "        def self.helper; :wrong; end\n      end\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "provider.rb",
+        "class Provider\n  module API\n    class Base\n      class << self\n"
+        "        attr_reader :helper\n      end\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "module Outer\n  module Inner\n"
+        "    class Services < ::Provider; end\n"
+        "    class Child < Services::API::Base\n"
         "      def self.call\n        helper()\n      end\n    end\n"
         "  end\nend\n",
     )
