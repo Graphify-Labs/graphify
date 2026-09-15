@@ -27,6 +27,7 @@ import os
 import re
 import sys
 import unicodedata
+from collections.abc import Iterable
 from pathlib import Path
 import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
@@ -973,6 +974,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 continue
             if "source_file" in node:
                 node["source_file"] = _norm_source_file(node["source_file"], _root)
+            # definition_file names a file inside the scanned tree exactly like
+            # source_file (the #2990 decl/def merge stamps it from the impl's
+            # source_file BEFORE this normalization runs), so it must be made
+            # portable the same way - it used to ship absolute, leaking the
+            # build host's layout into graph.json and MCP get_node (#3223).
+            if "definition_file" in node:
+                node["definition_file"] = _norm_source_file(node["definition_file"], _root)
         G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
     node_set = set(G.nodes())
 
@@ -986,6 +994,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     _loc_nodes: dict[tuple[str, str], str] = {}   # (source_file, label) -> canonical node id
     _loc_collisions: set[tuple[str, str]] = set()  # keys shared by 2+ AST nodes
     _noloc_nodes: dict[tuple[str, str], str] = {}  # (source_file, label) -> ghost node id
+    _ast_file_nodes: list[tuple[str, str]] = []  # (node_id, source_file) for AST file-self nodes (#3344)
 
     # Pass 1: collect canonical nodes — AST-origin nodes take precedence over LLM nodes.
     # When 2+ AST nodes share a key (same-named symbols in same-named files across
@@ -1028,6 +1037,20 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                     _loc_collisions.add(key)
                 # AST-origin nodes always overwrite a prior non-AST entry.
                 _loc_nodes[key] = nid
+                # #3344: a self-referential semantic pass (e.g. re-extracting a
+                # saved graphify-out/memory/*.md query answer) mints a NEW
+                # non-AST node for every bare file path/basename it mentions in
+                # prose ("App.tsx", "customer-app/index.ts"), stamped with
+                # source_file = the memory doc being read, NOT the file named in
+                # the prose. That wrong source_file means such a ghost can never
+                # hit the (sf, label) key above — same underlying bug as #1145,
+                # just with the (source_file, label) *pair* broken instead of
+                # only the id. Record every AST node whose own label already
+                # names its own file (_is_file_node_label — the same "is this a
+                # file node" predicate the label-disambiguation pass uses) so
+                # Pass 2b below can catch these by label alone.
+                if _is_file_node_label(label, sf):
+                    _ast_file_nodes.append((nid, sf))
             else:
                 # First non-AST node for this (file, label) wins as canonical; a
                 # later same-key node is a genuine same-file duplicate and still
@@ -1054,6 +1077,37 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         ast_id = _loc_nodes.get(key)
         if ast_id is not None:
             _ghost_remap[sem_id] = ast_id
+
+    # Pass 2b (#3344): catch ghosts the (source_file, label) key above cannot,
+    # because their source_file is simply wrong — a semantic pass over a
+    # document that only *mentions* a file (a saved graphify-out/memory/*.md
+    # query answer, a README, an ADR) stamps the file's own name as a new
+    # node's label but the DOCUMENT's path as source_file, since it has no way
+    # to know the mentioned file's real path. Resolve these by label alone
+    # against every AST file-self node collected in Pass 1, reusing
+    # _is_file_node_label so "App.tsx" matches source_file ".../App.tsx" and
+    # "customer-app/index.ts" matches ".../apps/customer-app/index.ts" (a
+    # directory-qualified suffix, e.g. the leading "apps/" the prose dropped).
+    # Conservative by construction: a label matching 0 or 2+ AST files is left
+    # alone (0 = no known file, 2+ = genuinely ambiguous — same "no safe
+    # canonical winner" rule Pass 2's _loc_collisions already applies).
+    if _ast_file_nodes:
+        for nid in sorted(node_set):
+            if nid in _ghost_remap:
+                continue  # already resolved by the exact (sf, label) key
+            attrs = G.nodes[nid]
+            if attrs.get("_origin") == "ast":
+                continue
+            label = str(attrs.get("label", "")).strip()
+            if not label:
+                continue
+            matches = {
+                ast_id for ast_id, ast_sf in _ast_file_nodes
+                if _is_file_node_label(label, ast_sf)
+            }
+            if len(matches) == 1:
+                _ghost_remap[nid] = next(iter(matches))
+
     # Remove ghost nodes from the graph; edges will be re-pointed via norm_to_id.
     for ghost_id in _ghost_remap:
         G.remove_node(ghost_id)
@@ -1202,6 +1256,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             )
         if "source_file" in attrs:
             attrs["source_file"] = _norm_source_file(attrs["source_file"], _root)
+        if attrs.get("definition_file"):
+            # Same portability rule as source_file (#3223); heals a graph
+            # written before the fix on its next rebuild.
+            attrs["definition_file"] = _norm_source_file(attrs["definition_file"], _root)
         # Drop cross-language phantom edges — the same short names (render, parse,
         # time, ...) recur across language boundaries, so an unresolved target can
         # bind to a same-named node in another language. The extraction spec forbids
@@ -1344,6 +1402,7 @@ def build(
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
+    protected_ids: "set[str] | None" = None,
 ) -> nx.Graph:
     """Merge multiple extraction results into one graph.
 
@@ -1353,6 +1412,8 @@ def build(
     dedup_llm_backend: if set (e.g. "gemini", "claude", or "kimi"), uses LLM to resolve
         ambiguous pairs in the 75–92 Jaro-Winkler score zone.
     root: if given, absolute source_file paths are made relative to root (#932).
+    protected_ids: optional set of node IDs to protect from being collapsed with
+        other protected nodes during incremental merge (#3477).
 
     With dedup disabled, extractions are merged in order and the last node's
     attributes win (NetworkX add_node overwrites). With dedup enabled, nodes
@@ -1368,6 +1429,7 @@ def build(
         combined["hyperedges"].extend(ext.get("hyperedges", []))
         combined["input_tokens"] += ext.get("input_tokens", 0)
         combined["output_tokens"] += ext.get("output_tokens", 0)
+    _root = str(Path(root).resolve()) if root else None
     if dedup and combined["nodes"]:
         # Numeric ids must be str before dedup, which keys on them and would
         # raise TypeError in _pick_winner's regex search (#2326). build_from_json
@@ -1380,14 +1442,24 @@ def build(
         for n in combined["nodes"]:
             if isinstance(n, dict):
                 _fold_node_aliases(n)
+                # Normalize source_file and definition_file to the build root before
+                # deduplication (#3472), so exact-ID collision checks and same-file
+                # attribute merging operate on canonical repo-relative paths rather
+                # than false-flagging absolute paths from semantic subagents as
+                # different files.
+                if "source_file" in n:
+                    n["source_file"] = _norm_source_file(n["source_file"], _root)
+                if "definition_file" in n:
+                    n["definition_file"] = _norm_source_file(n["definition_file"], _root)
         combined["nodes"], combined["edges"] = deduplicate_entities(
             combined["nodes"], combined["edges"], communities={},
-            dedup_llm_backend=dedup_llm_backend, root=root,
+            dedup_llm_backend=dedup_llm_backend, root=_root,
             # Hyperedge members reference node ids too, so they need the same
             # survivor rewiring the edges get (#2805).
             hyperedges=combined.get("hyperedges"),
+            protected_ids=protected_ids,
         )
-    return build_from_json(combined, directed=directed, root=root)
+    return build_from_json(combined, directed=directed, root=_root)
 
 
 def _norm_label(label: str | None) -> str:
@@ -1502,11 +1574,79 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     )
 
 
+def _tier_replacement_sources(
+    chunks: "Iterable[dict]",
+    root: "str | Path | None" = None,
+    ast_sources: "Iterable[str | Path] | None" = None,
+) -> tuple[set[str], set[str]]:
+    """Compute (new_ast_sources, new_sem_sources) for tier-scoped replacement.
+
+    #3411: AST replacement ownership is derived from explicit extraction
+    provenance (ast_sources or chunk-level "extracted_sources"), so cross-file
+    stub nodes emitted by extractors (e.g. .sln project stubs or ProjectReference
+    stubs) do not pollute the replacement set and wipe the target project's
+    nodes/edges. Falls back to AST node source_file only when no provenance is
+    provided.
+    """
+    explicit_ast_sources: set[str] = set()
+    if ast_sources is not None:
+        for s in ast_sources:
+            if s:
+                explicit_ast_sources.add(str(s))
+    for ch in chunks:
+        if isinstance(ch, dict):
+            for s in (ch.get("extracted_sources") or []):
+                if s:
+                    explicit_ast_sources.add(str(s))
+
+    new_ast_sources: set[str] = set()
+    new_sem_sources: set[str] = set()
+
+    if explicit_ast_sources:
+        for sf in explicit_ast_sources:
+            new_ast_sources.add(sf)
+            norm = _norm_source_file(sf, root)
+            if norm:
+                new_ast_sources.add(norm)
+    else:
+        for ch in chunks:
+            if not isinstance(ch, dict):
+                continue
+            for n in ch.get("nodes", []):
+                if not isinstance(n, dict):
+                    continue
+                sf = n.get("source_file")
+                if not sf or not _is_ast_tier(n):
+                    continue
+                new_ast_sources.add(sf)
+                norm = _norm_source_file(sf, root)
+                if norm:
+                    new_ast_sources.add(norm)
+
+    for ch in chunks:
+        if not isinstance(ch, dict):
+            continue
+        for n in ch.get("nodes", []):
+            if not isinstance(n, dict):
+                continue
+            sf = n.get("source_file")
+            if not sf or _is_ast_tier(n):
+                continue
+            new_sem_sources.add(sf)
+            norm = _norm_source_file(sf, root)
+            if norm:
+                new_sem_sources.add(norm)
+
+    return new_ast_sources, new_sem_sources
+
+
 def merge_raw_extraction(
     new: dict,
     graph_path: str | Path,
     prune_sources: "list[str] | None" = None,
     root: "str | Path | None" = None,
+    *,
+    ast_sources: "Iterable[str | Path] | None" = None,
 ) -> dict:
     """Merge the existing raw graph.json forward into a fresh raw extraction
     (the ``extract --no-cluster`` incremental path, #2169).
@@ -1515,10 +1655,13 @@ def merge_raw_extraction(
     clustered incremental paths can't drift:
 
     - sources re-extracted this run REPLACE their prior contribution PER TIER
-      (#2333/#2336): existing nodes/edges/hyperedges owned by them are dropped
+      (#2333/#2336, #3411): existing nodes/edges/hyperedges owned by them are dropped
       only when the new extraction contains the same tier (AST vs semantic,
       per :func:`_is_ast_tier`) for that source, matched in both raw and
-      :func:`_norm_source_file` form (#1007);
+      :func:`_norm_source_file` form (#1007). AST replacement ownership is derived
+      from explicit extraction provenance (``ast_sources`` or chunk-level
+      ``extracted_sources``), falling back to AST node source_file only when no
+      provenance is provided (#3411);
     - ``prune_sources`` (deleted / excluded / graph-stale files) are dropped,
       with the ``_abs_identity`` third-form fallback (#2012), and "replace" wins
       over a contradictory "delete" of a re-extracted source (#1796);
@@ -1545,23 +1688,15 @@ def merge_raw_extraction(
         else _infer_merge_root(graph_path)
     )
 
-    # Tier-scoped replace, mirroring build_merge (#2333/#2336, COEXIST): a
+    # Tier-scoped replace, mirroring build_merge (#2333/#2336, COEXIST, #3411): a
     # source re-extracted this run replaces only the tier(s) actually present
     # in the new extraction, so an AST-only re-extract keeps the file's
-    # semantic layer and vice versa.
-    new_ast_sources: set[str] = set()
-    new_sem_sources: set[str] = set()
-    for n in new.get("nodes", []):
-        if not isinstance(n, dict):
-            continue
-        sf = n.get("source_file")
-        if not sf:
-            continue
-        tier_sources = new_ast_sources if _is_ast_tier(n) else new_sem_sources
-        tier_sources.add(sf)
-        norm = _norm_source_file(sf, _eff_root)
-        if norm:
-            tier_sources.add(norm)
+    # semantic layer and vice versa. AST replacement ownership is derived from
+    # explicit extraction provenance (ast_sources or "extracted_sources"),
+    # falling back to AST node source_files only when no provenance is provided.
+    new_ast_sources, new_sem_sources = _tier_replacement_sources(
+        [new], root=_eff_root, ast_sources=ast_sources
+    )
     new_sources: set[str] = new_ast_sources | new_sem_sources
 
     # "Replace" wins over a contradictory "delete" of the same source (#1796),
@@ -1658,6 +1793,7 @@ def build_merge(
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
+    ast_sources: "Iterable[str | Path] | None" = None,
 ) -> nx.Graph:
     """Load existing graph.json and return it merged with ``new_chunks``.
 
@@ -1665,13 +1801,16 @@ def build_merge(
     ``export.to_json(G, communities, graph_path, force=True)`` after
     clustering. ``graph_path`` is read-only here.
 
-    Re-extracted files REPLACE their prior contribution per tier (#2333/#2336):
+    Re-extracted files REPLACE their prior contribution per tier (#2333/#2336, #3411):
     a source_file present in new_chunks has its existing nodes/edges dropped
     for each tier (AST vs semantic, per :func:`_is_ast_tier`) the new chunks
     actually contain, so a changed file's stale nodes/edges don't accumulate
-    while a one-tier re-extract keeps the other tier's layer intact. Files
-    absent from new_chunks are preserved unchanged; deleted files are removed
-    via prune_sources (tier-blind). Safe to call repeatedly.
+    while a one-tier re-extract keeps the other tier's layer intact. AST replacement
+    ownership is derived from explicit extraction provenance (``ast_sources`` or
+    chunk-level ``extracted_sources``), falling back to AST node source_file only
+    when no provenance is provided (#3411). Files absent from new_chunks are
+    preserved unchanged; deleted files are removed via prune_sources (tier-blind).
+    Safe to call repeatedly.
     root: if given, absolute source_file paths in new_chunks are made relative (#932).
     directed: if None (default), honor the on-disk graph's own ``directed`` flag
     when one exists, so an incremental merge can't silently flip a directed
@@ -1724,19 +1863,17 @@ def build_merge(
     # chunk used to delete the file's AST headings). Which tier a NEW chunk
     # item belongs to is read via _is_ast_tier (existing items were stamped by
     # _load_existing_graph above).
+    #
+    # #3411: AST replacement ownership is derived from explicit extraction
+    # provenance (ast_sources or chunk-level "extracted_sources"), so cross-file
+    # stub nodes emitted by extractors (e.g. .sln project stubs or ProjectReference
+    # stubs) do not pollute the replacement set and wipe the target project's
+    # nodes/edges. Falls back to AST node source_file only when no provenance is
+    # provided.
     _replace_root = _eff_root
-    new_ast_sources: set[str] = set()
-    new_sem_sources: set[str] = set()
-    for ch in new_chunks:
-        for n in ch.get("nodes", []):
-            sf = n.get("source_file")
-            if not sf:
-                continue
-            tier_sources = new_ast_sources if _is_ast_tier(n) else new_sem_sources
-            tier_sources.add(sf)
-            norm = _norm_source_file(sf, _replace_root)
-            if norm:
-                tier_sources.add(norm)
+    new_ast_sources, new_sem_sources = _tier_replacement_sources(
+        new_chunks, root=_replace_root, ast_sources=ast_sources
+    )
     new_sources: set[str] = new_ast_sources | new_sem_sources
     # True on-disk baseline for the #479 shrink accounting at the end (#2497):
     # the rebind below removes the re-extracted sources' old nodes from
@@ -1889,13 +2026,40 @@ def build_merge(
                 continue  # the new chunks re-emitted it — theirs wins
             carried.append(he)
 
+    # Remove replaced deleted-source records before entity dedup can choose their stale
+    # provenance over a freshly emitted node with the same ID. A Terraform
+    # directory anchor, for example, survives deletion of its first .tf file
+    # with a new source_file; pruning only AFTER build would delete the live
+    # anchor too if dedup selected the old record.
+    if prune_sources:
+        fresh_ids = {n.get("id") for chunk in new_chunks for n in chunk.get("nodes", [])}
+        existing_nodes = [
+            n for n in existing_nodes
+            if not (n.get("id") in fresh_ids and _prune_match(n.get("source_file")))
+        ]
+        # Other deleted records and edges stay until the normal prune below:
+        # it needs their connectivity to identify newly orphaned import stubs.
+
     base = (
         [{"nodes": existing_nodes, "edges": existing_edges, "hyperedges": carried_hyperedges}]
         if had_graph else []
     )
 
+    # Untouched existing nodes must not be collapsed with each other during dedup (#3477).
+    _protected_ids = {
+        n["id"] for n in existing_nodes
+        if isinstance(n, dict) and n.get("id")
+    } if had_graph else None
+
     all_chunks = base + list(new_chunks)
-    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
+    G = build(
+        all_chunks,
+        directed=directed,
+        dedup=dedup,
+        dedup_llm_backend=dedup_llm_backend,
+        root=_eff_root,
+        protected_ids=_protected_ids,
+    )
 
     # Prune nodes and edges from deleted source files
     if prune_sources:

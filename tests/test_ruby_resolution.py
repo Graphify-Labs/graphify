@@ -17,6 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from graphify.extract import extract, extract_ruby
+from graphify.ruby_resolution import resolve_ruby_member_calls
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -55,6 +56,23 @@ def _has_call_edge(graph: dict, src_label_sub: str, tgt_label_sub: str) -> dict 
         if src_label_sub in s and tgt_label_sub in t:
             return e
     return None
+
+
+def _call_edges_matching(graph: dict, src_label: str, tgt_label: str) -> list[dict]:
+    labels = _labels(graph["nodes"])
+    return [
+        edge
+        for edge in graph["edges"]
+        if edge.get("relation") == "calls"
+        and labels.get(edge.get("source")) == src_label
+        and labels.get(edge.get("target")) == tgt_label
+    ]
+
+
+def _only_call(graph: dict, target_label: str = ".helper()") -> dict:
+    matches = _call_edges_matching(graph, ".call()", target_label)
+    assert len(matches) == 1
+    return matches[0]
 
 
 HELPER_RB = """\
@@ -650,3 +668,699 @@ end
     graph = extract([caller, tmp_path / "solo.rb"], cache_root=tmp_path, parallel=False)
     assert _has_call_edge(graph, "pinned", ".go()") is not None, \
         "a top-level-pinned constant receiver must still resolve"
+
+
+# ── #3567 inherited implicit-self calls ──────────────────────────────────────
+
+
+def test_inherited_singleton_implicit_self_call_is_promoted(tmp_path: Path) -> None:
+    """The BaseTool/GetSchema shape reported in #3567 becomes structural."""
+    _write(
+        tmp_path,
+        "base.rb",
+        "module App\n  class BaseTool < MCP::Tool\n    class << self\n"
+        "      def text_response(value); value; end\n"
+        "    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "module App\n  class GetSchema < BaseTool\n"
+        "    def self.call(value)\n      text_response(value)\n"
+        "    end\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+    edge = _only_call(graph, ".text_response()")
+
+    assert edge["confidence"] == "EXTRACTED"
+    assert edge["confidence_score"] == 1.0
+    labels = _labels(graph["nodes"])
+    assert any(
+        candidate.get("relation") == "method"
+        and labels.get(candidate.get("source")) == "App::BaseTool"
+        and candidate.get("target") == edge["target"]
+        for candidate in graph["edges"]
+    )
+
+
+def test_inherited_instance_call_walks_unique_ancestry(tmp_path: Path) -> None:
+    _write(tmp_path, "grand.rb", "class Grand\n  def helper; :ok; end\nend\n")
+    _write(tmp_path, "base.rb", "class Base < Grand\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+    edge = _only_call(graph)
+
+    assert edge["confidence"] == "EXTRACTED"
+    assert edge["confidence_score"] == 1.0
+
+
+def test_compact_class_does_not_invent_lexical_superclass(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "base.rb",
+        "module App\n  class Base\n    def helper; :wrong; end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "class App::Child < Base\n  def call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_inherited_constant_lookup_does_not_fall_back_past_lexical_owner(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :wrong; end\nend\n")
+    _write(
+        tmp_path,
+        "provider.rb",
+        "class Provider\n  class Base\n    class << self\n"
+        "      attr_reader :helper\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Scope < Provider\n  class Child < Base\n"
+        "    def self.call\n      helper()\n    end\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_inherited_call_stays_inferred_for_superclass_constant_alias(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :wrong; end\nend\n")
+    _write(
+        tmp_path,
+        "other.rb",
+        "class Other\n  class << self\n    attr_reader :helper\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "Base = Other\nclass Child < Base\n"
+        "  def self.call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_inherited_call_stays_inferred_for_dynamic_superclass_constant_write(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def helper; :stale; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "Base = resolve_base()\nclass Child < Base\n"
+        "  def call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_inherited_call_stays_inferred_for_multiple_constant_write(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def helper; :stale; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "Base, Spare = ExternalBase, Object\nclass Child < Base\n"
+        "  def call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_destructured_constant_alias_owner_stays_inferred(tmp_path: Path) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :wrong; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "AliasChild, Spare = [Child, Object]\n"
+        "AliasChild.define_singleton_method(:helper) { :child }\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_inherited_call_stays_inferred_under_enclosing_refinement(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "refinement.rb",
+        "module R\n  refine Base do\n"
+        "    define_method(:helper) { :refined }\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "module App\n  using R\n  class Child < Base\n"
+        "    def call\n      helper()\n    end\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_inherited_call_stays_inferred_for_external_owner_mutator(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "Child.define_singleton_method(:helper) { :child }\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_inherited_call_stays_inferred_for_external_owner_eval(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def call\n    helper()\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "patch.rb",
+        "Base.class_eval { prepend ExternalMethods }\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_external_owner_mutator_inside_singleton_class_stays_inferred(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "module Installer\n  class << self\n"
+        "    Child.define_singleton_method(:helper) { :child }\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_external_owner_mutator_inside_external_eigenclass_stays_inferred(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "class Installer; end\nclass << Installer\n"
+        "  Child.define_singleton_method(:helper) { :child }\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_external_owner_mutator_through_constant_alias_stays_inferred(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "AliasChild = Child\n"
+        "AliasChild.define_singleton_method(:helper) { :child }\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_qualified_external_owner_through_namespace_alias_stays_inferred(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "module Namespace\n  class Child < Base\n"
+        "    def self.call\n      helper()\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "AliasNS = Namespace\n"
+        "AliasNS::Child.define_singleton_method(:helper) { :child }\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_qualified_superclass_under_rebound_namespace_stays_inferred(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "base.rb",
+        "module Namespace\n  class Base\n"
+        "    def self.helper; :wrong; end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "other.rb",
+        "module Other\n  class Base\n    class << self\n"
+        "      attr_reader :helper\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "Namespace = Other\nclass Child < Namespace::Base\n"
+        "  def self.call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_inherited_call_stays_inferred_for_compact_reopening(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "module Namespace\n  class Child < Base\n"
+        "    def call\n      helper()\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "module Wrapper\n  class Namespace::Child\n"
+        "    attr_reader :helper\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_absolute_class_declaration_inside_namespace_stays_inferred(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "module Wrapper\n  class ::Child < ::Base\n"
+        "    def call\n      helper()\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        "class Child\n  attr_reader :helper\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_qualified_superclass_stops_at_nearer_lexical_prefix(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "base.rb",
+        "module Outer\n  module Services\n    class Base\n"
+        "      def self.helper; :wrong; end\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "provider.rb",
+        "class Provider\n  class Base\n    class << self\n"
+        "      attr_reader :helper\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "module Outer\n  module Inner\n"
+        "    class Services < ::Provider; end\n"
+        "    class Child < Services::Base\n"
+        "      def self.call\n        helper()\n      end\n    end\n"
+        "  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_deep_qualified_superclass_stops_at_first_lexical_segment(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "base.rb",
+        "module Outer\n  module Services\n    module API\n      class Base\n"
+        "        def self.helper; :wrong; end\n      end\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "provider.rb",
+        "class Provider\n  module API\n    class Base\n      class << self\n"
+        "        attr_reader :helper\n      end\n    end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "module Outer\n  module Inner\n"
+        "    class Services < ::Provider; end\n"
+        "    class Child < Services::API::Base\n"
+        "      def self.call\n        helper()\n      end\n    end\n"
+        "  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_inherited_call_stops_at_ambiguous_nearer_method(tmp_path: Path) -> None:
+    _write(tmp_path, "grand.rb", "class Grand\n  def helper; :grand; end\nend\n")
+    _write(
+        tmp_path,
+        "base.rb",
+        "class Base < Grand\n  def helper; :instance; end\n"
+        "  def self.helper; :singleton; end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert not any(
+        edge.get("confidence") == "EXTRACTED"
+        for edge in _call_edges_matching(graph, ".call()", ".helper()")
+    )
+
+
+def test_inherited_call_does_not_cross_method_kind(tmp_path: Path) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def helper; :instance; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert not any(
+        edge.get("confidence") == "EXTRACTED"
+        for edge in _call_edges_matching(graph, ".call()", ".helper()")
+    )
+
+
+def test_inherited_call_stays_inferred_across_lookup_barrier(tmp_path: Path) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  include ExternalMethods\n"
+        "  def call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_inherited_singleton_call_stays_inferred_for_eigenclass_barrier(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        "base.rb",
+        "class Base\n  class << self\n    prepend ExternalMethods\n"
+        "    def helper; :base; end\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_inherited_call_stays_inferred_for_reopened_class(tmp_path: Path) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def call\n    helper()\n  end\nend\n",
+    )
+    _write(tmp_path, "reopen.rb", "class Child\n  def other; :other; end\nend\n")
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
+def test_inherited_singleton_call_stays_inferred_for_external_owner(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+    )
+    _write(tmp_path, "reopen.rb", "def Child.helper; :child; end\n")
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert not any(
+        edge.get("confidence") == "EXTRACTED"
+        for edge in _call_edges_matching(graph, ".call()", ".helper()")
+    )
+
+
+def test_inherited_resolver_never_creates_or_repoints_call_edge() -> None:
+    file_node = {
+        "id": "child_file",
+        "label": "child.rb",
+        "source_file": "child.rb",
+        "metadata": {"ruby_resolution_schema": 1},
+    }
+    nodes = [
+        file_node,
+        {
+            "id": "base_file",
+            "label": "base.rb",
+            "source_file": "base.rb",
+            "metadata": {"ruby_resolution_schema": 1},
+        },
+        {"id": "child", "label": "Child", "source_file": "child.rb"},
+        {"id": "base", "label": "Base", "source_file": "base.rb"},
+        {"id": "other", "label": "Other", "source_file": "other.rb"},
+        {
+            "id": "caller",
+            "label": ".call()",
+            "source_file": "child.rb",
+            "metadata": {"ruby_method_kind": "instance"},
+        },
+        {
+            "id": "helper",
+            "label": ".helper()",
+            "source_file": "base.rb",
+            "metadata": {"ruby_method_kind": "instance"},
+        },
+        {
+            "id": "wrong",
+            "label": ".helper()",
+            "source_file": "other.rb",
+            "metadata": {"ruby_method_kind": "instance"},
+        },
+    ]
+    structural = [
+        {"source": "child", "target": "caller", "relation": "method"},
+        {
+            "source": "child",
+            "target": "base",
+            "relation": "inherits",
+            "metadata": {
+                "ruby_superclass_ref": "Base",
+                "ruby_lexical_scopes": [],
+            },
+        },
+        {"source": "base", "target": "helper", "relation": "method"},
+        {"source": "other", "target": "wrong", "relation": "method"},
+    ]
+    raw_call = {
+        "caller_nid": "caller",
+        "callee": "helper",
+        "is_member_call": False,
+        "source_file": "child.rb",
+        "source_location": "L3",
+    }
+
+    without_call = list(structural)
+    resolve_ruby_member_calls([{"raw_calls": [raw_call]}], nodes, without_call)
+    assert without_call == structural
+
+    wrong_edge = {
+        "source": "caller",
+        "target": "wrong",
+        "relation": "calls",
+        "context": "call",
+        "confidence": "INFERRED",
+        "confidence_score": 0.85,
+        "source_file": "child.rb",
+        "source_location": "L3",
+    }
+    with_wrong_call = [*structural, wrong_edge]
+    resolve_ruby_member_calls([{"raw_calls": [raw_call]}], nodes, with_wrong_call)
+    assert with_wrong_call[-1] == wrong_edge
+    assert with_wrong_call[-1]["target"] == "wrong"
+    assert with_wrong_call[-1]["confidence"] == "INFERRED"
+
+
+def test_inherited_resolver_requires_edge_target_to_match_metadata() -> None:
+    nodes = [
+        {
+            "id": "child_file",
+            "label": "child.rb",
+            "source_file": "child.rb",
+            "metadata": {"ruby_resolution_schema": 1},
+        },
+        {
+            "id": "base_file",
+            "label": "base.rb",
+            "source_file": "base.rb",
+            "metadata": {"ruby_resolution_schema": 1},
+        },
+        {
+            "id": "other_file",
+            "label": "other.rb",
+            "source_file": "other.rb",
+            "metadata": {"ruby_resolution_schema": 1},
+        },
+        {"id": "child", "label": "Child", "source_file": "child.rb"},
+        {"id": "base", "label": "Base", "source_file": "base.rb"},
+        {"id": "other", "label": "Other", "source_file": "other.rb"},
+        {
+            "id": "caller",
+            "label": ".call()",
+            "source_file": "child.rb",
+            "metadata": {"ruby_method_kind": "instance"},
+        },
+        {
+            "id": "helper",
+            "label": ".helper()",
+            "source_file": "base.rb",
+            "metadata": {"ruby_method_kind": "instance"},
+        },
+    ]
+    edge = {
+        "source": "caller",
+        "target": "helper",
+        "relation": "calls",
+        "context": "call",
+        "confidence": "INFERRED",
+        "confidence_score": 0.85,
+        "source_file": "child.rb",
+        "source_location": "L3",
+    }
+    edges = [
+        {"source": "child", "target": "caller", "relation": "method"},
+        {
+            "source": "child",
+            "target": "other",
+            "relation": "inherits",
+            "metadata": {
+                "ruby_superclass_ref": "Base",
+                "ruby_lexical_scopes": [],
+            },
+        },
+        {"source": "base", "target": "helper", "relation": "method"},
+        edge,
+    ]
+    raw_call = {
+        "caller_nid": "caller",
+        "callee": "helper",
+        "is_member_call": False,
+        "source_file": "child.rb",
+        "source_location": "L3",
+    }
+
+    resolve_ruby_member_calls([{"raw_calls": [raw_call]}], nodes, edges)
+
+    assert edge["confidence"] == "INFERRED"

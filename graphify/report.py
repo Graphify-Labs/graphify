@@ -137,6 +137,21 @@ def generate(
             f"- {detection_result['total_files']} files · ~{detection_result['total_words']:,} words",
             "- Verdict: corpus is large enough that graph structure adds value.",
         ]
+        # #3511: files detect() saw but could not classify (no supported
+        # extension/shebang) were counted nowhere -- a corpus that is mostly
+        # an unsupported language reported the same "well covered" verdict as
+        # one that was actually extracted. Surface the count and its biggest
+        # extensions so a near-total miss (e.g. a Lean/Zig/whatever repo with
+        # no matching extractor) is visible here instead of silent.
+        unclassified = detection_result.get("unclassified") or []
+        if unclassified:
+            from collections import Counter as _Counter
+            ext_counts = _Counter(Path(p).suffix or "(none)" for p in unclassified)
+            top = ", ".join(f"{ext} {n}" for ext, n in ext_counts.most_common(3))
+            lines.append(
+                f"- Unclassified: {len(unclassified)} file(s) not represented in "
+                f"the graph (top: {top})"
+            )
 
     from .analyze import _is_file_node as _ifn
 
@@ -146,13 +161,18 @@ def generate(
     non_empty = {cid: nodes for cid, nodes in communities.items()
                  if any(not _ifn(G, n) for n in nodes)}
     # One predicate for every figure the report prints about itself (#3148):
-    # "thin" is 0 < real < min_community_size, and "shown" is what the render
-    # loop below actually renders (real >= min_community_size) - previously
-    # shown was total-thin, which also counted communities with ZERO real
-    # nodes that the loop skips, overstating the count (#2129's residual).
+    # "thin" is real < min_community_size (ZERO real nodes included), and
+    # "shown" is what the render loop below actually renders (real >=
+    # min_community_size) - previously shown was total-thin, which also
+    # counted communities with ZERO real nodes that the loop skips,
+    # overstating the count (#2129's residual). A subsequent `0 <` guard on
+    # "thin" fixed that overcount but introduced the opposite gap: an
+    # all-file-node community (real == 0) is skipped by the SAME render loop
+    # yet was excluded from "thin" too, so it went uncounted anywhere and
+    # `shown + thin` silently undercounted `len(communities)` (#3548).
     thin_count_summary = sum(
         1 for nodes in communities.values()
-        if 0 < _real_count(nodes) < min_community_size
+        if _real_count(nodes) < min_community_size
     )
     shown_count = sum(
         1 for nodes in communities.values()
@@ -299,10 +319,12 @@ def generate(
     # Same threshold the Summary and Communities headers used (#3148): this
     # was a hardcoded 3, so with --min-community-size anything else the count
     # here disagreed with the label text beside it, which already printed
-    # min_community_size.
+    # min_community_size. No `0 <` guard, matching thin_count_summary above
+    # (#3548): an all-file-node community is skipped by the same render loop
+    # as a genuinely thin one, so it belongs in this count too.
     thin_communities = {
         cid: nodes for cid, nodes in communities.items()
-        if 0 < sum(1 for n in nodes if not _is_file_node(G, n)) < min_community_size
+        if sum(1 for n in nodes if not _is_file_node(G, n)) < min_community_size
     }
     gap_count = len(isolated) + len(thin_communities)
 
