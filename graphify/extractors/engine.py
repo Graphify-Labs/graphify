@@ -3588,9 +3588,7 @@ def _extract_generic(
             file_metadata["ruby_external_method_owners"] = external_owners
         sanitized_metadata = sanitize_metadata(file_metadata)
         sanitized_owners = sanitized_metadata.get("ruby_external_method_owners")
-        if isinstance(sanitized_owners, list) and len(sanitized_owners) < len(
-            external_owners
-        ):
+        if isinstance(sanitized_owners, list) and sanitized_owners != external_owners:
             # A truncated safety set cannot prove any inherited owner safe.
             sanitized_metadata["ruby_external_method_owners"] = ["*"]
         file_node["metadata"] = sanitized_metadata

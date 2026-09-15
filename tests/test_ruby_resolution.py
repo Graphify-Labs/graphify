@@ -965,6 +965,25 @@ def test_external_owner_overflow_stays_inferred(tmp_path: Path) -> None:
     assert _only_call(graph)["confidence"] == "INFERRED"
 
 
+def test_truncated_external_owner_stays_inferred(tmp_path: Path) -> None:
+    owner = "Child" + "A" * 516
+    _write(tmp_path, "base.rb", "class Base\n  def self.helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        f"class {owner} < Base\n  def self.call\n    helper()\n  end\nend\n",
+    )
+    _write(
+        tmp_path,
+        "override.rb",
+        f"{owner}.define_singleton_method(:helper) {{ :child }}\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
+
+
 def test_external_owner_mutator_inside_singleton_class_stays_inferred(
     tmp_path: Path,
 ) -> None:
