@@ -2266,6 +2266,7 @@ def _extract_with_adaptive_retry(
     *,
     deep_mode: bool = False,
     _deadline: float | None = None,
+    _timeout_hit: "list[bool] | None" = None,
 ) -> dict:
     """Extract a chunk; if the response is truncated (`finish_reason="length"`),
     the API rejects the prompt as too large for the model's context window, or
@@ -2322,11 +2323,17 @@ def _extract_with_adaptive_retry(
     proactively, before making that attempt: if an earlier sibling elsewhere
     in the same subtree already exhausted the budget with a real timeout of
     its own, this split is skipped outright rather than paying for a fresh
-    full-length attempt that the shared budget can no longer afford.
+    full-length attempt that the shared budget can no longer afford. This
+    proactive skip only fires once a real timeout has actually been observed
+    somewhere in the subtree (``_timeout_hit``, a one-element list shared by
+    reference across the whole recursion) — plain wall-clock time passing
+    from ordinary successful calls, or from a context-exceeded or truncation
+    split, never trips it on its own.
     """
     if _deadline is None:
         _deadline = time.monotonic() + _resolve_api_timeout()
-    elif _depth > 0 and time.monotonic() >= _deadline:
+        _timeout_hit = [False]
+    elif _timeout_hit[0] and _depth > 0 and time.monotonic() >= _deadline:
         # An earlier split in this subtree already used up the shared budget
         # with a real timeout of its own (the reactive check below, on a
         # prior call in this recursion). Skip this attempt entirely rather
@@ -2344,10 +2351,10 @@ def _extract_with_adaptive_retry(
 
     def _merge_two(left_units, right_units) -> dict:
         left = _extract_with_adaptive_retry(
-            left_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline
+            left_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline, _timeout_hit=_timeout_hit
         )
         right = _extract_with_adaptive_retry(
-            right_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline
+            right_units, backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline, _timeout_hit=_timeout_hit
         )
         return {
             "nodes": left.get("nodes", []) + right.get("nodes", []),
@@ -2397,6 +2404,11 @@ def _extract_with_adaptive_retry(
         if not (_looks_like_context_exceeded(exc) or is_timeout):
             raise
         reason = "timed out" if is_timeout else "exceeded context"
+        if is_timeout:
+            # A real timeout happened, not just elapsed wall-clock time from
+            # ordinary successful calls — only now is the shared budget
+            # allowed to skip a not-yet-started sibling proactively.
+            _timeout_hit[0] = True
         if is_timeout and time.monotonic() >= _deadline:
             # The subtree's shared timeout budget is spent — every prior split
             # in this cascade already re-paid the full per-attempt timeout, so
@@ -2441,10 +2453,10 @@ def _extract_with_adaptive_retry(
         )
         mid = len(chunk) // 2
         left = _extract_with_adaptive_retry(
-            chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline
+            chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline, _timeout_hit=_timeout_hit
         )
         right = _extract_with_adaptive_retry(
-            chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline
+            chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline, _timeout_hit=_timeout_hit
         )
         return {
             "nodes": left.get("nodes", []) + right.get("nodes", []),
@@ -2529,10 +2541,10 @@ def _extract_with_adaptive_retry(
     )
     mid = len(chunk) // 2
     left = _extract_with_adaptive_retry(
-        chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline
+        chunk[:mid], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline, _timeout_hit=_timeout_hit
     )
     right = _extract_with_adaptive_retry(
-        chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline
+        chunk[mid:], backend, api_key, model, root, max_depth, _depth + 1, deep_mode=deep_mode, _deadline=_deadline, _timeout_hit=_timeout_hit
     )
 
     return {
