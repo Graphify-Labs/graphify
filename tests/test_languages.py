@@ -3448,6 +3448,53 @@ def test_apex_no_dangling_edges():
             assert e["source"] in node_ids, f"dangling source in {fixture}: {e}"
             assert e["target"] in node_ids, f"dangling target in {fixture}: {e}"
 
+def test_apex_modifiers_in_any_order_are_declarations():
+    r = extract_apex(FIXTURES / "apex_modifiers.cls")
+    labels = _labels(r)
+    for name in ("ReportBuilder", "Nested", "Legacy", "Constants"):
+        assert name in labels, f"{name} produced no node"
+
+def test_apex_referenced_types_are_sourceless(tmp_path):
+    source = tmp_path / "Handler.cls"
+    source.write_text(
+        "public with sharing class Handler extends BaseHandler implements Queueable {\n"
+        "    void run() {\n"
+        "        List<Account> rows = [SELECT Id FROM Account];\n"
+        "    }\n"
+        "}\n"
+    )
+    r = extract_apex(source)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    # Only referenced here, so they are placeholders for definitions elsewhere.
+    for name in ("BaseHandler", "Queueable", "Account"):
+        assert by_label[name]["source_file"] == "", f"{name} claims to be defined here"
+    # Actually declared here, so it keeps this file as its source.
+    assert by_label["Handler"]["source_file"].endswith("Handler.cls")
+
+def test_apex_referenced_type_is_not_contained_by_referencing_file(tmp_path):
+    """Negative control: a referenced type must NOT get a `contains` edge.
+
+    A contained node reads as a definition owned by this file, which is what
+    made one class fragment into a node per referencing file."""
+    source = tmp_path / "Handler.cls"
+    source.write_text("public class Handler extends BaseHandler {}\n")
+    r = extract_apex(source)
+    base = next(n for n in r["nodes"] if n["label"] == "BaseHandler")
+    contained = {e["target"] for e in r["edges"] if e["relation"] == "contains"}
+    assert base["id"] not in contained
+
+def test_apex_local_declaration_beats_stub(tmp_path):
+    """A base class declared in the SAME file binds to that declaration."""
+    source = tmp_path / "Outer.cls"
+    source.write_text(
+        "public with sharing class Base {}\n"
+        "public with sharing class Outer extends Base {}\n"
+    )
+    r = extract_apex(source)
+    base = [n for n in r["nodes"] if n["label"] == "Base"]
+    assert len(base) == 1
+    assert base[0]["source_file"].endswith("Outer.cls")
+
 
 # -- SystemVerilog -------------------------------------------------------------
 
