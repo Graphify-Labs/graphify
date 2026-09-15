@@ -27,7 +27,7 @@ _CONFIG_KEY_RE = re.compile(
     r"(?m)(?:^|,)\s*(?P<key>type|schema|database|description|tags|dependencies)\s*:"
 )
 _CALL_RE = re.compile(
-    r"(?<![\w$.])(?P<kind>ref|self)\s*\((?P<args>[^()\r\n]*)\)",
+    r"(?<![\w$.])(?P<kind>ref|self)\s*\((?P<args>[^()]*)\)",
     re.IGNORECASE,
 )
 _STRING_RE = re.compile(r"(?P<quote>['\"])(?P<body>(?:\\.|(?!\1).)*)\1", re.DOTALL)
@@ -178,7 +178,7 @@ def _parse_config(body: str) -> dict[str, Any]:
                 end += 1
             value = body[start:end].strip()
         if isinstance(value, str) and value:
-            config[key] = value
+            config[key] = [value] if key == "dependencies" else value
     return config
 
 

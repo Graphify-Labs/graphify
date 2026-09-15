@@ -138,3 +138,36 @@ def test_config_dependency_edge_uses_dependency_value_location(tmp_path):
     ]
     assert len(config_edges) == 1
     assert config_edges[0]["source_location"] == "L4"
+
+
+def test_scalar_config_dependency_is_one_dependency(tmp_path):
+    model = tmp_path / "scalar_dependency.sqlx"
+    model.write_text(
+        'config { dependencies: "upstream" }\n'
+        "SELECT 1;\n",
+        encoding="utf-8",
+    )
+
+    result = extract_dataform(model)
+
+    assert result["nodes"][0]["dataform_config"]["dependencies"] == ["upstream"]
+    assert [edge["target"] for edge in result["edges"]] == ["dataform_upstream"]
+
+
+def test_multiline_ref_call_is_extracted(tmp_path):
+    model = tmp_path / "multiline_ref.sqlx"
+    model.write_text(
+        'config { type: "table" }\n'
+        "SELECT * FROM ${ref(\n"
+        '  "analytics",\n'
+        '  "upstream"\n'
+        ")};\n",
+        encoding="utf-8",
+    )
+
+    result = extract_dataform(model)
+
+    assert [edge["target"] for edge in result["edges"]] == [
+        "dataform_analytics_upstream"
+    ]
+    assert result["edges"][0]["source_location"] == "L2"
