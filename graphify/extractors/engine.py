@@ -3158,20 +3158,57 @@ _SWIFT_AWAIT_BINDING = re.compile(
 )
 
 
+def _swift_line_comment_start(line: bytes) -> int:
+    """Offset of the `//` that opens a line comment, or `len(line)` if none.
+
+    Quote-aware, because "is there a `//` earlier on the line" is not the same
+    question: `let base = "https://x"; if let y = await f(base)` has one inside
+    a string literal, and reading it as a comment marker skipped the repair on
+    a line that needed it (Graphify review on #3542). A URL in Swift source is
+    ordinary, so this was not a corner.
+
+    What it does NOT model: raw strings (`#"..."#`), multi-line `\"\"\"`
+    literals, and interpolation. Getting one of those wrong costs nothing in
+    either direction. Reading a comment as code rewrites an `await` inside a
+    comment, which is equal-length and only reaches a file that already failed
+    to parse; reading code as a comment is the behaviour this replaces.
+    """
+    inside_string = False
+    index = 0
+    while index < len(line):
+        character = line[index : index + 1]
+        if inside_string:
+            if character == b"\\":
+                index += 2
+                continue
+            if character == b'"':
+                inside_string = False
+        elif character == b'"':
+            inside_string = True
+        elif character == b"/" and line[index + 1 : index + 2] == b"/":
+            return index
+        index += 1
+    return len(line)
+
+
 def _swift_blank_await_bindings(source: bytes) -> bytes:
     """`if let x = await y` -> `if let x =       y`, same byte length.
 
-    Skips a match that sits behind a `//` on its own line, so a commented-out
-    binding keeps its text: comments are not parsed into symbols, but some of
-    them are read as documentation and rewriting one would be a change nobody
-    asked for. A block comment or a string literal holding this exact shape is
-    still rewritten — harmless at equal length, and this only runs on a file
-    that already failed to parse.
+    Skips a match that sits behind the `//` that opens a line comment, so a
+    commented-out binding keeps its text: comments are not parsed into symbols,
+    but some of them are read as documentation and rewriting one would be a
+    change nobody asked for. A block comment or a string literal holding this
+    exact shape is still rewritten — harmless at equal length, and this only
+    runs on a file that already failed to parse.
     """
 
     def replace(match: "re.Match[bytes]") -> bytes:
         line_start = source.rfind(b"\n", 0, match.start()) + 1
-        if b"//" in source[line_start:match.start()]:
+        line_end = source.find(b"\n", match.start())
+        if line_end == -1:
+            line_end = len(source)
+        comment_start = _swift_line_comment_start(source[line_start:line_end])
+        if line_start + comment_start < match.start():
             return match.group(0)
         return match.group(1) + b" " * len(match.group(2))
 

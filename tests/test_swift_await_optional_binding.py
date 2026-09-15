@@ -108,6 +108,38 @@ class TestSwiftAwaitOptionalBinding(unittest.TestCase):
             with self.subTest(source.decode()):
                 self.assertEqual(len(_swift_blank_await_bindings(source)), len(source))
 
+    def test_a_url_in_a_string_is_not_a_comment_marker(self):
+        """The Graphify review's finding, reproduced first.
+
+        `"https://..."` puts a `//` on the line before the binding, and reading
+        "is there a `//` earlier" as "is this commented out" skipped the repair
+        on a line that needed it — so the file stayed unparseable, which is the
+        defect this whole function exists to clear. A URL in Swift source is
+        ordinary, so this was not a corner.
+        """
+        for source in (
+            b'let base = "https://api.example.com"; if let x = await f(base) {',
+            b'let u = "a//b"; while var r = await box.rings {',
+            b'let s = "said \\"hi//\\""; if let r = await p {',
+        ):
+            with self.subTest(source.decode()):
+                repaired = _swift_blank_await_bindings(source)
+                self.assertNotEqual(repaired, source)
+                self.assertEqual(len(repaired), len(source))
+                self.assertNotIn(b"await", repaired)
+
+    def test_a_real_line_comment_is_still_left_alone(self):
+        """The control for it, in both positions a comment can open: the whole
+        line, and after code on the same line. Losing this would rewrite a
+        commented-out binding that somebody is reading as documentation."""
+        for untouched in (
+            b"// if let r = await pending\n",
+            b"    // guard let r = await pending else {\n",
+            b'let base = "x" // if let r = await pending\n',
+        ):
+            with self.subTest(untouched.decode()):
+                self.assertEqual(_swift_blank_await_bindings(untouched), untouched)
+
     def test_the_repair_leaves_everything_else_alone(self):
         """It rewrites the binding operand and nothing else — not a `guard`,
         which the grammar already accepts, and not an `await` in a statement
