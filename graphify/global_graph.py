@@ -115,12 +115,15 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     except TypeError:
         src_G = _jg.node_link_graph(data)
 
-    # Prefix IDs for cross-project isolation
-    prefixed = prefix_graph_for_global(src_G, repo_tag)
-
-    # Load global graph and prune stale nodes for this repo
+    # Load global graph and prune stale nodes for this repo, before prefixing
+    # the incoming one: the offset computed in the next commit reads the
+    # store's community ids as they stand once this repo's own stale entries
+    # are already gone, so re-adding the same repo cannot inflate it forever.
     G = _load_global_graph()
     removed = prune_repo_from_graph(G, repo_tag)
+
+    # Prefix IDs for cross-project isolation
+    prefixed = prefix_graph_for_global(src_G, repo_tag)
 
     # Merge external-library nodes (no source_file) by label to avoid duplication
     external_labels = {
