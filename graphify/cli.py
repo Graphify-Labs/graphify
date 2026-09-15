@@ -1283,12 +1283,19 @@ def dispatch_command(cmd: str) -> None:
             except TypeError:
                 G = json_graph.node_link_graph(_raw)
             try:
-                from graphify.build import graph_has_legacy_ids as _legacy
-                if _legacy(_raw.get("nodes", [])):
+                # Nudge only when a legacy id is genuinely AMBIGUOUS (claimed by
+                # more than one file). Warning on "this graph predates #1504"
+                # alone fired on every query of every older graph, including the
+                # measured 51k-node case where 591 legacy ids collided zero times
+                # (#RANK1).
+                from graphify.build import legacy_id_collisions as _legacy_collisions
+                _collisions = _legacy_collisions(_raw.get("nodes", []))
+                if _collisions:
                     print(
-                        "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
-                        "rebuild with `graphify extract --force` to get path-qualified IDs "
-                        "(fixes same-name-file collisions).",
+                        f"[graphify] note: {_collisions} node ID(s) in this graph are "
+                        "claimed by more than one file (pre-#1504 scheme); those nodes "
+                        "may answer for the wrong file. Rebuild with "
+                        "`graphify extract --force` for path-qualified IDs.",
                         file=sys.stderr,
                     )
             except Exception:
@@ -2223,11 +2230,18 @@ def dispatch_command(cmd: str) -> None:
                     if have_label:
                         changed += 1
             if changed:
+                # Clustering re-runs on every rebuild, so a corpus that changed at all
+                # produces a different community set — this is the normal case, not a
+                # fault. The affected names have ALREADY been refreshed deterministically
+                # from each community's hub by the lines above, so the old wording
+                # ("Run `graphify label`") named a required repair for work that was
+                # already done, on every single run (#RANK1). Report what happened and
+                # say plainly that the LLM pass is optional.
                 print(
-                    f"[graphify] community set changed since labeling "
-                    f"({len(existing_labels)} saved labels, {len(communities)} communities now; "
-                    f"renamed {changed} community(ies) by their hub). "
-                    f"Run `graphify label` to refresh names with the LLM.",
+                    f"[graphify] renamed {changed} of {len(communities)} communities "
+                    f"after re-clustering ({len(existing_labels)} saved labels); new "
+                    f"names come from each community's hub. Optional: `graphify label` "
+                    f"regenerates them with the LLM.",
                     file=sys.stderr,
                 )
         elif no_label and not force_relabel:
