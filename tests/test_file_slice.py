@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -126,6 +127,32 @@ def test_estimate_tokens_for_slice_scales_with_range(tmp_path):
     small = FileSlice(f, 0, 100, 0, 2)
     big = FileSlice(f, 0, 8000, 1, 2)
     assert llm._estimate_file_tokens(small) < llm._estimate_file_tokens(big)
+
+
+def test_whole_file_text_paths_read_at_the_char_cap(tmp_path, monkeypatch):
+    path = tmp_path / "large.py"
+    text = "x" * (llm._FILE_CHAR_CAP + 1)
+    read_sizes = []
+
+    class GuardedReader(StringIO):
+        def read(self, size=-1):
+            read_sizes.append(size)
+            assert size == llm._FILE_CHAR_CAP
+            return super().read(size)
+
+    class Tokenizer:
+        def encode(self, text, *, disallowed_special):
+            return [0] * len(text)
+
+    monkeypatch.setattr(Path, "open", lambda self, *args, **kwargs: GuardedReader(text))
+    monkeypatch.setattr(llm, "_TOKENIZER", Tokenizer())
+
+    assert llm._file_to_text(path) == text[:llm._FILE_CHAR_CAP]
+    assert llm._dispatched_source_text([path], tmp_path) == {path.resolve(): text[:llm._FILE_CHAR_CAP]}
+    assert llm._estimate_file_tokens(path) == llm._FILE_CHAR_CAP + (
+        llm._PER_FILE_OVERHEAD_CHARS // llm._CHARS_PER_TOKEN
+    )
+    assert read_sizes == [llm._FILE_CHAR_CAP] * 3
 
 
 def test_partition_keeps_slices_as_text(tmp_path):
