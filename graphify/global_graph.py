@@ -116,14 +116,27 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         src_G = _jg.node_link_graph(data)
 
     # Load global graph and prune stale nodes for this repo, before prefixing
-    # the incoming one: the offset computed in the next commit reads the
-    # store's community ids as they stand once this repo's own stale entries
-    # are already gone, so re-adding the same repo cannot inflate it forever.
+    # the incoming one: the offset below reads the store's community ids as
+    # they stand once this repo's own stale entries are already gone, so
+    # re-adding the same repo cannot inflate it forever.
     G = _load_global_graph()
     removed = prune_repo_from_graph(G, repo_tag)
 
+    # Offset the incoming repo's community ids past every other repo's
+    # already in the store (#3014, #3100): every graph.json numbers its own
+    # communities from 0, and the CLI merge-graphs command already offsets
+    # for exactly this reason, but the incremental add path here kept
+    # prefixing each new repo's communities from 0 too, colliding with
+    # whatever id another repo already occupied.
+    community_offset = 0
+    existing_cids = [
+        d["community"] for _, d in G.nodes(data=True) if isinstance(d.get("community"), int)
+    ]
+    if existing_cids:
+        community_offset = max(existing_cids) + 1
+
     # Prefix IDs for cross-project isolation
-    prefixed = prefix_graph_for_global(src_G, repo_tag)
+    prefixed = prefix_graph_for_global(src_G, repo_tag, community_offset=community_offset)
 
     # Merge external-library nodes (no source_file) by label to avoid duplication
     external_labels = {
