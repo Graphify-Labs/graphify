@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id
+from graphify.security import sanitize_metadata
 
 
 def extract_elixir(path: Path) -> dict:
@@ -30,6 +31,7 @@ def extract_elixir(path: Path) -> dict:
     edges: list[dict] = []
     seen_ids: set[str] = set()
     function_bodies: list[tuple[str, Any]] = []
+    module_def_nids: set[str] = set()
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -39,12 +41,15 @@ def extract_elixir(path: Path) -> dict:
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
-                 context: str | None = None) -> None:
+                 context: str | None = None,
+                 metadata: dict | None = None) -> None:
         edge = {"source": src, "target": tgt, "relation": relation,
                 "confidence": confidence, "source_file": str_path,
                 "source_location": f"L{line}", "weight": weight}
         if context:
             edge["context"] = context
+        if metadata:
+            edge["metadata"] = sanitize_metadata(metadata)
         edges.append(edge)
 
     file_nid = _make_id(str(path))
@@ -118,6 +123,16 @@ def extract_elixir(path: Path) -> dict:
                 return
             module_nid = _make_id(stem, module_name)
             add_node(module_nid, module_name, line)
+            # Only TOP-LEVEL modules are indexable by the corpus-wide resolver.
+            # A nested `defmodule Supervisor` inside `MyApp.Application` is
+            # labelled with the written inner name, not its real BEAM name
+            # (`MyApp.Application.Supervisor`), so indexing it would let it
+            # capture `use Supervisor` from unrelated files and assert a false
+            # EXTRACTED edge. Marker rides on the node dict so it survives the
+            # id-remap/disambiguation passes (same rationale as `_callable`,
+            # #1566); export strips `_`-prefixed attrs.
+            if parent_module_nid is None:
+                module_def_nids.add(module_nid)
             add_edge(file_nid, module_nid, "contains", line)
             if do_block_node:
                 for child in do_block_node.children:
@@ -164,14 +179,27 @@ def extract_elixir(path: Path) -> dict:
 
         if keyword in _IMPORT_KEYWORDS and arguments_node:
             for module_name in _get_alias_modules(arguments_node):
+                # An Elixir `alias`/`import`/`require`/`use` names a BEAM module,
+                # not a path, so a per-file extractor cannot know which file
+                # defines it. Target stays the name-derived id for now;
+                # `_resolve_elixir_import_targets` rewrites it to the real
+                # `defmodule` node id via the `target_fqn` stamped here, once the
+                # corpus-wide module index exists (#3562). Targets that resolve
+                # to nothing (Ecto, Logger, any dep) stay dangling like other
+                # languages' external imports and are pruned by build.
                 tgt_nid = _make_id(module_name)
-                add_edge(file_nid, tgt_nid, "imports", line, context="import")
+                add_edge(file_nid, tgt_nid, "imports", line, context="import",
+                         metadata={"target_fqn": module_name})
             return
 
         for child in node.children:
             walk(child, parent_module_nid)
 
     walk(root)
+
+    for n in nodes:
+        if n["id"] in module_def_nids:
+            n["_elixir_module"] = True
 
     label_to_nid: dict[str, str] = {}
     for n in nodes:

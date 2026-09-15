@@ -4530,6 +4530,87 @@ def _resolve_kotlin_import_targets(
             e["target"] = candidates[0]
 
 
+_ELIXIR_MODULE_LABEL_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)*$")
+
+
+def _resolve_elixir_import_targets(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Rewrite Elixir ``imports`` edge targets from the bare module name to the
+    ``defmodule`` node that name actually defines (#3562).
+
+    ``extract_elixir`` mints module DEFINITIONS as ``_make_id(file_stem, name)``
+    (the corpus-wide invariant documented on ``_file_stem`` — same-named symbols
+    in different files must not collide) but emits
+    ``file --imports--> _make_id(module_name)`` for every
+    ``alias``/``import``/``require``/``use``, with the written name stamped as
+    ``metadata.target_fqn``. The two ids can never be equal, so build's
+    ``src not in node_set or tgt not in node_set`` prune dropped EVERY Elixir
+    alias/import edge — the same failure Kotlin had in #2526, and the reason
+    ``extract_elixir`` deliberately exempts ``imports`` from its own dangling-edge
+    filter: it assumes a downstream pass will resolve them.
+
+    An Elixir alias names a BEAM module, not a path, so the per-file extractor
+    cannot resolve it — and guessing a file from ``Macro.underscore`` conventions
+    would break on umbrella apps, ``:elixirc_paths`` config, acronym modules and
+    multi-module files. Hence a corpus-wide pass here instead, matching the
+    written name against module labels EXACTLY (the label is the alias text as
+    written, so no normalisation is involved and confidence stays EXTRACTED). A
+    name defined exactly ONCE in the corpus is rewritten to that node id; zero or
+    several candidates leave the edge untouched, dangling like other languages'
+    external imports (``Ecto.Query``, ``Logger``, any dependency), so no stub node
+    is ever fabricated.
+
+    Must run BEFORE the shared call pass builds its import-evidence index, for the
+    same reason the Kotlin pass does — see the call site in ``extract()``.
+    """
+    # label -> [module node ids]. Restricted to nodes that came from an Elixir
+    # source file and whose label has the shape of a module alias: extract_elixir
+    # emits exactly three node kinds, and neither file nodes (basename, e.g.
+    # `user.ex`) nor function nodes (`create()`) can match this pattern.
+    modules_by_name: dict[str, list[tuple[str, str]]] = {}
+    for n in all_nodes:
+        # `_elixir_module` is stamped by extract_elixir on TOP-LEVEL defmodule
+        # nodes only. Gating on it (rather than on a label regex) excludes
+        # nested modules — whose label is the written inner name, not their real
+        # BEAM name, so they would capture aliases meant for a different module —
+        # and also excludes any same-labelled node a semantic/LLM tier might add,
+        # which would otherwise make the name ambiguous and suppress resolution.
+        if not n.get("_elixir_module"):
+            continue
+        label = str(n.get("label") or "")
+        if not _ELIXIR_MODULE_LABEL_RE.match(label):
+            continue
+        modules_by_name.setdefault(label, []).append(
+            (n["id"], str(n.get("source_file") or ""))
+        )
+    if not modules_by_name:
+        return
+    for e in all_edges:
+        if e.get("relation") != "imports":
+            continue
+        if not str(e.get("source_file") or "").endswith((".ex", ".exs")):
+            continue
+        fqn = str((e.get("metadata") or {}).get("target_fqn") or "")
+        if not fqn:
+            continue
+        candidates = modules_by_name.get(fqn, [])
+        if len(candidates) != 1:  # single-candidate guard: never fabricate
+            continue
+        target_id, target_src = candidates[0]
+        # Self-import: `defmodule MyApp.Context` whose own `__using__`/`quote`
+        # body does `import MyApp.Context`. Retargeting would land a second
+        # edge on the `file --contains--> module` pair; the graph is a plain
+        # (non-multi) Graph, so one relation would silently overwrite the
+        # other and destroy the `contains` edge. A self-import carries no
+        # cross-file information, so leave it dangling as before.
+        if target_src and target_src == str(e.get("source_file") or ""):
+            continue
+        e["target"] = target_id
+
+
 def _resolve_csharp_qualified_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -4721,6 +4802,14 @@ def _resolve_kotlin_qualified_calls(
 # failure isolation.
 _KOTLIN_IMPORT_TARGET_RESOLVER = LanguageResolver(
     "kotlin_import_targets", frozenset({".kt", ".kts"}), _resolve_kotlin_import_targets
+)
+
+# Elixir import-target resolution (#3562) — same shape, same reason, same early
+# slot as the Kotlin pass above: alias/import targets are name-derived and must be
+# repointed onto the real `defmodule` node before import-evidence promotion reads
+# the edges.
+_ELIXIR_IMPORT_TARGET_RESOLVER = LanguageResolver(
+    "elixir_import_targets", frozenset({".ex", ".exs"}), _resolve_elixir_import_targets
 )
 
 
@@ -7276,15 +7365,23 @@ def extract(
     # them from the indirect_call guard below to avoid false edges (#2137).
     class_nids = {n["id"] for n in resolution_nodes if n.get("_callable_class")}
 
-    # Kotlin import targets (#2526): rewrite each `imports` edge from the bare
-    # last-segment id to the node its written FQN names, via the per-file
-    # package declarations. Runs HERE — after the id-remap/disambiguation passes
-    # (ids are final) but before the import-evidence index just below reads the
-    # edges — so genuine imported calls get promoted INFERRED -> EXTRACTED. The
-    # tail registry run (run_language_resolvers below) would be too late.
+    # Kotlin (#2526) and Elixir (#3562) import targets: rewrite each `imports`
+    # edge from its name-derived id to the node its written FQN names. Runs HERE —
+    # after the id-remap/disambiguation passes (ids are final) but before the
+    # import-evidence index just below reads the edges — so genuine imported calls
+    # get promoted INFERRED -> EXTRACTED. The tail registry run
+    # (run_language_resolvers below) would be too late.
+    # `resolution_nodes`, NOT `all_nodes` (#2406): on an incremental rebuild
+    # `all_nodes` holds only the re-extracted batch, so every alias pointing into
+    # an UNCHANGED file would fail to resolve and be pruned — the graph would
+    # decay back toward the bug on exactly the `graphify watch` / hook path. It
+    # would also bypass the single-candidate guard, since a name that is
+    # ambiguous corpus-wide can look unique within the changed subset and get an
+    # arbitrary, fabricated target. Inert for Kotlin, which indexes off
+    # `per_file`.
     run_language_resolvers(
-        paths, per_file, all_nodes, all_edges,
-        resolvers=[_KOTLIN_IMPORT_TARGET_RESOLVER],
+        paths, per_file, resolution_nodes, all_edges,
+        resolvers=[_KOTLIN_IMPORT_TARGET_RESOLVER, _ELIXIR_IMPORT_TARGET_RESOLVER],
     )
 
     # Build evidence index from import edges so cross-file calls backed by an
