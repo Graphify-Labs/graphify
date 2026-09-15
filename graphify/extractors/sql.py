@@ -32,11 +32,36 @@ from graphify.extractors.base import _file_stem, _make_id
 # 'SELECT AUTOCREATE PROCEDURE x FROM t;' in an error-bearing file minted a
 # phantom routine x() (delimited identifiers are span-skipped at the scan
 # site, but a bare word has no span).
+# A backtick-quoted name is also accepted: _debracket_tsql rewrites every
+# T-SQL bracket-quoted identifier in the source to a backtick-quoted one
+# before parsing, so by the time an ERROR-bearing file reaches this scan a
+# bracket-named routine has no brackets left to match — only a backtick
+# name. Without this alternative a bracketed routine name went from a
+# recovered (if ugly) node to no node at all.
 _ROUTINE_RECOVERY_RX = re.compile(
     r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:FUNCTION|PROC(?:EDURE)?)\s+"
     r"(?:IF\s+NOT\s+EXISTS\s+)?"
-    r"((?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
-    r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
+    r"((?:\"(?:[^\"\n]|\"\")+\"|`(?:[^`\n]|``)+`|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
+    r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|`(?:[^`\n]|``)+`|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
+    re.IGNORECASE,
+)
+
+# Recovers a CREATE TABLE/VIEW statement swallowed into an unrelated ERROR
+# node's span (#2719): TSQL's AS BEGIN...END routine body has no grammar
+# rule, so a broken CREATE FUNCTION/PROCEDURE lands in an ERROR node whose
+# byte span can absorb the following statement too, and a bare
+# create_table/create_view never lands in the tree at all for it. Shares
+# _ROUTINE_RECOVERY_RX's delimited name alternatives and the same whole
+# file masked scan, gated the same way (root.has_error), and dedupes
+# against table_nids so a statement that DID parse cleanly is never
+# registered twice. Also accepts OR ALTER alongside OR REPLACE, matching
+# _ROUTINE_RECOVERY_RX: T-SQL views are re-created with OR ALTER, not OR
+# REPLACE, so a swallowed "CREATE OR ALTER VIEW" could never match before.
+_VIEW_TABLE_RECOVERY_RX = re.compile(
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:VIEW|TABLE)\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"((?:\"(?:[^\"\n]|\"\")+\"|`(?:[^`\n]|``)+`|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
+    r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|`(?:[^`\n]|``)+`|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
     re.IGNORECASE,
 )
 
@@ -81,9 +106,11 @@ def _scan_sql(text: str) -> tuple[str, list[tuple[int, int]]]:
     One output character per input character: non-newline characters inside
     a blanked span become spaces and newlines are kept, so positions and
     line numbers computed against the masked text are valid against the
-    original. Double-quoted and bracket-delimited identifiers are preserved
-    verbatim (they carry recoverable routine names); single-quoted strings,
-    line comments, and (nesting-aware) block comments are blanked. Used by
+    original. Double-quoted, bracket-delimited, and backtick-delimited
+    identifiers are preserved verbatim (they carry recoverable routine
+    names — a backtick-quoted one is what _debracket_tsql rewrote a T-SQL
+    bracket-quoted name into before parsing); single-quoted strings, line
+    comments, and (nesting-aware) block comments are blanked. Used by
     the routine-recovery scan so CREATE PROCEDURE/FUNCTION DDL reachable
     only through a comment or a single-quoted string cannot fabricate a
     routine node when an unrelated parse error arms recovery.
@@ -173,7 +200,7 @@ def _scan_sql(text: str) -> tuple[str, list[tuple[int, int]]]:
                     break
                 j += 1
             i = _blank(j)
-        elif c == '"' or c == "[":
+        elif c == '"' or c == "[" or c == "`":
             # Delimited identifier: preserve verbatim. Doubled closers are
             # escapes. A span is DISTRUSTED when it is unterminated (no
             # closer before the newline) or would swallow a comment opener
@@ -202,7 +229,7 @@ def _scan_sql(text: str) -> tuple[str, list[tuple[int, int]]]:
             # same /, an irreducible divergence whose only closure would be
             # blanking to EOF on every */* sequence (accepted, documented
             # limitation; the token sequence appears in no dialect's idiom).
-            closer = '"' if c == '"' else "]"
+            closer = '"' if c == '"' else ("]" if c == "[" else "`")
             j = i + 1
             closed = False
             while j < n and text[j] != "\n":
@@ -269,6 +296,290 @@ def _norm_ident(name: str) -> str:
     return ".".join(parts)
 
 
+# PostgreSQL dollar-quoted string/body delimiter: $$ or $tag$, tag optional.
+_DOLLAR_QUOTE_TAG_RX = re.compile(rb"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
+
+# A lone surrogate (U+D800-U+DFFF) is what errors="surrogateescape" leaves
+# behind for an invalid source byte; str.encode(errors="replace") does turn
+# one into a placeholder rather than raising, but that placeholder is a
+# bare "?", not the U+FFFD every OTHER invalid-byte path in this module
+# produces (bytes.decode(errors="replace") on a malformed sequence, as
+# _read still uses). Replacing it explicitly keeps a name's placeholder
+# character consistent with the rest of the extractor.
+_LONE_SURROGATE_RX = re.compile("[\ud800-\udfff]")
+
+
+def _debracket_tsql(source: bytes) -> tuple[bytes, list[tuple[int, int]]]:
+    """Rewrite T-SQL bracket quoted identifiers to backtick quoted ones.
+
+    tree_sitter_sql has no grammar rule for a bracket delimited identifier
+    ([dbo].[Orders]): every one lands in an ERROR node, and the surrounding
+    statement can misparse or drop entirely, mangling labels (#2712) and
+    silently losing a whole table behind a broken foreign key (#2713).
+    Backtick quoting (MySQL's dialect) is a token the grammar already
+    recognizes, so rewriting the source before parsing lets the normal AST
+    path handle these statements instead of falling into error recovery.
+
+    Only a bracket span that reads as an identifier is rewritten. A trailing
+    [] pair is also used as an array type or array literal marker in other
+    dialects: int[], numeric(10)[3], ARRAY[1,2,3]. Those are told apart from
+    a quoted identifier by what comes right before the bracket. A quoted
+    identifier starts a name, so it is preceded by whitespace, `.`, `,`, `(`,
+    or the start of the file; an array marker is preceded by the identifier
+    or keyword it subscripts (ARRAY[, col[, the closing `)` of a type's
+    precision/scale list), with no separating punctuation -- except the
+    ARRAY keyword itself, which PostgreSQL also allows any whitespace
+    (including a newline) before its bracket (ARRAY [1, 2, 3], or
+    ARRAY\n[1, 2, 3]); that specific case is checked for past a run of
+    whitespace so it is not mistaken for the start of a quoted name.
+    Content that is empty or purely numeric is also excluded, since neither
+    is a legal bare T-SQL identifier, and content holding a comment opener
+    (`--`, `/*`) is
+    distrusted the same way _scan_sql treats it: a genuine identifier never
+    contains one, so a bracket that appears to swallow one is more likely an
+    unrelated stray `[` racing ahead to some later statement's real closing
+    `]`. Rewriting it anyway would erase the comment before _scan_sql's own
+    line-scoped distrust handling ever sees it.
+
+    Content holding a literal `.` or a literal backtick is excluded too,
+    but for a different reason: tree_sitter_sql's own grammar cannot
+    correctly parse either one inside a backtick span. A dot splits the
+    token regardless of quoting, so [My.Table] would still come out mangled
+    after rewriting to `My.Table` (the grammar reads it as `My`, a bare `.`
+    qualifier, `Table`, and a dangling stray backtick). A literal backtick
+    is escaped by doubling it when this function writes a rewritten span
+    ([Foo`Bar] -> `Foo``Bar`, matching MySQL's own escaping convention),
+    but the grammar treats the first backtick of that doubled pair as the
+    closing delimiter instead of an escape, truncating the identifier to
+    `Foo` and leaving `Bar` behind as an unrelated ERROR node. No amount of
+    escaping on this end can round-trip either shape; leaving the span as a
+    plain, un-rewritten bracket is the fallback that existed before this
+    function did.
+
+    A single or double quoted string is scanned to its real closing quote
+    even across embedded newlines, matching how the engines actually read
+    one: stopping at the first line break would leave the remainder of a
+    still-open multi-line string scanned as ordinary source, so bracket-like
+    text inside it (dynamic SQL split across lines, say) would be mistaken
+    for a real identifier and rewritten, corrupting the string's content.
+    A string that in fact never closes just consumes the rest of the file
+    this way, which only means nothing past it gets debracketed -- the same
+    fallback behavior as before this function existed.
+
+    A PostgreSQL dollar-quoted span ($$ ... $$ or $tag$ ... $tag$, as used
+    for a PL/pgSQL function body) is skipped the same way: its content is
+    opaque body text, not SQL to debracket, and bracket-like text inside it
+    (an array subscript expression, say) must not be rewritten just because
+    it happens to sit between a stray pair of square brackets.
+
+    A genuinely backtick-quoted MySQL identifier is skipped for the same
+    reason: without a dedicated branch its content was scanned character by
+    character like ordinary source, so a bracket-like substring inside one
+    (a name like [weird]name written between backticks) was mistaken for a
+    real T-SQL bracket identifier and rewritten right there inside the
+    existing backtick span, producing doubled and orphaned backticks. A
+    doubled backtick inside the span is honored as an escaped literal
+    backtick, the same escaping convention this function itself uses when
+    it writes a rewritten span, so the scan does not stop early on one.
+    Unlike a string or dollar-quoted span, this one IS line-scoped: a name
+    does not span lines in practice, so an unclosed backtick is far more
+    likely a stray character (a typo, a mark in a comment) than a genuine
+    multi-line identifier, and scanning past a newline for one would let
+    that stray backtick silently swallow the rest of the file as "still
+    inside a span." A backtick that does not close on its own line is left
+    as an ordinary character instead, matching how _scan_sql itself treats
+    an unterminated delimited identifier.
+
+    Returns the rewritten source plus the byte-range spans, in the rewritten
+    source's own coordinates, of every backtick pair this function inserted.
+    A downstream reader uses those spans to un-rewrite ONLY the identifiers
+    that came from a bracket: a genuinely backtick-quoted MySQL name sitting
+    anywhere else in the same file must not be touched just because the file
+    also happened to need debracketing somewhere (#2721 follow-up).
+    """
+    out = bytearray()
+    i, n = 0, len(source)
+    spans: list[tuple[int, int]] = []
+    while i < n:
+        c = source[i]
+        if c == ord("'"):
+            j = i + 1
+            while j < n:
+                if source[j] == ord("'"):
+                    if j + 1 < n and source[j + 1] == ord("'"):
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out += source[i:j]
+            i = j
+        elif c == ord('"'):
+            j = i + 1
+            while j < n:
+                if source[j] == ord('"'):
+                    if j + 1 < n and source[j + 1] == ord('"'):
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out += source[i:j]
+            i = j
+        elif c == ord("`"):
+            # Line-scoped, unlike the string/dollar-quote spans above: a
+            # genuine backtick-quoted identifier is a name, and names do
+            # not span lines in practice, so there is no real-world case
+            # this would need to close on a later line the way a multi-line
+            # dynamic-SQL string or a PL/pgSQL body does. Scanning past a
+            # newline here would let one accidental, unmatched backtick
+            # anywhere in the file (a stray character in prose, a typo)
+            # swallow everything after it as "still inside a backtick span"
+            # -- silently disabling debracketing for the rest of the file.
+            # If it does not close on this line it is not treated as a
+            # span at all: the single backtick is ordinary text, and
+            # scanning resumes right after it, matching how _scan_sql
+            # itself treats an unterminated delimited identifier.
+            j = i + 1
+            closed = False
+            while j < n and source[j] != ord("\n"):
+                if source[j] == ord("`"):
+                    if j + 1 < n and source[j + 1] == ord("`"):
+                        j += 2
+                        continue
+                    j += 1
+                    closed = True
+                    break
+                j += 1
+            if not closed:
+                j = i + 1
+            out += source[i:j]
+            i = j
+        elif c == ord("$") and (m := _DOLLAR_QUOTE_TAG_RX.match(source, i)):
+            tag = m.group(0)
+            close = source.find(tag, m.end())
+            j = close + len(tag) if close != -1 else n
+            out += source[i:j]
+            i = j
+        elif c == ord("-") and i + 1 < n and source[i + 1] == ord("-"):
+            j = i
+            while j < n and source[j] != ord("\n"):
+                j += 1
+            out += source[i:j]
+            i = j
+        elif c == ord("/") and i + 1 < n and source[i + 1] == ord("*"):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if source[j] == ord("/") and j + 1 < n and source[j + 1] == ord("*"):
+                    depth += 1
+                    j += 2
+                elif source[j] == ord("*") and j + 1 < n and source[j + 1] == ord("/"):
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
+            out += source[i:j]
+            i = j
+        elif c == ord("["):
+            prev = source[i - 1] if i > 0 else None
+            subscript_like = prev is not None and (
+                chr(prev).isalnum() or chr(prev) in "_$)]"
+            )
+            if not subscript_like and prev in (0x20, 0x09, 0x0A, 0x0D):
+                # PostgreSQL allows whitespace -- including a newline, since
+                # SQL treats all whitespace between tokens the same way --
+                # between the ARRAY keyword and its bracket constructor
+                # (ARRAY [1, 2, 3], or ARRAY\n[1, 2, 3]), so a plain
+                # "preceding char" check misses it: the char right before
+                # '[' is whitespace, not the identifier/keyword the marker
+                # actually subscripts. Look back past the run of whitespace
+                # for a bare ARRAY word instead.
+                k = i - 1
+                while k > 0 and source[k - 1] in (0x20, 0x09, 0x0A, 0x0D):
+                    k -= 1
+                word_start = k - 5
+                if word_start >= 0 and source[word_start:k].upper() == b"ARRAY" and (
+                    word_start == 0
+                    or not (
+                        chr(source[word_start - 1]).isalnum()
+                        or source[word_start - 1] in (0x5F, 0x24)
+                    )
+                ):
+                    subscript_like = True
+            j = i + 1
+            closed = False
+            while j < n and source[j] != ord("\n"):
+                if source[j] == ord("]"):
+                    if j + 1 < n and source[j + 1] == ord("]"):
+                        j += 2
+                        continue
+                    j += 1
+                    closed = True
+                    break
+                j += 1
+            content = source[i + 1:j - 1] if closed else b""
+            looks_like_ident = (
+                closed
+                and content
+                and not subscript_like
+                and not content.strip().isdigit()
+                and b"--" not in content
+                and b"/*" not in content
+                and b"." not in content
+                and b"`" not in content
+            )
+            if looks_like_ident:
+                escaped = content.replace(b"]]", b"]").replace(b"`", b"``")
+                span_start = len(out)
+                out += b"`" + escaped + b"`"
+                spans.append((span_start, len(out)))
+                i = j
+            else:
+                out.append(c)
+                i += 1
+        else:
+            out.append(c)
+            i += 1
+    return bytes(out), spans
+
+
+def _strip_backtick_parts(raw: bytes, base_byte: int, overlaps) -> bytes:
+    """Undo _debracket_tsql's rewrite for display labels and recovered
+    names, per dotted part.
+
+    Checks each dotted part's OWN byte range against a debracketed span
+    independently, not the whole name's range: a genuinely backtick-quoted
+    part sitting next to a debracketed one ([dbo].`Foo`, a T-SQL schema
+    debracketed alongside a native MySQL table name, say) must keep its
+    own backticks. The caller having confirmed the WHOLE name overlaps
+    SOME span is not enough to strip every part -- that can be true even
+    when only one of several dotted parts was actually touched (#2721
+    follow-up).
+
+    raw is the exact bytes of the (already-debracketed) name as it reads
+    in source, and base_byte is raw's own starting offset in source, so
+    each part's absolute byte range can be computed and checked.
+    """
+    out_parts = []
+    pos = 0
+    for part in raw.split(b"."):
+        part_start = base_byte + pos
+        pos += len(part) + 1
+        stripped = part.strip()
+        lead_ws = len(part) - len(part.lstrip())
+        s_start = part_start + lead_ws
+        s_end = s_start + len(stripped)
+        if (
+            len(stripped) >= 2
+            and stripped[:1] == b"`"
+            and stripped[-1:] == b"`"
+            and overlaps(s_start, s_end)
+        ):
+            stripped = stripped[1:-1].replace(b"``", b"`")
+        out_parts.append(stripped)
+    return b".".join(out_parts)
+
+
 def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     """Extract tables, views, functions, and relationships from .sql files via tree-sitter."""
     try:
@@ -295,6 +606,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             else content if content is not None
             else path.read_bytes()
         )
+        source, debracket_spans = _debracket_tsql(source)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -313,10 +625,56 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     def _read(n) -> str:
         return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
 
+    def _overlaps_debracketed_span(start_byte: int, end_byte: int) -> bool:
+        return any(s < end_byte and start_byte < e for s, e in debracket_spans)
+
+    def _clean_name(n) -> str:
+        """Read n's text, un-rewriting it ONLY if _debracket_tsql touched it.
+
+        A node whose byte range never overlaps a rewritten span is returned
+        exactly as read -- in particular, a genuinely backtick-quoted MySQL
+        name elsewhere in a file that also needed T-SQL debracketing is left
+        with its own backticks intact, not stripped just because the file as
+        a whole went through the rewrite (#2721 follow-up). The overlap
+        check here is a fast-path only: it decides whether to bother with
+        _strip_backtick_parts at all, which does the real, per-dotted-part
+        check on n.start_byte..n.end_byte overlapping SOMEWHERE is not the
+        same as every part of a dotted name having been touched.
+        """
+        text = _read(n)
+        if debracket_spans and _overlaps_debracketed_span(n.start_byte, n.end_byte):
+            raw = source[n.start_byte:n.end_byte]
+            text = _strip_backtick_parts(raw, n.start_byte, _overlaps_debracketed_span).decode(
+                "utf-8", errors="replace"
+            )
+        # A bracket-quoted identifier containing a literal dot cannot be
+        # represented via backtick rewriting (the grammar splits on the dot
+        # regardless of quoting) and is left as a plain bracket -- but this
+        # is a tree_sitter_sql grammar limitation independent of any
+        # rewriting: confirmed by feeding a raw, un-debracketed multi-part
+        # bracket reference straight to the parser with none of this
+        # module's code involved at all. The grammar's own error recovery
+        # for a plain bracket span containing a dot sometimes groups the
+        # opening '[' into THIS object_reference node while its matching
+        # ']' lands in a separate, later sibling ERROR node this function
+        # never visits, leaking a stray, unmatched '[' into the name.
+        # Stripped unconditionally, not just when debracket_spans overlap,
+        # since two dot-containing bracket parts joined by '.' produce this
+        # leak even when neither one was ever debracketed. An excess ']'
+        # can leak the same way when the STRAY OPENER lands in the
+        # PREVIOUS sibling instead. Neither carries information the rest
+        # of the text does not already have without it.
+        extra_open = text.count("[") - text.count("]")
+        if extra_open > 0:
+            text = text.replace("[", "", extra_open)
+        elif extra_open < 0:
+            text = text.replace("]", "", -extra_open)
+        return text
+
     def _obj_name(n) -> str | None:
         for c in n.children:
             if c.type == "object_reference":
-                return _read(c)
+                return _clean_name(c)
         return None
 
     def _add_node(nid: str, label: str, line: int) -> None:
@@ -380,7 +738,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                     if cc.type == "keyword_references":
                                         found_ref = True
                                     elif found_ref and cc.type == "object_reference":
-                                        ref_name = _read(cc)
+                                        ref_name = _clean_name(cc)
                                         break
                                 if ref_name:
                                     ref_nid = table_nids.get(_norm_ident(ref_name)) or _ref_stub(ref_name)
@@ -397,7 +755,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                         if cc.type == "keyword_references":
                                             found_ref = True
                                         elif found_ref and cc.type == "object_reference":
-                                            ref_name = _read(cc)
+                                            ref_name = _clean_name(cc)
                                             break
                                     if ref_name:
                                         ref_nid = table_nids.get(_norm_ident(ref_name)) or _ref_stub(ref_name)
@@ -458,7 +816,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                 if ccc.type == "keyword_references":
                                     found_ref = True
                                 elif found_ref and ccc.type == "object_reference":
-                                    ref_name = _read(ccc)
+                                    ref_name = _clean_name(ccc)
                                     break
                             if ref_name:
                                 ref_nid = (table_nids.get(_norm_ident(ref_name))
@@ -474,11 +832,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 if c.type == "keyword_trigger":
                     after_trigger = True
                 elif after_trigger and not trig_name and c.type == "object_reference":
-                    trig_name = _read(c)
+                    trig_name = _clean_name(c)
                 elif c.type == "keyword_for":
                     after_for = True
                 elif after_for and not tbl_name and c.type == "object_reference":
-                    tbl_name = _read(c)
+                    tbl_name = _clean_name(c)
             if trig_name:
                 trig_nid = _make_id(stem, trig_name)
                 _add_node(trig_nid, trig_name, line)
@@ -609,7 +967,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 if c.type == "relation":
                     for cc in c.children:
                         if cc.type == "object_reference":
-                            tbl = _read(cc)
+                            tbl = _clean_name(cc)
                             if _norm_ident(tbl) in cte_names:
                                 continue
                             tbl_nid = table_nids.get(_norm_ident(tbl)) or _ref_stub(tbl)
@@ -661,14 +1019,64 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # (e.g. Firebird COMPUTED BY columns push constraints out of the tree entirely).
     # Snapshot after tree walk so we don't re-emit edges already captured above.
     emitted = {(e["source"], e["target"]) for e in edges if e["relation"] == "references"}
-    src_text = source.decode("utf-8", errors="replace")
-    for m in re.finditer(r"CREATE\s+TABLE\s+([\w$]+)\s*\(", src_text, re.IGNORECASE):
+    # surrogateescape, not replace: _clean_regex_name reconstructs a byte
+    # offset by re-encoding a src_text slice, which only works if decoding
+    # was lossless. errors="replace" collapses each invalid byte to a
+    # single U+FFFD that re-encodes to 3 bytes, permanently inflating every
+    # offset computed past it (confirmed: 200 invalid bytes shifted a
+    # routine name's computed span 400 bytes off, past every real
+    # debracket_spans entry, so a debracketed name that should have had
+    # its backticks stripped kept them in the final label instead).
+    # surrogateescape maps each invalid byte to its own lone surrogate
+    # codepoint and back losslessly, so encode(decode(source)) == source
+    # exactly and every offset stays correct.
+    src_text = source.decode("utf-8", errors="surrogateescape")
+    # Computed unconditionally, not just under the has_error gate below: the
+    # Firebird CREATE TABLE/REFERENCES fallback right after this runs on
+    # every file, clean or not, and needs the same masking its sibling
+    # recovery loops already get -- scanning raw src_text let a
+    # CREATE TABLE ... REFERENCES ... shaped string LITERAL (dynamic SQL
+    # text, never executed as DDL) fabricate a real edge between two
+    # genuinely unrelated tables that merely share names with the string's
+    # content (#2724 follow-up).
+    masked_src, ident_spans = _scan_sql(src_text)
+
+    def _clean_regex_name(text: str, char_start: int, char_end: int) -> str:
+        """_clean_name's counterpart for a name captured by a regex match
+        against src_text (a decoded str) rather than read off a tree-sitter
+        node -- the whole-file ERROR-recovery fallback has no node to ask
+        for a byte range, so this converts the match's character offsets to
+        byte offsets (src_text decodes the same, already-debracketed
+        `source` debracket_spans was computed against) before doing the same
+        overlap check _clean_name does.
+
+        A delimited name's content can itself carry one of src_text's
+        surrogate-escaped bytes (a quoted identifier's negated character
+        class does not exclude it the way a bare [\\w$]+ name already does).
+        Sanitized on the way out, past the point the surrogate was needed
+        for correct offset math, so a name never carries one into a label —
+        encoding a lone surrogate is a hard error everywhere except this
+        one special mode, and a label is not meant to be decoded back with
+        it.
+        """
+        if not debracket_spans:
+            return _LONE_SURROGATE_RX.sub("�", text)
+        byte_start = len(src_text[:char_start].encode("utf-8", errors="surrogateescape"))
+        byte_end = len(src_text[:char_end].encode("utf-8", errors="surrogateescape"))
+        if not _overlaps_debracketed_span(byte_start, byte_end):
+            return _LONE_SURROGATE_RX.sub("�", text)
+        raw = text.encode("utf-8", errors="surrogateescape")
+        stripped = _strip_backtick_parts(raw, byte_start, _overlaps_debracketed_span)
+        return _LONE_SURROGATE_RX.sub("�", stripped.decode("utf-8", errors="surrogateescape"))
+    for m in re.finditer(r"CREATE\s+TABLE\s+([\w$]+)\s*\(", masked_src, re.IGNORECASE):
+        if any(s <= m.start() < e for s, e in ident_spans):
+            continue
         tbl_name = m.group(1)
         tbl_nid = table_nids.get(_norm_ident(tbl_name))
         if tbl_nid is None:
             continue
         tbl_line = src_text[: m.start()].count("\n") + 1
-        tail = src_text[m.start():]
+        tail = masked_src[m.start():]
         end = re.search(r"(?:^|\n)(?:CREATE|SET\s+TERM|ALTER)\s", tail[1:], re.IGNORECASE)
         block = tail[: end.start() + 1] if end else tail
         for rm in re.finditer(r"\bREFERENCES\s+([\w$]+)", block, re.IGNORECASE):
@@ -708,13 +1116,33 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         # CREATE keyword STARTS inside one is identifier data, not DDL
         # ('SELECT 1 AS [CREATE PROCEDURE x pending]') and is skipped — the
         # name a genuine statement captures is allowed to be a delimited
-        # identifier; its CREATE never is.
-        masked_src, ident_spans = _scan_sql(src_text)
+        # identifier; its CREATE never is. masked_src/ident_spans were
+        # already computed above, unconditionally, for the Firebird
+        # REFERENCES fallback.
         for m in _ROUTINE_RECOVERY_RX.finditer(masked_src):
             if any(s <= m.start() < e for s, e in ident_spans):
                 continue
-            fn_name = m.group(1)
+            fn_name = _clean_regex_name(m.group(1), m.start(1), m.end(1))
             fn_line = src_text[: m.start()].count("\n") + 1
             _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)
+
+        # A TSQL routine with an AS BEGIN...END body has no grammar rule, so
+        # its ERROR node can absorb the text of the statement right after it
+        # too, and a following CREATE VIEW/TABLE never lands in the tree as
+        # its own node (#2719). Recovered the same way as routines above:
+        # same masked scan, same ident span skip, gated the same has_error
+        # check, deduped against table_nids so a statement that DID parse
+        # cleanly is never re registered here.
+        for m in _VIEW_TABLE_RECOVERY_RX.finditer(masked_src):
+            if any(s <= m.start() < e for s, e in ident_spans):
+                continue
+            obj_name = _clean_regex_name(m.group(1), m.start(1), m.end(1))
+            norm = _norm_ident(obj_name)
+            if norm in table_nids:
+                continue
+            obj_line = src_text[: m.start()].count("\n") + 1
+            obj_nid = _make_id(stem, obj_name)
+            _add_node(obj_nid, obj_name, obj_line)
+            table_nids[norm] = obj_nid
 
     return {"nodes": nodes, "edges": edges}
