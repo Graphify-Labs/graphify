@@ -3191,11 +3191,12 @@ def _ruby_external_method_owners(root_node, source: bytes) -> list[str]:
                 # denotes, including dynamic RHS and multiple assignment.
                 owners.update(prefix_marker(raw) for raw in lhs_refs)
             right = node.child_by_field_name("right")
-            if node.type == "assignment" and lhs_refs and right is not None:
+            if lhs_refs and right is not None:
                 # Treat both ends of a potential constant alias as unsafe.  A
-                # later mutation through the alias affects descendant owners
-                # too.  Only direct/parenthesized constant RHS forms qualify;
-                # ordinary values containing constant references do not.
+                # later mutation through a plain or operator-assigned alias
+                # affects descendant owners too.  Only direct/parenthesized
+                # constant RHS forms qualify; ordinary values containing
+                # constant references do not.
                 owners.update(
                     prefix_marker(raw)
                     for raw in alias_rhs_refs(
