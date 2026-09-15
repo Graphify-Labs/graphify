@@ -133,6 +133,25 @@ def test_doc_only_deletion_full_rebuild_evicts_md_nodes(tmp_path):
     assert "run()" in labels
 
 
+def test_rebuild_code_reports_unclassified_files(tmp_path, capsys):
+    """#3511: `graphify extract` has surfaced files it saw but could not
+    classify (no supported extension/shebang) since #1692; the update/watch
+    rebuild path never did, so a corpus mostly in an unsupported language
+    (e.g. Lean, per the report) rebuilt "successfully" with those files
+    silently absent and nothing said about it."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    (corpus / "Main.lean").write_text("def main := 0\n", encoding="utf-8")
+    (corpus / "Util.lean").write_text("def util := 1\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    out = capsys.readouterr().out
+    assert "2 file(s) not classified" in out
+    assert "Main.lean" in out
+    assert "Util.lean" in out
+
+
 # --- watch() import error without watchdog ---
 
 def test_check_update_no_flag_returns_true(tmp_path):
@@ -161,6 +180,32 @@ def test_check_update_does_not_clear_flag(tmp_path):
     flag.write_text("1")
     check_update(tmp_path)
     assert flag.exists()
+
+
+@pytest.mark.parametrize(
+    ("no_cluster", "change_topology"),
+    [(True, False), (False, False), (False, True)],
+    ids=["no-cluster", "unchanged-topology", "clustered-rebuild"],
+)
+def test_code_rebuild_preserves_semantic_update_flag(
+    tmp_path, no_cluster, change_topology
+):
+    """An AST-only rebuild cannot clear pending semantic work (#3294)."""
+    source = tmp_path / "app.py"
+    source.write_text("def before(): pass\n", encoding="utf-8")
+    assert _rebuild_code(
+        tmp_path, no_cluster=no_cluster, acquire_lock=False
+    ) is True
+
+    flag = tmp_path / "graphify-out" / "needs_update"
+    flag.write_text("docs/PRD.md\n", encoding="utf-8")
+    if change_topology:
+        source.write_text("def after(): pass\n", encoding="utf-8")
+
+    assert _rebuild_code(
+        tmp_path, no_cluster=no_cluster, acquire_lock=False
+    ) is True
+    assert flag.read_text(encoding="utf-8") == "docs/PRD.md\n"
 
 
 def test_watch_raises_without_watchdog(tmp_path, monkeypatch):
@@ -633,6 +678,61 @@ def test_rebuild_honors_persisted_no_gitignore(tmp_path):
     graph = json.loads((corpus / "graphify-out" / "graph.json").read_text())
     sources = {Path(str(node.get("source_file", ""))).as_posix() for node in graph["nodes"]}
     assert any(source.endswith("generated/gen.py") for source in sources)
+
+
+def test_no_cluster_rebuild_disambiguates_colliding_file_labels(tmp_path):
+    """The raw update path keeps the same display labels as a fresh extract.
+
+    File nodes with the same basename need directory-qualified labels (#2032),
+    including after an incremental no-cluster rebuild.
+    """
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    (corpus / "pkg_a").mkdir(parents=True)
+    (corpus / "pkg_b").mkdir()
+    (corpus / "pkg_a" / "errors.ts").write_text(
+        "export class AlphaError {}\n", encoding="utf-8"
+    )
+    (corpus / "pkg_b" / "errors.ts").write_text(
+        "export class BetaError {}\n", encoding="utf-8"
+    )
+    entry = corpus / "entry.ts"
+    entry.write_text(
+        'import { AlphaError } from "./pkg_a/errors.js";\n'
+        'import { BetaError } from "./pkg_b/errors.js";\n'
+        "export const errors = [AlphaError, BetaError];\n",
+        encoding="utf-8",
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    graph_path = corpus / "graphify-out" / "graph.json"
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    labels = {
+        node["label"]
+        for node in graph["nodes"]
+        if node.get("id") in {"pkg_a_errors", "pkg_b_errors"}
+    }
+    assert labels == {"pkg_a/errors.ts", "pkg_b/errors.ts"}
+
+    entry.write_text(
+        entry.read_text(encoding="utf-8") + "export const count = errors.length;\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[entry],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    labels = {
+        node["label"]
+        for node in graph["nodes"]
+        if node.get("id") in {"pkg_a_errors", "pkg_b_errors"}
+    }
+    assert labels == {"pkg_a/errors.ts", "pkg_b/errors.ts"}
 
 
 def test_graphify_root_preserves_absolute_when_user_supplied(tmp_path):
@@ -3414,6 +3514,87 @@ def test_incremental_rebuild_preserves_python_call_to_unchanged_target(tmp_path)
     assert sorted(_2406_calls(_2406_graph(corpus))) == sorted(full)
 
 
+# --- #3567: inherited Ruby calls into unchanged ancestry --------------------
+
+
+def _3567_seed(tmp_path, *, singleton=False, grandparent=False):
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir(parents=True)
+    helper = (
+        "  class << self\n    def helper(value); value; end\n  end\n"
+        if singleton
+        else "  def helper(value); value; end\n"
+    )
+    if grandparent:
+        (corpus / "grand.rb").write_text(
+            f"class Grand\n{helper}end\n", encoding="utf-8"
+        )
+        (corpus / "base.rb").write_text(
+            "class Base < Grand\nend\n", encoding="utf-8"
+        )
+    else:
+        (corpus / "base.rb").write_text(
+            f"class Base\n{helper}end\n", encoding="utf-8"
+        )
+    declaration = "def self.call" if singleton else "def call"
+    (corpus / "child.rb").write_text(
+        f"class Child < Base\n  {declaration}\n"
+        "    helper(1)\n  end\nend\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    return corpus
+
+
+def _3567_call(graph):
+    nodes = {node["id"]: node for node in graph.get("nodes", [])}
+    matches = [
+        (edge, nodes.get(edge.get("target"), {}))
+        for edge in graph.get("links", graph.get("edges", []))
+        if edge.get("relation") == "calls"
+        and nodes.get(edge.get("source"), {}).get("label") == ".call()"
+        and nodes.get(edge.get("target"), {}).get("label") == ".helper()"
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+@pytest.mark.parametrize(
+    ("singleton", "grandparent", "target_file"),
+    [(False, True, "grand.rb"), (True, False, "base.rb")],
+)
+def test_incremental_ruby_inherited_call_matches_full_build(
+    tmp_path, singleton, grandparent, target_file
+):
+    """A changed caller keeps the full-build confidence and target."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _3567_seed(
+        tmp_path, singleton=singleton, grandparent=grandparent
+    )
+    full_edge, full_target = _3567_call(_2406_graph(corpus))
+    assert full_edge.get("confidence") == "EXTRACTED"
+    assert full_target.get("source_file") == target_file
+
+    caller = corpus / "child.rb"
+    declaration = "def self.call" if singleton else "def call"
+    caller.write_text(
+        f"class Child < Base\n  {declaration}\n"
+        "    marker = 1\n    helper(1)\n  end\nend\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+
+    incremental_edge, incremental_target = _3567_call(_2406_graph(corpus))
+    assert incremental_edge.get("confidence") == "EXTRACTED"
+    assert incremental_edge.get("confidence_score") == 1.0
+    assert incremental_target.get("source_file") == target_file
+
+
 # --- #2437 / #2438: member + indirect calls into unchanged files -------------
 # The #2406 resolution context now also carries the unchanged corpus's
 # contains/method edges (member-call resolvers, #2437) and the persisted
@@ -4203,3 +4384,108 @@ def test_markdown_reconcile_does_not_suffix_match_top_level_target(tmp_path):
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
     links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
     assert not any(edge.get("relation") == "references" for edge in links)
+
+
+# --- portable paths: definition_file travels with source_file --------------
+
+def test_relativize_source_files_relativizes_definition_file(tmp_path):
+    """`definition_file` (the implementation site recorded when a C/C++/ObjC
+    decl/def pair merges) names a file in the scanned tree exactly like
+    `source_file`, so it must be relativized too. Left absolute, the graph
+    carries the build machine's paths and cannot be read on another checkout."""
+    from graphify.watch import _relativize_source_files
+
+    root = tmp_path.resolve()
+    payload = {"nodes": [{
+        "id": "foo_bar",
+        "source_file": str(root / "src" / "Foo.h"),
+        "definition_file": str(root / "src" / "Foo.cpp"),
+    }]}
+    _relativize_source_files(payload, root)
+    node = payload["nodes"][0]
+    assert node["source_file"] == "src/Foo.h"
+    assert node["definition_file"] == "src/Foo.cpp"
+
+
+def test_relativize_source_files_leaves_an_outside_definition_file_alone(tmp_path):
+    """The scope guard applies to the new key as well: a path outside the
+    watched tree is left as-is rather than being forced under the root."""
+    from graphify.watch import _relativize_source_files
+
+    root = (tmp_path / "repo").resolve()
+    (root).mkdir()
+    outside = (tmp_path / "elsewhere" / "Foo.cpp").resolve()
+    payload = {"nodes": [{
+        "id": "foo_bar",
+        "source_file": str(root / "Foo.h"),
+        "definition_file": str(outside),
+    }]}
+    _relativize_source_files(payload, root, scope=root)
+    node = payload["nodes"][0]
+    assert node["source_file"] == "Foo.h"
+    assert node["definition_file"] == str(outside)
+
+
+def test_rebase_relative_source_files_rebases_definition_file(tmp_path):
+    """Cache-root-relative rebasing moves both keys, so a decl/def node built
+    under a cache root keeps a definition site that resolves from the project
+    root instead of pointing one directory level off."""
+    from graphify.watch import _rebase_relative_source_files
+
+    source_root = tmp_path / "cache" / "pkg"
+    target_root = tmp_path / "cache"
+    payload = {"nodes": [{
+        "id": "foo_bar",
+        "source_file": "src/Foo.h",
+        "definition_file": "src/Foo.cpp",
+    }]}
+    _rebase_relative_source_files(payload, source_root, target_root)
+    node = payload["nodes"][0]
+    assert node["source_file"] == "pkg/src/Foo.h"
+    assert node["definition_file"] == "pkg/src/Foo.cpp"
+
+
+def test_no_cluster_rebuild_survives_a_permission_error_on_replace(tmp_path, monkeypatch):
+    """#2689: on a VMware HGFS shared folder, os.replace over a graph.json
+    read earlier in the same process raises PermissionError even on the same
+    drive. The no_cluster incremental rebuild path must fall back instead of
+    aborting the whole run."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    (corpus / "app.py").write_text("def run(): pass\ndef added(): pass\n", encoding="utf-8")
+
+    monkeypatch.setattr(os, "replace", lambda src, dst: (_ for _ in ()).throw(
+        PermissionError("simulated HGFS WinError 5")
+    ))
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "added()" in labels, "the fallback must still land the new content"
+
+
+def test_clustered_rebuild_survives_a_permission_error_on_replace(tmp_path, monkeypatch):
+    """Same #2689 fallback requirement for the default (clustered) rebuild
+    path, the second of the two watch.py call sites."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "app.py").write_text("def run(): pass\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    (corpus / "app.py").write_text("def run(): pass\ndef added(): pass\n", encoding="utf-8")
+
+    monkeypatch.setattr(os, "replace", lambda src, dst: (_ for _ in ()).throw(
+        PermissionError("simulated HGFS WinError 5")
+    ))
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
+    assert "added()" in labels, "the fallback must still land the new content"
