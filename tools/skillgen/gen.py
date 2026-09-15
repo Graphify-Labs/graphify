@@ -1142,6 +1142,24 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_update_kind_ast_fix_line(line: str) -> bool:
+    """Whether a line is part of the --update kind="ast" fix (#2459).
+
+    The update flow called ``detect_incremental(Path('INPUT_PATH'))`` without a
+    ``kind``, inheriting the "semantic" default that reports any file whose
+    semantic_hash is empty (AST-extracted only, never semantically chunked) as
+    changed on EVERY run. The call now passes ``kind="ast"`` with a comment
+    explaining why. Both the old (removed) and new (added) call forms and the
+    comment lines match here.
+    """
+    return (
+        "detect_incremental(Path('INPUT_PATH')" in line
+        or "not re-flagged changed on every run (#2459)" in line
+        or "semantic_hash is still empty" in line
+        or 'kind="ast": the update flow diffs content' in line
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1163,6 +1181,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_update_kind_ast_fix_line,
 )
 
 
@@ -1181,7 +1200,8 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     unification, the unified frontmatter description, the chunk-cleanup rewrite
     (#1172), the four #1392 runbook fixes (directed propagation, content-only
     semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
-    and semantic-cache source scoping (#1757).
+    semantic-cache source scoping (#1757), and the --update kind="ast" call fix
+    (#2459).
 
     The comparison is a multiset diff, not a positional zip: a line whose text is
     unchanged but merely *moved* (the report-write line shifted below ``to_json``
