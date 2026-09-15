@@ -3078,7 +3078,14 @@ _RUBY_LOOKUP_MUTATORS = frozenset(
 )
 
 _RUBY_EXTERNAL_OWNER_MUTATORS = _RUBY_LOOKUP_MUTATORS | frozenset(
-    {"class_eval", "class_exec", "module_eval", "module_exec"}
+    {
+        "class_eval",
+        "class_exec",
+        "instance_eval",
+        "instance_exec",
+        "module_eval",
+        "module_exec",
+    }
 )
 
 

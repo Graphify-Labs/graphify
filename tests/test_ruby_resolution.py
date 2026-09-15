@@ -914,6 +914,35 @@ def test_inherited_call_stays_inferred_for_external_owner_eval(
     assert _only_call(graph)["confidence"] == "INFERRED"
 
 
+def test_inherited_call_stays_inferred_for_external_owner_instance_eval(
+    tmp_path: Path,
+) -> None:
+    for mutator in ("instance_eval", "instance_exec"):
+        case_dir = tmp_path / mutator
+        case_dir.mkdir()
+        _write(
+            case_dir,
+            "base.rb",
+            "class Base\n  def self.helper; :base; end\nend\n",
+        )
+        _write(
+            case_dir,
+            "child.rb",
+            "class Child < Base\n  def self.call\n    helper()\n  end\nend\n",
+        )
+        _write(
+            case_dir,
+            "override.rb",
+            f"Child.{mutator} {{ define_singleton_method(:helper) {{ :child }} }}\n",
+        )
+
+        graph = extract(
+            sorted(case_dir.glob("*.rb")), cache_root=case_dir, parallel=False
+        )
+
+        assert _only_call(graph)["confidence"] == "INFERRED"
+
+
 def test_external_owner_mutator_inside_singleton_class_stays_inferred(
     tmp_path: Path,
 ) -> None:
