@@ -3129,8 +3129,13 @@ def _ruby_file_has_refinement_barrier(root_node, source: bytes) -> bool:
 
     def visit(node) -> bool:
         if node.type == "call":
+            receiver = node.child_by_field_name("receiver")
             method = node.child_by_field_name("method")
-            if method is not None and _read_text(method, source) in {"refine", "using"}:
+            if (
+                (receiver is None or _read_text(receiver, source) == "self")
+                and method is not None
+                and _read_text(method, source) in {"refine", "using"}
+            ):
                 return True
         return any(visit(child) for child in node.children)
 
@@ -4837,6 +4842,8 @@ def _extract_generic(
                     kinds = ruby_method_kinds.setdefault(func_nid, set())
                     kinds.add(ruby_method_kind)
                     ruby_method_counts[func_nid] = ruby_method_counts.get(func_nid, 0) + 1
+                    # Redeclarations share one node and retain calls from every body.
+                    # Keep even same-kind duplicates ambiguous so stale calls stay inferred.
                     stored_kind = (
                         next(iter(kinds))
                         if len(kinds) == 1

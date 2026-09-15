@@ -853,6 +853,27 @@ def test_inherited_call_stays_inferred_under_enclosing_refinement(
     assert _only_call(graph)["confidence"] == "INFERRED"
 
 
+def test_refinement_barrier_only_applies_to_lexical_receivers(tmp_path: Path) -> None:
+    cases = (("Registry", "EXTRACTED"), ("self", "INFERRED"))
+    for receiver, expected in cases:
+        for method_name in ("using", "refine"):
+            case_dir = tmp_path / f"{receiver}-{method_name}"
+            case_dir.mkdir()
+            _write(case_dir, "base.rb", "class Base\n  def helper; :base; end\nend\n")
+            _write(
+                case_dir,
+                "child.rb",
+                f"{receiver}.{method_name}(:adapter)\nclass Child < Base\n"
+                "  def call\n    helper()\n  end\nend\n",
+            )
+
+            graph = extract(
+                sorted(case_dir.glob("*.rb")), cache_root=case_dir, parallel=False
+            )
+
+            assert _only_call(graph)["confidence"] == expected
+
+
 def test_inherited_call_stays_inferred_for_external_owner_mutator(
     tmp_path: Path,
 ) -> None:
@@ -1128,6 +1149,21 @@ def test_inherited_call_stops_at_ambiguous_nearer_method(tmp_path: Path) -> None
         edge.get("confidence") == "EXTRACTED"
         for edge in _call_edges_matching(graph, ".call()", ".helper()")
     )
+
+
+def test_redeclared_caller_does_not_promote_obsolete_body(tmp_path: Path) -> None:
+    _write(tmp_path, "base.rb", "class Base\n  def helper; :base; end\nend\n")
+    _write(
+        tmp_path,
+        "child.rb",
+        "class Child < Base\n"
+        "  def call\n    helper()\n  end\n"
+        "  def call\n    :replacement\n  end\nend\n",
+    )
+
+    graph = extract(sorted(tmp_path.glob("*.rb")), cache_root=tmp_path, parallel=False)
+
+    assert _only_call(graph)["confidence"] == "INFERRED"
 
 
 def test_inherited_call_does_not_cross_method_kind(tmp_path: Path) -> None:
