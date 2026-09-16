@@ -3830,6 +3830,7 @@ def _resolve_cpp_member_calls(
         if rc.get("lang") != "cpp":
             continue
         # Determine the receiver's type and the resulting confidence.
+        qualified_fallback_label: str | None = None
         if receiver == "this":
             # this->bar(): receiver is the caller's own enclosing class.
             type_nid = enclosing_type.get(caller)
@@ -3838,6 +3839,7 @@ def _resolve_cpp_member_calls(
             type_qualified = True
         elif receiver[:1].isupper():
             # Foo::bar(): the type is named explicitly in source.
+            qualified_fallback_label = f"{receiver}::{callee}()"
             type_defs = type_def_nids.get(_key(receiver), [])
             if not type_defs:
                 # Declared nowhere here, which in a multi-repo setup usually means
@@ -3869,6 +3871,10 @@ def _resolve_cpp_member_calls(
             type_nid = type_defs[0]
             type_qualified = False
         method_nid = method_index.get((type_nid, _key(callee)))
+        if method_nid is None and qualified_fallback_label is not None:
+            candidates = qualified_method_nids.get(qualified_fallback_label, [])
+            if len(candidates) == 1:
+                method_nid = candidates[0]
         target = method_nid or type_nid
         relation = "calls" if method_nid else "references"
         if target == caller or (caller, target) in existing_pairs:
