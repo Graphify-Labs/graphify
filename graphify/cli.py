@@ -2002,7 +2002,7 @@ def dispatch_command(cmd: str) -> None:
         if from_file:
             try:
                 payload = json.loads(Path(from_file).read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 print(f"error: could not read --from-file payload: {exc}", file=sys.stderr)
                 sys.exit(1)
             if not isinstance(payload, dict):
