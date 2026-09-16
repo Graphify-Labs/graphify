@@ -286,3 +286,28 @@ def test_cli_add_from_file_non_string_url_is_a_clean_error(bad_url, tmp_path, ca
         dispatch_command("add")
     assert exc_info.value.code != 0
     assert "url" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad_key", ["author", "contributor"])
+@pytest.mark.parametrize("bad_val", [["Jane"], {"nested": "Jane"}, 42])
+def test_cli_add_from_file_non_string_author_or_contributor_is_a_clean_error(
+    bad_key, bad_val, tmp_path, capsys, monkeypatch
+):
+    """A payload whose "author" or "contributor" key is not a string (a
+    list, an object, a number) does not crash -- _yaml_str stringifies
+    anything -- but silently saves a garbled value like "['Jane']" into
+    the frontmatter instead of the same clean "error: ..." message every
+    other bad-payload shape in this command already produces."""
+    import json
+    import sys
+    from graphify.cli import dispatch_command
+
+    payload = tmp_path / "payload.json"
+    payload.write_text(
+        json.dumps({"url": "https://example.com", bad_key: bad_val}), encoding="utf-8"
+    )
+    monkeypatch.setattr(sys, "argv", ["graphify", "add", "--from-file", str(payload)])
+    with pytest.raises(SystemExit) as exc_info:
+        dispatch_command("add")
+    assert exc_info.value.code != 0
+    assert bad_key in capsys.readouterr().err
