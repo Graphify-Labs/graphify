@@ -2531,9 +2531,159 @@ def extract_ruby(path: Path) -> dict:
     return _extract_generic(path, _RUBY_CONFIG)
 
 
+def _csharp_string_opener(source: bytes, i: int) -> "tuple[int, int, bool, bool] | None":
+    """If a string literal starts at ``i``, return ``(quote_pos, quote_run, interpolated, verbatim)``.
+
+    C# lets the ``$`` and ``@`` prefixes appear in either order and repeat, and
+    a raw string literal opens with a run of three or more quotes, so the prefix
+    is read as a set of flags rather than matched as fixed spellings.
+    """
+    j = i
+    interpolated = False
+    verbatim = False
+    while j < len(source):
+        ch = source[j:j + 1]
+        if ch == b"$":
+            interpolated = True
+        elif ch == b"@":
+            verbatim = True
+        else:
+            break
+        j += 1
+    if source[j:j + 1] != b'"':
+        return None
+    run = 0
+    while source[j + run:j + run + 1] == b'"':
+        run += 1
+    return j, run, interpolated, verbatim
+
+
+def _csharp_broken_escape_offsets(source: bytes) -> list[int]:
+    """Offsets of the ``""`` pairs that trigger the #3376 grammar bug.
+
+    A verbatim interpolated string whose text ends with an interpolation hole,
+    then an escaped quote, then the terminator — the ``}`` ``""`` ``"``
+    adjacency — is rejected by tree-sitter-c-sharp 0.23.5 even though it is
+    valid C#. Every neighbouring spelling parses, so only that adjacency is
+    reported here.
+
+    The file is walked once so a ``$@"`` written inside a comment, a char
+    literal or another string is never mistaken for code.
+    """
+    offsets: list[int] = []
+    n = len(source)
+    i = 0
+    while i < n:
+        if source.startswith(b"//", i):
+            nl = source.find(b"\n", i)
+            i = n if nl == -1 else nl + 1
+            continue
+        if source.startswith(b"/*", i):
+            end = source.find(b"*/", i + 2)
+            i = n if end == -1 else end + 2
+            continue
+        if source[i:i + 1] == b"'":
+            j = i + 1
+            while j < n:
+                if source[j:j + 1] == b"\\":
+                    j += 2
+                    continue
+                if source[j:j + 1] in (b"'", b"\n"):
+                    break
+                j += 1
+            i = j + 1
+            continue
+        opener = _csharp_string_opener(source, i)
+        if opener is None:
+            i += 1
+            continue
+        quote, run, interpolated, verbatim = opener
+        if run >= 3:
+            # Raw string literal: closed by a quote run of the same length.
+            end = source.find(b'"' * run, quote + run)
+            i = n if end == -1 else end + run
+            continue
+        if run == 2:
+            i = quote + 2  # empty string literal
+            continue
+        j = quote + 1
+        if verbatim:
+            # `""` is the escape; a verbatim string may span lines.
+            while j < n:
+                if source.startswith(b'""', j):
+                    j += 2
+                    continue
+                if source[j:j + 1] == b'"':
+                    break
+                j += 1
+            if j < n and interpolated and j - 2 > quote and source[j - 2:j] == b'""' and source[j - 3:j - 2] == b"}":
+                offsets.append(j - 2)
+        else:
+            while j < n:
+                ch = source[j:j + 1]
+                if ch == b"\\":
+                    j += 2
+                    continue
+                if ch in (b'"', b"\n"):
+                    break
+                j += 1
+        i = j + 1
+    return offsets
+
+
+def _normalize_csharp_verbatim_interpolation(source: bytes) -> bytes | None:
+    """Neutralize the one verbatim-interpolated spelling the C# grammar rejects, or None.
+
+    A verbatim interpolated string whose text ends with an interpolation hole,
+    an escaped quote and then the terminator is valid C# — ``dotnet build``
+    accepts it — but tree-sitter-c-sharp 0.23.5 rejects it, so it is partially
+    extracted and every member after that line is silently missing from the
+    graph. 0.23.5 is the newest release, so there is no grammar bump to take
+    (#3376).
+
+    Only the trailing ``""`` escape is overwritten, with two spaces. The
+    rewrite is **byte-length preserving** — nothing is inserted or deleted and
+    no line break is touched — so every offset, line and column still points at
+    the same place in the file on disk and reported source locations stay
+    accurate (the #2876 contract). The interpolation hole itself is kept, so
+    identifiers referenced inside it still resolve.
+
+    Returns None unless the file genuinely needs it AND the rewrite fixes it:
+    a file that already parses is never touched, and if the masked source still
+    has errors the original is used, leaving today's behaviour exactly as it is.
+    """
+    try:
+        import tree_sitter_c_sharp as ts_c_sharp
+        from tree_sitter import Language, Parser
+
+        parser = Parser(Language(ts_c_sharp.language()))
+    except Exception:
+        return None
+    try:
+        if not parser.parse(source).root_node.has_error:
+            return None
+        offsets = _csharp_broken_escape_offsets(source)
+        if not offsets:
+            return None
+        masked = bytearray(source)
+        for start in offsets:
+            masked[start:start + 2] = b"  "
+        out = bytes(masked)
+        if parser.parse(out).root_node.has_error:
+            return None
+    except Exception:
+        return None
+    return out
+
+
 def extract_csharp(path: Path) -> dict:
     """Extract C# type declarations, methods, namespaces, and usings from a .cs file."""
-    return _extract_generic(path, _CSHARP_CONFIG)
+    source_override = None
+    try:
+        source_override = _normalize_csharp_verbatim_interpolation(path.read_bytes())
+    except OSError:
+        pass
+    return _extract_generic(path, _CSHARP_CONFIG, source_override=source_override)
 
 
 def extract_kotlin(path: Path) -> dict:
