@@ -2007,7 +2007,15 @@ def dispatch_command(cmd: str) -> None:
                 sys.exit(1)
             author = payload.get("author")
             contributor = payload.get("contributor")
-            target_dir = Path(payload.get("dir") or "raw")
+            raw_dir = payload.get("dir")
+            if raw_dir is not None and not isinstance(raw_dir, str):
+                print(
+                    "error: --from-file payload 'dir' must be a string, not "
+                    + type(raw_dir).__name__,
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            target_dir = Path(raw_dir or "raw")
         else:
             if len(sys.argv) < 3:
                 print(
