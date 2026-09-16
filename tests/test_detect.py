@@ -3182,6 +3182,41 @@ def test_save_manifest_subset_save_preserves_untouched_rows(tmp_path):
     )
 
 
+def test_save_manifest_subset_save_keeps_a_deleted_files_row(tmp_path):
+    """#3426: without scan_corpus, a row for a file no longer on disk must
+    survive a save too -- not just an untouched one. detect_incremental()
+    is what REPORTS a deletion via deleted_files, and a save that runs
+    without also pruning the graph (a scan-only run, an interrupted
+    pipeline) must not erase the row before any caller gets a chance to
+    act on that report, or the deletion becomes unreportable from the very
+    next run onward."""
+    import json
+    from graphify.detect import detect_incremental
+
+    a = tmp_path / "a.py"
+    gone = tmp_path / "gone.py"
+    a.write_text("x = 1\n")
+    gone.write_text("y = 2\n")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    save_manifest({"code": [str(a), str(gone)]}, manifest_path, root=tmp_path)
+
+    gone.unlink()
+    detection = detect_incremental(tmp_path, manifest_path=manifest_path)
+    assert str(gone) in detection["deleted_files"], "must be reported deleted on this pass"
+
+    # A save that is NOT given the full scan corpus (no scan_corpus) --
+    # the row must not disappear before the report above was acted on.
+    save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
+    raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert "gone.py" in raw, (
+        f"a deleted file's row must survive a subset save so it stays reportable, got {set(raw)}"
+    )
+
+    detection2 = detect_incremental(tmp_path, manifest_path=manifest_path)
+    assert str(gone) in detection2["deleted_files"], \
+        "the deletion must still be reportable on the next pass"
+
+
 def test_save_manifest_full_scan_keeps_out_of_root_rows(tmp_path):
     """Out-of-root entries (--include sources, symlinked corpora) are never
     walked by detect, so their absence from the corpus is not exclusion
