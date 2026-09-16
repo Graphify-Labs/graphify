@@ -1479,7 +1479,7 @@ def dispatch_command(cmd: str) -> None:
         p.add_argument("--answer-file", dest="answer_file", default=None)
         p.add_argument("--type", dest="query_type", default="query")
         p.add_argument("--nodes", nargs="*", default=[])
-        p.add_argument("--nodes-file", dest="nodes_file", default=None)
+        p.add_argument("--nodes-file", dest="nodes_file", nargs="+", default=None)
         p.add_argument("--outcome", choices=("useful", "dead_end", "corrected"), default=None)
         p.add_argument("--correction", default=None)
         p.add_argument("--correction-file", dest="correction_file", default=None)
@@ -1496,9 +1496,17 @@ def dispatch_command(cmd: str) -> None:
         if opts.correction_file:
             opts.correction = Path(opts.correction_file).read_text(encoding="utf-8").strip()
         if opts.nodes_file:
+            # One or more paths: each file's lines are node labels (a file
+            # holding a single label with no trailing content works the same
+            # way, since a label that happens to contain a literal newline
+            # is unlikely, but splitting per file rather than assuming a
+            # fixed global line count is what lets a caller reserve one file
+            # per label — the path/explain fallbacks do this specifically to
+            # avoid an unpack that assumes an exact line count.
             opts.nodes = [
                 line.strip()
-                for line in Path(opts.nodes_file).read_text(encoding="utf-8").splitlines()
+                for nf in opts.nodes_file
+                for line in Path(nf).read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
         from graphify.ingest import save_query_result as _sqr
