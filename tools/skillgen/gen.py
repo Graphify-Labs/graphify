@@ -1142,6 +1142,36 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_no_cluster_force_fix_line(line: str) -> bool:
+    """Whether a line is part of the --no-cluster / --force wiring fix (#1619 C1/C2).
+
+    Step 2 suggested --no-cluster and the #479 shrink-guard error message
+    suggested --force, but neither flag was ever implemented: Step 4 called
+    cluster() unconditionally, and to_json() never received force=. Both are
+    now wired through -- Step 4 builds a single "Full Corpus" community
+    instead of calling cluster() when --no-cluster was given, both to_json()
+    calls take force=IS_FORCE, and Step 5 is skipped when there is nothing to
+    label. These are the added Usage lines, the substitution instructions,
+    and the changed Step 4/5 body lines (old and new forms both sanctioned,
+    matched trimmed so the added lines' extra indentation inside the new
+    if/else does not matter).
+    """
+    stripped = line.strip()
+    return (
+        stripped.startswith('/graphify <path> --no-cluster ')
+        or stripped.startswith('/graphify <path> --force ')
+        or stripped.startswith("Two more substitutions, in this step's block and Step 5's:")
+        or stripped == "if IS_NO_CLUSTER:"
+        or stripped == "communities = {0: list(G.nodes())}"
+        or stripped == "communities = cluster(G)"
+        or stripped
+        == "labels = {0: 'Full Corpus'} if IS_NO_CLUSTER else {cid: 'Community ' + str(cid) for cid in communities}"
+        or stripped == "labels = {cid: 'Community ' + str(cid) for cid in communities}"
+        or "regenerated with real labels in Step 5" in line
+        or "Skip this step entirely if `--no-cluster` was given in Step 4" in line
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1163,6 +1193,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_no_cluster_force_fix_line,
 )
 
 
