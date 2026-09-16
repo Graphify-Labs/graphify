@@ -4715,6 +4715,59 @@ def _resolve_kotlin_qualified_calls(
         })
 
 
+def _resolve_elixir_import_targets(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve Elixir cross-file alias/import/require/use edges (#2556).
+
+    extract_elixir mints a module's own node id with the defining file's stem
+    (``_make_id(stem, module_name)``) but an alias/import/require/use target
+    with just the bare module name (``_make_id(module_name)``) — the two can
+    only ever match when a module refers to itself, so almost every
+    cross-file reference was silently dropped as dangling at build time
+    (13% of edges on a real 900-file project).
+
+    Exact match only, per the issue's own finding: id-suffix matching
+    (``application`` latching onto ``..._oauthapplications_update_application``)
+    produced wrong resolutions in testing on a real corpus; matching a
+    module's own id (already exact, since both sides run through the same
+    ``_make_id``) needs no heuristics. A name matching zero modules is left
+    exactly as extracted — the generic external-reference handling already
+    turns an unresolved bare id into a leaf stub, the correct outcome for a
+    genuinely external (stdlib/hex) name. A name matching 2+ modules (e.g.
+    two files each defining the same module name, most likely a genuine
+    corpus oddity) also leaves the edge alone rather than guessing.
+    """
+    module_nids_by_bare_id: dict[str, list[str]] = {}
+    for n in all_nodes:
+        sf = str(n.get("source_file") or "")
+        if not sf.endswith((".ex", ".exs")):
+            continue
+        label = str(n.get("label") or "")
+        if not label or label.endswith("()"):
+            continue  # function nodes are labeled "name()"; modules are not
+        module_nids_by_bare_id.setdefault(_make_id(label), []).append(n["id"])
+    if not module_nids_by_bare_id:
+        return
+
+    node_ids = {n["id"] for n in all_nodes}
+    for e in all_edges:
+        if (
+            e.get("relation") != "imports"
+            or e.get("context") != "import"
+            or not str(e.get("source_file") or "").endswith((".ex", ".exs"))
+        ):
+            continue
+        tgt = e.get("target")
+        if tgt in node_ids:
+            continue  # already resolves (e.g. a module referring to itself)
+        candidates = module_nids_by_bare_id.get(tgt, [])
+        if len(candidates) == 1:
+            e["target"] = candidates[0]
+
+
 # Kotlin import-target resolution runs EARLY (directly in extract(), before the
 # shared call pass builds its import-evidence index) — registering it in the
 # tail registry would rewrite the targets after promotion already read them.
@@ -4770,6 +4823,13 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver("java_member_calls", frozenset({".java"}), _resolve_java_member_calls)
+)
+register_language_resolver(
+    LanguageResolver(
+        "elixir_import_targets",
+        frozenset({".ex", ".exs"}),
+        _resolve_elixir_import_targets,
+    )
 )
 # Pascal/Delphi cross-file inherited-method-call resolution: a call from a
 # manual descendant class to a method it inherits from an ancestor declared
