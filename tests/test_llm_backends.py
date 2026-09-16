@@ -16,6 +16,7 @@ def _clear_backend_env(monkeypatch):
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "DEEPSEEK_API_KEY",
+        "ATLASCLOUD_API_KEY",
         "AZURE_OPENAI_API_KEY",
         "AZURE_OPENAI_ENDPOINT",
     ):
@@ -84,6 +85,14 @@ def test_openai_backend_detected(monkeypatch):
     assert llm._get_backend_api_key("openai") == "openai-key"
 
 
+def test_atlascloud_backend_detected(monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("ATLASCLOUD_API_KEY", "atlas-key")
+
+    assert llm.detect_backend() == "atlascloud"
+    assert llm._get_backend_api_key("atlascloud") == "atlas-key"
+
+
 def test_extract_files_direct_routes_gemini_through_openai_compat(tmp_path, monkeypatch):
     _clear_backend_env(monkeypatch)
     monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
@@ -110,6 +119,26 @@ def test_extract_files_direct_routes_gemini_through_openai_compat(tmp_path, monk
     assert call.call_args.kwargs["max_completion_tokens"] == 16384
 
 
+def test_extract_files_direct_routes_atlascloud_through_openai_compat(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("ATLASCLOUD_API_KEY", "atlas-key")
+    source = tmp_path / "note.md"
+    source.write_text("# Architecture\n\nThe runner emits a snapshot.\n")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_openai_compat", return_value=result) as call:
+        assert llm.extract_files_direct([source], backend="atlascloud", root=tmp_path) is result
+
+    assert call.call_args.args[:3] == (
+        "https://api.atlascloud.ai/v1",
+        "atlas-key",
+        "qwen/qwen3.5-flash",
+    )
+    assert call.call_args.kwargs["temperature"] == 0
+    assert call.call_args.kwargs["max_completion_tokens"] == 16384
+    assert call.call_args.kwargs["backend"] == "atlascloud"
+
+
 @pytest.mark.parametrize(
     "backend, env_key",
     [
@@ -117,6 +146,7 @@ def test_extract_files_direct_routes_gemini_through_openai_compat(tmp_path, monk
         ("deepseek", "DEEPSEEK_API_KEY"),
         ("openai", "OPENAI_API_KEY"),
         ("kimi", "MOONSHOT_API_KEY"),
+        ("atlascloud", "ATLASCLOUD_API_KEY"),
     ],
 )
 def test_openai_compat_backends_resolve_full_output_cap(tmp_path, monkeypatch, backend, env_key):
@@ -149,6 +179,20 @@ def test_gemini_model_can_be_overridden_by_env(tmp_path, monkeypatch):
         llm.extract_files_direct([source], backend="gemini", root=tmp_path)
 
     assert call.call_args.args[2] == "gemini-3.1-pro-preview"
+
+
+def test_atlascloud_model_can_be_overridden_by_env(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("ATLASCLOUD_API_KEY", "atlas-key")
+    monkeypatch.setenv("GRAPHIFY_ATLASCLOUD_MODEL", "deepseek-ai/deepseek-v4-pro")
+    source = tmp_path / "note.md"
+    source.write_text("# Architecture\n")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_openai_compat", return_value=result) as call:
+        llm.extract_files_direct([source], backend="atlascloud", root=tmp_path)
+
+    assert call.call_args.args[2] == "deepseek-ai/deepseek-v4-pro"
 
 
 def test_missing_gemini_key_names_both_supported_env_vars(monkeypatch):
@@ -1153,6 +1197,7 @@ import os  # noqa: E402
     ("kimi", "KIMI_BASE_URL", "https://proxy.example/kimi/v1"),
     ("gemini", "GEMINI_BASE_URL", "https://proxy.example/gemini"),
     ("deepseek", "DEEPSEEK_BASE_URL", "https://proxy.example/deepseek"),
+    ("atlascloud", "ATLASCLOUD_API_BASE", "https://proxy.example/atlas/v1"),
 ])
 def test_base_url_env_overrides(backend, env_var, override):
     assert _backend_base_url(backend, {env_var: override}) == override
@@ -1162,10 +1207,20 @@ def test_base_url_env_overrides(backend, env_var, override):
     ("kimi", "https://api.moonshot.ai/v1"),
     ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai/"),
     ("deepseek", "https://api.deepseek.com"),
+    ("atlascloud", "https://api.atlascloud.ai/v1"),
 ])
 def test_base_url_defaults_without_env(backend, default):
     # Ensure the override env vars are unset so the hardcoded default is used.
-    cleared = {k: "" for k in ("KIMI_BASE_URL", "GEMINI_BASE_URL", "DEEPSEEK_BASE_URL")}
+    cleared = {
+        k: ""
+        for k in (
+            "KIMI_BASE_URL",
+            "GEMINI_BASE_URL",
+            "DEEPSEEK_BASE_URL",
+            "ATLASCLOUD_API_BASE",
+            "ATLASCLOUD_BASE_URL",
+        )
+    }
     # empty string would be falsy-but-set; delete instead by reconstructing env without them
     env = {k: v for k, v in os.environ.items() if k not in cleared}
     out = subprocess.run(
