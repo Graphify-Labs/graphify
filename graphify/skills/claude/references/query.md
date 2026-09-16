@@ -212,18 +212,20 @@ graphify path "NODE_A" "NODE_B"
 
 If the CLI is unavailable, run it inline. The two concept names can come
 from extracted document content and so are not guaranteed free of shell
-characters - reserve a unique file path for them first (a fixed, shared
-filename risks a concurrent graphify session overwriting or reading a
-stale value):
+characters - reserve a unique file path for EACH one (not one shared file
+with a name on each line: a name containing a literal newline would then
+split across lines and corrupt the count). A fixed, shared filename risks
+a concurrent graphify session overwriting or reading a stale value:
 
 ```bash
-mktemp /tmp/graphify_nodes.XXXXXX
+mktemp /tmp/graphify_node_a.XXXXXX
+mktemp /tmp/graphify_node_b.XXXXXX
 ```
 
-Using your file-write tool, write the two concept names to that path, one
-per line (first line the source concept, second line the target), then
-run the traversal reading them back from the file instead of substituting
-them into the script:
+Using your file-write tool, write the source concept name to the first
+path and the target concept name to the second, then run the traversal
+reading them back from the files instead of substituting them into the
+script:
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -235,8 +237,8 @@ from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')
 
-_node_lines = [l for l in Path('NODES_PATH').read_text(encoding='utf-8').splitlines() if l.strip()]
-a_term, b_term = _node_lines
+a_term = Path('NODE_A_PATH').read_text(encoding='utf-8').strip()
+b_term = Path('NODE_B_PATH').read_text(encoding='utf-8').strip()
 
 def find_node(term):
     term = term.lower()
@@ -273,7 +275,7 @@ except nx.NodeNotFound as e:
 "
 ```
 
-Replace `NODES_PATH` with the path `mktemp` printed. Then explain the path in plain language - what each hop means, why it's significant.
+Replace `NODE_A_PATH`/`NODE_B_PATH` with the paths the two `mktemp` calls printed. Then explain the path in plain language - what each hop means, why it's significant.
 
 After writing the explanation, save it back. Reserve two more unique file
 paths for the question and answer text - the same free text risk as
@@ -287,11 +289,12 @@ mktemp /tmp/graphify_answer.XXXXXX
 
 Using your file-write tool, write `Path from <source concept> to <target
 concept>` (with the actual node names) to the first path and the
-explanation to the second, then pass those paths and the same node-labels
-file reserved above, the same way as for `/graphify query` above:
+explanation to the second, then pass those paths and the same two
+node-label files reserved above, the same way as for `/graphify query`
+above:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question-file QUESTION_PATH --answer-file ANSWER_PATH --type path_query --nodes-file NODES_PATH
+$(cat graphify-out/.graphify_python) -m graphify save-result --question-file QUESTION_PATH --answer-file ANSWER_PATH --type path_query --nodes-file NODE_A_PATH NODE_B_PATH
 ```
 
 ---
