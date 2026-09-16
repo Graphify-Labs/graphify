@@ -16,6 +16,7 @@ flow) and every reader honours it.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -406,8 +407,30 @@ def is_absolute_any_platform(p: "str | Path | None") -> bool:
     """
     if not p:
         return False
-    s = str(p)
-    return PurePosixPath(s).is_absolute() or PureWindowsPath(s).is_absolute()
+    return _is_absolute_any_platform_str(str(p))
+
+
+@functools.lru_cache(maxsize=131072)
+def _is_absolute_any_platform_str(s: str) -> bool:
+    """Memoized core of :func:`is_absolute_any_platform` (#perf).
+
+    The pipeline asks this of the same few hundred stored paths tens of
+    thousands of times (once or more per node/edge in build, and again per
+    resolution pass), and each uncached call built TWO pathlib objects — a
+    ``PurePosixPath`` and a ``PureWindowsPath`` — just to read a flag. The
+    answer is a pure function of the string (and the interpreter's pathlib
+    rules, fixed for the process), so it is cached; nothing here touches the
+    filesystem, so there is no staleness to invalidate.
+
+    The POSIX arm is exactly ``s.startswith("/")`` — checked first so a
+    common in-repo relative path returns without constructing any Path, and
+    the ``PureWindowsPath`` is built only for the drive-letter/UNC forms the
+    cheap check cannot settle. Semantics are byte-for-byte the prior
+    ``PurePosixPath(s).is_absolute() or PureWindowsPath(s).is_absolute()``.
+    """
+    if s.startswith("/"):
+        return True
+    return PureWindowsPath(s).is_absolute()
 
 
 # Legacy Windows path ceiling. Unless long-path support is enabled *and* every
