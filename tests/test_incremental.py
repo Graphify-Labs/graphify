@@ -338,3 +338,91 @@ def test_update_prunes_a_removed_imports_edge(tmp_path):
              if e.get("relation") in ("imports", "imports_from")
              and str(e.get("source_file", "")).endswith("a.py")]
     assert not stale, f"removed import's edge survived update (stale): {stale}"
+
+
+def _write_cross_file_symbol_corpus(proj: Path) -> tuple[Path, Path]:
+    """#2230 repro corpus: a.py raises a class it imports from exc.py."""
+    pkg = proj / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "exc.py").write_text(
+        "class BadData(Exception):\n    pass\n", encoding="utf-8"
+    )
+    a = pkg / "a.py"
+    a.write_text(
+        "from .exc import BadData\n\n\ndef load():\n    raise BadData()\n",
+        encoding="utf-8",
+    )
+    return a, pkg / "exc.py"
+
+
+def _cross_file_baddata_edges(edges: list[dict]) -> list[dict]:
+    return [
+        e for e in edges
+        if str(e.get("source_file", "")).endswith("a.py")
+        and ("baddata" in str(e.get("source", "")).lower()
+             or "baddata" in str(e.get("target", "")).lower())
+    ]
+
+
+def test_extract_no_cluster_incremental_regenerates_cross_file_symbol_edges(tmp_path):
+    """#2230: an incremental --no-cluster extract of ONE changed file must
+    regenerate its INFERRED cross-file calls/imports/uses edges to a symbol
+    defined in an UNCHANGED neighbor, not just to unchanged endpoints already
+    covered by #2169's target_file canonicalization."""
+    proj = tmp_path / "proj"
+    a, exc = _write_cross_file_symbol_corpus(proj)
+
+    first = _run(["extract", str(proj), "--code-only", "--no-cluster"], tmp_path)
+    assert first.returncode == 0, first.stderr
+    gj = proj / "graphify-out" / "graph.json"
+    base_edges = _cross_file_baddata_edges(_edges(gj))
+    assert base_edges, "sanity: full scan should link a.py to exc.py's BadData"
+    base_relations = {e["relation"] for e in base_edges}
+    assert "uses" in base_relations, base_relations
+
+    # Change ONLY a.py; exc.py is untouched, so the incremental scan re-extracts
+    # a.py alone.
+    a.write_text(a.read_text(encoding="utf-8") + "\n# touched\n", encoding="utf-8")
+    second = _run(["extract", str(proj), "--code-only", "--no-cluster"], tmp_path)
+    assert second.returncode == 0, second.stderr
+    assert "incremental scan" in second.stdout.lower(), second.stdout
+
+    after_edges = _cross_file_baddata_edges(_edges(gj))
+    after_relations = {e["relation"] for e in after_edges}
+    assert after_relations == base_relations, (
+        f"incremental --no-cluster lost cross-file symbol edges: "
+        f"missing={base_relations - after_relations}"
+    )
+
+
+def test_extract_clustered_incremental_regenerates_cross_file_symbol_edges(tmp_path):
+    """#2230, clustered path: a second `graphify extract` (clustering ON) that
+    only re-extracts one changed file must regenerate its INFERRED cross-file
+    edges to a symbol defined in an unchanged neighbor, mirroring the
+    --no-cluster case above. Uses `--code-only` so the run stays fully local
+    (no LLM backend needed) and takes cli.py's own incremental-scan branch
+    (the one that threads resolution_context_nodes from the persisted graph),
+    as opposed to `--no-cluster`'s separate incremental-merge path."""
+    proj = tmp_path / "proj"
+    a, exc = _write_cross_file_symbol_corpus(proj)
+
+    first = _run(["extract", str(proj), "--code-only"], tmp_path)
+    assert first.returncode == 0, first.stderr
+    gj = proj / "graphify-out" / "graph.json"
+    base_edges = _cross_file_baddata_edges(_edges(gj))
+    assert base_edges, "sanity: full scan should link a.py to exc.py's BadData"
+    base_relations = {e["relation"] for e in base_edges}
+    assert {"calls", "imports"} <= base_relations, base_relations
+
+    a.write_text(a.read_text(encoding="utf-8") + "\n# touched\n", encoding="utf-8")
+    second = _run(["extract", str(proj), "--code-only"], tmp_path)
+    assert second.returncode == 0, second.stderr
+    assert "incremental scan" in second.stdout.lower(), second.stdout
+
+    after_edges = _cross_file_baddata_edges(_edges(gj))
+    after_relations = {e["relation"] for e in after_edges}
+    assert after_relations == base_relations, (
+        f"clustered incremental extract lost cross-file symbol edges: "
+        f"missing={base_relations - after_relations}"
+    )
