@@ -13,7 +13,7 @@ Reserve a unique file path first - a fixed, shared filename risks a
 concurrent graphify session overwriting or reading a stale payload:
 
 ```bash
-mktemp /tmp/graphify_add_payload.XXXXXX.json
+mktemp /tmp/graphify_add_payload.XXXXXX
 ```
 
 Using your file-write tool (not a shell heredoc, which has the same
