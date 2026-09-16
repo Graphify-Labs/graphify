@@ -80,7 +80,7 @@ def extract_rust(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
-    function_bodies: list[tuple[str, object]] = []
+    function_bodies: list[tuple[str, object, str | None]] = []
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -160,7 +160,7 @@ def extract_rust(path: Path) -> dict:
                 if tgt != func_nid:
                     add_edge(func_nid, tgt, "references", line, context=ctx)
 
-    def walk(node, parent_impl_nid: str | None = None) -> None:
+    def walk(node, parent_impl_nid: str | None = None, parent_impl_type: str | None = None) -> None:
         t = node.type
 
         if t == "function_item":
@@ -179,7 +179,7 @@ def extract_rust(path: Path) -> dict:
                 emit_param_return_refs(node, func_nid, line)
                 body = node.child_by_field_name("body")
                 if body:
-                    function_bodies.append((func_nid, body))
+                    function_bodies.append((func_nid, body, parent_impl_type))
             return
 
         if t == "function_signature_item":
@@ -358,10 +358,15 @@ def extract_rust(path: Path) -> dict:
             type_node = node.child_by_field_name("type")
             trait_node = node.child_by_field_name("trait")
             impl_nid: str | None = None
+            impl_type_bare: str | None = None
             if type_node:
                 type_name = _read_text(type_node, source).strip()
                 impl_nid = _make_id(stem, type_name)
                 add_node(impl_nid, type_name, node.start_point[0] + 1)
+                # Bare name (generics stripped) for typing a `self.` receiver
+                # inside this block's methods (#2234) — `impl Foo<T>` types
+                # `self` as `Foo`, not the literal `Foo<T>` text.
+                impl_type_bare = type_name.split("<")[0].strip()
             if trait_node is not None and impl_nid is not None:
                 refs: list[tuple[str, str]] = []
                 _rust_collect_type_refs(trait_node, source, False, refs)
@@ -377,7 +382,7 @@ def extract_rust(path: Path) -> dict:
             body = node.child_by_field_name("body")
             if body:
                 for child in body.children:
-                    walk(child, parent_impl_nid=impl_nid)
+                    walk(child, parent_impl_nid=impl_nid, parent_impl_type=impl_type_bare)
             return
 
         if t == "use_declaration":
@@ -457,7 +462,7 @@ def extract_rust(path: Path) -> dict:
         for child in node.children:
             walk_calls(child, caller_nid)
 
-    for caller_nid, body_node in function_bodies:
+    for caller_nid, body_node, _impl_type in function_bodies:
         walk_calls(body_node, caller_nid)
 
     valid_ids = seen_ids
