@@ -60,6 +60,16 @@ def test_package_subpath_import_resolves_to_the_same_target_as_a_bare_import():
     assert subpath_tgt == bare_tgt
 
 
+def test_scoped_package_subpath_import_resolves_to_the_scope_and_package_only():
+    bare_tgt, _ = _resolve_js_import_target("@scope/pkg", "src/bare.ts")
+    subpath_tgt, resolved_path = _resolve_js_import_target("@scope/pkg/deep/sub", "src/subpath.ts")
+    assert resolved_path is None
+    assert subpath_tgt == bare_tgt
+    # Must not fold onto a DIFFERENT package under the same scope.
+    other_tgt, _ = _resolve_js_import_target("@scope/other", "src/other.ts")
+    assert subpath_tgt != other_tgt
+
+
 # ── end-to-end: the reporter's exact synthetic monorepo ─────────────────────
 
 
