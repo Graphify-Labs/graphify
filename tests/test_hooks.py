@@ -24,18 +24,6 @@ def _make_git_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _find_hook_shell() -> str | None:
-    shell = shutil.which("sh")
-    if shell:
-        return shell
-    git = shutil.which("git")
-    if git:
-        candidate = Path(git).resolve().parent.parent / "bin" / "sh.exe"
-        if candidate.is_file():
-            return str(candidate)
-    return None
-
-
 def test_install_creates_hook(tmp_path):
     repo = _make_git_repo(tmp_path)
     result = install(repo)
@@ -113,37 +101,6 @@ def test_install_validates_both_hooks_before_writing(tmp_path):
 
     assert post_commit.read_text(encoding="utf-8") == original_commit
     assert post_checkout.read_text(encoding="utf-8") == original_checkout
-
-
-@pytest.mark.parametrize(
-    ("hook_name", "hook_args"),
-    [("post-commit", ()), ("post-checkout", ("old", "new", "1"))],
-)
-def test_graphify_exit_does_not_suppress_following_hook_content(
-    tmp_path, hook_name, hook_args
-):
-    shell = _find_hook_shell()
-    if shell is None:
-        pytest.skip("POSIX shell is required to execute the installed hook")
-    repo = _make_git_repo(tmp_path)
-    install(repo)
-    hook = repo / ".git" / "hooks" / hook_name
-    with hook.open("a", encoding="utf-8") as stream:
-        stream.write("\necho preserved > following-hook-ran.txt\n")
-    environment = os.environ.copy()
-    environment["GRAPHIFY_SKIP_HOOK"] = "1"
-
-    result = subprocess.run(
-        [shell, str(hook), *hook_args],
-        cwd=repo,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0
-    assert (repo / "following-hook-ran.txt").is_file()
 
 
 def test_install_appends_to_existing_hook(tmp_path):

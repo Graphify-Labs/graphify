@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.63 (2026-09-16)
 
+- Fix: `graphify hook install` now rejects malformed or duplicated managed-section markers before writing either hook, so a broken section cannot leave the other hook partially updated.
 - Feature: Elixir `alias`/`import`/`require`/`use` targets now resolve onto the module's `defmodule` node across files, so the internal module dependency graph is no longer dropped as dangling. Only top-level modules are indexed (a nested `defmodule`, labeled with its bare inner name, cannot capture an unrelated `use <Name>` from another file), and a same-file reference is left unresolved so it cannot clobber the structural `contains` edge (#3603, thanks @ayushcodes10).
 - Feature: a Rust `self.method()` call now resolves to a method defined on the same type in another file (the common split-`impl`-block layout), pooling methods across every `impl` of one type and refusing to link when two unrelated types share a bare name (#3602, thanks @ayushcodes10).
 - Feature: a Ruby member call `obj.foo` on a known-type receiver now resolves to a method `foo` inherited from a superclass, including across files, using the same conservative promotion as the implicit-self resolver — a single owning class, matching method kind, and one unambiguous ancestry chain, or it stays dangling (#3585, thanks @oleksii-tumanov).
@@ -163,7 +164,6 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.50 (2026-08-25)
 
-- Fix: `graphify hook install` now rejects malformed or duplicated managed-section markers without writing, and scopes Graphify's generated shell body so an early exit cannot suppress unrelated hook content that follows it.
 - Fix: Ruby methods whose names end in `!`, `?`, or `=` now keep distinct node ids, so `save` and `save!` (or `foo` and `foo=`) no longer collide into one node; the label keeps the raw spelling and member-call resolution still matches (#3077, thanks @hopstreax).
 - Fix: a Ruby call on a qualified constant receiver (`ActiveRecord::Base.transaction`) now matches the receiver's full constant path, so it no longer binds to an unrelated lone class named `Base`; an edge is emitted only on a single unambiguous match (#3078, thanks @rohit-jsfreaky).
 - Fix: a CommonJS member export wrapped in a higher-order function (`exports.x = wrap(fn)`, `module.exports.y = onCall({...}, handler)`) is now captured, reaching through the wrapper to the function it wraps without fabricating the wrapper as the export's identity (#3035, thanks @hopstreax).

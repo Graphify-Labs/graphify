@@ -382,7 +382,6 @@ fi
 # hook's own exit status stays 0 as before.
 _HOOK_SCRIPT = """\
 # graphify-hook-start
-(
 # Auto-rebuilds the knowledge graph after each commit (code files only, no LLM needed).
 # Installed by: graphify hook install
 (
@@ -452,7 +451,6 @@ echo "[graphify hook] launching background rebuild (log: $_GRAPHIFY_LOG)"
 
 _CHECKOUT_SCRIPT = """\
 # graphify-checkout-hook-start
-(
 # Auto-rebuilds the knowledge graph (code only) when switching branches.
 # Installed by: graphify hook install
 (
