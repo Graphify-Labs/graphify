@@ -5846,6 +5846,7 @@ def _extract_generic(
             swift_receiver: str | None = None
             member_receiver: str | None = None
             kotlin_qualified_prefix: str | None = None
+            kotlin_object_receiver: str | None = None
             csharp_qualified_prefix: str | None = None
 
             # Special handling per language
@@ -5895,6 +5896,23 @@ def _extract_generic(
                         segments = _kotlin_nav_identifier_segments(first, source)
                         if segments is not None and len(segments) >= 3:
                             kotlin_qualified_prefix = ".".join(segments[:-1])
+                        # #1698: the plain `Receiver.method()` shape (exactly
+                        # two segments) is neither a fully qualified name nor
+                        # eligible for member_receiver (same reasoning as
+                        # above). A capitalized receiver here is an object
+                        # singleton or a class/companion member reference —
+                        # statically unambiguous, no type inference needed —
+                        # captured separately so a dedicated cross-file pass
+                        # can resolve it by declared-type name when the in
+                        # file bare name lookup below finds nothing (the
+                        # cross-file case this issue is about; the same-file
+                        # case already resolves through that lookup and never
+                        # reaches raw_calls at all).
+                        elif (
+                            segments is not None and len(segments) == 2
+                            and segments[0][:1].isupper()
+                        ):
+                            kotlin_object_receiver = segments[0]
             elif config.ts_module == "tree_sitter_scala":
                 # Scala: first child
                 first = node.children[0] if node.children else None
@@ -6372,6 +6390,14 @@ def _extract_generic(
                         if kotlin_qualified_prefix:
                             rc_entry["lang"] = "kotlin"
                             rc_entry["qualified_prefix"] = kotlin_qualified_prefix
+                        # Kotlin object/class-qualified member call (#1698): the
+                        # receiver + lang tag let _resolve_kotlin_member_calls
+                        # claim it once the in-file bare-name lookup above (the
+                        # only reason a real definition reaches raw_calls at
+                        # all) has already failed.
+                        if kotlin_object_receiver:
+                            rc_entry["lang"] = "kotlin"
+                            rc_entry["kotlin_object_receiver"] = kotlin_object_receiver
                         raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
