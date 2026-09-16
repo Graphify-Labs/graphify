@@ -165,15 +165,36 @@ print(output)
 
 Replace `QUESTION` with the **expanded** query string, `MODE` with `bfs` or `dfs`, and `BUDGET` with the token budget (default `2000`, or whatever `--budget N` specifies). Then answer based on the subgraph output above, using only what the graph contains.
 
-After writing the answer, save it back into the graph so it improves future queries. Include the expanded tokens inside the `--answer` text (e.g. `"Expanded from original query via vocab: [tokens]. Then traversed..."`) so the next `--update` extracts the expansion history as a graph node:
+After writing the answer, save it back into the graph so it improves future queries. Include the expanded tokens inside the answer text (e.g. `"Expanded from original query via vocab: [tokens]. Then traversed..."`) so the next `--update` extracts the expansion history as a graph node.
+
+The question and answer are free text you do not control the content of,
+and the node labels you cite can also come from extracted document content
+- a quote, backtick, or `$()` embedded in any of the three corrupts or
+escapes a command it's substituted into. Reserve three unique file paths
+first - a fixed, shared filename risks a concurrent graphify session
+overwriting or reading a stale value:
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "ORIGINAL_QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2
+mktemp /tmp/graphify_question.XXXXXX
+mktemp /tmp/graphify_answer.XXXXXX
+mktemp /tmp/graphify_nodes.XXXXXX
 ```
 
-Replace `ORIGINAL_QUESTION` with the user's verbatim question, `ANSWER` with your full answer text (containing the expanded-token trace), `NODE1 NODE2` with the list of node labels you cited. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
+Using your file-write tool, write the user's verbatim question to the path
+the first command printed, your full answer text (containing the
+expanded-token trace) to the path the second one printed, and the node
+labels you cited to the path the third one printed - one label per line -
+then pass those exact paths - not their content - on the command line:
 
-**Work memory (self-improving loop).** Add an `--outcome` so future sessions learn from this one — append `--outcome useful|dead_end|corrected` to the `save-result` command (and `--correction "the right answer"` when correcting):
+```bash
+$(cat graphify-out/.graphify_python) -m graphify save-result --question-file QUESTION_PATH --answer-file ANSWER_PATH --type query --nodes-file NODES_PATH
+```
+
+Replace `QUESTION_PATH`/`ANSWER_PATH`/`NODES_PATH` with the paths `mktemp` printed. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
+
+(`--nodes-file` takes one or more paths - a single file with one label per line here, but the `/graphify path` flow below passes two separate single-label files to the same flag; both forms are valid.)
+
+**Work memory (self-improving loop).** Add an `--outcome` so future sessions learn from this one — append `--outcome useful|dead_end|corrected` to the `save-result` command (and, when correcting, reserve one more unique path with `mktemp`, write what was right to it, and pass `--correction-file CORRECTION_PATH` the same way):
 
 - `useful` — the cited nodes answered the question well (they become *preferred sources*).
 - `dead_end` — the question/path led nowhere; don't re-derive it next time.
@@ -191,7 +212,22 @@ Find the shortest path between two named concepts in the graph. Prefer the CLI w
 graphify path "NODE_A" "NODE_B"
 ```
 
-If the CLI is unavailable, run it inline:
+If the CLI is unavailable, run it inline. The two concept names can come
+from extracted document content and so are not guaranteed free of shell
+characters - reserve a unique file path for EACH one (not one shared file
+with a name on each line: a name containing a literal newline would then
+split across lines and corrupt the count). A fixed, shared filename risks
+a concurrent graphify session overwriting or reading a stale value:
+
+```bash
+mktemp /tmp/graphify_node_a.XXXXXX
+mktemp /tmp/graphify_node_b.XXXXXX
+```
+
+Using your file-write tool, write the source concept name to the first
+path and the target concept name to the second, then run the traversal
+reading them back from the files instead of substituting them into the
+script:
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -203,8 +239,8 @@ from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')
 
-a_term = 'NODE_A'
-b_term = 'NODE_B'
+a_term = Path('NODE_A_PATH').read_text(encoding='utf-8').strip()
+b_term = Path('NODE_B_PATH').read_text(encoding='utf-8').strip()
 
 def find_node(term):
     term = term.lower()
@@ -241,12 +277,26 @@ except nx.NodeNotFound as e:
 "
 ```
 
-Replace `NODE_A` and `NODE_B` with the actual concept names from the user. Then explain the path in plain language - what each hop means, why it's significant.
+Replace `NODE_A_PATH`/`NODE_B_PATH` with the paths the two `mktemp` calls printed. Then explain the path in plain language - what each hop means, why it's significant.
 
-After writing the explanation, save it back:
+After writing the explanation, save it back. Reserve two more unique file
+paths for the question and answer text - the same free text risk as
+`/graphify query` above (a fixed, shared filename risks a concurrent
+graphify session overwriting or reading a stale value):
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B
+mktemp /tmp/graphify_question.XXXXXX
+mktemp /tmp/graphify_answer.XXXXXX
+```
+
+Using your file-write tool, write `Path from <source concept> to <target
+concept>` (with the actual node names) to the first path and the
+explanation to the second, then pass those paths and the same two
+node-label files reserved above, the same way as for `/graphify query`
+above:
+
+```bash
+$(cat graphify-out/.graphify_python) -m graphify save-result --question-file QUESTION_PATH --answer-file ANSWER_PATH --type path_query --nodes-file NODE_A_PATH NODE_B_PATH
 ```
 
 ---
@@ -259,7 +309,19 @@ Give a plain-language explanation of a single node - everything connected to it.
 graphify explain "NODE_NAME"
 ```
 
-If the CLI is unavailable, run it inline:
+If the CLI is unavailable, run it inline. The concept name can come from
+extracted document content and so is not guaranteed free of shell
+characters - reserve a unique file path for it first (a fixed, shared
+filename risks a concurrent graphify session overwriting or reading a
+stale value):
+
+```bash
+mktemp /tmp/graphify_nodes.XXXXXX
+```
+
+Using your file-write tool, write the concept name to that path, then run
+the lookup reading it back from the file instead of substituting it into
+the script:
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -271,7 +333,7 @@ from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')
 
-term = 'NODE_NAME'
+term = Path('NODES_PATH').read_text(encoding='utf-8').strip()
 term_lower = term.lower()
 
 # Find best matching node
@@ -302,10 +364,23 @@ for neighbor in G.neighbors(nid):
 "
 ```
 
-Replace `NODE_NAME` with the concept the user asked about. Then write a 3-5 sentence explanation of what this node is, what it connects to, and why those connections are significant. Use the source locations as citations.
+Replace `NODES_PATH` with the path `mktemp` printed. Then write a 3-5 sentence explanation of what this node is, what it connects to, and why those connections are significant. Use the source locations as citations.
 
-After writing the explanation, save it back:
+After writing the explanation, save it back. Reserve two more unique file
+paths for the question and answer text - the same free text risk as
+`/graphify query` above (a fixed, shared filename risks a concurrent
+graphify session overwriting or reading a stale value):
 
 ```bash
-$(cat graphify-out/.graphify_python) -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME
+mktemp /tmp/graphify_question.XXXXXX
+mktemp /tmp/graphify_answer.XXXXXX
+```
+
+Using your file-write tool, write `Explain` followed by the actual node
+name to the first path and the explanation to the second, then pass those
+paths and the same node-label file reserved above, the same way as for
+`/graphify query` above:
+
+```bash
+$(cat graphify-out/.graphify_python) -m graphify save-result --question-file QUESTION_PATH --answer-file ANSWER_PATH --type explain --nodes-file NODES_PATH
 ```
