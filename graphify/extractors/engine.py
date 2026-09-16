@@ -160,6 +160,14 @@ _CSHARP_TYPE_PARAMETER_SCOPE_DECLARATIONS = frozenset({
     "method_declaration",
 })
 
+_CSHARP_BINDING_GENERICS: dict[str, tuple[int, str]] = {
+    "IRequestHandler": (0, "handles"),
+    "INotificationHandler": (0, "handles"),
+    "IPipelineBehavior": (0, "intercepts"),
+    "AbstractValidator": (0, "validates"),
+    "IEntityTypeConfiguration": (0, "configures"),
+}
+
 def _csharp_type_parameters_in_scope(node, source: bytes) -> frozenset[str]:
     """Return C# type-parameter names visible from ``node``."""
     names: set[str] = set()
@@ -4076,7 +4084,7 @@ def _extract_generic(
                             for tal in sub.children:
                                 if tal.type != "type_argument_list":
                                     continue
-                                for arg in tal.children:
+                                for idx, arg in enumerate(a for a in tal.children if a.is_named):
                                     if not arg.is_named:
                                         continue
                                     refs: list[tuple[str, str, bool, str]] = []
@@ -4092,6 +4100,11 @@ def _extract_generic(
                                             metadata["ref_qualifier"] = ref_qualifier
                                         add_edge(class_nid, target, "references", line,
                                                  context="generic_arg", metadata=metadata)
+                                        binding = _CSHARP_BINDING_GENERICS.get(base)
+                                        if binding is not None and binding[0] == idx and len(refs) == 1:
+                                            add_edge(class_nid, target, binding[1], line,
+                                                     context="type_binding",
+                                                     metadata={"ref_token": ref_name, "binding_interface": base, "binding_arg": idx})
 
             # Java-specific: extends (superclass) / implements (interfaces) / interface-extends
             if config.ts_module in ("tree_sitter_java", "tree_sitter_groovy"):

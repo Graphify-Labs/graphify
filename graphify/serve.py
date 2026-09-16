@@ -820,6 +820,7 @@ _RELATIONAL_INTENT_TERMS: frozenset[str] = frozenset({
     "implement", "implements", "implemented",
     "depend", "depends",
     "reference", "references", "referenced",
+    "handle", "handles", "handled", "handler", "handlers", "dispatch", "dispatches",
 })
 
 
@@ -830,6 +831,7 @@ _CONTEXT_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("parameter_type", ("parameter", "parameters", "param", "params", "argument", "arguments")),
     ("return_type", ("return", "returns", "returned")),
     ("generic_arg", ("generic", "generics", "template", "templates")),
+    ("type_binding", ("handler", "handlers", "handles", "dispatch", "validator", "validators")),
 )
 
 
@@ -868,6 +870,12 @@ _CONTEXT_FILTER_ALIASES: dict[str, str] = {
     "modules": "import",
     "exports": "export",
     "exported": "export",
+    "handler": "type_binding",
+    "handlers": "type_binding",
+    "handles": "type_binding",
+    "dispatch": "type_binding",
+    "validator": "type_binding",
+    "validators": "type_binding",
 }
 
 

@@ -54,6 +54,30 @@ def test_csharp_declaration_nodes_carry_enclosing_namespace(tmp_path: Path):
     assert _defs(result, "Damage")[0]["metadata"].get("scope_chain"), "lexical scope_chain must be stamped"
 
 
+def test_csharp_request_handler_generic_binds_request_to_handler(tmp_path: Path):
+    """A class implementing IRequestHandler<TRequest> handles that request type,
+    but the two were only ever linked by a `references`/`implements` edge to the
+    interface itself — the request-to-handler chain a caller needs to answer
+    "what handles CreateOrder" did not exist. The edge is stored request->handler
+    (the reverse of how "handles" reads in English) so a lookup starting at the
+    request type walks straight to its handler."""
+    src = _write(
+        tmp_path / "handler.cs",
+        "public class CreateOrder {}\n"
+        "public interface IRequestHandler<TRequest> {}\n"
+        "public class CreateOrderHandler : IRequestHandler<CreateOrder> {}\n",
+    )
+
+    result = extract([src], cache_root=tmp_path)
+
+    handles_edges = [e for e in result["edges"] if e["relation"] == "handles"]
+    assert handles_edges, "expected a handles edge"
+    request_node = _node_by_id(result, handles_edges[0]["source"])
+    handler_node = _node_by_id(result, handles_edges[0]["target"])
+    assert request_node is not None and request_node["label"] == "CreateOrder"
+    assert handler_node is not None and handler_node["label"] == "CreateOrderHandler"
+
+
 def test_csharp_cross_file_inherits_resolves_to_real_def(tmp_path: Path):
     core = _write(tmp_path / "core.cs",
                   "namespace Game.Core { public class Damage { public int Calc() { return 1; } } }\n")

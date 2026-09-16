@@ -1127,6 +1127,14 @@ def test_query_graph_text_context_filter_aliases_resolve():
     assert _normalize_context_filters(["field"]) == ["field"]
 
 
+def test_query_graph_text_type_binding_alias_resolves():
+    from graphify.serve import _normalize_context_filters
+
+    assert _normalize_context_filters(["handler"]) == ["type_binding"]
+    assert _normalize_context_filters(["handlers"]) == ["type_binding"]
+    assert _normalize_context_filters(["validator"]) == ["type_binding"]
+
+
 # --- Chinese segmentation ---
 
 def test_serve_import_is_clean_under_syntax_warnings(tmp_path):

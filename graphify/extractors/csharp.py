@@ -406,7 +406,7 @@ def _resolve_csharp_type_references(
         node_by_id[stub_id] = node
         return stub_id
 
-    REPOINT_RELATIONS = {"implements", "inherits", "references"}
+    REPOINT_RELATIONS = {"implements", "inherits", "references", "handles", "validates", "configures", "intercepts"}
     repointed_from: set[str] = set()
     for edge in all_edges:
         if edge.get("relation") not in REPOINT_RELATIONS:
@@ -434,6 +434,10 @@ def _resolve_csharp_type_references(
             edge["target"] = desired
             if isinstance(target, str) and _is_placeholder(target_node):
                 repointed_from.add(target)
+
+    for edge in all_edges:
+        if edge.get("relation") == "handles" and edge.get("context") == "type_binding":
+            edge["source"], edge["target"] = edge["target"], edge["source"]
 
     if not repointed_from:
         return

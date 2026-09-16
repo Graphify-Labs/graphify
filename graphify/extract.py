@@ -377,6 +377,7 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
 SEMANTIC_RELATIONS = frozenset({
     "inherits", "implements", "mixes_in", "embeds", "references",
     "calls", "imports", "imports_from", "re_exports", "contains", "method",
+    "handles", "validates", "configures", "intercepts",
 })
 
 
@@ -2855,7 +2856,7 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         return
 
     by_id = {node.get("id"): node for node in nodes if node.get("id")}
-    csharp_scoped_relations = {"inherits", "implements", "references", "imports"}
+    csharp_scoped_relations = {"inherits", "implements", "references", "imports", "handles", "validates", "configures", "intercepts"}
 
     def _names_own_builtin_base(edge: dict, stub_id: str, remapped_id: str) -> bool:
         r"""#2812: `class FooApiException extends \Exception` names PHP's own global
