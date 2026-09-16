@@ -1166,15 +1166,20 @@ def _apply_symbol_resolution_facts(
             str(edge.get("target")),
             str(edge.get("relation")),
             str(edge.get("context") or ""),
-        )
+        ): edge
         for edge in edges
     }
 
     def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None, type_only: bool = False) -> None:
         key = (source, target, relation, context or "")
-        if key in existing_edges:
+        existing_edge = existing_edges.get(key)
+        if existing_edge is not None:
+            # A module can re-export the same target in both type-only and
+            # runtime declarations. The deduplicated edge is runtime when any
+            # of those declarations survives compilation.
+            if relation == "re_exports" and context == "export" and not type_only:
+                existing_edge.pop("type_only", None)
             return
-        existing_edges.add(key)
         edge = {
             "source": source,
             "target": target,
@@ -1199,6 +1204,7 @@ def _apply_symbol_resolution_facts(
         if type_only:
             edge["type_only"] = True
         edges.append(edge)
+        existing_edges[key] = edge
 
     def is_extracted_type_only_reexport(
         source: str, target: str, line: int, fact_type_only: bool
