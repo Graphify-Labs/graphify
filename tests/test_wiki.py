@@ -426,6 +426,21 @@ def test_escape_md_brackets_still_escapes_a_backslash_before_a_bracket():
     assert _escape_md_brackets(r"\]+") == r"\\\]+"
 
 
+def test_escape_md_brackets_handles_a_run_of_backslashes_before_a_bracket():
+    """A RUN of two or more backslashes right before a bracket in source (an
+    escaped backslash inside a regex character class, `[\\]`, for example)
+    must still leave the bracket escaped. Doubling only the single backslash
+    immediately adjacent to the bracket (rather than the whole run) left the
+    earlier backslashes in the run unpaired: two source backslashes produced
+    four escaped ones with nothing left to escape the bracket itself, so
+    CommonMark read it as two literal backslashes followed by a BARE,
+    newly-live bracket -- un-escaping it right back into link syntax."""
+    # Two backslashes + a close bracket: CommonMark must read this back as
+    # two literal backslashes followed by one literal (escaped) bracket, five
+    # backslashes then the bracket (2 pairs + 1 leftover that pairs with it).
+    assert _escape_md_brackets("\\" * 2 + "]") == "\\" * 5 + "]"
+
+
 def test_wiki_links_to_nodes_without_articles_are_plain_text(tmp_path):
     """A god node links its neighbours, but only communities and god nodes get
     article files — neighbours without one must render as plain text, not as a
