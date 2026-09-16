@@ -82,7 +82,54 @@ _GEMINI_NUDGE_TEXT = (
 
 
 def _default_graph_path() -> str:
-    return str(Path(_GRAPHIFY_OUT) / "graph.json")
+    """Default graph.json for the read commands (query/explain/path/affected).
+
+    Normally ``<GRAPHIFY_OUT>/graph.json`` relative to CWD. When run from a linked
+    git worktree that has no graph of its own, fall back to the primary checkout's
+    graph — worktrees share one build and agent workflows increasingly run each
+    task in its own worktree (#2008). An explicit ``--graph`` still overrides this,
+    and writers (extract/build) resolve through graphify.paths, so a write is never
+    redirected.
+    """
+    local = Path(_GRAPHIFY_OUT) / "graph.json"
+    if local.is_file():
+        return str(local)
+    shared = _worktree_primary_graph()
+    if shared is not None:
+        return shared
+    return str(local)
+
+
+def _worktree_primary_graph() -> str | None:
+    """The primary checkout's ``graph.json`` when CWD is inside a linked git
+    worktree, else ``None``.
+
+    A linked worktree has ``--git-dir`` != the shared ``--git-common-dir`` (whose
+    parent is the primary checkout) — the same absolute-path compare the commit and
+    post-checkout hooks use to skip worktrees (#1809). Returns ``None`` when git is
+    unavailable, we are not in a linked worktree, ``GRAPHIFY_OUT`` is absolute (an
+    absolute override already points every worktree at one graph), or the primary
+    checkout has no graph yet.
+    """
+    if os.path.isabs(_GRAPHIFY_OUT):
+        return None
+    import subprocess
+    try:
+        git_dir = subprocess.run(["git", "rev-parse", "--git-dir"],
+                                 capture_output=True, text=True, timeout=3)
+        common = subprocess.run(["git", "rev-parse", "--git-common-dir"],
+                                capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if git_dir.returncode != 0 or common.returncode != 0:
+        return None
+    cwd = os.getcwd()
+    git_dir_abs = Path(cwd, git_dir.stdout.strip()).resolve()
+    common_abs = Path(cwd, common.stdout.strip()).resolve()
+    if git_dir_abs == common_abs:
+        return None  # primary checkout (or a subdir of it), not a linked worktree
+    candidate = common_abs.parent / _GRAPHIFY_OUT / "graph.json"
+    return str(candidate) if candidate.is_file() else None
 
 
 def _stamped_manifest_files(
