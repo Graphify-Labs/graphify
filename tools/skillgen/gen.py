@@ -1117,6 +1117,25 @@ def _is_semantic_cache_scope_fix_line(line: str) -> bool:
     ) or stripped.startswith("saved = save_semantic_cache(")
 
 
+def _is_document_extraction_fix_line(line: str) -> bool:
+    """Whether a line is part of the Part A document-extraction fix.
+
+    Part A fed only the 'code' category into ``extract()``, so a
+    document-classified file with a real structural extractor (Markdown, for
+    instance) never reached it — Part B's semantic pass deliberately skips code
+    but was never meant to be the only path for a document a structural
+    extractor already covers. The import gaining ``_get_extractor`` (old form
+    removed, new form added) and the added document-category loop are
+    sanctioned here.
+    """
+    stripped = line.strip()
+    return (
+        stripped.startswith("from graphify.extract import collect_files, extract")
+        or stripped == "for f in detect.get('files', {}).get('document', []):"
+        or stripped.startswith("code_files.extend(p for p in (collect_files(Path(f))")
+    )
+
+
 def _is_community_label_export_fix_line(line: str) -> bool:
     """Whether a line is part of the Step-5 community_name re-export fix (#2490).
 
@@ -1163,6 +1182,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_document_extraction_fix_line,
 )
 
 
@@ -1181,7 +1201,8 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     unification, the unified frontmatter description, the chunk-cleanup rewrite
     (#1172), the four #1392 runbook fixes (directed propagation, content-only
     semantic scope, stale-cache unlink, and the zero-node/shrink-guard ordering),
-    and semantic-cache source scoping (#1757).
+    semantic-cache source scoping (#1757), and Part A also walking the
+    document category for files a structural extractor already covers.
 
     The comparison is a multiset diff, not a positional zip: a line whose text is
     unchanged but merely *moved* (the report-write line shifted below ``to_json``

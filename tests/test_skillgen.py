@@ -589,6 +589,22 @@ def test_monoliths_render_inline_single_file_no_references():
         assert "references/" not in arts[0].content or "see `references/" not in arts[0].content.lower()
 
 
+def test_part_a_also_walks_the_document_category():
+    """Part A fed extract() only the 'code' category, so a document-classified
+    file with a real structural extractor (Markdown, for instance) never
+    reached it — Part B's semantic pass deliberately skips code and was never
+    meant to be the only path for a document a structural extractor covers."""
+    core, _ = _claude_artifacts()
+    assert "from graphify.extract import collect_files, extract, _get_extractor" in core
+    assert "detect.get('files', {}).get('document', [])" in core
+    assert "_get_extractor(p) is not None" in core
+
+    platforms = gen.load_platforms()
+    for key in ("aider", "devin"):
+        body = gen.render(platforms[key])[0].content
+        assert "detect.get('files', {}).get('document', [])" in body
+
+
 def test_monolith_roundtrip_passes_for_aider_and_devin():
     """Each monolith is diff-clean vs v8 except the file_type enum unification."""
     platforms = gen.load_platforms()

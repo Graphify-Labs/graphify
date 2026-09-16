@@ -174,7 +174,7 @@ For any code files detected, run AST extraction in parallel with Part B subagent
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
-from graphify.extract import collect_files, extract
+from graphify.extract import collect_files, extract, _get_extractor
 from pathlib import Path
 import json
 
@@ -182,6 +182,8 @@ code_files = []
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
 for f in detect.get('files', {}).get('code', []):
     code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
+for f in detect.get('files', {}).get('document', []):
+    code_files.extend(p for p in (collect_files(Path(f)) if Path(f).is_dir() else [Path(f)]) if _get_extractor(p) is not None)
 
 if code_files:
     result = extract(code_files, cache_root=Path('INPUT_PATH'))
