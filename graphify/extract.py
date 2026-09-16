@@ -6369,6 +6369,27 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     return idx, result
 
 
+def _caller_main_lacks_guard() -> bool:
+    """#1637: on Windows (spawn start method), a caller script with no
+    ``if __name__ == "__main__":`` guard makes every worker re-execute the
+    top-level module on import — including, if it calls ``extract()`` at
+    module scope, spawning its OWN pool. Each of those child pools spawns
+    more children the same way, faster than any per-future exception can
+    surface and stop it: a fork bomb, not a slow failure. Read the caller's
+    own source (best-effort; a read failure means "can't tell", not "missing")
+    so the pool is never opened in the first place, rather than caught after
+    the fact via BrokenProcessPool once the damage is already spawning.
+    """
+    main_file = getattr(sys.modules.get("__main__"), "__file__", None)
+    if not main_file:
+        return False
+    try:
+        main_src = Path(main_file).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    return "__main__" not in main_src
+
+
 def _extract_parallel(
     uncached_work: list[tuple[int, Path]],
     per_file: list[dict | None],
@@ -6385,6 +6406,25 @@ def _extract_parallel(
     BrokenProcessPool); the caller should fall back to sequential extraction.
     """
     import concurrent.futures
+    import multiprocessing
+
+    # #1637: a legitimate call to extract() only ever happens in the main
+    # process. If we are somehow already running inside a spawned worker
+    # (the guard-less-caller re-execution case above), opening ANOTHER pool
+    # here is exactly the recursive step that turns a single missing guard
+    # into an unbounded process explosion. Refuse unconditionally, before
+    # even a spawn-capable platform check, since this is never correct.
+    if multiprocessing.parent_process() is not None:
+        return False
+
+    if sys.platform == "win32" and _caller_main_lacks_guard():
+        print(
+            "  warning: calling script lacks an `if __name__ == \"__main__\":` "
+            "guard; extracting sequentially to avoid runaway process spawning "
+            "(pass parallel=False to extract() to silence this check)",
+            file=sys.stderr, flush=True,
+        )
+        return False
 
     if max_workers is None:
         # Honour GRAPHIFY_MAX_WORKERS env override; otherwise scale to the
