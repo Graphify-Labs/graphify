@@ -243,6 +243,91 @@ def test_kotlin_fq_call_to_ambiguous_name_yields_no_edge(tmp_path):
         "guard must refuse to pick"
 
 
+# ── #1698: object/class qualified member calls across files ─────────────────
+
+_OBJECT_CALL_CORPUS = {
+    "config/Config.kt": (
+        "package com.demo.config\n"
+        "\n"
+        "object Config {\n"
+        "    fun load() { }\n"
+        "}\n"
+    ),
+    "app/App.kt": (
+        "package com.demo.app\n"
+        "\n"
+        "import com.demo.config.Config\n"
+        "\n"
+        "fun Start() {\n"
+        "    Config.load()\n"
+        "}\n"
+    ),
+}
+
+
+def test_kotlin_object_member_call_resolves_across_files(tmp_path):
+    r = _extract(tmp_path, _OBJECT_CALL_CORPUS)
+    start = _find(r, "Start()")
+    load = _find(r, ".load()")
+    calls = _edges(r, "calls")
+    assert (start, load) in calls, \
+        "`Config.load()` in another file must resolve to `object Config`'s method"
+    edge = next(
+        e for e in r["edges"]
+        if e["relation"] == "calls" and e["source"] == start and e["target"] == load
+    )
+    assert edge["confidence"] == "EXTRACTED"
+
+
+def test_kotlin_object_member_call_same_file_control_unaffected(tmp_path):
+    r = _extract(tmp_path, {
+        "Same.kt": (
+            "package com.demo.same\n"
+            "\n"
+            "object Config {\n"
+            "    fun load() { }\n"
+            "}\n"
+            "\n"
+            "fun Start() {\n"
+            "    Config.load()\n"
+            "}\n"
+        ),
+    })
+    start = _find(r, "Start()")
+    load = _find(r, ".load()")
+    assert (start, load) in _edges(r, "calls"), \
+        "the pre existing same file object member call resolution must be unaffected"
+
+
+def test_kotlin_object_member_call_ambiguous_receiver_yields_no_edge(tmp_path):
+    r = _extract(tmp_path, {
+        "one/One.kt": (
+            "package com.demo.one\n"
+            "\n"
+            "object Config {\n"
+            "    fun load() { }\n"
+            "}\n"
+        ),
+        "two/Two.kt": (
+            "package com.demo.two\n"
+            "\n"
+            "object Config {\n"
+            "    fun load() { }\n"
+            "}\n"
+        ),
+        "callr/Caller.kt": (
+            "package com.demo.callr\n"
+            "\n"
+            "fun Start() {\n"
+            "    Config.load()\n"
+            "}\n"
+        ),
+    })
+    start = _find(r, "Start()")
+    assert not {t for s, t in _edges(r, "calls") if s == start}, \
+        "`Config` exists in two packages — the exactly one candidate guard must refuse to pick"
+
+
 # ── #2551: one-line type bodies + ERROR recovery ─────────────────────────────
 
 def test_kotlin_partial_parse_warns_with_file_and_line(tmp_path, capsys):
