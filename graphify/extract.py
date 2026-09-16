@@ -4758,8 +4758,12 @@ def _resolve_rust_self_member_calls(
         if str(n.get("source_file") or "").endswith(".rs"):
             nids_by_label.setdefault(n.get("label", ""), []).append(n.get("id"))
 
-    # (impl/type node id, bare method name) -> method node id, from `method` edges.
-    method_index: dict[tuple[str, str], str] = {}
+    # (impl/type node id, bare method name) -> method node id(s), from `method`
+    # edges. A set, not a single overwritten value: two distinct method nodes
+    # sharing both a source and a stripped label (however unlikely) must still
+    # surface as an ambiguity below rather than silently keeping whichever one
+    # was seen last.
+    method_index: dict[tuple[str, str], set[str]] = {}
     for e in all_edges:
         if e.get("relation") != "method":
             continue
@@ -4767,7 +4771,7 @@ def _resolve_rust_self_member_calls(
         tnode = node_by_id.get(tgt)
         if tnode is not None:
             name = str(tnode.get("label", "")).strip("()").lstrip(".")
-            method_index[(src, name)] = tgt
+            method_index.setdefault((src, name), set()).add(tgt)
 
     # Scoped to `calls`: a caller that already has a DIFFERENT relation to the
     # same target (e.g. a `references` edge from also naming the type in a
@@ -4781,11 +4785,9 @@ def _resolve_rust_self_member_calls(
     for rc in raw:
         caller = rc["caller_nid"]
         callee = rc["callee"]
-        candidates = {
-            method_index[(nid, callee)]
-            for nid in nids_by_label.get(rc["rust_self_type"], [])
-            if (nid, callee) in method_index
-        }
+        candidates: set[str] = set()
+        for nid in nids_by_label.get(rc["rust_self_type"], []):
+            candidates |= method_index.get((nid, callee), set())
         if len(candidates) != 1:  # zero or ambiguous -> no edge (god-node guard)
             continue
         tgt = next(iter(candidates))

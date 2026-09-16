@@ -168,3 +168,39 @@ def test_resolver_is_not_suppressed_by_an_unrelated_edge_to_the_same_pair(tmp_pa
         if e["relation"] == "calls"
     }
     assert ("impl_foo_caller", "impl_foo_method") in calls
+
+
+def test_resolver_treats_a_duplicate_method_index_key_as_ambiguous(tmp_path: Path):
+    """Two DIFFERENT method nodes sharing both a source impl node and a
+    stripped label must surface as an ambiguity (no edge), not silently
+    keep whichever one a plain dict overwrite happened to see last."""
+    from graphify.extract import _resolve_rust_self_member_calls
+
+    all_nodes = [
+        {"id": "impl_foo", "label": "Foo", "source_file": "a.rs"},
+        {"id": "impl_foo_method_a", "label": ".method()", "source_file": "a.rs"},
+        {"id": "impl_foo_method_b", "label": ".method()", "source_file": "a.rs"},
+        {"id": "impl_foo_caller", "label": ".caller()", "source_file": "a.rs"},
+    ]
+    all_edges = [
+        {"source": "impl_foo", "target": "impl_foo_method_a", "relation": "method"},
+        {"source": "impl_foo", "target": "impl_foo_method_b", "relation": "method"},
+    ]
+    per_file = [{
+        "raw_calls": [{
+            "caller_nid": "impl_foo_caller",
+            "callee": "method",
+            "rust_self_type": "Foo",
+            "source_file": "a.rs",
+            "source_location": "L1",
+        }],
+    }]
+
+    _resolve_rust_self_member_calls(per_file, all_nodes, all_edges)
+
+    calls = {
+        (e["source"], e["target"])
+        for e in all_edges
+        if e["relation"] == "calls"
+    }
+    assert not calls, "two same-labeled method nodes on one type must not guess"
