@@ -71,3 +71,30 @@ def test_alias_resolves_to_the_module_declared_in_another_file(tmp_path: Path):
     assert (web_file, accounts) in imports
     node_ids = {n["id"] for n in result["nodes"]}
     assert accounts in node_ids, "the import target must be a real, non-dangling node"
+
+
+def test_same_file_module_reference_is_unaffected(tmp_path: Path):
+    """Negative control: a module importing something declared in the SAME
+    file already resolved before this fix (both ids share the same stem)
+    and must keep working exactly as before."""
+    result = _extract(tmp_path, {
+        "lib/demo.ex": (
+            "defmodule Demo.Inner do\n"
+            "  def go, do: 1\n"
+            "end\n"
+            "\n"
+            "defmodule Demo.Outer do\n"
+            "  alias Demo.Inner\n"
+            "\n"
+            "  def run, do: Inner.go()\n"
+            "end\n"
+        ),
+    })
+    demo_file = _find_file(result, "demo.ex")
+    inner = _find(result, "Demo.Inner")
+    imports = {
+        (e["source"], e["target"])
+        for e in result["edges"]
+        if e["relation"] == "imports"
+    }
+    assert (demo_file, inner) in imports
