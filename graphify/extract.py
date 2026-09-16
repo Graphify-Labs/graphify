@@ -3793,6 +3793,23 @@ def _resolve_cpp_member_calls(
             enclosing_type.setdefault(tgt, src)
             method_index[(src, _key(tnode.get("label", "")))] = tgt
 
+    # Qualified label ("Class::method()") -> node id(s), for a Foo::bar() call
+    # whose callee exists ONLY as this fallback shape with no `defines`/`method`
+    # edge to its class at all (#2348). A macro-heavy class body (Unreal's
+    # UCLASS()/GENERATED_BODY()) can defeat the bundled grammar's error recovery
+    # badly enough that the in-class declaration is never parsed as a member;
+    # the out-of-line .cpp definition then has nothing to attach to, so the
+    # extractor falls back to a qualified-labeled node contained by its FILE
+    # instead of a bare-labeled one contained by its class. method_index can
+    # never find that node (it only indexes defines/method targets), so this is
+    # a second-chance lookup by the exact qualified label, still guarded by
+    # exactly-one-candidate.
+    qualified_method_nids: dict[str, list[str]] = {}
+    for n in all_nodes:
+        label = str(n.get("label", ""))
+        if n.get("source_file") and label.endswith("()") and "::" in label:
+            qualified_method_nids.setdefault(label, []).append(n["id"])
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
