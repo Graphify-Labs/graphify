@@ -72,24 +72,30 @@ def _escape_md_brackets(text: object) -> str:
     legal). ``str()`` first so that fallback stringifies exactly like the
     plain f-interpolation this call replaced, instead of raising.
 
-    A backslash immediately before a bracket in the SOURCE text is escaped
-    first, before the bracket. Source content occasionally already contains
-    a literal backslash right before a bracket (a doc excerpt showing a
-    regex character class, ``\]+``, for example). Escaping the bracket alone
-    turns that into ``\\]`` — two backslashes then a bare bracket — and
-    CommonMark reads a doubled backslash as one literal backslash, which
-    un-escapes the bracket right back into live link syntax. Doubling only a
-    backslash that precedes a bracket (not every backslash in the text)
-    keeps the bracket's own escape intact without touching an unrelated
-    pre-existing escape elsewhere in the source (``\*`` meaning a literal
-    asterisk, doubled unconditionally, would itself un-escape into a bare,
-    newly-live ``*``).
+    A RUN of one or more backslashes immediately before a bracket in the
+    SOURCE text is doubled first, before the bracket is escaped. Source
+    content occasionally already contains one or more literal backslashes
+    right before a bracket (a doc excerpt showing a regex character class,
+    ``\]+``, or an escaped backslash inside one, ``[\\]``, for example).
+    Doubling only the LAST backslash of a run, rather than every backslash
+    in the run, still leaves the earlier ones unpaired: two source
+    backslashes before a bracket produced four backslashes then a bare
+    bracket, and CommonMark reads two backslash pairs as two literal
+    backslashes with nothing left to escape the bracket, un-escaping it
+    right back into live link syntax. The whole run must double, then get
+    one more backslash for the bracket's own escape, in a single pass —
+    two separate ``.replace()`` calls for the brackets can't do this, since
+    the second call has no way to know which backslashes a previous
+    replacement result already produced versus which were in the run.
+    Matching (and touching) only a run that actually precedes a bracket
+    keeps an unrelated pre-existing escape elsewhere in the source intact
+    (``\*`` meaning a literal asterisk, doubled unconditionally, would
+    itself un-escape into a bare, newly-live ``*``).
     """
-    return (
-        re.sub(r"\\(?=[\[\]])", r"\\\\", str(text))
-        .replace("[", r"\[")
-        .replace("]", r"\]")
-    )
+    def _double_and_escape(m: "re.Match[str]") -> str:
+        return m.group(1) * 2 + "\\" + m.group(2)
+
+    return re.sub(r"(\\*)([\[\]])", _double_and_escape, str(text))
 
 
 def _md_link(label: str, resolver: dict[str, str]) -> str:
