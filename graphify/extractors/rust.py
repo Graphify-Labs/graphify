@@ -410,7 +410,7 @@ def extract_rust(path: Path) -> dict:
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
 
-    def walk_calls(node, caller_nid: str) -> None:
+    def walk_calls(node, caller_nid: str, self_type: str | None = None) -> None:
         if node.type == "function_item":
             return
         if node.type == "call_expression":
@@ -418,6 +418,7 @@ def extract_rust(path: Path) -> dict:
             callee_name: str | None = None
             is_member_call: bool = False
             is_scoped_call: bool = False
+            is_self_call: bool = False
             if func_node:
                 if func_node.type == "identifier":
                     callee_name = _read_text(func_node, source)
@@ -426,6 +427,9 @@ def extract_rust(path: Path) -> dict:
                     field = func_node.child_by_field_name("field")
                     if field:
                         callee_name = _read_text(field, source)
+                    receiver = func_node.child_by_field_name("value")
+                    if receiver is not None and receiver.type == "self":
+                        is_self_call = True
                 elif func_node.type == "scoped_identifier":
                     # Type::method() — still allow in-file EXTRACTED match, but
                     # skip cross-file resolution: bare last-segment lookup ignores
@@ -452,18 +456,21 @@ def extract_rust(path: Path) -> dict:
                             "weight": 1.0,
                         })
                 elif not is_scoped_call and callee_name.lower() not in _RUST_TRAIT_METHOD_BLOCKLIST:
-                    raw_calls.append({
+                    rc_entry = {
                         "caller_nid": caller_nid,
                         "callee": callee_name,
                         "is_member_call": is_member_call,
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
-                    })
+                    }
+                    if is_self_call and self_type:
+                        rc_entry["rust_self_type"] = self_type
+                    raw_calls.append(rc_entry)
         for child in node.children:
-            walk_calls(child, caller_nid)
+            walk_calls(child, caller_nid, self_type)
 
-    for caller_nid, body_node, _impl_type in function_bodies:
-        walk_calls(body_node, caller_nid)
+    for caller_nid, body_node, impl_type in function_bodies:
+        walk_calls(body_node, caller_nid, impl_type)
 
     valid_ids = seen_ids
     clean_edges = []
