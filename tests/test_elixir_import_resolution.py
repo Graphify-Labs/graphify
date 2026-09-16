@@ -98,3 +98,37 @@ def test_same_file_module_reference_is_unaffected(tmp_path: Path):
         if e["relation"] == "imports"
     }
     assert (demo_file, inner) in imports
+
+
+def test_ambiguous_module_name_across_files_yields_no_resolution(tmp_path: Path):
+    """Two DIFFERENT files each declare a module with the same bare name --
+    the exactly-one-candidate guard must leave the reference exactly as
+    extracted rather than guessing which one the caller meant."""
+    result = _extract(tmp_path, {
+        "a/dup.ex": (
+            "defmodule Demo.Dup do\n"
+            "  def f, do: 1\n"
+            "end\n"
+        ),
+        "b/dup.ex": (
+            "defmodule Demo.Dup do\n"
+            "  def g, do: 2\n"
+            "end\n"
+        ),
+        "caller.ex": (
+            "defmodule Demo.Caller do\n"
+            "  alias Demo.Dup\n"
+            "\n"
+            "  def run, do: Dup.f()\n"
+            "end\n"
+        ),
+    })
+    caller_file = _find_file(result, "caller.ex")
+    node_ids = {n["id"] for n in result["nodes"]}
+    import_targets = {
+        e["target"] for e in result["edges"]
+        if e["relation"] == "imports" and e["source"] == caller_file
+    }
+    assert import_targets, "the alias edge must still exist"
+    assert not (import_targets & node_ids), \
+        "an ambiguous module name must not resolve to either same-named definition"
