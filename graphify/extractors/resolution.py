@@ -1458,6 +1458,12 @@ def _apply_symbol_resolution_facts(
             # the dedicated call-graph pass; widening this would duplicate those
             # edges. Import resolution still takes precedence (#1095).
             target_id = symbol_nodes.get((file_path, use_fact.local_name))
+        if target_id is None and use_fact.context == "inline_parameter":
+            # Self-targeted arity marker: the referenced name is the callable
+            # itself (emitted by `_ts_emit_callable_type_refs`), so resolving it
+            # against the file's own symbol nodes is provably unambiguous — no
+            # import or uniqueness gating needed, unlike other `references`.
+            target_id = symbol_nodes.get((file_path, use_fact.local_name))
         if target_id is None:
             continue
         source_id = use_fact.source_id
@@ -1655,16 +1661,20 @@ def _js_default_export_name(node, source: bytes) -> str | None:
         return _read_text(value, source)
     return None
 
-def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
-    bodies: list[tuple[str, object]] = []
-    stem = _file_stem(path)
-    # A top-level `export function f(){}` / `export const g = () => {}` is an
-    # export_statement WRAPPING the declaration, not a bare program child, so
-    # scanning only direct children missed every exported function — and the
-    # calls inside them never became `uses` facts, so an aliased-import call
-    # (`import { bar as baz }; baz()`) never resolved through the import table
-    # (#3346). Unwrap a non-re-export export_statement to its inner declaration
-    # so exported and non-exported functions are treated identically.
+def _js_top_level_unwrapped(root_node) -> list:
+    """Top-level program children with non-re-export `export_statement`s
+    unwrapped to their inner declaration.
+
+    A top-level `export function f(){}` / `export const g = () => {}` is an
+    export_statement WRAPPING the declaration, not a bare program child, so
+    scanning only direct children missed every exported function — and the
+    calls inside them never became `uses` facts, so an aliased-import call
+    (`import { bar as baz }; baz()`) never resolved through the import table
+    (#3346). Shared by `_js_top_level_function_bodies` (bodies, for the
+    call-graph `uses` pass) and `_js_top_level_function_nodes` (callables, for
+    the parameter/return type-ref pass) so both treat exported and
+    non-exported functions identically.
+    """
     top_nodes: list = []
     for node in root_node.children:
         if node.type == "export_statement" and not any(
@@ -1676,7 +1686,12 @@ def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[
             )
         else:
             top_nodes.append(node)
-    for node in top_nodes:
+    return top_nodes
+
+def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
+    bodies: list[tuple[str, object]] = []
+    stem = _file_stem(path)
+    for node in _js_top_level_unwrapped(root_node):
         if node.type == "function_declaration":
             name_node = node.child_by_field_name("name")
             body = node.child_by_field_name("body")
@@ -1697,6 +1712,40 @@ def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[
             ):
                 bodies.append((_make_id(stem, _read_text(name_node, source)), value_node))
     return bodies
+
+def _js_top_level_function_nodes(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
+    """Return (id, callable node) for every top-level named callable that
+    already becomes a graph node (`Name()` label): `function_declaration` (bare
+    or `export`/`export default`-wrapped, covering `export async function`) and
+    const-assigned `arrow_function` / `function_expression` declarator values.
+
+    Unlike `_js_top_level_function_bodies`, the returned node is the callable
+    itself, so its `parameters` / `return_type` fields are reachable for the
+    parameter/return type-ref pass. The id reuses the bodies' recipe
+    (`_make_id(stem, name)`), so both passes agree with the engine-minted node.
+    """
+    callables: list[tuple[str, object]] = []
+    stem = _file_stem(path)
+    for node in _js_top_level_unwrapped(root_node):
+        if node.type == "function_declaration":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                callables.append((_make_id(stem, _read_text(name_node, source)), node))
+            continue
+        if node.type != "lexical_declaration":
+            continue
+        for child in node.children:
+            if child.type != "variable_declarator":
+                continue
+            name_node = child.child_by_field_name("name")
+            value_node = child.child_by_field_name("value")
+            if (
+                name_node is not None
+                and value_node is not None
+                and value_node.type in ("arrow_function", "function_expression")
+            ):
+                callables.append((_make_id(stem, _read_text(name_node, source)), value_node))
+    return callables
 
 def _js_call_identifier(node, source: bytes) -> str | None:
     if node.type != "call_expression":
@@ -1791,8 +1840,73 @@ def _ts_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[st
             if c.is_named:
                 _ts_collect_type_refs(c, source, generic, out)
 
+def _ts_emit_callable_type_refs(path: Path, source: bytes, callable_nid: str,
+                                callable_node, facts: _SymbolResolutionFacts,
+                                line: int, *,
+                                inline_params: bool = False) -> None:
+    """Emit `references[parameter_type]` / `references[return_type]` uses for a
+    function-like node.
+
+    Shared by class-member walking (`_ts_walk_class_members`) and top-level
+    free functions (`_js_top_level_function_nodes`), so both get the same edge
+    shapes: only typed parameters contribute, primitive types are dropped by
+    `_ts_collect_type_refs`, and types inside `type_arguments` are split off as
+    `generic_arg` — matching the split methods already get.
+
+    When `inline_params=True`, parameters whose type annotation is an anonymous
+    object literal (`object_type`) emit:
+      - a `references[inline_parameter]` self-edge (markers), and
+      - nested named refs from their body as `references[field]`
+        (not `parameter_type`).
+    This ensures `parameter_type` edges represent only *named* param types,
+    and anonymous param arity is carried by the `inline_parameter` marker.
+    """
+    callable_name: str | None = None
+    if inline_params:
+        name_node = callable_node.child_by_field_name("name")
+        if name_node is not None:
+            callable_name = _read_text(name_node, source)
+    params = callable_node.child_by_field_name("parameters")
+    if params is not None:
+        for p in params.children:
+            if p.type not in ("required_parameter", "optional_parameter"):
+                continue
+            type_anno = p.child_by_field_name("type")
+            if type_anno is None:
+                continue
+            is_anon = type_anno.type == "object_type"
+            if is_anon:
+                pass
+            elif type_anno.type == "type_annotation":
+                named = [c for c in type_anno.children if c.is_named]
+                is_anon = (named[-1].type == "object_type" if named else False)
+            if is_anon and inline_params and callable_name:
+                facts.uses.append(
+                    _SymbolUseFact(path, callable_nid, callable_name,
+                                   "references", "inline_parameter", line)
+                )
+            refs: list[tuple[str, str]] = []
+            _ts_collect_type_refs(type_anno, source, False, refs)
+            for name, role in refs:
+                if is_anon and inline_params:
+                    ctx = "generic_arg" if role == "generic_arg" else "field"
+                else:
+                    ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
+                facts.uses.append(
+                    _SymbolUseFact(path, callable_nid, name, "references", ctx, line)
+                )
+    return_type = callable_node.child_by_field_name("return_type")
+    if return_type is not None:
+        refs = []
+        _ts_collect_type_refs(return_type, source, False, refs)
+        for name, role in refs:
+            ctx = "generic_arg" if role == "generic_arg" else "return_type"
+            facts.uses.append(
+                _SymbolUseFact(path, callable_nid, name, "references", ctx, line)
+            )
+
 def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str,
-                            facts: _SymbolResolutionFacts) -> None:
+                            facts: _SymbolResolutionFacts, inline_params: bool = False) -> None:
     """Emit type-relation and type-reference use facts for a class declaration node."""
     line = class_node.start_point[0] + 1
     for child in class_node.children:
@@ -1848,30 +1962,8 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
                 continue
             method_name = _read_text(name_node, source)
             method_nid = _make_id(class_nid, method_name)
-            params = member.child_by_field_name("parameters")
-            if params is not None:
-                for p in params.children:
-                    if p.type not in ("required_parameter", "optional_parameter"):
-                        continue
-                    type_anno = p.child_by_field_name("type")
-                    if type_anno is None:
-                        continue
-                    refs: list[tuple[str, str]] = []
-                    _ts_collect_type_refs(type_anno, source, False, refs)
-                    for name, role in refs:
-                        ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
-                        facts.uses.append(
-                            _SymbolUseFact(path, method_nid, name, "references", ctx, m_line)
-                        )
-            return_type = member.child_by_field_name("return_type")
-            if return_type is not None:
-                refs = []
-                _ts_collect_type_refs(return_type, source, False, refs)
-                for name, role in refs:
-                    ctx = "generic_arg" if role == "generic_arg" else "return_type"
-                    facts.uses.append(
-                        _SymbolUseFact(path, method_nid, name, "references", ctx, m_line)
-                    )
+            _ts_emit_callable_type_refs(path, source, method_nid, member, facts, m_line,
+                                        inline_params=inline_params)
         elif member.type in ("public_field_definition", "property_signature"):
             type_anno = None
             for c in member.children:
@@ -1888,7 +1980,8 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
                     _SymbolUseFact(path, class_nid, name, "references", ctx, m_line)
                 )
 
-def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolutionFacts) -> None:
+def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolutionFacts,
+                                        inline_params: bool = False) -> None:
     js_paths = [
         path for path in paths
         if path.suffix in _JS_CACHE_BYPASS_SUFFIXES
@@ -2074,6 +2167,18 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
         if parsed is None:
             continue
         source, root_node = parsed
+        for fn_id, fn_node in _js_top_level_function_nodes(path, root_node, source):
+            _ts_emit_callable_type_refs(
+                path, source, fn_id, fn_node, facts, fn_node.start_point[0] + 1,
+                inline_params=inline_params,
+            )
+
+    for path in js_paths:
+        resolved_path = path.resolve()
+        parsed = trees.get(resolved_path)
+        if parsed is None:
+            continue
+        source, root_node = parsed
         stem = _file_stem(path)
         for node in _walk_js_tree(root_node):
             if node.type not in (
@@ -2089,7 +2194,8 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
             if not class_name:
                 continue
             class_nid = _make_id(stem, class_name)
-            _ts_walk_class_members(node, source, path, class_nid, facts)
+            _ts_walk_class_members(node, source, path, class_nid, facts,
+                                   inline_params=inline_params)
 
 @functools.lru_cache(maxsize=2048)
 def _parse_python_tree_cached(path_str: str, _mtime_ns: int, _size: int):
@@ -2386,9 +2492,10 @@ def _augment_symbol_resolution_edges(
     nodes: list[dict],
     edges: list[dict],
     root: Path,
+    inline_params: bool = False,
 ) -> None:
     facts = _SymbolResolutionFacts()
-    _collect_js_symbol_resolution_facts(paths, facts)
+    _collect_js_symbol_resolution_facts(paths, facts, inline_params=inline_params)
     _collect_python_symbol_resolution_facts(paths, root, facts)
     _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 

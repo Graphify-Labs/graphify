@@ -1008,6 +1008,142 @@ def test_ts_type_relationships_and_contexts(tmp_path: Path):
     assert ("run", "Payload", "generic_arg") in reference_contexts
 
 
+# ── Free-function parameter_type / return_type edges ─────────────────────────
+
+
+def test_ts_free_function_parameter_return_and_generic_contexts(tmp_path: Path):
+    """Top-level (free) functions must emit the same `references` type edges
+    class methods already get: parameter_type per typed param, return_type per
+    typed return, generic_arg split for inner type_arguments.
+
+    Covers `export async function`, `function`, `const ... =>` arrows, and
+    `const ... = function` expressions; primitives (string) stay filtered out.
+    """
+    base = _write(
+        tmp_path / "src/lib/base.ts",
+        "export interface SubsystemComponent { name: string }\n"
+        "export interface SubsystemComponentEdge { from: string }\n"
+        "export interface ExcalidrawScene { elements: unknown[] }\n"
+        "export class Renderer {}\n",
+    )
+    impl = _write(
+        tmp_path / "src/lib/scene.ts",
+        "import type { SubsystemComponent, SubsystemComponentEdge, ExcalidrawScene, Renderer } from './base'\n"
+        "export async function subsystemGraphToExcalidrawScene(\n"
+        "  components: SubsystemComponent[],\n"
+        "  edges: SubsystemComponentEdge[],\n"
+        "  name: string,\n"
+        "): Promise<ExcalidrawScene> {\n"
+        "  return { elements: [] };\n"
+        "}\n"
+        "function bareFn(e: ExcalidrawScene, r: Renderer): SubsystemComponent { return { name: 'x' } }\n"
+        "const arrowFn = (edge: SubsystemComponentEdge): ExcalidrawScene => ({ elements: [] });\n"
+        "const fnExpr = function (s: SubsystemComponent): SubsystemComponentEdge { return { from: s.name } };\n",
+    )
+
+    result = _extract_for([base, impl], tmp_path)
+    labels = {node["id"]: node["label"] for node in result["nodes"]}
+
+    def _norm(label: str) -> str:
+        return label.strip("()").lstrip(".")
+
+    reference_contexts = {
+        (
+            _norm(labels.get(edge["source"], edge["source"])),
+            _norm(labels.get(edge["target"], edge["target"])),
+            edge.get("context"),
+        )
+        for edge in result["edges"]
+        if edge.get("relation") == "references"
+    }
+
+    assert ("subsystemGraphToExcalidrawScene", "SubsystemComponent", "parameter_type") in reference_contexts
+    assert ("subsystemGraphToExcalidrawScene", "SubsystemComponentEdge", "parameter_type") in reference_contexts
+    assert ("subsystemGraphToExcalidrawScene", "ExcalidrawScene", "generic_arg") in reference_contexts
+    assert ("bareFn", "ExcalidrawScene", "parameter_type") in reference_contexts
+    assert ("bareFn", "Renderer", "parameter_type") in reference_contexts
+    assert ("bareFn", "SubsystemComponent", "return_type") in reference_contexts
+    assert ("arrowFn", "SubsystemComponentEdge", "parameter_type") in reference_contexts
+    assert ("arrowFn", "ExcalidrawScene", "return_type") in reference_contexts
+    assert ("fnExpr", "SubsystemComponent", "parameter_type") in reference_contexts
+    assert ("fnExpr", "SubsystemComponentEdge", "return_type") in reference_contexts
+    assert ("subsystemGraphToExcalidrawScene", "string", "parameter_type") not in reference_contexts
+
+
+# ── --inline-params: anonymous-object parameter designation ──────────────────
+
+
+def test_inline_params_flag_designates_anonymous_object_parameters(tmp_path: Path):
+    """With `--inline-params`, a parameter typed as an anonymous object literal
+    emits a self-targeted `references[inline_parameter]` marker (arity) and its
+    nested named refs become `references[field]` — NOT `parameter_type` — so
+    `parameter_type` edges mean only *named* param types. Without the flag the
+    nested refs stay `parameter_type` and no marker is emitted (default keeps
+    today's shape for downstream consumers).
+    """
+    base = _write(
+        tmp_path / "base.ts",
+        "export interface SessionEventRow { id: string }\n",
+    )
+    target = _write(
+        tmp_path / "agent.ts",
+        "import type { SessionEventRow } from './base'\n"
+        "export function buildView(opts: { sessionId: string; events: SessionEventRow[] | null }): string {\n"
+        "  return opts.sessionId;\n"
+        "}\n",
+    )
+
+    def _refs(result: dict) -> set[tuple[str, str, str]]:
+        labels = {node["id"]: node["label"].strip("()").lstrip(".") for node in result["nodes"]}
+        return {
+            (labels.get(edge["source"], edge["source"]), labels.get(edge["target"], edge["target"]), edge.get("context"))
+            for edge in result["edges"]
+            if edge.get("relation") == "references"
+        }
+
+    default = _refs(extract([base, target], cache_root=tmp_path, parallel=False))
+    assert ("buildView", "SessionEventRow", "parameter_type") in default
+    assert ("buildView", "SessionEventRow", "field") not in default
+    assert ("buildView", "buildView", "inline_parameter") not in default
+
+    flagged = _refs(
+        extract([base, target], cache_root=tmp_path, parallel=False, inline_params=True)
+    )
+    assert ("buildView", "buildView", "inline_parameter") in flagged
+    assert ("buildView", "SessionEventRow", "field") in flagged
+    assert ("buildView", "SessionEventRow", "parameter_type") not in flagged
+
+
+def test_free_fn_type_refs_cover_exported_const_callables(tmp_path: Path):
+    """The free-function param/return pass shares the export-unwrap traversal
+    with the call-graph pass (#3346), so export-wrapped const callables — both
+    arrow and function-expression values — contribute typed refs, not just bare
+    `function` declarations. (The inline arity marker still needs a `name` field
+    on the callable node, so it stays a `function`-declaration-only signal.)"""
+    base = _write(
+        tmp_path / "base.ts",
+        "export interface SessionEventRow { id: string }\n",
+    )
+    target = _write(
+        tmp_path / "agent.ts",
+        "import type { SessionEventRow } from './base'\n"
+        "export const buildView = (row: SessionEventRow): void => {};\n"
+        "export const renderView = function (row: SessionEventRow): void {};\n",
+    )
+
+    def _refs(result: dict) -> set[tuple[str, str, str]]:
+        labels = {node["id"]: node["label"].strip("()").lstrip(".") for node in result["nodes"]}
+        return {
+            (labels.get(edge["source"], edge["source"]), labels.get(edge["target"], edge["target"]), edge.get("context"))
+            for edge in result["edges"]
+            if edge.get("relation") == "references"
+        }
+
+    refs = _refs(extract([base, target], cache_root=tmp_path, parallel=False))
+    assert ("buildView", "SessionEventRow", "parameter_type") in refs
+    assert ("renderView", "SessionEventRow", "parameter_type") in refs
+
+
 # ── #1531: tsconfig path-alias fallback targets ──────────────────────────────
 
 
