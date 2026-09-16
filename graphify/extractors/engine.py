@@ -6390,6 +6390,14 @@ def _extract_generic(
                         if kotlin_qualified_prefix:
                             rc_entry["lang"] = "kotlin"
                             rc_entry["qualified_prefix"] = kotlin_qualified_prefix
+                        # Kotlin object/class-qualified member call (#1698): the
+                        # receiver + lang tag let _resolve_kotlin_member_calls
+                        # claim it once the in-file bare-name lookup above (the
+                        # only reason a real definition reaches raw_calls at
+                        # all) has already failed.
+                        if kotlin_object_receiver:
+                            rc_entry["lang"] = "kotlin"
+                            rc_entry["kotlin_object_receiver"] = kotlin_object_receiver
                         raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
