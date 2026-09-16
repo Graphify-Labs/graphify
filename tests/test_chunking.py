@@ -279,6 +279,34 @@ def test_corpus_parallel_continues_after_chunk_failure(tmp_path, capsys):
     assert "failed" in err and "simulated API error" in err
 
 
+def test_failed_chunk_is_not_reported_as_successful_model_omission(tmp_path, capsys):
+    """A dependency or backend exception means no model response exists.
+
+    The reconciliation warning must not claim the model returned a response and
+    omitted the file when its chunk failed before producing any result.
+    """
+    from graphify.llm import extract_corpus_parallel
+
+    doc = tmp_path / "guide.md"
+    doc.write_text("# Guide\n", encoding="utf-8")
+
+    with patch(
+        "graphify.llm.extract_files_direct",
+        side_effect=ImportError(
+            "OpenAI package not installed. Install with: pip install 'graphifyy[gemini]'"
+        ),
+    ):
+        result = extract_corpus_parallel(
+            [doc], backend="gemini", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+        )
+
+    assert result["failed_chunks"] == 1
+    err = capsys.readouterr().err
+    assert "failed before returning a usable result" in err
+    assert "returned a response but omitted" not in err
+
+
 def test_checkpoint_scopes_cache_writes_to_chunk_files(tmp_path):
     """#1757: the per-chunk incremental checkpoint must not let a chunk's
     mis-attributed node clobber another corpus file's semantic cache. A chunk
@@ -424,6 +452,7 @@ def test_omitted_documents_are_reconciled_and_warned(tmp_path, capsys):
     assert uncovered == {"doc1.md", "doc3.md"}, f"reconciliation missed omissions: {uncovered}"
     err = capsys.readouterr().err
     assert "produced no nodes" in err and "doc1.md" in err
+    assert "returned a response but omitted" in err
 
 
 def test_out_of_scope_nodes_are_dropped_from_merged_result(tmp_path, capsys):
