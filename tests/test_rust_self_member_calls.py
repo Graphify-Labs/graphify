@@ -129,3 +129,42 @@ def test_self_call_to_undefined_method_yields_no_edge(tmp_path: Path):
     caller = _find(result, ".show()", "widget")
     targets = {tgt for (src, tgt) in calls if src == caller}
     assert not targets
+
+
+def test_resolver_is_not_suppressed_by_an_unrelated_edge_to_the_same_pair(tmp_path: Path):
+    """A caller that already has a DIFFERENT relation to the exact same
+    target (e.g. a references edge from also naming the type elsewhere)
+    must still get its calls edge -- the two relations are not mutually
+    exclusive, and an existing non-calls edge says nothing about whether a
+    call was resolved."""
+    from graphify.extract import _resolve_rust_self_member_calls
+
+    all_nodes = [
+        {"id": "impl_foo", "label": "Foo", "source_file": "a.rs"},
+        {"id": "impl_foo_method", "label": ".method()", "source_file": "a.rs"},
+        {"id": "impl_foo_caller", "label": ".caller()", "source_file": "a.rs"},
+    ]
+    all_edges = [
+        {"source": "impl_foo", "target": "impl_foo_method", "relation": "method"},
+        # A pre-existing, unrelated edge between the exact same pair the
+        # resolver is about to consider -- must not suppress the new one.
+        {"source": "impl_foo_caller", "target": "impl_foo_method", "relation": "references"},
+    ]
+    per_file = [{
+        "raw_calls": [{
+            "caller_nid": "impl_foo_caller",
+            "callee": "method",
+            "rust_self_type": "Foo",
+            "source_file": "a.rs",
+            "source_location": "L1",
+        }],
+    }]
+
+    _resolve_rust_self_member_calls(per_file, all_nodes, all_edges)
+
+    calls = {
+        (e["source"], e["target"])
+        for e in all_edges
+        if e["relation"] == "calls"
+    }
+    assert ("impl_foo_caller", "impl_foo_method") in calls

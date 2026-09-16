@@ -4769,7 +4769,15 @@ def _resolve_rust_self_member_calls(
             name = str(tnode.get("label", "")).strip("()").lstrip(".")
             method_index[(src, name)] = tgt
 
-    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    # Scoped to `calls`: a caller that already has a DIFFERENT relation to the
+    # same target (e.g. a `references` edge from also naming the type in a
+    # parameter) says nothing about whether a call to it was resolved, and
+    # must not suppress one.
+    existing_pairs = {
+        (e.get("source"), e.get("target"))
+        for e in all_edges
+        if e.get("relation") == "calls"
+    }
     for rc in raw:
         caller = rc["caller_nid"]
         callee = rc["callee"]
