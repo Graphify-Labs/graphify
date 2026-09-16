@@ -1479,6 +1479,7 @@ def dispatch_command(cmd: str) -> None:
         p.add_argument("--answer-file", dest="answer_file", default=None)
         p.add_argument("--type", dest="query_type", default="query")
         p.add_argument("--nodes", nargs="*", default=[])
+        p.add_argument("--nodes-file", dest="nodes_file", default=None)
         p.add_argument("--outcome", choices=("useful", "dead_end", "corrected"), default=None)
         p.add_argument("--correction", default=None)
         p.add_argument("--correction-file", dest="correction_file", default=None)
@@ -1494,6 +1495,12 @@ def dispatch_command(cmd: str) -> None:
             p.error("--answer or --answer-file is required")
         if opts.correction_file:
             opts.correction = Path(opts.correction_file).read_text(encoding="utf-8").strip()
+        if opts.nodes_file:
+            opts.nodes = [
+                line.strip()
+                for line in Path(opts.nodes_file).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
         from graphify.ingest import save_query_result as _sqr
 
         out = _sqr(
