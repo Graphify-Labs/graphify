@@ -557,6 +557,26 @@ def test_cli_save_result_reads_nodes_from_file(tmp_path):
     assert "`AuthMiddleware`" in body
 
 
+def test_cli_save_result_reads_nodes_from_multiple_files(tmp_path):
+    """--nodes-file accepts more than one path, each contributing its own
+    label -- the path/explain fallback scripts reserve one file per label
+    specifically so a label containing a literal newline still lands as
+    exactly one entry, instead of relying on a shared file holding a fixed
+    number of lines."""
+    a = tmp_path / "a.txt"
+    b = tmp_path / "b.txt"
+    a.write_text("Concept A\n", encoding="utf-8")
+    b.write_text("Concept B\n", encoding="utf-8")
+    r = _run(["save-result", "--question", "q", "--answer", "a",
+              "--outcome", "useful", "--nodes-file", str(a), str(b)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    docs = list((tmp_path / "graphify-out" / "memory").glob("*.md"))
+    assert docs, "save-result wrote no memory doc"
+    body = docs[0].read_text(encoding="utf-8")
+    assert "Concept A" in body
+    assert "Concept B" in body
+
+
 def test_cli_reflect_cold_start_writes_empty_lessons(tmp_path):
     """First run with no graphify-out/memory/ still succeeds and writes a valid doc."""
     r = _run(["reflect"], tmp_path)
