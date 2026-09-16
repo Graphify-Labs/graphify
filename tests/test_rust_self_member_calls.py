@@ -204,3 +204,33 @@ def test_resolver_treats_a_duplicate_method_index_key_as_ambiguous(tmp_path: Pat
         if e["relation"] == "calls"
     }
     assert not calls, "two same-labeled method nodes on one type must not guess"
+
+
+def test_self_call_does_not_link_across_two_unrelated_types_sharing_a_name(tmp_path: Path):
+    """Two UNRELATED structs happen to share the bare name `Config`; each
+    defines a DIFFERENT method (no name collision between them). Pooling
+    methods across every same-labeled node -- the mechanism that makes a
+    split impl block work -- must not also link a caller in one type's impl
+    to a method that only exists on the other, unrelated type. This is the
+    shape a shared trait default (present in real, compiling Rust: one type
+    overrides a trait method, the other relies on the default and so never
+    gets an explicit method node for it) would trigger."""
+    calls, result = _calls(tmp_path, {
+        "a.rs": (
+            "struct Config { x: i32 }\n"
+            "impl Config {\n"
+            "    fn foo(&self) -> i32 { self.x }\n"
+            "}\n"
+        ),
+        "b.rs": (
+            "struct Config { y: i32 }\n"
+            "impl Config {\n"
+            "    fn bar(&self) -> i32 { self.y }\n"
+            "    fn start(&self) -> i32 { self.foo() }\n"
+            "}\n"
+        ),
+    })
+    caller = _find(result, ".start()", "b_config")
+    targets = {tgt for (src, tgt) in calls if src == caller}
+    assert not targets, \
+        "`Config` is declared twice (a.rs, b.rs) -- must not link to the other one's foo()"

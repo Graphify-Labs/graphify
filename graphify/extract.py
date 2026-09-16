@@ -4740,6 +4740,17 @@ def _resolve_rust_self_member_calls(
     a call resolves only when exactly one method across the WHOLE pool matches
     the callee name — two impl blocks (however many files apart) defining the
     same method name still bail, a real ambiguity rather than a false one.
+
+    Pooling across every same-labeled node is only safe when they are all
+    impl blocks for ONE real type; it must not also fire when the bare name is
+    shared by two UNRELATED types, which would link a call to a method that
+    only exists on the wrong one (concretely: one type overrides a trait
+    method the other relies on the default for, so only the override gets an
+    explicit method node). A struct/enum/trait DECLARATION gets a `contains`
+    edge from its file; an impl block never does. So the type name itself is
+    treated as ambiguous, and pooling skipped entirely, whenever 2+ nodes
+    sharing the bare label are real declarations rather than impl blocks.
+
     Only `self.` receivers are handled: a non-self receiver needs local type
     inference this pass does not attempt, left for a future extension.
     """
@@ -4757,6 +4768,23 @@ def _resolve_rust_self_member_calls(
     for n in all_nodes:
         if str(n.get("source_file") or "").endswith(".rs"):
             nids_by_label.setdefault(n.get("label", ""), []).append(n.get("id"))
+
+    # Pooling methods across every same-labeled node is safe when they are all
+    # impl blocks for ONE real type spread across files, but not when the bare
+    # name is shared by two UNRELATED types (#2234 follow up) -- pooling would
+    # then link a call to a method on the wrong one whenever the caller's own
+    # type happens to lack that method (a trait default the caller relies on
+    # but never overrides, most concretely). The two shapes differ in exactly
+    # one place: a struct/enum/trait DECLARATION gets a `contains` edge from
+    # its file, an impl block never does (rust.py adds a node for the impl's
+    # type but no such edge). So 2+ declarations sharing a bare name means the
+    # name itself is genuinely ambiguous; 0 or 1 means every same-labeled node
+    # -- however many files its impl blocks are spread across -- is safe to
+    # pool, which is the split-impl-block shape this pass exists for.
+    declared_type_count: dict[str, int] = {}
+    contains_targets = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
+    for label, nids in nids_by_label.items():
+        declared_type_count[label] = sum(1 for nid in nids if nid in contains_targets)
 
     # (impl/type node id, bare method name) -> method node id(s), from `method`
     # edges. A set, not a single overwritten value: two distinct method nodes
@@ -4785,8 +4813,11 @@ def _resolve_rust_self_member_calls(
     for rc in raw:
         caller = rc["caller_nid"]
         callee = rc["callee"]
+        self_type = rc["rust_self_type"]
+        if declared_type_count.get(self_type, 0) >= 2:
+            continue  # the type name itself is ambiguous -- two unrelated types share it
         candidates: set[str] = set()
-        for nid in nids_by_label.get(rc["rust_self_type"], []):
+        for nid in nids_by_label.get(self_type, []):
             candidates |= method_index.get((nid, callee), set())
         if len(candidates) != 1:  # zero or ambiguous -> no edge (god-node guard)
             continue
