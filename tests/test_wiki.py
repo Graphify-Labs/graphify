@@ -392,6 +392,22 @@ def test_wiki_link_with_bracketed_label_resolves(tmp_path):
     assert (tmp_path / "Array[T]_Models.md").exists()
 
 
+def test_community_article_title_escapes_a_bare_bracket_label(tmp_path):
+    """A community label that is JUST a bracket character (`_community_article`'s
+    own `# {label}` title heading, not a link target) must render escaped too,
+    or the lone `[` opens a markdown link/image syntax the rest of the line
+    never closes."""
+    G = nx.Graph()
+    G.add_node(1, label="a", file_type="code", source_file="a.py", community=0)
+    G.add_node(2, label="b", file_type="code", source_file="b.py", community=0)
+    G.add_node(3, label="c", file_type="code", source_file="c.py", community=0)
+    G.add_edge(1, 2, relation="references", confidence="INFERRED", weight=1.0)
+    G.add_edge(1, 3, relation="references", confidence="INFERRED", weight=1.0)
+    G.add_edge(2, 3, relation="references", confidence="INFERRED", weight=1.0)
+    article = _community_article(G, 0, [1, 2, 3], "[", {0: "["}, 1.0)
+    assert article.startswith("# \\[\n")
+
+
 def test_wiki_links_to_nodes_without_articles_are_plain_text(tmp_path):
     """A god node links its neighbours, but only communities and god nodes get
     article files — neighbours without one must render as plain text, not as a
