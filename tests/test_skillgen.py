@@ -685,6 +685,31 @@ def test_no_cluster_and_force_flags_are_wired_through():
         )
 
 
+def test_input_path_forward_slash_guidance_is_present():
+    """#1619 B1: a Windows INPUT_PATH substitution with backslashes corrupts
+    the Python string literal it's spliced into. Every host must tell the
+    agent to substitute forward slashes instead, and the PowerShell
+    Resolve-Path call must be quoted so a path with a space in it survives."""
+    claude_core, _ = _platform_artifacts("claude")
+    windows_core, _ = _platform_artifacts("windows")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core, "windows": windows_core}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        assert "substitute it with forward slashes" in body.lower(), (
+            f"[{key}] missing the forward-slash INPUT_PATH guidance"
+        )
+
+    assert "(Resolve-Path 'INPUT_PATH')" in bodies["windows"], (
+        "skill-windows.md's Resolve-Path call must be quoted (#1619 B1)"
+    )
+    assert "(Resolve-Path INPUT_PATH)" not in bodies["windows"], (
+        "the unquoted Resolve-Path call must not survive"
+    )
+
+
 def test_monoliths_scope_semantic_cache_writes_to_uncached_files():
     """#1757: generated monoliths pass the dispatched-file allowlist when
     replacing semantic cache entries."""
