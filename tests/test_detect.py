@@ -42,6 +42,11 @@ def test_classify_powershell_manifest():
     # #1331: .psd1 manifests must be classified as CODE so the manifest extractor runs.
     assert classify_file(Path("MyModule.psd1")) == FileType.CODE
 
+def test_classify_stylesheet():
+    # A .css file fell through classify_file() as unclassified (CODE_EXTENSIONS gap),
+    # so it reached no extractor and left no node in the graph.
+    assert classify_file(Path("theme.css")) == FileType.CODE
+
 def test_classify_markdown():
     assert classify_file(Path("README.md")) == FileType.DOCUMENT
 
