@@ -416,7 +416,7 @@ def test_windows_and_posix_cores_have_step_and_2490_parity():
     for heading in _STEP_HEADINGS:
         assert heading in claude_core, f"skill.md lost step heading: {heading!r}"
         assert heading in windows_core, f"skill-windows.md lost step heading: {heading!r}"
-    line_2490 = "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)"
+    line_2490 = "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels, force=IS_FORCE)"
     assert line_2490 in claude_core, "skill.md lost the #2490 Step-5 re-export"
     assert line_2490 in windows_core, "skill-windows.md lost the #2490 Step-5 re-export"
 
@@ -649,6 +649,40 @@ def test_monoliths_carry_the_1392_runbook_fixes():
         # guard fires right after the build, before the graph/report are written.
         assert build_i < guard_i < wrote_i < report_i, f"[{key}] Step 4 ordering not fixed"
         assert "if not wrote:" in body
+
+
+def test_no_cluster_and_force_flags_are_wired_through():
+    """#1619 C1/C2: --no-cluster and --force were documented/suggested but never
+    implemented -- cluster() ran unconditionally and to_json() never received
+    force=. Both are now wired through Step 4/5, for the core render and both
+    hand-maintained monoliths.
+    """
+    claude_core, _ = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        assert "--no-cluster" in body.split("## Usage")[1].split("```")[1], (
+            f"[{key}] --no-cluster missing from Usage"
+        )
+        assert "--force " in body.split("## Usage")[1].split("```")[1], (
+            f"[{key}] --force missing from Usage"
+        )
+        assert "if IS_NO_CLUSTER:" in body, f"[{key}] Step 4 does not branch on IS_NO_CLUSTER"
+        assert "communities = {0: list(G.nodes())}" in body, (
+            f"[{key}] Step 4 missing the flat --no-cluster community shortcut"
+        )
+        assert "force=IS_FORCE" in body, f"[{key}] to_json is not wired to IS_FORCE"
+        # Both to_json(...graph.json...) calls in the main build path take it -
+        # Step 4's first write and Step 5's curated-labels re-export.
+        assert body.count("force=IS_FORCE") >= 2, (
+            f"[{key}] expected force=IS_FORCE on both Step 4 and Step 5 to_json calls"
+        )
+        assert "Skip this step entirely if `--no-cluster` was given in Step 4" in body, (
+            f"[{key}] Step 5 does not document skipping labeling for --no-cluster"
+        )
 
 
 def test_monoliths_scope_semantic_cache_writes_to_uncached_files():
