@@ -4715,6 +4715,92 @@ def _resolve_kotlin_qualified_calls(
         })
 
 
+def _resolve_kotlin_member_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve Kotlin object/class-qualified member calls across files (#1698).
+
+    ``Receiver.method()`` (exactly two navigation segments, a capitalized
+    receiver — an object singleton or a class/companion member) resolves
+    in-file through the engine's own bare-name lookup, so a call reaches
+    ``raw_calls`` here only when that lookup already failed: the receiver and
+    the callee are declared in different files. The shared cross-file pass
+    skips every ``is_member_call`` unconditionally (a bare method name like
+    ``log`` collides across the corpus and inflates god-nodes, #543/#1219),
+    and Kotlin deliberately never stamps ``member_receiver`` for this shape
+    either (see ``extractors/engine.py``), so nothing else can ever answer it.
+
+    Guarded by exactly-one-candidate at both steps, the same god-node guard
+    ``_resolve_kotlin_qualified_calls`` uses just above: a receiver name
+    matching 2+ declared types, or a method name matching 2+ methods of the
+    matched type, yields no edge. The receiver names the type explicitly in
+    source, so a unique match is EXTRACTED (mirrors the type-qualified case
+    in ``_resolve_swift_member_calls``, #1356).
+    """
+    raw = [
+        rc
+        for result in per_file
+        for rc in result.get("raw_calls", [])
+        if rc.get("lang") == "kotlin" and rc.get("kotlin_object_receiver")
+        and rc.get("callee") and rc.get("caller_nid")
+    ]
+    if not raw:
+        return
+
+    node_by_id: dict[str, dict] = {n.get("id"): n for n in all_nodes}
+    methods_by_type: dict[str, list[str]] = {}
+    for e in all_edges:
+        if e.get("relation") == "method":
+            methods_by_type.setdefault(e.get("source"), []).append(e.get("target"))
+
+    # Receiver name -> declaring type node ids, scoped to Kotlin-sourced
+    # definitions only (a same-named type in another language must not
+    # answer a Kotlin call). len != 1 is the god-node guard.
+    types_by_name: dict[str, list[str]] = {}
+    for n in all_nodes:
+        if not n.get("_callable_class"):
+            continue
+        sf = str(n.get("source_file") or "")
+        if not sf.endswith((".kt", ".kts")):
+            continue
+        name = str(n.get("label", ""))
+        if name:
+            types_by_name.setdefault(name, []).append(n["id"])
+
+    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    for rc in raw:
+        receiver = rc["kotlin_object_receiver"]
+        callee = rc["callee"]
+        caller = rc["caller_nid"]
+        type_nids = types_by_name.get(receiver, [])
+        if len(type_nids) != 1:
+            continue
+        wanted = f".{callee}"
+        candidates = [
+            m for m in methods_by_type.get(type_nids[0], [])
+            if str(node_by_id.get(m, {}).get("label", "")).strip("()") == wanted
+        ]
+        if len(candidates) != 1:
+            continue
+        tgt = candidates[0]
+        if tgt == caller or (caller, tgt) in existing_pairs:
+            continue
+        existing_pairs.add((caller, tgt))
+        all_edges.append({
+            "source": caller,
+            "target": tgt,
+            "relation": "calls",
+            "context": "call",
+            "confidence": "EXTRACTED",  # the receiver names the type explicitly in source
+            "confidence_score": 1.0,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
 # Kotlin import-target resolution runs EARLY (directly in extract(), before the
 # shared call pass builds its import-evidence index) — registering it in the
 # tail registry would rewrite the targets after promotion already read them.
@@ -4791,6 +4877,14 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "kotlin_qualified_calls", frozenset({".kt", ".kts"}), _resolve_kotlin_qualified_calls
+    )
+)
+# Kotlin object/class-qualified member calls (#1698): Receiver.method() across
+# files, guarded by a unique receiver-name match the same way qualified calls
+# are guarded by a unique package match just above.
+register_language_resolver(
+    LanguageResolver(
+        "kotlin_member_calls", frozenset({".kt", ".kts"}), _resolve_kotlin_member_calls
     )
 )
 # C# qualified construction (#2997): `new A.B.Cache()` arrives as the bare name,
