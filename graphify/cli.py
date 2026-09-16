@@ -1487,11 +1487,11 @@ def dispatch_command(cmd: str) -> None:
         opts = p.parse_args(sys.argv[2:])
         if opts.question_file:
             opts.question = Path(opts.question_file).read_text(encoding="utf-8").strip()
-        elif not opts.question:
+        elif opts.question is None:
             p.error("--question or --question-file is required")
         if opts.answer_file:
             opts.answer = Path(opts.answer_file).read_text(encoding="utf-8").strip()
-        elif not opts.answer:
+        elif opts.answer is None:
             p.error("--answer or --answer-file is required")
         if opts.correction_file:
             opts.correction = Path(opts.correction_file).read_text(encoding="utf-8").strip()
