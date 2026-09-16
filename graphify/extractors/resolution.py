@@ -591,6 +591,30 @@ def _package_entry_candidates(
     candidates.append(package_dir / "index")
     return candidates
 
+# Build-output directories that a package's `exports`/`main` routinely name
+# (`"import": "./dist/index.js"`). They are pruned from the scan
+# (detect._SKIP_DIRS), so when the package is built the target is a real file
+# with no node, the edge lands on nothing, and build drops it (#2849). The
+# file the output was built from sits at the same relative path under `src/`.
+_BUILD_OUTPUT_DIRS = frozenset({"dist", "build", "out"})
+
+def _source_mirror(candidate: Path, package_dir: Path) -> Path | None:
+    """`<pkg>/dist/a/b.js` -> `<pkg>/src/a/b`, extensionless so
+    _resolve_js_import_path probes `.ts`/`.tsx`/index files. None when the
+    candidate is not under a build-output directory."""
+    try:
+        rel = Path(os.path.normpath(candidate)).relative_to(os.path.normpath(package_dir))
+    except ValueError:
+        return None
+    if len(rel.parts) < 2 or rel.parts[0] not in _BUILD_OUTPUT_DIRS:
+        return None
+    name = rel.name
+    if name.endswith(".d.ts"):
+        name = name[:-len(".d.ts")]
+    elif name.endswith((".js", ".jsx", ".mjs", ".cjs")):
+        name = name.rsplit(".", 1)[0]
+    return package_dir / "src" / Path(*rel.parts[1:-1]) / name
+
 def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
     packages = _load_workspace_packages(start_dir)
     platform = _importer_platform(start_dir)
@@ -602,9 +626,14 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
         else:
             continue
         for candidate in _package_entry_candidates(package_dir, subpath, platform):
-            resolved = _resolve_js_import_path(candidate)
-            if resolved.is_file():
-                return resolved
+            # Source first: a built `dist/` target is on disk but never in the
+            # corpus, so it must not win over the file it was built from.
+            for probe in (_source_mirror(candidate, package_dir), candidate):
+                if probe is None:
+                    continue
+                resolved = _resolve_js_import_path(probe)
+                if resolved.is_file():
+                    return resolved
     return None
 
 def _find_js_project_anchor(start_dir: Path) -> Path:
