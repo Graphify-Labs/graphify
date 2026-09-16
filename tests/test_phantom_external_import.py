@@ -136,3 +136,54 @@ def test_multiple_tsx_files_do_not_all_alias_onto_one_python_file(tmp_path: Path
         if d.get("relation") == "imports_from" and ({u, v} & py_ids)
     ]
     assert not phantom, f"phantom edges onto colors.py: {phantom}"
+
+
+def test_subpath_import_does_not_dangle_like_a_bare_import(tmp_path: Path):
+    """The reporter's exact repro for #3595: a package subpath import
+    ("next/image") produced no edge at all, while a bare import of the same
+    package ("next") resolved fine, so a file that only ever imports
+    subpaths came out fully disconnected from the framework it depends on."""
+    _write(
+        tmp_path / "package.json",
+        '{"name": "mre", "dependencies": {"next": "16.2.7"}}\n',
+    )
+    bare = _write(
+        tmp_path / "bare.ts",
+        'import type { Metadata } from "next";\n'
+        "export const meta: Metadata = {};\n",
+    )
+    subpath = _write(
+        tmp_path / "subpath.ts",
+        'import Image from "next/image";\n'
+        "export const i = Image;\n",
+    )
+
+    result = extract(
+        [tmp_path / "package.json", bare, subpath], cache_root=tmp_path / "graphify-out"
+    )
+    G = build_from_json(result, root=str(tmp_path))
+
+    def _imports_from(nid):
+        # The built graph may be undirected, which loses (u, v) edge-iteration
+        # order -- direction is preserved separately as _src/_tgt (build.py).
+        return {
+            d.get("_tgt") for u, v, d in G.edges(data=True)
+            if d.get("relation") == "imports_from" and d.get("_src") == nid
+        }
+
+    bare_id = next(
+        n for n, d in G.nodes(data=True)
+        if str(d.get("source_file", "")).endswith("bare.ts")
+    )
+    subpath_id = next(
+        n for n, d in G.nodes(data=True)
+        if str(d.get("source_file", "")).endswith("subpath.ts")
+    )
+    bare_targets = _imports_from(bare_id)
+    subpath_targets = _imports_from(subpath_id)
+    assert bare_targets, "the bare import must resolve"
+    assert subpath_targets, "the subpath import must resolve, not dangle"
+    assert subpath_targets == bare_targets, (
+        "a subpath import of a package must land on the same node as a bare "
+        "import of that package"
+    )
