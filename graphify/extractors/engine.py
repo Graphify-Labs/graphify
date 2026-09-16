@@ -5846,6 +5846,7 @@ def _extract_generic(
             swift_receiver: str | None = None
             member_receiver: str | None = None
             kotlin_qualified_prefix: str | None = None
+            kotlin_object_receiver: str | None = None
             csharp_qualified_prefix: str | None = None
 
             # Special handling per language
