@@ -6,6 +6,9 @@
   "license": "Apache-2.0",
   "type": "module",
   "files": ["index.ts"],
+  "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": "^18.2.2"
+  },
   "omp": {
     "extensions": ["./index.ts"],
     "skills": []

@@ -78,6 +78,33 @@ jobs:
           uv run --frozen graphify --help
           uv run --frozen graphify install
 
+  omp-bridge:
+    # tests/omp.test.ts drives the real OMP extension: bun resolves the
+    # path-utils helpers it imports from the pinned @oh-my-pi/pi-coding-agent
+    # devDependency in graphify/omp/, and the policy assertions run against
+    # the real installed Python CLI, so this job needs both toolchains.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Install OMP extension dependencies
+        run: bun install --frozen-lockfile
+        working-directory: graphify/omp
+
+      - name: Run OMP bridge tests
+        run: GRAPHIFY_TEST_CLI=$PWD/.venv/bin/graphify bun test tests/omp.test.ts
+
   security-scan:
     # The dev deps include bandit and pip-audit. Run them in CI so a new
     # HIGH-severity finding or vulnerable dependency is caught on the PR that
