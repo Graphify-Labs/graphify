@@ -131,6 +131,28 @@ function use(x: Thing): Thing {
     assert _make_id(str(tmp_path / "types.ts")) in _targets(result, relation="imports_from")
 
 
+def test_type_only_wildcard_reexport_is_normalized_and_stamped(tmp_path):
+    _write(tmp_path / "dto.ts", "export type Payload = { id: string }\n")
+    comp = _write(
+        tmp_path / "Barrel.vue",
+        """<script setup lang="ts">
+export type * from './dto'
+export const after = 1
+</script>
+
+<template><div/></template>
+""",
+    )
+    result = extract_vue(comp)
+    assert "after" in _labels(result)
+    edges = [
+        edge for edge in result["edges"]
+        if edge["relation"] == "imports_from"
+        and edge["target"] == _make_id(str(tmp_path / "dto.ts"))
+    ]
+    assert edges and all(edge.get("type_only") is True for edge in edges)
+
+
 def test_two_script_blocks_both_parsed(tmp_path):
     """Vue allows a classic ``<script>`` plus ``<script setup>``; both are TS."""
     _write(tmp_path / "a.ts", "export const a = 1\n")

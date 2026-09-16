@@ -510,7 +510,17 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
             edges.append(edge)
 
 
-def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
+def _import_js(
+    node,
+    source: bytes,
+    file_nid: str,
+    stem: str,
+    edges: list,
+    str_path: str,
+    scope_stack: list[str] | None = None,
+    *,
+    type_only_export_star_ranges: tuple[tuple[int, int], ...] = (),
+) -> None:
     is_reexport = node.type == "export_statement"
     # Only handle export_statement if it has a `from` clause (re-export).
     # Pure exports like `export const x = 1` or `export { localVar }` have no source module.
@@ -534,6 +544,11 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
     # stays a runtime edge - C is a runtime import.
     is_type_only = any(
         child.type == "type" and not child.is_named for child in node.children
+    ) or (
+        is_reexport and any(
+            node.start_byte <= start and end <= node.end_byte
+            for start, end in type_only_export_star_ranges
+        )
     )
     resolved_path: "Path | None" = None
     module_string = None
@@ -1456,8 +1471,11 @@ _TS_IMPORT_CALL_RE = re.compile(
 # Replacing only ``type`` with spaces produces the grammar's older ``export *``
 # form while keeping every source byte offset intact. ``as Namespace`` is the
 # other TypeScript 5.0 form and needs the same treatment.
+_TS_EXPORT_TYPE_STAR_TRIVIA = rb"(?:\s+|/\*[\s\S]*?\*/)+"
 _TS_EXPORT_TYPE_STAR_RE = re.compile(
-    rb"\bexport\s+(?P<type>type)\s+\*(?=\s+(?:as\s+[A-Za-z_$][\w$]*\s+)?from\b)"
+    rb"\bexport" + _TS_EXPORT_TYPE_STAR_TRIVIA
+    + rb"(?P<type>type)" + _TS_EXPORT_TYPE_STAR_TRIVIA
+    + rb"\*(?=\s+(?:as\s+[A-Za-z_$][\w$]*\s+)?from\b)"
 )
 
 
@@ -1487,13 +1505,15 @@ def _ts_import_is_code(root: Any, start: int) -> bool:
     return True
 
 
-def _normalize_ts_export_type_star(source: bytes, *, tsx: bool = False) -> bytes | None:
+def _normalize_ts_export_type_star(
+    source: bytes, *, tsx: bool = False
+) -> tuple[bytes, tuple[tuple[int, int], ...]] | None:
     """Mask valid TypeScript 5 type-only wildcard re-exports for old grammars.
 
     The installed grammar parses ``export *`` but not ``export type *``. The
-    type-only marker has no graph-level representation, so blanking its four
-    bytes before AST extraction is enough to retain the file and its exports.
-    Comments, strings, and literal template text are left untouched.
+    type-only marker is recorded as a byte range while blanking its four bytes,
+    so import extraction can retain the ``type_only`` edge marker. Comments,
+    strings, and literal template text are left untouched.
     """
     matches = list(_TS_EXPORT_TYPE_STAR_RE.finditer(source))
     if not matches:
@@ -1511,14 +1531,16 @@ def _normalize_ts_export_type_star(source: bytes, *, tsx: bool = False) -> bytes
         return None
 
     normalized = bytearray(source)
-    changed = False
+    masked_ranges: list[tuple[int, int]] = []
     for match in matches:
         if not _ts_import_is_code(root, match.start()):
             continue
         start, end = match.span("type")
         normalized[start:end] = b" " * (end - start)
-        changed = True
-    return bytes(normalized) if changed else None
+        masked_ranges.append((start, end))
+    if not masked_ranges:
+        return None
+    return bytes(normalized), tuple(masked_ranges)
 
 
 def _ts_type_argument_ranges(root: Any, *, call_only: bool) -> list[tuple[int, int]]:
@@ -1747,17 +1769,24 @@ def extract_js(path: Path) -> dict:
     else:
         config = _JS_CONFIG
     source_override = None
+    type_only_export_star_ranges: tuple[tuple[int, int], ...] = ()
     if is_ts:
         try:
             source = path.read_bytes()
             source_override = _normalize_ts_import_types(source, tsx=suffix == ".tsx")
-            export_star_source = _normalize_ts_export_type_star(
+            export_star_normalization = _normalize_ts_export_type_star(
                 source_override or source, tsx=suffix == ".tsx"
             )
-            source_override = export_star_source or source_override
+            if export_star_normalization is not None:
+                source_override, type_only_export_star_ranges = export_star_normalization
         except OSError:
             pass
-    result = _extract_generic(path, config, source_override=source_override)
+    result = _extract_generic(
+        path,
+        config,
+        source_override=source_override,
+        type_only_export_star_ranges=type_only_export_star_ranges,
+    )
     if "error" not in result:
         _extract_js_rationale(path, result)
         _rescue_js_dynamic_imports(path, result)
@@ -2228,12 +2257,23 @@ def extract_vue(path: Path) -> dict:
     else:  # "ts" or unspecified — default to the TS grammar (superset of JS)
         config = _TS_CONFIG
     masked_bytes = masked.encode("utf-8")
+    type_only_export_star_ranges: tuple[tuple[int, int], ...] = ()
     if config in (_TS_CONFIG, _TSX_CONFIG):
         masked_bytes = _normalize_ts_import_types(
             masked_bytes, tsx=config is _TSX_CONFIG
         ) or masked_bytes
+        export_star_normalization = _normalize_ts_export_type_star(
+            masked_bytes, tsx=config is _TSX_CONFIG
+        )
+        if export_star_normalization is not None:
+            masked_bytes, type_only_export_star_ranges = export_star_normalization
 
-    result = _extract_generic(path, config, source_override=masked_bytes)
+    result = _extract_generic(
+        path,
+        config,
+        source_override=masked_bytes,
+        type_only_export_star_ranges=type_only_export_star_ranges,
+    )
 
     # Dynamic `import('…')` calls aren't edged by the AST pass; recover by regex,
     # mirroring extract_svelte/extract_astro.

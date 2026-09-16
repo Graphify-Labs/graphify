@@ -118,6 +118,23 @@ def test_ts_export_type_star_mask_leaves_comments_and_strings_unchanged():
     assert _normalize_ts_export_type_star(source) is None
 
 
+def test_ts_export_type_star_with_comments_is_stamped_and_keeps_later_exports(tmp_path):
+    r = _extract(tmp_path, {
+        "dto.ts": "export type Foo = number;\n",
+        "barrel.ts": (
+            'export /* token trivia */ type /* more trivia */ * from "./dto";\n'
+            "export function after() { return 1 }\n"
+        ),
+    })
+    assert "after()" in _labels(r)
+    edges = [
+        edge for edge in r["edges"]
+        if edge["source_file"].endswith("barrel.ts")
+        and edge["relation"] in ("imports_from", "re_exports")
+    ]
+    assert edges and all(edge.get("type_only") is True for edge in edges)
+
+
 def test_ts_genuinely_broken_file_still_warns(tmp_path, capsys):
     # `function f( {` dissolves the whole parse — nothing beyond the file
     # node extracts. The warning must fire and name the file + first line.
