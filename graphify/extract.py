@@ -4715,6 +4715,88 @@ def _resolve_kotlin_qualified_calls(
         })
 
 
+def _resolve_rust_self_member_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve cross-file Rust `self.method()` calls (#2234).
+
+    The shared cross-file pass drops every is_member_call — a bare method name
+    (``log``) has no import evidence and collides with any top-level function
+    named ``log`` in the corpus (#543/#1219). Rust is the only member-call-heavy
+    language with no recovery pass behind that guard: `self.apply_block()`
+    inside `impl Foo { .. }` types the receiver as `Foo` syntactically, no
+    inference needed, but nothing used that signal. rust.py now records that
+    type on each self-call raw_call as `rust_self_type`; this pass matches it.
+
+    Unlike the Kotlin/Swift equivalents, this does NOT require the type name to
+    resolve to exactly one node: Rust routinely splits `impl Foo { .. }` across
+    as many files as it likes (one struct can have a dozen impl blocks scattered
+    through a crate), and rust.py mints a SEPARATE graph node per (file, type
+    name) pair rather than merging them, so requiring a single node would
+    refuse the exact split-impl-block shape this issue is about. Instead,
+    every node carrying the type's bare label pools its methods together, and
+    a call resolves only when exactly one method across the WHOLE pool matches
+    the callee name — two impl blocks (however many files apart) defining the
+    same method name still bail, a real ambiguity rather than a false one.
+    Only `self.` receivers are handled: a non-self receiver needs local type
+    inference this pass does not attempt, left for a future extension.
+    """
+    raw = [
+        rc
+        for result in per_file
+        for rc in result.get("raw_calls", [])
+        if rc.get("rust_self_type") and rc.get("callee") and rc.get("caller_nid")
+    ]
+    if not raw:
+        return
+
+    node_by_id: dict[str, dict] = {n.get("id"): n for n in all_nodes}
+    nids_by_label: dict[str, list[str]] = {}
+    for n in all_nodes:
+        if str(n.get("source_file") or "").endswith(".rs"):
+            nids_by_label.setdefault(n.get("label", ""), []).append(n.get("id"))
+
+    # (impl/type node id, bare method name) -> method node id, from `method` edges.
+    method_index: dict[tuple[str, str], str] = {}
+    for e in all_edges:
+        if e.get("relation") != "method":
+            continue
+        src, tgt = e.get("source"), e.get("target")
+        tnode = node_by_id.get(tgt)
+        if tnode is not None:
+            name = str(tnode.get("label", "")).strip("()").lstrip(".")
+            method_index[(src, name)] = tgt
+
+    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    for rc in raw:
+        caller = rc["caller_nid"]
+        callee = rc["callee"]
+        candidates = {
+            method_index[(nid, callee)]
+            for nid in nids_by_label.get(rc["rust_self_type"], [])
+            if (nid, callee) in method_index
+        }
+        if len(candidates) != 1:  # zero or ambiguous -> no edge (god-node guard)
+            continue
+        tgt = next(iter(candidates))
+        if tgt == caller or (caller, tgt) in existing_pairs:
+            continue
+        existing_pairs.add((caller, tgt))
+        all_edges.append({
+            "source": caller,
+            "target": tgt,
+            "relation": "calls",
+            "context": "call",
+            "confidence": "EXTRACTED",  # `self` inside `impl Foo` types it explicitly
+            "confidence_score": 1.0,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
 # Kotlin import-target resolution runs EARLY (directly in extract(), before the
 # shared call pass builds its import-evidence index) — registering it in the
 # tail registry would rewrite the targets after promotion already read them.
@@ -4770,6 +4852,9 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver("java_member_calls", frozenset({".java"}), _resolve_java_member_calls)
+)
+register_language_resolver(
+    LanguageResolver("rust_self_member_calls", frozenset({".rs"}), _resolve_rust_self_member_calls)
 )
 # Pascal/Delphi cross-file inherited-method-call resolution: a call from a
 # manual descendant class to a method it inherits from an ancestor declared
