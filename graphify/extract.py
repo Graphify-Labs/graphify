@@ -2531,8 +2531,14 @@ def extract_ruby(path: Path) -> dict:
     return _extract_generic(path, _RUBY_CONFIG)
 
 
-def _csharp_string_opener(source: bytes, i: int) -> "tuple[int, int, bool, bool] | None":
-    """If a string literal starts at ``i``, return ``(quote_pos, quote_run, interpolated, verbatim)``.
+def _csharp_string_opener(source: bytes, i: int) -> "tuple[int, int, bool, bool]":
+    """Read a possible string-literal opener at ``i``.
+
+    Returns ``(prefix_end, quote_run, interpolated, verbatim)``. ``quote_run`` is
+    0 when no string starts here, and ``prefix_end`` is always where the run of
+    ``$``/``@`` characters stopped — the caller needs that even on a miss, so it
+    can resume past the run instead of re-walking it from the next byte (a long
+    run in malformed source would otherwise cost O(n^2)).
 
     C# lets the ``$`` and ``@`` prefixes appear in either order and repeat, and
     a raw string literal opens with a run of three or more quotes, so the prefix
@@ -2551,7 +2557,7 @@ def _csharp_string_opener(source: bytes, i: int) -> "tuple[int, int, bool, bool]
             break
         j += 1
     if source[j:j + 1] != b'"':
-        return None
+        return j, 0, interpolated, verbatim
     run = 0
     while source[j + run:j + run + 1] == b'"':
         run += 1
@@ -2593,11 +2599,13 @@ def _csharp_broken_escape_offsets(source: bytes) -> list[int]:
                 j += 1
             i = j + 1
             continue
-        opener = _csharp_string_opener(source, i)
-        if opener is None:
-            i += 1
+        quote, run, interpolated, verbatim = _csharp_string_opener(source, i)
+        if run == 0:
+            # No string opens here. Resume at the end of the `$`/`@` run rather
+            # than at i + 1: re-walking a long run from every offset is what
+            # makes a malformed file quadratic.
+            i = quote if quote > i else i + 1
             continue
-        quote, run, interpolated, verbatim = opener
         if run >= 3:
             # Raw string literal: closed by a quote run of the same length.
             end = source.find(b'"' * run, quote + run)

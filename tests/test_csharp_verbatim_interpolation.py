@@ -16,7 +16,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from graphify.extract import _normalize_csharp_verbatim_interpolation, extract
+from graphify.extract import (
+    _csharp_broken_escape_offsets,
+    _normalize_csharp_verbatim_interpolation,
+    extract,
+)
 
 # The offending literal, kept in one place: `}` then an escaped quote then the
 # terminator. Written as a plain string so the C# quoting stays readable.
@@ -164,3 +168,20 @@ def test_two_offending_literals_in_one_file(tmp_path):
     labels = {str(n.get("label", "")).lstrip(".") for n in result["nodes"]}
     for member in ("First()", "Between()", "Second()", "Last()"):
         assert member in labels, f"{member} missing from {sorted(labels)}"
+
+
+def test_long_prefix_run_does_not_blow_up(tmp_path):
+    """A malformed file is the normal input here -- the scan only runs on files
+    the grammar already rejected -- so a long run of `$`/`@` must stay linear.
+
+    Resuming one byte past the start of such a run re-walks it from every offset:
+    4k characters took 0.8s that way, and the cost quadruples each doubling.
+    """
+    import time
+
+    src = b"class C { " + (b"$" * 1_000_000) + b" }"
+    started = time.perf_counter()
+    assert _csharp_broken_escape_offsets(src) == []
+    elapsed = time.perf_counter() - started
+    # Linear finishes in well under a second; the quadratic form needs hours.
+    assert elapsed < 5.0, f"prefix scan took {elapsed:.1f}s -- quadratic again?"
