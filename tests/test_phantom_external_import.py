@@ -48,6 +48,18 @@ def test_scoped_package_import_is_ref_namespaced():
     assert tgt.startswith("ref")
 
 
+# ── #3595: a package subpath import must resolve to the package root, not the ─
+# whole specifier, so it lands on the same node as a bare import of that
+# package (and the package.json dependency node itself) instead of dangling.
+
+
+def test_package_subpath_import_resolves_to_the_same_target_as_a_bare_import():
+    bare_tgt, _ = _resolve_js_import_target("next", "src/bare.ts")
+    subpath_tgt, resolved_path = _resolve_js_import_target("next/image", "src/subpath.ts")
+    assert resolved_path is None
+    assert subpath_tgt == bare_tgt
+
+
 # ── end-to-end: the reporter's exact synthetic monorepo ─────────────────────
 
 
