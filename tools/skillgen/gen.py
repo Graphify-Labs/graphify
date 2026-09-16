@@ -1172,6 +1172,35 @@ def _is_no_cluster_force_fix_line(line: str) -> bool:
     )
 
 
+def _is_install_failure_gate_fix_line(line: str) -> bool:
+    """Whether a line is part of the #1619 B4 Step 1 failure gate.
+
+    A failed install used to leave PYTHON pointing at an interpreter that
+    still could not import graphify, with nothing checking for it: the step
+    fell through silently, wrote that interpreter's path anyway, and every
+    later step then failed with a cryptic "-c: command not found" far from
+    the real cause. An explicit re-check after the install attempt now stops
+    with an actionable error instead. The extra `fi` (added) and the changed
+    "If the import succeeds..." sentence (both old and new forms) are
+    sanctioned here too.
+    """
+    stripped = line.strip()
+    return (
+        stripped == "fi"
+        or "#1619 B4" in line
+        or "interpreter that still cannot import graphify" in line
+        or "silently, writing that interpreter's path anyway" in line
+        or 'then failed with a cryptic "-c: command not found"' in line
+        or "cause instead of a clear error here" in line
+        or stripped == 'if ! "$PYTHON" -c "import graphify" 2>/dev/null; then'
+        or "could not install or locate a Python interpreter with graphify" in line
+        or "uv tool install graphifyy" in line
+        or "python3 -m pip install graphifyy" in line
+        or stripped == "exit 1"
+        or stripped.startswith("If the import succeeds, print nothing and move straight to Step 2")
+    )
+
+
 def _is_input_path_slash_guidance_line(line: str) -> bool:
     """Whether a line is the #1619 B1 forward-slash INPUT_PATH guidance.
 
@@ -1207,6 +1236,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_community_label_export_fix_line,
     _is_no_cluster_force_fix_line,
     _is_input_path_slash_guidance_line,
+    _is_install_failure_gate_fix_line,
 )
 
 
