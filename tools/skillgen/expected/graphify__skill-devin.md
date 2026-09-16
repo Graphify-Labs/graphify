@@ -67,6 +67,8 @@ If the user invoked `/graphify --help` or `/graphify -h` (with no other argument
 
 If no path was given, use `.` (current directory). Do not ask the user for a path.
 
+Every occurrence of `INPUT_PATH` below is a placeholder substituted with this resolved path, inside a Python string literal. On Windows, substitute it with forward slashes (`C:/Users/me/project`, not `C:\Users\me\project`) - a literal backslash in a Windows path splices a stray escape into the Python source (`\t` becomes a tab, `\U` raises a `SyntaxError`), silently or loudly corrupting every block that uses it.
+
 Follow these steps in order. Do not skip steps.
 
 ### Step 1 - Ensure graphify is installed
