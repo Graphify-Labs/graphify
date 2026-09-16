@@ -619,6 +619,28 @@ def test_cluster_only_migrates_labels_without_signature_by_old_membership(tmp_pa
     )
 
 
+def test_cluster_only_does_not_fill_incomplete_signature_from_graph(tmp_path):
+    """A present sidecar is authoritative even when it omits a community."""
+    from graphify.cluster import community_member_sigs_from_node_communities
+
+    out = _make_graph(tmp_path)
+    graph_path = out / "graph.json"
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    previous = {n["id"]: n["community"] for n in graph["nodes"]}
+    sigs = community_member_sigs_from_node_communities(previous)
+    assert len(sigs) >= 2
+    keep, missing = sorted(sigs)[:2]
+    labels_path = out / ".graphify_labels.json"
+    labels_path.write_text(json.dumps({str(keep): "Keep curated", str(missing): "Missing proof"}))
+    (out / ".graphify_labels.json.sig").write_text(json.dumps({str(keep): sigs[keep]}))
+
+    result = _run(["cluster-only", ".", "--no-viz"], tmp_path)
+    assert result.returncode == 0, result.stderr
+    labels_after = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert labels_after[str(keep)] == "Keep curated"
+    assert "Missing proof" not in labels_after.values()
+
+
 # ── communities-fallback when .graphify_analysis.json is absent ──────────────
 # The watch / post-commit rebuild path only writes graph.json + GRAPH_REPORT.md;
 # it does NOT regenerate .graphify_analysis.json. The full `graphify extract`

@@ -2195,14 +2195,13 @@ def dispatch_command(cmd: str) -> None:
                     }
                 except Exception:
                     saved_sigs = {}
-            # Labels created by older assistant skills have no .sig sidecar,
-            # but graph.json still records their previous members.  Derive
-            # fingerprints from that authoritative snapshot instead of treating
-            # an equal community count as proof that raw cids are still valid.
-            for cid, sig in community_member_sigs_from_node_communities(
-                previous_node_community
-            ).items():
-                saved_sigs.setdefault(cid, sig)
+            # Older assistant labels have no .sig sidecar. Only in that case
+            # recover membership from graph.json; an existing but incomplete
+            # sidecar must not gain signatures it never recorded.
+            else:
+                saved_sigs = community_member_sigs_from_node_communities(
+                    previous_node_community
+                )
             cur_sigs = community_member_sigs(communities)
             labels = {}
             hub_labels: dict[int, str] | None = None

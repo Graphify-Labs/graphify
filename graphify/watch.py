@@ -2026,13 +2026,12 @@ def _rebuild_code(
                 }
             except Exception:
                 saved_sigs = {}
-        # Assistant-curated labels from before .sig support can recover their
-        # previous membership from graph.json.  Equal community counts say
-        # nothing about whether cid N still represents the same concept.
-        for cid, sig in community_member_sigs_from_node_communities(
-            previous_node_community
-        ).items():
-            saved_sigs.setdefault(cid, sig)
+        # Recover legacy labels only when no sidecar exists. A partial sidecar
+        # gives no evidence for its missing cids, even if graph.json has them.
+        else:
+            saved_sigs = community_member_sigs_from_node_communities(
+                previous_node_community
+            )
         # Missing membership evidence is unsafe: drop the human label rather
         # than silently attaching it to a different community.
         stale = {cid for cid in labels if saved_sigs.get(cid) != cur_sigs.get(cid)}
