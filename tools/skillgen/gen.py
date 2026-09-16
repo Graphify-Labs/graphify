@@ -1172,6 +1172,18 @@ def _is_no_cluster_force_fix_line(line: str) -> bool:
     )
 
 
+def _is_input_path_slash_guidance_line(line: str) -> bool:
+    """Whether a line is the #1619 B1 forward-slash INPUT_PATH guidance.
+
+    A Windows path substituted into INPUT_PATH splices raw backslashes into a
+    Python string literal (`\\t` becomes a tab, `\\U` raises a SyntaxError),
+    silently or loudly corrupting the block. One rule near the top of each
+    monolith, right after the path-resolution paragraph it belongs with,
+    tells the agent to substitute with forward slashes instead.
+    """
+    return "substitute it with forward slashes" in line.lower()
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1194,6 +1206,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
     _is_no_cluster_force_fix_line,
+    _is_input_path_slash_guidance_line,
 )
 
 
