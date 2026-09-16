@@ -2014,6 +2014,14 @@ def dispatch_command(cmd: str) -> None:
                 sys.exit(1)
             author = payload.get("author")
             contributor = payload.get("contributor")
+            for _key, _val in (("author", author), ("contributor", contributor)):
+                if _val is not None and not isinstance(_val, str):
+                    print(
+                        f"error: --from-file payload '{_key}' must be a string, not "
+                        + type(_val).__name__,
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
             raw_dir = payload.get("dir")
             if raw_dir is not None and not isinstance(raw_dir, str):
                 print(
