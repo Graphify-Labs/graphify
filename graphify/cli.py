@@ -3006,18 +3006,24 @@ def dispatch_command(cmd: str) -> None:
             # #2386: the sidecar EXISTS but can still be stale, since
             # update/watch advance graph.json's per-node community attribute
             # without ever regenerating .graphify_analysis.json. Cheap,
-            # unambiguous signal: compare the node-id set each side covers,
-            # not the community ids themselves (those can renumber run to
-            # run even for the same partition, #1667). A mismatch means the
-            # sidecar was written by an earlier clustering pass, so prefer
-            # the fresh reconstruction instead of silently exporting a
-            # degraded artifact against nodes that no longer agree with it.
-            sidecar_nodes = {str(n) for nodes in communities.values() for n in nodes}
-            fresh_nodes = {n for nodes in reconstructed.values() for n in nodes}
-            if sidecar_nodes != fresh_nodes:
+            # unambiguous signal: compare each side's partition (its set of
+            # community blocks), not the community ids themselves (those can
+            # renumber run to run even for the same partition, #1667) and not
+            # just the flat node-id set either (a merge, split, or a node
+            # moving between communities can leave the overall node set
+            # unchanged while still describing a different partition). A
+            # mismatch means the sidecar was written by an earlier
+            # clustering pass, so prefer the fresh reconstruction instead of
+            # silently exporting a degraded artifact against a clustering
+            # that no longer agrees with it.
+            sidecar_partition = {frozenset(str(n) for n in nodes) for nodes in communities.values()}
+            fresh_partition = {frozenset(nodes) for nodes in reconstructed.values()}
+            if sidecar_partition != fresh_partition:
+                sidecar_node_count = len({n for block in sidecar_partition for n in block})
+                fresh_node_count = len({n for block in fresh_partition for n in block})
                 print(
-                    f"warning: {analysis_path} is stale ({len(sidecar_nodes)} node(s) "
-                    f"recorded vs {len(fresh_nodes)} in graph.json) — reconstructing "
+                    f"warning: {analysis_path} is stale ({sidecar_node_count} node(s) "
+                    f"recorded vs {fresh_node_count} in graph.json) — reconstructing "
                     "communities from graph.json instead. Run `graphify cluster-only .` "
                     "to refresh the sidecar and its cohesion/god-node data.",
                     file=sys.stderr,

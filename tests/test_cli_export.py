@@ -713,6 +713,26 @@ def test_export_html_uses_sidecar_when_it_still_matches(tmp_path):
     assert (out / "graph.html").exists()
 
 
+def test_export_html_detects_stale_sidecar_with_same_nodes_different_partition(tmp_path):
+    """A merge, a split, or a node moving from one community to another can
+    leave the overall node id set unchanged while still describing a
+    different partition -- comparing only the flat node-id set missed this
+    exact shape of staleness."""
+    out = _make_graph(tmp_path)
+    analysis_path = out / ".graphify_analysis.json"
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    communities = analysis["communities"]
+    assert len(communities) >= 2, "fixture must have at least two communities to prove this"
+    all_nodes = [n for nodes in communities.values() for n in nodes]
+    analysis["communities"] = {"0": all_nodes}
+    analysis_path.write_text(json.dumps(analysis))
+
+    r = _run(["export", "html"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "is stale" in r.stderr
+    assert (out / "graph.html").exists()
+
+
 def test_graph_json_node_ids_are_portable_across_checkout_paths(tmp_path):
     """#1789: the committed graph.json's node ids must be relative to the scan
     root — not embed the absolute path — so the same repo yields identical ids
