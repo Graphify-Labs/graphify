@@ -40,3 +40,6 @@ paper/
 
 # macOS Finder metadata
 .DS_Store
+
+# OMP extension test dependency tree (graphify/omp)
+graphify/omp/node_modules/
