@@ -101,7 +101,7 @@ def test_skill_step5_reexports_graph_json_with_curated_labels(path: Path):
     ]
     assert post_labels_blocks, f"{path.name}: no Step-5 (LABELS_DICT) code block found"
     for block in post_labels_blocks:
-        assert "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)" in block, (
+        assert "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels, force=IS_FORCE)" in block, (
             f"{path.name}: the post-labels Step-5 block must re-export "
             f"graphify-out/graph.json with community_labels=labels (#2490)"
         )
@@ -125,7 +125,7 @@ def test_core_fragments_step5_reexport_with_curated_labels(fragment: Path):
     ]
     assert post_labels_blocks, f"{fragment.name}: no Step-5 (LABELS_DICT) code block found"
     for block in post_labels_blocks:
-        assert "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)" in block, (
+        assert "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels, force=IS_FORCE)" in block, (
             f"{fragment.name}: the post-labels Step-5 block must re-export "
             f"graphify-out/graph.json with community_labels=labels (#2490)"
         )
