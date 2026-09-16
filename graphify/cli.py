@@ -2179,7 +2179,11 @@ def dispatch_command(cmd: str) -> None:
             # is told to `graphify label` for fresh LLM names. Unchanged communities keep
             # their saved label. When no signature sidecar exists (labels predate this),
             # fall back to hub-filling only the communities missing a label.
-            from graphify.cluster import community_member_sigs, label_communities_by_hub
+            from graphify.cluster import (
+                community_member_sigs,
+                community_member_sigs_from_node_communities,
+                label_communities_by_hub,
+            )
             sig_path = labels_path.parent / (labels_path.name + ".sig")
             saved_sigs: dict[int, str] = {}
             if sig_path.exists():
@@ -2191,8 +2195,15 @@ def dispatch_command(cmd: str) -> None:
                     }
                 except Exception:
                     saved_sigs = {}
+            # Labels created by older assistant skills have no .sig sidecar,
+            # but graph.json still records their previous members.  Derive
+            # fingerprints from that authoritative snapshot instead of treating
+            # an equal community count as proof that raw cids are still valid.
+            for cid, sig in community_member_sigs_from_node_communities(
+                previous_node_community
+            ).items():
+                saved_sigs.setdefault(cid, sig)
             cur_sigs = community_member_sigs(communities)
-            count_mismatch = len(existing_labels) != len(communities)
             labels = {}
             hub_labels: dict[int, str] | None = None
             changed = 0
@@ -2210,10 +2221,9 @@ def dispatch_command(cmd: str) -> None:
                     # community changed since it was labeled.
                     fresh = have_label and saved_sigs.get(cid) == cur_sigs.get(cid)
                 else:
-                    # No signature sidecar (labels predate it). A differing community
-                    # COUNT means the labels describe a different clustering, so a cid's
-                    # old label can't be trusted; equal count is the best "same" signal.
-                    fresh = have_label and not count_mismatch
+                    # No previous graph membership is available. Keeping a human label
+                    # by raw cid would be semantic corruption, so use the hub fallback.
+                    fresh = False
                 if fresh:
                     labels[cid] = existing_labels[cid]
                 else:

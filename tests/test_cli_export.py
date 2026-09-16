@@ -576,6 +576,49 @@ def test_cluster_only_remaps_labels_to_previous_cids(tmp_path):
     )
 
 
+def test_cluster_only_migrates_labels_without_signature_by_old_membership(tmp_path):
+    """A missing .sig must never make labels follow raw community ids.
+
+    Assistant-curated label files from before membership signatures contain only
+    cid -> label mappings.  Re-clustering this graph keeps two communities, but
+    changes both memberships.  The old count-based fallback treated the labels
+    as fresh and silently named unrelated nodes; graph.json itself contains the
+    old memberships needed to reject that unsafe reuse.
+    """
+    import networkx as nx
+    from graphify.export import to_json
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph_json = out / "graph.json"
+    labels_json = out / ".graphify_labels.json"
+
+    graph = nx.Graph()
+    for node_id in ("a", "b", "c", "d"):
+        graph.add_node(node_id, label=node_id, source_file=f"{node_id}.py")
+    graph.add_edges_from((("a", "b"), ("c", "d")))
+
+    # The saved graph says a/c and b/d belonged together; re-clustering follows
+    # the actual edges and yields a/b and c/d.  Both versions have two groups.
+    old_communities = {0: ["a", "c"], 1: ["b", "d"]}
+    curated = {0: "Alpha concerns", 1: "Beta concerns"}
+    assert to_json(graph, old_communities, str(graph_json), community_labels=curated)
+    labels_json.write_text(json.dumps({str(k): v for k, v in curated.items()}))
+    assert not (out / ".graphify_labels.json.sig").exists()
+
+    result = _run(["cluster-only", ".", "--no-viz"], tmp_path)
+    assert result.returncode == 0, result.stderr
+
+    labels_after = json.loads(labels_json.read_text(encoding="utf-8"))
+    assert not ({"Alpha concerns", "Beta concerns"} & set(labels_after.values()))
+
+    graph_after = json.loads(graph_json.read_text(encoding="utf-8"))
+    assert all(
+        node.get("community_name") not in {"Alpha concerns", "Beta concerns"}
+        for node in graph_after["nodes"]
+    )
+
+
 # ── communities-fallback when .graphify_analysis.json is absent ──────────────
 # The watch / post-commit rebuild path only writes graph.json + GRAPH_REPORT.md;
 # it does NOT regenerate .graphify_analysis.json. The full `graphify extract`
