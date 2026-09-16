@@ -128,6 +128,45 @@ def test_cpp_qualified_member_call_is_extracted(tmp_path: Path):
     assert ("main()", "calls", "bar", "EXTRACTED") in calls
 
 
+def test_cpp_qualified_call_resolves_to_a_qualified_only_definition(tmp_path: Path):
+    """#2348: a macro heavy class body (Unreal's UCLASS()/GENERATED_BODY()) can
+    defeat the bundled grammar's error recovery badly enough that the in-class
+    method declaration is never parsed as a member at all -- the out-of-line
+    .cpp definition then has nothing to attach to and the extractor falls back
+    to a node labeled with the qualified name ("AHelper::FindNearest()")
+    contained by its FILE rather than a bare-labeled one contained by its
+    class. A Foo::bar() call site must still resolve to that qualified only
+    node instead of silently dropping the edge."""
+    base = tmp_path / "src"
+    _write(base / "helper.h", (
+        "#pragma once\n"
+        '#include "CoreMinimal.h"\n'
+        '#include "helper.generated.h"\n'
+        "UCLASS()\n"
+        "class AHelper : public AActor {\n"
+        "    GENERATED_BODY()\n"
+        "public:\n"
+        "    UFUNCTION()\n"
+        "    static AHelper* FindNearest(UWorld* W);\n"
+        "};\n"
+    ))
+    _write(base / "helper.cpp", (
+        '#include "helper.h"\n'
+        "AHelper* AHelper::FindNearest(UWorld* W) { return nullptr; }\n"
+    ))
+    _write(base / "caller.cpp", (
+        '#include "helper.h"\n'
+        "void useIt(UWorld* W) {\n"
+        "    AHelper* h = AHelper::FindNearest(W);\n"
+        "    (void)h;\n"
+        "}\n"
+    ))
+    result = extract(sorted(base.glob("*")), cache_root=tmp_path / "cache")
+
+    calls = _call_edges(result)
+    assert ("useIt()", "calls", "AHelper::FindNearest()", "EXTRACTED") in calls
+
+
 def test_cpp_this_member_call_resolves_to_enclosing_class(tmp_path: Path):
     # `this->bar()` inside Foo::baz resolves to Foo::bar (the caller's own class) ->
     # EXTRACTED. Cross-file: the body lives in Foo.cpp, the decl in Foo.h.
