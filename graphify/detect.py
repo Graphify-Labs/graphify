@@ -2323,23 +2323,30 @@ def save_manifest(
 
     # Seed from the existing manifest so incremental callers passing a subset
     # of files don't silently erase entries for untouched files (#917).
-    # Prune entries whose file no longer exists on disk — those are genuine
-    # deletions that detect_incremental() should treat as gone. When the
-    # caller supplied the full scan corpus, additionally prune in-root rows
-    # the scan no longer covers: those files were excluded, not deleted, and
-    # keeping the row makes them look deleted on every future run (#1908).
+    #
+    # A row for a file no longer on disk is NOT pruned here (#3426): that was
+    # this function's own doing until this fix, on the theory that a
+    # genuinely deleted file's row is dead weight. But detect_incremental()
+    # is what REPORTS a deletion to callers via deleted_files, and it runs
+    # before this function is asked to save again — pruning the row here,
+    # unconditionally, could erase it before a caller that saves without
+    # also pruning the graph (a scan-only run, an interrupted pipeline) ever
+    # gets to act on the report, making that genuine deletion permanently
+    # unreportable from the very next run onward. When the caller supplied
+    # the full scan corpus, the check below already prunes an in-root row
+    # the scan no longer covers — which a deleted file always satisfies, on
+    # path alone, regardless of whether it still exists — so a full-scan
+    # caller still cleans the row up, just sequenced after
+    # detect_incremental() has had the chance to report it on that same
+    # scan. Only a partial/subset caller (no scan_corpus) now leaves a dead
+    # row in place; the next full scan reconciles it.
     manifest: dict[str, dict] = {}
     for f, entry in existing.items():
         normalised = _normalise_entry(entry)
         if normalised is None:
             continue
-        try:
-            if not Path(f).exists():
-                continue
-        except OSError:
-            continue
         if scan_set is not None and not _in_scan(f) and _in_root(f):
-            continue  # excluded-but-alive: drop the stale row (#1908)
+            continue  # excluded-or-deleted, not in this scan: drop the stale row (#1908)
         if clear_ast_set is not None and _in_clear_ast(f):
             # AST failure this run (missing extra / zero nodes, #2543): blank
             # both hashes so either detect_incremental kind re-queues.
