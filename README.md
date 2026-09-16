@@ -531,6 +531,64 @@ docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
 
 ---
 
+## OrcaRouter
+
+[OrcaRouter](https://www.orcarouter.ai) is an OpenAI-compatible AI gateway built for both
+models and agents, with adaptive routing, automatic failover, zero-markup inference,
+observability, guardrails, and agent-tool governance. It also runs gateway-level, zero-trust
+security for AI agents on the same endpoint — screening every prompt/response and governing
+every tool call on a default-deny basis, with no application code changes.
+
+It is a first-class `--backend orcarouter`, with two explicit ways to authenticate. Both end
+up holding **the same ordinary `sk-orca-…` API key, owned by you**: billed to your account,
+listed in your console, revocable by you at any time.
+
+```bash
+# 1) Sign in with your OrcaRouter account (OAuth 2.0 + PKCE — no client secret)
+graphify orcarouter login
+
+# 2) …or paste an existing API key
+graphify orcarouter key set          # prompts; or: export ORCAROUTER_API_KEY=sk-orca-…
+
+# Then extract through the gateway
+graphify extract . --backend orcarouter
+```
+
+`graphify orcarouter status` shows which credential is active — masked, never in full — and
+`graphify orcarouter models` lists the live catalog from your workspace.
+
+**Two origins, deliberately.** Authentication lives on `https://www.orcarouter.ai`
+(`/auth`, `/api/v1/auth/keys`); inference and model discovery live on
+`https://api.orcarouter.ai/v1`. Setting `ORCA_BASE_URL` points *both* at one self-hosted
+origin; `ORCA_AUTH_BASE_URL` / `ORCA_API_BASE_URL` override either one individually and win
+over the shared value. Remote origins must be HTTPS — plaintext `http` is accepted only for
+loopback.
+
+**Models come from the live catalog, not from a hardcoded list.** `GET /v1/models` (with your
+key) is the single source of truth, and the models offered are filtered per entry point:
+
+| Entry point | Filter |
+|---|---|
+| Text extraction, dedup, community labelling, `prs --triage` | `?capability=chat`, and the model must declare an endpoint type this client speaks (`openai`, `openai-response`, `anthropic`, `gemini`) |
+| Corpora containing raster images | chat **and** `architecture.input_modalities` must explicitly contain `image` — a model that doesn't declare it is never handed pixels |
+| Embedding / image generation / video / rerank | the matching endpoint type only (`embeddings`, `image-generation`, `openai-video`, `jina-rerank`) |
+
+Model IDs keep their `vendor/model` namespace verbatim. Capabilities are never inferred from a
+model's *name*. If live discovery fails, graphify falls back to the last-known-good catalog and
+then to a small verified seed (`openai/gpt-5.5`, `anthropic/claude-opus-4.8`,
+`google/gemini-3.5-flash`, `deepseek/deepseek-v4-pro`, `orcarouter/auto`) with its reasoning and
+input-modality metadata intact — the seed is never mixed into a successful live result, and the
+degraded state is reported rather than hidden.
+
+**Revocation.** A PKCE-issued key is durable, not a refresh token: graphify reuses it until you
+revoke it, and never re-authorizes on startup (OrcaRouter caps PKCE-issued keys at 10 per user
+per 24 hours). If the gateway answers `401`, the exact rejected credential is marked as needing
+reauthentication — graphify does not invent a refresh grant and does not delete your key before
+a new login succeeds. Revoke any time at
+<https://www.orcarouter.ai/console/authorized-apps>.
+
+---
+
 ## Environment variables
 
 These are only needed for **headless / CI extraction** (`graphify extract`). When running via the `/graphify` skill inside your IDE, the model API is provided by your IDE session — no extra keys needed.
@@ -546,6 +604,12 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `OPENAI_MODEL` | Model name for the OpenAI backend — for self-hosted servers, use the model name/alias your server exposes (check its `/v1/models` endpoint), e.g. `LFM2.5-8B-A1B-UD-Q4_K_XL` for llama.cpp | `--backend openai` (default: `gpt-4.1-mini`) |
 | `DEEPSEEK_API_KEY` | DeepSeek backend | `--backend deepseek` |
 | `MOONSHOT_API_KEY` | Kimi Code backend | `--backend kimi` |
+| `ORCAROUTER_API_KEY` | OrcaRouter gateway backend (API-key path) | `--backend orcarouter` |
+| `ORCA_API_BASE_URL` | OrcaRouter inference + model-catalog origin | optional — default `https://api.orcarouter.ai/v1` |
+| `ORCA_AUTH_BASE_URL` | OrcaRouter authentication origin (`/auth`, `/api/v1/auth/keys`) | optional — default `https://www.orcarouter.ai` |
+| `ORCA_BASE_URL` | Shared origin for self-hosted OrcaRouter (auth **and** inference) | optional — only for single-origin deployments |
+| `GRAPHIFY_ORCAROUTER_MODEL` | Model name for the OrcaRouter backend | optional — default `orcarouter/auto` |
+| `ORCAROUTER_OAUTH_FLOW` | PKCE flow for `graphify orcarouter login` — `loopback` or `oob` | optional — default `loopback` |
 | `OLLAMA_BASE_URL` | Ollama local inference URL | `--backend ollama` (default: `http://localhost:11434`) |
 | `OLLAMA_MODEL` | Ollama model name | `--backend ollama` (default: auto-detect) |
 | `GRAPHIFY_OLLAMA_NUM_CTX` | Override Ollama KV-cache window size | optional — auto-sized by default |
@@ -578,8 +642,8 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 
 - **Code files** — processed locally via tree-sitter. Nothing leaves your machine. A code-only corpus requires no API key — `graphify extract` runs fully offline. On a mixed repo, add `--code-only` to index just the code and skip the docs/PDFs/images that would otherwise need an LLM.
 - **Video / audio** — transcribed locally with faster-whisper. Nothing leaves your machine.
-- **Docs, PDFs, images** — sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), or the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription). The `--dedup-llm` flag uses the same key.
-- **Data residency** — `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). For code with data-residency requirements, use `--backend ollama` (fully local) or pass an explicit `--backend` flag. Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
+- **Docs, PDFs, images** — sent to your AI assistant for semantic extraction (via the `/graphify` skill, using whatever model your IDE session runs). Headless `graphify extract` requires `GEMINI_API_KEY` / `GOOGLE_API_KEY` (Gemini), `MOONSHOT_API_KEY` (Kimi), `ANTHROPIC_API_KEY` (Claude), `OPENAI_API_KEY` (OpenAI), `DEEPSEEK_API_KEY` (DeepSeek), `ORCAROUTER_API_KEY` (OrcaRouter), a running Ollama instance (`OLLAMA_BASE_URL`), AWS credentials via the standard provider chain (Bedrock - no API key needed, uses IAM), or the `claude` CLI binary (Claude Code - no API key needed, uses your Claude subscription). The `--dedup-llm` flag uses the same key.
+- **Data residency** — `graphify extract` auto-detects which provider to use based on which API key is set (priority: Gemini → Kimi → Claude → OpenAI → DeepSeek → OrcaRouter → Azure → Bedrock → Ollama). For code with data-residency requirements, use `--backend ollama` (fully local) or pass an explicit `--backend` flag. Kimi (`MOONSHOT_API_KEY`) routes to Moonshot AI servers in China.
 - **No telemetry**, no usage tracking, no analytics.
 - **Query logging** — every `graphify query`, `graphify path`, `graphify explain`, and MCP `query_graph` call is logged to `~/.cache/graphify-queries.log` in JSON Lines format (timestamp, question, corpus, nodes returned, duration). Full subgraph responses are **not** stored by default. Set `GRAPHIFY_QUERY_LOG_DISABLE=1` to opt out, or `GRAPHIFY_QUERY_LOG=/dev/null` to silence without disabling the code path.
 

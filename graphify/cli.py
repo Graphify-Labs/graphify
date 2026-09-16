@@ -1179,6 +1179,9 @@ def dispatch_command(cmd: str) -> None:
             print("Usage: graphify provider [add|list|show|remove]", file=sys.stderr)
             if subcmd:
                 sys.exit(1)
+    elif cmd == "orcarouter":
+        from graphify.orcarouter_cli import cmd_orcarouter
+        cmd_orcarouter(sys.argv[2:])
     elif cmd == "prs":
         from graphify.prs import cmd_prs
         cmd_prs(sys.argv[2:])
@@ -3180,7 +3183,7 @@ def dispatch_command(cmd: str) -> None:
         # has an API key set.
         if len(sys.argv) < 3:
             print(
-                "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
+                "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|orcarouter|ollama] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
                 "[--no-gitignore] [--code-only] [--no-dedup] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
@@ -3659,6 +3662,27 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        # The OrcaRouter model is chosen against what this run will actually
+        # send. A corpus with raster images needs a model that DECLARES image
+        # input; the catalog filter fails closed, an incompatible --model is
+        # cleared with the compatible options named, and a catalog outage falls
+        # back to the verified seed rather than to free text (#orcarouter).
+        if backend == "orcarouter" and needs_llm:
+            from graphify import orcarouter as _orca
+            try:
+                _media = _orca.media_kinds(str(f) for f in semantic_files)
+                _model, _catalog = _orca.resolve_model(model, media=_media)
+            except _orca.OrcaRouterError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                sys.exit(2)
+            if model is None:
+                model = _model
+            if _catalog.degraded:
+                print(
+                    f"[graphify] OrcaRouter catalog: using {_catalog.source} "
+                    f"({_catalog.error or 'live discovery unavailable'})",
+                    file=sys.stderr,
+                )
         if needs_llm:
             if backend is None:
                 reasons = []
@@ -3676,7 +3700,9 @@ def dispatch_command(cmd: str) -> None:
                     "error: no LLM API key found (" + "; ".join(reasons) + "). "
                     "Set GEMINI_API_KEY or GOOGLE_API_KEY (gemini), MOONSHOT_API_KEY "
                     "(kimi), ANTHROPIC_API_KEY (claude), OPENAI_API_KEY (openai), "
-                    "DEEPSEEK_API_KEY (deepseek), or pass --backend. A code-only "
+                    "DEEPSEEK_API_KEY (deepseek), ORCAROUTER_API_KEY (orcarouter), "
+                    "or pass --backend. For OrcaRouter you can also sign in with "
+                    "`graphify orcarouter login`. A code-only "
                     "corpus needs no key." + hint,
                     file=sys.stderr,
                 )

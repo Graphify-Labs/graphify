@@ -565,6 +565,9 @@ _TRIAGE_MODEL_DEFAULTS: dict[str, str] = {
     "kimi":   "kimi-k2.6",
     "openai": "gpt-4.1-mini",
     "gemini": "gemini-3-flash-preview",
+    # OrcaRouter routes to an upstream, so its own alias is the stable choice;
+    # a specific vendor id here would pin triage to one upstream model.
+    "orcarouter": "orcarouter/auto",
 }
 
 
@@ -579,7 +582,7 @@ def _resolve_triage_backend() -> tuple[str, str]:
                  or _default_model_for_backend(explicit))
         return explicit, model
 
-    for b in ("claude", "kimi", "openai", "gemini"):
+    for b in ("claude", "kimi", "openai", "gemini", "orcarouter"):
         if _get_backend_api_key(b):
             model = (os.environ.get("GRAPHIFY_TRIAGE_MODEL")
                      or _TRIAGE_MODEL_DEFAULTS.get(b)
@@ -591,7 +594,6 @@ def _resolve_triage_backend() -> tuple[str, str]:
         return "claude-cli", "claude-code-plan"
 
     return "ollama", _default_model_for_backend("ollama")
-
 
 def triage_with_opus(prs: list[PRInfo], base: str) -> None:
     try:
@@ -644,7 +646,7 @@ def triage_with_opus(prs: list[PRInfo], base: str) -> None:
                     print(text.replace("\n", "\n  "), end="", flush=True)
             print("\n")
 
-        elif backend in ("kimi", "openai", "gemini", "ollama"):
+        elif backend in ("kimi", "openai", "gemini", "ollama", "orcarouter"):
             from openai import OpenAI
             cfg = BACKENDS[backend]
             api_key = _get_backend_api_key(backend) or "ollama"
