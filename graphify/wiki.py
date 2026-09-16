@@ -72,18 +72,21 @@ def _escape_md_brackets(text: object) -> str:
     legal). ``str()`` first so that fallback stringifies exactly like the
     plain f-interpolation this call replaced, instead of raising.
 
-    Backslashes in the SOURCE text are escaped first, before brackets. Source
-    content occasionally already contains a literal backslash right before a
-    bracket (a doc excerpt showing a regex character class, ``\]+``, for
-    example). Escaping brackets alone turns that into ``\\]`` — two
-    backslashes then a bare bracket — and CommonMark reads a doubled
-    backslash as one literal backslash, which un-escapes the bracket right
-    back into live link syntax. Escaping the backslash itself first keeps the
-    bracket's own escape intact regardless of what already preceded it.
+    A backslash immediately before a bracket in the SOURCE text is escaped
+    first, before the bracket. Source content occasionally already contains
+    a literal backslash right before a bracket (a doc excerpt showing a
+    regex character class, ``\]+``, for example). Escaping the bracket alone
+    turns that into ``\\]`` — two backslashes then a bare bracket — and
+    CommonMark reads a doubled backslash as one literal backslash, which
+    un-escapes the bracket right back into live link syntax. Doubling only a
+    backslash that precedes a bracket (not every backslash in the text)
+    keeps the bracket's own escape intact without touching an unrelated
+    pre-existing escape elsewhere in the source (``\*`` meaning a literal
+    asterisk, doubled unconditionally, would itself un-escape into a bare,
+    newly-live ``*``).
     """
     return (
-        str(text)
-        .replace("\\", "\\\\")
+        re.sub(r"\\(?=[\[\]])", r"\\\\", str(text))
         .replace("[", r"\[")
         .replace("]", r"\]")
     )

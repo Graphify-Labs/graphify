@@ -3,7 +3,7 @@ import re
 import pytest
 from pathlib import Path
 import networkx as nx
-from graphify.wiki import to_wiki, _index_md, _community_article, _god_node_article
+from graphify.wiki import to_wiki, _index_md, _community_article, _god_node_article, _escape_md_brackets
 
 _MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
@@ -406,6 +406,24 @@ def test_community_article_title_escapes_a_bare_bracket_label(tmp_path):
     G.add_edge(2, 3, relation="references", confidence="INFERRED", weight=1.0)
     article = _community_article(G, 0, [1, 2, 3], "[", {0: "["}, 1.0)
     assert article.startswith("# \\[\n")
+
+
+def test_escape_md_brackets_leaves_an_unrelated_escape_alone():
+    """A backslash that precedes something other than a bracket (`\\*`,
+    escaping a literal asterisk so it doesn't open emphasis) must survive
+    unchanged. Doubling every backslash unconditionally -- rather than only
+    ones that precede a bracket -- would itself un-escape that unrelated
+    escape: `\\*` doubled becomes `\\\\*`, and CommonMark reads `\\\\` as one
+    literal backslash followed by a bare, newly-live `*`."""
+    assert _escape_md_brackets(r"\*bold*\ ") == r"\*bold*\ "
+
+
+def test_escape_md_brackets_still_escapes_a_backslash_before_a_bracket():
+    """The one case the backslash handling exists for is unaffected: a
+    backslash already sitting right before a bracket in source (a regex
+    character class, `\\]+`) still round-trips as a literal backslash
+    followed by a literal bracket once escaped."""
+    assert _escape_md_brackets(r"\]+") == r"\\\]+"
 
 
 def test_wiki_links_to_nodes_without_articles_are_plain_text(tmp_path):
