@@ -1201,6 +1201,24 @@ def _is_install_failure_gate_fix_line(line: str) -> bool:
     )
 
 
+def _is_update_backup_reorder_fix_line(line: str) -> bool:
+    """Whether a line is part of the #1619 C4 backup-ordering fix.
+
+    "Before the merge step, save the old graph" appeared AFTER the merge
+    block and the diff block that consumes the backup, so an agent executing
+    top to bottom reached it too late and the post-update diff's `if
+    old_data:` silently no-opped every time. The instruction now appears
+    before the merge block it belongs with; the trailing cleanup line stays
+    where it was, reworded to stop implying a backup step just above it.
+    """
+    stripped = line.strip()
+    return (
+        stripped.startswith("Before the merge step")
+        or stripped.startswith("Clean up after:")
+        or stripped.startswith("Clean up the backup after:")
+    )
+
+
 def _is_input_path_slash_guidance_line(line: str) -> bool:
     """Whether a line is the #1619 B1 forward-slash INPUT_PATH guidance.
 
@@ -1237,6 +1255,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_no_cluster_force_fix_line,
     _is_input_path_slash_guidance_line,
     _is_install_failure_gate_fix_line,
+    _is_update_backup_reorder_fix_line,
 )
 
 
