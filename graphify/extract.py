@@ -1450,6 +1450,16 @@ _TS_IMPORT_CALL_RE = re.compile(
     rb"\bimport\s*\(\s*['\"][^'\"\r\n]+['\"]\s*\)"
 )
 
+# tree-sitter-typescript 0.23.x predates TypeScript 5.0's type-only wildcard
+# re-exports. Its error recovery turns ``export type * from "./dto"`` into an
+# ERROR node, which leaves an otherwise-valid barrel with no extracted symbols.
+# Replacing only ``type`` with spaces produces the grammar's older ``export *``
+# form while keeping every source byte offset intact. ``as Namespace`` is the
+# other TypeScript 5.0 form and needs the same treatment.
+_TS_EXPORT_TYPE_STAR_RE = re.compile(
+    rb"\bexport\s+(?P<type>type)\s+\*(?=\s+(?:as\s+[A-Za-z_$][\w$]*\s+)?from\b)"
+)
+
 
 def _ts_import_is_code(root: Any, start: int) -> bool:
     """Return whether an import-call match starts in executable source.
@@ -1475,6 +1485,40 @@ def _ts_import_is_code(root: Any, start: int) -> bool:
             return False
         node = node.parent
     return True
+
+
+def _normalize_ts_export_type_star(source: bytes, *, tsx: bool = False) -> bytes | None:
+    """Mask valid TypeScript 5 type-only wildcard re-exports for old grammars.
+
+    The installed grammar parses ``export *`` but not ``export type *``. The
+    type-only marker has no graph-level representation, so blanking its four
+    bytes before AST extraction is enough to retain the file and its exports.
+    Comments, strings, and literal template text are left untouched.
+    """
+    matches = list(_TS_EXPORT_TYPE_STAR_RE.finditer(source))
+    if not matches:
+        return None
+
+    try:
+        import tree_sitter_typescript as ts_typescript
+        from tree_sitter import Language, Parser
+
+        language_factory = (
+            ts_typescript.language_tsx if tsx else ts_typescript.language_typescript
+        )
+        root = Parser(Language(language_factory())).parse(source).root_node
+    except Exception:
+        return None
+
+    normalized = bytearray(source)
+    changed = False
+    for match in matches:
+        if not _ts_import_is_code(root, match.start()):
+            continue
+        start, end = match.span("type")
+        normalized[start:end] = b" " * (end - start)
+        changed = True
+    return bytes(normalized) if changed else None
 
 
 def _ts_type_argument_ranges(root: Any, *, call_only: bool) -> list[tuple[int, int]]:
@@ -1707,6 +1751,10 @@ def extract_js(path: Path) -> dict:
         try:
             source = path.read_bytes()
             source_override = _normalize_ts_import_types(source, tsx=suffix == ".tsx")
+            export_star_source = _normalize_ts_export_type_star(
+                source_override or source, tsx=suffix == ".tsx"
+            )
+            source_override = export_star_source or source_override
         except OSError:
             pass
     result = _extract_generic(path, config, source_override=source_override)
