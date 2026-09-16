@@ -710,6 +710,36 @@ def test_input_path_forward_slash_guidance_is_present():
     )
 
 
+def test_step1_gates_on_a_still_failed_install():
+    """#1619 B4: a failed install must stop with an actionable error instead of
+    silently writing a broken interpreter path that fails every later step
+    with a cryptic error far from the real cause.
+    """
+    claude_core, _ = _platform_artifacts("claude")
+    windows_core, _ = _platform_artifacts("windows")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core, "windows": windows_core}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        assert "could not install or locate a Python interpreter with graphify" in body, (
+            f"[{key}] missing the Step 1 failure-gate error message"
+        )
+        lines = body.splitlines()
+        gate_i = next(
+            i for i, l in enumerate(lines)
+            if "could not install or locate a Python interpreter" in l
+        )
+        write_i = next(
+            i for i, l in enumerate(lines)
+            if ".graphify_python" in l and ("write(" in l or "WriteAllText" in l)
+        )
+        # the gate fires after the install attempt, before the (possibly still
+        # broken) interpreter path is persisted for every later step to read.
+        assert gate_i < write_i, f"[{key}] Step 1 gate does not precede the interpreter-path write"
+
+
 def test_monoliths_scope_semantic_cache_writes_to_uncached_files():
     """#1757: generated monoliths pass the dispatched-file allowlist when
     replacing semantic cache entries."""
