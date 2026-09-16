@@ -58,7 +58,7 @@ if (-not $GRAPHIFY_PYTHON) {
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_python'), [string]$GRAPHIFY_PYTHON, $Utf8NoBom)
 # Save scan root so `graphify update` (no args) knows where to look next time
-[System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path INPUT_PATH).Path, $Utf8NoBom)
+[System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path 'INPUT_PATH').Path, $Utf8NoBom)
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
