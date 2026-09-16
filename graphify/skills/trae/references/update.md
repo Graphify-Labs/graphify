@@ -79,6 +79,7 @@ Path('graphify-out/.graphify_extract.json').write_text(json.dumps({'nodes':[],'e
 fi
 ```
 
+Before the merge step below, save the old graph so the post-update diff has something to compare against: `cp graphify-out/graph.json graphify-out/.graphify_old.json`
 
 Then:
 
@@ -194,8 +195,7 @@ if old_data:
 "
 ```
 
-Before the merge step, save the old graph: `cp graphify-out/graph.json graphify-out/.graphify_old.json`
-Clean up after: `rm -f graphify-out/.graphify_old.json`
+Clean up the backup after: `rm -f graphify-out/.graphify_old.json`
 
 ---
 
