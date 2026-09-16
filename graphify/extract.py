@@ -43,6 +43,7 @@ from graphify.extractors.csharp import (
     _resolve_csharp_type_references,
 )
 from graphify.extractors.css import extract_css  # noqa: F401
+from graphify.extractors.design_tokens import read_tailwind_preset, scan_token_refs  # noqa: F401
 from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
@@ -2776,6 +2777,88 @@ def _is_top_level_function_definition(node: dict) -> bool:
         and not label.startswith(".")
         and "." not in label
     )
+
+
+def _resolve_design_token_refs(paths: list[Path], all_nodes: list[dict], all_edges: list[dict]) -> None:
+    """Bind var(--x) and Tailwind-utility design-token references to their definition node."""
+    css_index: dict[str, str] = {}
+    for node in all_nodes:
+        source_file = str(node.get("source_file") or "")
+        label = node.get("label")
+        nid = node.get("id")
+        if (source_file.endswith(".css") and isinstance(label, str)
+                and label.startswith("--") and isinstance(nid, str)):
+            css_index.setdefault(label, nid)
+
+    def _resolve_var(name: str) -> str | None:
+        found = css_index.get(name)
+        if found is None and name.endswith("-rgb"):
+            found = css_index.get(name[:-4])
+        return found
+
+    literal_index: dict[str, str] = {}
+    merged_table: dict[str, tuple[str, str, int]] = {}
+    for preset_path in paths:
+        if preset_path.name != "tailwind-preset.ts":
+            continue
+        table = read_tailwind_preset(preset_path)
+        merged_table.update(table)
+        preset_str = str(preset_path)
+        preset_nid = _make_id(str(preset_path))
+        for utility_name, (kind, _ref, line) in table.items():
+            if kind != "literal":
+                continue
+            nid = _make_id(_file_stem(preset_path), utility_name)
+            literal_index[utility_name] = nid
+            all_nodes.append({"id": nid, "label": utility_name, "file_type": "code",
+                              "source_file": preset_str, "source_location": f"L{line}"})
+            all_edges.append({"source": preset_nid, "target": nid, "relation": "contains",
+                              "confidence": "EXTRACTED", "source_file": preset_str,
+                              "source_location": f"L{line}", "weight": 1.0})
+
+    unresolved = 0
+    for path in paths:
+        if path.suffix not in (".ts", ".tsx", ".css"):
+            continue
+        pairs = scan_token_refs(path, merged_table)
+        if not pairs:
+            continue
+        file_nid = _make_id(str(path))
+        path_str = str(path)
+        for name, line in pairs:
+            if name.startswith("--"):
+                target = _resolve_var(name)
+            else:
+                entry = merged_table.get(name)
+                if entry is None:
+                    target = None
+                elif entry[0] == "var":
+                    target = _resolve_var(entry[1])
+                else:
+                    target = literal_index.get(name)
+            if target is None:
+                unresolved += 1
+                continue
+            all_edges.append({"source": file_nid, "target": target, "relation": "uses_token",
+                              "confidence": "EXTRACTED", "source_file": path_str,
+                              "source_location": f"L{line}", "weight": 1.0})
+
+    for edge in all_edges:
+        if edge.get("relation") != "uses_token":
+            continue
+        target = edge.get("target")
+        if not isinstance(target, str) or not target.startswith("--"):
+            continue
+        resolved = _resolve_var(target)
+        if resolved is None:
+            unresolved += 1
+            edge["target"] = None
+        else:
+            edge["target"] = resolved
+    all_edges[:] = [e for e in all_edges if e.get("target") is not None]
+
+    import logging
+    logging.getLogger(__name__).info("design-token references left unresolved: %d", unresolved)
 
 
 def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
@@ -7191,6 +7274,12 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("C# cross-file import resolution failed, skipping: %s", exc)
+
+    try:
+        _resolve_design_token_refs(paths, all_nodes, all_edges)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Design-token reference resolution failed, skipping: %s", exc)
 
     # Cross-file Bash source-backed call resolution: a call to a function defined
     # in a file this one `source`s is left unresolved by the per-file extractor
