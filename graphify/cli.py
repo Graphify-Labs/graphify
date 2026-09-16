@@ -3030,8 +3030,16 @@ def dispatch_command(cmd: str) -> None:
                 )
                 communities = reconstructed
                 from graphify.cluster import score_all as _score_all_export
+                from graphify.analyze import god_nodes as _god_nodes_export
                 cohesion = _score_all_export(G, communities)
-                gods_data = []
+                # god_nodes ranks purely by graph degree, independent of the
+                # community partition, so recompute it directly here instead
+                # of clearing it to an empty list and relying on the wiki
+                # subcommand's own "if not gods_data: recompute" fallback
+                # further down — that fallback happens to cover the only
+                # current consumer, but silently drops real data for any
+                # future one that reads gods_data without the same guard.
+                gods_data = _god_nodes_export(G)
 
         labels: dict[int, str] = {}
         if labels_path.exists():
