@@ -192,6 +192,8 @@ $(cat graphify-out/.graphify_python) -m graphify save-result --question-file QUE
 
 Replace `QUESTION_PATH`/`ANSWER_PATH`/`NODES_PATH` with the paths `mktemp` printed. This closes the feedback loop: the next `--update` will extract this Q&A as a node in the graph.
 
+(`--nodes-file` takes one or more paths - a single file with one label per line here, but the `/graphify path` flow below passes two separate single-label files to the same flag; both forms are valid.)
+
 **Work memory (self-improving loop).** Add an `--outcome` so future sessions learn from this one — append `--outcome useful|dead_end|corrected` to the `save-result` command (and, when correcting, reserve one more unique path with `mktemp`, write what was right to it, and pass `--correction-file CORRECTION_PATH` the same way):
 
 - `useful` — the cited nodes answered the question well (they become *preferred sources*).
