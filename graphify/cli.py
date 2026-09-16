@@ -1489,10 +1489,14 @@ def dispatch_command(cmd: str) -> None:
             opts.question = Path(opts.question_file).read_text(encoding="utf-8").strip()
         elif opts.question is None:
             p.error("--question or --question-file is required")
+        if not opts.question:
+            p.error("--question must not be empty")
         if opts.answer_file:
             opts.answer = Path(opts.answer_file).read_text(encoding="utf-8").strip()
         elif opts.answer is None:
             p.error("--answer or --answer-file is required")
+        if not opts.answer:
+            p.error("--answer must not be empty")
         if opts.correction_file:
             opts.correction = Path(opts.correction_file).read_text(encoding="utf-8").strip()
         if opts.nodes_file:
