@@ -529,6 +529,34 @@ def test_cli_save_result_requires_question_or_question_file(tmp_path):
     assert "--question" in (r.stderr + r.stdout)
 
 
+def test_cli_save_result_accepts_present_but_empty_question(tmp_path):
+    """A present but empty --question must not be treated the same as an
+    absent one -- the check is on whether the flag was given, not on its
+    truthiness."""
+    r = _run(["save-result", "--question", "", "--answer", "a",
+              "--outcome", "useful"], tmp_path)
+    assert r.returncode == 0, r.stderr
+
+
+def test_cli_save_result_reads_nodes_from_file(tmp_path):
+    """#3439 follow up: a node label the skill instructions build this
+    command from can come from extracted document content, so it is free
+    text of unpredictable content just like the question and answer.
+    --nodes-file mirrors --question-file/--answer-file for the node list,
+    one label per line, so the label never has to touch a shell argument.
+    Round-trips adversarial content (backticks, $(), quotes) unexecuted."""
+    nodes = tmp_path / "nodes.txt"
+    nodes.write_text("what about $(whoami)\n`AuthMiddleware`\n\n", encoding="utf-8")
+    r = _run(["save-result", "--question", "q", "--answer", "a",
+              "--outcome", "useful", "--nodes-file", str(nodes)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    docs = list((tmp_path / "graphify-out" / "memory").glob("*.md"))
+    assert docs, "save-result wrote no memory doc"
+    body = docs[0].read_text(encoding="utf-8")
+    assert "$(whoami)" in body
+    assert "`AuthMiddleware`" in body
+
+
 def test_cli_reflect_cold_start_writes_empty_lessons(tmp_path):
     """First run with no graphify-out/memory/ still succeeds and writes a valid doc."""
     r = _run(["reflect"], tmp_path)
