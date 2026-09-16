@@ -902,6 +902,72 @@ def test_workspace_subpath_export_default_consulted_last(tmp_path: Path):
     assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/default-entry.ts")
 
 
+def test_workspace_subpath_export_development_outranks_default(tmp_path: Path):
+    # `development` sat outside _EXPORT_CONDITION_PRIORITY, so it was never
+    # even queried: an exports map naming only `development` and `default`
+    # resolved to the `default` catch-all instead of the intended condition.
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "exports": {
+                "./widget": {
+                    "default": "./dist/widget.js",
+                    "development": "./src/widget.dev.ts",
+                },
+            },
+        }),
+    )
+    dev_entry = _write(
+        tmp_path / "packages/pkg-a/src/widget.dev.ts",
+        'export const value = "dev"\n',
+    )
+    default_entry = _write(
+        tmp_path / "packages/pkg-a/dist/widget.js",
+        'export const value = "default"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a/widget'\nexport const v = value\n",
+    )
+
+    result = _extract_for([dev_entry, default_entry, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/widget.dev.ts")
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/widget.js")
+
+
+def test_workspace_dist_subpath_falls_back_to_src_twin_when_dist_is_not_built(tmp_path: Path):
+    # A consumer importing a workspace package's built subpath directly
+    # (`pkg/dist/utils`, no `exports` map) resolved to nothing when the
+    # scanned corpus never ran the build and `dist/` does not exist on disk,
+    # even though the `src/` file the build compiles FROM is right there.
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({"name": "@example/pkg-a"}),
+    )
+    target = _write(
+        tmp_path / "packages/pkg-a/src/utils.ts",
+        'export const value = "ok"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a/dist/utils'\nexport const v = value\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/utils.ts")
+
+
 def test_js_import_resolution_ignores_stale_importer_cache_when_target_appears(tmp_path: Path):
     importer = _write(
         tmp_path / "src/lib/page.ts",

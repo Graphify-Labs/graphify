@@ -421,7 +421,7 @@ def _load_workspace_packages(start_dir: Path) -> dict[str, Path]:
 # specified when the exports map was added; the tuple had `types` ahead of
 # `require`/`default` instead.
 _EXPORT_CONDITION_PRIORITY = (
-    "source", "import", "module", "svelte", "require", "default", "types",
+    "source", "development", "import", "module", "svelte", "require", "default", "types",
 )
 
 # Conditions a bundler opts into per platform. `react-native` is a custom
@@ -591,6 +591,22 @@ def _package_entry_candidates(
     candidates.append(package_dir / "index")
     return candidates
 
+_DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
+
+def _source_twin_of_build_output(candidate: Path, package_dir: Path) -> Path | None:
+    """Extensionless `src/` counterpart of a candidate under the package's `dist/`, or None."""
+    try:
+        relative = candidate.relative_to(package_dir / "dist")
+    except ValueError:
+        return None
+    name = relative.name
+    if not name:
+        return package_dir / "src"
+    for suffix in _DECLARATION_SUFFIXES:
+        if name.endswith(suffix):
+            return package_dir / "src" / relative.parent / name[: -len(suffix)]
+    return package_dir / "src" / relative.with_suffix("")
+
 def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
     packages = _load_workspace_packages(start_dir)
     platform = _importer_platform(start_dir)
@@ -602,6 +618,14 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
         else:
             continue
         for candidate in _package_entry_candidates(package_dir, subpath, platform):
+            # A `dist/` candidate that IS on disk (the build ran) still points
+            # outside the scanned corpus when dist/ itself was not extracted, so
+            # try its src/ twin first rather than accept a dead-end file match.
+            source_twin = _source_twin_of_build_output(candidate, package_dir)
+            if source_twin is not None and _contained_in_package(source_twin, package_dir):
+                resolved = _resolve_js_import_path(source_twin)
+                if resolved.is_file():
+                    return resolved
             resolved = _resolve_js_import_path(candidate)
             if resolved.is_file():
                 return resolved
