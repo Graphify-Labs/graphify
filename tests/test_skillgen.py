@@ -740,6 +740,36 @@ def test_step1_gates_on_a_still_failed_install():
         assert gate_i < write_i, f"[{key}] Step 1 gate does not precede the interpreter-path write"
 
 
+def test_update_backup_instruction_precedes_the_merge_it_backs_up():
+    """#1619 C4: "save the old graph" must appear BEFORE the merge block and
+    the diff block that consumes it. An agent reading top to bottom that
+    reaches the merge before being told to back up never creates
+    .graphify_old.json, so the post-update diff's `if old_data:` silently
+    no-ops on every run instead of ever showing a diff.
+    """
+    _, claude_refs = _platform_artifacts("claude")
+    update_body = claude_refs["update.md"]
+    platforms = gen.load_platforms()
+    bodies = {"claude (references/update.md)": update_body}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        lines = body.splitlines()
+        backup_i = next(
+            i for i, l in enumerate(lines) if l.strip().startswith("Before the merge step")
+        )
+        merge_i = next(
+            i for i, l in enumerate(lines)
+            if "build_merge(" in l or "G_existing.update(G_new)" in l
+        )
+        diff_i = next(i for i, l in enumerate(lines) if "old_data" in l and "Path(" in l)
+        assert backup_i < merge_i < diff_i, (
+            f"[{key}] backup instruction must precede both the merge and the diff "
+            f"that reads the backup (backup={backup_i}, merge={merge_i}, diff={diff_i})"
+        )
+
+
 def test_monoliths_scope_semantic_cache_writes_to_uncached_files():
     """#1757: generated monoliths pass the dispatched-file allowlist when
     replacing semantic cache entries."""
