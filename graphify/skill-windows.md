@@ -56,6 +56,8 @@ If the user invoked `/graphify --help` or `/graphify -h` (with no other argument
 
 If no path was given, use `.` (current directory). Do not ask the user for a path.
 
+Every occurrence of `INPUT_PATH` below is a placeholder substituted with this resolved path, inside a Python string literal. On Windows, substitute it with forward slashes (`C:/Users/me/project`, not `C:\Users\me\project`) — a literal backslash in a Windows path splices a stray escape into the Python source (`\t` becomes a tab, `\U` raises a `SyntaxError`), silently or loudly corrupting every block that uses it.
+
 If the path argument starts with `https://github.com/` or `http://github.com/`, treat it as a GitHub URL - run Step 0 before anything else, then continue with the resolved local path.
 
 Follow these steps in order. Do not skip steps.
@@ -126,7 +128,7 @@ if (-not $GRAPHIFY_PYTHON) {
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_python'), [string]$GRAPHIFY_PYTHON, $Utf8NoBom)
 # Save scan root so `graphify update` (no args) knows where to look next time
-[System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path INPUT_PATH).Path, $Utf8NoBom)
+[System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path 'INPUT_PATH').Path, $Utf8NoBom)
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
