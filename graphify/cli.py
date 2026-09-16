@@ -2005,6 +2005,13 @@ def dispatch_command(cmd: str) -> None:
             except KeyError:
                 print("error: --from-file payload is missing required key 'url'", file=sys.stderr)
                 sys.exit(1)
+            if not isinstance(url, str):
+                print(
+                    "error: --from-file payload 'url' must be a string, not "
+                    + type(url).__name__,
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             author = payload.get("author")
             contributor = payload.get("contributor")
             raw_dir = payload.get("dir")
