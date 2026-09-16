@@ -95,3 +95,39 @@ def test_a_plain_python_shebang_still_resolves_as_before(tmp_path):
 def test_only_python_like_interpreters_are_ever_probed():
     """The emitted script gates the probe on the interpreter's name."""
     assert "*python*|*pypy*)" in _PYTHON_DETECT
+
+
+def test_every_interpreter_probe_silences_stdout(tmp_path):
+    """No probe may redirect only stderr (#3611): the detect chain probes
+    interpreters found by pin/file/uv paths too — not just the shebang, which
+    the *python*-name gate guards — and a stray one (e.g. a `/bin/sh` that
+    resolves `import` to ImageMagick) writes its usage dump to STDOUT. The
+    probe is used only for its exit code, so every one redirects stdout."""
+    # Not a single bare stderr-only probe remains.
+    assert '-c "$_GFY_PROBE" 2>/dev/null' not in _PYTHON_DETECT
+    # Every probe of the graphify import check redirects stdout: each
+    # `-c "$_GFY_PROBE"` is immediately followed by the full `>/dev/null 2>&1`.
+    n_probes = _PYTHON_DETECT.count('-c "$_GFY_PROBE"')
+    assert n_probes >= 1, "expected at least one interpreter probe in the emitted script"
+    assert _PYTHON_DETECT.count('-c "$_GFY_PROBE" >/dev/null 2>&1') == n_probes, (
+        "some probe does not redirect stdout"
+    )
+
+
+def test_stray_shell_interpreter_at_a_nonshebang_site_does_not_leak(tmp_path):
+    """A pinned interpreter that happens to be a shell (so `import` = ImageMagick)
+    must not dump usage text — the probe there silences stdout regardless of the
+    *python*-name gate, which only guards the shebang path."""
+    home, stub_bin = _machine(tmp_path, wrapper_exec=None)
+    # Pin GRAPHIFY_PYTHON to /bin/sh via the env the detect chain honours first.
+    script = tmp_path / "detect_pinned.sh"
+    script.write_text(_PYTHON_DETECT + '\necho "RESOLVED=$GRAPHIFY_PYTHON"\n',
+                      encoding="utf-8", newline="\n")
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env.pop("UV_TOOL_DIR", None)
+    env["PATH"] = str(stub_bin) + os.pathsep + env["PATH"]
+    env["GRAPHIFY_PYTHON"] = "/bin/sh"  # the pin path probes this directly
+    res = subprocess.run(["sh", script.name], capture_output=True, text=True,
+                         cwd=str(tmp_path), env=env)
+    assert "Usage: import" not in res.stdout + res.stderr, res.stdout
