@@ -2307,6 +2307,122 @@ def test_extract_parallel_still_spawns_pool_for_multiple_workers(tmp_path, monke
     assert spawned["count"] == 1, "multi-worker runs must still use the pool"
 
 
+def test_extract_parallel_declines_pool_inside_a_spawned_worker(tmp_path, monkeypatch):
+    """#1637: a guard-less Windows caller makes every spawned worker re-execute
+    the top-level module. If that module calls extract() again at module
+    scope, the worker would open its OWN pool, whose own guard-less children
+    do the same — unbounded process growth, not a single recoverable
+    failure. _extract_parallel must refuse to open a pool at all whenever it
+    is already running inside a multiprocessing child, regardless of
+    platform, since a legitimate call only ever happens in the main process.
+    """
+    import concurrent.futures
+    import multiprocessing
+    from graphify import extract as extract_mod
+
+    spawned = {"count": 0}
+
+    def fake_pool(*a, **kw):
+        spawned["count"] += 1
+        raise AssertionError("ProcessPoolExecutor must not be constructed inside a worker")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", fake_pool)
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: object())
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert ok is False, "must decline and hand the work back for sequential extraction"
+    assert spawned["count"] == 0, "no pool may be spawned from inside a worker process"
+
+
+def test_extract_parallel_declines_pool_on_windows_when_caller_lacks_guard(
+    tmp_path, monkeypatch
+):
+    """#1637: on Windows, pre-empt the pool entirely when the caller script has
+    no `if __name__ == "__main__":` guard, instead of discovering the failure
+    only after BrokenProcessPool -- by then the pool has already started
+    respawning dying workers faster than the exception can stop it.
+    """
+    import concurrent.futures
+    import multiprocessing
+    from graphify import extract as extract_mod
+
+    guardless = tmp_path / "runner.py"
+    guardless.write_text("from graphify.extract import extract\nextract([])\n", encoding="utf-8")
+
+    class FakeMain:
+        __file__ = str(guardless)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "__main__", FakeMain())
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+
+    spawned = {"count": 0}
+
+    def fake_pool(*a, **kw):
+        spawned["count"] += 1
+        raise AssertionError("ProcessPoolExecutor must not be constructed for a guard-less caller")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", fake_pool)
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert ok is False, "must decline and hand the work back for sequential extraction"
+    assert spawned["count"] == 0, "no pool may be spawned for a guard-less Windows caller"
+
+
+def test_extract_parallel_still_spawns_pool_on_windows_when_caller_has_guard(
+    tmp_path, monkeypatch
+):
+    """Guard the #1637 fix: a caller that DOES have the guard must still take
+    the pool path on Windows, so legitimate scripts keep their parallelism."""
+    import concurrent.futures
+    import multiprocessing
+    from graphify import extract as extract_mod
+
+    guarded = tmp_path / "runner.py"
+    guarded.write_text(
+        "from graphify.extract import extract\n"
+        "def main():\n"
+        "    extract([])\n"
+        'if __name__ == "__main__":\n'
+        "    main()\n",
+        encoding="utf-8",
+    )
+
+    class FakeMain:
+        __file__ = str(guarded)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "__main__", FakeMain())
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "4")
+
+    spawned = {"count": 0}
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            spawned["count"] += 1
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def submit(self, *a, **kw):
+            raise concurrent.futures.process.BrokenProcessPool("stop here")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert spawned["count"] == 1, "a guarded caller must still use the pool on Windows"
+
+
 def test_extract_falls_back_when_worker_future_breaks_pool(
     tmp_path, monkeypatch, capsys
 ):
