@@ -247,3 +247,22 @@ def test_cli_add_from_file_non_object_json_is_a_clean_error(body, tmp_path, caps
         dispatch_command("add")
     assert exc_info.value.code != 0
     assert "error:" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("bad_dir", [["raw"], {"nested": "raw"}, 42])
+def test_cli_add_from_file_non_string_dir_is_a_clean_error(bad_dir, tmp_path, capsys, monkeypatch):
+    """A payload whose "dir" key is not a string (a list, an object, a
+    number) used to raise a raw, unhandled TypeError from Path() instead
+    of the same clean "error: ..." message every other bad-payload shape
+    in this command produces."""
+    import json
+    import sys
+    from graphify.cli import dispatch_command
+
+    payload = tmp_path / "payload.json"
+    payload.write_text(json.dumps({"url": "https://example.com", "dir": bad_dir}), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["graphify", "add", "--from-file", str(payload)])
+    with pytest.raises(SystemExit) as exc_info:
+        dispatch_command("add")
+    assert exc_info.value.code != 0
+    assert "dir" in capsys.readouterr().err
