@@ -231,6 +231,23 @@ def test_cli_add_from_file_malformed_json_is_a_clean_error(tmp_path, capsys, mon
     assert "error:" in capsys.readouterr().err
 
 
+def test_cli_add_from_file_invalid_utf8_is_a_clean_error(tmp_path, capsys, monkeypatch):
+    """A payload file that is not valid UTF-8 (binary content, a BOM-only
+    stray byte) used to raise a raw, unhandled UnicodeDecodeError from
+    read_text() instead of the same clean "error: ..." message every other
+    unreadable-payload shape in this command already produces."""
+    import sys
+    from graphify.cli import dispatch_command
+
+    payload = tmp_path / "payload.json"
+    payload.write_bytes(b'\xff\xfe{"url": "https://example.com"}')
+    monkeypatch.setattr(sys, "argv", ["graphify", "add", "--from-file", str(payload)])
+    with pytest.raises(SystemExit) as exc_info:
+        dispatch_command("add")
+    assert exc_info.value.code != 0
+    assert "error:" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("body", ["[1, 2, 3]", '"just a string"', "42"])
 def test_cli_add_from_file_non_object_json_is_a_clean_error(body, tmp_path, capsys, monkeypatch):
     """A payload that is syntactically valid JSON but not an object (a
