@@ -90,13 +90,24 @@ if ! "$PYTHON" -c "import graphify" 2>/dev/null; then
         "$PYTHON" -m pip install graphifyy -q 2>/dev/null \
           || "$PYTHON" -m pip install graphifyy -q --break-system-packages 2>&1 | tail -3
     fi
+    # #1619 B4: without this gate, a failed install left PYTHON pointing at an
+    # interpreter that still cannot import graphify. The step fell through
+    # silently, writing that interpreter's path anyway, and every later step
+    # then failed with a cryptic "-c: command not found" far from the real
+    # cause instead of a clear error here.
+    if ! "$PYTHON" -c "import graphify" 2>/dev/null; then
+        echo "ERROR: could not install or locate a Python interpreter with graphify. Try one of:" >&2
+        echo "  uv tool install graphifyy" >&2
+        echo "  python3 -m pip install graphifyy" >&2
+        exit 1
+    fi
 fi
 # Write interpreter path for all subsequent steps (persists across invocations)
 mkdir -p graphify-out
 "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
 ```
 
-If the import succeeds, print nothing and move straight to Step 2.
+If the import succeeds, print nothing and move straight to Step 2. If it prints the ERROR above, stop and tell the user what happened - do not proceed to Step 2.
 
 **In every subsequent bash block, replace `python3` with `$(cat graphify-out/.graphify_python)` to use the correct interpreter.**
 
