@@ -235,7 +235,8 @@ from pathlib import Path
 data = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
 G = json_graph.node_link_graph(data, edges='links')
 
-a_term, b_term = Path('NODES_PATH').read_text(encoding='utf-8').strip().splitlines()
+_node_lines = [l for l in Path('NODES_PATH').read_text(encoding='utf-8').splitlines() if l.strip()]
+a_term, b_term = _node_lines
 
 def find_node(term):
     term = term.lower()
