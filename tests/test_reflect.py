@@ -529,13 +529,25 @@ def test_cli_save_result_requires_question_or_question_file(tmp_path):
     assert "--question" in (r.stderr + r.stdout)
 
 
-def test_cli_save_result_accepts_present_but_empty_question(tmp_path):
-    """A present but empty --question must not be treated the same as an
-    absent one -- the check is on whether the flag was given, not on its
-    truthiness."""
+def test_cli_save_result_rejects_present_but_empty_question_distinctly(tmp_path):
+    """An explicitly empty --question is still rejected -- an empty question
+    is never useful content to save -- but with a message that says so,
+    distinct from the "required" error a genuinely absent flag gets."""
     r = _run(["save-result", "--question", "", "--answer", "a",
               "--outcome", "useful"], tmp_path)
-    assert r.returncode == 0, r.stderr
+    assert r.returncode != 0
+    err = r.stderr
+    assert "must not be empty" in err
+    assert "required" not in err
+
+
+def test_cli_save_result_rejects_present_but_empty_answer_distinctly(tmp_path):
+    r = _run(["save-result", "--question", "q", "--answer", "",
+              "--outcome", "useful"], tmp_path)
+    assert r.returncode != 0
+    err = r.stderr
+    assert "must not be empty" in err
+    assert "required" not in err
 
 
 def test_cli_save_result_reads_nodes_from_file(tmp_path):
