@@ -84,3 +84,48 @@ def test_self_call_same_file_control_is_unaffected(tmp_path: Path):
     caller = _find(result, ".show()", "widget")
     callee = _find(result, ".get()", "widget")
     assert (caller, callee) in calls
+
+
+def test_self_call_to_ambiguous_type_name_yields_no_edge(tmp_path: Path):
+    """Two DIFFERENT structs across the corpus happen to share the bare name
+    `Config`, and both define a same-named method -- the exactly-one-candidate
+    guard must refuse to pick either."""
+    calls, result = _calls(tmp_path, {
+        "a.rs": (
+            "struct Config { x: i32 }\n"
+            "impl Config {\n"
+            "    fn load(&self) -> i32 { self.x }\n"
+            "}\n"
+        ),
+        "b.rs": (
+            "struct Config { y: i32 }\n"
+            "impl Config {\n"
+            "    fn load(&self) -> i32 { self.y }\n"
+            "}\n"
+        ),
+        "c.rs": (
+            "struct Config { z: i32 }\n"
+            "impl Config {\n"
+            "    fn start(&self) -> i32 { self.load() }\n"
+            "}\n"
+        ),
+    })
+    caller = _find(result, ".start()", "c_config")
+    targets = {tgt for (src, tgt) in calls if src == caller}
+    assert not targets, "`Config::load` is ambiguous across a.rs/b.rs -- must not guess"
+
+
+def test_self_call_to_undefined_method_yields_no_edge(tmp_path: Path):
+    """A `self.` call whose method genuinely doesn't exist anywhere in the
+    corpus must not fabricate a target."""
+    calls, result = _calls(tmp_path, {
+        "lib.rs": (
+            "struct Widget { n: u32 }\n"
+            "impl Widget {\n"
+            "    fn show(&self) -> u32 { self.missing() }\n"
+            "}\n"
+        ),
+    })
+    caller = _find(result, ".show()", "widget")
+    targets = {tgt for (src, tgt) in calls if src == caller}
+    assert not targets
