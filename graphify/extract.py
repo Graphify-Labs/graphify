@@ -64,7 +64,7 @@ from graphify.extractors.terraform import extract_terraform, prepare_terraform, 
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
-from graphify.paths import disambiguate_ambiguous_candidates
+from graphify.paths import GRAPHIFY_OUT, disambiguate_ambiguous_candidates
 
 from graphify.extractors.models import LanguageConfig, _JS_CACHE_BYPASS_SUFFIXES, _NamespaceExportFact, _StarExportFact, _SymbolAliasFact, _SymbolDeclarationFact, _SymbolExportFact, _SymbolImportFact, _SymbolResolutionFacts, _SymbolUseFact, _WORKSPACE_PACKAGE_CACHE  # noqa: E402,F401
 
@@ -6699,6 +6699,7 @@ def extract(
     # above fires (nodes exist, no error marker), so surface it explicitly,
     # naming the first error line so the user can find the construct.
     _syntax_error_files: list[tuple[str, int | None]] = []
+    _syntax_error_rows: list[tuple[str, int | None]] = []
     for i, _p in enumerate(paths):
         _res = per_file[i] or {}
         _pe = _res.get("parse_errors")
@@ -6721,6 +6722,7 @@ def extract(
             # partial. "May be partially extracted" rendered both identically.
             _kept = max(len(_res.get("nodes", [])) - 1, 0)
             _syntax_error_files.append((_rel, _pe.get("first_error_line"), _kept))
+            _syntax_error_rows.append((str(_p), _pe.get("first_error_line")))
     if _syntax_error_files:
         def _describe_syntax_error(rel: str, line: "int | None", kept: int) -> str:
             _where = f"first error at line {line}" if line else "syntax error"
@@ -6746,6 +6748,17 @@ def extract(
             f"may be partially extracted: {_shown}{_more}",
             file=sys.stderr, flush=True,
         )
+        _register = Path(root) / GRAPHIFY_OUT / "EXCLUDED.tsv"
+        try:
+            _fresh = not _register.exists()
+            _register.parent.mkdir(parents=True, exist_ok=True)
+            with open(_register, "a", encoding="utf-8") as _f:
+                if _fresh:
+                    _f.write("kind\tpath\treason\n")
+                for _target, _line in _syntax_error_rows:
+                    _f.write(f"partial\t{_target}\tfirst-error-line={_line if _line else '?'}\n")
+        except OSError:
+            pass
 
     for path, result in zip(paths, per_file):
         if path.suffix in (".tf", ".tfvars", ".hcl"):

@@ -19,7 +19,7 @@ from graphify.google_workspace import (
     convert_google_workspace_file,
     google_workspace_enabled,
 )
-from graphify.paths import GRAPHIFY_OUT, out_path
+from graphify.paths import GRAPHIFY_OUT, _atomic_replace, out_path
 
 
 class FileType(str, Enum):
@@ -1735,6 +1735,44 @@ def _resolves_under_root(path: Path, root: Path) -> bool:
     return True
 
 
+_EXCLUDED_REGISTER = "EXCLUDED.tsv"
+_EXCLUDED_REGISTER_HEADER = "kind\tpath\treason"
+
+
+def _exclusion_rows(
+    ignored: list[str],
+    pruned_noise: list[str],
+    unclassified: list[str],
+    skipped_sensitive: list[str],
+) -> list[tuple[str, str, str]]:
+    """Register rows (kind, path, reason) for the paths a scan did not take in."""
+    rows: list[tuple[str, str, str]] = []
+    for entry in ignored:
+        rows.append(("ignored", entry, "ignore-rule"))
+    for entry in pruned_noise:
+        rows.append(("ignored", entry, "noise-dir"))
+    for entry in unclassified:
+        rows.append(("unclassified", entry, Path(entry).suffix.lower() or "<no-extension>"))
+    for entry in skipped_sensitive:
+        target, sep, reason = entry.partition(" [")
+        rows.append(("skipped", target, reason.rstrip("]") if sep else "sensitive-pattern"))
+    rows.sort()
+    return rows
+
+
+def _write_exclusion_register(out_dir: Path, rows: list[tuple[str, str, str]]) -> None:
+    """Write the exclusion register as a tab-separated file in the output dir."""
+    def _write(f) -> None:
+        f.write(_EXCLUDED_REGISTER_HEADER + "\n")
+        for kind, target, reason in rows:
+            f.write(f"{kind}\t{target}\t{reason}\n")
+
+    try:
+        _atomic_replace(out_dir / _EXCLUDED_REGISTER, _write)
+    except OSError:
+        pass
+
+
 def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace: bool | None = None, extra_excludes: list[str] | None = None, cache_root: Path | None = None, gitignore: bool = True) -> dict:
     root = root.resolve()
     configured_out_dir = root / GRAPHIFY_OUT
@@ -2032,6 +2070,13 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             f"Semantic extraction will be expensive (many Claude tokens). "
             f"Consider running on a subfolder."
         )
+
+    # cache_root (when given, e.g. from `extract --out`) keeps this register out
+    # of the scanned corpus too, same as the word-count cache above (#1747).
+    _write_exclusion_register(
+        Path(cache_root if cache_root is not None else root).resolve() / GRAPHIFY_OUT,
+        _exclusion_rows(sorted(ignored), sorted(pruned_noise), sorted(unclassified), skipped_sensitive),
+    )
 
     return {
         "files": {k.value: v for k, v in files.items()},

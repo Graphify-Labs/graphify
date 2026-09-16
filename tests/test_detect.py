@@ -89,6 +89,26 @@ def test_detect_warns_small_corpus():
     assert result["needs_graph"] is False
     assert result["warning"] is not None
 
+def test_detect_writes_exclusion_register(tmp_path):
+    """detect() computes ignored/unclassified paths and previously discarded them —
+    only a classified file left any trace. Both now land in graphify-out/EXCLUDED.tsv."""
+    (tmp_path / ".gitignore").write_text("skipped.py\n")
+    (tmp_path / "skipped.py").write_text("x = 1\n")
+    (tmp_path / "notes.xyz").write_text("no known extension\n")
+    (tmp_path / "main.py").write_text("def hello(): pass\n")
+
+    detect(tmp_path)
+
+    register = tmp_path / "graphify-out" / "EXCLUDED.tsv"
+    assert register.exists()
+    lines = register.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "kind\tpath\treason"
+    body = "\n".join(lines[1:])
+    assert "skipped.py" in body
+    assert "notes.xyz" in body
+    assert "main.py" not in body
+
+
 def test_detect_skips_noise_dot_dirs():
     """Noise dot dirs (.next, .nuxt, .graphify cache, …) are skipped (#873).
     Non-noise dot dirs (.github, .claude, …) are now allowed through."""

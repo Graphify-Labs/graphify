@@ -523,6 +523,23 @@ def test_collect_files_walks_each_directory_once(tmp_path, monkeypatch):
     assert max(counts.values()) == 1
 
 
+def test_partial_extraction_writes_exclusion_register(tmp_path):
+    """A file only partially taken in (#2551 syntax-error warning) is recorded in
+    graphify-out/EXCLUDED.tsv — previously that fact lived only in the stderr line."""
+    broken = tmp_path / "broken.py"
+    broken.write_text("def foo(\n    !!! not python at all $$$ ###\n", encoding="utf-8")
+
+    extract([broken], cache_root=tmp_path)
+
+    register = tmp_path / "graphify-out" / "EXCLUDED.tsv"
+    assert register.exists()
+    lines = register.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "kind\tpath\treason"
+    body = "\n".join(lines[1:])
+    assert "partial" in body
+    assert "broken.py" in body
+
+
 def test_no_dangling_edges_on_extract():
     """After merging multiple files, no internal edges should be dangling."""
     files = list(FIXTURES.glob("*.py"))
