@@ -2515,6 +2515,189 @@ def test_extract_parallel_spawns_pool_for_reversed_guard_order(tmp_path, monkeyp
     assert spawned["count"] == 1, "the reversed operand order is still a real guard"
 
 
+def test_extract_parallel_declines_pool_when_guard_text_is_inside_a_string(tmp_path, monkeypatch):
+    """Review finding on the regex based detector this replaces: a guard
+    shaped line sitting inside a triple-quoted string is not executable
+    code and must not be read as a real guard. The caller here has no
+    actual if statement at all."""
+    import concurrent.futures
+    import multiprocessing
+    from graphify import extract as extract_mod
+
+    guardless = tmp_path / "runner.py"
+    guardless.write_text(
+        '"""\n'
+        "Example usage:\n"
+        'if __name__ == "__main__":\n'
+        "    main()\n"
+        '"""\n'
+        "from graphify.extract import extract\n"
+        "extract([])\n",
+        encoding="utf-8",
+    )
+
+    class FakeMain:
+        __file__ = str(guardless)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "__main__", FakeMain())
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+
+    spawned = {"count": 0}
+
+    def fake_pool(*a, **kw):
+        spawned["count"] += 1
+        raise AssertionError("ProcessPoolExecutor must not be constructed for a guard-less caller")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", fake_pool)
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert ok is False, "guard text inside a string is not a real guard"
+    assert spawned["count"] == 0
+
+
+def test_extract_parallel_declines_pool_when_guard_text_is_in_a_docstring_example(
+    tmp_path, monkeypatch
+):
+    """Same class of finding, the other shape reported: a guard shaped line
+    inside a function's own docstring, documenting how to call it, must
+    not be read as the module actually having a guard."""
+    import concurrent.futures
+    import multiprocessing
+    from graphify import extract as extract_mod
+
+    guardless = tmp_path / "runner.py"
+    guardless.write_text(
+        "from graphify.extract import extract\n"
+        "\n"
+        "def run_from_cli():\n"
+        '    """Entry point.\n'
+        "\n"
+        "    Typical usage:\n"
+        '        if __name__ == "__main__":\n'
+        "            run_from_cli()\n"
+        '    """\n'
+        "    extract([])\n"
+        "\n"
+        "run_from_cli()\n",
+        encoding="utf-8",
+    )
+
+    class FakeMain:
+        __file__ = str(guardless)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "__main__", FakeMain())
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+
+    spawned = {"count": 0}
+
+    def fake_pool(*a, **kw):
+        spawned["count"] += 1
+        raise AssertionError("ProcessPoolExecutor must not be constructed for a guard-less caller")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", fake_pool)
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert ok is False, "guard text inside a docstring example is not a real guard"
+    assert spawned["count"] == 0
+
+
+def test_extract_parallel_spawns_pool_for_a_parenthesized_guard(tmp_path, monkeypatch):
+    """Review finding: a parenthesized comparison, `if (__name__ ==
+    "__main__"):`, is valid Python and a real guard, but was rejected by
+    the regex based detector this replaces since it required `if` to be
+    followed immediately by the comparison with no parens in between."""
+    import concurrent.futures
+    import multiprocessing
+    from graphify import extract as extract_mod
+
+    guarded = tmp_path / "runner.py"
+    guarded.write_text(
+        "from graphify.extract import extract\n"
+        "def main():\n"
+        "    extract([])\n"
+        'if (__name__ == "__main__"):\n'
+        "    main()\n",
+        encoding="utf-8",
+    )
+
+    class FakeMain:
+        __file__ = str(guarded)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "__main__", FakeMain())
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "4")
+
+    spawned = {"count": 0}
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            spawned["count"] += 1
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def submit(self, *a, **kw):
+            raise concurrent.futures.process.BrokenProcessPool("stop here")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert spawned["count"] == 1, "a parenthesized comparison is still a real guard"
+
+
+def test_extract_parallel_spawns_pool_when_caller_source_fails_to_parse(tmp_path, monkeypatch):
+    """An unparseable caller (a syntax error, or a non-Python source read as
+    text) means the guard's presence genuinely can't be determined -- this
+    is treated the same as an unreadable file, not escalated into "assume
+    it's missing", matching this function's existing best-effort philosophy."""
+    import concurrent.futures
+    import multiprocessing
+    from graphify import extract as extract_mod
+
+    broken = tmp_path / "runner.py"
+    broken.write_text("def broken(:\n", encoding="utf-8")
+
+    class FakeMain:
+        __file__ = str(broken)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "__main__", FakeMain())
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "4")
+
+    spawned = {"count": 0}
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            spawned["count"] += 1
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def submit(self, *a, **kw):
+            raise concurrent.futures.process.BrokenProcessPool("stop here")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert spawned["count"] == 1, "an unparseable caller must not be treated as guard-less"
+
+
 def test_extract_falls_back_when_worker_future_breaks_pool(
     tmp_path, monkeypatch, capsys
 ):
