@@ -1,6 +1,7 @@
 """Deterministic structural extraction from source code using tree-sitter. Outputs nodes+edges dicts."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import json
@@ -6369,11 +6370,26 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     return idx, result
 
 
-_MAIN_GUARD_RE = re.compile(
-    r'^[ \t]*if\s+(?:__name__\s*==\s*[\'"]__main__[\'"]'
-    r'|[\'"]__main__[\'"]\s*==\s*__name__)\s*:',
-    re.MULTILINE,
-)
+def _is_main_guard_test(test: ast.expr) -> bool:
+    """Whether an ``if`` statement's test is ``__name__ == "__main__"``, in
+    either operand order. Parens around the comparison are transparent to
+    the AST, and this never looks inside a string, comment, or docstring —
+    only a real comparison expression in executable code satisfies it."""
+    if not isinstance(test, ast.Compare):
+        return False
+    if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+        return False
+    left, right = test.left, test.comparators[0]
+
+    def _is_dunder_name(node: ast.expr) -> bool:
+        return isinstance(node, ast.Name) and node.id == "__name__"
+
+    def _is_main_string(node: ast.expr) -> bool:
+        return isinstance(node, ast.Constant) and node.value == "__main__"
+
+    return (_is_dunder_name(left) and _is_main_string(right)) or (
+        _is_main_string(left) and _is_dunder_name(right)
+    )
 
 
 def _caller_main_lacks_guard() -> bool:
@@ -6387,9 +6403,13 @@ def _caller_main_lacks_guard() -> bool:
     so the pool is never opened in the first place, rather than caught after
     the fact via BrokenProcessPool once the damage is already spawning.
 
-    Looks for the actual guard statement, not a bare substring match — a
-    docstring, comment, or unrelated string literal mentioning ``__main__``
-    must not be read as a guard that isn't really there.
+    Parses the source and looks for a real ``if`` statement with this test,
+    rather than a regex over the text — a regex line match still treats a
+    guard-shaped line sitting inside a triple-quoted string or a docstring
+    example as a real guard (it is not executable code), and still rejects
+    a valid but less common form like a parenthesized comparison. The AST
+    does not see string contents as code at all, and is indifferent to
+    formatting, so both gaps close at once.
     """
     main_file = getattr(sys.modules.get("__main__"), "__file__", None)
     if not main_file:
@@ -6398,7 +6418,16 @@ def _caller_main_lacks_guard() -> bool:
         main_src = Path(main_file).read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return False
-    return _MAIN_GUARD_RE.search(main_src) is None
+    try:
+        tree = ast.parse(main_src)
+    except SyntaxError:
+        # Can't tell whether a guard is present -- treated the same as an
+        # unreadable file above, not escalated into "assume it's missing".
+        return False
+    return not any(
+        isinstance(node, ast.If) and _is_main_guard_test(node.test)
+        for node in ast.walk(tree)
+    )
 
 
 def _extract_parallel(
