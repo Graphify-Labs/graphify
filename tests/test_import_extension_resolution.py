@@ -161,6 +161,99 @@ def test_resolve_jsx_to_tsx_when_real_file_is_tsx(tmp_path):
     assert _resolve_js_module_path(written_as) == target
 
 
+# ── #3486: a `.js` specifier resolves through TypeScript's full order ────────
+
+
+def test_resolve_js_to_tsx_when_real_file_is_tsx(tmp_path):
+    """#3486 reproducer. TypeScript emits `Button.tsx` as `Button.js`, so under
+    NodeNext/Node16 the specifier the compiler *requires* is `./Button.js`
+    while the source on disk is `.tsx`. The `.js` branch only ever tried `.ts`
+    and stopped, so every such import dropped to a phantom `ref_` edge."""
+    target = _write(tmp_path / "Button.tsx", "export const x = 1")
+    written_as = tmp_path / "Button.js"
+    assert _resolve_js_module_path(written_as) == target
+
+
+def test_resolve_js_prefers_ts_over_tsx(tmp_path):
+    """TypeScript's documented order for a `.js` specifier is
+    .ts -> .tsx -> .d.ts -> .js, so `.ts` keeps precedence."""
+    ts_target = _write(tmp_path / "Widget.ts", "export const x = 1")
+    _write(tmp_path / "Widget.tsx", "export const x = 1")
+    assert _resolve_js_module_path(tmp_path / "Widget.js") == ts_target
+
+
+def test_resolve_js_to_d_ts_when_only_a_declaration_exists(tmp_path):
+    """Third entry in the same order — a `.js` specifier resolves to a
+    declaration-only module when no implementation is on disk."""
+    target = _write(tmp_path / "ambient.d.ts", "export declare const x: string")
+    assert _resolve_js_module_path(tmp_path / "ambient.js") == target
+
+
+def test_resolve_js_prefers_tsx_over_d_ts(tmp_path):
+    """An implementation still beats a declaration for the same specifier."""
+    tsx_target = _write(tmp_path / "Thing.tsx", "export const x = 1")
+    _write(tmp_path / "Thing.d.ts", "export declare const x: string")
+    assert _resolve_js_module_path(tmp_path / "Thing.js") == tsx_target
+
+
+def test_resolve_js_multi_dot_stem_to_tsx(tmp_path):
+    """`with_suffix` replaces only the last suffix, so a multi-dot stem keeps
+    its dots: `tag-action.shared.js` -> `tag-action.shared.tsx`."""
+    target = _write(tmp_path / "tag-action.shared.tsx", "export const x = 1")
+    assert _resolve_js_module_path(tmp_path / "tag-action.shared.js") == target
+
+
+def test_resolve_real_js_still_wins_over_a_tsx_sibling(tmp_path):
+    """The existence check still short-circuits: a real `.js` file stays the
+    import target even when a `.tsx` sibling is present."""
+    real = _write(tmp_path / "foo.js", "module.exports = 1")
+    _write(tmp_path / "foo.tsx", "export const x = 1")
+    assert _resolve_js_module_path(real) == real
+
+
+def test_resolve_mjs_to_mts_then_d_mts(tmp_path):
+    """Same shape for the `.mjs` emitted specifier, implementation first."""
+    target = _write(tmp_path / "mod.mts", "export const x = 1")
+    _write(tmp_path / "mod.d.mts", "export declare const x: string")
+    assert _resolve_js_module_path(tmp_path / "mod.mjs") == target
+
+
+def test_resolve_cjs_to_cts_then_d_cts(tmp_path):
+    """And for `.cjs`."""
+    target = _write(tmp_path / "mod.cts", "export const x = 1")
+    _write(tmp_path / "mod.d.cts", "export declare const x: string")
+    assert _resolve_js_module_path(tmp_path / "mod.cjs") == target
+
+
+def test_resolve_mjs_to_d_mts_when_only_a_declaration_exists(tmp_path):
+    target = _write(tmp_path / "mod.d.mts", "export declare const x: string")
+    assert _resolve_js_module_path(tmp_path / "mod.mjs") == target
+
+
+def test_resolve_cjs_to_d_cts_when_only_a_declaration_exists(tmp_path):
+    target = _write(tmp_path / "mod.d.cts", "export declare const x: string")
+    assert _resolve_js_module_path(tmp_path / "mod.cjs") == target
+
+
+def test_js_import_of_tsx_resolves_end_to_end(tmp_path):
+    """The #3486 reproducer through the import handler: `App.ts` importing
+    `./Button.js` must emit an edge to the `Button.tsx` node id, not to a
+    `ref_button_js` phantom."""
+    target = _write(tmp_path / "Button.tsx",
+                    "export function Button() { return null }")
+    importer = _write(tmp_path / "App.ts",
+                      "import { Button } from './Button.js'\n")
+    result = extract_js(importer)
+    expected = _make_id(str(target))
+    assert expected in _import_targets(result), (
+        f".js -> .tsx resolution failed end to end; "
+        f"expected {expected}; got {_import_targets(result)}"
+    )
+
+
+# ── #3486 end: back to the existing resolver contracts ──────────────────────
+
+
 def test_resolve_returns_unchanged_when_nothing_matches(tmp_path):
     """External / truly missing paths fall back to the input — preserves
     pre-#716 behavior of becoming an external phantom edge."""
