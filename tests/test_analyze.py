@@ -37,6 +37,82 @@ def test_god_nodes_have_required_keys():
     assert "degree" in result[0]
 
 
+def _make_directed_god_graph():
+    """A small directed graph shaped like #2488's repro: one node with many
+    inbound edges (a widely-depended-on abstraction) and one with many
+    outbound edges (a config-shaped node that depends on many things), so
+    they rank as neighbors under total degree despite being opposites."""
+    G = nx.DiGraph()
+    G.add_node("hub", label="hub()", file_type="code", source_file="auth.py")
+    G.add_node("config", label="config", file_type="code", source_file="tsconfig.json")
+    for i in range(4):
+        caller = f"caller{i}"
+        G.add_node(caller, label=f"caller{i}()", file_type="code", source_file=f"c{i}.py")
+        G.add_edge(caller, "hub")  # 4 inbound edges to hub
+    for i in range(4):
+        dep = f"dep{i}"
+        G.add_node(dep, label=f"dep{i}", file_type="code", source_file="tsconfig.json")
+        G.add_edge("config", dep)  # 4 outbound edges from config
+    return G
+
+
+def test_god_nodes_directed_graph_carries_in_out_degree():
+    """#2488: a directed graph's results must carry in_degree/out_degree
+    alongside total degree, so a caller can tell "many things depend on this"
+    from "this depends on many things" without re-deriving it."""
+    G = _make_directed_god_graph()
+    result = god_nodes(G, top_n=10)
+    by_id = {r["id"]: r for r in result}
+    assert by_id["hub"]["in_degree"] == 4
+    assert by_id["hub"]["out_degree"] == 0
+    assert by_id["hub"]["degree"] == 4
+    assert by_id["config"]["in_degree"] == 0
+    assert by_id["config"]["out_degree"] == 4
+    assert by_id["config"]["degree"] == 4
+
+
+def test_god_nodes_undirected_graph_has_no_in_out_degree():
+    """An undirected graph has no in/out distinction, so results must not
+    carry in_degree/out_degree keys at all rather than a meaningless value."""
+    G = make_graph()
+    result = god_nodes(G, top_n=3)
+    for r in result:
+        assert "in_degree" not in r
+        assert "out_degree" not in r
+
+
+def test_god_nodes_sort_by_in_ranks_by_inbound_only():
+    G = _make_directed_god_graph()
+    # 8 more callers into hub so its in-degree clearly exceeds config's total.
+    for i in range(4, 8):
+        caller = f"caller{i}"
+        G.add_node(caller, label=f"caller{i}()", file_type="code", source_file=f"c{i}.py")
+        G.add_edge(caller, "hub")
+    result = god_nodes(G, top_n=1, sort_by="in")
+    assert result[0]["id"] == "hub"
+    assert result[0]["in_degree"] == 8
+
+
+def test_god_nodes_sort_by_out_ranks_by_outbound_only():
+    G = _make_directed_god_graph()
+    for i in range(4, 8):
+        dep = f"dep{i}"
+        G.add_node(dep, label=f"dep{i}", file_type="code", source_file="tsconfig.json")
+        G.add_edge("config", dep)
+    result = god_nodes(G, top_n=1, sort_by="out")
+    assert result[0]["id"] == "config"
+    assert result[0]["out_degree"] == 8
+
+
+def test_god_nodes_sort_by_unknown_falls_back_to_total():
+    """An unrecognized sort_by must not raise -- it degrades to the
+    historical total-degree ranking rather than crashing a caller."""
+    G = _make_directed_god_graph()
+    result = god_nodes(G, top_n=10, sort_by="bogus")
+    degrees = [r["degree"] for r in result]
+    assert degrees == sorted(degrees, reverse=True)
+
+
 def test_surprising_connections_cross_source_multi_file():
     """Multi-file graph: should find cross-file edges between real entities."""
     G = make_graph()
