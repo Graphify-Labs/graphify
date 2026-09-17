@@ -312,6 +312,17 @@ _SOURCE_MATCH_BONUS = 0.5
 # toward term coverage, so a long rationale adds recall without winning back
 # an exact-label tier it did not earn.
 _RATIONALE_MATCH_BONUS = 0.75
+# A node emitted by something other than graphify's own extraction (a
+# Confluence page, a Jira issue) has nowhere to put its free text except an
+# arbitrary attribute, and nothing considers those for seeding: the content
+# is in the graph, the ranker is fine, the node is just never visited (#3313).
+# `body` is the documented convention such an emitter can use. Weighted well
+# below the curated `rationale` tier (which the extraction spec itself
+# writes) rather than reusing it, since raw scraped/pasted text is noisier
+# and an unweighted body match was measured to make retrieval WORSE - a few
+# hundred characters of prose matches many query terms, so a page that
+# merely mentions the words ties with the page that is actually about them.
+_BODY_MATCH_BONUS = 0.35
 
 
 def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
@@ -360,6 +371,21 @@ def _node_rationale_text(data: dict) -> str:
     return _strip_diacritics(str(raw)).lower()
 
 
+def _node_body_text(data: dict) -> str:
+    """The node's `body` attribute normalized like a label (#3313).
+
+    The documented convention for free text a non-extraction emitter (a
+    Confluence page, a Jira issue) has nowhere else to put. Same shape as
+    `_node_rationale_text`: a list is joined, missing or empty is "".
+    """
+    raw = data.get("body")
+    if not raw:
+        return ""
+    if isinstance(raw, (list, tuple)):
+        raw = " ".join(str(part) for part in raw if part)
+    return _strip_diacritics(str(raw)).lower()
+
+
 def _node_search_text(data: dict, nid: str) -> str:
     """Concatenate every field _score_nodes / _find_node match a query against, so
     one trigram index over this text is a complete candidate generator for both.
@@ -367,6 +393,8 @@ def _node_search_text(data: dict, nid: str) -> str:
     - `rationale` (normalized via `_node_rationale_text`) feeds _score_nodes'
       rationale tier (#2293); appended last, and only when present, so every
       other field position is unchanged.
+    - `body` (normalized via `_node_body_text`) feeds _score_nodes' body tier
+      (#3313); same append-only-when-present treatment as rationale.
 
     - `norm_label` and `source_file` feed _score_nodes' per-term substring tiers.
     - `label_tokens` (the space-joined token form) feeds _find_node's
@@ -401,6 +429,9 @@ def _node_search_text(data: dict, nid: str) -> str:
     rationale = _node_rationale_text(data)
     if rationale:
         fields += (rationale,)
+    body = _node_body_text(data)
+    if body:
+        fields += (body,)
     return "\x00".join(fields)
 
 
@@ -535,6 +566,18 @@ def _score_query(
     trigram candidate set (needles `norm_terms + [joined]`) is a superset of
     each per-token `[t]` candidate set, so iterating combined candidates
     discovers every non-zero singleton-score node for every term.
+
+    `label`, `source_file`, `rationale` (#2293), and `body` (#3313) are the
+    only attributes matched against. An emitter with nowhere else to put free
+    text (a Confluence page, a Jira issue) can use `body`; anything stored
+    under another attribute name is still invisible to seeding, so the node
+    can never become a seed no matter how relevant its content is - the data
+    is in the graph and the ranker is fine, the node is just never visited,
+    which makes this easy to hit and hard to diagnose. `body` is weighted
+    well below `rationale` rather than sharing its tier: unweighted body
+    matching was measured to make retrieval worse, since a few hundred
+    characters of prose matches many query terms and a page that merely
+    mentions the words ties with the page that is actually about them.
     """
     scored: list[tuple[float, str]] = []
     # Dedupe tokens, order-preserving (as _pick_seeds already does): a repeated
@@ -578,6 +621,7 @@ def _score_query(
         label_tokens = " ".join(_search_tokens(data.get("label") or ""))
         source = (data.get("source_file") or "").lower()
         rationale = _node_rationale_text(data)
+        body = _node_body_text(data)
         # `nid_lower` is needed both by the full-query tier (`if joined`) and by
         # the per-token singleton tier (joined-singlet exact-match check). When
         # neither runs (`joined` empty AND not collecting seeds) skip the call;
@@ -643,6 +687,15 @@ def _score_query(
             if rationale and t in rationale:
                 rationale_value = _RATIONALE_MATCH_BONUS * w
                 score += rationale_value
+            # Body tier (#3313): recall for content a non-extraction emitter
+            # stored on the node with nowhere else to put it. Same shape as
+            # the rationale tier - adds to the score, not to `matched` - at a
+            # lower weight, since unlike a curated rationale, raw body text is
+            # noisy prose where many terms coincidentally appear.
+            body_value = 0.0
+            if body and t in body:
+                body_value = _BODY_MATCH_BONUS * w
+                score += body_value
             tiered += tier_value
             if collect_per_term_seeds and best_by_term is not None:
                 # Singleton score for [t] on this node, mirroring
@@ -661,7 +714,7 @@ def _score_query(
                     singleton = _PREFIX_MATCH_BONUS * 10 * w
                 else:
                     singleton = 0.0
-                singleton += tier_value + substr_value + source_value + rationale_value
+                singleton += tier_value + substr_value + source_value + rationale_value + body_value
                 if singleton > 0:
                     # Tie-break key mirrors the legacy sort+max(degree):
                     # (-singleton, -degree, label_len, nid) — the minimum
