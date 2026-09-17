@@ -381,7 +381,7 @@ def _render_frontmatter(platform: Platform) -> str:
 # untranslated bash to the Windows variant. ``_POWERSHELL_BANNED_TOKENS`` is the
 # belt-and-braces post-check on the final body.
 
-_PY_INVOKE_POSIX = '$(cat graphify-out/.graphify_python) -c "'
+_PY_INVOKE_POSIX = '"$(cat graphify-out/.graphify_python)" -c "'
 _PY_INVOKE_PS_OPEN = "@'"
 _PY_INVOKE_PS_CLOSE = "'@ | & (Get-Content graphify-out\\.graphify_python) -"
 _MKDIR_POSIX = "mkdir -p graphify-out"
@@ -1219,6 +1219,19 @@ def _is_update_backup_reorder_fix_line(line: str) -> bool:
     )
 
 
+def _is_quoted_interpreter_cat_fix_line(line: str) -> bool:
+    """Whether a line is part of the #1619 B5 interpreter-substitution quoting fix.
+
+    `$(cat graphify-out/.graphify_python)` was spliced in unquoted everywhere
+    it names the interpreter to run, so an interpreter path containing a
+    space (a venv under `C:\\Users\\First Last\\...`) word-split into
+    multiple arguments. Every occurrence, and the prose line describing the
+    substitution, is now quoted, matching the `"$PYTHON"` form Step 1 already
+    used. Both the old (removed) and new (added) forms match here.
+    """
+    return "$(cat graphify-out/.graphify_python)" in line
+
+
 def _is_input_path_slash_guidance_line(line: str) -> bool:
     """Whether a line is the #1619 B1 forward-slash INPUT_PATH guidance.
 
@@ -1256,6 +1269,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_input_path_slash_guidance_line,
     _is_install_failure_gate_fix_line,
     _is_update_backup_reorder_fix_line,
+    _is_quoted_interpreter_cat_fix_line,
 )
 
 
