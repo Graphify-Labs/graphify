@@ -4178,6 +4178,17 @@ def test_get_extractor_routes_matlab_m_away_from_objc(tmp_path):
     assert _get_extractor(mm) is extract_objc              # .mm is unambiguously ObjC++
 
 
+def test_markdown_dispatch_matches_resolution_suffixes():
+    from graphify.extract import _DISPATCH, extract_markdown
+    from graphify.markdown_resolution import MARKDOWN_MENTION_SUFFIXES
+
+    dispatched = {
+        suffix for suffix, extractor in _DISPATCH.items()
+        if extractor is extract_markdown
+    }
+    assert dispatched == MARKDOWN_MENTION_SUFFIXES
+
+
 def test_matlab_m_not_extracted_as_garbage(tmp_path, capsys):
     # End to end: a MATLAB .m produces no (garbage) nodes and is surfaced by the
     # no-AST-extractor warning (#1702 + #1689), rather than mis-parsed as ObjC.

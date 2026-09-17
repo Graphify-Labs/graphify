@@ -550,7 +550,7 @@ def _reconcile_markdown_links(
     from graphify.extract import _file_node_id, _safe_extract_with_xaml_root
     from graphify.extractors.base import _make_id
     from graphify.extractors.markdown import extract_markdown
-    from graphify.markdown_resolution import _is_file_node
+    from graphify.markdown_resolution import MARKDOWN_MENTION_SUFFIXES, _is_file_node
 
     all_nodes = result.get("nodes", []) + preserved_nodes
     nodes_by_id = {node["id"]: node for node in all_nodes if node.get("id")}
@@ -580,7 +580,11 @@ def _reconcile_markdown_links(
             representatives[source_file] = None
 
     markdown_files = code_files if full_rebuild else extract_targets
-    markdown_files = [path for path in markdown_files if path.suffix.lower() == ".md"]
+    markdown_files = [
+        path
+        for path in markdown_files
+        if path.suffix.lower() in MARKDOWN_MENTION_SUFFIXES
+    ]
     parsed_sources: set[str] = set()
     authored_links: set[tuple[str, str]] = set()
     authored_raw_pairs: set[frozenset[str]] = set()

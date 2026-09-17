@@ -4027,11 +4027,13 @@ def _ast_reference(source, target, source_file, **extra):
     }
 
 
-def test_markdown_reconcile_links_new_source_to_semantic_target(tmp_path):
+@pytest.mark.parametrize("suffix", [".md", ".mdx", ".qmd", ".skill"])
+def test_markdown_reconcile_links_new_source_to_semantic_target(tmp_path, suffix):
     """#1915/#1954: a fresh source reaches a semantic-only target."""
+    source_file = f"a{suffix}"
     corpus, graph_path = _markdown_reconcile_fixture(
         tmp_path,
-        {"a.md": "[link](b.md)\n", "b.md": "target\n"},
+        {source_file: "[link](b.md)\n", "b.md": "target\n"},
         [_semantic_doc("b_sem", "b.md")],
         [],
     )
@@ -4085,18 +4087,57 @@ def test_markdown_reconcile_preserves_ambiguous_source(tmp_path):
     assert references[0]["sentinel"] == "keep"
 
 
-def test_markdown_reconcile_prunes_removed_authored_link(tmp_path):
+@pytest.mark.parametrize("suffix", [".md", ".mdx", ".qmd", ".skill"])
+def test_markdown_reconcile_prunes_removed_authored_link(tmp_path, suffix):
     """#1915/#1954: removing a Markdown link removes its owned AST edge."""
+    source_file = f"a{suffix}"
     corpus, graph_path = _markdown_reconcile_fixture(
         tmp_path,
-        {"a.md": "no link\n", "b.md": "target\n"},
-        [_semantic_doc("a_sem", "a.md"), _semantic_doc("b_sem", "b.md")],
-        [_ast_reference("a_sem", "b_sem", "a.md")],
+        {source_file: "no link\n", "b.md": "target\n"},
+        [_semantic_doc("a_sem", source_file), _semantic_doc("b_sem", "b.md")],
+        [_ast_reference("a_sem", "b_sem", source_file)],
     )
 
     assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
     links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
     assert not any(edge.get("relation") == "references" for edge in links)
+
+
+@pytest.mark.parametrize("suffix", [".md", ".mdx", ".qmd", ".skill"])
+def test_markdown_reconcile_repoints_incremental_link_to_semantic_target(
+    tmp_path, suffix
+):
+    """A changed Markdown source reuses the target's semantic representative."""
+    source_file = f"a{suffix}"
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {source_file: "[link](b.md)\n", "b.md": "target\n"},
+        [
+            {
+                "id": "a",
+                "label": source_file,
+                "node_kind": "page",
+                "file_type": "document",
+                "source_file": source_file,
+                "source_location": "L1",
+                "_origin": "ast",
+            },
+            _semantic_doc("b_sem", "b.md"),
+        ],
+        [],
+    )
+
+    for _ in range(2):
+        assert _rebuild_code(
+            corpus,
+            changed_paths=[corpus / source_file],
+            no_cluster=True,
+            acquire_lock=False,
+        ) is True
+        links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+        references = [edge for edge in links if edge.get("relation") == "references"]
+        assert len(references) == 1
+        assert {references[0]["source"], references[0]["target"]} == {"a", "b_sem"}
 
 
 def test_markdown_reconcile_keeps_reverse_stored_edge_unchanged(tmp_path):
