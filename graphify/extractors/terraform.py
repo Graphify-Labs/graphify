@@ -7,6 +7,13 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 from graphify.extractors.base import _make_id
+from graphify.security import (
+    _CONTROL_CHAR_RE,
+    _METADATA_MAX_ATTRIBUTES,
+    _METADATA_MAX_LIST_ITEMS,
+    _METADATA_MAX_VALUE_LEN,
+)
+
 
 
 _TF_META_HEADS = frozenset({"count", "each", "self", "path", "terraform"})
@@ -248,6 +255,85 @@ def extract_terraform(path: Path) -> dict:
             if c.is_named:
                 _collect_refs(c, owner_nid, rel)
 
+    def _clean_val_str(text: str) -> str:
+        text = _CONTROL_CHAR_RE.sub("", str(text))
+        if len(text) > _METADATA_MAX_VALUE_LEN:
+            text = text[:_METADATA_MAX_VALUE_LEN]
+        return text
+
+    def _parse_attr_value(node, depth: int = 0):
+        if depth > 5:
+            return _clean_val_str(_read(node).strip())
+        cur = node
+        while cur.type in ("expression", "literal_value", "collection_value") and len(cur.named_children) == 1:
+            cur = cur.named_children[0]
+
+        t = cur.type
+        raw = _read(cur).strip()
+
+        if t == "bool_lit":
+            return raw == "true"
+        elif t == "numeric_lit":
+            try:
+                return int(raw)
+            except ValueError:
+                try:
+                    return float(raw)
+                except ValueError:
+                    return _clean_val_str(raw)
+        elif t == "null_lit":
+            return None
+        elif t == "string_lit":
+            if raw.startswith('"') and raw.endswith('"'):
+                try:
+                    return _clean_val_str(json.loads(raw))
+                except Exception:
+                    return _clean_val_str(raw[1:-1])
+            return _clean_val_str(raw)
+        elif t == "tuple":
+            items = []
+            for c in cur.named_children:
+                if c.type not in ("tuple_start", "tuple_end"):
+                    items.append(_parse_attr_value(c, depth + 1))
+                    if len(items) >= _METADATA_MAX_LIST_ITEMS:
+                        break
+            return items
+        elif t == "object":
+            obj = {}
+            for c in cur.children:
+                if c.type == "object_elem":
+                    k_node = c.child_by_field_name("key") or (c.named_children[0] if c.named_children else None)
+                    v_node = c.child_by_field_name("val") or (c.named_children[-1] if len(c.named_children) > 1 else None)
+                    if k_node and v_node:
+                        k_val = _parse_attr_value(k_node, depth + 1)
+                        k_str = str(k_val) if k_val is not None else _read(k_node).strip().strip('"')
+                        k_str = _clean_val_str(k_str)
+                        obj[k_str] = _parse_attr_value(v_node, depth + 1)
+                        if len(obj) >= _METADATA_MAX_LIST_ITEMS:
+                            break
+            return obj
+        else:
+            return _clean_val_str(raw)
+
+    def _collect_direct_attributes(blk_body) -> dict:
+        attrs = {}
+        for child in blk_body.children:
+            if child.type != "attribute":
+                continue
+            k_node = child.child_by_field_name("key") or (child.children[0] if child.children else None)
+            if k_node is None:
+                continue
+            key = _clean_val_str(_read(k_node).strip())
+            if not key:
+                continue
+            val_node = child.named_children[-1] if child.named_children else None
+            if val_node is None:
+                continue
+            attrs[key] = _parse_attr_value(val_node)
+            if len(attrs) >= _METADATA_MAX_ATTRIBUTES:
+                break
+        return attrs
+
     def _body_of(block):
         for c in block.children:
             if c.type == "body":
@@ -306,6 +392,9 @@ def extract_terraform(path: Path) -> dict:
         else:
             continue
         if blk_body is not None:
+            attrs = _collect_direct_attributes(blk_body)
+            if attrs:
+                nodes_by_id[owner]["attributes"] = attrs
             _collect_refs(blk_body, owner, "references")
 
     return {"nodes": nodes, "edges": edges}
