@@ -22,6 +22,10 @@ _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
 
 # compilerOptions.baseUrl per config path, as an absolute dir (#2153).
 _TSCONFIG_BASEURL_CACHE: "dict[str, Path | None]" = {}
+# Solution-style configs delegate to referenced projects, and which project
+# owns a file is part of the answer, so these are keyed by (config, start_dir).
+_TSCONFIG_REFERENCE_ALIAS_CACHE: "dict[tuple[str, str], dict[str, list[str]]]" = {}
+_TSCONFIG_REFERENCE_BASEURL_CACHE: "dict[tuple[str, str], Path | None]" = {}
 
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
 
@@ -209,6 +213,92 @@ def _find_js_config(start_dir: Path) -> "tuple[Path, Path] | None":
                 return config, candidate
     return None
 
+def _tsconfig_include_prefixes(data: dict, base_dir: Path) -> "list[Path]":
+    """Directories a config's ``include``/``files`` entries cover.
+
+    A glob is truncated at its first wildcard (``src/**/*`` -> ``src``); a plain
+    file entry contributes its parent directory. A config declaring neither
+    covers everything under its own directory, which is tsc's default.
+
+    ``exclude`` is deliberately ignored: it only ever narrows a project, and the
+    result is used to pick which project's ``paths`` apply, not to decide whether
+    a file is compiled. An excluded file keeps the aliases of the project that
+    would otherwise own it, which is what an editor does for it anyway.
+    """
+    entries = [
+        e for key in ("include", "files")
+        for e in (data.get(key) or [])
+        if isinstance(e, str) and e
+    ]
+    if not entries:
+        return [base_dir]
+    prefixes: list[Path] = []
+    for entry in entries:
+        head = re.split(r"[*?]", entry, maxsplit=1)[0]
+        candidate = base_dir / head
+        # "src/**/*" splits to "src/", "vite.config.*" to "vite.config." —
+        # only the former is a directory; the latter names files in base_dir.
+        if not head.endswith("/") and not candidate.is_dir():
+            candidate = candidate.parent
+        prefixes.append(Path(os.path.normpath(candidate)))
+    return prefixes
+
+def _tsconfig_solution_chain(
+    config: Path, base_dir: Path, start_dir: Path,
+) -> "list[tuple[Path, Path]]":
+    """``config`` plus the referenced projects that cover ``start_dir``.
+
+    A root ``tsconfig.json`` of the form ``{"files": [], "references": [...]}``
+    — what ``create-vue`` and ``create-vite`` generate, and what Angular and the
+    TypeScript docs recommend — carries no ``compilerOptions`` at all. tsc never
+    merges a referenced project into the root: it assigns each source file to
+    the referenced project whose ``include``/``files`` cover it, and only that
+    project's ``paths`` apply. Reading the root alone therefore yields an empty
+    alias map and every ``@/…`` import in the repo resolves to nothing.
+
+    Returned least- to most-specific so a caller merging in order lets the most
+    specific project win. When no referenced project covers ``start_dir`` they
+    are all returned in declared order, which keeps the overwhelmingly common
+    case — several projects sharing one ``@/*`` — working.
+
+    Only called when the root config declares no aliases/baseUrl of its own, so
+    a config that already resolves keeps its existing behavior byte for byte.
+    """
+    data = _read_json_config(config)
+    if data is None:
+        return [(config, base_dir)]
+    references = data.get("references")
+    if not isinstance(references, list):
+        return [(config, base_dir)]
+    start = Path(os.path.normpath(start_dir))
+    covering: list[tuple[int, Path, Path]] = []
+    declared: list[tuple[Path, Path]] = []
+    for ref in references:
+        if not isinstance(ref, dict):
+            continue
+        raw = ref.get("path")
+        if not isinstance(raw, str) or not raw:
+            continue
+        ref_path = Path(os.path.normpath(base_dir / raw))
+        if ref_path.is_dir():
+            ref_path = ref_path / "tsconfig.json"
+        elif not ref_path.suffix:
+            ref_path = ref_path.with_suffix(".json")
+        if ref_path == config or not ref_path.is_file():
+            continue
+        declared.append((ref_path, ref_path.parent))
+        ref_data = _read_json_config(ref_path)
+        if ref_data is None:
+            continue
+        for prefix in _tsconfig_include_prefixes(ref_data, ref_path.parent):
+            if start == prefix or prefix in start.parents:
+                covering.append((len(prefix.parts), ref_path, ref_path.parent))
+                break
+    if covering:
+        covering.sort(key=lambda item: item[0])
+        return [(config, base_dir)] + [(c, d) for _, c, d in covering]
+    return [(config, base_dir)] + declared
+
 def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
     """Walk up from start_dir to find tsconfig/jsconfig.json and return compilerOptions.paths aliases.
 
@@ -226,7 +316,20 @@ def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
     key = str(config)
     if key not in _TSCONFIG_ALIAS_CACHE:
         _TSCONFIG_ALIAS_CACHE[key] = _read_tsconfig_aliases(config, candidate, seen=set())
-    return _TSCONFIG_ALIAS_CACHE[key]
+    aliases = _TSCONFIG_ALIAS_CACHE[key]
+    if aliases:
+        return aliases
+    # Solution-style root: no paths of its own, the real ones live in the
+    # referenced projects (see :func:`_tsconfig_solution_chain`). Keyed by
+    # start_dir
+    # because which project owns the file is part of the answer.
+    ref_key = (key, str(start_dir))
+    if ref_key not in _TSCONFIG_REFERENCE_ALIAS_CACHE:
+        merged: dict[str, list[str]] = {}
+        for ref_config, ref_dir in _tsconfig_solution_chain(config, candidate, start_dir)[1:]:
+            merged.update(_read_tsconfig_aliases(ref_config, ref_dir, seen=set()))
+        _TSCONFIG_REFERENCE_ALIAS_CACHE[ref_key] = merged
+    return _TSCONFIG_REFERENCE_ALIAS_CACHE[ref_key]
 
 def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
     """`compilerOptions.baseUrl` of the nearest config, as an absolute directory.
@@ -251,7 +354,23 @@ def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
             if isinstance(raw_base, str) and raw_base:
                 base_url = Path(os.path.normpath(candidate / raw_base))
         _TSCONFIG_BASEURL_CACHE[key] = base_url
-    return _TSCONFIG_BASEURL_CACHE[key]
+    base_url = _TSCONFIG_BASEURL_CACHE[key]
+    if base_url is not None:
+        return base_url
+    # Same solution-style case as _load_tsconfig_aliases: a root that declares
+    # nothing delegates to the project that owns this directory.
+    ref_key = (key, str(start_dir))
+    if ref_key not in _TSCONFIG_REFERENCE_BASEURL_CACHE:
+        resolved = None
+        for ref_config, ref_dir in _tsconfig_solution_chain(config, candidate, start_dir)[1:]:
+            ref_data = _read_json_config(ref_config)
+            if ref_data is None:
+                continue
+            raw_base = ref_data.get("compilerOptions", {}).get("baseUrl")
+            if isinstance(raw_base, str) and raw_base:
+                resolved = Path(os.path.normpath(ref_dir / raw_base))
+        _TSCONFIG_REFERENCE_BASEURL_CACHE[ref_key] = resolved
+    return _TSCONFIG_REFERENCE_BASEURL_CACHE[ref_key]
 
 def _match_tsconfig_alias(raw: str, pattern: str) -> "tuple[tuple[int, int], str, bool] | None":
     """Return (specificity, captured text, is_wildcard) when pattern matches raw.
