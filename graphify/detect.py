@@ -1817,6 +1817,11 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             explicit_cache=explicit_ignore_cache,
         )
 
+    def _explicitly_ignored_for_scan(path: Path) -> bool:
+        # Only .graphifyignore/--exclude rules, never a plain .gitignore entry
+        # (see the memory_dir handling below, #3637).
+        return _is_ignored(path, root, explicit_ignore_patterns, _cache=explicit_ignore_cache)
+
     # Always include graphify-out/memory/ - query results filed back into the graph
     memory_dir = root / GRAPHIFY_OUT / "memory"
     scan_paths = [root]
@@ -1856,6 +1861,21 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 if parent_real == real or parent_real.startswith(real + os.sep):
                     dirnames.clear()
                     continue
+            if in_memory_tree:
+                # Memory notes stay visible regardless of noise-dir rules or
+                # the graphify-out/ blanket .gitignore convention the docs
+                # recommend -- only a deliberate .graphifyignore/--exclude
+                # rule prunes here, never a plain .gitignore entry, so users
+                # get an actual way to keep specific notes out of the graph
+                # without losing the "memory is always visible" default (#3637).
+                kept_memory_dirs: list[str] = []
+                for d in dirnames:
+                    child = dp / d
+                    if _explicitly_ignored_for_scan(child):
+                        ignored.append(str(child) + os.sep)
+                        continue
+                    kept_memory_dirs.append(d)
+                dirnames[:] = kept_memory_dirs
             if not in_memory_tree:
                 # dp == root was already loaded by _load_graphifyignore (root is
                 # the last entry in its ancestor chain); every other directory
@@ -1935,7 +1955,13 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             # Skip files inside our own converted/ dir (avoid re-processing sidecars)
             if str(p).startswith(str(converted_dir)):
                 continue
-        if not in_memory and _ignored_for_scan(p):
+            if _ignored_for_scan(p):
+                ignored.append(str(p))
+                continue
+        elif _explicitly_ignored_for_scan(p):
+            # #3637: same reasoning as the directory level prune above --
+            # only a deliberate .graphifyignore/--exclude rule excludes a
+            # memory note, never the graphify-out/ blanket .gitignore entry.
             ignored.append(str(p))
             continue
         if not _resolves_under_root(p, root):
