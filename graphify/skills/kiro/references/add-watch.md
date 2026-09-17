@@ -19,14 +19,21 @@ mktemp /tmp/graphify_add_payload.XXXXXX
 Using your file-write tool (not a shell heredoc, which has the same
 quoting problem one level down), write a JSON file with those values to
 the path that command printed, then pass only that path - not its content
-- to `graphify add`:
+- to `graphify add`. Build the JSON as data, not as a text template: the
+same free-text risk that rules out a substituted shell command applies
+one level down here too, since a URL, author, or contributor value that
+happens to contain a literal quote or backslash would corrupt or inject
+into a hand-substituted string the same way it would a shell command.
+Use your language's JSON encoder (or equivalent structured-write call in
+your file-write tool) so every value is escaped correctly, producing a
+file shaped like:
 
 ```json
 {"url": "URL", "author": "AUTHOR", "contributor": "CONTRIBUTOR", "dir": "./raw"}
 ```
 
-Replace `URL` with the actual URL, `AUTHOR` with the user's name if
-provided (omit the key entirely if not), `CONTRIBUTOR` likewise, then run:
+with `url` set to the actual URL, `author` set to the user's name if
+provided (omit the key entirely if not), `contributor` likewise, then run:
 
 ```bash
 $(cat graphify-out/.graphify_python) -m graphify add --from-file PAYLOAD_PATH
