@@ -6369,6 +6369,13 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     return idx, result
 
 
+_MAIN_GUARD_RE = re.compile(
+    r'^[ \t]*if\s+(?:__name__\s*==\s*[\'"]__main__[\'"]'
+    r'|[\'"]__main__[\'"]\s*==\s*__name__)\s*:',
+    re.MULTILINE,
+)
+
+
 def _caller_main_lacks_guard() -> bool:
     """#1637: on Windows (spawn start method), a caller script with no
     ``if __name__ == "__main__":`` guard makes every worker re-execute the
@@ -6379,6 +6386,10 @@ def _caller_main_lacks_guard() -> bool:
     own source (best-effort; a read failure means "can't tell", not "missing")
     so the pool is never opened in the first place, rather than caught after
     the fact via BrokenProcessPool once the damage is already spawning.
+
+    Looks for the actual guard statement, not a bare substring match — a
+    docstring, comment, or unrelated string literal mentioning ``__main__``
+    must not be read as a guard that isn't really there.
     """
     main_file = getattr(sys.modules.get("__main__"), "__file__", None)
     if not main_file:
@@ -6387,7 +6398,7 @@ def _caller_main_lacks_guard() -> bool:
         main_src = Path(main_file).read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return False
-    return "__main__" not in main_src
+    return _MAIN_GUARD_RE.search(main_src) is None
 
 
 def _extract_parallel(
