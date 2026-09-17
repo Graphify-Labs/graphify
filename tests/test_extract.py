@@ -3705,7 +3705,12 @@ def test_extract_json_no_self_loops():
 # ---------------------------------------------------------------------------
 
 def test_extract_json_data_file_skipped(tmp_path):
-    """A data-shaped .json (eval fixture / dataset) must NOT emit per-key nodes."""
+    """A data-shaped .json (eval fixture / dataset) must NOT emit per-key nodes.
+
+    It still emits exactly one bare file node (#2108) — no children, no
+    edges — so the file stays discoverable via query/explain/affected
+    instead of being entirely absent from the graph.
+    """
     data = tmp_path / "cases.json"
     data.write_text(json.dumps({
         "generation": {"target": "gpt-4", "cases_file": "c.json", "num_cases": 12},
@@ -3713,18 +3718,49 @@ def test_extract_json_data_file_skipped(tmp_path):
         "suite": [{"name": "x"}, {"name": "y"}],
     }))
     result = extract_json(data)
-    assert result["nodes"] == []
+    assert len(result["nodes"]) == 1, "must emit exactly the bare file node, no per-key nodes"
+    assert result["nodes"][0]["label"] == "cases.json"
+    assert result["nodes"][0]["source_file"] == str(data)
     assert result["edges"] == []
     assert "skipped" in result
 
 
 def test_extract_json_top_level_array_skipped(tmp_path):
-    """A JSON file whose root is an array is data, never a config/manifest."""
+    """A JSON file whose root is an array is data, never a config/manifest.
+
+    Still emits exactly one bare file node (#2108), same as the object-root
+    data case.
+    """
     data = tmp_path / "records.json"
     data.write_text(json.dumps([{"id": 1}, {"id": 2}]))
     result = extract_json(data)
-    assert result["nodes"] == []
+    assert len(result["nodes"]) == 1, "must emit exactly the bare file node, no per-key nodes"
+    assert result["nodes"][0]["label"] == "records.json"
     assert result["edges"] == []
+
+
+def test_extract_json_data_file_node_is_a_real_file_node(tmp_path):
+    """#2108: the bare file node for a skipped data .json must look like every
+    other file node graphify emits — same id scheme, file_type "code" (matching
+    .json's CODE_EXTENSIONS classification in detect()), and no error key, so it
+    behaves like a normal corpus member rather than a special case."""
+    data = tmp_path / "stateful_corpus.json"
+    data.write_text(json.dumps({"cases": [{"input": 1, "expected": 2}]}))
+    result = extract_json(data)
+    assert result["nodes"][0]["id"] == _make_id(str(data))
+    assert result["nodes"][0]["file_type"] == "code"
+    assert "error" not in result
+
+
+def test_extract_json_many_data_files_still_one_node_each(tmp_path):
+    """A corpus of several data .json files must stay #1224-safe: one bare file
+    node per file, never per-key nodes, regardless of how many files."""
+    for i in range(5):
+        f = tmp_path / f"fixture_{i}.json"
+        f.write_text(json.dumps({"a": i, "b": {"c": i, "d": [1, 2, 3]}}))
+        result = extract_json(f)
+        assert len(result["nodes"]) == 1
+        assert result["edges"] == []
 
 
 def test_extract_json_config_by_filename_still_extracted(tmp_path):
