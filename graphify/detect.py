@@ -2225,9 +2225,12 @@ def save_manifest(
     forever and masquerading as deletions in detect_incremental. It must be
     the RAW detect output, not a stamp-filtered subset — pruning to a
     filtered set would erase rows the filter merely omitted (failed chunks,
-    --code-only doc rows). Out-of-root entries are never pruned. Callers
-    saving a SUBSET of files (changed_paths hooks, skill runbooks, #917)
-    must leave this None so their untouched rows are preserved.
+    --code-only doc rows). Out-of-root entries are never pruned merely for
+    being outside the current scan (they were never walked by detect, so
+    their absence from the corpus is not exclusion evidence) — only when
+    the file no longer exists on disk at all (#3426). Callers saving a
+    SUBSET of files (changed_paths hooks, skill runbooks, #917) must leave
+    this None so their untouched rows are preserved.
 
     ``clear_semantic`` (#1948): files that were dispatched this run but
     produced no stamped output (e.g. the LLM omitted their chunk on a
@@ -2340,13 +2343,31 @@ def save_manifest(
     # detect_incremental() has had the chance to report it on that same
     # scan. Only a partial/subset caller (no scan_corpus) now leaves a dead
     # row in place; the next full scan reconciles it.
+    #
+    # A review finding pointed out that _in_root(f) alone leaves an
+    # out-of-root row (a merged/foreign corpus entry, or a root that could
+    # not be resolved) permanently unpruned even on a full scan, since
+    # _in_root() fails open for exactly those paths. A full scan is still
+    # the same safe reconciliation point detect_incremental() already had
+    # its chance to report against this run, so an out-of-root row whose
+    # file no longer exists on disk is pruned here too — never on a
+    # partial/subset save, matching the in-root case above.
     manifest: dict[str, dict] = {}
     for f, entry in existing.items():
         normalised = _normalise_entry(entry)
         if normalised is None:
             continue
-        if scan_set is not None and not _in_scan(f) and _in_root(f):
-            continue  # excluded-or-deleted, not in this scan: drop the stale row (#1908)
+        if scan_set is not None and not _in_scan(f):
+            if _in_root(f):
+                continue  # excluded-or-deleted, not in this scan: drop the stale row (#1908)
+            try:
+                out_of_root_gone = not Path(f).exists()
+            except OSError:
+                # Cannot tell: fail open and keep the row, matching _in_root's
+                # own "cannot tell in-root from out-of-root" fail-open rule.
+                out_of_root_gone = False
+            if out_of_root_gone:
+                continue  # out-of-root deletion: safe to prune on a full scan
         if clear_ast_set is not None and _in_clear_ast(f):
             # AST failure this run (missing extra / zero nodes, #2543): blank
             # both hashes so either detect_incremental kind re-queues.
