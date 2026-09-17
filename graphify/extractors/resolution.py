@@ -2297,7 +2297,27 @@ def _python_call_identifier(node, source: bytes) -> str | None:
 
 # Schema version for the cached Python raw-facts payload. Bump when
 # _extract_python_raw_facts changes shape, so stale entries are ignored.
-_PY_RAW_FACTS_SCHEMA = 1
+_PY_RAW_FACTS_SCHEMA = 2
+
+
+def _python_xfile_import_module(node, source: bytes) -> "dict | None":
+    """The module reference of an ``import_from_statement`` as
+    ``_resolve_cross_file_imports`` reads it — a relative form (the ``import_prefix``
+    dots and the dotted tail) or an absolute dotted name. Mirrors that pass's own
+    parse so the cached form resolves identically."""
+    for child in node.children:
+        if child.type == "relative_import":
+            prefix_text = ""
+            dotted_text = ""
+            for sub in child.children:
+                if sub.type == "import_prefix":
+                    prefix_text = _read_text(sub, source)
+                elif sub.type == "dotted_name":
+                    dotted_text = _read_text(sub, source)
+            return {"prefix": prefix_text, "dotted": dotted_text}
+        if child.type == "dotted_name":
+            return {"abs": _read_text(child, source)}
+    return None
 
 
 def _extract_python_raw_facts(root_node, source: bytes) -> dict:
@@ -2345,7 +2365,55 @@ def _extract_python_raw_facts(root_node, source: bytes) -> dict:
                 "callee": callee,
                 "line": call_node.start_point[0] + 1,
             })
-    return {"imports": imports, "uses": uses}
+
+    # Cross-file import-resolution facts (consumed by _resolve_cross_file_imports,
+    # #perf). ``xfile_imports`` is each from-import's module reference (in that
+    # pass's own parse shape) plus its imported/local name pairs. ``xfile_refs``
+    # is, for each identifier whose name a from-import binds locally, the chain
+    # of enclosing class/function NAMES (outermost first) and the line — the
+    # pass attributes the use to the FIRST enclosing symbol whose name resolves
+    # to a node, so the whole chain is kept and that choice is made fresh at
+    # apply time. Refs are filtered to the imported local names because only
+    # those are ever queried, keeping the cached payload small.
+    xfile_imports: list[dict] = []
+    wanted: set[str] = set()
+    for node in _walk_python_tree(root_node):
+        if node.type != "import_from_statement":
+            continue
+        module = _python_xfile_import_module(node, source)
+        if module is None:
+            continue
+        names = [[imp, loc] for imp, loc in _python_imported_names(node, source)]
+        xfile_imports.append({"module": module, "names": names})
+        for _imp, loc in names:
+            wanted.add(loc)
+
+    xfile_refs: list[list] = []
+
+    def _walk_refs(node, chain: list[str]) -> None:
+        if node.type == "import_from_statement":
+            return  # the import itself is not a use; handled via xfile_imports
+        cur = chain
+        if node.type in ("class_definition", "function_definition"):
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                cur = chain + [_read_text(name_node, source)]
+        if node.type == "identifier" and cur:
+            name = _read_text(node, source)
+            if name in wanted:
+                xfile_refs.append([name, cur, node.start_point[0] + 1])
+        for child in node.children:
+            _walk_refs(child, cur)
+
+    if wanted:
+        _walk_refs(root_node, [])
+
+    return {
+        "imports": imports,
+        "uses": uses,
+        "xfile_imports": xfile_imports,
+        "xfile_refs": xfile_refs,
+    }
 
 
 def _apply_python_raw_imports(raw: dict, path: Path, root: Path,
@@ -2407,6 +2475,33 @@ def _apply_python_raw_uses(raw: dict, path: Path,
         )
 
 
+def _python_raw_facts_for(
+    path: Path, cache_root: "Path | None", root: Path
+) -> "dict | None":
+    """One file's content-only Python raw facts, from the content-hash cache
+    when available (a warm run then does no read/parse), else by parsing and
+    populating the cache. Shared by both the symbol-resolution facts pass and
+    the cross-file import pass, so a file is parsed at most once across them —
+    and not at all on a warm run. Caching is opt-in via cache_root; without it
+    every call parses, matching the pre-cache behaviour."""
+    from graphify.cache import load_derived_facts, save_derived_facts
+
+    if cache_root is not None:
+        cached = load_derived_facts(
+            path, root, cache_root, "pyfacts", _PY_RAW_FACTS_SCHEMA
+        )
+        if cached is not None:
+            return cached
+    parsed = _parse_python_tree(path)
+    if parsed is None:
+        return None
+    source, root_node = parsed
+    raw = _extract_python_raw_facts(root_node, source)
+    if cache_root is not None:
+        save_derived_facts(path, raw, root, cache_root, "pyfacts", _PY_RAW_FACTS_SCHEMA)
+    return raw
+
+
 def _collect_python_symbol_resolution_facts(
     paths: list[Path],
     root: Path,
@@ -2423,29 +2518,12 @@ def _collect_python_symbol_resolution_facts(
     # otherwise do for every unchanged file. The filesystem-dependent half
     # (module->file resolution, caller-id derivation) still runs fresh below,
     # so a file added/removed elsewhere can never be served a stale target
-    # (#perf). Caching is opt-in via cache_root; without it, behaviour is the
-    # pre-cache parse-every-file path.
-    from graphify.cache import load_derived_facts, save_derived_facts
-
+    # (#perf).
     raw_by_path: dict[Path, dict] = {}
     for path in py_paths:
-        if cache_root is not None:
-            cached = load_derived_facts(
-                path, root, cache_root, "pyfacts", _PY_RAW_FACTS_SCHEMA
-            )
-            if cached is not None:
-                raw_by_path[path] = cached
-                continue
-        parsed = _parse_python_tree(path)
-        if parsed is None:
-            continue
-        source, root_node = parsed
-        raw = _extract_python_raw_facts(root_node, source)
-        raw_by_path[path] = raw
-        if cache_root is not None:
-            save_derived_facts(
-                path, raw, root, cache_root, "pyfacts", _PY_RAW_FACTS_SCHEMA
-            )
+        raw = _python_raw_facts_for(path, cache_root, root)
+        if raw is not None:
+            raw_by_path[path] = raw
 
     # Imports for every file first, then uses — preserving the original
     # two-pass order so the accumulated fact lists (and thus edge resolution)
@@ -2476,6 +2554,8 @@ def _resolve_cross_file_imports(
     paths: list[Path],
     all_nodes: list[dict] | None = None,
     all_edges: list[dict] | None = None,
+    root: Path | None = None,
+    cache_root: "Path | None" = None,
 ) -> list[dict]:
     """
     Two-pass import resolution: turn file-level imports into class-level edges.
@@ -2560,118 +2640,84 @@ def _resolve_cross_file_imports(
         if not name_to_nid:
             continue
 
-        # Parse imports from this file (shared with the facts pass via the
-        # mtime-keyed memo, so each .py is parsed once across both passes).
-        parsed = _parse_python_tree(path)
-        if parsed is None:
+        # A warm run resolves these imports straight from the content-hash cache
+        # the facts pass already populated — no re-read, no re-parse of this file
+        # (#perf). The module->stem resolution and caller-id mapping below run
+        # fresh against the current node index, so a file added or removed
+        # elsewhere can never be served a stale target.
+        raw = _python_raw_facts_for(path, cache_root, root)
+        if raw is None:
             continue
-        source, root_node = parsed
 
         # local_name -> target node id (local_name honours `import X as Y`, so a
-        # reference to the alias in the body still attributes correctly).
+        # reference to the alias in the body still attributes correctly). Last
+        # writer wins on a repeated local name, matching the original in-order
+        # walk over import statements.
         import_targets: dict[str, str] = {}
-        # referenced name -> {source symbol nid: first reference line}
-        ref_sources: dict[str, dict[str, int]] = {}
-
-        def _text(n) -> str:
-            return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
-
-        def resolve_import(node) -> None:
-            # Find the module name - handles both absolute and relative imports.
-            # Relative: `from .models import X` → relative_import → dotted_name
-            # Absolute: `from models import X`  → module_name field
+        for imp in raw.get("xfile_imports", []):
+            module = imp.get("module")
+            if not module:
+                continue
             # target_fq is the directory-qualified stem used as the key in
             # stem_to_entities. Relative imports are resolved exactly via the
             # importing file's directory; absolute imports fall back to the
             # bare-stem secondary index (first-writer-wins when names collide).
             target_fq: str | None = None
-            for child in node.children:
-                if child.type == "relative_import":
-                    prefix_text = ""
-                    dotted_text = ""
-                    for sub in child.children:
-                        if sub.type == "import_prefix":
-                            prefix_text = _text(sub)
-                        elif sub.type == "dotted_name":
-                            dotted_text = _text(sub)
-                    dots = prefix_text.count(".") if prefix_text else 1
-                    cur_dir = path.parent
-                    for _ in range(dots - 1):
-                        cur_dir = cur_dir.parent
-                    if dotted_text:
-                        candidate = cur_dir.joinpath(*dotted_text.split(".")).with_suffix(".py")
+            if "abs" in module:
+                dotted_name = module["abs"]
+                dotted_as_path = "/".join(dotted_name.split("."))
+                if dotted_as_path in stem_to_entities:
+                    target_fq = dotted_as_path
+                else:
+                    suffix_matches = [
+                        fq for fq in stem_to_entities
+                        if fq.endswith(f"/{dotted_as_path}") or fq.endswith(f"\\{dotted_as_path}")
+                    ]
+                    if len(suffix_matches) == 1:
+                        target_fq = suffix_matches[0]
                     else:
-                        candidate = cur_dir / "__init__.py"
-                    target_fq = _file_stem(candidate)
-                    break
-                if child.type == "dotted_name" and target_fq is None:
-                    dotted_name = _text(child)
-                    dotted_as_path = "/".join(dotted_name.split("."))
-                    if dotted_as_path in stem_to_entities:
-                        target_fq = dotted_as_path
-                    else:
-                        suffix_matches = [
-                            fq for fq in stem_to_entities
-                            if fq.endswith(f"/{dotted_as_path}") or fq.endswith(f"\\{dotted_as_path}")
-                        ]
-                        if len(suffix_matches) == 1:
-                            target_fq = suffix_matches[0]
-                        else:
-                            bare = dotted_name.split(".")[-1]
-                            target_fq = bare_to_qualified.get(bare)
+                        bare = dotted_name.split(".")[-1]
+                        target_fq = bare_to_qualified.get(bare)
+            else:
+                prefix_text = module.get("prefix", "")
+                dotted_text = module.get("dotted", "")
+                dots = prefix_text.count(".") if prefix_text else 1
+                cur_dir = path.parent
+                for _ in range(dots - 1):
+                    cur_dir = cur_dir.parent
+                if dotted_text:
+                    candidate = cur_dir.joinpath(*dotted_text.split(".")).with_suffix(".py")
+                else:
+                    candidate = cur_dir / "__init__.py"
+                target_fq = _file_stem(candidate)
 
             if not target_fq or target_fq not in stem_to_entities:
-                return
-
-            # Imported names come AFTER the 'import' keyword token. For
-            # `import X as Y` the target is found via X but the body uses Y.
-            past_import_kw = False
-            for child in node.children:
-                if child.type == "import":
-                    past_import_kw = True
-                    continue
-                if not past_import_kw:
-                    continue
-                imported_name: str | None = None
-                local_name: str | None = None
-                if child.type == "dotted_name":
-                    imported_name = local_name = _text(child)
-                elif child.type == "aliased_import":
-                    name_node = child.child_by_field_name("name")
-                    alias_node = child.child_by_field_name("alias")
-                    if name_node is not None:
-                        imported_name = _text(name_node)
-                        local_name = _text(alias_node) if alias_node is not None else imported_name
-                if not imported_name or not local_name:
-                    continue
-                tgt_nid = stem_to_entities[target_fq].get(imported_name)
+                continue
+            entities = stem_to_entities[target_fq]
+            for imported_name, local_name in imp.get("names", []):
+                tgt_nid = entities.get(imported_name)
                 if tgt_nid:
                     import_targets[local_name] = tgt_nid
 
-        def visit(node, current_nid: str | None) -> None:
-            # Identifiers inside an import statement are the import itself, not a
-            # real use — resolve the import here and don't descend into it.
-            if node.type == "import_from_statement":
-                resolve_import(node)
-                return
-            # Attribute references to the top-level symbol that contains them: a
-            # class is a unit (a reference inside one of its methods counts for
-            # the class, matching the documented DigestAuth->Response edge), and
-            # a module-level function is its own source. Only set at module scope
-            # (current_nid is None) so nested defs never override the container.
-            if current_nid is None and node.type in ("class_definition", "function_definition"):
-                name_node = node.child_by_field_name("name")
-                if name_node is not None:
-                    mapped = name_to_nid.get(_text(name_node))
-                    if mapped is not None:
-                        current_nid = mapped
-            if node.type == "identifier" and current_nid is not None:
-                slot = ref_sources.setdefault(_text(node), {})
-                slot.setdefault(current_nid, node.start_point[0] + 1)
-            for child in node.children:
-                visit(child, current_nid)
-
-        visit(root_node, None)
+        # referenced name -> {source symbol nid: first reference line}. Each
+        # cached ref carries the chain of enclosing class/function names
+        # (outermost first); attribute the use to the FIRST one whose name maps
+        # to a node id in THIS file. A class is a unit (a reference inside one of
+        # its methods counts for the class, matching the documented
+        # DigestAuth->Response edge), and a module-level function is its own
+        # source — exactly the original module-scope walk, but resolved here so
+        # the choice can't be baked into the (path-free) cache.
+        ref_sources: dict[str, dict[str, int]] = {}
+        for ref_name, chain, line in raw.get("xfile_refs", []):
+            containing_nid: str | None = None
+            for enclosing in chain:
+                mapped = name_to_nid.get(enclosing)
+                if mapped is not None:
+                    containing_nid = mapped
+                    break
+            if containing_nid is None:
+                continue
+            ref_sources.setdefault(ref_name, {}).setdefault(containing_nid, line)
 
         for name, tgt_nid in import_targets.items():
             for src_nid, line in ref_sources.get(name, {}).items():

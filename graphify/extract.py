@@ -7359,7 +7359,9 @@ def extract(
     if py_paths:
         py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
         try:
-            cross_file_edges = _resolve_cross_file_imports(py_results, py_paths, all_nodes, all_edges)
+            cross_file_edges = _resolve_cross_file_imports(
+                py_results, py_paths, all_nodes, all_edges, root, cache_root=cache_location
+            )
             all_edges.extend(cross_file_edges)
         except Exception as exc:
             import logging
