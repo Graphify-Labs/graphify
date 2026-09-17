@@ -1113,6 +1113,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         G.remove_node(ghost_id)
         node_set.discard(ghost_id)
 
+    # #1847: record how many nodes this canonicalization pass legitimately
+    # collapsed (AST/manifest duplicates sharing (source_file, label)), so a
+    # downstream shrink guard (export.to_json) can tell a merge-explained node
+    # count drop from an unexplained data-loss shrink instead of refusing both
+    # alike.
+    G.graph["_ghost_dedup_count"] = G.graph.get("_ghost_dedup_count", 0) + len(_ghost_remap)
+
     # Normalized ID map: lets edges survive when the LLM generates IDs with
     # slightly different casing or punctuation than the AST extractor.
     # e.g. "Session_ValidateToken" maps to "session_validatetoken".

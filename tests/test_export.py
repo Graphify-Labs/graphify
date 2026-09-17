@@ -960,6 +960,30 @@ def test_to_json_refuses_shrink(tmp_path):
     assert to_json(_mkG(2), {}, str(p), force=True) is True  # force overrides
 
 
+def test_to_json_allows_dedup_explained_shrink(tmp_path):
+    """#1847: a cluster-only re-run that reloads graph.json through
+    build_from_json legitimately collapses a duplicate node (e.g. a
+    manifest package node merged into its AST-canonical twin, same
+    (source_file, label)). build_from_json records that collapse count on
+    `G.graph["_ghost_dedup_count"]`; the #479 shrink guard must let a drop
+    fully explained by it through instead of refusing."""
+    p = tmp_path / "graph.json"
+    json.dump({"nodes": [{"id": f"n{i}"} for i in range(5)]}, p.open("w"))
+    G = _mkG(4)
+    G.graph["_ghost_dedup_count"] = 1  # exactly explains the 5 -> 4 drop
+    assert to_json(G, {}, str(p), force=False) is True
+
+
+def test_to_json_still_refuses_shrink_beyond_dedup_count(tmp_path):
+    """The dedup allowance only excuses the EXPLAINED portion of a drop — a
+    further, unexplained loss on top of it must still refuse."""
+    p = tmp_path / "graph.json"
+    json.dump({"nodes": [{"id": f"n{i}"} for i in range(5)]}, p.open("w"))
+    G = _mkG(2)  # drop of 3, but only 1 is dedup-explained
+    G.graph["_ghost_dedup_count"] = 1
+    assert to_json(G, {}, str(p), force=False) is False
+
+
 def test_to_json_fails_safe_on_corrupt_existing(tmp_path):
     """A non-empty but unparseable existing graph.json (corrupt or mid-write)
     must NOT be silently overwritten — we can't verify the new graph isn't a

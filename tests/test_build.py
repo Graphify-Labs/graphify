@@ -488,6 +488,24 @@ def test_ghost_merge_unique_located_node_still_merges():
     assert G.has_edge("caller", "ast_render")
 
 
+def test_ghost_merge_records_dedup_count():
+    """#1847: each ghost collapsed into its AST canonical twin is a legitimate
+    node-count reduction, not data loss. build_from_json must record how many
+    were merged so a downstream shrink guard can tell the two apart instead of
+    refusing to overwrite a graph.json that only shrank via this dedup."""
+    ext = {
+        "nodes": [
+            {"id": "ast_render", "label": "render", "file_type": "code",
+             "source_file": "src/app/index.ts", "source_location": "L10", "_origin": "ast"},
+            {"id": "ghost_render", "label": "render", "file_type": "code",
+             "source_file": "src/app/index.ts"},
+        ],
+        "edges": [], "input_tokens": 0, "output_tokens": 0,
+    }
+    G = build_from_json(ext)
+    assert G.graph.get("_ghost_dedup_count") == 1
+
+
 def test_ghost_merge_uses_source_file_not_basename():
     """#2068: the ghost-merge key is the full source_file, not the bare basename.
     A ghost from src/a/index.ts merges into THAT file's AST node (a_render), never
