@@ -444,7 +444,11 @@ questions = suggest_questions(G, communities, labels)
 # nothing) when the new graph is smaller than the existing graph.json. Only write
 # GRAPH_REPORT.md + the analysis sidecar when the graph was actually written, so
 # they never describe a graph that graph.json doesn't contain (#1392).
-wrote = to_json(G, communities, 'graphify-out/graph.json', force=IS_FORCE)
+# community_labels=labels is passed here too, not just in Step 5's rewrite,
+# because --no-cluster skips Step 5 entirely -- this is the only write for
+# that path, so the 'Full Corpus' label computed above must reach graph.json
+# now or every node silently loses its community_name.
+wrote = to_json(G, communities, 'graphify-out/graph.json', community_labels=labels, force=IS_FORCE)
 if not wrote:
     print('ERROR: refused to shrink graphify-out/graph.json (existing graph has more nodes; #479).')
     print('If this shrink is intentional (you deleted files), re-run a full build with --force.')

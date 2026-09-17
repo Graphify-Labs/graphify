@@ -507,7 +507,11 @@ questions = suggest_questions(G, communities, labels)
 # Persist the graph first and only write the report/analysis if it actually
 # persisted - to_json refuses to shrink an existing graph.json (#479), and a
 # report describing a graph we did not write would be a lie (#1392).
-wrote = to_json(G, communities, 'graphify-out/graph.json', force=IS_FORCE)
+# community_labels=labels is passed here too, not just in Step 5's rewrite,
+# because --no-cluster skips Step 5 entirely - this is the only write for
+# that path, so the 'Full Corpus' label computed above must reach graph.json
+# now or every node silently loses its community_name.
+wrote = to_json(G, communities, 'graphify-out/graph.json', community_labels=labels, force=IS_FORCE)
 if not wrote:
     print('ERROR: refused to shrink graphify-out/graph.json (fewer nodes than the existing graph). Run a full rebuild to be safe.')
     raise SystemExit(1)
