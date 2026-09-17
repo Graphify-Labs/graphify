@@ -615,6 +615,32 @@ def test_monoliths_change_only_sanctioned_lines():
         assert UNIFIED_DESCRIPTION in rendered
 
 
+def test_subagent_capability_wording_predicate_does_not_overmatch():
+    """Review finding on #2525: a bare "general-purpose"/"Write and Bash
+    access" substring check also matches unrelated, unchanged lines (the
+    dispatch fragments' own worked example showing `subagent_type=
+    "general-purpose"` as example syntax), which would silently stop the
+    round trip check from catching real corruption of those lines. The
+    predicate must match only the two changed lines' actual old and new
+    forms, not any line that merely mentions either phrase."""
+    f = gen._is_subagent_capability_wording_fix_line
+    assert f('- If the file is missing, the subagent was likely dispatched as read-only — '
+              'print a warning: "chunk N missing from disk — subagent may have been '
+              'read-only. Re-run with general-purpose agent." Do not silently skip.')
+    assert f('If more than half the chunks failed or are missing, stop and tell the user '
+              'to re-run and ensure `subagent_type="general-purpose"` is used.')
+    assert f('- If the file is missing, the subagent was likely dispatched as a read-only '
+              'type — print a warning: "chunk N missing from disk — subagent may have '
+              'been dispatched without Write and Bash access. Re-run with a subagent '
+              'type that has both." Do not silently skip.')
+    assert f('If more than half the chunks failed or are missing, stop and tell the user '
+              'to re-run using a subagent type that has Write and Bash access '
+              '(`general-purpose` by default; any host-permitted type with those two '
+              'tools otherwise).')
+    assert not f('Task(subagent_type="general-purpose", prompt="...")')
+    assert not f('subagent_type="general-purpose"')
+
+
 def test_monoliths_carry_the_1392_runbook_fixes():
     """The four #1392 data-loss/correctness fixes are present in both monoliths.
 
