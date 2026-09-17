@@ -3109,42 +3109,52 @@ def dispatch_command(cmd: str) -> None:
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         from graphify.global_graph import (
             global_add as _global_add,
+            global_add_many as _global_add_many,
             global_remove as _global_remove,
             global_list as _global_list,
             global_path as _global_path,
         )
         if subcmd == "add":
-            # graphify global add <graph.json> [--as <tag>]
+            # graphify global add <graph.json> [<graph2.json> ...] [--as <tag>]
             args = sys.argv[3:]
-            source = None
+            sources = []
             tag = None
             i = 0
             while i < len(args):
                 if args[i] == "--as" and i + 1 < len(args):
                     tag = args[i + 1]; i += 2
-                elif not source:
-                    source = Path(args[i]); i += 1
                 else:
+                    sources.append(Path(args[i]))
                     i += 1
-            if not source:
-                print("Usage: graphify global add <graph.json> [--as <repo-tag>]", file=sys.stderr)
+            if not sources:
+                print("Usage: graphify global add <graph.json> [<graph2.json> ...] [--as <repo-tag>]", file=sys.stderr)
                 sys.exit(1)
-            if not tag:
-                # Inferred through merge-graphs' own helper, which degrades to "repo"
-                # instead of "": an empty tag prunes by "" and registers a manifest
-                # entry no later add can address.
+            if tag and len(sources) > 1:
+                print("error: --as can only be used with a single graph path", file=sys.stderr)
+                sys.exit(1)
+
+            batch_sources = []
+            if tag:
+                batch_sources.append((sources[0], tag))
+            else:
                 from graphify.build import distinct_repo_tags
-                tag = distinct_repo_tags([source.absolute()])[0]
+                inferred_tags = distinct_repo_tags([s.absolute() for s in sources])
+                for s, t in zip(sources, inferred_tags):
+                    batch_sources.append((s, t))
+
             try:
-                result = _global_add(source, tag)
-                if result["skipped"]:
-                    print(f"'{tag}' unchanged since last add - global graph not modified.")
-                else:
-                    print(f"Added '{tag}' to global graph: +{result['nodes_added']} nodes, "
-                          f"-{result['nodes_removed']} pruned. Global: {_global_path()}")
-                    if result.get("cross_repo_calls"):
-                        print(f"  resolved {result['cross_repo_calls']} "
-                              f"member call(s) across repos")
+                result_dict = _global_add_many(batch_sources)
+                results = result_dict["results"]
+                cross_repo_calls = result_dict.get("cross_repo_calls", 0)
+                for result in results:
+                    _tag = result["repo_tag"]
+                    if result["skipped"]:
+                        print(f"'{_tag}' unchanged since last add - global graph not modified.")
+                    else:
+                        print(f"Added '{_tag}' to global graph: +{result['nodes_added']} nodes, "
+                              f"-{result['nodes_removed']} pruned. Global: {_global_path()}")
+                if cross_repo_calls:
+                    print(f"  resolved {cross_repo_calls} member call(s) across repos")
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr); sys.exit(1)
         elif subcmd == "remove":
