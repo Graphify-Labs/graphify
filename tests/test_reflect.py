@@ -589,6 +589,47 @@ def test_cli_save_result_reads_nodes_from_multiple_files(tmp_path):
     assert "Concept B" in body
 
 
+def test_cli_save_result_missing_answer_file_gives_a_clean_error(tmp_path):
+    """A nonexistent --answer-file path must end in a normal argparse style
+    error, not a raw traceback -- these paths come from the same skill
+    instructions --answer-file exists to protect, so a bad path deserves
+    the same clean handling as a bad flag value."""
+    missing = tmp_path / "does_not_exist.txt"
+    r = _run(["save-result", "--question", "q", "--answer-file", str(missing),
+              "--outcome", "useful"], tmp_path)
+    assert r.returncode != 0
+    assert "Traceback" not in r.stderr
+    assert "--answer-file" in r.stderr
+    assert str(missing) in r.stderr
+
+
+def test_cli_save_result_missing_question_file_gives_a_clean_error(tmp_path):
+    missing = tmp_path / "does_not_exist.txt"
+    r = _run(["save-result", "--question-file", str(missing), "--answer", "a",
+              "--outcome", "useful"], tmp_path)
+    assert r.returncode != 0
+    assert "Traceback" not in r.stderr
+    assert "--question-file" in r.stderr
+
+
+def test_cli_save_result_missing_nodes_file_gives_a_clean_error(tmp_path):
+    missing = tmp_path / "does_not_exist.txt"
+    r = _run(["save-result", "--question", "q", "--answer", "a",
+              "--outcome", "useful", "--nodes-file", str(missing)], tmp_path)
+    assert r.returncode != 0
+    assert "Traceback" not in r.stderr
+    assert "--nodes-file" in r.stderr
+
+
+def test_cli_save_result_missing_correction_file_gives_a_clean_error(tmp_path):
+    missing = tmp_path / "does_not_exist.txt"
+    r = _run(["save-result", "--question", "q", "--answer", "a",
+              "--outcome", "corrected", "--correction-file", str(missing)], tmp_path)
+    assert r.returncode != 0
+    assert "Traceback" not in r.stderr
+    assert "--correction-file" in r.stderr
+
+
 def test_cli_reflect_cold_start_writes_empty_lessons(tmp_path):
     """First run with no graphify-out/memory/ still succeeds and writes a valid doc."""
     r = _run(["reflect"], tmp_path)
