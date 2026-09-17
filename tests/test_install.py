@@ -446,6 +446,24 @@ def test_kilo_skill_avoids_double_quoted_python_c_fstring_dict_keys():
     assert not re.search(r"print\(f'.*\[[\"'][^\"']+[\"']\]", skill)
 
 
+def test_subagent_dispatch_names_the_capability_not_just_the_type():
+    """#2525: a host whose dispatch policy restricts the literal
+    "general-purpose" agent type must have an escape hatch. Every host that
+    carries the shared Agent-tool dispatch slot or Step B3 diagnostics must
+    state the underlying requirement (Write and Bash access) and name
+    general-purpose only as the default, not the sole option.
+    """
+    import graphify
+
+    for name in ("skill.md", "skill-claw.md", "skill-kilo.md"):
+        skill = (Path(graphify.__file__).parent / name).read_text()
+        assert "Write and Bash access" in skill, f"{name}: missing the capability requirement"
+        assert "host policy constraint, not a graphify requirement" in skill or \
+            "use any permitted type with both tools instead" in skill, (
+            f"{name}: missing the policy-restricted-host escape hatch"
+        )
+
+
 def test_claw_skill_uses_agent_tool_dispatch():
     """OpenClaw rides the shared Agent-tool disk-collect dispatch.
 
