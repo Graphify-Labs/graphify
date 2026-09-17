@@ -229,12 +229,17 @@ def extract_json(path: Path) -> dict:
     if doc.type == "object":
         # Only AST-extract recognized config/manifest JSON. Data JSON (fixtures,
         # datasets, GeoJSON, API dumps) is skipped so it doesn't explode into
-        # orphan key-nodes (#1224); it's left to the LLM semantic pass.
+        # orphan key-nodes (#1224); it's left to the LLM semantic pass. `nodes`
+        # already holds the bare file node added above — returning it (rather
+        # than an empty list) keeps the file discoverable via query/explain/
+        # affected without reintroducing the key-node explosion #1224 fixed
+        # (#2108): no children, no edges, just the one file node.
         if not _is_config_json(path, doc, source):
-            return {"nodes": [], "edges": [], "skipped": "data json (not a config/manifest)"}
+            return {"nodes": nodes, "edges": [], "skipped": "data json (not a config/manifest)"}
         walk_object(doc, file_nid, None, 0, [0])
     else:
         # Top-level array or scalar => data JSON, never a config/manifest.
-        return {"nodes": [], "edges": [], "skipped": "data json (non-object root)"}
+        # Same bare-file-node rationale as above (#2108).
+        return {"nodes": nodes, "edges": [], "skipped": "data json (non-object root)"}
 
     return {"nodes": nodes, "edges": edges}
