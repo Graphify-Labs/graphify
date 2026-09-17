@@ -462,6 +462,22 @@ def test_claw_skill_uses_agent_tool_dispatch():
     assert "@mention" not in skill
 
 
+def test_agent_tool_hosts_warn_against_a_named_subagent():
+    """#2847: a named Agent call's report can return only via SendMessage: if
+    that path is unavailable, the caller gets a bare idle notification with
+    zero findings, indistinguishable from a chunk that silently failed. Every
+    host dispatching via the Claude Code Agent tool (subagent_type=...) must
+    carry the "no name" warning alongside the subagent-type guidance."""
+    import graphify
+
+    for name in ("skill.md", "skill-claw.md"):
+        skill = (Path(graphify.__file__).parent / name).read_text()
+        assert 'subagent_type="general-purpose"' in skill, f"{name}: not an Agent-tool host?"
+        b2 = skill[skill.index("**Step B2"):skill.index("**Step B3")]
+        assert "IMPORTANT - no `name`" in b2, f"{name}: missing the no-name warning in Step B2"
+        assert "SendMessage" in b2, f"{name}: warning must explain the SendMessage failure mode"
+
+
 def test_all_skill_files_exist_in_package():
     """All installable platform skill files must be present in the installed package."""
     import graphify
