@@ -685,6 +685,32 @@ def test_no_cluster_and_force_flags_are_wired_through():
         )
 
 
+def test_no_cluster_step_4_write_carries_the_full_corpus_label():
+    """Review finding on #1619: Step 5 (which normally supplies real community
+    labels) is skipped entirely for --no-cluster, making Step 4's write the
+    only one -- so it must pass community_labels=labels itself, or every node
+    in a --no-cluster build silently loses its community_name even though the
+    'Full Corpus' label was computed right above it."""
+    claude_core, _ = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        # Step 4 and Step 5 now both use this exact call shape -- Step 5's
+        # own occurrence alone would make a bare "in body" check pass even
+        # if Step 4's copy were still missing community_labels, so this
+        # counts occurrences the same way the neighboring force=IS_FORCE
+        # assertion above does.
+        step4_or_5_write = "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels, force=IS_FORCE)"
+        assert body.count(step4_or_5_write) >= 2, (
+            f"[{key}] expected community_labels=labels on both Step 4 and Step 5 "
+            "to_json calls -- Step 4's is the only write for --no-cluster, since "
+            "Step 5 is skipped for that path"
+        )
+
+
 def test_input_path_forward_slash_guidance_is_present():
     """#1619 B1: a Windows INPUT_PATH substitution with backslashes corrupts
     the Python string literal it's spliced into. Every host must tell the
