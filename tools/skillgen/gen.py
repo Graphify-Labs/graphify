@@ -1169,6 +1169,15 @@ def _is_no_cluster_force_fix_line(line: str) -> bool:
         or stripped == "labels = {cid: 'Community ' + str(cid) for cid in communities}"
         or "regenerated with real labels in Step 5" in line
         or "Skip this step entirely if `--no-cluster` was given in Step 4" in line
+        # A review finding on #1619 pointed out the Step 4 to_json() call
+        # (sanctioned above via the #1392 predicate's generic "to_json(G,
+        # communities," match) never received community_labels=labels, so a
+        # --no-cluster build silently lost every node's community_name --
+        # Step 5, which normally supplies it, is skipped for that path. The
+        # explanatory comment added alongside that fix is sanctioned here.
+        or "because --no-cluster skips Step 5 entirely" in line
+        or "the 'Full Corpus' label computed above must reach graph.json" in line
+        or "now or every node silently loses its community_name" in line
     )
 
 
