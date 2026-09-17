@@ -770,6 +770,36 @@ def test_update_backup_instruction_precedes_the_merge_it_backs_up():
         )
 
 
+def test_interpreter_cat_substitution_is_quoted_everywhere():
+    """#1619 B5: `$(cat graphify-out/.graphify_python)` names the interpreter to
+    run and must be quoted, like the `"$PYTHON"` form Step 1 already uses --
+    an unquoted interpreter path containing a space (a venv under
+    `C:\\Users\\First Last\\...`) would otherwise word-split into multiple
+    arguments and fail to exec.
+    """
+    claude_core, claude_refs = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core, **{f"claude:{k}": v for k, v in claude_refs.items()}}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    found_any = False
+    for key, body in bodies.items():
+        if "$(cat graphify-out/.graphify_python)" not in body:
+            continue
+        found_any = True
+        assert '"$(cat graphify-out/.graphify_python)"' in body, (
+            f"[{key}] has the interpreter substitution but not the quoted form"
+        )
+        # every occurrence must be the quoted form -- an unquoted survivor would
+        # still contain the bare substring outside any quoted instance.
+        unquoted = body.replace('"$(cat graphify-out/.graphify_python)"', "")
+        assert "$(cat graphify-out/.graphify_python)" not in unquoted, (
+            f"[{key}] an unquoted $(cat ...) interpreter substitution survived"
+        )
+    assert found_any, "no host's rendered output referenced the interpreter substitution at all"
+
+
 def test_monoliths_scope_semantic_cache_writes_to_uncached_files():
     """#1757: generated monoliths pass the dispatched-file allowlist when
     replacing semantic cache entries."""
