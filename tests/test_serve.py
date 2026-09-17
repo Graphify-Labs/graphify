@@ -1827,3 +1827,66 @@ def test_query_graph_text_seeds_the_node_whose_rationale_answers_a_why_question(
     )
     header = text.split("\n\n", 1)[0]
     assert "FAB visibility rule" in header, header
+
+
+# --- body attribute scoring (#3313) ---
+
+def test_score_nodes_reads_body_when_label_does_not_match():
+    """The #3313 shape: a non-extraction emitter (a wiki page, a ticket) puts
+    its content on `body` since there is nowhere else to put it, and the
+    label alone shares no query term."""
+    G = nx.Graph()
+    G.add_node(
+        "page", label="Masterlist/Certificate controls", source_file="confluence/page1.md",
+        body="The CSCA Master List defines certificate authority trust anchors.",
+    )
+    G.add_node("ticket", label="CSCA rollout ticket", source_file="jira/TICKET-1.md")
+    G.add_node("other", label="Unrelated page", source_file="confluence/other.md",
+               body="Nothing to do with certificates at all.")
+    assert "page" in [nid for _, nid in _score_nodes(G, ["CSCA", "Master", "List"])]
+
+
+def test_score_nodes_body_tier_sits_below_rationale_and_source():
+    """Body is the noisiest signal (raw prose, not curated why-text), so it
+    must rank below both the rationale and source-path tiers, not above."""
+    G = nx.Graph()
+    G.add_node("lbl", label="popover-anchor", source_file="ui/a.py")
+    G.add_node("rat", label="Sheet drag", source_file="ui/b.py", rationale="starts only once the popover is closed")
+    G.add_node("src", label="Thing", source_file="ui/popover/thing.py")
+    G.add_node("bod", label="Notes", source_file="ui/c.py", body="mentions a popover somewhere in the middle")
+    assert [nid for _, nid in _score_nodes(G, ["popover"])] == ["lbl", "rat", "src", "bod"]
+
+
+def test_score_nodes_body_does_not_count_toward_term_coverage():
+    """Like rationale and source, a body hit adds recall but must not restore
+    the coverage-scaled exact tier."""
+    from graphify.serve import _EXACT_MATCH_BONUS
+    G = nx.Graph()
+    G.add_node("a", label="cache", source_file="x.py", body="invalidated on every write")
+    G.add_node("b", label="cache", source_file="y.py")
+    score = {nid: s for s, nid in _score_nodes(G, ["cache", "invalidated"])}
+    assert score["a"] > score["b"]
+    assert score["a"] - score["b"] < _EXACT_MATCH_BONUS * 0.5
+
+
+def test_score_nodes_tolerates_list_valued_body():
+    G = nx.Graph()
+    G.add_node("n", label="X", source_file="x.py", body=["first paragraph", "popover second"])
+    assert [nid for _, nid in _score_nodes(G, ["popover"])] == ["n"]
+
+
+def test_node_search_text_includes_body_so_trigram_prefilter_stays_complete():
+    parts = _node_search_text(
+        {"label": "Foo", "source_file": "a.py", "body": "Describes the Popover in detail"}, "foo"
+    ).split("\x00")
+    assert "describes the popover in detail" in parts
+    # No body: field layout unchanged (the #2467 positions still hold).
+    assert len(_node_search_text({"label": "Foo", "source_file": "a.py"}, "foo").split("\x00")) == 5
+
+
+def test_node_search_text_includes_both_rationale_and_body_when_both_present():
+    parts = _node_search_text(
+        {"label": "Foo", "source_file": "a.py", "rationale": "why text", "body": "body text"}, "foo"
+    ).split("\x00")
+    assert "why text" in parts
+    assert "body text" in parts
