@@ -4140,6 +4140,52 @@ def test_markdown_reconcile_repoints_incremental_link_to_semantic_target(
         assert {references[0]["source"], references[0]["target"]} == {"a", "b_sem"}
 
 
+@pytest.mark.parametrize("suffix", [".md", ".mdx", ".qmd", ".skill"])
+def test_markdown_reconcile_preserves_links_on_extraction_error(
+    tmp_path, monkeypatch, suffix
+):
+    """A failed parse cannot claim ownership of persisted authored links."""
+    import graphify.extract as extract_module
+
+    source_file = f"a{suffix}"
+    corpus, graph_path = _markdown_reconcile_fixture(
+        tmp_path,
+        {source_file: "[link](b.md)\n", "b.md": "target\n"},
+        [_semantic_doc("a_sem", source_file), _semantic_doc("b_sem", "b.md")],
+        [_ast_reference("a_sem", "b_sem", source_file, sentinel="keep")],
+    )
+    source_path = (corpus / source_file).resolve()
+    real_extract = extract_module._safe_extract_with_xaml_root
+    fail_source = True
+
+    def controlled_extract(extractor, path, root):
+        if fail_source and path.resolve() == source_path:
+            return {"nodes": [], "edges": [], "error": "simulated read failure"}
+        return real_extract(extractor, path, root)
+
+    monkeypatch.setattr(
+        extract_module, "_safe_extract_with_xaml_root", controlled_extract
+    )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert references[0]["sentinel"] == "keep"
+
+    fail_source = False
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    references = [edge for edge in links if edge.get("relation") == "references"]
+    assert len(references) == 1
+    assert {references[0]["source"], references[0]["target"]} == {"a_sem", "b_sem"}
+
+    (corpus / source_file).write_text("no link\n", encoding="utf-8")
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+    assert not any(edge.get("relation") == "references" for edge in links)
+
+
 def test_markdown_reconcile_keeps_reverse_stored_edge_unchanged(tmp_path):
     """#1915/#1954: undirected endpoint order must not churn edge data."""
     corpus, graph_path = _markdown_reconcile_fixture(

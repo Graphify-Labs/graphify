@@ -603,12 +603,14 @@ def _reconcile_markdown_links(
         except ValueError:
             relative_source = markdown_file
         source_file = source_paths.normalize(str(relative_source))
-        parsed_sources.add(source_file)
         source_rep = representatives.get(source_file)
 
         extraction = _safe_extract_with_xaml_root(
             extract_markdown, markdown_file, project_root
         )
+        if extraction.get("error"):
+            continue
+        parsed_sources.add(source_file)
         for edge in extraction.get("edges", []):
             if edge.get("relation") != "references":
                 continue
