@@ -1389,6 +1389,38 @@ def test_php_file_without_script_block_is_unaffected(tmp_path):
     assert labels == {"plain.php", "plainPhpHelper()"}
 
 
+def test_php_js_name_collision_drops_the_dropped_js_nodes_edges(tmp_path):
+    """Follow up finding: when a JS symbol's id collides with an existing PHP
+    node (same name, one file), the JS node is correctly dropped in favor of
+    the PHP one, but its edges were still being merged in unconditionally —
+    an edge meant for the discarded JS symbol silently attached to the
+    unrelated retained PHP node sharing its id. A JS call to the colliding
+    name must vanish along with the node, not misattach to the PHP function
+    of the same name (which the inline script never actually calls)."""
+    f = tmp_path / "page.php"
+    f.write_text(
+        "<?php\n"
+        "function sharedName() { return 1; }\n"
+        "?>\n"
+        "<script>\n"
+        "function sharedName(x) { return x; }\n"
+        "function jsCaller(y) { return sharedName(y); }\n"
+        "</script>\n"
+    )
+    r = extract_php(f)
+    labels = {n["label"] for n in r["nodes"]}
+    # Exactly one sharedName node survives (the PHP one) -- no duplicate.
+    assert labels == {"page.php", "sharedName()", "jsCaller()"}
+    # The JS call to the colliding name must not appear as a calls edge at
+    # all (misattaching it to the PHP node would be a wrong edge, not a
+    # missing one).
+    assert _edge_labels(r, "calls") == set()
+    # The file's own contains edges for the surviving, non colliding JS node
+    # must still be present -- the fix for the collision must not also drop
+    # unrelated JS edges sourced from the shared file node.
+    assert ("page.php", "jsCaller") in _edge_labels(r, "contains")
+
+
 # ── Swift ────────────────────────────────────────────────────────────────────
 
 def test_swift_no_error():
