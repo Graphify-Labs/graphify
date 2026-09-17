@@ -2593,7 +2593,9 @@ def extract_php(path: Path) -> dict:
     file node id, so JS symbols land under the one file node like any other
     PHP symbol; a same-name PHP/JS collision (rare — different languages,
     same file) is resolved by keeping the PHP node, since PHP is the file's
-    primary language.
+    primary language, and dropping every JS edge that touches the id the
+    dropped JS node would have used, so no edge from the discarded symbol
+    is left to silently attach to the unrelated PHP node sharing its id.
     """
     result = _extract_generic(path, _PHP_CONFIG)
     try:
@@ -2602,12 +2604,29 @@ def extract_php(path: Path) -> dict:
         if not had_script:
             return result
         js_result = _extract_generic(path, _JS_CONFIG, source_override=masked.encode("utf-8"))
+        # The file node itself always collides by construction -- both passes
+        # derive its id from the same path, on purpose, so JS symbols can
+        # land under the one PHP file node. That expected collision must not
+        # be treated as a dropped-symbol collision below, or every JS edge
+        # sourced from the file node (i.e. every top-level JS symbol's own
+        # `contains` edge) would be discarded along with it.
+        file_node_id = result["nodes"][0]["id"] if result.get("nodes") else None
         existing_ids = {n["id"] for n in result.get("nodes", [])}
+        colliding_ids: set = set()
         for n in js_result.get("nodes", []):
-            if n["id"] not in existing_ids:
-                result.setdefault("nodes", []).append(n)
-                existing_ids.add(n["id"])
+            if n["id"] in existing_ids:
+                if n["id"] != file_node_id:
+                    colliding_ids.add(n["id"])
+                continue
+            result.setdefault("nodes", []).append(n)
+            existing_ids.add(n["id"])
         for e in js_result.get("edges", []):
+            # A JS node dropped above for colliding with an existing PHP
+            # node id must not leave its edges behind -- otherwise an edge
+            # meant for the dropped JS symbol silently attaches to the
+            # unrelated retained PHP node that happens to share its id.
+            if e.get("source") in colliding_ids or e.get("target") in colliding_ids:
+                continue
             result.setdefault("edges", []).append(e)
     except Exception:
         pass
