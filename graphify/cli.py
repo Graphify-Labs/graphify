@@ -1484,21 +1484,32 @@ def dispatch_command(cmd: str) -> None:
         p.add_argument("--correction", default=None)
         p.add_argument("--correction-file", dest="correction_file", default=None)
         p.add_argument("--memory-dir", default=str(Path(_GRAPHIFY_OUT) / "memory"))
+        def _read_arg_file(flag: str, file_path: str) -> str:
+            # A missing/unreadable/undecodable path here must end in a clean
+            # CLI error, not a raw traceback -- these paths are as much a
+            # skill-supplied argument as --question/--answer themselves.
+            try:
+                return Path(file_path).read_text(encoding="utf-8")
+            except OSError as exc:
+                p.error(f"could not read {flag} {file_path!r}: {exc}")
+            except UnicodeDecodeError as exc:
+                p.error(f"{flag} {file_path!r} is not valid UTF 8: {exc}")
+
         opts = p.parse_args(sys.argv[2:])
         if opts.question_file:
-            opts.question = Path(opts.question_file).read_text(encoding="utf-8").strip()
+            opts.question = _read_arg_file("--question-file", opts.question_file).strip()
         elif opts.question is None:
             p.error("--question or --question-file is required")
         if not opts.question:
             p.error("--question must not be empty")
         if opts.answer_file:
-            opts.answer = Path(opts.answer_file).read_text(encoding="utf-8").strip()
+            opts.answer = _read_arg_file("--answer-file", opts.answer_file).strip()
         elif opts.answer is None:
             p.error("--answer or --answer-file is required")
         if not opts.answer:
             p.error("--answer must not be empty")
         if opts.correction_file:
-            opts.correction = Path(opts.correction_file).read_text(encoding="utf-8").strip()
+            opts.correction = _read_arg_file("--correction-file", opts.correction_file).strip()
         if opts.nodes_file:
             # One or more paths: each file's lines are node labels (a file
             # holding a single label with no trailing content works the same
@@ -1510,7 +1521,7 @@ def dispatch_command(cmd: str) -> None:
             opts.nodes = [
                 line.strip()
                 for nf in opts.nodes_file
-                for line in Path(nf).read_text(encoding="utf-8").splitlines()
+                for line in _read_arg_file("--nodes-file", nf).splitlines()
                 if line.strip()
             ]
         from graphify.ingest import save_query_result as _sqr
