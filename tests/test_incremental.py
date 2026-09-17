@@ -308,6 +308,85 @@ def test_incremental_md_reference_target_canonicalizes(tmp_path):
         assert "target_file" not in e, e
 
 
+def test_incremental_extract_regenerates_neighbor_symbol_edges(tmp_path):
+    """#2230: extract([A]) alone must still emit A→B imports/calls.
+
+    Without context-file facts, symbol resolution only sees A's nodes and
+    those edges are missing from the incremental chunk (then dropped by
+    merge). Also assert B's owned nodes/edges are not returned — ownership
+    must stay with the unchanged file for the merge to carry them forward.
+    """
+    from graphify.extract import extract
+
+    tmp = Path(os.path.realpath(tmp_path))
+    pkg = tmp / "pkg"
+    pkg.mkdir()
+    (pkg / "b.py").write_text(
+        "class BadData(Exception):\n    pass\n\ndef helper():\n    return 1\n",
+        encoding="utf-8",
+    )
+    a = pkg / "a.py"
+    a.write_text(
+        "from .b import BadData, helper\n\ndef use():\n    helper()\n    raise BadData()\n",
+        encoding="utf-8",
+    )
+
+    def _a_edges(result):
+        return sorted(
+            (e.get("source"), e.get("target"), e.get("relation"), e.get("confidence"))
+            for e in result["edges"]
+            if str(e.get("source_file", "")).replace("\\", "/").endswith("a.py")
+        )
+
+    full = extract([a, pkg / "b.py"], cache_root=tmp, root=tmp)
+    inc = extract([a], cache_root=tmp, root=tmp)
+    assert _a_edges(inc) == _a_edges(full)
+    assert not any(
+        str(x.get("source_file", "")).replace("\\", "/").endswith("b.py")
+        for x in inc["nodes"] + inc["edges"]
+    )
+
+
+@pytest.mark.parametrize("no_cluster", [True, False], ids=["no-cluster", "clustered"])
+def test_incremental_cli_neighbor_edge_parity(tmp_path, no_cluster):
+    """#2230: full extract → touch A → incremental must keep the same edges.
+
+    Covers both merge paths (clustered and --no-cluster); the bug is in
+    extract() itself and hits both identically.
+    """
+    tmp = Path(os.path.realpath(tmp_path))
+    proj = tmp / "proj"
+    pkg = proj / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "b.py").write_text(
+        "class BadData(Exception):\n    pass\n\ndef helper():\n    return 1\n",
+        encoding="utf-8",
+    )
+    a = pkg / "a.py"
+    a.write_text(
+        "from .b import BadData, helper\n\ndef use():\n    helper()\n    raise BadData()\n",
+        encoding="utf-8",
+    )
+
+    flags = ["--code-only"] + (["--no-cluster"] if no_cluster else [])
+    first = _run(["extract", str(proj), *flags], tmp)
+    assert first.returncode == 0, first.stderr
+    gj = proj / "graphify-out" / "graph.json"
+
+    def _keys():
+        return sorted(
+            (e.get("source"), e.get("target"), e.get("relation"), e.get("confidence"))
+            for e in _edges(gj)
+        )
+
+    before = _keys()
+    a.write_text(a.read_text(encoding="utf-8") + "\n# touched\n", encoding="utf-8")
+    second = _run(["extract", str(proj), *flags], tmp)
+    assert second.returncode == 0, second.stderr
+    assert "incremental scan" in second.stdout.lower(), second.stdout
+    assert _keys() == before
+
+
 def test_update_prunes_a_removed_imports_edge(tmp_path):
     """#1521: when an import is deleted from a file, `graphify update` must prune
     the edge it produced — preserving it (keyed only on endpoint membership) left a
