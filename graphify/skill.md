@@ -32,6 +32,13 @@ Turn any folder of files into a navigable knowledge graph with community detecti
 /graphify <path> --watch                              # watch folder, auto-rebuild on code changes (no LLM needed)
 /graphify <path> --wiki                               # build agent-crawlable wiki (index.md + one article per community)
 /graphify <path> --obsidian --obsidian-dir ~/vaults/my-project  # write vault to custom path (e.g. existing vault)
+/graphify depth <root>                                # iterative sliding-window build: per-bucket extract then merge (for >500 files)
+/graphify depth <root> --focus <path>                 # explicit bucket paths (repeatable)
+/graphify depth <root> --parallel 4                   # run up to 4 buckets concurrently
+/graphify depth <root> --resume                        # skip buckets whose graph.json is fresher than source
+/graphify depth <root> --retries 2                    # transient-failure retry with exponential backoff
+/graphify depth <root> --global                       # also fold the merged graph into the cross-repo global graph
+/graphify depth <root> --dry-run                      # preview auto-detected buckets without running extract
 /graphify add <url>                                   # fetch URL, save to ./raw, update graph
 /graphify add <url> --author "Name"                   # tag who wrote it
 /graphify add <url> --contributor "Name"              # tag who added it to the corpus
