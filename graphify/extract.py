@@ -2161,13 +2161,87 @@ def extract_astro(path: Path) -> dict:
 # generic="T extends Record<string, unknown>">`) doesn't prematurely end the tag.
 
 
+# unplugin-vue-components / Nuxt register components globally, so a template tag
+# like `<ConfirmDeleteDialog>` has no import statement for the script pass to edge.
+# The generated `components.d.ts` is the registry that maps the tag back to its
+# file; it is commonly gitignored, so it is read straight off disk rather than
+# relying on it being part of the scanned corpus.
+_VUE_TEMPLATE_RE = re.compile(r"<template[\s>].*</template>", re.S)
+# PascalCase, or kebab-case with at least one hyphen — a plain lowercase tag is
+# always HTML, and requiring the hyphen keeps `<div>`/`<span>` out of the lookup.
+_VUE_TEMPLATE_TAG_RE = re.compile(
+    r"</?([A-Z][A-Za-z0-9]*|[a-z][a-z0-9]*(?:-[a-z0-9]+)+)[\s/>]"
+)
+_VUE_COMPONENTS_DTS_RE = re.compile(
+    r"""^\s*(\w+):\s*typeof import\(['"]([^'"]+\.vue)['"]\)""", re.M
+)
+_VUE_COMPONENTS_DTS_CACHE: dict[str, dict[str, str]] = {}
+
+
+def _kebab(name: str) -> str:
+    """`ConfirmDeleteDialog` -> `confirm-delete-dialog` (Vue resolves either form)."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "-", name).lower()
+
+
+def _load_vue_components_dts(start_dir: Path) -> dict[str, str]:
+    """Tag name -> module specifier, from the nearest generated ``components.d.ts``.
+
+    Walks up from *start_dir* the same way :func:`_find_js_config` does. Entries
+    look like ``Foo: typeof import('./src/components/Foo.vue')['default']``; the
+    specifier is rewritten relative to the directory holding the ``.d.ts`` so
+    ``_emit_rescued_import`` resolves it from the SFC's own directory. Both the
+    PascalCase and kebab-case spellings are registered because Vue accepts both
+    in templates. Cached by start_dir; :func:`extract` clears it per run.
+    """
+    key = str(start_dir)
+    cached = _VUE_COMPONENTS_DTS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    registry: dict[str, str] = {}
+    try:
+        # normpath, not resolve(): _emit_rescued_import joins the specifier onto
+        # the SFC path exactly as scanned and normpaths it, so resolving symlinks
+        # here would hand it a target it then fails to match.
+        current = Path(os.path.normpath(start_dir))
+        for candidate in [current, *current.parents]:
+            dts = candidate / "components.d.ts"
+            if not dts.is_file():
+                # Stop at the package boundary. The generator writes
+                # components.d.ts at or under the package root, so a file found
+                # above one belongs to a different project and its components
+                # are not part of this corpus. Without this an unrelated parent
+                # directory silently injects edges into every SFC beneath it.
+                if (candidate / "package.json").is_file():
+                    break
+                continue
+            text = dts.read_text(encoding="utf-8", errors="replace")
+            for name, spec in _VUE_COMPONENTS_DTS_RE.findall(text):
+                target = os.path.normpath(candidate / spec)
+                try:
+                    rel = os.path.relpath(target, current)
+                except ValueError:  # different drive on Windows
+                    continue
+                rel = rel.replace(os.sep, "/")
+                if not rel.startswith("."):
+                    rel = "./" + rel
+                registry[name] = rel
+                registry[_kebab(name)] = rel
+            break
+    except OSError:
+        registry = {}
+    _VUE_COMPONENTS_DTS_CACHE[key] = registry
+    return registry
+
+
 def extract_vue(path: Path) -> dict:
     """Extract imports, symbols, and type refs from a ``.vue`` SFC.
 
     Masks the non-``<script>`` regions and parses the script with the grammar
     its ``lang`` implies (``tsx``→TSX, ``js``/``jsx``→JS, ``ts`` or unset→TS;
     TS is a superset of JS so it is a safe default). A regex pass then recovers
-    ``import('…')`` dynamic imports the AST does not edge.
+    ``import('…')`` dynamic imports the AST does not edge, and a second pass
+    edges the globally-registered components the template renders, which have no
+    import statement at all (see :func:`_load_vue_components_dts`).
     """
     try:
         src = path.read_text(encoding="utf-8", errors="replace")
@@ -2204,6 +2278,49 @@ def extract_vue(path: Path) -> dict:
                 result, existing_ids, file_node_id, path, raw,
                 "dynamic_import", aliases, base_url,
             )
+
+        # Auto-registered components (unplugin-vue-components, Nuxt) are rendered
+        # from the template with no import statement anywhere in the SFC, so the
+        # script pass cannot see them at all. Resolve each template tag through
+        # the components.d.ts registry instead.
+        #
+        # Dedupe mirrors _rescue_js_dynamic_imports: a component the SFC ALSO
+        # imports explicitly already has a file-level edge from the AST pass, and
+        # re-emitting it as `uses` would state the same dependency twice. Resolve
+        # first, then skip when this file's node already points at that target.
+        registry = _load_vue_components_dts(path.parent)
+        template = _VUE_TEMPLATE_RE.search(src) if registry else None
+        if template is not None:
+            imported: set[str] = set()
+            for e in result.get("edges", []):
+                if e.get("source") != file_node_id:
+                    continue
+                imported.add(e["target"])
+                if e.get("target_file"):
+                    imported.add(e["target_file"])
+            for tag in dict.fromkeys(
+                _VUE_TEMPLATE_TAG_RE.findall(template.group(0))
+            ):
+                spec = registry.get(tag)
+                if spec is None:
+                    continue
+                resolution = _resolve_rescued_specifier(path, spec, aliases, base_url)
+                if resolution is None:
+                    continue
+                node_id, _stub_source_file, resolved_file = resolution
+                # A component rendering itself (recursive component) is not a
+                # dependency worth an edge.
+                if node_id == file_node_id:
+                    continue
+                if node_id in imported or (
+                    resolved_file is not None and str(resolved_file) in imported
+                ):
+                    continue
+                _emit_rescued_import(
+                    result, existing_ids, file_node_id, path, spec,
+                    "uses", aliases, base_url,
+                )
+                imported.add(node_id)
     except Exception:
         pass
     return result
@@ -6618,6 +6735,7 @@ def extract(
     _TSCONFIG_BASEURL_CACHE.clear()
     _TSCONFIG_REFERENCE_ALIAS_CACHE.clear()
     _TSCONFIG_REFERENCE_BASEURL_CACHE.clear()
+    _VUE_COMPONENTS_DTS_CACHE.clear()
     _PACKAGE_IMPORTS_CACHE.clear()
     _XAML_CSHARP_CLASS_CACHE.clear()
     _MD_LINK_INDEX_CACHE.clear()
