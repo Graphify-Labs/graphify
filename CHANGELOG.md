@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.57 (unreleased)
 
+- Fix: `graphify save-result`'s `--question-file`/`--answer-file`/`--correction-file`/`--nodes-file` flags now give a clean argparse style error naming the flag and path when the file is missing or unreadable, instead of a raw traceback. The `graphify add` skill reference no longer instructs building its JSON payload by literally substituting free text values into a template string, which reintroduced the same injection risk one level down that the surrounding file based approach exists to avoid; values are now run through a real JSON encoder (#3439, #3442).
 - Fix: an incremental rebuild no longer wipes cross-file project AST nodes — re-extracting one `.csproj`/`.sln` was dropping package/framework nodes of a *referenced* project (whose stub carried the referenced file's `source_file`); the AST-replacement set is now derived from the files actually extracted (#3411, thanks @hopstreax).
 - Fix: when duplicate nodes merge, the richer (more complete) node is now kept as the survivor and the losers' non-empty fields are folded in, instead of a shorter-id passing mention winning and dropping content (#3372, thanks @abhay-codes07).
 - Fix: a C# generic call site with explicit type arguments — `Get<int>(...)`, unqualified or through `this` — now resolves to the method definition instead of capturing `Get<int>` as the callee and failing to match (#3406, thanks @abhay-codes07).
