@@ -1140,6 +1140,64 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
         raise
 
 
+def _derived_facts_dir(root: Path, cache_root: "Path | None", kind: str,
+                       schema: int) -> Path:
+    """Directory for a per-file derived-facts cache (e.g. Python symbol
+    resolution facts, #perf). Namespaced by package version AND ``schema`` —
+    the payload shape depends on the extractor code, so entries from another
+    version/schema must never be reused; a bump simply orphans the old dir.
+    """
+    _out = Path(_GRAPHIFY_OUT)
+    anchor = cache_root if cache_root is not None else root
+    base = _out if _out.is_absolute() else Path(anchor).resolve() / _out
+    d = base / "cache" / kind / f"v{_EXTRACTOR_VERSION}-s{schema}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def load_derived_facts(path: Path, root: Path, cache_root: "Path | None",
+                       kind: str, schema: int) -> "dict | None":
+    """Load a file's cached derived facts, keyed by the SAME content hash the
+    AST cache uses (so it is valid exactly when the file is unchanged). Returns
+    None on any miss or error — the caller recomputes. The payload is plain,
+    path-free JSON, so no portability rewrite is needed on load.
+    """
+    try:
+        h = file_hash(path, root, cache_root=cache_root)
+        entry = _derived_facts_dir(root, cache_root, kind, schema) / f"{h}.json"
+        if entry.is_file():
+            return json.loads(entry.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return None
+
+
+def save_derived_facts(path: Path, data: dict, root: Path,
+                       cache_root: "Path | None", kind: str, schema: int) -> None:
+    """Persist a file's derived facts atomically. Best-effort: a failure just
+    means the next run recomputes them."""
+    try:
+        h = file_hash(path, root, cache_root=cache_root)
+        target_dir = _derived_facts_dir(root, cache_root, kind, schema)
+        entry = target_dir / f"{h}.json"
+        fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=f"{h}.", suffix=".tmp")
+        try:
+            os.write(fd, json.dumps(data).encode())
+            os.close(fd)
+            _os_replace_with_fallback(tmp_path, entry)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def cached_files(root: Path = Path(".")) -> set[str]:
     """Return set of file hashes that have a valid cache entry (any kind)."""
     base = Path(root).resolve() / _GRAPHIFY_OUT / "cache"

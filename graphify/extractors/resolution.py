@@ -2295,101 +2295,180 @@ def _python_call_identifier(node, source: bytes) -> str | None:
         return _read_text(function_node, source)
     return None
 
+# Schema version for the cached Python raw-facts payload. Bump when
+# _extract_python_raw_facts changes shape, so stale entries are ignored.
+_PY_RAW_FACTS_SCHEMA = 1
+
+
+def _extract_python_raw_facts(root_node, source: bytes) -> dict:
+    """The content-only symbol-resolution facts derivable from ONE file's AST,
+    with no filesystem or path dependence — so the result is a pure function of
+    the file's bytes and safe to cache by content hash (#perf).
+
+    ``imports`` are the ``from … import …`` statements exactly as written (the
+    relative ``level``, the module string, the imported/local name pairs, the
+    line); resolving the module string to a target file on disk is deliberately
+    NOT done here — that depends on other files and must run fresh. ``uses`` are
+    the bare-identifier call sites inside each top-level function, keyed by the
+    function's own name (the caller node id is re-derived from the path at apply
+    time, so no path is baked in).
+    """
+    imports: list[dict] = []
+    for node in _walk_python_tree(root_node):
+        if node.type != "import_from_statement":
+            continue
+        module = _python_import_from_module(node, source)
+        if module is None:
+            continue
+        level, module_name = module
+        imports.append({
+            "level": level,
+            "module": module_name,
+            "names": [[imp, loc] for imp, loc in _python_imported_names(node, source)],
+            "line": node.start_point[0] + 1,
+        })
+    uses: list[dict] = []
+    for node in root_node.children:
+        if node.type != "function_definition":
+            continue
+        name_node = node.child_by_field_name("name")
+        body = node.child_by_field_name("body")
+        if name_node is None or body is None:
+            continue
+        func_name = _read_text(name_node, source)
+        for call_node in _walk_python_tree(body):
+            callee = _python_call_identifier(call_node, source)
+            if callee is None:
+                continue
+            uses.append({
+                "func": func_name,
+                "callee": callee,
+                "line": call_node.start_point[0] + 1,
+            })
+    return {"imports": imports, "uses": uses}
+
+
+def _apply_python_raw_imports(raw: dict, path: Path, root: Path,
+                              facts: _SymbolResolutionFacts) -> None:
+    """Resolve one file's raw import facts to target files (filesystem, fresh)."""
+    for imp in raw.get("imports", []):
+        level = imp["level"]
+        module_name = imp["module"]
+        line = imp["line"]
+        target_path = _resolve_python_module_path(module_name, path, root, level)
+        if target_path is not None:
+            # #1146: `from pkg import submod` — if the target is a package
+            # (__init__.py) and an imported name matches a submodule file on
+            # disk, emit a file-level import edge to that submodule rather
+            # than only to the package.
+            pkg_dir = target_path.parent if target_path.name == "__init__.py" else None
+        else:
+            # A PEP 420 namespace package: the module names a directory with
+            # no __init__.py, so there is no module file to resolve to, but
+            # the names it imports can still be submodule files on disk.
+            # Without this branch `from . import brain` in such a package
+            # emitted nothing, and `brain.think()` never became an edge.
+            pkg_dir = _resolve_python_namespace_dir(module_name, path, root, level)
+            if pkg_dir is None:
+                continue
+        for imported_name, local_name in imp["names"]:
+            if pkg_dir is not None:
+                sub_py = pkg_dir / f"{imported_name}.py"
+                sub_pkg = pkg_dir / imported_name / "__init__.py"
+                submodule = sub_py if sub_py.is_file() else (sub_pkg if sub_pkg.is_file() else None)
+                if submodule is not None:
+                    facts.module_imports.append((path, submodule, line, local_name))
+                    continue
+            if target_path is None:
+                continue  # a namespace package owns no symbols of its own to bind
+            facts.imports.append(
+                _SymbolImportFact(path, local_name, target_path, imported_name, line)
+            )
+            if path.name == "__init__.py":
+                facts.exports.append(
+                    _SymbolExportFact(
+                        path,
+                        local_name,
+                        line,
+                        target_path=target_path,
+                        target_name=imported_name,
+                    )
+                )
+
+
+def _apply_python_raw_uses(raw: dict, path: Path,
+                           facts: _SymbolResolutionFacts) -> None:
+    """Re-derive each caller node id from ``path`` and record its call uses."""
+    stem = _file_stem(path)
+    for use in raw.get("uses", []):
+        source_id = _make_id(stem, use["func"])
+        facts.uses.append(
+            _SymbolUseFact(path, source_id, use["callee"], "calls", "call", use["line"])
+        )
+
+
 def _collect_python_symbol_resolution_facts(
     paths: list[Path],
     root: Path,
     facts: _SymbolResolutionFacts,
+    cache_root: "Path | None" = None,
 ) -> None:
     py_paths = [path for path in paths if path.suffix == ".py"]
     if not py_paths:
         return
 
-    trees: dict[Path, tuple[bytes, object]] = {}
+    # The raw facts are a pure function of a file's bytes (no filesystem, no
+    # paths — see _extract_python_raw_facts), so they cache by content hash and
+    # a warm `graphify update` skips the re-read+re-parse this pass would
+    # otherwise do for every unchanged file. The filesystem-dependent half
+    # (module->file resolution, caller-id derivation) still runs fresh below,
+    # so a file added/removed elsewhere can never be served a stale target
+    # (#perf). Caching is opt-in via cache_root; without it, behaviour is the
+    # pre-cache parse-every-file path.
+    from graphify.cache import load_derived_facts, save_derived_facts
+
+    raw_by_path: dict[Path, dict] = {}
     for path in py_paths:
+        if cache_root is not None:
+            cached = load_derived_facts(
+                path, root, cache_root, "pyfacts", _PY_RAW_FACTS_SCHEMA
+            )
+            if cached is not None:
+                raw_by_path[path] = cached
+                continue
         parsed = _parse_python_tree(path)
         if parsed is None:
             continue
         source, root_node = parsed
-        trees[_resolve_cached(path)] = parsed
+        raw = _extract_python_raw_facts(root_node, source)
+        raw_by_path[path] = raw
+        if cache_root is not None:
+            save_derived_facts(
+                path, raw, root, cache_root, "pyfacts", _PY_RAW_FACTS_SCHEMA
+            )
 
-        for node in _walk_python_tree(root_node):
-            if node.type != "import_from_statement":
-                continue
-            module = _python_import_from_module(node, source)
-            if module is None:
-                continue
-            level, module_name = module
-            target_path = _resolve_python_module_path(module_name, path, root, level)
-            if target_path is not None:
-                # #1146: `from pkg import submod` — if the target is a package
-                # (__init__.py) and an imported name matches a submodule file on
-                # disk, emit a file-level import edge to that submodule rather
-                # than only to the package.
-                pkg_dir = target_path.parent if target_path.name == "__init__.py" else None
-            else:
-                # A PEP 420 namespace package: the module names a directory with
-                # no __init__.py, so there is no module file to resolve to, but
-                # the names it imports can still be submodule files on disk.
-                # Without this branch `from . import brain` in such a package
-                # emitted nothing, and `brain.think()` never became an edge.
-                pkg_dir = _resolve_python_namespace_dir(module_name, path, root, level)
-                if pkg_dir is None:
-                    continue
-            for imported_name, local_name in _python_imported_names(node, source):
-                line = node.start_point[0] + 1
-                if pkg_dir is not None:
-                    sub_py = pkg_dir / f"{imported_name}.py"
-                    sub_pkg = pkg_dir / imported_name / "__init__.py"
-                    submodule = sub_py if sub_py.is_file() else (sub_pkg if sub_pkg.is_file() else None)
-                    if submodule is not None:
-                        facts.module_imports.append((path, submodule, line, local_name))
-                        continue
-                if target_path is None:
-                    continue  # a namespace package owns no symbols of its own to bind
-                facts.imports.append(
-                    _SymbolImportFact(path, local_name, target_path, imported_name, line)
-                )
-                if path.name == "__init__.py":
-                    facts.exports.append(
-                        _SymbolExportFact(
-                            path,
-                            local_name,
-                            line,
-                            target_path=target_path,
-                            target_name=imported_name,
-                        )
-                    )
-
+    # Imports for every file first, then uses — preserving the original
+    # two-pass order so the accumulated fact lists (and thus edge resolution)
+    # are byte-identical to the single-pass form.
     for path in py_paths:
-        parsed = trees.get(_resolve_cached(path))
-        if parsed is None:
-            continue
-        source, root_node = parsed
-        for source_id, body in _python_top_level_function_bodies(path, root_node, source):
-            for node in _walk_python_tree(body):
-                imported_name = _python_call_identifier(node, source)
-                if imported_name is None:
-                    continue
-                facts.uses.append(
-                    _SymbolUseFact(
-                        path,
-                        source_id,
-                        imported_name,
-                        "calls",
-                        "call",
-                        node.start_point[0] + 1,
-                    )
-                )
+        raw = raw_by_path.get(path)
+        if raw is not None:
+            _apply_python_raw_imports(raw, path, root, facts)
+    for path in py_paths:
+        raw = raw_by_path.get(path)
+        if raw is not None:
+            _apply_python_raw_uses(raw, path, facts)
 
 def _augment_symbol_resolution_edges(
     paths: list[Path],
     nodes: list[dict],
     edges: list[dict],
     root: Path,
+    cache_root: "Path | None" = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
     _collect_js_symbol_resolution_facts(paths, facts)
-    _collect_python_symbol_resolution_facts(paths, root, facts)
+    _collect_python_symbol_resolution_facts(paths, root, facts, cache_root=cache_root)
     _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 
 def _resolve_cross_file_imports(
