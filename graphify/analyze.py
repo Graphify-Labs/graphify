@@ -107,7 +107,8 @@ def _is_json_key_node(G: nx.Graph, node_id: str) -> bool:
 
 
 def god_nodes(G: nx.Graph, top_n: int = 10,
-              exclude_hubs_percentile: float | None = None) -> list[dict]:
+              exclude_hubs_percentile: float | None = None,
+              sort_by: str = "total") -> list[dict]:
     """Return the top_n most-connected real entities - the core abstractions.
 
     File-level hub nodes are excluded: they accumulate import/contains edges
@@ -118,28 +119,52 @@ def god_nodes(G: nx.Graph, top_n: int = 10,
     threshold computation ``cluster()`` applies (#3205) - so the one setting
     suppresses utility hubs in the ranking AND in community resolution,
     instead of only the latter. ``None`` keeps the historical ranking.
+
+    ``sort_by`` picks the ranking metric: ``"total"`` (default, historical
+    behavior), ``"in"``, or ``"out"``. On a directed graph, total degree sums
+    in-degree (how many things depend on this node - break it and they break)
+    and out-degree (how many things this node depends on - it breaks easily),
+    which answer opposite questions; collapsing them ranks a heavily-depended-on
+    module next to a config file with many outbound-only edges as if
+    comparable (#2488). Every result carries ``in_degree``/``out_degree`` when
+    the graph is directed, regardless of ``sort_by``, so a caller can always
+    show the split. On an undirected graph in/out has no meaning; ``sort_by``
+    is ignored and results carry no ``in_degree``/``out_degree`` keys.
     """
-    degree = dict(G.degree())
+    directed = G.is_directed()
+    if directed:
+        in_degree = dict(G.in_degree())
+        out_degree = dict(G.out_degree())
+        degree = {n: in_degree[n] + out_degree[n] for n in G.nodes()}
+        sort_key = {"total": degree, "in": in_degree, "out": out_degree}.get(sort_by, degree)
+    else:
+        degree = dict(G.degree())
+        sort_key = degree
     hub_threshold: float | None = None
     if exclude_hubs_percentile is not None:
         degrees = sorted(degree.values())
         if degrees:
             idx = max(0, int(len(degrees) * exclude_hubs_percentile / 100) - 1)
             hub_threshold = degrees[idx]
-    sorted_nodes = sorted(degree.items(), key=lambda x: x[1], reverse=True)
+    sorted_nodes = sorted(sort_key.items(), key=lambda x: x[1], reverse=True)
     result = []
-    for node_id, deg in sorted_nodes:
+    for node_id, _rank_deg in sorted_nodes:
+        deg = degree[node_id]
         if hub_threshold is not None and deg > hub_threshold:
             continue
         if _is_file_node(G, node_id) or _is_concept_node(G, node_id) or _is_json_key_node(G, node_id):
             continue
         if G.nodes[node_id].get("label", "") in _BUILTIN_NOISE_LABELS:
             continue
-        result.append({
+        entry = {
             "id": node_id,
             "label": G.nodes[node_id].get("label", node_id),
             "degree": deg,
-        })
+        }
+        if directed:
+            entry["in_degree"] = in_degree[node_id]
+            entry["out_degree"] = out_degree[node_id]
+        result.append(entry)
         if len(result) >= top_n:
             break
     return result

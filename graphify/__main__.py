@@ -590,6 +590,7 @@ def _run_cli() -> None:
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("  god-nodes               list the most connected nodes (architectural hubs)")
         print("    --top N                 how many to show (default 10)")
+        print("    --by total|in|out       rank by total degree, in-degree, or out-degree (default total, directed graphs only)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("    --json                  emit JSON instead of text")
         print("  prs                     PR dashboard: CI state, review status, worktree mapping")
