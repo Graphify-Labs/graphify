@@ -360,6 +360,25 @@ def _node_rationale_text(data: dict) -> str:
     return _strip_diacritics(str(raw)).lower()
 
 
+def _node_attributes_text(data: dict) -> str:
+    """The node's `attributes` dict normalized like a label (diacritics
+    folded, lower-cased) for substring matching in queries (#3625).
+    """
+    raw = data.get("attributes")
+    if not raw:
+        return ""
+    if isinstance(raw, dict):
+        parts = []
+        for k, v in raw.items():
+            if isinstance(v, dict):
+                val = v.get("value", "")
+            else:
+                val = str(v)
+            parts.append(f"{k} {val}")
+        return _strip_diacritics(" ".join(parts)).lower()
+    return ""
+
+
 def _node_search_text(data: dict, nid: str) -> str:
     """Concatenate every field _score_nodes / _find_node match a query against, so
     one trigram index over this text is a complete candidate generator for both.
@@ -367,6 +386,9 @@ def _node_search_text(data: dict, nid: str) -> str:
     - `rationale` (normalized via `_node_rationale_text`) feeds _score_nodes'
       rationale tier (#2293); appended last, and only when present, so every
       other field position is unchanged.
+
+    - `attributes` (normalized via `_node_attributes_text`) feeds attribute
+      matching for queries (#3625).
 
     - `norm_label` and `source_file` feed _score_nodes' per-term substring tiers.
     - `label_tokens` (the space-joined token form) feeds _find_node's
@@ -401,6 +423,9 @@ def _node_search_text(data: dict, nid: str) -> str:
     rationale = _node_rationale_text(data)
     if rationale:
         fields += (rationale,)
+    attrs_text = _node_attributes_text(data)
+    if attrs_text:
+        fields += (attrs_text,)
     return "\x00".join(fields)
 
 
@@ -578,6 +603,7 @@ def _score_query(
         label_tokens = " ".join(_search_tokens(data.get("label") or ""))
         source = (data.get("source_file") or "").lower()
         rationale = _node_rationale_text(data)
+        attrs_text = _node_attributes_text(data)
         # `nid_lower` is needed both by the full-query tier (`if joined`) and by
         # the per-token singleton tier (joined-singlet exact-match check). When
         # neither runs (`joined` empty AND not collecting seeds) skip the call;
@@ -643,6 +669,10 @@ def _score_query(
             if rationale and t in rationale:
                 rationale_value = _RATIONALE_MATCH_BONUS * w
                 score += rationale_value
+            attrs_value = 0.0
+            if attrs_text and t in attrs_text:
+                attrs_value = _RATIONALE_MATCH_BONUS * w
+                score += attrs_value
             tiered += tier_value
             if collect_per_term_seeds and best_by_term is not None:
                 # Singleton score for [t] on this node, mirroring
@@ -661,7 +691,7 @@ def _score_query(
                     singleton = _PREFIX_MATCH_BONUS * 10 * w
                 else:
                     singleton = 0.0
-                singleton += tier_value + substr_value + source_value + rationale_value
+                singleton += tier_value + substr_value + source_value + rationale_value + attrs_value
                 if singleton > 0:
                     # Tie-break key mirrors the legacy sort+max(degree):
                     # (-singleton, -degree, label_len, nid) — the minimum

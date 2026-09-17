@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 from graphify.extractors.base import _make_id
 
 
@@ -248,6 +249,50 @@ def extract_terraform(path: Path) -> dict:
             if c.is_named:
                 _collect_refs(c, owner_nid, rel)
 
+    def _extract_attrs(body_node, prefix: str = "") -> dict[str, Any]:
+        attrs: dict[str, Any] = {}
+        if body_node is None:
+            return attrs
+        for c in body_node.children:
+            if c.type == "attribute":
+                named = [ch for ch in c.children if ch.is_named]
+                if len(named) >= 2:
+                    key = _read(named[0]).strip().strip('"')
+                    val_node = named[1]
+                    val = _read(val_node).strip()
+                    full_key = f"{prefix}{key}" if prefix else key
+                    clean_val = val[1:-1] if (val.startswith('"') and val.endswith('"')) else val
+                    attrs[full_key] = clean_val
+                    for gc in val_node.children:
+                        if gc.type == "object" or (gc.type == "collection_value" and any(cc.type == "object" for cc in gc.children)):
+                            obj = gc if gc.type == "object" else next(cc for cc in gc.children if cc.type == "object")
+                            for elem in obj.children:
+                                if elem.type == "object_elem":
+                                    elem_named = [ch for ch in elem.children if ch.is_named]
+                                    if len(elem_named) >= 2:
+                                        ekey = _read(elem_named[0]).strip().strip('"')
+                                        eval_str = _read(elem_named[1]).strip()
+                                        if eval_str.startswith('"') and eval_str.endswith('"'):
+                                            eval_str = eval_str[1:-1]
+                                        attrs[f"{full_key}.{ekey}"] = eval_str
+            elif c.type == "block":
+                btype = None
+                labels = []
+                nested_body = None
+                for bc in c.children:
+                    if bc.type == "identifier" and btype is None:
+                        btype = _read(bc).strip()
+                    elif bc.type in ("string_lit", "identifier"):
+                        labels.append(_read(bc).strip().strip('"'))
+                    elif bc.type == "body":
+                        nested_body = bc
+                sub_prefix = f"{btype}." if btype else ""
+                if labels:
+                    sub_prefix = f"{btype}.{labels[0]}."
+                nested_attrs = _extract_attrs(nested_body, prefix=f"{prefix}{sub_prefix}")
+                attrs.update(nested_attrs)
+        return attrs
+
     def _body_of(block):
         for c in block.children:
             if c.type == "body":
@@ -299,13 +344,22 @@ def extract_terraform(path: Path) -> dict:
                 key_node = attr.children[0] if attr.children else None
                 if key_node is None:
                     continue
-                key = _read(key_node)
+                key = _read(key_node).strip()
                 lnid = _add_node(f"local.{key}", f"local.{key}", attr.start_point[0] + 1)
+                named = [ch for ch in attr.children if ch.is_named]
+                if len(named) >= 2:
+                    val = _read(named[1]).strip()
+                    clean_val = val[1:-1] if (val.startswith('"') and val.endswith('"')) else val
+                    nodes_by_id[lnid].setdefault("attributes", {})[key] = clean_val
                 _collect_refs(attr, lnid, "references")
             continue
         else:
             continue
         if blk_body is not None:
+            attrs = _extract_attrs(blk_body)
+            if attrs:
+                existing_attrs = nodes_by_id[owner].setdefault("attributes", {})
+                existing_attrs.update(attrs)
             _collect_refs(blk_body, owner, "references")
 
     return {"nodes": nodes, "edges": edges}
