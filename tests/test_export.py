@@ -296,15 +296,18 @@ def test_to_html_creates_file():
         to_html(G, communities, str(out))
         assert out.exists()
 
-def test_to_html_contains_visjs():
+def test_to_html_is_self_contained():
+    """The renderer is inlined, so the file opens offline with no CDN fetch."""
     G = make_graph()
     communities = cluster(G)
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "graph.html"
         to_html(G, communities, str(out))
         content = out.read_text()
-        assert "vis-network" in content
-
+    assert "force-graph" in content
+    assert "<script src=" not in content
+    assert "unpkg.com" not in content
+    assert len(_vis_nodes_from_html(content)) == G.number_of_nodes()
 
 
 def test_to_html_title_uses_portable_path_not_host_absolute():
@@ -357,32 +360,6 @@ def test_to_html_neighbor_links_have_no_inline_onclick_xss():
     assert 'data-nid="${esc(nid)}"' in html
     assert "closest('.neighbor-link')" in html
 
-
-def test_to_html_pins_visjs_version_with_sri():
-    """vis-network script tag must use a pinned versioned URL with a sha384
-    Subresource Integrity hash and crossorigin=anonymous. Without this,
-    a compromised CDN could ship arbitrary JavaScript into every rendered
-    graph viewer. The hash was verified against the upstream file at
-    https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js
-    (sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1).
-    Bumping the vis-network version MUST update both the URL and the hash.
-    """
-    G = make_graph()
-    communities = cluster(G)
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "graph.html"
-        to_html(G, communities, str(out))
-        content = out.read_text()
-
-    # Versioned URL — unversioned `vis-network/standalone/...` is rejected.
-    assert "vis-network@9.1.6/standalone/umd/vis-network.min.js" in content
-    assert "https://unpkg.com/vis-network/standalone" not in content
-
-    # SRI integrity attribute pinning the known-good hash.
-    assert 'integrity="sha384-Ux6phic9PEHJ38YtrijhkzyJ8yQlH8i/+buBR8s3mAZOJrP1gwyvAcIYl3GWtpX1"' in content
-
-    # crossorigin="anonymous" is required for SRI on cross-origin scripts.
-    assert 'crossorigin="anonymous"' in content
 
 def test_to_html_contains_search():
     G = make_graph()
@@ -449,8 +426,8 @@ def test_to_html_annotated_node_gets_learning_status_and_ring():
     ann = nodes["n_transformer"]
     assert ann["learning_status"] == "preferred"
     assert ann["learning_stale"] is False
-    assert ann["color"]["border"] == "#22c55e"  # green ring for preferred
-    assert ann.get("borderWidth") == 3
+    assert ann["ring"] == "#22c55e"  # green ring for preferred
+    assert ann["ring_dashed"] is False
     assert "Lesson: preferred source" in ann["title"]
     # An un-annotated node carries no learning fields.
     other = next(n for nid, n in nodes.items() if nid != "n_transformer")
@@ -472,8 +449,8 @@ def test_to_html_contested_stale_node_gets_dashed_desaturated_ring():
     ann = {n["id"]: n for n in _vis_nodes_from_html(content)}["n_transformer"]
     assert ann["learning_status"] == "contested"
     assert ann["learning_stale"] is True
-    assert ann["color"]["border"] == "#9ca3af"  # desaturated when stale
-    assert ann["shapeProperties"]["borderDashes"] == [4, 4]
+    assert ann["ring"] == "#9ca3af"  # desaturated when stale
+    assert ann["ring_dashed"] is True
     assert "code changed" in ann["title"]
 
 
@@ -1015,8 +992,8 @@ def test_hyperedge_perimeter_uses_convex_hull_not_member_order():
     """The hyperedge polygon must be traced in hull order. Tracing `h.nodes`
     array order self-intersects whenever the layout does not place members in
     angular order, so `fill()` paints crossed wedges instead of one region."""
-    from graphify.exporters.html import _hyperedge_script
-    script = _hyperedge_script("[]")
+    from graphify.exporters.html import _html_script
+    script = _html_script("[]", "[]", "[]", "[]")
     assert "function convexHull(pts)" in script
     assert "const hull = convexHull(positions);" in script
     # the traced ring must derive from the hull, never from raw member order
@@ -1033,8 +1010,8 @@ def test_hyperedge_convex_hull_js_is_geometrically_sound():
     if node is None:
         import pytest
         pytest.skip("node not available")
-    from graphify.exporters.html import _hyperedge_script
-    m = re.search(r"function convexHull\(pts\) \{.*?\n\}", _hyperedge_script("[]"), re.S)
+    from graphify.exporters.html import _html_script
+    m = re.search(r"function convexHull\(pts\) \{.*?\n\}", _html_script("[]", "[]", "[]", "[]"), re.S)
     assert m, "convexHull not found in emitted script"
     harness = m.group(0) + r"""
 const cross = (p,q,r) => (q.x-p.x)*(r.y-p.y) - (q.y-p.y)*(r.x-p.x);
