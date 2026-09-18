@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import tempfile
+from unittest.mock import patch
+
 import pytest
 
 from graphify.paths import (
     _is_test_path,
     disambiguate_ambiguous_candidates,
+    write_json_atomic,
 )
 
 
@@ -144,3 +148,36 @@ def test_is_absolute_any_platform_is_host_independent():
     from graphify.paths import is_absolute_any_platform
     assert is_absolute_any_platform("/home/ci/x.md")
     assert is_absolute_any_platform("C:/Users/u/x.md")
+
+
+def test_atomic_replace_mkstemp_retry_success(tmp_path):
+    """mkstemp PermissionError is retried up to 5 times before succeeding (#3646)."""
+    target = tmp_path / "test.json"
+
+    original_mkstemp = tempfile.mkstemp
+    mock_calls = 0
+
+    def mock_mkstemp(*args, **kwargs):
+        nonlocal mock_calls
+        mock_calls += 1
+        if mock_calls < 3:
+            raise PermissionError("Simulated locked directory")
+        return original_mkstemp(*args, **kwargs)
+
+    with patch("tempfile.mkstemp", side_effect=mock_mkstemp):
+        write_json_atomic(target, {"key": "value"})
+
+    assert target.exists()
+    assert mock_calls == 3
+
+
+def test_atomic_replace_mkstemp_retry_failure(tmp_path):
+    """mkstemp that never succeeds raises RuntimeError after 5 retries (#3646)."""
+    target = tmp_path / "test2.json"
+
+    def mock_mkstemp(*args, **kwargs):
+        raise PermissionError("Simulated locked directory permanently")
+
+    with patch("tempfile.mkstemp", side_effect=mock_mkstemp):
+        with pytest.raises(RuntimeError, match="Failed to create temporary file"):
+            write_json_atomic(target, {"key": "value"})
