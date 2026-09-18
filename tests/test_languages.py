@@ -1164,6 +1164,24 @@ def test_scala_method_return_type_context():
     assert ("create", "HttpClient") in _edge_labels(r, "references", "return_type")
 
 
+def test_scala_type_alias_rhs_references():
+    r = extract_scala(FIXTURES / "sample.scala")
+    assert ("TypeAliases", "Map") in _edge_labels(r, "references", "field")
+    assert ("TypeAliases", "HttpClient") in _edge_labels(r, "references", "generic_arg")
+
+
+def test_scala_opaque_type_rhs_references():
+    r = extract_scala(FIXTURES / "sample.scala")
+    assert ("TypeAliases", "Long") in _edge_labels(r, "references", "field")
+
+
+def test_scala_match_type_case_references():
+    r = extract_scala(FIXTURES / "sample.scala")
+    labels = _edge_labels(r, "references", "field")
+    assert ("TypeAliases", "Option") in labels
+    assert ("TypeAliases", "ListBuffer") in labels
+
+
 def test_scala_call_edges_have_call_context():
     r = extract_scala(FIXTURES / "sample.scala")
     call_edges = _edges_with_relation(r, "calls")
