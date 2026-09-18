@@ -5,6 +5,7 @@ import math
 import os
 import re
 import sys
+import warnings
 from array import array
 from collections import OrderedDict
 from pathlib import Path
@@ -17,8 +18,16 @@ from graphify.build import edge_data, edge_datas
 from graphify.paths import default_graph_json as _default_graph_json
 
 try:
-    import jieba as _jieba  # type: ignore[import-untyped]
-except ImportError:
+    with warnings.catch_warnings():
+        # jieba/jieba-py carry invalid regex escapes that emit a SyntaxWarning on
+        # compile; the message and line moved across Python versions (3.12 also
+        # reworded it), so ignore the category wholesale here rather than pinning
+        # a message/lineno. Under `-W error::SyntaxWarning` this keeps the import
+        # from escalating to a fatal SyntaxError.
+        warnings.simplefilter("ignore", SyntaxWarning)
+        import jieba as _jieba  # type: ignore[import-untyped]
+except (ImportError, SyntaxError):
+    # A stray/broken jieba must never take down the whole server import.
     _jieba = None
 
 
@@ -1335,6 +1344,84 @@ def _query_graph_text(
     return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
 
 
+def _resolve_path_scoped_symbol(G: nx.Graph, path_part: str, symbol_part: str) -> list[str]:
+    """Nodes whose source_file matches path_part and label/id matches symbol_part.
+
+    Backs the `path::Symbol` query form (#3485): a bare path resolves to the
+    FILE node (`_find_node_tiers`'s own `source_exact` tier, which prefers
+    the file over its members once #2032-disambiguated), and a bare symbol
+    name can be ambiguous across files -- the same-named local declaration
+    guard from #3176 exists for exactly that case, and its own suggested
+    retry ("the repo-relative path") pointed at a form that resolved to the
+    wrong node or nothing at all, since no prior tier combined a path with
+    a label. This combines both constraints in one query, so a specific
+    symbol in a specific file is reachable without needing its opaque id.
+    """
+    path_tokens = " ".join(_search_tokens(path_part))
+    norm_path_query = _strip_diacritics(path_part).lower().strip()
+    symbol_term = " ".join(_search_tokens(symbol_part))
+    norm_symbol_query = _strip_diacritics(symbol_part).lower().strip()
+    if not (path_tokens or norm_path_query) or not (symbol_term or norm_symbol_query):
+        return []
+    candidate_ids = _trigram_candidates(G, [symbol_term, norm_symbol_query])
+    node_iter = (
+        G.nodes(data=True) if candidate_ids is None
+        else ((nid, G.nodes[nid]) for nid in candidate_ids)
+    )
+    matches: list[str] = []
+    for nid, d in node_iter:
+        source_file = d.get("source_file") or ""
+        source_tokens = " ".join(_search_tokens(source_file))
+        norm_source = _strip_diacritics(source_file).lower().strip()
+        if not (
+            source_tokens == path_tokens
+            or norm_source == norm_path_query
+            or (norm_path_query and norm_source.endswith("/" + norm_path_query))
+            or (path_tokens and source_tokens.endswith(" " + path_tokens))
+        ):
+            continue
+        norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
+        bare_label = norm_label.rstrip("()")
+        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
+        nid_lower = nid.lower()
+        if (
+            symbol_term == norm_label or symbol_term == bare_label
+            or symbol_term == label_tokens or symbol_term == nid_lower
+            or norm_symbol_query == norm_label or norm_symbol_query == bare_label
+        ):
+            matches.append(nid)
+    return matches
+
+
+def _label_has_literal_exact_match(G: nx.Graph, term: str, norm_query: str) -> bool:
+    """Does the RAW, unsplit query already exact-match some node's own label/id?
+
+    Mirrors the `exact` tier's own condition below, run early and standalone so
+    `_find_node_tiers` can tell a literal `::`-bearing label (Rust modules, C++
+    namespaces) from a deliberately path-scoped query before choosing between
+    them. A real label essentially never equals a whole `path::symbol` string
+    verbatim, so this is a safe way to prefer the literal interpretation
+    whenever one genuinely exists.
+    """
+    candidate_ids = _trigram_candidates(G, [term, norm_query])
+    node_iter = (
+        G.nodes(data=True) if candidate_ids is None
+        else ((nid, G.nodes[nid]) for nid in candidate_ids)
+    )
+    for nid, d in node_iter:
+        norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
+        bare_label = norm_label.rstrip("()")
+        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
+        nid_lower = nid.lower()
+        nid_norm = nid_lower if nid.isascii() else _strip_diacritics(nid).lower()
+        if (
+            term == norm_label or term == bare_label or term == label_tokens or term == nid_lower
+            or norm_query == norm_label or norm_query == bare_label or norm_query == nid_norm
+        ):
+            return True
+    return False
+
+
 def _find_node_tiers(
     G: nx.Graph, label: str
 ) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -1346,8 +1433,6 @@ def _find_node_tiers(
     tier holds several nodes from different files. See `find_node_ambiguity`.
     """
     term = " ".join(_search_tokens(label))
-    if not term:
-        return []
     # Punctuation-preserving normalized query. `term` tokenizes on \w+ (so
     # "blockStream.ts" -> "blockstream ts", space where the '.' was), but a node's
     # stored `norm_label` keeps punctuation ("blockstream.ts"). Matching only via
@@ -1357,6 +1442,29 @@ def _find_node_tiers(
     # `nid_norm` below extends that symmetry to node ids, which keep their
     # punctuation too and are compared raw against the tokenized `term` (#2467).
     norm_query = _strip_diacritics(str(label)).lower().strip()
+
+    # `path::Symbol` restricts the label match to nodes defined in that
+    # file (#3485) -- checked before the ordinary tiers below so a
+    # deliberately path-scoped query never falls back to guessing among
+    # same-named symbols in other files. Returned as source_exact (the
+    # tier `find_node_ambiguity` already treats as maximally specific) so
+    # existing callers need no changes; an empty result falls through to
+    # ordinary matching rather than reporting no match outright, in case
+    # "::" is meaningful some other way to a caller this was not designed
+    # for. Skipped when the raw label already literally matches a node (a
+    # native `::`-bearing label, e.g. Rust modules or C++ namespaces) so that
+    # an unrelated file whose path happens to resemble the label's prefix
+    # cannot hijack a query that was never meant to be path-scoped.
+    if "::" in label and not _label_has_literal_exact_match(G, term, norm_query):
+        path_part, _, symbol_part = label.partition("::")
+        path_part, symbol_part = path_part.strip(), symbol_part.strip()
+        if path_part and symbol_part:
+            scoped = _resolve_path_scoped_symbol(G, path_part, symbol_part)
+            if scoped:
+                return scoped, [], [], []
+
+    if not term:
+        return [], [], [], []
     source_exact: list[str] = []
     exact: list[str] = []
     prefix: list[str] = []
@@ -1471,7 +1579,8 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
         return None, (
             f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
             f"{listing}\n"
-            "Retry with the repo-relative path or the full node id."
+            f"Retry with path::symbol using one of the paths above (e.g. "
+            f"<path>::{label}) or the full node id."
         )
     return matches[0], None
 

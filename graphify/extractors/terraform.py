@@ -1,12 +1,120 @@
-"""Terraform extractor. Moved verbatim from graphify/extract.py."""
+"""Terraform block extraction and local module-source topology."""
 from __future__ import annotations
 
 
+import hashlib
+import json
+from collections.abc import Sequence
 from pathlib import Path
 from graphify.extractors.base import _make_id
 
 
 _TF_META_HEADS = frozenset({"count", "each", "self", "path", "terraform"})
+
+
+def _scope_id(directory: str) -> str:
+    # Hash the exact path too: make_id folds case and punctuation, which must
+    # not merge e.g. dev/app with prod/app, or a-b with a_b.
+    digest = hashlib.sha256(directory.encode("utf-8")).hexdigest()[:16]
+    return _make_id("terraform", directory, digest)
+
+
+def prepare_terraform(result: dict, path: Path, root: Path) -> None:
+    """Make cached directory-scoped IDs portable before the common merge passes."""
+    directory = path.parent.resolve()
+    try:
+        relative = directory.relative_to(root).as_posix()
+    except ValueError:
+        return
+    old, new = _scope_id(directory.as_posix()), _scope_id(relative)
+    for node in result.get("nodes", []):
+        nid = node["id"]
+        if nid.startswith(old + "_"):
+            node["id"] = new + nid[len(old):]
+        node["_terraform_directory"] = relative
+    for edge in result.get("edges", []):
+        for key in ("source", "target"):
+            nid = edge[key]
+            if nid.startswith(old + "_"):
+                edge[key] = new + nid[len(old):]
+    # Resolve paths only here, with the scan boundary available. The per-file
+    # cache keeps syntax facts, never filesystem-dependent topology.
+    for node in result.get("nodes", []):
+        source = node.get("module_source", "")
+        if not source.startswith(("./", "../")):
+            continue
+        try:
+            target = (directory / source).resolve().relative_to(root)
+        except (ValueError, OSError, RuntimeError):
+            continue
+        node["_terraform_source_directory"] = target.as_posix()
+
+
+def resolve_terraform_modules(per_file: list[dict], nodes: list[dict], edges: list[dict]) -> None:
+    """Connect module calls to scanned .tf directories without reading new files."""
+    files: dict[str, list[dict]] = {}
+    anchors = {}
+    for node in nodes:
+        directory = node.get("_terraform_directory")
+        if directory is None:
+            continue
+        if node.get("type") == "terraform_file" and Path(node["source_file"]).suffix == ".tf":
+            files.setdefault(directory, []).append(node)
+        elif node.get("type") == "module" and node.get("language") == "terraform":
+            anchors[directory] = node["id"]
+    fresh_files = {
+        node["id"] for result in per_file for node in result.get("nodes", [])
+        if node.get("type") == "terraform_file"
+    }
+    known_ids = {n["id"] for n in nodes}
+    for directory, members in sorted(files.items()):
+        anchor = anchors.setdefault(directory, _make_id(_scope_id(directory), "directory"))
+        if anchor not in known_ids:
+            owner = min(members, key=lambda n: n["source_file"])
+            nodes.append({
+                "id": anchor, "label": f"Terraform module: {directory}",
+                "type": "module", "language": "terraform", "file_type": "code",
+                "source_file": owner["source_file"], "source_location": None,
+                "_terraform_directory": directory,
+            })
+            known_ids.add(anchor)
+        for member in members:
+            if member["id"] in fresh_files:
+                edges.append({
+                    "source": anchor, "target": member["id"], "relation": "contains",
+                    "confidence": "EXTRACTED", "weight": 1.0,
+                    "source_file": member["source_file"], "source_location": None,
+                })
+    fresh_calls = {
+        node["id"] for result in per_file for node in result.get("nodes", [])
+        if "module_source" in node
+    }
+    for node in nodes:
+        if node["id"] not in fresh_calls:
+            continue
+        target = anchors.get(node.get("_terraform_source_directory"))
+        if target is not None:
+            edges.append({
+                "source": node["id"], "target": target, "relation": "module_source",
+                "confidence": "EXTRACTED", "weight": 1.0,
+                "source_file": node["source_file"],
+                "source_location": node["module_source_location"],
+            })
+
+
+def refresh_terraform_paths(
+    changed: list[Path], corpus: list[Path], invalidated: Sequence[Path] = (),
+) -> list[Path]:
+    """Reconcile directory ownership and incoming links on incremental scans.
+
+    Callers pass only the permitted, live corpus. Cached syntax is reused for
+    unchanged Terraform files; other languages keep their incremental behavior.
+    """
+    if not any(p.suffix == ".tf" or p.name in (".gitignore", ".graphifyignore")
+               for p in [*changed, *invalidated]):
+        return changed
+    return list(dict.fromkeys([*changed, *(p for p in corpus if p.suffix == ".tf")]))
+
 
 def extract_terraform(path: Path) -> dict:
     """Extract Terraform/HCL blocks and the references between them via tree-sitter.
@@ -37,14 +145,16 @@ def extract_terraform(path: Path) -> dict:
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
-    str_path = str(path)
+    str_path = str(path.parent.resolve() / path.name)
     file_nid = _make_id(str_path)
-    scope = path.parent.name or "tf"
+    scope = _scope_id(path.parent.resolve().as_posix())
 
     nodes: list[dict] = [{"id": file_nid, "label": path.name, "file_type": "code",
-                          "source_file": str_path, "source_location": None}]
+                          "source_file": str_path, "source_location": None,
+                          "type": "terraform_file"}]
     edges: list[dict] = []
     seen_ids: set[str] = {file_nid}
+    nodes_by_id = {file_nid: nodes[0]}
     seen_edges: set[tuple[str, str, str]] = set()
 
     def _read(n) -> str:
@@ -59,6 +169,7 @@ def extract_terraform(path: Path) -> dict:
             seen_ids.add(nid)
             nodes.append({"id": nid, "label": label, "file_type": "code",
                           "source_file": str_path, "source_location": f"L{line}"})
+            nodes_by_id[nid] = nodes[-1]
             edges.append({"source": file_nid, "target": nid, "relation": "contains",
                           "confidence": "EXTRACTED", "source_file": str_path,
                           "source_location": f"L{line}", "weight": 1.0})
@@ -156,6 +267,25 @@ def extract_terraform(path: Path) -> dict:
             owner = _add_node(f"data.{labels[0]}.{labels[1]}", f"data.{labels[0]}.{labels[1]}", line)
         elif btype == "module" and labels:
             owner = _add_node(f"module.{labels[0]}", f"module.{labels[0]}", line)
+            if blk_body is not None and path.suffix == ".tf":
+                for attr in blk_body.named_children:
+                    if attr.type != "attribute" or _read(attr.named_children[0]) != "source":
+                        continue
+                    # Accept a plain quoted literal only, not interpolation,
+                    # heredocs, or constant expressions requiring evaluation.
+                    value = attr.named_children[-1]
+                    while value.type in ("expression", "literal_value") and len(value.named_children) == 1:
+                        value = value.named_children[0]
+                    if value.type != "string_lit" or value.has_error:
+                        continue
+                    try:
+                        module_source = json.loads(_read(value))
+                    except (ValueError, TypeError):
+                        continue
+                    if not isinstance(module_source, str):
+                        continue
+                    nodes_by_id[owner]["module_source"] = module_source.replace("$${", "${").replace("%%{", "%{")
+                    nodes_by_id[owner]["module_source_location"] = f"L{attr.start_point[0] + 1}"
         elif btype == "variable" and labels:
             owner = _add_node(f"var.{labels[0]}", f"var.{labels[0]}", line)
         elif btype == "output" and labels:

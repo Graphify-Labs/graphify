@@ -296,7 +296,7 @@ def test_windows_frontmatter_name_and_shell_and_extra():
     assert "## Troubleshooting" in core
     assert "### PowerShell 5.1: Vertical scrolling stops working" in core
     # The troubleshooting section sits before Honesty Rules, single separator.
-    assert "\n4. **Skip graspologic**" in core
+    assert "\n4. **Skip Leiden**" in core
     assert core.index("## Troubleshooting") < core.index("## Honesty Rules")
 
 

@@ -30,6 +30,7 @@ except Exception:
     __version__ = "unknown"
 
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
 
 
 def _write_version_stamp(skill_dst: Path, version: str) -> None:
@@ -45,7 +46,7 @@ def _write_version_stamp(skill_dst: Path, version: str) -> None:
     tmp = version_file.with_name(".graphify_version.tmp")
     try:
         tmp.write_text(version, encoding="utf-8")
-        os.replace(tmp, version_file)
+        _os_replace_with_fallback(tmp, version_file)
     except Exception:
         try:
             tmp.unlink(missing_ok=True)
@@ -250,7 +251,7 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
     tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
     try:
         shutil.copy(skill_src, tmp_dst)
-        os.replace(tmp_dst, skill_dst)
+        _os_replace_with_fallback(tmp_dst, skill_dst)
     except Exception:
         try:
             tmp_dst.unlink(missing_ok=True)
@@ -337,6 +338,14 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
     When ``strict`` is set, the read hook carries ``--strict`` so it blocks the
     first raw read per session (Claude Code only). The ``GRAPHIFY_HOOK_STRICT`` env
     var can force it on or off at runtime without a reinstall.
+
+    Each entry carries a ``timeout`` (#3314): unset, Claude Code defaults a
+    command hook to 600s, so a single wedged guard (a stuck filesystem, a
+    hung subprocess) stalls the surrounding tool call for ten minutes on
+    every Bash/Grep/Read/Glob call -- the four highest-frequency tools an
+    agent uses. The guard itself measures ~170ms warm; 10s is generous
+    headroom over that while still two orders of magnitude below the
+    unset default.
     """
     exe = _resolve_graphify_exe(project=project)
     if " " in exe and not exe.startswith('"'):
@@ -344,9 +353,9 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
     read_cmd = f"{exe} hook-guard read" + (" --strict" if strict else "")
     return [
         {"matcher": "Bash|Grep",
-         "hooks": [{"type": "command", "command": f"{exe} hook-guard search"}]},
+         "hooks": [{"type": "command", "command": f"{exe} hook-guard search", "timeout": 10}]},
         {"matcher": "Read|Glob",
-         "hooks": [{"type": "command", "command": read_cmd}]},
+         "hooks": [{"type": "command", "command": read_cmd, "timeout": 10}]},
     ]
 def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") -> str:
     return (
@@ -356,6 +365,34 @@ def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") 
         "When the user types `/graphify`, use the installed graphify skill "
         "or instructions before doing anything else.\n"
     )
+def _register_always_on_block(target: Path, prefix: str, registration: str) -> None:
+    """Append an always-on registration to *target*, degrading instead of raising.
+
+    The skill files are copied before this runs, so a *target* that cannot be
+    read or written must not abort an otherwise-complete install (#3474). That
+    happens whenever the dotfile is managed declaratively -- nix/home-manager
+    symlinks ``~/.claude/CLAUDE.md`` into a read-only /nix/store, and chezmoi or
+    stow with read-only sources leave the same shape.
+    """
+    try:
+        if target.exists():
+            content = target.read_text(encoding="utf-8")
+            if "graphify" in content:
+                print(f"{prefix}already registered (no change)")
+            else:
+                target.write_text(content.rstrip() + registration, encoding="utf-8")
+                print(f"{prefix}skill registered in {target}")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(registration.lstrip(), encoding="utf-8")
+            print(f"{prefix}created at {target}")
+    except OSError as exc:
+        print(f"{prefix}skipped: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        print(
+            f"  hint: the skill files were installed; add the graphify block to "
+            f"{target} manually to finish always-on registration",
+            file=sys.stderr,
+        )
 _PLATFORM_CONFIG: dict[str, dict] = {
     "claude": {
         "skill_file": "skill.md",
@@ -673,34 +710,17 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         else:
             claude_md = Path.home() / ".claude" / "CLAUDE.md"
             skill_ref = "~/.claude/skills/graphify/SKILL.md"
-        registration = _skill_registration(skill_ref)
-        if claude_md.exists():
-            content = claude_md.read_text(encoding="utf-8")
-            if "graphify" in content:
-                print(f"  CLAUDE.md        ->  already registered (no change)")
-            else:
-                claude_md.write_text(content.rstrip() + registration, encoding="utf-8")
-                print(f"  CLAUDE.md        ->  skill registered in {claude_md}")
-        else:
-            claude_md.parent.mkdir(parents=True, exist_ok=True)
-            claude_md.write_text(registration.lstrip(), encoding="utf-8")
-            print(f"  CLAUDE.md        ->  created at {claude_md}")
+        _register_always_on_block(
+            claude_md, "  CLAUDE.md        ->  ", _skill_registration(skill_ref)
+        )
 
     if platform == "codebuddy":
         # Register in ~/.codebuddy/CODEBUDDY.md (CodeBuddy only)
-        codebuddy_md = Path.home() / ".codebuddy" / "CODEBUDDY.md"
-        registration = _skill_registration("~/.codebuddy/skills/graphify/SKILL.md")
-        if codebuddy_md.exists():
-            content = codebuddy_md.read_text(encoding="utf-8")
-            if "graphify" in content:
-                print(f"  CODEBUDDY.md     ->  already registered (no change)")
-            else:
-                codebuddy_md.write_text(content.rstrip() + registration, encoding="utf-8")
-                print(f"  CODEBUDDY.md     ->  skill registered in {codebuddy_md}")
-        else:
-            codebuddy_md.parent.mkdir(parents=True, exist_ok=True)
-            codebuddy_md.write_text(registration.lstrip(), encoding="utf-8")
-            print(f"  CODEBUDDY.md     ->  created at {codebuddy_md}")
+        _register_always_on_block(
+            Path.home() / ".codebuddy" / "CODEBUDDY.md",
+            "  CODEBUDDY.md     ->  ",
+            _skill_registration("~/.codebuddy/skills/graphify/SKILL.md"),
+        )
 
     if platform == "opencode":
         _install_opencode_plugin(project_dir if project else Path("."))
@@ -887,7 +907,7 @@ def vscode_install(project_dir: Path | None = None) -> None:
     tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
     try:
         shutil.copy(skill_src, tmp_dst)
-        os.replace(tmp_dst, skill_dst)
+        _os_replace_with_fallback(tmp_dst, skill_dst)
     except Exception:
         try:
             tmp_dst.unlink(missing_ok=True)

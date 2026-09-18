@@ -59,7 +59,7 @@ _RUST_TRAIT_METHOD_BLOCKLIST: frozenset[str] = frozenset({
 })
 
 def extract_rust(path: Path) -> dict:
-    """Extract functions, structs, enums, traits, impl methods, and use declarations from a .rs file."""
+    """Extract functions, structs, enums, traits, impl methods, statics/consts, and use declarations from a .rs file."""
     try:
         import tree_sitter_rust as tsrust
         from tree_sitter import Language, Parser
@@ -80,7 +80,7 @@ def extract_rust(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
-    function_bodies: list[tuple[str, object]] = []
+    function_bodies: list[tuple[str, object, str | None]] = []
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -160,7 +160,7 @@ def extract_rust(path: Path) -> dict:
                 if tgt != func_nid:
                     add_edge(func_nid, tgt, "references", line, context=ctx)
 
-    def walk(node, parent_impl_nid: str | None = None) -> None:
+    def walk(node, parent_impl_nid: str | None = None, parent_impl_type: str | None = None) -> None:
         t = node.type
 
         if t == "function_item":
@@ -179,7 +179,7 @@ def extract_rust(path: Path) -> dict:
                 emit_param_return_refs(node, func_nid, line)
                 body = node.child_by_field_name("body")
                 if body:
-                    function_bodies.append((func_nid, body))
+                    function_bodies.append((func_nid, body, parent_impl_type))
             return
 
         if t == "function_signature_item":
@@ -325,14 +325,48 @@ def extract_rust(path: Path) -> dict:
                             walk(child, parent_impl_nid=item_nid)
             return
 
+        if t in ("static_item", "const_item"):
+            # `static NAME: T = …;` / `const NAME: T = …;` at module level, or an
+            # associated const inside an impl. Neither node type had a branch, so a
+            # constant reached the graph only through files that referenced it,
+            # never from the Rust that defines it (#3471).
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                item_name = _read_text(name_node, source)
+                line = node.start_point[0] + 1
+                if parent_impl_nid:
+                    item_nid = _make_id(parent_impl_nid, item_name)
+                    add_node(item_nid, f".{item_name}", line)
+                    add_edge(parent_impl_nid, item_nid, "contains", line)
+                else:
+                    item_nid = _make_id(stem, item_name)
+                    add_node(item_nid, item_name, line)
+                    add_edge(file_nid, item_nid, "contains", line)
+                type_node = node.child_by_field_name("type")
+                if type_node is not None:
+                    refs: list[tuple[str, str]] = []
+                    _rust_collect_type_refs(type_node, source, False, refs)
+                    for ref_name, role in refs:
+                        tgt = ensure_named_node(ref_name, line)
+                        if tgt == item_nid:
+                            continue
+                        ctx = "generic_arg" if role == "generic_arg" else "field"
+                        add_edge(item_nid, tgt, "references", line, context=ctx)
+            return
+
         if t == "impl_item":
             type_node = node.child_by_field_name("type")
             trait_node = node.child_by_field_name("trait")
             impl_nid: str | None = None
+            impl_type_bare: str | None = None
             if type_node:
                 type_name = _read_text(type_node, source).strip()
                 impl_nid = _make_id(stem, type_name)
                 add_node(impl_nid, type_name, node.start_point[0] + 1)
+                # Bare name (generics stripped) for typing a `self.` receiver
+                # inside this block's methods (#2234) — `impl Foo<T>` types
+                # `self` as `Foo`, not the literal `Foo<T>` text.
+                impl_type_bare = type_name.split("<")[0].strip()
             if trait_node is not None and impl_nid is not None:
                 refs: list[tuple[str, str]] = []
                 _rust_collect_type_refs(trait_node, source, False, refs)
@@ -348,7 +382,7 @@ def extract_rust(path: Path) -> dict:
             body = node.child_by_field_name("body")
             if body:
                 for child in body.children:
-                    walk(child, parent_impl_nid=impl_nid)
+                    walk(child, parent_impl_nid=impl_nid, parent_impl_type=impl_type_bare)
             return
 
         if t == "use_declaration":
@@ -376,7 +410,7 @@ def extract_rust(path: Path) -> dict:
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
 
-    def walk_calls(node, caller_nid: str) -> None:
+    def walk_calls(node, caller_nid: str, self_type: str | None = None) -> None:
         if node.type == "function_item":
             return
         if node.type == "call_expression":
@@ -384,6 +418,7 @@ def extract_rust(path: Path) -> dict:
             callee_name: str | None = None
             is_member_call: bool = False
             is_scoped_call: bool = False
+            is_self_call: bool = False
             if func_node:
                 if func_node.type == "identifier":
                     callee_name = _read_text(func_node, source)
@@ -392,6 +427,9 @@ def extract_rust(path: Path) -> dict:
                     field = func_node.child_by_field_name("field")
                     if field:
                         callee_name = _read_text(field, source)
+                    receiver = func_node.child_by_field_name("value")
+                    if receiver is not None and receiver.type == "self":
+                        is_self_call = True
                 elif func_node.type == "scoped_identifier":
                     # Type::method() — still allow in-file EXTRACTED match, but
                     # skip cross-file resolution: bare last-segment lookup ignores
@@ -418,18 +456,21 @@ def extract_rust(path: Path) -> dict:
                             "weight": 1.0,
                         })
                 elif not is_scoped_call and callee_name.lower() not in _RUST_TRAIT_METHOD_BLOCKLIST:
-                    raw_calls.append({
+                    rc_entry = {
                         "caller_nid": caller_nid,
                         "callee": callee_name,
                         "is_member_call": is_member_call,
                         "source_file": str_path,
                         "source_location": f"L{node.start_point[0] + 1}",
-                    })
+                    }
+                    if is_self_call and self_type:
+                        rc_entry["rust_self_type"] = self_type
+                    raw_calls.append(rc_entry)
         for child in node.children:
-            walk_calls(child, caller_nid)
+            walk_calls(child, caller_nid, self_type)
 
-    for caller_nid, body_node in function_bodies:
-        walk_calls(body_node, caller_nid)
+    for caller_nid, body_node, impl_type in function_bodies:
+        walk_calls(body_node, caller_nid, impl_type)
 
     valid_ids = seen_ids
     clean_edges = []

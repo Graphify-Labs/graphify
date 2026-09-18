@@ -2,8 +2,77 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
-## 0.9.57 (unreleased)
+## 0.9.63 (2026-09-16)
 
+- Feature: Elixir `alias`/`import`/`require`/`use` targets now resolve onto the module's `defmodule` node across files, so the internal module dependency graph is no longer dropped as dangling. Only top-level modules are indexed (a nested `defmodule`, labeled with its bare inner name, cannot capture an unrelated `use <Name>` from another file), and a same-file reference is left unresolved so it cannot clobber the structural `contains` edge (#3603, thanks @ayushcodes10).
+- Feature: a Rust `self.method()` call now resolves to a method defined on the same type in another file (the common split-`impl`-block layout), pooling methods across every `impl` of one type and refusing to link when two unrelated types share a bare name (#3602, thanks @ayushcodes10).
+- Feature: a Ruby member call `obj.foo` on a known-type receiver now resolves to a method `foo` inherited from a superclass, including across files, using the same conservative promotion as the implicit-self resolver — a single owning class, matching method kind, and one unambiguous ancestry chain, or it stays dangling (#3585, thanks @oleksii-tumanov).
+- Fix: every edge endpoint written to `graph.json` is now a declared node. An `imports`/`imports_from`/`re_exports` edge to an external module (stdlib, a third-party dependency) mints a typed external stub node instead of leaving a dangling endpoint that loaders materialise as an attribute-less phantom, and a cross-repo merge unifies the same external module into one global node instead of fragmenting it per repo; sourceless external call targets stay suppressed (#2873, #2878, thanks @AromalBiju1).
+- Fix: a Markdown code-span mention edge now survives an incremental rebuild instead of being pruned as an unauthored link, and a dotted span (`Foo.bar`) resolves using its qualifiers as evidence, rejecting misleading matches such as `time.sleep` or `pyproject.toml` (#3587, thanks @AstroMined).
+
+## 0.9.62 (2026-09-15)
+
+- Feature: Terraform module calls with a literal local `source` (`./…` or `../…`) now resolve to a directory-scoped module node, exposing the caller→implementation topology (e.g. environment → application → base); remote and registry sources and source expressions are left unresolved and never fabricate a target. After upgrading an existing graph, run `graphify update .` once to regenerate Terraform ids and topology (#3571, thanks @vstepko).
+- Feature: a bare implicit-self call in a Ruby method now resolves up the inheritance chain to a method defined on a superclass, including across files. The promotion is conservative — it only upgrades an existing inferred edge when a single owning class, a matching method kind, and one unambiguous ancestry chain all agree, and it bails on mixins, reopened classes, and dynamic superclasses rather than guess (#3569, thanks @oleksii-tumanov).
+- Feature: an inline code span in a Markdown file (e.g. `` `Widget.render` ``) now emits a `references` edge to the symbol it names, but only when exactly one corpus callable matches — generic words and ambiguous names link to nothing, so docs join the graph without a false-edge firehose (#3562, thanks @AstroMined).
+- Fix: a prose file whose stem is the bare plural "tokens" (e.g. `TOKENS.md`) is no longer excluded as a credential dump; singular `token.md` and other keywords' bare plurals still exclude, and content-based secret detection is unchanged (#3527, thanks @HARSHAVARDHAN-RAJU5).
+- Fix: a call whose only resolution target is a sourceless external stub no longer emits a spurious `calls` edge, so an unresolved external name stops accruing a phantom god-node (#3156, thanks @DevChiniwala).
+- Fix: calls made inside a module-level anonymous closure (an IIFE or a top-level callback) are now attributed to the file node instead of being dropped (#3124, thanks @ayushcodes10).
+- Fix: cross-repo merge now respects C# namespace/`using` scoping — a parked member call binds to a same-named type in another repo only when the caller's namespace or an in-scope `using` resolves it, so a third-party receiver no longer binds to an unrelated repo-local type (#3360, thanks @DevChiniwala).
+- Fix: a bare Lua `require("mod")` statement (no assignment) now emits an `imports` edge, including the chained `require("lazy").setup({})` LazyVim idiom, so Neovim configs graph correctly instead of coming out as disconnected files (#3320, thanks @A-Levin).
+- Fix: the Claude/CodeBuddy PreToolUse guard hooks now carry a timeout, so a wedged filesystem stat can no longer stall a tool call indefinitely (#3314, thanks @ayushcodes10).
+- Fix: id-prefix reconstruction is now Unicode-aware — a non-Latin path segment is slugified with the canonical normalizer instead of being dropped, so files under non-ASCII directories keep stable ids (#3559, thanks @ayushcodes10).
+- Fix: `cohesion_score` now excludes self-loops (e.g. a recursive call) from the edge count, so a community's score stays within 0..1 instead of being inflated above 1 (#3558, thanks @jordanalexanderp18-rgb).
+- Fix: the incremental watch and rebuild paths now route the `graph.json` replace through the shared atomic-write fallback at both write sites, so a cross-drive or locked-file replace can no longer corrupt the graph mid-update (#3555, thanks @ayushcodes10).
+- Fix: a semantic-cache group whose stored `source_file` is malformed is now recovered by basename instead of being dropped, with the recovered group's `source_file` corrected before it is written back; an ambiguous basename stays skipped (#3553, thanks @ayushcodes10).
+- Fix: an exported destructuring declaration (`export const { a, b } = obj`) now emits one node per exported name instead of a single combined node, so each name resolves and cross-file imports of a split export link correctly (#3552, #2604, thanks @ayushcodes10).
+- Fix: a community made up entirely of file nodes is now counted as thin rather than invisible in the report, so it is no longer silently dropped from the community summary (#3549, #3548, thanks @ayushcodes10).
+- Fix: the git guard-hook shell gates now resolve the output directory from `GRAPHIFY_OUT` instead of a hardcoded `graphify-out/`, so a renamed output directory no longer makes the hooks silently no-op (#3546, thanks @breken-ai).
+
+## 0.9.61 (2026-09-12)
+
+- Fix: `graphify.serve` now imports cleanly on Python 3.12 and 3.13. The `chinese` extra pins `jieba-py` from 3.12 onward (0.9.60 mistakenly kept the old `jieba` until 3.14, and its invalid regex escapes are a hard error on 3.12+), and the jieba import now suppresses the tokenizer's `SyntaxWarning` regardless of message or line so it never escalates under `-W error`.
+- Fix: the git hook's rebuild-root guard now rejects a symlink-loop or dangling `.graphify_root` on Python 3.13, whose `Path.resolve()` no longer raises on a loop — the saved root must resolve to a real directory inside the repo before it is adopted.
+
+## 0.9.60 (2026-09-12)
+
+- Fix: atomic writes now fall back correctly on Windows `WinError 17` (cannot move to a different drive), not just `PermissionError` — a shared `os_replace_with_fallback` copies through a temp in the target directory and restores the original if the swap fails, keeping install/export/cache writes crash-safe (#3508, thanks @ayushcodes10).
+- Fix: files that could not be classified into any language or type are now surfaced (a count and top extensions in the console and GRAPH_REPORT) instead of vanishing from a "successful" run; noise and ignored paths are unaffected (#3511, thanks @ayushcodes10).
+- Fix: a C or C++ header with no trailing newline no longer trips a tree-sitter syntax error — a newline is appended before parsing when the source lacks one (#3513, thanks @imanolpg).
+- Fix: Office and Workspace document sidecars converted into `graphify-out/converted/` are no longer dropped when `graphify-out/` is gitignored — the tool stops ignoring its own output (#3504, thanks @ayushcodes10).
+- Fix: a call inside an exported function (`export function f(){ g() }`, `export const f = () => g()`) now resolves, including calls to aliased imports (`import { x as y }; y()`) (#3346, thanks @abhay-codes07).
+- Fix: a package.json `exports` map is now resolved by importer platform with the runtime condition preferred over `types`, so cross-package edges no longer drop to a non-existent `.d.ts` (#3487, thanks @dajiaohuang).
+- Feature: Python 3.14 is now supported — optional dependencies without 3.14 wheels are gated to drop-in replacements (`jieba` to `jieba-py`, `graspologic` to `graspologic-native`) by interpreter version, and vulnerable dependency floors (setuptools, pypdf, yt-dlp) were raised (#3490, thanks @taazbro).
+
+## 0.9.59 (2026-09-12)
+
+- Fix: an incremental rebuild no longer drops cross-file `concept` nodes from files it didn't touch — global dedup during a merge now protects existing nodes from untouched files instead of collapsing same-labeled ones across them (#3477, thanks @hopstreax).
+- Fix: extraction now falls back to sequential in-process work when the process pool cannot start (e.g. POSIX semaphore exhaustion), instead of aborting the whole run (#3497, thanks @curtismu7).
+- Performance: Python symbol resolution is roughly 47% faster — path resolution is memoized, each file parses once across both resolution passes, and the tree walk is iterative rather than recursive; extraction output is unchanged (#3500 / #3501 / #3502, thanks @abhay-codes07).
+- Fix: `graphify explain` now accepts a `path::Symbol` form to disambiguate a symbol that shares its name with its file, and the ambiguity hint now shows a form the resolver actually accepts (#3485, thanks @ayushcodes10).
+- Fix: the git hook now keeps its rebuild root inside the repository — a committed `.graphify_root` pointing outside the worktree is ignored and falls back to the repo top, so a checked-in marker can't steer the hook to scan or write outside the tree (#3265, thanks @ayushcodes10).
+
+## 0.9.58 (2026-09-10)
+
+- Fix: a call to a Python function defined nested inside another function now resolves to that inner definition per lexical scope, instead of leaking to a same-named function elsewhere; direct recursion is preserved as a self-loop (#3410, thanks @hopstreax).
+- Fix: submodule imports inside a PEP 420 namespace package (a directory with no `__init__.py`) now resolve to the target module instead of being dropped (#3429, thanks @flaukowski).
+- Fix: a bare-name import of a module sitting next to the importing file (a flat script dir with no package) now resolves to that sibling — matching CPython's `sys.path[0]` behavior — without over-resolving a genuine third-party name (#3430, thanks @hopstreax).
+- Fix: a PHP `use Foo\Bar as Baz;` import keys its local binding on the alias, so later `Baz` references resolve to the real class, and distinct aliased same-named classes stay separate (#3421, thanks @ayushcodes10).
+- Fix: a directory literally named `out` is skipped as build output only when there is build-output evidence, so a real source `out/` is no longer silently dropped (#3347, thanks @abhay-codes07).
+- Fix: a shell script invoked in exec position through a variable path (`"$SCRIPT_DIR/foo.sh"`) now resolves to the target when the variable holds a constant, matching the existing `source` handling (#3416, thanks @edwardselby).
+- Fix: added the missing `Iterable` import in build.py so its type annotations resolve (they were an undefined name) (#3462, thanks @xiongjianxu).
+- Fix: `graphify global add` no longer infers an empty repo tag for a path like `/tmp/graph.json`; it degrades to a sensible non-empty tag via the same helper `merge-graphs` uses (#3464, thanks @xiongjianxu).
+- Feature: SQL extraction now emits index nodes for `CREATE [UNIQUE] INDEX`, linked to the table they index (#3467, thanks @L4XB).
+- Fix: a TypeScript `export *` re-export no longer resolves a name to a same-named interface *method* — only module-level exports are candidates (#3436, thanks @L4XB).
+- Feature: Rust module-level `static` and `const` declarations are now extracted as nodes (#3471, thanks @L4XB).
+- Fix: an incremental rebuild no longer drops a node's `rationale`/`summary` when a semantic node's absolute `source_file` collides with its AST twin's relative path during dedup — source paths are normalized first (#3472, thanks @hopstreax).
+- Fix: `graphify install` no longer aborts when the always-on registration target is unwritable (read-only or symlinked config); it skips that step with an actionable warning and still installs the skill (#3474, thanks @dajiaohuang).
+- Fix: community labelling falls back to an installed `claude` CLI resolved at run time instead of pinning a path that expires (e.g. under snap/nvm), so labelling keeps working across updates (#3475, thanks @ktsang622).
+- Fix: the `all` extra now includes `psycopg[binary]`, so `pip install 'graphifyy[all]'` provides the postgres driver (#3482, thanks @L4XB).
+
+## 0.9.57 (2026-09-09)
+
+- Fix: Rust module-level `static` and `const` declarations (and associated consts inside an `impl`) are now extracted as nodes with a `contains` edge and a reference to their declared type — neither node type had a branch, so a constant only ever reached the graph through files that referenced it (#3471, thanks @sortakool).
 - Fix: an incremental rebuild no longer wipes cross-file project AST nodes — re-extracting one `.csproj`/`.sln` was dropping package/framework nodes of a *referenced* project (whose stub carried the referenced file's `source_file`); the AST-replacement set is now derived from the files actually extracted (#3411, thanks @hopstreax).
 - Fix: when duplicate nodes merge, the richer (more complete) node is now kept as the survivor and the losers' non-empty fields are folded in, instead of a shorter-id passing mention winning and dropping content (#3372, thanks @abhay-codes07).
 - Fix: a C# generic call site with explicit type arguments — `Get<int>(...)`, unqualified or through `this` — now resolves to the method definition instead of capturing `Get<int>` as the callee and failing to match (#3406, thanks @abhay-codes07).

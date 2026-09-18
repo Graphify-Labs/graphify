@@ -207,7 +207,7 @@ graphify install --project --platform codex
 | `neo4j` | דחיפה ל-Neo4j | `uv tool install "graphifyy[neo4j]"` |
 | `falkordb` | דחיפה ל-FalkorDB | `uv tool install "graphifyy[falkordb]"` |
 | `svg` | ייצוא גרף ל-SVG | `uv tool install "graphifyy[svg]"` |
-| `leiden` | זיהוי קהילות Leiden ‏(Python < 3.13 בלבד) | `uv tool install "graphifyy[leiden]"` |
+| `leiden` | זיהוי קהילות Leiden ‏(graspologic ב-Python < 3.13; מנגנון native ב-3.13+) | `uv tool install "graphifyy[leiden]"` |
 | `ollama` | הרצה מקומית עם Ollama | `uv tool install "graphifyy[ollama]"` |
 | `openai` | OpenAI / ממשקי API תואמי-OpenAI | `uv tool install "graphifyy[openai]"` |
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
