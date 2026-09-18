@@ -43,3 +43,6 @@ paper/
 
 # OMP extension test dependency tree (graphify/omp)
 graphify/omp/node_modules/
+
+# Local symlink for the root-level bun tests (temporary, per AGENTS.md)
+/node_modules
