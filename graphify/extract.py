@@ -6410,6 +6410,13 @@ def _caller_main_lacks_guard() -> bool:
     a valid but less common form like a parenthesized comparison. The AST
     does not see string contents as code at all, and is indifferent to
     formatting, so both gaps close at once.
+
+    Only the module's direct top-level statements are checked, not every
+    node anywhere in the tree: ``ast.walk`` also finds a guard nested inside
+    an unrelated function, class, or dead branch, which never executes at
+    import time and so provides no actual protection at all. The idiom
+    itself only has its intended effect as a bare top-level statement, so
+    that is the only place a real guard can be.
     """
     main_file = getattr(sys.modules.get("__main__"), "__file__", None)
     if not main_file:
@@ -6426,7 +6433,7 @@ def _caller_main_lacks_guard() -> bool:
         return False
     return not any(
         isinstance(node, ast.If) and _is_main_guard_test(node.test)
-        for node in ast.walk(tree)
+        for node in tree.body
     )
 
 
