@@ -454,3 +454,87 @@ def test_global_add_rejects_oversized_source_graph(monkeypatch, tmp_path):
         from graphify.global_graph import global_add
         with pytest.raises(ValueError, match="exceeds"):
             global_add(src_graph, "repoA")
+
+
+def test_global_store_lock_serializes_concurrent_critical_sections(tmp_path):
+    """Review finding: global_add/global_remove each load-mutate-save the
+    shared store with no locking, so two concurrent calls read the same
+    pre-write snapshot, compute conflicting results, and the second save
+    silently discards the first's work entirely. The lock added to close
+    this must actually provide mutual exclusion -- verified directly by
+    running several threads through the critical section and confirming
+    at most one is ever inside it at once, rather than through global_add
+    itself (racing its real logic reliably, without deadlocking a test
+    that also needs to pass once the lock works, is far harder to get
+    right than testing the lock's own guarantee in isolation)."""
+    import threading
+    import time
+    from graphify import global_graph as gg_mod
+
+    global_dir = tmp_path / ".graphify"
+    active = {"count": 0}
+    max_active = {"value": 0}
+    counter_lock = threading.Lock()
+
+    def worker():
+        with gg_mod._global_store_lock():
+            with counter_lock:
+                active["count"] += 1
+                max_active["value"] = max(max_active["value"], active["count"])
+            time.sleep(0.05)
+            with counter_lock:
+                active["count"] -= 1
+
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir):
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+    assert max_active["value"] == 1, (
+        f"the lock let {max_active['value']} threads into the critical section at once"
+    )
+
+
+def test_global_add_concurrent_calls_both_survive(tmp_path):
+    """End-to-end: two different repos added via genuinely concurrent
+    global_add calls must both still be present afterward -- the lock
+    from the finding above must be held across the real load/mutate/save
+    cycle, not just demonstrated in isolation."""
+    import threading
+    from graphify import global_graph as gg_mod
+
+    src_a = tmp_path / "a.json"
+    src_b = tmp_path / "b.json"
+    _graph_to_json(
+        _make_graph([{"id": "a1", "label": "A1", "source_file": "a.py"}]), src_a
+    )
+    _graph_to_json(
+        _make_graph([{"id": "b1", "label": "B1", "source_file": "b.py"}]), src_b
+    )
+
+    global_dir = tmp_path / ".graphify"
+    errors: list[Exception] = []
+
+    def add(src, tag):
+        try:
+            gg_mod.global_add(src, tag)
+        except Exception as exc:  # pragma: no cover - surfaced via assertion below
+            errors.append(exc)
+
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        t1 = threading.Thread(target=add, args=(src_a, "repoA"))
+        t2 = threading.Thread(target=add, args=(src_b, "repoB"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+    assert not errors, errors
+    manifest = json.loads((global_dir / "global-manifest.json").read_text())
+    assert set(manifest["repos"]) == {"repoA", "repoB"}, (
+        f"a concurrent add lost the other's update, got {set(manifest['repos'])}"
+    )
