@@ -4753,6 +4753,11 @@ def _resolve_rust_self_member_calls(
 
     Only `self.` receivers are handled: a non-self receiver needs local type
     inference this pass does not attempt, left for a future extension.
+
+    Simple unbounded generic impls use a persisted owner/arity marker instead
+    of their parameter-spelling-sensitive labels (`Bucket<T>` vs `Bucket<U>`).
+    That path additionally requires exactly one bare declaration and never
+    falls back to bare-label pooling when marker context is missing.
     """
     raw = [
         rc
@@ -4765,9 +4770,13 @@ def _resolve_rust_self_member_calls(
 
     node_by_id: dict[str, dict] = {n.get("id"): n for n in all_nodes}
     nids_by_label: dict[str, list[str]] = {}
+    nids_by_rust_impl_key: dict[str, list[str]] = {}
     for n in all_nodes:
         if str(n.get("source_file") or "").endswith(".rs"):
             nids_by_label.setdefault(n.get("label", ""), []).append(n.get("id"))
+            impl_key = n.get("_rust_impl_key")
+            if isinstance(impl_key, str) and impl_key:
+                nids_by_rust_impl_key.setdefault(impl_key, []).append(n.get("id"))
 
     # Pooling methods across every same-labeled node is safe when they are all
     # impl blocks for ONE real type spread across files, but not when the bare
@@ -4782,9 +4791,20 @@ def _resolve_rust_self_member_calls(
     # -- however many files its impl blocks are spread across -- is safe to
     # pool, which is the split-impl-block shape this pass exists for.
     declared_type_count: dict[str, int] = {}
+    generic_declared_type_count: dict[str, int] = {}
     contains_targets = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
     for label, nids in nids_by_label.items():
         declared_type_count[label] = sum(1 for nid in nids if nid in contains_targets)
+        generic_declared_type_count[label] = sum(
+            count
+            for nid in nids
+            if isinstance(
+                count := node_by_id.get(nid, {}).get("_rust_declaration_count"),
+                int,
+            )
+            and not isinstance(count, bool)
+            and count > 0
+        )
 
     # (impl/type node id, bare method name) -> method node id(s), from `method`
     # edges. A set, not a single overwritten value: two distinct method nodes
@@ -4814,10 +4834,20 @@ def _resolve_rust_self_member_calls(
         caller = rc["caller_nid"]
         callee = rc["callee"]
         self_type = rc["rust_self_type"]
-        if declared_type_count.get(self_type, 0) >= 2:
-            continue  # the type name itself is ambiguous -- two unrelated types share it
+        impl_key = rc.get("rust_self_impl_key")
+        if isinstance(impl_key, str) and impl_key:
+            # A generic owner/arity marker proves family identity only with one
+            # declaration in the corpus. Never fall back to bare-label pooling
+            # when persisted marker context is absent or ambiguous.
+            if generic_declared_type_count.get(self_type, 0) != 1:
+                continue
+            owner_nids = nids_by_rust_impl_key.get(impl_key, [])
+        else:
+            if declared_type_count.get(self_type, 0) >= 2:
+                continue  # two unrelated types share this bare name
+            owner_nids = nids_by_label.get(self_type, [])
         candidates: set[str] = set()
-        for nid in nids_by_label.get(self_type, []):
+        for nid in owner_nids:
             candidates |= method_index.get((nid, callee), set())
         if len(candidates) != 1:  # zero or ambiguous -> no edge (god-node guard)
             continue

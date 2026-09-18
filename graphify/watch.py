@@ -1684,10 +1684,13 @@ def _rebuild_code(
                         "file_type": node.get("file_type"),
                         "type": node.get("type"),
                     }
-                    # #2438: the persisted callability markers are the only
-                    # thing that lets an unchanged target pass the
-                    # indirect_call guard — never re-derived from the label.
-                    for marker in ("_callable", "_callable_class", "_elixir_module"):
+                    # Persisted resolver markers are never re-derived from a
+                    # label: callability protects indirect calls (#2438), and
+                    # Rust impl identity connects alpha-renamed generic blocks.
+                    for marker in (
+                        "_callable", "_callable_class", "_elixir_module",
+                        "_rust_impl_key", "_rust_declaration_count",
+                    ):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
                     metadata = node.get("metadata")
