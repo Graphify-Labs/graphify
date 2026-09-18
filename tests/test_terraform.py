@@ -156,3 +156,86 @@ def test_tfvars_key_value_is_safe(tmp_path):
     r = extract_terraform(_write(tmp_path, "terraform.tfvars", 'region = "us-east-1"\nenv = "prod"\n'))
     assert r.get("error") is None
     assert len(r["nodes"]) == 1  # only the file node, no variable nodes
+
+
+def test_terraform_attribute_extraction(tmp_path):
+    """Verify attribute names, values, and nested block attributes are preserved (#3625)."""
+    hcl = """\
+variable "bucket_name" {
+  type = string
+}
+
+resource "aws_s3_bucket" "example" {
+  bucket        = var.bucket_name
+  force_destroy = true
+
+  tags = {
+    Environment = "production"
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_db_instance" "example" {
+  engine_version    = "15.4"
+  instance_class    = "db.t3.micro"
+  allocated_storage = 20
+  multi_az          = false
+}
+
+locals {
+  app_env = "staging"
+}
+"""
+    r = extract_terraform(_write(tmp_path, "main.tf", hcl))
+    assert r.get("error") is None
+    nodes_by_label = {n["label"]: n for n in r["nodes"]}
+
+    s3_node = nodes_by_label["aws_s3_bucket.example"]
+    assert "attributes" in s3_node
+    s3_attrs = s3_node["attributes"]
+    assert s3_attrs.get("bucket") == "var.bucket_name"
+    assert s3_attrs.get("force_destroy") == "true"
+    assert s3_attrs.get("tags.Environment") == "production"
+    assert s3_attrs.get("lifecycle.prevent_destroy") == "true"
+
+    db_node = nodes_by_label["aws_db_instance.example"]
+    assert "attributes" in db_node
+    db_attrs = db_node["attributes"]
+    assert db_attrs.get("engine_version") == "15.4"
+    assert db_attrs.get("instance_class") == "db.t3.micro"
+    assert db_attrs.get("allocated_storage") == "20"
+    assert db_attrs.get("multi_az") == "false"
+
+    var_node = nodes_by_label["var.bucket_name"]
+    assert var_node.get("attributes", {}).get("type") == "string"
+
+    local_node = nodes_by_label["local.app_env"]
+    assert local_node.get("attributes", {}).get("app_env") == "staging"
+
+
+def test_terraform_attribute_querying(tmp_path):
+    """Attribute values allow graph queries to find the configured resource (#3625)."""
+    from graphify.serve import _query_graph_text
+
+    hcl = """\
+resource "aws_s3_bucket" "example" {
+  bucket        = "my-bucket"
+  force_destroy = true
+}
+
+resource "aws_db_instance" "example" {
+  engine_version = "15.4"
+  multi_az       = false
+}
+"""
+    r = extract_terraform(_write(tmp_path, "main.tf", hcl))
+    G = build_from_json(r)
+
+    # Query for force_destroy attribute on aws_s3_bucket
+    out = _query_graph_text(G, "which aws_s3_bucket sets force_destroy = true")
+    assert "aws_s3_bucket.example" in out
+    assert "Start: ['aws_s3_bucket.example']" in out
+
