@@ -1,0 +1,17 @@
+limitations:
+  - Linux Docker verifies packaged Antigravity-Windows payload consistency only; Windows paths, permissions, shells, cleanup, and runtime discovery are not verified.
+scopes:
+  user:
+    effects:
+      - kind: skill
+        root: home
+        path: .gemini/config/skills/graphify/SKILL.md
+        source: graphify/skill-windows.md
+        reference_bundle: windows
+  project:
+    effects:
+      - kind: skill
+        root: project
+        path: .agents/skills/graphify/SKILL.md
+        source: graphify/skill-windows.md
+        reference_bundle: windows
