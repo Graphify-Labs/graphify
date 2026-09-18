@@ -249,3 +249,37 @@ def test_cli_type_suffixes_are_still_rewritten(decl, rewritten):
     assert out is not None
     assert len(out) == len(src)
     assert rewritten in out
+
+
+def test_cpp_export_macros_survive(tmp_path):
+    p = tmp_path / "export.h"
+    p.write_text(
+        "class MODULE_API Widget : public BaseWidget {\n"
+        "public:\n"
+        "    void DoThing() {}\n"
+        "};\n"
+        "class SOME_OTHER_MACRO Widget2 {};\n"
+        "class MODULE_API Widget3 final : public BaseWidget {};\n"
+    )
+    result = extract_cpp(p)
+    labels = [n["label"] for n in result["nodes"]]
+    assert "Widget" in labels
+    assert ".DoThing()" in labels
+    assert "Widget2" in labels
+    assert "Widget3" in labels
+
+
+def test_cpp_export_macro_does_not_break_variables(tmp_path):
+    """Ensure elaborated type variable declarations don't trigger macro stripping."""
+    p = tmp_path / "vars.h"
+    p.write_text(
+        "void F() {\n"
+        "    for (class MODULE_API var: container) {}\n"
+        "    class MODULE_API var2{1};\n"
+        "}\n"
+    )
+    # If the regex strips MYTYPE, `var` becomes the class name and breaks extraction.
+    result = extract_cpp(p)
+    # The extraction should just parse normally. We don't extract local vars, but
+    # we ensure there are no parse_errors.
+    assert result.get("parse_errors") is None

@@ -1154,7 +1154,7 @@ _PHP_CONFIG = LanguageConfig(
         "enum_declaration",
         "trait_declaration",
     }),
-    function_types=frozenset({"function_definition", "method_declaration"}),
+    function_types=frozenset({"function_definition", "method_declaration", "anonymous_function_creation_expression", "arrow_function"}),
     import_types=frozenset({"namespace_use_clause"}),
     # object_creation_expression joins the dispatch set so `new Foo(...)` links
     # the constructing method to Foo (engine has a dedicated PHP branch: the
@@ -1172,7 +1172,7 @@ _PHP_CONFIG = LanguageConfig(
     # enums wrap their members in an enum_declaration_list rather than a
     # declaration_list, so the body walk needs it to reach enum methods/cases.
     body_fallback_child_types=("declaration_list", "compound_statement", "enum_declaration_list"),
-    function_boundary_types=frozenset({"function_definition", "method_declaration"}),
+    function_boundary_types=frozenset({"function_definition", "method_declaration", "anonymous_function_creation_expression", "arrow_function"}),
     import_handler=_import_php,
 )
 
@@ -2506,6 +2506,55 @@ def _normalize_cpp_cli(source: bytes) -> bytes | None:
     return _CPP_CLI_ATTR_RE.sub(_blank_keeping_newlines, out)
 
 
+# -- Export macros in type headers -------------------------------------------
+# `class MODULE_API Foo : public Bar` (module/DLL export macros) is not in
+# tree-sitter-cpp's grammar: the ERROR lands on the type header and dissolves
+# the whole class body, so the class, its `inherits` edge and every member are
+# lost, and recovery invents a phantom node named after the base class.
+#
+# The macro is an ALL-CAPS identifier between `class`/`struct` and the type
+# name. The lookahead requires the header to continue into a base clause or a
+# body, which is what separates a macro from `class MYTYPE globalThing;` -- an
+# elaborated-type variable declaration where the ALL-CAPS token is the type.
+# Blanked with spaces, never deleted, the same contract as _normalize_cpp_cli
+# above, so offsets, lines and columns all stay accurate.
+_CPP_EXPORT_MACRO_RE = re.compile(
+    rb"(\b(?:class|struct)[ \t]+)([A-Z][A-Z0-9_]*(?:_API|_EXPORT|_MACRO)|(?:[A-Z_]*EXPORT[A-Z_]*|[A-Z_]*API[A-Z_]*))"
+    rb"([ \t]+[A-Za-z_][A-Za-z0-9_]*(?:[ \t]+final)?[ \t\r\n]*)([:{])"
+)
+
+
+def _normalize_cpp_export_macros(source: bytes) -> bytes:
+    """Blank an export macro between ``class``/``struct`` and the type name."""
+
+    def repl(m: re.Match[bytes]) -> bytes:
+        start = m.start()
+        idx = start - 1
+        while idx >= 0 and source[idx] in b" \t\r\n":
+            idx -= 1
+        # If preceded by '(' it's inside a parameter list or range-for loop
+        if idx >= 0 and source[idx] == ord(b"("):
+            return m.group(0)
+
+        if m.group(4) == b"{":
+            # Brace initialization like `var{1}` typically lacks whitespace before `{`
+            # and is followed by a literal. Class bodies don't start with literals.
+            if not m.group(3).endswith((b" ", b"\t", b"\r", b"\n")):
+                end = m.end()
+                idx_after = end
+                while idx_after < len(source) and source[idx_after] in b" \t\r\n":
+                    idx_after += 1
+                if idx_after < len(source):
+                    next_char = source[idx_after : idx_after + 1]
+                    if next_char in b"0123456789\"'-":
+                        return m.group(0)
+
+        # Blank the macro with spaces to preserve offsets
+        return m.group(1) + b" " * len(m.group(2)) + m.group(3) + m.group(4)
+
+    return _CPP_EXPORT_MACRO_RE.sub(repl, source)
+
+
 def extract_cpp(path: Path) -> dict:
     """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file.
 
@@ -2520,9 +2569,12 @@ def extract_cpp(path: Path) -> dict:
     except OSError:
         # Let _extract_generic report the read failure in its usual shape.
         return _augment_cpp_string_tests(path, _extract_generic(path, _CPP_CONFIG))
-    result = _extract_generic(
-        path, _CPP_CONFIG, source_override=_normalize_cpp_cli(source) or source
+    
+    normalized = _normalize_cpp_export_macros(
+        _normalize_cpp_cli(source) or source
     )
+    
+    result = _extract_generic(path, _CPP_CONFIG, source_override=normalized)
     return _augment_cpp_string_tests(path, result)
 
 
