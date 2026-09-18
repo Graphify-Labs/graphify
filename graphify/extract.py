@@ -2375,6 +2375,31 @@ def _normalize_cpp_cli(source: bytes) -> bytes | None:
     return _CPP_CLI_ATTR_RE.sub(_blank_keeping_newlines, out)
 
 
+# -- Export macros in type headers -------------------------------------------
+# `class MODULE_API Foo : public Bar` (module/DLL export macros) is not in
+# tree-sitter-cpp's grammar: the ERROR lands on the type header and dissolves
+# the whole class body, so the class, its `inherits` edge and every member are
+# lost, and recovery invents a phantom node named after the base class.
+#
+# The macro is an ALL-CAPS identifier between `class`/`struct` and the type
+# name. The lookahead requires the header to continue into a base clause or a
+# body, which is what separates a macro from `class MYTYPE globalThing;` -- an
+# elaborated-type variable declaration where the ALL-CAPS token is the type.
+# Blanked with spaces, never deleted, the same contract as _normalize_cpp_cli
+# above, so offsets, lines and columns all stay accurate.
+_CPP_EXPORT_MACRO_RE = re.compile(
+    rb"(\b(?:class|struct)[ \t]+)([A-Z][A-Z0-9_]*)"
+    rb"(?=[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t\r\n]*[:{])"
+)
+
+
+def _normalize_cpp_export_macros(source: bytes) -> bytes:
+    """Blank an export macro between ``class``/``struct`` and the type name."""
+    return _CPP_EXPORT_MACRO_RE.sub(
+        lambda m: m.group(1) + b" " * len(m.group(2)), source
+    )
+
+
 def extract_cpp(path: Path) -> dict:
     """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file.
 
@@ -2389,9 +2414,12 @@ def extract_cpp(path: Path) -> dict:
     except OSError:
         # Let _extract_generic report the read failure in its usual shape.
         return _augment_cpp_string_tests(path, _extract_generic(path, _CPP_CONFIG))
-    result = _extract_generic(
-        path, _CPP_CONFIG, source_override=_normalize_cpp_cli(source) or source
+    
+    normalized = _normalize_cpp_export_macros(
+        _normalize_cpp_cli(source) or source
     )
+    
+    result = _extract_generic(path, _CPP_CONFIG, source_override=normalized)
     return _augment_cpp_string_tests(path, result)
 
 

@@ -249,3 +249,20 @@ def test_cli_type_suffixes_are_still_rewritten(decl, rewritten):
     assert out is not None
     assert len(out) == len(src)
     assert rewritten in out
+
+
+def test_cpp_export_macros_survive(tmp_path):
+    p = tmp_path / "export.h"
+    p.write_text(
+        "class MODULE_API Widget : public BaseWidget {\n"
+        "public:\n"
+        "    void DoThing() {}\n"
+        "};\n"
+    )
+    result = extract_cpp(p)
+    labels = [n["label"] for n in result["nodes"]]
+    assert "Widget" in labels
+    assert ".DoThing()" in labels
+
+
+
