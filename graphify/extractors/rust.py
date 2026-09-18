@@ -50,6 +50,55 @@ def _rust_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[
             if c.is_named:
                 _rust_collect_type_refs(c, source, generic, out)
 
+
+def _rust_simple_generic_impl_key(node, source: bytes) -> str | None:
+    """Return a stable owner/arity key for a deliberately narrow impl shape."""
+    if node.child_by_field_name("trait") is not None:
+        return None
+    parameters = node.child_by_field_name("type_parameters")
+    owner_type = node.child_by_field_name("type")
+    if parameters is None or owner_type is None or owner_type.type != "generic_type":
+        return None
+    if any(child.type == "where_clause" for child in node.named_children):
+        return None
+
+    parameter_names: list[str] = []
+    for parameter in parameters.named_children:
+        if parameter.type != "type_parameter":
+            return None
+        named = parameter.named_children
+        if len(named) != 1 or named[0].type != "type_identifier":
+            return None
+        name = _read_text(named[0], source)
+        if not name or name in parameter_names:
+            return None
+        parameter_names.append(name)
+    if not parameter_names:
+        return None
+
+    owner = owner_type.child_by_field_name("type")
+    if owner is None or owner.type != "type_identifier":
+        return None
+    arguments = next(
+        (child for child in owner_type.named_children if child.type == "type_arguments"),
+        None,
+    )
+    if arguments is None:
+        return None
+    argument_names = [
+        _read_text(argument, source)
+        for argument in arguments.named_children
+        if argument.type == "type_identifier"
+    ]
+    if len(argument_names) != len(arguments.named_children):
+        return None
+    if argument_names != parameter_names:
+        return None
+
+    owner_name = _read_text(owner, source)
+    return f"{owner_name}/{len(parameter_names)}" if owner_name else None
+
+
 _RUST_TRAIT_METHOD_BLOCKLIST: frozenset[str] = frozenset({
     "new", "default", "parse", "from_str", "now", "clone", "into", "from",
     "to_string", "to_owned", "len", "is_empty", "iter", "next", "build",
@@ -80,7 +129,8 @@ def extract_rust(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
-    function_bodies: list[tuple[str, object, str | None]] = []
+    function_bodies: list[tuple[str, object, str | None, str | None]] = []
+    impl_keys: dict[str, str | None] = {}
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -160,7 +210,12 @@ def extract_rust(path: Path) -> dict:
                 if tgt != func_nid:
                     add_edge(func_nid, tgt, "references", line, context=ctx)
 
-    def walk(node, parent_impl_nid: str | None = None, parent_impl_type: str | None = None) -> None:
+    def walk(
+        node,
+        parent_impl_nid: str | None = None,
+        parent_impl_type: str | None = None,
+        parent_impl_key: str | None = None,
+    ) -> None:
         t = node.type
 
         if t == "function_item":
@@ -179,7 +234,12 @@ def extract_rust(path: Path) -> dict:
                 emit_param_return_refs(node, func_nid, line)
                 body = node.child_by_field_name("body")
                 if body:
-                    function_bodies.append((func_nid, body, parent_impl_type))
+                    function_bodies.append((
+                        func_nid,
+                        body,
+                        parent_impl_type,
+                        parent_impl_key,
+                    ))
             return
 
         if t == "function_signature_item":
@@ -210,6 +270,10 @@ def extract_rust(path: Path) -> dict:
                 line = node.start_point[0] + 1
                 item_nid = _make_id(stem, item_name)
                 add_node(item_nid, item_name, line)
+                declaration_node = next(n for n in nodes if n["id"] == item_nid)
+                declaration_node["_rust_declaration_count"] = (
+                    declaration_node.get("_rust_declaration_count", 0) + 1
+                )
                 add_edge(file_nid, item_nid, "contains", line)
                 if t == "trait_item":
                     for c in node.children:
@@ -359,10 +423,12 @@ def extract_rust(path: Path) -> dict:
             trait_node = node.child_by_field_name("trait")
             impl_nid: str | None = None
             impl_type_bare: str | None = None
+            impl_key: str | None = None
             if type_node:
                 type_name = _read_text(type_node, source).strip()
                 impl_nid = _make_id(stem, type_name)
                 add_node(impl_nid, type_name, node.start_point[0] + 1)
+                impl_key = _rust_simple_generic_impl_key(node, source)
                 # Bare name (generics stripped) for typing a `self.` receiver
                 # inside this block's methods (#2234) — `impl Foo<T>` types
                 # `self` as `Foo`, not the literal `Foo<T>` text.
@@ -381,8 +447,27 @@ def extract_rust(path: Path) -> dict:
                                  context="generic_arg")
             body = node.child_by_field_name("body")
             if body:
+                has_methods = any(
+                    child.type in ("function_item", "function_signature_item")
+                    for child in body.children
+                )
+                if impl_nid is not None and has_methods:
+                    if impl_nid not in impl_keys:
+                        impl_keys[impl_nid] = impl_key
+                    elif impl_keys[impl_nid] != impl_key:
+                        impl_keys[impl_nid] = None
+                    impl_node = next(n for n in nodes if n["id"] == impl_nid)
+                    if impl_keys[impl_nid]:
+                        impl_node["_rust_impl_key"] = impl_keys[impl_nid]
+                    else:
+                        impl_node.pop("_rust_impl_key", None)
                 for child in body.children:
-                    walk(child, parent_impl_nid=impl_nid, parent_impl_type=impl_type_bare)
+                    walk(
+                        child,
+                        parent_impl_nid=impl_nid,
+                        parent_impl_type=impl_type_bare,
+                        parent_impl_key=impl_key,
+                    )
             return
 
         if t == "use_declaration":
@@ -410,7 +495,12 @@ def extract_rust(path: Path) -> dict:
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
 
-    def walk_calls(node, caller_nid: str, self_type: str | None = None) -> None:
+    def walk_calls(
+        node,
+        caller_nid: str,
+        self_type: str | None = None,
+        self_impl_key: str | None = None,
+    ) -> None:
         if node.type == "function_item":
             return
         if node.type == "call_expression":
@@ -465,12 +555,14 @@ def extract_rust(path: Path) -> dict:
                     }
                     if is_self_call and self_type:
                         rc_entry["rust_self_type"] = self_type
+                        if self_impl_key:
+                            rc_entry["rust_self_impl_key"] = self_impl_key
                     raw_calls.append(rc_entry)
         for child in node.children:
-            walk_calls(child, caller_nid, self_type)
+            walk_calls(child, caller_nid, self_type, self_impl_key)
 
-    for caller_nid, body_node, impl_type in function_bodies:
-        walk_calls(body_node, caller_nid, impl_type)
+    for caller_nid, body_node, impl_type, impl_key in function_bodies:
+        walk_calls(body_node, caller_nid, impl_type, impl_key)
 
     valid_ids = seen_ids
     clean_edges = []

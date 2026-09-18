@@ -3514,6 +3514,144 @@ def test_incremental_rebuild_preserves_python_call_to_unchanged_target(tmp_path)
     assert sorted(_2406_calls(_2406_graph(corpus))) == sorted(full)
 
 
+# --- Rust generic self calls into unchanged impls ---------------------------
+
+_RUST_GENERIC_STATE = "pub struct Bucket<T> { value: T }\n"
+_RUST_GENERIC_METHOD = (
+    "impl<T> Bucket<T> {\n"
+    "    pub fn fetch_value(&self) {}\n"
+    "}\n"
+)
+_RUST_GENERIC_CALLER = (
+    "impl<U> Bucket<U> {\n"
+    "    pub fn run(&self) {\n%s        self.fetch_value();\n"
+    "    }\n"
+    "}\n"
+)
+
+
+def _rust_generic_seed(tmp_path):
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir(parents=True)
+    (corpus / "state.rs").write_text(_RUST_GENERIC_STATE, encoding="utf-8")
+    (corpus / "method.rs").write_text(_RUST_GENERIC_METHOD, encoding="utf-8")
+    (corpus / "caller.rs").write_text(
+        _RUST_GENERIC_CALLER % "", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    return corpus
+
+
+def _rust_generic_call(graph):
+    caller = _2406_nid(graph, ".run()", "caller.rs")
+    callee = _2406_nid(graph, ".fetch_value()", "method.rs")
+    return (caller, callee) in _2406_calls(graph)
+
+
+def test_incremental_rust_generic_self_call_uses_unchanged_impl_context(tmp_path):
+    """A changed generic caller retains its call into an unchanged impl block."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _rust_generic_seed(tmp_path)
+    assert _rust_generic_call(_2406_graph(corpus))
+
+    caller = corpus / "caller.rs"
+    caller.write_text(
+        _RUST_GENERIC_CALLER % "        let marker = 1;\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert _rust_generic_call(_2406_graph(corpus))
+
+
+def test_incremental_rust_generic_self_call_legacy_marker_fails_closed(tmp_path):
+    """A pre-marker graph does not guess; re-extraction restores the edge."""
+    from graphify.watch import _rebuild_code
+
+    corpus = _rust_generic_seed(tmp_path)
+    graph_path = corpus / "graphify-out" / "graph.json"
+    legacy = _2406_graph(corpus)
+    assert any(node.get("_rust_impl_key") for node in legacy["nodes"])
+    for node in legacy["nodes"]:
+        node.pop("_rust_impl_key", None)
+    graph_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    caller = corpus / "caller.rs"
+    caller.write_text(
+        _RUST_GENERIC_CALLER % "        let marker = 1;\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert not _rust_generic_call(_2406_graph(corpus))
+
+    state = corpus / "state.rs"
+    method = corpus / "method.rs"
+    state.write_text(_RUST_GENERIC_STATE + "// refreshed\n", encoding="utf-8")
+    method.write_text(_RUST_GENERIC_METHOD + "// refreshed\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus,
+        changed_paths=[state, method, caller],
+        no_cluster=True,
+        acquire_lock=False,
+    ) is True
+    assert _rust_generic_call(_2406_graph(corpus))
+
+
+def test_incremental_rust_generic_self_call_keeps_module_ambiguity(tmp_path):
+    """A collapsed same-file declaration count survives context projection."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "state.rs").write_text(
+        "pub mod a { pub struct Bucket<T>(pub T); }\n"
+        "pub mod b { pub struct Bucket<T>(pub T); }\n",
+        encoding="utf-8",
+    )
+    (corpus / "a_impl.rs").write_text(
+        "impl<T> Bucket<T> { pub fn fetch_value(&self) {} }\n",
+        encoding="utf-8",
+    )
+    (corpus / "fallback.rs").write_text(
+        "pub trait Fallback { fn fetch_value(&self) {} }\n",
+        encoding="utf-8",
+    )
+    caller = corpus / "b_impl.rs"
+    caller.write_text(
+        "impl<T> Fallback for Bucket<T> {}\n"
+        "impl<U> Bucket<U> { pub fn run(&self) { self.fetch_value(); } }\n",
+        encoding="utf-8",
+    )
+
+    def has_call():
+        graph = _2406_graph(corpus)
+        run_id = _2406_nid(graph, ".run()", "b_impl.rs")
+        return any(
+            edge.get("relation") == "calls" and edge.get("source") == run_id
+            for edge in graph.get("links", graph.get("edges", []))
+        )
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    assert not has_call()
+    caller.write_text(
+        "impl<T> Fallback for Bucket<T> {}\n"
+        "impl<U> Bucket<U> {\n"
+        "    pub fn run(&self) { let marker = 1; self.fetch_value(); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    assert _rebuild_code(
+        corpus, changed_paths=[caller], no_cluster=True, acquire_lock=False
+    ) is True
+    assert not has_call()
+
+
 # --- #3567: inherited Ruby calls into unchanged ancestry --------------------
 
 
