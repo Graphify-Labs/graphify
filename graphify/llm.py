@@ -98,6 +98,21 @@ def _resolve_ollama_base_url(default: str) -> str:
     return host
 
 
+def _orcarouter_api_base() -> str:
+    """Inference base for the orcarouter backend, at import time.
+
+    Delegates to the provider module so the two-origin policy (explicit
+    ORCA_API_BASE_URL, then shared ORCA_BASE_URL, then the public default) has
+    exactly one implementation. Never derived from the auth origin.
+    """
+    from graphify.orcarouter import api_base as _api_base
+
+    try:
+        return _api_base()
+    except Exception:
+        return "https://api.orcarouter.ai/v1"
+
+
 BACKENDS: dict[str, dict] = {
     "claude": {
         # ANTHROPIC_BASE_URL points the backend at any Anthropic-compatible
@@ -205,6 +220,33 @@ BACKENDS: dict[str, dict] = {
         "temperature": 0,
         "max_tokens": 16384,
         "vision": True,
+    },
+    "orcarouter": {
+        # OrcaRouter is an OpenAI-compatible AI gateway. Inference and the model
+        # catalog live on https://api.orcarouter.ai/v1; authentication lives on
+        # https://www.orcarouter.ai. The two origins are independent and neither
+        # is derived from the other.
+        #
+        # ORCA_BASE_URL is the shared self-hosted fallback; ORCA_API_BASE_URL
+        # overrides the inference origin alone. The credential is resolved
+        # through graphify.orcarouter.resolve_credential_secret(), which accepts
+        # EITHER a pasted ORCAROUTER_API_KEY or a key issued by the PKCE login
+        # (`graphify orcarouter login`) — the transport never learns which.
+        "base_url": _orcarouter_api_base(),
+        "default_model": "orcarouter/auto",
+        "model_env_key": "GRAPHIFY_ORCAROUTER_MODEL",
+        "env_key": "ORCAROUTER_API_KEY",
+        # Published rates are not available for a routing gateway that fans out
+        # to arbitrary upstreams, so cost is reported as zero rather than as a
+        # guess. `graphify orcarouter models` prints the catalog's own per-model
+        # pricing metadata when the workspace advertises it.
+        "pricing": {"input": 0.0, "output": 0.0},
+        "temperature": 0,
+        "max_tokens": 16384,
+        # Vision is decided per-model from the live catalog (a text-only model
+        # must not be handed pixels); _backend_supports_vision special-cases
+        # this backend. Declared False so the static default is fail-closed.
+        "vision": False,
     },
     "claude-cli": {
         # Routes through the locally-installed `claude` CLI (Claude Code) using
@@ -888,10 +930,34 @@ def _backend_supports_vision(backend: str) -> bool:
     Ollama is special-cased: its default model is text-only, so vision is
     opt-in via GRAPHIFY_OLLAMA_VISION=1 once the user selects a vision model
     (e.g. --model llama3.2-vision).
+
+    OrcaRouter is special-cased too, because it is a gateway: the answer
+    depends on WHICH model is selected, not on the provider. The live catalog
+    is the only authority for that (a text-only model must not be handed
+    pixels), and the filter fails closed when the catalog cannot prove the
+    model accepts image input. A catalog outage falls back to the verified
+    seed, whose modalities are known.
     """
+    if backend == "orcarouter":
+        return _orcarouter_model_supports_vision()
     if backend == "ollama":
         return os.environ.get("GRAPHIFY_OLLAMA_VISION", "").strip() == "1"
     return bool(BACKENDS.get(backend, {}).get("vision", False))
+
+
+def _orcarouter_model_supports_vision() -> bool:
+    """True only when the selected OrcaRouter model declares image input."""
+    try:
+        from graphify.orcarouter import load_catalog
+    except ImportError:
+        return False
+    model = os.environ.get("GRAPHIFY_ORCAROUTER_MODEL") or BACKENDS["orcarouter"]["default_model"]
+    try:
+        catalog = load_catalog()
+    except Exception:
+        return False
+    info = catalog.get(model)
+    return bool(info is not None and "image" in info.input_modalities)
 
 
 def _image_notes(refs: list[_ImageRef], *, with_paths: bool = False) -> str:
@@ -1310,7 +1376,17 @@ def _backend_env_keys(backend: str) -> list[str]:
 
 
 def _get_backend_api_key(backend: str) -> str:
-    """Return the first configured API key for backend, or an empty string."""
+    """Return the first configured API key for backend, or an empty string.
+
+    OrcaRouter is resolved through its own credential seam so that a key pasted
+    as ORCAROUTER_API_KEY and a key issued by the PKCE login are interchangeable
+    here — this function, and everything downstream of it, never learns which
+    one produced the secret.
+    """
+    if backend == "orcarouter":
+        from graphify.orcarouter import resolve_credential_secret
+
+        return resolve_credential_secret()
     for env_key in _backend_env_keys(backend):
         value = os.environ.get(env_key)
         if value:
@@ -1460,7 +1536,7 @@ def _call_openai_compat(
             num_ctx = auto_num_ctx
         keep_alive = os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", "30m")
         kwargs["extra_body"] = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
-    resp = client.chat.completions.create(**kwargs)
+    resp = _orcarouter_guarded_create(client, kwargs, backend, api_key)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
     raw_content = resp.choices[0].message.content
@@ -1490,6 +1566,82 @@ def _call_openai_compat(
             file=sys.stderr,
         )
     return result
+
+
+def _orcarouter_guarded_create(client, kwargs: dict, backend: str, api_key: str):
+    """``client.chat.completions.create`` with OrcaRouter's terminal-401 handling.
+
+    A revoked OrcaRouter key is a terminal reauthentication requirement, not a
+    retry. Without this the SDK's own transient-error retries turn a dead
+    credential into repeated 401s buried in a generic traceback, and the stored
+    record still looks usable so the next run repeats it. Marking the exact
+    rejected credential generation lets `graphify orcarouter status` explain the
+    situation and stops the loop. No refresh is attempted — OrcaRouter issues
+    durable keys, not refreshable tokens.
+
+    A ``model_access_denied`` 403 is classified separately: the catalog is
+    scoped to the workspace, but an individual key can still be restricted to a
+    subset of it. That is a model-selection problem, not a credential problem,
+    so it must NOT mark the credential for reauthentication.
+
+    Every other backend is passed through untouched.
+    """
+    if backend != "orcarouter":
+        return client.chat.completions.create(**kwargs)
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as exc:  # noqa: BLE001 — re-raised below unless classified
+        status = getattr(exc, "status_code", None)
+        if status is None:
+            response = getattr(exc, "response", None)
+            status = getattr(response, "status_code", None)
+
+        if status == 403 and _orcarouter_error_code(exc) == "model_access_denied":
+            model = kwargs.get("model", "")
+            raise ValueError(
+                f"OrcaRouter refused this key access to model {model!r} (model_access_denied). "
+                "The credential itself is fine. Run `graphify orcarouter models` to list the "
+                "catalog and pick a model this key may use, or widen the key's model scope at "
+                "https://www.orcarouter.ai/console/token."
+            ) from exc
+
+        if status != 401:
+            raise
+        try:
+            from graphify.orcarouter import note_rejected
+
+            marked = note_rejected(api_key)
+        except Exception:  # noqa: BLE001 — bookkeeping must not mask the 401
+            marked = False
+        detail = (
+            " The stored OrcaRouter credential is now marked for reauthentication."
+            if marked
+            else ""
+        )
+        raise ValueError(
+            "OrcaRouter rejected this credential (HTTP 401). The key may have been "
+            "revoked from https://www.orcarouter.ai/console/authorized-apps. "
+            "Run `graphify orcarouter login` to authorize again." + detail
+        ) from exc
+
+
+def _orcarouter_error_code(exc: BaseException) -> str:
+    """Best-effort extraction of OrcaRouter's machine-readable error code.
+
+    Reads the parsed body the SDK already attached; never re-reads the response
+    stream and never includes any part of it in a raised message.
+    """
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            code = error.get("code")
+            if isinstance(code, str):
+                return code
+        code = body.get("code")
+        if isinstance(code, str):
+            return code
+    return ""
 
 
 def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 8192, *, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
@@ -3053,7 +3205,7 @@ def _call_llm(
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     elif _thinking_disabled_via_env():
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-    resp = client.chat.completions.create(**kwargs)
+    resp = _orcarouter_guarded_create(client, kwargs, backend, key)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
     ou = getattr(resp, "usage", None)
