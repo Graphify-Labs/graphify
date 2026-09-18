@@ -452,6 +452,11 @@ graphify-out/cost.json        # local only
 # graphify-out/cache/         # optional: commit for speed, skip to keep repo small
 ```
 
+A started `graphify extract` also writes `graphify-out/last_run.json`, a
+machine-readable summary of the latest run. Check its `ok` field and
+`wrote_graph`/`refused_reason` fields in automation instead of scraping extraction
+logs; `ok` is false when content was missing even if a partial graph was written.
+
 > `manifest.json` is now portable — keys are stored as relative paths and re-anchored on load, so committing it is safe and avoids a full rebuild on first checkout.
 
 ### Recommended workflow

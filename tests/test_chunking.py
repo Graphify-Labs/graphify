@@ -275,6 +275,9 @@ def test_corpus_parallel_continues_after_chunk_failure(tmp_path, capsys):
 
     # 4 chunks dispatched, 1 failed → 3 chunks contributed nodes
     assert len(result["nodes"]) == 3
+    assert result["chunks_total"] == 4
+    assert result["failed_chunks"] == 1
+    assert result["chunk_errors"] == ["simulated API error"]
     err = capsys.readouterr().err
     assert "failed" in err and "simulated API error" in err
 
