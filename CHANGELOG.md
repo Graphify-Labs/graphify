@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
 
+## Unreleased
+
+- Feature: the OpenCode plugin is upgraded from a once-per-session bash reminder to a full JS port of the Claude Code PreToolUse guard pair (`graphify hook-guard <search|read>`): a search guard that fires on the bash command's executed tokens (heredoc bodies and quoted spans dropped, wrappers skipped, `git grep`/`VAR=x grep` counted — the #3121 contract), a read/glob guard with source-extension, in-project, and staleness gating (the #1840 contract), and the opt-in strict mode (`GRAPHIFY_HOOK_STRICT=1`, `GRAPHIFY_HOOK_STRICT_TTL`) that emits a forceful once-per-session reminder for reads of indexed files, sharing the same `hook_sessions` markers and `last_query_stamp` as the Claude hook so the budget spans harnesses. Because opencode has no PreToolUse `additionalContext` channel, bash nudges ride a shell-inert `echo '…' ;` prepend and read/grep/glob nudges are appended to the tool result via `tool.execute.after`; the Claude `deny` degrades to the strong reminder since opencode plugins cannot block a tool call from the `before` hook.
+
 ## 0.9.62 (2026-09-15)
 
 - Feature: Terraform module calls with a literal local `source` (`./…` or `../…`) now resolve to a directory-scoped module node, exposing the caller→implementation topology (e.g. environment → application → base); remote and registry sources and source expressions are left unresolved and never fabricate a target. After upgrading an existing graph, run `graphify update .` once to regenerate Terraform ids and topology (#3571, thanks @vstepko).
