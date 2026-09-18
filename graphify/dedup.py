@@ -265,7 +265,7 @@ def _is_code(node: dict) -> bool:
 
 # ── ID collisions ─────────────────────────────────────────────────────────────
 
-_ID_SEGMENT = re.compile(r"[^a-z0-9]+")
+_ID_SEGMENT = re.compile(r"[^\w]+")
 _EXTENSION = re.compile(r"\.[^./]+$")
 
 

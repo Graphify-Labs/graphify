@@ -258,11 +258,26 @@ def test_cpp_export_macros_survive(tmp_path):
         "public:\n"
         "    void DoThing() {}\n"
         "};\n"
+        "class SOME_OTHER_MACRO Widget2 {};\n"
     )
     result = extract_cpp(p)
     labels = [n["label"] for n in result["nodes"]]
     assert "Widget" in labels
     assert ".DoThing()" in labels
+    assert "Widget2" in labels
 
 
-
+def test_cpp_export_macro_does_not_break_variables(tmp_path):
+    """Ensure elaborated type variable declarations don't trigger macro stripping."""
+    p = tmp_path / "vars.h"
+    p.write_text(
+        "void F() {\n"
+        "    for (class MYTYPE var: container) {}\n"
+        "    class MYTYPE var2{1};\n"
+        "}\n"
+    )
+    # If the regex strips MYTYPE, `var` becomes the class name and breaks extraction.
+    result = extract_cpp(p)
+    # The extraction should just parse normally. We don't extract local vars, but
+    # we ensure there are no parse_errors.
+    assert result.get("parse_errors") is None

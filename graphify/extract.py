@@ -2388,7 +2388,7 @@ def _normalize_cpp_cli(source: bytes) -> bytes | None:
 # Blanked with spaces, never deleted, the same contract as _normalize_cpp_cli
 # above, so offsets, lines and columns all stay accurate.
 _CPP_EXPORT_MACRO_RE = re.compile(
-    rb"(\b(?:class|struct)[ \t]+)([A-Z][A-Z0-9_]*)"
+    rb"(\b(?:class|struct)[ \t]+)([A-Z][A-Z0-9_]*(?:_API|_EXPORT|_MACRO)|(?:[A-Z_]*EXPORT[A-Z_]*|[A-Z_]*API[A-Z_]*))"
     rb"(?=[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t\r\n]*[:{])"
 )
 
