@@ -127,7 +127,17 @@ class _GraphContextCache:
         self._pinned: dict[str, dict] = {}
         self._lock = threading.Lock()
 
-    def _load_entry(self, resolved_path: str, key: tuple[int, int]) -> dict:
+    @staticmethod
+    def _file_key(resolved_path: str) -> tuple[int, int, int, int, int]:
+        """Observe file identity; equal size/restored mtime alone is insufficient."""
+        try:
+            stat_result = Path(resolved_path).stat()
+        except FileNotFoundError:
+            raise FileNotFoundError(f"graph.json not found: {resolved_path}") from None
+        return (stat_result.st_dev, stat_result.st_ino, stat_result.st_ctime_ns,
+                stat_result.st_mtime_ns, stat_result.st_size)
+
+    def _load_entry(self, resolved_path: str, key: tuple[int, int, int, int, int]) -> dict:
         """Build one entry for an already-resolved path and known file key.
 
         ``_load_graph`` is also used by the CLI, where invalid input terminates
@@ -159,11 +169,7 @@ class _GraphContextCache:
         it remains warm without consuming a project-cache slot.
         """
         with self._lock:
-            try:
-                stat_result = Path(resolved_path).stat()
-            except FileNotFoundError:
-                raise FileNotFoundError(f"graph.json not found: {resolved_path}") from None
-            key = (stat_result.st_mtime_ns, stat_result.st_size)
+            key = self._file_key(resolved_path)
             entries = self._pinned if pinned else self._entries
             entry = entries.get(resolved_path)
             if entry is not None and entry["key"] == key:
@@ -171,7 +177,16 @@ class _GraphContextCache:
                     self._entries.move_to_end(resolved_path)
                 return entry["G"], entry["communities"]
 
-            entry = self._load_entry(resolved_path, key)
+            # Build privately and publish only after a matching observation.
+            # A changing file gets one retry; failures preserve the old cache/LRU.
+            for _ in range(2):
+                entry = self._load_entry(resolved_path, key)
+                observed_key = self._file_key(resolved_path)
+                if observed_key == key:
+                    break
+                key = observed_key
+            else:
+                raise RuntimeError("graph.json changed while loading")
             entries[resolved_path] = entry
             if not pinned:
                 self._entries.move_to_end(resolved_path)
