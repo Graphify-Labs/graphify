@@ -8,6 +8,7 @@ import posixpath
 import re
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Callable
 
@@ -2206,7 +2207,11 @@ def _rebuild_code(
         return True
 
     except Exception as exc:
-        print(f"[graphify watch] Rebuild failed: {exc}")
+        # Include the type and traceback: an exception whose str() is empty -- MemoryError()
+        # is the common one on a large corpus -- otherwise prints as "Rebuild failed: " with
+        # nothing after it, leaving no way to tell what went wrong.
+        print(f"[graphify watch] Rebuild failed: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
         return False
 
 
