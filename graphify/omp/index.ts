@@ -15,7 +15,6 @@ import {
 const INPUT_LIMIT = 256 * 1024;
 const OUTPUT_LIMIT = 64 * 1024;
 const TIMEOUT_MS = 2000;
-const CONTEXT_TYPE = "graphify-guard";
 const TOOL_NAMES = { bash: "Bash", grep: "Grep", read: "Read", glob: "Glob" } as const;
 
 function isRemote(path: string): boolean {
@@ -47,16 +46,19 @@ function runGuard(command: string, kind: string, payload: string, cwd: string, s
 }
 
 export default function graphify(api: ExtensionAPI): void {
-  const guidance = new Set<string>();
-  let guidanceBytes = 0;
+  // Claude PreToolUse additionalContext parity: `tool_call` captures the guard's
+  // guidance for that call, `tool_result` appends it to the persisted tool
+  // result. Every qualifying call carries its own nudge — no dedup — and the
+  // text lands inline with the call it belongs to, surviving compaction like
+  // any other tool output.
+  const pending = new Map<string, string>();
   let generation = 0;
   let controller = new AbortController();
   const reset = () => {
     generation++;
     controller.abort();
     controller = new AbortController();
-    guidance.clear();
-    guidanceBytes = 0;
+    pending.clear();
   };
   api.on("session_start", reset);
   api.on("session_switch", reset);
@@ -80,7 +82,6 @@ export default function graphify(api: ExtensionAPI): void {
       if (isRemote(rawPath)) return;
       const paths = toolName === "Read" || toolName === "Bash" ? [rawPath] :
         await expandDelimitedPathEntries([rawPath], ctx.cwd, { splitter: parseSearchPath });
-      let remainingOutput = OUTPUT_LIMIT;
       for (const path of paths) {
         if (isRemote(path)) continue;
         const input: Record<string, unknown> = { ...event.input };
@@ -93,24 +94,20 @@ export default function graphify(api: ExtensionAPI): void {
           else input.path = resolved;
         }
         const timeout = Math.floor(deadline - performance.now());
-        if (current !== generation || !ctx.isProjectTrusted() || timeout <= 0 || remainingOutput <= 0) return;
+        if (current !== generation || !ctx.isProjectTrusted() || timeout <= 0) return;
         const output = await runGuard(command, toolName === "Bash" || toolName === "Grep" ? "search" : "read", JSON.stringify({
           session_id: ctx.sessionManager.getSessionId(), cwd: ctx.cwd, tool_name: toolName, tool_input: input,
-        }), ctx.cwd, signal, timeout, remainingOutput);
+        }), ctx.cwd, signal, timeout, OUTPUT_LIMIT);
         if (current !== generation || !ctx.isProjectTrusted()) return;
         if (!output) continue;
-        remainingOutput -= Buffer.byteLength(output);
         const hook = JSON.parse(output)?.hookSpecificOutput;
         if (hook?.hookEventName !== "PreToolUse") continue;
         if (hook.permissionDecision === "deny" && typeof hook.permissionDecisionReason === "string" && hook.permissionDecisionReason.trim()) {
           return { block: true, reason: hook.permissionDecisionReason };
         }
-        if (typeof hook.additionalContext === "string" && hook.additionalContext.trim() && !guidance.has(hook.additionalContext)) {
-          const bytes = Buffer.byteLength(hook.additionalContext) + 2;
-          if (guidanceBytes + bytes <= OUTPUT_LIMIT) {
-            guidance.add(hook.additionalContext);
-            guidanceBytes += bytes;
-          }
+        if (typeof hook.additionalContext === "string" && hook.additionalContext.trim()) {
+          const previous = pending.get(event.toolCallId);
+          pending.set(event.toolCallId, previous ? `${previous}\n\n${hook.additionalContext}` : hook.additionalContext);
         }
         // The search CLI does not inspect individual targets; one call suffices.
         if (toolName === "Grep") break;
@@ -121,14 +118,11 @@ export default function graphify(api: ExtensionAPI): void {
     }
   });
 
-  api.on("context", (event, ctx) => {
-    if (!ctx.isProjectTrusted()) reset();
-    // Context transforms are not persisted. Keep one current-run message across
-    // provider requests, and discard any prior generation's injected message.
-    const messages = event.messages.filter(message => message.role !== "custom" || message.customType !== CONTEXT_TYPE);
-    if (guidance.size) messages.push({
-      role: "custom", customType: CONTEXT_TYPE, content: [...guidance].join("\n\n"), display: false, timestamp: Date.now(),
-    });
-    if (guidance.size || messages.length !== event.messages.length) return { messages };
+  api.on("tool_result", (event, ctx) => {
+    if (!ctx.isProjectTrusted()) { pending.clear(); return; }
+    const nudge = pending.get(event.toolCallId);
+    if (nudge === undefined) return;
+    pending.delete(event.toolCallId);
+    return { content: [...event.content, { type: "text" as const, text: nudge }] };
   });
 }
