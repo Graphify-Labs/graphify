@@ -21,6 +21,7 @@ import os
 import re
 import stat
 import tempfile
+import time
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
@@ -45,7 +46,21 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
     # atomic rename) and the replace writes through the link, not over it.
     real = Path(os.path.realpath(str(path)))
     real.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(real.parent), prefix=".gfy-", suffix=".tmp")
+    
+    fd = None
+    tmp = None
+    last_err = None
+    for _retry in range(5):
+        try:
+            fd, tmp = tempfile.mkstemp(dir=str(real.parent), prefix=".gfy-", suffix=".tmp")
+            break
+        except PermissionError as e:
+            last_err = e
+            time.sleep(0.1)
+    
+    if fd is None:
+        raise RuntimeError(f"Failed to create temporary file in {real.parent} after 5 retries. Is the directory locked by an antivirus or indexing service?") from last_err
+
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             write_fn(f)
