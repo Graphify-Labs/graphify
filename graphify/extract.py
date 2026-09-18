@@ -2520,15 +2520,39 @@ def _normalize_cpp_cli(source: bytes) -> bytes | None:
 # above, so offsets, lines and columns all stay accurate.
 _CPP_EXPORT_MACRO_RE = re.compile(
     rb"(\b(?:class|struct)[ \t]+)([A-Z][A-Z0-9_]*(?:_API|_EXPORT|_MACRO)|(?:[A-Z_]*EXPORT[A-Z_]*|[A-Z_]*API[A-Z_]*))"
-    rb"(?=[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t\r\n]*[:{])"
+    rb"([ \t]+[A-Za-z_][A-Za-z0-9_]*(?:[ \t]+final)?[ \t\r\n]*)([:{])"
 )
 
 
 def _normalize_cpp_export_macros(source: bytes) -> bytes:
     """Blank an export macro between ``class``/``struct`` and the type name."""
-    return _CPP_EXPORT_MACRO_RE.sub(
-        lambda m: m.group(1) + b" " * len(m.group(2)), source
-    )
+
+    def repl(m: re.Match[bytes]) -> bytes:
+        start = m.start()
+        idx = start - 1
+        while idx >= 0 and source[idx] in b" \t\r\n":
+            idx -= 1
+        # If preceded by '(' it's inside a parameter list or range-for loop
+        if idx >= 0 and source[idx] == ord(b"("):
+            return m.group(0)
+
+        if m.group(4) == b"{":
+            # Brace initialization like `var{1}` typically lacks whitespace before `{`
+            # and is followed by a literal. Class bodies don't start with literals.
+            if not m.group(3).endswith((b" ", b"\t", b"\r", b"\n")):
+                end = m.end()
+                idx_after = end
+                while idx_after < len(source) and source[idx_after] in b" \t\r\n":
+                    idx_after += 1
+                if idx_after < len(source):
+                    next_char = source[idx_after : idx_after + 1]
+                    if next_char in b"0123456789\"'-":
+                        return m.group(0)
+
+        # Blank the macro with spaces to preserve offsets
+        return m.group(1) + b" " * len(m.group(2)) + m.group(3) + m.group(4)
+
+    return _CPP_EXPORT_MACRO_RE.sub(repl, source)
 
 
 def extract_cpp(path: Path) -> dict:
