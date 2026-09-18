@@ -2657,6 +2657,51 @@ def test_extract_parallel_spawns_pool_for_a_parenthesized_guard(tmp_path, monkey
     assert spawned["count"] == 1, "a parenthesized comparison is still a real guard"
 
 
+def test_extract_parallel_declines_pool_for_a_guard_nested_in_an_unrelated_function(
+    tmp_path, monkeypatch
+):
+    """Review finding: ast.walk() finds a guard anywhere in the tree, including
+    one nested inside an unrelated function that never runs at import time and
+    so provides no actual protection at all -- the module-scope extract() call
+    right below it is genuinely unguarded. Only a real, top-level guard should
+    count."""
+    import concurrent.futures
+    import multiprocessing
+    from graphify import extract as extract_mod
+
+    guardless = tmp_path / "runner.py"
+    guardless.write_text(
+        "from graphify.extract import extract\n"
+        "def unrelated_helper():\n"
+        '    if __name__ == "__main__":\n'
+        "        pass\n"
+        "extract([])\n",
+        encoding="utf-8",
+    )
+
+    class FakeMain:
+        __file__ = str(guardless)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "__main__", FakeMain())
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+
+    spawned = {"count": 0}
+
+    def fake_pool(*a, **kw):
+        spawned["count"] += 1
+        raise AssertionError("ProcessPoolExecutor must not be constructed for a guard-less caller")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", fake_pool)
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert ok is False, "a guard nested inside an unrelated function must not count as real"
+    assert spawned["count"] == 0, "no pool may be spawned for a genuinely guard-less caller"
+
+
 def test_extract_parallel_spawns_pool_when_caller_source_fails_to_parse(tmp_path, monkeypatch):
     """An unparseable caller (a syntax error, or a non-Python source read as
     text) means the guard's presence genuinely can't be determined -- this
