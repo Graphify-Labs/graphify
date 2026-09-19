@@ -46,8 +46,8 @@ $(cat graphify-out/.graphify_python) -m graphify.watch INPUT_PATH --debounce 3
 
 Replace INPUT_PATH with the folder to watch. Behavior depends on what changed:
 
-- **Code files only (.py, .ts, .go, etc.):** re-runs AST extraction + rebuild + cluster immediately, no LLM needed. `graph.json` and `GRAPH_REPORT.md` are updated automatically.
-- **Docs, papers, or images:** writes a `graphify-out/needs_update` flag and prints a notification to run `/graphify --update` (LLM semantic re-extraction required).
+- **Code files only (.py, .ts, .go, etc.):** re-runs AST extraction + rebuild + cluster immediately, no LLM needed. `graph.json` and `GRAPH_REPORT.md` are updated automatically. `--watch` runs the installed `graphify.watch` module directly (not the SKILL.md-driven pipeline), so it still writes these fixed names rather than a dated `{corpus-slug}-{date}` basename - see the Step 2.6 scope note in `skill.md`.
+- **Docs, papers, or images:** writes a `graphify-out/needs_update` flag and prints a notification to run `/graphify --update` (LLM semantic re-extraction required) - that follow-up `--update` run DOES produce dated output as described in `skill.md`.
 
 Debounce (default 3s): waits until file activity stops before triggering, so a wave of parallel agent writes doesn't trigger a rebuild per file.
 
