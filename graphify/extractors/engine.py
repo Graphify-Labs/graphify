@@ -5634,16 +5634,37 @@ def _extract_generic(
         string names an ATTRIBUTE and is never shadowed by a local, so that path passes
         the name straight through. ``loc_node`` supplies the source line.
         """
-        ref_nid = label_to_nid.get(ident_name)
+        # LEGB (#1862): check the CALLER's own lexical scope chain — innermost
+        # enclosing scope first — before falling back to the flat per-file/
+        # cross-file label maps below. A name reference binds to the nearest
+        # enclosing scope that defines it (Python Software Foundation, 2026,
+        # "Execution model: Resolution of names").
+        # `label_to_nid` is deliberately scope-blind for nested Python functions
+        # (#3405), so without this check a callback name that is only defined as
+        # a NESTED function falls straight through to the cross-file resolver in
+        # extract.py, which matches by bare label across the WHOLE corpus and
+        # picks an arbitrary same-named nested function from a SIBLING scope
+        # instead of the caller's own lexical definition.
+        lexical_nid = None
+        curr_scope = scope_nid
+        while curr_scope is not None:
+            local_scope = lexical_nids_by_scope.get(curr_scope)
+            if local_scope and ident_name in local_scope:
+                lexical_nid = local_scope[ident_name]
+                break
+            curr_scope = scope_parents.get(curr_scope)
+        ref_nid = lexical_nid if lexical_nid is not None else label_to_nid.get(ident_name)
         # Defer to the cross-file resolver when the name is not defined in this file
         # (`from .h import fn`), or resolves to an import-surfaced FOREIGN symbol whose
         # definition (and callability) lives in another file (JS/TS named imports map
         # the real node into this file's label map). The cross-file pass applies the
         # single-definition god-node guard plus the GLOBAL callable-target check, so a
-        # foreign non-callable (an imported data const) still produces no edge.
-        if ref_nid is None or (
+        # foreign non-callable (an imported data const) still produces no edge. A
+        # lexically-resolved name is already a known local callable and skips this
+        # deferral outright — it must never be re-adjudicated by the corpus-wide pass.
+        if lexical_nid is None and (ref_nid is None or (
             ref_nid not in callable_def_nids and nid_to_sf.get(ref_nid, "") != str_path
-        ):
+        )):
             raw_calls.append({
                 "caller_nid": scope_nid,
                 "callee": ident_name,
