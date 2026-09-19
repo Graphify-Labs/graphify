@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import pytest
 import networkx as nx
+from pathlib import Path
 from unittest.mock import patch
 
 
@@ -537,4 +538,46 @@ def test_global_add_concurrent_calls_both_survive(tmp_path):
     manifest = json.loads((global_dir / "global-manifest.json").read_text())
     assert set(manifest["repos"]) == {"repoA", "repoB"}, (
         f"a concurrent add lost the other's update, got {set(manifest['repos'])}"
+    )
+
+
+def test_global_add_hashes_and_parses_a_single_read(tmp_path, monkeypatch):
+    """Review finding: source_path used to be read twice at two different
+    times -- once by a standalone hashing helper before the lock, once for
+    the actual JSON parse after it -- so a concurrent writer to source_path
+    between those two reads could make the recorded manifest hash describe
+    different bytes than what was actually imported into the global graph.
+    Hashing and parsing must now share a single read of the file."""
+    src_graph = tmp_path / "graph.json"
+    G = _make_graph([{"id": "x", "label": "X", "source_file": "x.py"}])
+    _graph_to_json(G, src_graph)
+
+    reads = []
+    orig_read_bytes = Path.read_bytes
+    orig_read_text = Path.read_text
+
+    def counting_read_bytes(self, *a, **kw):
+        if self == src_graph:
+            reads.append("bytes")
+        return orig_read_bytes(self, *a, **kw)
+
+    def counting_read_text(self, *a, **kw):
+        if self == src_graph:
+            reads.append("text")
+        return orig_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add
+        global_add(src_graph, "repoA")
+
+    assert reads == ["bytes"], (
+        f"source_path must be read exactly once, for both hashing and "
+        f"parsing, so the recorded hash always matches what was actually "
+        f"imported -- got {reads}"
     )
