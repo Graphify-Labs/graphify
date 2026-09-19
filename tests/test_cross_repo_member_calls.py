@@ -6,8 +6,8 @@ type already in hand and nothing about it reached `graph.json` — the only arti
 `merge-graphs` and `global add` read. The two-repo graph was missing precisely the
 edges that make it a call graph.
 
-The Java, C++, C# and Swift resolvers now park those calls on the caller node and
-this pass finishes them after the merge. The cases below pin what it must NOT do
+The Java, C++, C#, Swift and PHP resolvers now park those calls on the caller node
+and this pass finishes them after the merge. The cases below pin what it must NOT do
 as much as what it must: the single-definition guard, the cross-repo-only scope,
 and the language guard are what keep it from fabricating an edge from a name
 collision.
@@ -45,6 +45,7 @@ needs_java = _needs("tree_sitter_java")
 needs_cpp = _needs("tree_sitter_cpp")
 needs_csharp = _needs("tree_sitter_c_sharp")
 needs_swift = _needs("tree_sitter_swift")
+needs_php = _needs("tree_sitter_php")
 
 
 def _caller(repo: str, parked: list[dict], node_id: str = "app_run",
@@ -372,6 +373,14 @@ def test_a_java_build_parks_the_call_and_the_merge_finishes_it(tmp_path: Path):
                           "}\n"),
         ("src/Greeter.swift", "class Greeter { func greet() {} }\n"),
         marks=needs_swift, id="swift-property-receiver",
+    ),
+    pytest.param(
+        "php", "greet",
+        ("src/App.php", "<?php\nclass App {\n    private Greeter $greeter;\n"
+                        "    public function run(): void { $this->greeter->greet(); }\n}\n"),
+        ("src/Greeter.php", "<?php\nclass Greeter {\n"
+                            "    public function greet(): void {}\n}\n"),
+        marks=needs_php, id="php-typed-property",
     ),
 ])
 def test_each_language_parks_the_call_and_the_merge_finishes_it(
