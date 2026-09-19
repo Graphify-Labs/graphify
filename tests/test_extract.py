@@ -2307,7 +2307,7 @@ def test_extract_parallel_still_spawns_pool_for_multiple_workers(tmp_path, monke
     assert spawned["count"] == 1, "multi-worker runs must still use the pool"
 
 
-def test_extract_parallel_declines_pool_inside_a_spawned_worker(tmp_path, monkeypatch):
+def test_extract_parallel_declines_pool_inside_a_spawned_worker(tmp_path, monkeypatch, capsys):
     """#1637: a guard-less Windows caller makes every spawned worker re-execute
     the top-level module. If that module calls extract() again at module
     scope, the worker would open its OWN pool, whose own guard-less children
@@ -2315,6 +2315,10 @@ def test_extract_parallel_declines_pool_inside_a_spawned_worker(tmp_path, monkey
     failure. _extract_parallel must refuse to open a pool at all whenever it
     is already running inside a multiprocessing child, regardless of
     platform, since a legitimate call only ever happens in the main process.
+
+    A review finding pointed out this branch returned silently, unlike the
+    sibling "caller lacks a guard" branch just below it which prints a
+    diagnostic -- decline reasons should both be visible the same way.
     """
     import concurrent.futures
     import multiprocessing
@@ -2335,6 +2339,9 @@ def test_extract_parallel_declines_pool_inside_a_spawned_worker(tmp_path, monkey
     ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
     assert ok is False, "must decline and hand the work back for sequential extraction"
     assert spawned["count"] == 0, "no pool may be spawned from inside a worker process"
+    assert "worker process" in capsys.readouterr().err, (
+        "declining here must be visible, matching the sibling guard-less branch"
+    )
 
 
 def test_extract_parallel_declines_pool_on_windows_when_caller_lacks_guard(
