@@ -4,6 +4,7 @@ graphify/dedup.py."""
 from __future__ import annotations
 
 import json
+import os
 import pytest
 import networkx as nx
 from pathlib import Path
@@ -532,6 +533,60 @@ def test_global_add_never_reads_a_new_oversized_file_into_memory(tmp_path, monke
         f"an oversized, never-before-tracked source file must be rejected "
         f"by the cap before any read of its bytes, got {reads}"
     )
+
+
+def test_global_add_does_not_skip_a_different_file_with_matching_stat(tmp_path):
+    """Review finding: the mtime/size fast path checked only the stat pair,
+    never the source path itself. A repo_tag re-pointed at a genuinely
+    different file that happens to share the old file's mtime and size (a
+    real possibility with cp -p/rsync -a/checkout-preserved timestamps) must
+    never fast-skip on stat coincidence alone, or the store silently keeps
+    stale data with no warning."""
+    src_a = tmp_path / "a.json"
+    src_b = tmp_path / "b.json"
+    G_a = _make_graph([{"id": "old", "label": "Old", "source_file": "old.py"}])
+    G_b = _make_graph([{"id": "new", "label": "New", "source_file": "new.py"}])
+    _graph_to_json(G_a, src_a)
+    _graph_to_json(G_b, src_b)
+
+    # Force identical size (pad the shorter payload with trailing whitespace
+    # -- valid outside a JSON document) and identical mtime, so only a path
+    # comparison can tell the two apart.
+    text_a = src_a.read_text(encoding="utf-8")
+    text_b = src_b.read_text(encoding="utf-8")
+    pad = abs(len(text_a) - len(text_b))
+    if len(text_a) < len(text_b):
+        src_a.write_text(text_a + " " * pad, encoding="utf-8")
+    else:
+        src_b.write_text(text_b + " " * pad, encoding="utf-8")
+    assert src_a.stat().st_size == src_b.stat().st_size
+    # os.utime's float-seconds form loses nanosecond precision (rounding can
+    # differ between the two calls); the ns= form sets it exactly.
+    common_mtime_ns = src_a.stat().st_mtime_ns
+    os.utime(src_b, ns=(common_mtime_ns, common_mtime_ns))
+    assert src_a.stat().st_mtime_ns == src_b.stat().st_mtime_ns
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add
+
+        result_a = global_add(src_a, "repoX")
+        assert result_a["skipped"] is False
+
+        result_b = global_add(src_b, "repoX")
+        assert result_b["skipped"] is False, (
+            "a different file with a matching mtime/size must not fast-skip"
+        )
+
+        manifest = json.loads((global_dir / "global-manifest.json").read_text())
+        assert manifest["repos"]["repoX"]["source_path"] == str(src_b.resolve())
+
+        graph = json.loads((global_dir / "global-graph.json").read_text())
+        ids = {n["id"] for n in graph["nodes"]}
+        assert "repoX::new" in ids, "the new file's content must actually be imported"
+        assert "repoX::old" not in ids, "the stale file's content must not survive"
 
 
 def test_global_store_lock_serializes_concurrent_critical_sections(tmp_path):
