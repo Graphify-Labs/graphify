@@ -48,8 +48,7 @@ def _shingles(text: str, k: int = 3) -> set[str]:
 def _make_minhash(text: str, num_perm: int = 128) -> MinHash:
     # Strip spaces so "graph extractor" and "graphextractor" share shingles
     m = MinHash(num_perm=num_perm)
-    for shingle in _shingles(text.replace(" ", "")):
-        m.update(shingle.encode("utf-8"))
+    m.update_batch([shingle.encode("utf-8") for shingle in _shingles(text.replace(" ", ""))])
     return m
 
 
