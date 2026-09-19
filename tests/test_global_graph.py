@@ -457,6 +457,45 @@ def test_global_add_rejects_oversized_source_graph(monkeypatch, tmp_path):
             global_add(src_graph, "repoA")
 
 
+def test_global_add_skip_on_unchanged_hash_survives_a_later_size_cap_drop(tmp_path, monkeypatch):
+    """Review finding: reordering the size cap check ahead of the unchanged
+    hash skip check (to consolidate hashing and parsing into a single read)
+    made an already tracked, unchanged graph start erroring on every later
+    call once the file (or a lowered GRAPHIFY_MAX_GRAPH_BYTES) crossed the
+    cap, instead of continuing to skip -- the cap was never reached at all
+    on that path before. Skip must still win when nothing changed, even if
+    the file would now fail the cap on its own."""
+    import pytest
+
+    src_graph = tmp_path / "graph.json"
+    G = _make_graph([{"id": "x", "label": "X", "source_file": "src/x.py"}])
+    _graph_to_json(G, src_graph)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add
+
+        # First add succeeds while the file is well under the cap.
+        result1 = global_add(src_graph, "repoA")
+        assert result1["skipped"] is False
+
+        # The cap drops below the (unchanged) file's size -- a later call
+        # for the SAME, untouched file must still skip, not raise.
+        monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 8)
+        result2 = global_add(src_graph, "repoA")
+        assert result2["skipped"] is True
+
+        # A genuinely different (still oversized) file for the same repo
+        # must still be rejected -- the cap is not bypassed entirely.
+        _graph_to_json(
+            _make_graph([{"id": "y", "label": "Y", "source_file": "src/y.py"}]), src_graph
+        )
+        with pytest.raises(ValueError, match="exceeds"):
+            global_add(src_graph, "repoA")
+
+
 def test_global_store_lock_serializes_concurrent_critical_sections(tmp_path):
     """Review finding: global_add/global_remove each load-mutate-save the
     shared store with no locking, so two concurrent calls read the same
