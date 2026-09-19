@@ -3226,7 +3226,7 @@ def dispatch_command(cmd: str) -> None:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
-                "[--no-gitignore] [--code-only] [--no-dedup] "
+                "[--no-gitignore] [--code-only] [--no-dedup] [--inline-params] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
@@ -3259,6 +3259,12 @@ def dispatch_command(cmd: str) -> None:
         # off also arms build_merge's #479 shrink guard, which is disabled while
         # dedup is on because fuzzy merging shrinks the graph legitimately (#2881).
         no_dedup = False
+        # --inline-params: opt-in designation for parameters typed as anonymous
+        # object literals. Emits a `references[inline_parameter]` self-edge (arity
+        # marker) and emits the param's nested named refs as `references[field]`
+        # instead of `parameter_type`, so `parameter_type` means "named param
+        # type" (see _ts_emit_callable_type_refs). Off by default.
+        inline_params = False
         google_workspace = False
         global_merge = False
         code_only = False
@@ -3329,6 +3335,8 @@ def dispatch_command(cmd: str) -> None:
                 dedup_llm = True; i += 1
             elif a == "--no-dedup":
                 no_dedup = True; i += 1
+            elif a == "--inline-params":
+                inline_params = True; i += 1
             elif a == "--code-only":
                 code_only = True; i += 1
             elif a == "--google-workspace":
@@ -3803,6 +3811,8 @@ def dispatch_command(cmd: str) -> None:
             # `root` stays the scanned project so source_file/ids relativize
             # against it; conflating the two basenamed every node (#1941).
             ast_kwargs: dict = {"cache_root": out_root, "root": target}
+            if inline_params:
+                ast_kwargs["inline_params"] = True
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
             # #2437/#2438 (the `graphify update` twin of watch's #2406 fix): an

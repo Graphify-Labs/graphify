@@ -6789,6 +6789,7 @@ def extract(
     max_workers: int | None = None,
     resolution_context_nodes: list[dict] | None = None,
     resolution_context_edges: list[dict] | None = None,
+    inline_params: bool = False,
 ) -> dict:
     """Extract AST nodes and edges from a list of code files.
 
@@ -6811,6 +6812,10 @@ def extract(
             use ProcessPoolExecutor for multi-core extraction.
         max_workers: max subprocess count. Defaults to cpu_count (or the
             value of GRAPHIFY_MAX_WORKERS if set), bounded by len(uncached_work).
+        inline_params: if True, parameters typed as anonymous object literals
+            emit a `references[inline_parameter]` self-edge (arity marker) and
+            their nested named refs become `references[field]` instead of
+            `parameter_type` (see `_ts_emit_callable_type_refs`). Off by default.
         resolution_context_nodes: read-only AST nodes from files that are NOT
             being extracted this run (an incremental rebuild's unchanged
             corpus, #2406). They extend the cross-file resolution indexes —
@@ -7112,7 +7117,7 @@ def extract(
     # marker set in the per-file extractor. Populated just before the pass that uses it.
     callable_nids: set[str] = set()
 
-    _augment_symbol_resolution_edges(paths, all_nodes, all_edges, root)
+    _augment_symbol_resolution_edges(paths, all_nodes, all_edges, root, inline_params=inline_params)
 
     # Merge a header-declared class (and its methods) with its sibling-impl
     # definition into ONE node (C/C++/ObjC #1547/#1556). Runs BEFORE the id-remap

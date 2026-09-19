@@ -1032,6 +1032,12 @@ def deduplicate_entities(
         e.pop("to", None)
         if e["source"] != e["target"]:
             deduped_edges.append(e)
+        elif e.get("context") == "inline_parameter":
+            # `inline_parameter` is an intentional self-loop: an arity marker
+            # graphify emits (opt-in `--inline-params`) recording how many
+            # anonymous object-literal params a callable has. Other self-loops
+            # are noise (skip them); this one is metadata a verifier consumes.
+            deduped_edges.append(e)
 
     return deduped_nodes, deduped_edges
 
