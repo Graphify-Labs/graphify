@@ -6488,6 +6488,12 @@ def _extract_parallel(
     # into an unbounded process explosion. Refuse unconditionally, before
     # even a spawn-capable platform check, since this is never correct.
     if multiprocessing.parent_process() is not None:
+        print(
+            "  warning: extract() was called from inside a worker process; "
+            "extracting sequentially instead of opening a nested pool "
+            "(pass parallel=False to extract() to silence this check)",
+            file=sys.stderr, flush=True,
+        )
         return False
 
     if sys.platform == "win32" and _caller_main_lacks_guard():
