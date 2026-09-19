@@ -3916,6 +3916,73 @@ def test_cl_crossfile_superclass_inherits_edge_survives(tmp_path):
 
 
 @_needs_commonlisp
+def test_cl_crossfile_specializer_specializes_edge_survives(tmp_path):
+    """A method specialising on a class from another file must keep its edge.
+
+    The specializer was resolved with a file-scoped id, so a method dispatching
+    on a class defined elsewhere produced an edge to a node that did not exist
+    and the dangling-edge filter removed it. Since most methods in a CL system
+    live apart from the class they dispatch on, that erased nearly every
+    specializes edge in a real codebase. Resolve through the same sourceless
+    stub the cross-file superclass path uses.
+    """
+    f = tmp_path / "shapes.lisp"
+    f.write_text(
+        "(defclass circle () ())\n"
+        "(defgeneric area (obj))\n"
+        "(defmethod area ((obj circle)) 1)\n"
+        "(defmethod area ((obj square)) 2)\n"
+    )
+    r = extract_commonlisp(f)
+    assert "error" not in r
+    id_to_node = {n["id"]: n for n in r["nodes"]}
+    targets = {
+        id_to_node[e["target"]]["label"]
+        for e in r["edges"]
+        if e["relation"] == "specializes"
+        and e["source"] in id_to_node and e["target"] in id_to_node
+    }
+    # same-file specializer still binds locally
+    assert "circle" in targets
+    # cross-file specializer survives via a sourceless stub instead of being dropped
+    assert "square" in targets
+    square = next(n for n in r["nodes"] if n["label"] == "square")
+    assert square["source_file"] == "", "cross-file specializer must be a sourceless stub"
+
+
+@_needs_commonlisp
+def test_cl_define_condition_emits_inherits_edges(tmp_path):
+    """A condition hierarchy must produce inherits edges like a class one.
+
+    define-condition was routed to the generic definer path, which records the
+    name and never reads the parent list, so a condition hierarchy appeared in
+    the graph as unrelated nodes even with both ends in the same file. Codebases
+    that signal through conditions had that structure missing entirely.
+    """
+    f = tmp_path / "conditions.lisp"
+    f.write_text(
+        "(define-condition app-error (error) ())\n"
+        "(define-condition parse-error (app-error) ())\n"
+        "(defclass control () ())\n"
+        "(defclass control-sub (control) ())\n"
+    )
+    r = extract_commonlisp(f)
+    assert "error" not in r
+    id_to_node = {n["id"]: n for n in r["nodes"]}
+    inherits = {
+        (id_to_node[e["source"]]["label"], id_to_node[e["target"]]["label"])
+        for e in r["edges"]
+        if e["relation"] == "inherits"
+        and e["source"] in id_to_node and e["target"] in id_to_node
+    }
+    assert ("parse-error", "app-error") in inherits
+    assert ("app-error", "error") in inherits
+    # control: the defclass path was already working and must stay working
+    assert ("control-sub", "control") in inherits
+
+
+
+@_needs_commonlisp
 def test_cl_imports():
     r = extract_commonlisp(FIXTURES / "sample.lisp")
     import_edges = [e for e in r["edges"] if e["relation"] == "imports"]
