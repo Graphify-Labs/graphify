@@ -312,18 +312,31 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     return False
             new_n = G.number_of_nodes()
             if new_n < existing_n:
-                import sys as _sys
-                print(
-                    f"[graphify] WARNING: new graph has {new_n} nodes but existing "
-                    f"graph.json has {existing_n} (net -{existing_n - new_n}). "
-                    f"Refusing to overwrite. Possible causes: missing chunk files from "
-                    f"a previous session, or fuzzy dedup collapsed same-named symbols "
-                    f"across files during an --update on an already-current graph. "
-                    f"Run a full rebuild (/graphify .) to be safe, or pass force=True "
-                    f"only if you have verified the reduction is legitimate.",
-                    file=_sys.stderr,
-                )
-                return False
+                # #1847: build_from_json legitimately collapses duplicate
+                # nodes that resolve to the same (source_file, label) — e.g. a
+                # manifest-derived package node and its AST-canonical twin
+                # (crate:foo vs pkg_foo). That merge is recorded on the graph
+                # as `_ghost_dedup_count`. When the observed drop is fully
+                # explained by that count, it is a known-safe canonicalization,
+                # not the unverified data-loss shrink #479 guards against —
+                # proceed instead of refusing.
+                dedup = int(getattr(G, "graph", {}).get("_ghost_dedup_count", 0) or 0)
+                unexplained = (existing_n - new_n) - dedup
+                if unexplained > 0:
+                    import sys as _sys
+                    print(
+                        f"[graphify] WARNING: new graph has {new_n} nodes but existing "
+                        f"graph.json has {existing_n} (net -{existing_n - new_n}, "
+                        f"{dedup} explained by duplicate-node canonicalization, "
+                        f"{unexplained} unexplained). "
+                        f"Refusing to overwrite. Possible causes: missing chunk files from "
+                        f"a previous session, or fuzzy dedup collapsed same-named symbols "
+                        f"across files during an --update on an already-current graph. "
+                        f"Run a full rebuild (/graphify .) to be safe, or pass force=True "
+                        f"only if you have verified the reduction is legitimate.",
+                        file=_sys.stderr,
+                    )
+                    return False
 
     node_community = _node_community_map(communities)
     _labels: dict[int, str] = {int(k): v for k, v in (community_labels or {}).items()}
