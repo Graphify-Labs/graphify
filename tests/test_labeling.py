@@ -878,3 +878,281 @@ def test_label_cli_drops_sentinel_and_bare_key_echoes(tmp_path, monkeypatch):
     assert labels["0"] == "Order Management"            # real name survives
     assert labels["5"] == "PaymentService"              # sentinel echo dropped -> hub label
     assert labels["7"] == "ShippingService"             # bare-key echo dropped -> hub label
+
+
+# ── #3586: Size-aware community labels and token-bounded batching ─────────────
+
+
+def test_adaptive_sample_size_boundaries():
+    """Verify exact boundary transitions for size-aware adaptive sampling."""
+    from graphify.llm import _adaptive_sample_size
+
+    boundaries = {
+        5: 5,
+        12: 12,
+        13: 15,
+        50: 15,
+        51: 20,
+        200: 20,
+        201: 26,
+        1000: 26,
+        1001: 32,
+        2000: 32,
+    }
+    for n, expected in boundaries.items():
+        assert _adaptive_sample_size(n) == expected, (
+            f"Expected _adaptive_sample_size({n}) == {expected}, got {_adaptive_sample_size(n)}"
+        )
+
+    # Monotonicity and never sampling more nodes than available for small communities
+    for n in range(1, 13):
+        assert _adaptive_sample_size(n) == n
+    # Upper bound cap
+    assert _adaptive_sample_size(10_000) == 32
+
+
+def test_explicit_top_k_override_and_positional():
+    """Explicit top_k caps representative sample, and positional signature is preserved."""
+    from graphify.llm import _community_label_lines
+
+    G = nx.Graph()
+    # Large community with 100 nodes
+    members = [f"node_{i:03d}" for i in range(100)]
+    for m in members:
+        G.add_node(m, label=f"Label_{m}")
+    communities = {0: members}
+
+    # Adaptive default (top_k=None) for N=100 produces 20 representatives
+    lines_adaptive, cids_adaptive = _community_label_lines(G, communities)
+    assert cids_adaptive == [0]
+    names_adaptive = lines_adaptive[0].split(": ", 1)[1].split(", ")
+    assert len(names_adaptive) == 20
+
+    # Explicit top_k=7 caps representatives at 7
+    lines_explicit, _ = _community_label_lines(G, communities, top_k=7)
+    names_explicit = lines_explicit[0].split(": ", 1)[1].split(", ")
+    assert len(names_explicit) == 7
+
+    # Preserves positional call: _community_label_lines(G, communities, gods, max_communities, 12)
+    lines_pos, _ = _community_label_lines(G, communities, None, 10, 12)
+    names_pos = lines_pos[0].split(": ", 1)[1].split(", ")
+    assert len(names_pos) == 12
+
+
+def test_label_communities_and_generate_forward_explicit_top_k(monkeypatch):
+    """label_communities and generate_community_labels forward explicit top_k."""
+    G = nx.Graph()
+    members = [f"node_{i:03d}" for i in range(100)]
+    for m in members:
+        G.add_node(m, label=f"Label_{m}")
+    communities = {0: members}
+
+    captured_prompts = []
+
+    def fake_call(prompt, *, backend, max_tokens=200, **kwargs):
+        captured_prompts.append(prompt)
+        return '{"0": "Custom Subsystem"}'
+
+    monkeypatch.setattr("graphify.llm._call_llm", fake_call)
+
+    # Explicit top_k=5 via label_communities
+    labels = label_communities(G, communities, backend="gemini", top_k=5)
+    assert labels == {0: "Custom Subsystem"}
+    line = captured_prompts[-1].strip().splitlines()[-1]
+    prompt_labels = line.split(": ", 1)[1].split(", ")
+    assert len(prompt_labels) == 5
+
+    # Forwarding via generate_community_labels
+    gen_labels, src = generate_community_labels(G, communities, backend="gemini", top_k=8)
+    assert src == "llm"
+    assert gen_labels == {0: "Custom Subsystem"}
+    line_gen = captured_prompts[-1].strip().splitlines()[-1]
+    prompt_labels_gen = line_gen.split(": ", 1)[1].split(", ")
+    assert len(prompt_labels_gen) == 8
+
+
+def test_representative_diversity_per_file_cap():
+    """Representatives are not all taken from alphabetically first source file,
+    per-file cap is enforced, and internal hub & god nodes are prioritized."""
+    from graphify.llm import _community_label_lines
+
+    G = nx.Graph()
+    # 30 nodes in a_file.py, 10 nodes in b_file.py, 10 nodes in c_file.py
+    # N = 50 -> adaptive sample = 15.
+    # Per-file cap = max(2, (15 + 2) // 3) = 5.
+    members = []
+    for i in range(30):
+        nid = f"a_node_{i:02d}"
+        G.add_node(nid, label=f"ALabel_{i:02d}", source_file="a_file.py")
+        members.append(nid)
+    for i in range(10):
+        nid = f"b_node_{i:02d}"
+        G.add_node(nid, label=f"BLabel_{i:02d}", source_file="b_file.py")
+        members.append(nid)
+    for i in range(10):
+        nid = f"c_node_{i:02d}"
+        G.add_node(nid, label=f"CLabel_{i:02d}", source_file="c_file.py")
+        members.append(nid)
+
+    # Add community-internal edges to make b_node_05 a strong internal hub
+    for i in range(10):
+        if i != 5:
+            G.add_edge("b_node_05", f"b_node_{i:02d}")
+
+    # Declare c_node_09 as a global god node
+    gods = [{"id": "c_node_09", "label": "CLabel_09"}]
+
+    lines, _ = _community_label_lines(G, {0: members}, gods=gods)
+    labels = lines[0].split(": ", 1)[1].split(", ")
+    assert len(labels) == 15
+
+    # 1. God node is prioritized first
+    assert labels[0] == "CLabel_09"
+
+    # 2. Internal hub b_node_05 is prioritized high (second, before low-degree nodes)
+    assert labels[1] == "BLabel_05"
+
+    # 3. Alphabetically first file a_file.py does NOT dominate the sample:
+    a_labels = [l for l in labels if l.startswith("ALabel_")]
+    b_labels = [l for l in labels if l.startswith("BLabel_")]
+    c_labels = [l for l in labels if l.startswith("CLabel_")]
+
+    assert len(a_labels) == 5, f"a_file.py exceeded per-file cap of 5: {a_labels}"
+    assert len(b_labels) == 5, f"b_file.py did not receive 5 representatives: {b_labels}"
+    assert len(c_labels) == 5, f"c_file.py did not receive 5 representatives: {c_labels}"
+
+
+def test_single_file_community_receives_full_sample():
+    """Single-file community receives its full adaptive sample via backfill."""
+    from graphify.llm import _community_label_lines
+
+    G = nx.Graph()
+    # 50 nodes all in one source file
+    members = [f"single_{i:02d}" for i in range(50)]
+    for m in members:
+        G.add_node(m, label=f"SingleLabel_{m}", source_file="only_one.py")
+
+    # N = 50 -> adaptive sample = 15. File cap = 5, but backfill fills all 15.
+    lines, _ = _community_label_lines(G, {0: members})
+    labels = lines[0].split(": ", 1)[1].split(", ")
+    assert len(labels) == 15
+
+
+def test_missing_or_empty_source_file_does_not_crash():
+    """Missing or empty source_file attributes are handled gracefully."""
+    from graphify.llm import _community_label_lines
+
+    G = nx.Graph()
+    members = [f"n_{i:02d}" for i in range(40)]
+    for i, m in enumerate(members):
+        if i % 3 == 0:
+            G.add_node(m, label=f"Lbl_{m}")  # no source_file
+        elif i % 3 == 1:
+            G.add_node(m, label=f"Lbl_{m}", source_file=None)
+        else:
+            G.add_node(m, label=f"Lbl_{m}", source_file="")
+
+    # N = 40 -> adaptive sample = 15
+    lines, _ = _community_label_lines(G, {0: members})
+    labels = lines[0].split(": ", 1)[1].split(", ")
+    assert len(labels) == 15
+
+
+def test_community_smaller_than_target_uses_all_members():
+    """Communities with fewer members than target sample use all available nodes."""
+    from graphify.llm import _community_label_lines
+
+    G = nx.Graph()
+    members = ["node_a", "node_b", "node_c"]
+    for m in members:
+        G.add_node(m, label=f"Label_{m}")
+
+    lines, _ = _community_label_lines(G, {0: members})
+    labels = lines[0].split(": ", 1)[1].split(", ")
+    assert len(labels) == 3
+    assert set(labels) == {"Label_node_a", "Label_node_b", "Label_node_c"}
+
+
+def test_token_aware_batching_splits_oversized_batches(monkeypatch):
+    """Batches respect both batch_size and prompt token ceilings."""
+    from graphify.llm import _pack_label_batches, _estimate_text_tokens, _LABEL_PROMPT_PREAMBLE
+
+    # Create 30 community lines of ~400 characters (~100 tokens) each
+    labeled_cids = list(range(30))
+    lines = [f"{cid}: " + ", ".join(f"ComponentServiceHandler_{cid}_{i}" for i in range(15)) for cid in labeled_cids]
+
+    # If max_prompt_tokens is small, e.g. 500 tokens:
+    batches = _pack_label_batches(labeled_cids, lines, batch_size=100, max_prompt_tokens=500)
+    assert len(batches) > 1, "Should split across multiple batches when tokens exceed limit"
+
+    # Verify each batch respects constraints and all cids are preserved
+    seen_cids = []
+    for b_cids, b_lines in batches:
+        assert len(b_cids) <= 100
+        assert len(b_cids) == len(b_lines)
+        prompt = _LABEL_PROMPT_PREAMBLE + "\n".join(b_lines)
+        tokens = _estimate_text_tokens(prompt)
+        # Each batch must be within token budget unless it's a single oversized community line
+        if len(b_cids) > 1:
+            assert tokens <= 500
+        seen_cids.extend(b_cids)
+
+    assert seen_cids == labeled_cids
+
+
+def test_token_aware_batching_accepts_single_oversized_line():
+    """A community line exceeding max_prompt_tokens alone is accepted in its own batch."""
+    from graphify.llm import _pack_label_batches
+
+    labeled_cids = [0, 1, 2]
+    # Very long line
+    huge_line = "0: " + ", ".join(["LongRepresentativeNameHere"] * 100)
+    normal_line_1 = "1: ShortNameA, ShortNameB"
+    normal_line_2 = "2: ShortNameC, ShortNameD"
+
+    lines = [huge_line, normal_line_1, normal_line_2]
+    # Set max_prompt_tokens smaller than huge_line + preamble
+    batches = _pack_label_batches(labeled_cids, lines, batch_size=10, max_prompt_tokens=50)
+
+    # huge_line should be in its own batch, and normal lines in subsequent batch(es)
+    assert len(batches) >= 2
+    assert batches[0][0] == [0]
+    all_packed = [cid for b_cids, _ in batches for cid in b_cids]
+    assert all_packed == [0, 1, 2]
+
+
+def test_label_communities_end_to_end_with_token_batching(monkeypatch):
+    """label_communities processes all communities across token-split batches."""
+    G = nx.Graph()
+    # 20 communities with long member names
+    communities = {}
+    for cid in range(20):
+        c_members = [f"c{cid}_node_{i:02d}" for i in range(30)]
+        for m in c_members:
+            G.add_node(m, label=f"VeryLongDescriptiveComponentName_{cid}_{m}")
+        communities[cid] = c_members
+
+    batches_seen = []
+
+    def fake_call(prompt, *, backend, max_tokens=200, **kwargs):
+        batches_seen.append(prompt)
+        # Parse cids from prompt lines
+        results = {}
+        for line in prompt.splitlines():
+            m = re.match(r"^(\d+):", line)
+            if m:
+                results[m.group(1)] = f"Community Name {m.group(1)}"
+        return json.dumps(results)
+
+    monkeypatch.setattr("graphify.llm._call_llm", fake_call)
+
+    # Force a tight token limit by monkeypatching _LABEL_MAX_PROMPT_TOKENS
+    monkeypatch.setattr("graphify.llm._LABEL_MAX_PROMPT_TOKENS", 400)
+
+    labels = label_communities(G, communities, backend="gemini", batch_size=100)
+    assert len(labels) == 20
+    for cid in range(20):
+        assert labels[cid] == f"Community Name {cid}"
+
+    # Verify that splitting actually occurred because of the token limit
+    assert len(batches_seen) > 1
