@@ -5530,6 +5530,19 @@ def _extract_generic(
                     walk(child, parent_class_nid=parent_class_nid)
             return
 
+        # A Java enum wraps its fields, constructors and methods in an
+        # `enum_body_declarations` node, nested under `enum_body` after the
+        # constant list. The default recurse below drops parent_class_nid (an
+        # unknown wrapper usually IS a scope boundary), which orphaned every
+        # enum method, field and constructor onto the file instead of the enum.
+        # It is not a scope of its own — its members belong to the enum — so
+        # recurse transparently, keeping the enum linkage (mirrors the Kotlin
+        # companion_object handling above).
+        if t == "enum_body_declarations":
+            for child in node.children:
+                walk(child, parent_class_nid=parent_class_nid)
+            return
+
         # #2551: tree-sitter ERROR recovery can wrap declarations that plainly
         # sit inside a class body (e.g. the Kotlin grammar choking on a one-line
         # sibling member). The default recurse below deliberately drops
