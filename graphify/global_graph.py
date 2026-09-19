@@ -124,17 +124,41 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
 
     with _global_store_lock():
         manifest = _load_manifest()
+        existing = manifest["repos"].get(repo_tag, {})
 
-        # Hash and parse the SAME read of source_path, inside the lock. Hashing
-        # it separately before the lock (as this used to) reads the file twice
-        # at two different times -- a concurrent writer to source_path between
-        # those two reads could make the recorded hash describe different
-        # bytes than what actually gets imported below, corrupting the
-        # unchanged-hash skip check on every later call.
+        # A stat-only fast path, no read at all: if this file's mtime and size
+        # exactly match what was recorded on the last successful add, it is
+        # unchanged, full stop -- including when it is (or has become)
+        # oversized, since an already-tracked, genuinely untouched file must
+        # keep skipping rather than erroring on every call once it or the
+        # configured cap crosses the threshold. Anything else (first add,
+        # mtime/size differs, or an older manifest that predates this field)
+        # falls through to the cap check and a real read below.
+        st = source_path.stat()
+        if (
+            existing.get("source_mtime_ns") == st.st_mtime_ns
+            and existing.get("source_size") == st.st_size
+        ):
+            return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
+                    "cross_repo_calls": 0, "shared_type_links": 0}
+
+        # The cap is a stat-based check too (no read), and must run before
+        # ANY read of the file's bytes -- reading it first (even just to hash
+        # it) defeats the cap's whole purpose of failing fast before a
+        # multi-GiB file is loaded into memory, for exactly the case that
+        # matters most: a new or genuinely changed oversized file, which the
+        # fast path above cannot have already caught.
+        from graphify.security import check_graph_file_size_cap
+        check_graph_file_size_cap(source_path)
+
+        # Hash and parse the SAME read of source_path, inside the lock.
+        # Reading it twice at two different times (once to hash, once to
+        # parse) would let a concurrent writer to source_path in between make
+        # the recorded hash describe different bytes than what actually gets
+        # imported below.
         raw_bytes = source_path.read_bytes()
         src_hash = hashlib.sha256(raw_bytes).hexdigest()[:16]
 
-        existing = manifest["repos"].get(repo_tag, {})
         existing_path = existing.get("source_path", "")
         if existing_path and existing_path != str(source_path.resolve()):
             print(
@@ -144,17 +168,12 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
                 file=sys.stderr,
             )
         if existing.get("source_hash") == src_hash:
+            # Content-hash fallback for a manifest entry that predates the
+            # mtime/size fields above, or whose mtime changed without the
+            # content actually changing.
             return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
                     "cross_repo_calls": 0, "shared_type_links": 0}
 
-        # The size cap only guards a file that is actually about to be parsed
-        # and merged -- checking it before the skip check above (a review
-        # finding on the read-consolidation fix) made an unchanged, already
-        # tracked graph error out on every call once it (or the configured
-        # cap) crossed the threshold, instead of continuing to skip exactly
-        # as it did before that fix, since it was never reached at all then.
-        from graphify.security import check_graph_file_size_cap
-        check_graph_file_size_cap(source_path)
         data = json.loads(raw_bytes.decode("utf-8"))
         if "links" not in data and "edges" in data:
             data = dict(data, links=data["edges"])
@@ -238,6 +257,8 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
             "node_count": added,
             "edge_count": prefixed.number_of_edges(),
             "source_hash": src_hash,
+            "source_mtime_ns": st.st_mtime_ns,
+            "source_size": st.st_size,
         }
         _save_manifest(manifest)
 
