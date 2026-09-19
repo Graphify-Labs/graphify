@@ -2045,7 +2045,10 @@ def _rebuild_code(
         # hub-fill below renames it, deterministically and correct-by-construction.
         # Without this, an incremental `graphify update` launders stale names into
         # labels.json as though they were current (#label-stale).
-        from graphify.cluster import community_member_sigs
+        from graphify.cluster import (
+            community_member_sigs,
+            community_member_sigs_from_node_communities,
+        )
         cur_sigs = community_member_sigs(communities)
         saved_sigs: dict[int, str] = {}
         if sig_file.exists():
@@ -2057,14 +2060,15 @@ def _rebuild_code(
                 }
             except Exception:
                 saved_sigs = {}
-        if saved_sigs:
-            # Precise: the signature tells us exactly which communities changed.
-            stale = {cid for cid in labels if saved_sigs.get(cid) != cur_sigs.get(cid)}
+        # Recover legacy labels only when no sidecar exists. A partial sidecar
+        # gives no evidence for its missing cids, even if graph.json has them.
         else:
-            # No sidecar (labels predate it). A differing community COUNT means the
-            # labels describe a different clustering, so no cid's label is trustworthy;
-            # an equal count is the best available "unchanged" signal.
-            stale = set(labels) if len(raw) != len(communities) else set()
+            saved_sigs = community_member_sigs_from_node_communities(
+                previous_node_community
+            )
+        # Missing membership evidence is unsafe: drop the human label rather
+        # than silently attaching it to a different community.
+        stale = {cid for cid in labels if saved_sigs.get(cid) != cur_sigs.get(cid)}
         for cid in stale:
             del labels[cid]
         missing = {cid: members for cid, members in communities.items() if cid not in labels}

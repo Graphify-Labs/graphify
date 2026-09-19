@@ -229,6 +229,23 @@ def community_member_sigs(communities: dict[int, list[str]]) -> dict[int, str]:
     return sigs
 
 
+def community_member_sigs_from_node_communities(
+    node_communities: dict[str, int],
+) -> dict[int, str]:
+    """Build membership fingerprints from ``node_id -> previous community`` data.
+
+    Older curated-label files have no adjacent ``.sig`` sidecar, but their
+    graph.json still records each node's previous community.  That graph is a
+    safe migration source: it lets update/cluster-only validate a label against
+    its prior members instead of assuming equal community counts mean equal
+    communities.
+    """
+    communities: dict[int, list[str]] = {}
+    for node_id, cid in node_communities.items():
+        communities.setdefault(cid, []).append(node_id)
+    return community_member_sigs(communities)
+
+
 def cluster(
     G: nx.Graph,
     resolution: float = 1.0,

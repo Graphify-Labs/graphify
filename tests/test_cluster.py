@@ -3,7 +3,14 @@ import sys
 import networkx as nx
 from pathlib import Path
 from graphify.build import build_from_json
-from graphify.cluster import cluster, cohesion_score, remap_communities_to_previous, score_all
+from graphify.cluster import (
+    cluster,
+    cohesion_score,
+    community_member_sigs,
+    community_member_sigs_from_node_communities,
+    remap_communities_to_previous,
+    score_all,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -126,6 +133,14 @@ def test_remap_communities_to_previous_assigns_deterministic_new_ids():
     assert list(remapped.keys()) == [0, 1]
     assert remapped[0] == ["x", "y", "z"]
     assert remapped[1] == ["m"]
+
+
+def test_membership_signatures_can_be_recovered_from_previous_graph_nodes():
+    previous = {"a": 7, "b": 7, "c": 3}
+    assert community_member_sigs_from_node_communities(previous) == community_member_sigs({
+        7: ["a", "b"],
+        3: ["c"],
+    })
 
 
 def _grouping(partition):
