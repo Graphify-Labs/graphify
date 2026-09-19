@@ -1880,3 +1880,97 @@ def test_export_bare_root_types_condition_falls_through_to_default(tmp_path: Pat
     result = _extract_for([target, importer], tmp_path)
 
     assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/index.ts")
+
+
+# ── #2849: exports/main that name pruned build output must resolve to source ─
+
+
+def test_workspace_root_export_into_pruned_dist_resolves_to_source(tmp_path: Path):
+    """#2849. `exports["."]` names `./dist/index.js`, and the package is built,
+    so that file is on disk — but `dist/` is pruned from the scan, so the edge
+    landed on a node that does not exist and was dropped. Every runtime
+    condition points at `dist/`; only the tree the output was built from is in
+    the corpus."""
+    _write_workspace_package(tmp_path, "@example/pkg-a", {
+        ".": {"types": "./dist/index.d.ts", "import": "./dist/index.js"},
+    })
+    _write(tmp_path / "packages/pkg-a/dist/index.js", "export const value = 'built'\n")
+    _write(tmp_path / "packages/pkg-a/dist/index.d.ts", "export declare const value: string\n")
+    target = _write(
+        tmp_path / "packages/pkg-a/src/index.ts",
+        'export const value = "ok"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\nexport const v = value\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/index.ts")
+    assert _has_symbol_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/index.ts", "value")
+
+
+def test_workspace_subpath_export_into_pruned_dist_resolves_to_source(tmp_path: Path):
+    """The subpath form of the same bug: `./testing` -> `./dist/testing/index.js`
+    mirrors to `src/testing/index.ts`."""
+    _write_workspace_package(tmp_path, "@example/pkg-a", {
+        ".": {"import": "./dist/index.js"},
+        "./testing": {"types": "./dist/testing/index.d.ts", "import": "./dist/testing/index.js"},
+    })
+    _write(tmp_path / "packages/pkg-a/dist/testing/index.js", "export const helper = 1\n")
+    target = _write(
+        tmp_path / "packages/pkg-a/src/testing/index.ts",
+        "export const helper = 1\n",
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { helper } from '@example/pkg-a/testing'\nexport const h = helper\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/testing/index.ts")
+
+
+def test_workspace_main_into_pruned_dist_resolves_to_source(tmp_path: Path):
+    """No `exports` at all: `main` is the entry, and it names built output too."""
+    _write(
+        tmp_path / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({"name": "@example/pkg-a", "main": "./dist/index.js"}),
+    )
+    _write(tmp_path / "packages/pkg-a/dist/index.js", "export const value = 'built'\n")
+    target = _write(
+        tmp_path / "packages/pkg-a/src/index.ts",
+        'export const value = "ok"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\nexport const v = value\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/index.ts")
+
+
+def test_workspace_export_into_dist_keeps_dist_when_no_source_mirror_exists(tmp_path: Path):
+    """A package that ships only built files (no `src/` tree) must keep its
+    existing behaviour: the `dist/` target is the file, and if it is in the
+    corpus the edge lands on it."""
+    _write_workspace_package(tmp_path, "@example/pkg-a", {
+        ".": {"import": "./dist/index.js"},
+    })
+    target = _write(tmp_path / "packages/pkg-a/dist/index.js", "export const value = 'built'\n")
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\nexport const v = value\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")
