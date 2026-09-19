@@ -198,6 +198,75 @@ def test_global_add_two_repos_no_collision(tmp_path):
     assert G.number_of_nodes() == 2  # no silent merge
 
 
+# ── #3100: community offset and shared type linking parity with merge-graphs ──
+
+def test_global_add_offsets_community_ids_across_repos(tmp_path):
+    """merge-graphs already offsets each input's community ids into a shared
+    id space (#3014); global_add builds the same kind of store with the same
+    prefixer but kept the default (no) offset, so two repos both numbering
+    their own communities from 0 collided in the merged store -- worst of
+    all at id 0, which every repo starts numbering from."""
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+    G1 = _make_graph([
+        {"id": "a", "label": "A", "source_file": "a.py", "community": 0},
+        {"id": "b", "label": "B", "source_file": "b.py", "community": 1},
+    ])
+    G2 = _make_graph([
+        {"id": "c", "label": "C", "source_file": "c.py", "community": 0},
+        {"id": "d", "label": "D", "source_file": "d.py", "community": 1},
+    ])
+    _graph_to_json(G1, g1)
+    _graph_to_json(G2, g2)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add, _load_global_graph
+        global_add(g1, "repoA")
+        global_add(g2, "repoB")
+        G = _load_global_graph()
+
+    by_repo: dict[str, set[int]] = {}
+    for _, data in G.nodes(data=True):
+        by_repo.setdefault(data["repo"], set()).add(data["community"])
+    assert by_repo["repoA"].isdisjoint(by_repo["repoB"]), (
+        f"community ids collide across repos: {by_repo}"
+    )
+
+
+def test_global_add_links_shared_type_declarations(tmp_path):
+    """merge-graphs already links identically declared types across repos so
+    a traversal can cross the repo boundary (#3007); global_add never called
+    that pass, so an incrementally built store held zero same_type_as edges
+    no matter how many repos actually shared a type."""
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+    shared = {
+        "id": "contracttype", "label": "ContractType", "source_file": "models.cs",
+        "_callable_class": True, "metadata": {"namespace": "Acme.Contracts"},
+    }
+    G1 = _make_graph([shared])
+    G2 = _make_graph([shared])
+    _graph_to_json(G1, g1)
+    _graph_to_json(G2, g2)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add, _load_global_graph
+        first = global_add(g1, "repoA")
+        second = global_add(g2, "repoB")
+        G = _load_global_graph()
+
+    assert first["shared_type_links"] == 0  # nothing to link against yet
+    assert second["shared_type_links"] == 1
+    assert G.has_edge("repoA::contracttype", "repoB::contracttype")
+    assert G["repoA::contracttype"]["repoB::contracttype"]["relation"] == "same_type_as"
+
+
 def test_global_remove(tmp_path):
     src_graph = tmp_path / "graph.json"
     G = _make_graph([{"id": "userservice", "label": "UserService", "source_file": "src/user.py"}])
@@ -385,3 +454,87 @@ def test_global_add_rejects_oversized_source_graph(monkeypatch, tmp_path):
         from graphify.global_graph import global_add
         with pytest.raises(ValueError, match="exceeds"):
             global_add(src_graph, "repoA")
+
+
+def test_global_store_lock_serializes_concurrent_critical_sections(tmp_path):
+    """Review finding: global_add/global_remove each load-mutate-save the
+    shared store with no locking, so two concurrent calls read the same
+    pre-write snapshot, compute conflicting results, and the second save
+    silently discards the first's work entirely. The lock added to close
+    this must actually provide mutual exclusion -- verified directly by
+    running several threads through the critical section and confirming
+    at most one is ever inside it at once, rather than through global_add
+    itself (racing its real logic reliably, without deadlocking a test
+    that also needs to pass once the lock works, is far harder to get
+    right than testing the lock's own guarantee in isolation)."""
+    import threading
+    import time
+    from graphify import global_graph as gg_mod
+
+    global_dir = tmp_path / ".graphify"
+    active = {"count": 0}
+    max_active = {"value": 0}
+    counter_lock = threading.Lock()
+
+    def worker():
+        with gg_mod._global_store_lock():
+            with counter_lock:
+                active["count"] += 1
+                max_active["value"] = max(max_active["value"], active["count"])
+            time.sleep(0.05)
+            with counter_lock:
+                active["count"] -= 1
+
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir):
+        threads = [threading.Thread(target=worker) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+    assert max_active["value"] == 1, (
+        f"the lock let {max_active['value']} threads into the critical section at once"
+    )
+
+
+def test_global_add_concurrent_calls_both_survive(tmp_path):
+    """End-to-end: two different repos added via genuinely concurrent
+    global_add calls must both still be present afterward -- the lock
+    from the finding above must be held across the real load/mutate/save
+    cycle, not just demonstrated in isolation."""
+    import threading
+    from graphify import global_graph as gg_mod
+
+    src_a = tmp_path / "a.json"
+    src_b = tmp_path / "b.json"
+    _graph_to_json(
+        _make_graph([{"id": "a1", "label": "A1", "source_file": "a.py"}]), src_a
+    )
+    _graph_to_json(
+        _make_graph([{"id": "b1", "label": "B1", "source_file": "b.py"}]), src_b
+    )
+
+    global_dir = tmp_path / ".graphify"
+    errors: list[Exception] = []
+
+    def add(src, tag):
+        try:
+            gg_mod.global_add(src, tag)
+        except Exception as exc:  # pragma: no cover - surfaced via assertion below
+            errors.append(exc)
+
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        t1 = threading.Thread(target=add, args=(src_a, "repoA"))
+        t2 = threading.Thread(target=add, args=(src_b, "repoB"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+    assert not errors, errors
+    manifest = json.loads((global_dir / "global-manifest.json").read_text())
+    assert set(manifest["repos"]) == {"repoA", "repoB"}, (
+        f"a concurrent add lost the other's update, got {set(manifest['repos'])}"
+    )
