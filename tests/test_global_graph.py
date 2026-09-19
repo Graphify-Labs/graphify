@@ -496,6 +496,44 @@ def test_global_add_skip_on_unchanged_hash_survives_a_later_size_cap_drop(tmp_pa
             global_add(src_graph, "repoA")
 
 
+def test_global_add_never_reads_a_new_oversized_file_into_memory(tmp_path, monkeypatch):
+    """Review finding: the size cap exists to fail fast before a multi-GiB
+    file is read into memory, but hashing source_path (to check the
+    unchanged skip) read its full bytes before the cap ever ran, defeating
+    it for exactly the case that matters most -- a new or genuinely changed
+    oversized file, which has no prior manifest entry to skip via. The cap
+    must be checked, and must reject, before a single byte of such a file
+    is read."""
+    src_graph = tmp_path / "graph.json"
+    G = _make_graph([{"id": "x", "label": "X", "source_file": "src/x.py"}])
+    _graph_to_json(G, src_graph)
+
+    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 8)
+
+    reads = []
+    orig_read_bytes = Path.read_bytes
+
+    def counting_read_bytes(self, *a, **kw):
+        if self == src_graph:
+            reads.append("bytes")
+        return orig_read_bytes(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add
+        with pytest.raises(ValueError, match="exceeds"):
+            global_add(src_graph, "repoA")
+
+    assert reads == [], (
+        f"an oversized, never-before-tracked source file must be rejected "
+        f"by the cap before any read of its bytes, got {reads}"
+    )
+
+
 def test_global_store_lock_serializes_concurrent_critical_sections(tmp_path):
     """Review finding: global_add/global_remove each load-mutate-save the
     shared store with no locking, so two concurrent calls read the same
@@ -531,6 +569,7 @@ def test_global_store_lock_serializes_concurrent_critical_sections(tmp_path):
             t.start()
         for t in threads:
             t.join(timeout=10)
+            assert not t.is_alive(), "a thread did not finish within the timeout (deadlock?)"
 
     assert max_active["value"] == 1, (
         f"the lock let {max_active['value']} threads into the critical section at once"
@@ -572,6 +611,9 @@ def test_global_add_concurrent_calls_both_survive(tmp_path):
         t2.start()
         t1.join(timeout=10)
         t2.join(timeout=10)
+        assert not t1.is_alive() and not t2.is_alive(), (
+            "a thread did not finish within the timeout (deadlock?)"
+        )
 
     assert not errors, errors
     manifest = json.loads((global_dir / "global-manifest.json").read_text())
