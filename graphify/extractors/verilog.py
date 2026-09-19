@@ -10,9 +10,10 @@ from graphify.extractors.base import _file_stem, _make_id, _read_text
 def _sv_first_identifier(node, source: bytes) -> str | None:
     """First `simple_identifier` under node in pre-order, or None.
 
-    tree-sitter-verilog 1.0.3 nests declaration names a few levels deep instead
-    of exposing a `name` field. Scope the search to the right child node (e.g.
-    `function_identifier`) or this returns the return-type instead of the name.
+    Used as the fallback for grammars that nest declaration names a few levels
+    deep instead of exposing a `name` field. Scope the search to the right child
+    node (e.g. `function_identifier`) or this returns the return-type instead of
+    the name.
     """
     if node is None:
         return None
@@ -30,6 +31,34 @@ def _sv_child(node, type_name: str) -> object | None:
     for child in node.children:
         if child.type == type_name:
             return child
+    return None
+
+def _sv_declared_name(node, source: bytes, wrapper: str | None = None) -> str | None:
+    """Name declared by `node`, or None.
+
+    tree-sitter-systemverilog marks it with a `name` field; older grammars nest
+    it under a wrapper node instead, so fall back to the first identifier under
+    `wrapper`. Reading the field is not just tidier — for a function the return
+    type precedes the name, so an unscoped search yields the type.
+    """
+    if node is None:
+        return None
+    named = node.child_by_field_name("name")
+    if named is not None:
+        return _read_text(named, source)
+    return _sv_first_identifier(_sv_child(node, wrapper) if wrapper else node, source)
+
+# A module name lives under `module_header` in grammars that emit one, and on
+# the `module_ansi_header` itself otherwise. Order matters: where both nodes
+# exist, only the first carries the name — the ANSI header starts with the
+# parameter port list.
+_SV_MODULE_HEADERS = ("module_header", "module_ansi_header")
+
+def _sv_module_name(node, source: bytes) -> str | None:
+    for header_type in _SV_MODULE_HEADERS:
+        name = _sv_declared_name(_sv_child(node, header_type), source)
+        if name:
+            return name
     return None
 
 _SV_BUILTIN_TYPES = frozenset({
@@ -207,10 +236,10 @@ def extract_verilog(path: Path) -> dict:
     SystemVerilog class semantics (inherits/implements edges, field/parameter/
     return-type references) from .v/.sv files."""
     try:
-        import tree_sitter_verilog as tsverilog
+        import tree_sitter_systemverilog as tsverilog
         from tree_sitter import Language, Parser
     except ImportError:
-        return {"nodes": [], "edges": [], "error": "tree_sitter_verilog not installed"}
+        return {"nodes": [], "edges": [], "error": "tree_sitter_systemverilog not installed"}
 
     try:
         language = Language(tsverilog.language())
@@ -253,7 +282,7 @@ def extract_verilog(path: Path) -> dict:
             return
 
         if t == "module_declaration":
-            mod_name = _sv_first_identifier(_sv_child(node, "module_header"), source)
+            mod_name = _sv_module_name(node, source)
             if mod_name:
                 line = node.start_point[0] + 1
                 nid = _make_id(stem, mod_name)
@@ -268,7 +297,7 @@ def extract_verilog(path: Path) -> dict:
         # handled here.
         elif t == "function_declaration":
             fn_body = _sv_child(node, "function_body_declaration")
-            func_name = _sv_first_identifier(_sv_child(fn_body, "function_identifier"), source)
+            func_name = _sv_declared_name(fn_body, source, "function_identifier")
             if func_name:
                 line = node.start_point[0] + 1
                 parent = module_nid or file_nid
@@ -278,7 +307,7 @@ def extract_verilog(path: Path) -> dict:
 
         elif t == "task_declaration":
             tk_body = _sv_child(node, "task_body_declaration")
-            task_name = _sv_first_identifier(_sv_child(tk_body, "task_identifier"), source)
+            task_name = _sv_declared_name(tk_body, source, "task_identifier")
             if task_name:
                 line = node.start_point[0] + 1
                 parent = module_nid or file_nid
@@ -299,8 +328,9 @@ def extract_verilog(path: Path) -> dict:
                         add_edge(src_nid, tgt_nid, "imports_from", line)
 
         elif t in ("module_instantiation", "checker_instantiation"):
-            # `leaf u_leaf();` parses as checker_instantiation in 1.0.3;
-            # module_instantiation (when it occurs) exposes a `module_type` field.
+            # `leaf u_leaf();` parsed as checker_instantiation under
+            # tree-sitter-verilog; tree-sitter-systemverilog reports it as a
+            # module_instantiation. Accept both so either grammar works.
             # Both reduce to the first identifier under the node — the instantiated
             # type, not the instance name (which appears later).
             if module_nid:
