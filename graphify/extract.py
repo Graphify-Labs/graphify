@@ -6372,9 +6372,20 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
 
 def _is_main_guard_test(test: ast.expr) -> bool:
     """Whether an ``if`` statement's test is ``__name__ == "__main__"``, in
-    either operand order. Parens around the comparison are transparent to
-    the AST, and this never looks inside a string, comment, or docstring —
-    only a real comparison expression in executable code satisfies it."""
+    either operand order, optionally narrowed by an ``and`` (e.g.
+    ``__name__ == "__main__" and verbose``). Parens around the comparison
+    are transparent to the AST, and this never looks inside a string,
+    comment, or docstring — only a real comparison expression in executable
+    code satisfies it.
+
+    Only ``and`` is recursed through: every operand of an ``and`` must be
+    true for the body to run, so recognizing any one of them as the real
+    guard is still correct. An ``or`` is NOT safe to recognize this way —
+    the body can run even when ``__name__`` isn't ``"__main__"`` if the
+    other side is true — so a disjunction is never treated as a guard.
+    """
+    if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+        return any(_is_main_guard_test(value) for value in test.values)
     if not isinstance(test, ast.Compare):
         return False
     if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
