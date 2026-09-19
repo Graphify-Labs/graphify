@@ -110,12 +110,6 @@ def _save_global_graph(G: nx.Graph) -> None:
     write_json_atomic(_GLOBAL_GRAPH, data, indent=2)
 
 
-def _file_hash(path: Path) -> str:
-    h = hashlib.sha256()
-    h.update(path.read_bytes())
-    return h.hexdigest()[:16]
-
-
 def global_add(source_path: Path, repo_tag: str) -> dict:
     """Add or update a project graph in the global graph.
 
@@ -128,10 +122,19 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     if not source_path.exists():
         raise FileNotFoundError(f"graph not found: {source_path}")
 
-    src_hash = _file_hash(source_path)
-
     with _global_store_lock():
         manifest = _load_manifest()
+
+        # Hash and parse the SAME read of source_path, inside the lock. Hashing
+        # it separately before the lock (as this used to) reads the file twice
+        # at two different times -- a concurrent writer to source_path between
+        # those two reads could make the recorded hash describe different
+        # bytes than what actually gets imported below, corrupting the
+        # unchanged-hash skip check on every later call.
+        from graphify.security import check_graph_file_size_cap
+        check_graph_file_size_cap(source_path)
+        raw_bytes = source_path.read_bytes()
+        src_hash = hashlib.sha256(raw_bytes).hexdigest()[:16]
 
         existing = manifest["repos"].get(repo_tag, {})
         existing_path = existing.get("source_path", "")
@@ -146,10 +149,7 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
             return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
                     "cross_repo_calls": 0, "shared_type_links": 0}
 
-        # Load source graph
-        from graphify.security import check_graph_file_size_cap
-        check_graph_file_size_cap(source_path)
-        data = json.loads(source_path.read_text(encoding="utf-8"))
+        data = json.loads(raw_bytes.decode("utf-8"))
         if "links" not in data and "edges" in data:
             data = dict(data, links=data["edges"])
         try:
