@@ -7,7 +7,16 @@ import textwrap
 from types import SimpleNamespace
 from pathlib import Path
 import pytest
-from graphify.hooks import install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER
+from graphify.hooks import (
+    _CHECKOUT_MARKER,
+    _CHECKOUT_MARKER_END,
+    _HOOK_MARKER,
+    _HOOK_MARKER_END,
+    _hooks_dir,
+    install,
+    status,
+    uninstall,
+)
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
@@ -42,6 +51,56 @@ def test_install_idempotent(tmp_path):
     # marker appears only once
     hook = repo / ".git" / "hooks" / "post-commit"
     assert hook.read_text().count(_HOOK_MARKER) == 1
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        f"#!/bin/sh\n{_HOOK_MARKER}\necho incomplete\n",
+        f"#!/bin/sh\n{_HOOK_MARKER_END}\necho orphan\n",
+        (
+            f"#!/bin/sh\n{_HOOK_MARKER}\none\n{_HOOK_MARKER}\ntwo\n"
+            f"{_HOOK_MARKER_END}\n"
+        ),
+        (
+            f"#!/bin/sh\n{_HOOK_MARKER}\none\n{_HOOK_MARKER_END}\ntwo\n"
+            f"{_HOOK_MARKER_END}\n"
+        ),
+        f"#!/bin/sh\n{_HOOK_MARKER_END}\n{_HOOK_MARKER}\n",
+    ],
+)
+def test_install_rejects_malformed_managed_section_without_writing(tmp_path, content):
+    repo = _make_git_repo(tmp_path)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    hook.write_text(content, encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="malformed Graphify section"):
+        install(repo)
+
+    assert hook.read_text(encoding="utf-8") == content
+
+
+def test_install_validates_both_hooks_before_writing(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    hooks = repo / ".git" / "hooks"
+    post_commit = hooks / "post-commit"
+    post_checkout = hooks / "post-checkout"
+    post_commit.write_text(
+        f"#!/bin/sh\n{_HOOK_MARKER}\necho stale\n{_HOOK_MARKER_END}\n",
+        encoding="utf-8",
+    )
+    post_checkout.write_text(
+        f"#!/bin/sh\n{_CHECKOUT_MARKER}\necho incomplete\n",
+        encoding="utf-8",
+    )
+    original_commit = post_commit.read_text(encoding="utf-8")
+    original_checkout = post_checkout.read_text(encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="malformed Graphify section"):
+        install(repo)
+
+    assert post_commit.read_text(encoding="utf-8") == original_commit
+    assert post_checkout.read_text(encoding="utf-8") == original_checkout
 
 
 def test_install_appends_to_existing_hook(tmp_path):
