@@ -2755,6 +2755,98 @@ def test_extract_parallel_spawns_pool_for_a_parenthesized_guard(tmp_path, monkey
     assert spawned["count"] == 1, "a parenthesized comparison is still a real guard"
 
 
+def test_extract_parallel_spawns_pool_for_a_compound_and_guard(tmp_path, monkeypatch):
+    """Review finding: `if __name__ == "__main__" and verbose:` is a valid,
+    real guard -- every operand of `and` must be true for the body to run,
+    so it only executes when __name__ genuinely is "__main__" -- but was
+    rejected by a check that only accepted a bare comparison."""
+    import concurrent.futures
+    import multiprocessing
+    from graphify import extract as extract_mod
+
+    guarded = tmp_path / "runner.py"
+    guarded.write_text(
+        "from graphify.extract import extract\n"
+        "def main():\n"
+        "    extract([])\n"
+        'if __name__ == "__main__" and True:\n'
+        "    main()\n",
+        encoding="utf-8",
+    )
+
+    class FakeMain:
+        __file__ = str(guarded)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
+    monkeypatch.setitem(sys.modules, "__main__", FakeMain())
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "4")
+
+    spawned = {"count": 0}
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            spawned["count"] += 1
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def submit(self, *a, **kw):
+            raise concurrent.futures.process.BrokenProcessPool("stop here")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert spawned["count"] == 1, "a __main__ check narrowed by `and` is still a real guard"
+
+
+def test_extract_parallel_declines_pool_for_an_or_disjunction_with_main(tmp_path, monkeypatch):
+    """Companion to the finding above: `if __name__ == "__main__" or verbose:`
+    is NOT a real guard -- the body can run even when __name__ isn't
+    "__main__" if the other side of the `or` is true -- so this must still
+    decline, unlike the `and` case."""
+    import concurrent.futures
+    import multiprocessing
+    from graphify import extract as extract_mod
+
+    guardless = tmp_path / "runner.py"
+    guardless.write_text(
+        "from graphify.extract import extract\n"
+        "def main():\n"
+        "    extract([])\n"
+        'if __name__ == "__main__" or True:\n'
+        "    main()\n",
+        encoding="utf-8",
+    )
+
+    class FakeMain:
+        __file__ = str(guardless)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
+    monkeypatch.setitem(sys.modules, "__main__", FakeMain())
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+
+    spawned = {"count": 0}
+
+    def fake_pool(*a, **kw):
+        spawned["count"] += 1
+        raise AssertionError("ProcessPoolExecutor must not be constructed for a fake guard")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", fake_pool)
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert ok is False, "an `or` disjunction with __main__ is not a real guard"
+    assert spawned["count"] == 0, "no pool may be spawned when the guard is not really one"
+
+
 def test_extract_parallel_declines_pool_for_a_guard_nested_in_an_unrelated_function(
     tmp_path, monkeypatch
 ):
