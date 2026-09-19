@@ -41,14 +41,26 @@ how many times the caller has already casefolded.
 """
 from __future__ import annotations
 
+import functools
 import re
 import unicodedata
 
 __all__ = ["normalize_id", "make_id"]
 
 
+@functools.lru_cache(maxsize=262144)
 def normalize_id(s: str) -> str:
     r"""Normalize a single ID string to its canonical form.
+
+    Memoized (#perf): this is a pure, deterministic ``str -> str`` transform —
+    up to six casefold+NFKC iterations plus two regex passes, ~1.3µs each — and
+    every node id in the pipeline flows through it via :func:`make_id`, almost
+    always on a repeating handful of stems and identifiers (a file's stem is
+    normalized once per node it owns, the same symbol names recur across
+    files). Caching collapses those repeats; the result depends only on ``s``,
+    so there is nothing to invalidate. Bounded so a pathological corpus cannot
+    grow it without limit.
+
 
     Guarantees, all enforced by tests:
 
