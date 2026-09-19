@@ -1,5 +1,6 @@
 """Tests for direct semantic-extraction backend selection."""
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1118,7 +1119,9 @@ def test_native_extraction_prompt_matches_skill_spec_on_hyperedges():
 
 
 def test_native_extraction_prompt_requests_rationale():
-    """Verify that _EXTRACTION_SYSTEM requests rationale and includes it in the schema."""
+    """Verify that _EXTRACTION_SYSTEM requests rationale and includes it in the schema,
+    and instructs preserving mathematical notation in synthesized rationale (#3560).
+    """
     for deep in (False, True):
         prompt = llm._extraction_system(deep=deep)
         assert "rationale" in prompt.lower()
@@ -1126,8 +1129,82 @@ def test_native_extraction_prompt_requests_rationale():
         assert "store as a `rationale` attribute on the relevant node" in prompt
         assert "Do NOT create separate rationale nodes" in prompt
         assert "If the source does not explicitly provide a reason, omit this attribute" in prompt
+        assert "preserve mathematical expressions and notation from the source" in prompt
+        assert "`$...$` and `$$...$$`" in prompt
+        assert "`\\sum` or `\\frac`" in prompt
+        assert "do not paraphrase math into words" in prompt
         # Verify the node schema example includes rationale: null
         assert '"rationale":null' in prompt.replace(" ", "").replace("\n", "")
+
+
+def test_native_extraction_prompt_matches_skill_spec_on_math_notation():
+    """Both native prompt and skill extraction spec share the same math notation
+    preservation contract in rationale (#3560).
+    """
+    spec = (
+        Path(__file__).resolve().parents[1]
+        / "tools" / "skillgen" / "fragments" / "references" / "shared" / "extraction-spec.md"
+    ).read_text(encoding="utf-8")
+
+    phrases = [
+        "When synthesizing rationale, preserve mathematical expressions and notation",
+        "using their original LaTeX notation",
+        "delimiters and LaTeX commands",
+        "do not paraphrase math into words",
+        "Explanatory prose may be synthesized",
+        "ensure LaTeX backslashes are properly escaped",
+    ]
+    for phrase in phrases:
+        assert phrase in spec, f"skill extraction-spec missing: {phrase}"
+        assert phrase in llm._EXTRACTION_SYSTEM, f"native prompt drifted: {phrase}"
+
+
+def test_extract_files_direct_preserves_math_notation_in_node_rationale(tmp_path, monkeypatch):
+    """End-to-end extraction pipeline preserves synthesized rationale containing
+    inline math ($...), display math ($$...$$), and LaTeX commands (#3560).
+    """
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    mock_rationale = (
+        "Calculates the partition weight $w(S_0)$ under constraint "
+        "$$\\sum_{i=1}^n \\frac{a_i}{b_i} \\le R^2$$ using Lagrange multipliers."
+    )
+    fake_resp = _fake_openai_response(
+        json.dumps({
+            "nodes": [
+                {
+                    "id": "paper_opt_partition_weight",
+                    "label": "Partition Weight",
+                    "node_type": "concept",
+                    "file_type": "concept",
+                    "rationale": mock_rationale,
+                }
+            ],
+            "edges": [],
+            "hyperedges": [],
+        }),
+        finish_reason="stop",
+        completion_tokens=150,
+    )
+    _install_fake_openai(monkeypatch, fake_resp)
+
+    paper_file = tmp_path / "paper_opt.md"
+    paper_file.write_text(
+        "# Optimization\n\nGiven cost $w(S_0)$ and bound $$\\sum_{i=1}^n \\frac{a_i}{b_i} \\le R^2$$, we optimize.\n",
+        encoding="utf-8",
+    )
+
+    result = llm.extract_files_direct([paper_file], backend="openai", root=tmp_path)
+    nodes = result.get("nodes", [])
+    matching_nodes = [n for n in nodes if n.get("id") == "paper_opt_partition_weight"]
+    assert len(matching_nodes) == 1
+    node_data = matching_nodes[0]
+    assert node_data.get("rationale") == mock_rationale
+    assert "$w(S_0)$" in node_data["rationale"]
+    assert "$$\\sum_{i=1}^n \\frac{a_i}{b_i} \\le R^2$$" in node_data["rationale"]
+    assert "\\frac" in node_data["rationale"]
+    assert "\\sum" in node_data["rationale"]
 
 
 # --- *_BASE_URL env overrides for kimi / gemini / deepseek (#1458) -------------
