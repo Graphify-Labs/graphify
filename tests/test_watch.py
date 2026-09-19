@@ -133,6 +133,47 @@ def test_doc_only_deletion_full_rebuild_evicts_md_nodes(tmp_path):
     assert "run()" in labels
 
 
+def test_post_merge_style_unscoped_rebuild_heals_a_resurrected_node(tmp_path):
+    """#2418: the graphify merge driver union merges graph.json, which can
+    resurrect a node for a symbol that was deleted on one side of the merge.
+    A rebuild SCOPED to an unrelated changed file (what the commit hook
+    runs) must NOT heal it -- the resurrected symbol's own file was never
+    touched. The UNSCOPED rebuild the new merge hook performs (the same
+    body as the checkout hook: _rebuild_code with no changed_paths) must."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    (corpus / "src").mkdir(parents=True)
+    (corpus / "src" / "util.py").write_text("def helper_alpha(): return 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    graph_path = corpus / "graphify-out" / "graph.json"
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    real_node = next(n for n in data["nodes"] if n["id"] == "src_util_helper_alpha")
+    # Simulate what the union merge driver does: resurrect a node dict shaped
+    # exactly like a real AST node (same _origin/source_location fields a
+    # genuine prior extraction on the other side of the merge would carry),
+    # for a symbol that was deleted on THIS side.
+    phantom = {**real_node, "id": "src_util_helper_doomed", "label": "helper_doomed()"}
+    data["nodes"].append(phantom)
+    graph_path.write_text(json.dumps(data), encoding="utf-8")
+
+    def has_phantom() -> bool:
+        g = json.loads(graph_path.read_text(encoding="utf-8"))
+        return any(n["id"] == "src_util_helper_doomed" for n in g["nodes"])
+
+    assert has_phantom()
+
+    (corpus / "src" / "unrelated.py").write_text("x = 1\n", encoding="utf-8")
+    assert _rebuild_code(
+        corpus, changed_paths=[corpus / "src" / "unrelated.py"], acquire_lock=False
+    ) is True
+    assert has_phantom(), "a rebuild scoped to an unrelated file must not have healed the phantom"
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    assert not has_phantom(), "the unscoped rebuild must heal the resurrected node"
+
+
 def test_rebuild_code_reports_unclassified_files(tmp_path, capsys):
     """#3511: `graphify extract` has surfaced files it saw but could not
     classify (no supported extension/shebang) since #1692; the update/watch

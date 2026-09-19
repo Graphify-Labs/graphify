@@ -7,7 +7,9 @@ import textwrap
 from types import SimpleNamespace
 from pathlib import Path
 import pytest
-from graphify.hooks import install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER
+from graphify.hooks import (
+    install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER, _MERGE_HOOK_MARKER,
+)
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
@@ -114,6 +116,35 @@ def test_uninstall_removes_post_checkout_hook(tmp_path):
     assert not hook.exists()
 
 
+def test_install_creates_post_merge_hook(tmp_path):
+    # #2418: a merge hook is needed to heal a symbol the union merge driver
+    # resurrects on one side of a merge, since nothing else ever
+    # re-extracts that file's nodes unless it is touched again.
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    assert hook.exists()
+    assert _MERGE_HOOK_MARKER in hook.read_text()
+
+
+def test_install_post_merge_is_executable(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    if os.name == "nt":
+        assert hook.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+    else:
+        assert hook.stat().st_mode & 0o111
+
+
+def test_uninstall_removes_post_merge_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    uninstall(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    assert not hook.exists()
+
+
 def test_status_shows_both_hooks(tmp_path):
     repo = _make_git_repo(tmp_path)
     install(repo)
@@ -121,6 +152,17 @@ def test_status_shows_both_hooks(tmp_path):
     assert "post-commit" in result
     assert "post-checkout" in result
     assert result.count("installed") >= 2
+
+
+def test_status_shows_post_merge_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    result = status(repo)
+    assert "post-merge: installed" in result
+
+    uninstall(repo)
+    result = status(repo)
+    assert "post-merge: not installed" in result
 
 
 
@@ -229,12 +271,17 @@ import re  # noqa: E402
 from graphify.hooks import (  # noqa: E402
     _HOOK_SCRIPT,
     _CHECKOUT_SCRIPT,
+    _MERGE_SCRIPT,
     _REBUILD_BODY_COMMIT,
     _REBUILD_BODY_CHECKOUT,
     _detached_launch,
 )
 
-_HOOK_SCRIPTS = [("post-commit", _HOOK_SCRIPT), ("post-checkout", _CHECKOUT_SCRIPT)]
+_HOOK_SCRIPTS = [
+    ("post-commit", _HOOK_SCRIPT),
+    ("post-checkout", _CHECKOUT_SCRIPT),
+    ("post-merge", _MERGE_SCRIPT),
+]
 
 
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)

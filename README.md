@@ -723,7 +723,7 @@ graphify uninstall                 # remove from all platforms in one shot
 graphify uninstall --purge         # also delete graphify-out/
 graphify uninstall --project --platform codex  # remove project-scoped install files only
 
-graphify hook install              # post-commit + post-checkout hooks
+graphify hook install              # post-commit + post-checkout + post-merge hooks
 graphify hook uninstall
 graphify hook status
 

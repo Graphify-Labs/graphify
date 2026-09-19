@@ -9,6 +9,8 @@ _HOOK_MARKER = "# graphify-hook-start"
 _HOOK_MARKER_END = "# graphify-hook-end"
 _CHECKOUT_MARKER = "# graphify-checkout-hook-start"
 _CHECKOUT_MARKER_END = "# graphify-checkout-hook-end"
+_MERGE_HOOK_MARKER = "# graphify-merge-hook-start"
+_MERGE_HOOK_MARKER_END = "# graphify-merge-hook-end"
 
 # __PINNED_PYTHON__ is replaced at install time with the absolute path of the
 # Python interpreter that ran `graphify hook install`.  For uv-tool and pipx
@@ -511,6 +513,60 @@ echo "[graphify] Branch switched - launching background rebuild (log: $_GRAPHIFY
 """
 
 
+_MERGE_SCRIPT = """\
+# graphify-merge-hook-start
+# Auto-rebuilds the knowledge graph (code only) after a merge, unscoped.
+# The git merge driver graphify registers for graph.json does a pure union
+# of both sides, which can resurrect a symbol that was deleted on one side
+# (#2418). Nothing else ever re-extracts that symbol's file unless it is
+# touched again, so the phantom node would otherwise persist indefinitely;
+# an unscoped rebuild here re-derives the graph from the merged tree and
+# drops it like any other stale node.
+# Installed by: graphify hook install
+(
+
+# Deterministic clustering: networkx louvain iterates string-keyed sets whose
+# order is randomized per-process by PYTHONHASHSEED, so community assignments
+# churn run-to-run. Pinning it makes graphify-out reproducible.
+export PYTHONHASHSEED=0
+__VIZ_LIMIT_EXPORT__
+# Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
+# and agent shells. Keep hook-triggered rebuilds sequential by default there;
+# explicit GRAPHIFY_MAX_WORKERS still wins for users who want parallelism.
+if [ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]; then
+    export GRAPHIFY_MAX_WORKERS="${GRAPHIFY_MAX_WORKERS:-1}"
+fi
+
+# Only run if graphify-out/ exists (graph has been built before)
+if [ ! -d "graphify-out" ]; then
+    exit 0
+fi
+
+# This hook only fires after a merge completed cleanly, so MERGE_HEAD is
+# already gone by the time it runs -- these checks are belt and braces for
+# any git version/workflow quirk that lands here mid rebase or cherry-pick
+# anyway, matching the commit and checkout hooks' own defensive posture.
+# git exports GIT_DIR to hooks; the rev-parse fallback only runs when invoked
+# by hand (each git exec costs 1s+ on AV-scanned Windows machines).
+GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
+[ -d "$GIT_DIR/rebase-merge" ] && exit 0
+[ -d "$GIT_DIR/rebase-apply" ] && exit 0
+[ -f "$GIT_DIR/MERGE_HEAD" ] && exit 0
+[ -f "$GIT_DIR/CHERRY_PICK_HEAD" ] && exit 0
+
+# Honor the same opt out the commit and checkout hooks already respect.
+[ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
+
+""" + _WORKTREE_GUARD + _PYTHON_DETECT + """
+_GRAPHIFY_LOG="${HOME}/.cache/graphify-rebuild.log"
+mkdir -p "$(dirname "$_GRAPHIFY_LOG")"
+export GRAPHIFY_REBUILD_LOG="$_GRAPHIFY_LOG"
+echo "[graphify] Merge completed - launching background rebuild (log: $_GRAPHIFY_LOG)"
+""" + _detached_launch(_REBUILD_BODY_CHECKOUT) + """)
+# graphify-merge-hook-end
+"""
+
+
 def _load_graphifyrc(root: Path) -> dict[str, str | int]:
     """Load key/value options from <root>/.graphifyrc if present.
 
@@ -862,7 +918,7 @@ def _user_hooks_dir(hooks_dir: Path) -> Path:
 
 
 def install(path: Path = Path(".")) -> str:
-    """Install graphify post-commit and post-checkout hooks in the nearest git repo."""
+    """Install graphify's post-commit, post-checkout, and post-merge hooks in the nearest git repo."""
     root = _git_root(path)
     if root is None:
         raise RuntimeError(f"No git repository found at or above {path.resolve()}")
@@ -883,16 +939,23 @@ def install(path: Path = Path(".")) -> str:
     pinned = _pinned_python()
     hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
     checkout = _CHECKOUT_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
+    merge_hook = _MERGE_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
 
     commit_msg = _install_hook(hooks_dir, "post-commit", hook, _HOOK_MARKER, _HOOK_MARKER_END)
     checkout_msg = _install_hook(hooks_dir, "post-checkout", checkout, _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
+    post_merge_msg = _install_hook(
+        hooks_dir, "post-merge", merge_hook, _MERGE_HOOK_MARKER, _MERGE_HOOK_MARKER_END
+    )
     merge_msg = _register_merge_driver(root)
 
-    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
+    return (
+        f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\n"
+        f"post-merge: {post_merge_msg}\nmerge driver: {merge_msg}"
+    )
 
 
 def uninstall(path: Path = Path(".")) -> str:
-    """Remove graphify post-commit and post-checkout hooks."""
+    """Remove graphify's post-commit, post-checkout, and post-merge hooks."""
     root = _git_root(path)
     if root is None:
         raise RuntimeError(f"No git repository found at or above {path.resolve()}")
@@ -900,9 +963,15 @@ def uninstall(path: Path = Path(".")) -> str:
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
     commit_msg = _uninstall_hook(hooks_dir, "post-commit", _HOOK_MARKER, _HOOK_MARKER_END)
     checkout_msg = _uninstall_hook(hooks_dir, "post-checkout", _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
+    post_merge_msg = _uninstall_hook(
+        hooks_dir, "post-merge", _MERGE_HOOK_MARKER, _MERGE_HOOK_MARKER_END
+    )
     merge_msg = _unregister_merge_driver(root)
 
-    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
+    return (
+        f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\n"
+        f"post-merge: {post_merge_msg}\nmerge driver: {merge_msg}"
+    )
 
 
 def status(path: Path = Path(".")) -> str:
@@ -946,9 +1015,13 @@ def status(path: Path = Path(".")) -> str:
 
     commit = _check("post-commit", _HOOK_MARKER)
     checkout = _check("post-checkout", _CHECKOUT_MARKER)
+    post_merge = _check("post-merge", _MERGE_HOOK_MARKER)
     merge = _merge_driver_status(root)
 
-    res = f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"
+    res = (
+        f"post-commit: {commit}\npost-checkout: {checkout}\n"
+        f"post-merge: {post_merge}\nmerge driver: {merge}"
+    )
     if cfg_limit is not None:
         res += f"\nviz node limit: {cfg_limit}"
     return res
