@@ -3519,6 +3519,33 @@ def dispatch_command(cmd: str) -> None:
             deleted_files = list(detection.get("deleted_files", []))
             excluded_files = list(detection.get("excluded_files", []))
             unchanged_total = sum(len(v) for v in detection.get("unchanged_files", {}).values())
+            # #2654: a manifest that WAS non-trivial but matches almost
+            # nothing this run (a manifest built from a different checkout or
+            # worktree root than this one, or stale for some other reason)
+            # drives a corpus-wide semantic re-extraction that looks like an
+            # ordinary incremental scan in the log output, silently rewriting
+            # topology far beyond the files actually touched. Warn loudly
+            # before that happens, not only after the fact in the summary
+            # line below.
+            if manifest_path.exists():
+                from graphify.detect import load_manifest as _load_manifest
+                _prior_manifest = _load_manifest(str(manifest_path), root=target)
+                _new_total = sum(len(v) for v in new_by_type.values())
+                if len(_prior_manifest) >= 10 and unchanged_total == 0 and _new_total > 0:
+                    print(
+                        f"[graphify extract] warning: manifest.json tracks "
+                        f"{len(_prior_manifest)} files from a previous run, but "
+                        f"none of them matched this scan (0 unchanged, "
+                        f"{_new_total} to re-extract). This usually means the "
+                        f"manifest was built from a different checkout or "
+                        f"worktree root than this one, or the manifest is stale "
+                        f"for another reason -- the result will look like an "
+                        f"ordinary incremental run but rewrite topology far "
+                        f"beyond any files actually changed. Re-run with "
+                        f"--force if a full rebuild is intended, or investigate "
+                        f"the manifest/root mismatch first.",
+                        file=sys.stderr,
+                    )
             # #1909: derive the prune set from the existing graph itself, not
             # just the manifest. A file that became excluded without ever
             # being manifest-listed (every pre-#1897 graph is in this state)
