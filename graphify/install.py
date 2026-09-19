@@ -132,6 +132,22 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
     if platform_name in ("claude", "windows") and os.environ.get("CLAUDE_CONFIG_DIR"):
         return Path(os.environ["CLAUDE_CONFIG_DIR"]) / "skills" / "graphify" / "SKILL.md"
     return Path.home() / cfg["skill_dst"]
+def _global_claude_md() -> Path:
+    """The user-global ``CLAUDE.md`` the always-on block is registered in.
+
+    ``CLAUDE_CONFIG_DIR`` relocates a user's whole Claude Code config, which is
+    how a second account is kept separate, so the install that WRITES this
+    block and the uninstall that STRIPS it must resolve the same file. They did
+    not: install read the variable (#2694) while uninstall only ever looked in
+    the current directory, so a user-global uninstall removed the skill and left
+    the registration pointing at it (#3572). One function now, so the two cannot
+    drift again.
+    """
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    root = Path(config_dir) if config_dir else Path.home() / ".claude"
+    return root / "CLAUDE.md"
+
+
 def _packaged_skill_refs_dir(platform_name: str) -> Path | None:
     """Return the packaged references source dir for a progressive platform, else None.
 
@@ -703,13 +719,13 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         if project:
             claude_md = project_dir / ".claude" / "CLAUDE.md"
             skill_ref = ".claude/skills/graphify/SKILL.md"
-        elif os.environ.get("CLAUDE_CONFIG_DIR"):
-            config_dir = Path(os.environ["CLAUDE_CONFIG_DIR"])
-            claude_md = config_dir / "CLAUDE.md"
-            skill_ref = str(config_dir / "skills" / "graphify" / "SKILL.md")
         else:
-            claude_md = Path.home() / ".claude" / "CLAUDE.md"
-            skill_ref = "~/.claude/skills/graphify/SKILL.md"
+            claude_md = _global_claude_md()
+            skill_ref = (
+                str(claude_md.parent / "skills" / "graphify" / "SKILL.md")
+                if os.environ.get("CLAUDE_CONFIG_DIR")
+                else "~/.claude/skills/graphify/SKILL.md"
+            )
         _register_always_on_block(
             claude_md, "  CLAUDE.md        ->  ", _skill_registration(skill_ref)
         )
@@ -743,6 +759,12 @@ def _print_install_usage() -> None:
     print("  --strict  block the first raw file read per session until one "
           "`graphify query` runs (Claude Code project hook only; needs --project)")
 _CLAUDE_MD_MARKER = "## graphify"
+# The user-global registration is written by `_skill_registration`, which opens
+# its block with an H1 rather than the H2 `always_on/claude-md.md` uses for a
+# project. Uninstall matched only the H2, so the global block was unremovable
+# whatever directory it lived in -- the second half of #3572, and the reason
+# adding the global file to the search list alone was not enough.
+_GLOBAL_CLAUDE_MD_MARKER = "# graphify"
 _CODEBUDDY_MD_MARKER = "## graphify"
 _AGENTS_MD_MARKER = "## graphify"
 _GEMINI_MD_MARKER = "## graphify"
@@ -1935,7 +1957,14 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False, 
         project_dir / "CLAUDE.local.md",
         project_dir / ".claude" / "CLAUDE.local.md",
     ]
-    existing = [t for t in md_targets if t.exists()]
+    # A user-global uninstall has just deleted the global skill tree, so the
+    # block registering it goes with it, wherever CLAUDE_CONFIG_DIR put it.
+    # Appended rather than substituted: a bare `graphify uninstall` run inside a
+    # project still cleans that project's files too, which is what it did
+    # before (#3572).
+    if remove_user_skill:
+        md_targets.append(_global_claude_md())
+    existing = [t for t in dict.fromkeys(md_targets) if t.exists()]
     removed_any = False
     for target in existing:
         # Not short-circuited: every present file must be cleaned, not just the first.
@@ -1943,7 +1972,14 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False, 
             removed_any = True
 
     if not existing:
-        print("No CLAUDE.md found in current directory - nothing to do")
+        # Naming the places looked in, because "not found in current directory"
+        # was printed even when the global file it had not looked at held the
+        # block it had just orphaned.
+        print(
+            "No CLAUDE.md found in "
+            + " or ".join(str(t) for t in md_targets)
+            + " - nothing to do"
+        )
     elif not removed_any:
         print("graphify section not found in CLAUDE.md - nothing to do")
 
@@ -1963,6 +1999,13 @@ def _strip_graphify_md_section(target: Path) -> bool:
     # Remove graphify's ## graphify section (heading matched exactly, never as a
     # substring of a user's ### graphify) from the marker to the next H2 or EOF.
     cleaned = _remove_marker_section(content, _CLAUDE_MD_MARKER)
+    if cleaned is None:
+        # The H1 form, ended at the next heading of any level rather than the
+        # next H2: the block has no subheadings of its own, so stopping at the
+        # first `#` line can only remove less, never a neighbour's content.
+        cleaned = _remove_marker_section(
+            content, _GLOBAL_CLAUDE_MD_MARKER, boundary_prefix="#"
+        )
     if cleaned is None:
         return False
     if cleaned:
