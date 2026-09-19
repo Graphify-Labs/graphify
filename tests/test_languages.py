@@ -3600,6 +3600,40 @@ def test_systemverilog_preserves_existing_module_extraction():
     assert "instantiates" in _relations(r)
 
 
+def test_systemverilog_instantiation_resolves_to_local_module():
+    """`top` instantiating same-file `leaf` links to leaf's definition, not a
+    bare-id phantom duplicate. The instantiation target used an unscoped id
+    (`_make_id(name)`) while the definition used `_make_id(stem, name)`, so
+    they never matched: the module was split into a real definition node and a
+    sourced phantom that also blocked the corpus-level rewire (#1402 shape)."""
+    r = extract_verilog(FIXTURES / "sample.sv")
+    leaf_nodes = [n for n in r["nodes"] if n["label"] == "leaf"]
+    assert len(leaf_nodes) == 1, f"leaf split into duplicates: {leaf_nodes}"
+    leaf_id = leaf_nodes[0]["id"]
+    # The surviving node is the real, sourced definition.
+    assert leaf_nodes[0].get("source_file")
+    inst_targets = {e["target"] for e in r["edges"] if e["relation"] == "instantiates"}
+    assert leaf_id in inst_targets, (
+        f"instantiation did not link to the leaf definition {leaf_id}: {inst_targets}"
+    )
+
+
+def test_systemverilog_cross_file_instantiation_is_sourceless_stub(tmp_path):
+    """A module defined in another file is a SOURCELESS stub so the corpus-level
+    rewire can collapse it onto the real definition, rather than a sourced node
+    whose id bakes in this file's path and blocks the rewire."""
+    f = tmp_path / "wrapper.sv"
+    f.write_text("module wrapper;\n  external_ip u_ip();\nendmodule\n")
+    r = extract_verilog(f)
+    stubs = [n for n in r["nodes"] if n["label"] == "external_ip"]
+    assert len(stubs) == 1, stubs
+    assert stubs[0].get("source_file") == "", (
+        f"cross-file instantiation target must be sourceless: {stubs[0]}"
+    )
+    inst_targets = {e["target"] for e in r["edges"] if e["relation"] == "instantiates"}
+    assert stubs[0]["id"] in inst_targets
+
+
 def test_systemverilog_missing_file_returns_empty():
     r = extract_verilog(Path("nonexistent.sv"))
     assert r["nodes"] == []
