@@ -2702,6 +2702,84 @@ def test_extract_parallel_declines_pool_for_a_guard_nested_in_an_unrelated_funct
     assert spawned["count"] == 0, "no pool may be spawned for a genuinely guard-less caller"
 
 
+def _exec_as_main_and_call_extract_parallel(tmp_path, monkeypatch, script_src, script_path):
+    """Actually execute script_src as a top-level module (not just point
+    sys.modules["__main__"] at a file that is never run), so the call stack
+    genuinely contains a real <module> frame at script_path when checkpoint()
+    reaches _extract_parallel. A monkeypatched __file__ alone can't exercise
+    the call-site-vs-guard check below, since that check walks the real call
+    stack, not just module metadata. Returns the spawn count."""
+    import concurrent.futures
+    import multiprocessing
+    from graphify import extract as extract_mod
+
+    script_path.write_text(script_src, encoding="utf-8")
+
+    class FakeMain:
+        __file__ = str(script_path)
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+
+    spawned = {"count": 0}
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            spawned["count"] += 1
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def submit(self, *a, **kw):
+            raise concurrent.futures.process.BrokenProcessPool("stop here")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "4")
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    def checkpoint():
+        monkeypatch.setitem(sys.modules, "__main__", FakeMain())
+        extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+
+    g = {"__name__": "__main__", "__file__": str(script_path), "checkpoint": checkpoint}
+    exec(compile(script_src, str(script_path), "exec"), g)
+    return spawned["count"]
+
+
+def test_extract_parallel_declines_pool_when_the_call_site_is_outside_the_guard(
+    tmp_path, monkeypatch
+):
+    """Review finding: a module can have a real top-level guard AND a
+    separate, genuinely unguarded top-level statement that calls extract()
+    (via _extract_parallel here) outside it. Finding *some* guard anywhere
+    in the module is not enough -- the specific call site that led to this
+    call must itself be inside one, or the exact fork bomb this check
+    exists to prevent still happens through the unguarded statement."""
+    spawned_count = _exec_as_main_and_call_extract_parallel(
+        tmp_path, monkeypatch,
+        'if __name__ == "__main__":\n    pass\ncheckpoint()\n',
+        tmp_path / "mixed_runner.py",
+    )
+    assert spawned_count == 0, "no pool may be spawned when the call site itself is unguarded"
+
+
+def test_extract_parallel_spawns_pool_when_the_call_site_is_inside_the_guard(
+    tmp_path, monkeypatch
+):
+    """Companion to the finding above, under real execution rather than the
+    monkeypatched-metadata-only setup the other tests use: a call site that
+    genuinely does sit inside the guard (via an intervening function call,
+    the idiomatic shape) must still take the pool path."""
+    spawned_count = _exec_as_main_and_call_extract_parallel(
+        tmp_path, monkeypatch,
+        'def main():\n    checkpoint()\nif __name__ == "__main__":\n    main()\n',
+        tmp_path / "guarded_runner.py",
+    )
+    assert spawned_count == 1, "a call site genuinely inside the guard must take the pool path"
+
+
 def test_extract_parallel_spawns_pool_when_caller_source_fails_to_parse(tmp_path, monkeypatch):
     """An unparseable caller (a syntax error, or a non-Python source read as
     text) means the guard's presence genuinely can't be determined -- this
