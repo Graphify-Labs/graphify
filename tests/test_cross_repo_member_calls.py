@@ -6,11 +6,11 @@ type already in hand and nothing about it reached `graph.json` — the only arti
 `merge-graphs` and `global add` read. The two-repo graph was missing precisely the
 edges that make it a call graph.
 
-The Java, C++, C# and Swift resolvers now park those calls on the caller node and
-this pass finishes them after the merge. The cases below pin what it must NOT do
-as much as what it must: the single-definition guard, the cross-repo-only scope,
-and the language guard are what keep it from fabricating an edge from a name
-collision.
+The Java, C++, C#, Objective-C and Swift resolvers now park those calls on the
+caller node and this pass finishes them after the merge. The cases below pin what
+it must NOT do as much as what it must: the single-definition guard, the
+cross-repo-only scope, and the language guard are what keep it from fabricating an
+edge from a name collision.
 """
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ def _needs(module: str):
 needs_java = _needs("tree_sitter_java")
 needs_cpp = _needs("tree_sitter_cpp")
 needs_csharp = _needs("tree_sitter_c_sharp")
+needs_objc = _needs("tree_sitter_objc")
 needs_swift = _needs("tree_sitter_swift")
 
 
@@ -173,6 +174,79 @@ def test_a_defines_member_does_not_answer_a_java_call():
         caller=_caller("a", PARKED_GREET),
         declarations=[(_declaration("b", "Greeter"), _method("b"))],
         relation="defines",
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
+PARKED_OBJC = [{"callee": "greet", "receiver_type": "Greeter", "lang": "objc", "line": "L5"}]
+
+
+def test_an_objc_selector_answers_through_either_sigil():
+    # An ObjC method label keeps its +/- sigil while a parked selector carries no
+    # class/instance distinction, so both spellings have to be tried.
+    for label in ("-greet", "+greet"):
+        G = _graph(
+            caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+            declarations=[(_declaration("b", "Greeter", "Greeter.m"),
+                           _method("b", label, source_file="Greeter.m"))],
+        )
+        assert link_cross_repo_member_calls(G) == 1, label
+        assert _added_calls(G) == {("a::app_run", "b::greeter_greet")}
+
+
+def test_an_objc_callee_that_already_carries_a_sigil_still_binds():
+    # A parked selector is written bare, but the payload comes from `graph.json`
+    # and a sigiled one must not ask the index for `--greet`.
+    G = _graph(
+        caller=_caller("a", [dict(PARKED_OBJC[0], callee="-greet")],
+                       source_file="src/App.m"),
+        declarations=[(_declaration("b", "Greeter", "Greeter.m"),
+                       _method("b", "-greet", source_file="Greeter.m"))],
+    )
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::greeter_greet")}
+
+
+def test_a_type_declaring_both_objc_sigils_binds_nothing():
+    # `+greet` and `-greet` on one class are two different methods and the parked
+    # selector cannot say which was meant.
+    decl = _declaration("b", "Greeter", "Greeter.m")
+    G = _graph(
+        caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+        declarations=[(decl, _method("b", "-greet", "greeter_inst", "Greeter.m"))],
+    )
+    class_method = _method("b", "+greet", "greeter_cls", "Greeter.m")
+    G.add_node(class_method[0], **class_method[1])
+    G.add_edge(decl[0], class_method[0], relation="method")
+
+    assert link_cross_repo_member_calls(G) == 0
+
+
+def test_an_objc_call_does_not_bind_to_a_cpp_member_of_a_shared_header():
+    # `.h` belongs to both languages, so the sigil is what keeps an ObjC `-greet`
+    # and a C++ `.greet()` from answering for each other inside one header.
+    G = _graph(
+        caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+        declarations=[(_declaration("b", "Greeter", "greeter.h"),
+                       _method("b", ".greet()", source_file="greeter.h"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+    G = _graph(
+        caller=_caller("a", PARKED_CPP, source_file="src/app.cpp"),
+        declarations=[(_declaration("b", "Greeter", "greeter.h"),
+                       _method("b", "-greet", source_file="greeter.h"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
+def test_an_objc_protocol_does_not_answer_a_parked_call():
+    # A protocol carries the same markers as a class but is labelled `<Greeter>`,
+    # which no parked receiver type ever spells.
+    G = _graph(
+        caller=_caller("a", PARKED_OBJC, source_file="src/App.m"),
+        declarations=[(_declaration("b", "<Greeter>", "Greeter.h"),
+                       _method("b", "-greet", source_file="Greeter.h"))],
     )
     assert link_cross_repo_member_calls(G) == 0
 
@@ -363,6 +437,22 @@ def test_a_java_build_parks_the_call_and_the_merge_finishes_it(tmp_path: Path):
                        "}\n"),
         ("src/Greeter.cs", "class Greeter { public void Greet() {} }\n"),
         marks=needs_csharp, id="csharp-field-receiver",
+    ),
+    pytest.param(
+        "objc", "greet",
+        ("src/App.m", "@interface App : NSObject\n"
+                      "@property (nonatomic, strong) Greeter *greeter;\n"
+                      "@end\n"
+                      "@implementation App\n"
+                      "- (void)run { [self.greeter greet]; }\n"
+                      "@end\n"),
+        ("src/Greeter.m", "@interface Greeter : NSObject\n"
+                          "- (void)greet;\n"
+                          "@end\n"
+                          "@implementation Greeter\n"
+                          "- (void)greet {}\n"
+                          "@end\n"),
+        marks=needs_objc, id="objc-property-receiver",
     ),
     pytest.param(
         "swift", "greet",
