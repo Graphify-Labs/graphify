@@ -2363,6 +2363,7 @@ def test_extract_parallel_declines_pool_on_windows_when_caller_lacks_guard(
         __file__ = str(guardless)
 
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
     monkeypatch.setitem(sys.modules, "__main__", FakeMain())
     monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
 
@@ -2380,6 +2381,90 @@ def test_extract_parallel_declines_pool_on_windows_when_caller_lacks_guard(
     ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
     assert ok is False, "must decline and hand the work back for sequential extraction"
     assert spawned["count"] == 0, "no pool may be spawned for a guard-less Windows caller"
+
+
+def test_extract_parallel_declines_pool_on_macos_when_caller_lacks_guard(
+    tmp_path, monkeypatch
+):
+    """Review finding: checking sys.platform == "win32" missed macOS, which
+    has defaulted to the spawn start method since Python 3.8 -- the exact
+    same fork bomb this check exists to prevent is fully reproducible there,
+    not just on Windows. The check is now based on the actual multiprocessing
+    start method, not a hardcoded platform name."""
+    import concurrent.futures
+    import multiprocessing
+    from graphify import extract as extract_mod
+
+    guardless = tmp_path / "runner.py"
+    guardless.write_text("from graphify.extract import extract\nextract([])\n", encoding="utf-8")
+
+    class FakeMain:
+        __file__ = str(guardless)
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
+    monkeypatch.setitem(sys.modules, "__main__", FakeMain())
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+
+    spawned = {"count": 0}
+
+    def fake_pool(*a, **kw):
+        spawned["count"] += 1
+        raise AssertionError("ProcessPoolExecutor must not be constructed for a guard-less caller")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", fake_pool)
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert ok is False, "must decline and hand the work back for sequential extraction"
+    assert spawned["count"] == 0, "no pool may be spawned for a guard-less macOS spawn caller"
+
+
+def test_extract_parallel_spawns_pool_when_start_method_is_fork_even_without_a_guard(
+    tmp_path, monkeypatch
+):
+    """Under fork (Linux's default), a missing guard is harmless -- fork
+    never re-imports/re-executes the __main__ module in the child, so there
+    is no re-execution to guard against. The check must not fire and force
+    an unnecessary sequential fallback just because the caller happens to
+    lack a guard it was never going to need."""
+    import concurrent.futures
+    import multiprocessing
+    from graphify import extract as extract_mod
+
+    guardless = tmp_path / "runner.py"
+    guardless.write_text("from graphify.extract import extract\nextract([])\n", encoding="utf-8")
+
+    class FakeMain:
+        __file__ = str(guardless)
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "fork")
+    monkeypatch.setitem(sys.modules, "__main__", FakeMain())
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+    monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "4")
+
+    spawned = {"count": 0}
+
+    class FakePool:
+        def __init__(self, *a, **kw):
+            spawned["count"] += 1
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def submit(self, *a, **kw):
+            raise concurrent.futures.process.BrokenProcessPool("stop here")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", FakePool)
+
+    uncached = [(i, FIXTURES / "sample.py") for i in range(25)]
+    per_file: list = [None] * len(uncached)
+
+    extract_mod._extract_parallel(uncached, per_file, tmp_path, None, len(uncached))
+    assert spawned["count"] == 1, "fork needs no guard, so the pool path must still be taken"
 
 
 def test_extract_parallel_declines_pool_when_main_only_appears_in_a_comment(
@@ -2408,6 +2493,7 @@ def test_extract_parallel_declines_pool_when_main_only_appears_in_a_comment(
         __file__ = str(guardless)
 
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
     monkeypatch.setitem(sys.modules, "__main__", FakeMain())
     monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
 
@@ -2450,6 +2536,7 @@ def test_extract_parallel_still_spawns_pool_on_windows_when_caller_has_guard(
         __file__ = str(guarded)
 
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
     monkeypatch.setitem(sys.modules, "__main__", FakeMain())
     monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
     monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "4")
@@ -2497,6 +2584,7 @@ def test_extract_parallel_spawns_pool_for_reversed_guard_order(tmp_path, monkeyp
         __file__ = str(guarded)
 
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
     monkeypatch.setitem(sys.modules, "__main__", FakeMain())
     monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
     monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "4")
@@ -2547,6 +2635,7 @@ def test_extract_parallel_declines_pool_when_guard_text_is_inside_a_string(tmp_p
         __file__ = str(guardless)
 
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
     monkeypatch.setitem(sys.modules, "__main__", FakeMain())
     monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
 
@@ -2597,6 +2686,7 @@ def test_extract_parallel_declines_pool_when_guard_text_is_in_a_docstring_exampl
         __file__ = str(guardless)
 
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
     monkeypatch.setitem(sys.modules, "__main__", FakeMain())
     monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
 
@@ -2639,6 +2729,7 @@ def test_extract_parallel_spawns_pool_for_a_parenthesized_guard(tmp_path, monkey
         __file__ = str(guarded)
 
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
     monkeypatch.setitem(sys.modules, "__main__", FakeMain())
     monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
     monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "4")
@@ -2690,6 +2781,7 @@ def test_extract_parallel_declines_pool_for_a_guard_nested_in_an_unrelated_funct
         __file__ = str(guardless)
 
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
     monkeypatch.setitem(sys.modules, "__main__", FakeMain())
     monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
 
@@ -2726,6 +2818,7 @@ def _exec_as_main_and_call_extract_parallel(tmp_path, monkeypatch, script_src, s
         __file__ = str(script_path)
 
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
     monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
 
     spawned = {"count": 0}
@@ -2803,6 +2896,7 @@ def test_extract_parallel_spawns_pool_when_caller_source_fails_to_parse(tmp_path
         __file__ = str(broken)
 
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=False: "spawn")
     monkeypatch.setitem(sys.modules, "__main__", FakeMain())
     monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
     monkeypatch.setenv("GRAPHIFY_MAX_WORKERS", "4")
