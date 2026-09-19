@@ -3272,52 +3272,64 @@ def test_detect_incremental_exclusion_stable_across_runs(tmp_path):
     assert inc2["excluded_files"] == []
 
 
-# ── #2838: manifest seen timestamps preserved for unchanged entries ──
+# ── #3643: manifest byte stability and machine-local incremental state ──
 
-def test_save_manifest_unchanged_file_preserves_seen(tmp_path):
-    """#2838: save_manifest preserves existing seen timestamp for unchanged entries."""
+def test_save_manifest_unchanged_file_preserves_local_state(tmp_path):
+    """#3643: save_manifest stores hashes in manifest.json and preserves local state for unchanged entries."""
     import json
     a = tmp_path / "a.py"
     a.write_text("x = 1\n", encoding="utf-8")
-    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    state_path = tmp_path / "graphify-out" / "cache" / "incremental-state.json"
 
-    save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
-    raw1 = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-    seen_1 = raw1["a.py"]["seen"]
-    assert isinstance(seen_1, (int, float))
+    save_manifest({"code": [str(a)]}, str(manifest_path), root=tmp_path)
+    raw1 = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert set(raw1["a.py"].keys()) == {"ast_hash", "semantic_hash"}
 
-    # Second save on unchanged file must keep identical seen value
-    save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
-    raw2 = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-    assert raw2["a.py"]["seen"] == seen_1
-    assert raw2["a.py"]["ast_hash"] == raw1["a.py"]["ast_hash"]
-    assert raw2["a.py"]["mtime"] == raw1["a.py"]["mtime"]
+    state1 = json.loads(state_path.read_text(encoding="utf-8"))
+    indexed_1 = state1["a.py"]["indexed_at_ns"]
+    assert isinstance(indexed_1, int)
+
+    # Second save on unchanged file must keep identical local state and manifest bytes
+    save_manifest({"code": [str(a)]}, str(manifest_path), root=tmp_path)
+    raw2 = json.loads(manifest_path.read_text(encoding="utf-8"))
+    state2 = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert set(raw2["a.py"].keys()) == {"ast_hash", "semantic_hash"}
+    assert raw2["a.py"] == raw1["a.py"]
+    assert state2["a.py"]["indexed_at_ns"] == indexed_1
+    assert state2["a.py"]["mtime_ns"] == state1["a.py"]["mtime_ns"]
+    assert state2["a.py"]["size"] == state1["a.py"]["size"]
 
 
-def test_save_manifest_changed_file_updates_seen(tmp_path):
-    """#2838: save_manifest assigns a new seen timestamp when file content changes."""
+def test_save_manifest_changed_file_updates_state(tmp_path):
+    """#3643: save_manifest updates hash and incremental-state when file content changes."""
     import json
     import time
     a = tmp_path / "a.py"
     a.write_text("x = 1\n", encoding="utf-8")
-    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    state_path = tmp_path / "graphify-out" / "cache" / "incremental-state.json"
 
-    save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
-    raw1 = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-    seen_1 = raw1["a.py"]["seen"]
+    save_manifest({"code": [str(a)]}, str(manifest_path), root=tmp_path)
+    raw1 = json.loads(manifest_path.read_text(encoding="utf-8"))
+    state1 = json.loads(state_path.read_text(encoding="utf-8"))
+    indexed_1 = state1["a.py"]["indexed_at_ns"]
 
     # Modify file content (new hash)
     time.sleep(0.01)
     a.write_text("x = 2\n", encoding="utf-8")
-    save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
-    raw2 = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    save_manifest({"code": [str(a)]}, str(manifest_path), root=tmp_path)
+    raw2 = json.loads(manifest_path.read_text(encoding="utf-8"))
+    state2 = json.loads(state_path.read_text(encoding="utf-8"))
 
-    assert raw2["a.py"]["seen"] >= seen_1
+    assert set(raw2["a.py"].keys()) == {"ast_hash", "semantic_hash"}
     assert raw2["a.py"]["ast_hash"] != raw1["a.py"]["ast_hash"]
+    assert state2["a.py"]["indexed_at_ns"] >= indexed_1
 
 
 def test_save_manifest_noop_skips_disk_write(tmp_path):
-    """#2838: save_manifest does not rewrite manifest.json when payload is identical."""
+    """#2838 / #3643: save_manifest does not rewrite manifest.json when payload is identical."""
     a = tmp_path / "a.py"
     a.write_text("x = 1\n", encoding="utf-8")
     manifest_path = Path(tmp_path / "graphify-out" / "manifest.json")
@@ -3335,7 +3347,7 @@ def test_save_manifest_noop_skips_disk_write(tmp_path):
 
 
 def test_save_manifest_ast_kind_noop_then_change(tmp_path):
-    """#2838's literal path: `graphify update` calls save_manifest with kind='ast'.
+    """#2838 / #3643: `graphify update` calls save_manifest with kind='ast'.
     A no-op re-run must leave the manifest byte-identical; a real edit must update it."""
     import json
     a = tmp_path / "a.py"
@@ -3344,7 +3356,8 @@ def test_save_manifest_ast_kind_noop_then_change(tmp_path):
 
     save_manifest({"code": [str(a)]}, str(manifest_path), root=tmp_path, kind="ast")
     bytes_1 = manifest_path.read_bytes()
-    seen_1 = json.loads(bytes_1)["a.py"]["seen"]
+    raw_1 = json.loads(bytes_1)
+    assert set(raw_1["a.py"].keys()) == {"ast_hash", "semantic_hash"}
 
     save_manifest({"code": [str(a)]}, str(manifest_path), root=tmp_path, kind="ast")  # no-op
     assert manifest_path.read_bytes() == bytes_1, "ast-kind no-op re-run churned the manifest"
@@ -3353,8 +3366,8 @@ def test_save_manifest_ast_kind_noop_then_change(tmp_path):
     a.write_text("x = 2\n", encoding="utf-8")
     save_manifest({"code": [str(a)]}, str(manifest_path), root=tmp_path, kind="ast")
     raw2 = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert raw2["a.py"]["ast_hash"] != json.loads(bytes_1)["a.py"]["ast_hash"]
-    assert raw2["a.py"]["seen"] >= seen_1
+    assert raw2["a.py"]["ast_hash"] != raw_1["a.py"]["ast_hash"]
+    assert set(raw2["a.py"].keys()) == {"ast_hash", "semantic_hash"}
 
 
 def test_save_manifest_corrupt_existing_manifest_still_writes(tmp_path):
@@ -3369,7 +3382,9 @@ def test_save_manifest_corrupt_existing_manifest_still_writes(tmp_path):
 
     save_manifest({"code": [str(a)]}, str(manifest_path), root=tmp_path)
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))  # must parse now
-    assert "a.py" in raw and isinstance(raw["a.py"]["seen"], (int, float))
+    assert "a.py" in raw
+    assert set(raw["a.py"].keys()) == {"ast_hash", "semantic_hash"}
+
 
 
 # ── #2106: sensitive-filter over-match (prose/source rescued, real secrets kept) ──
