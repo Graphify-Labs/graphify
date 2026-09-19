@@ -1249,7 +1249,11 @@ def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, st
 _SWIFT_CONFIG = LanguageConfig(
     ts_module="tree_sitter_swift",
     class_types=frozenset({"class_declaration", "protocol_declaration"}),
-    function_types=frozenset({"function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration"}),
+    # `protocol_function_declaration` is the body-less method requirement inside a
+    # `protocol { ... }`; tree-sitter-swift gives it its own node type rather than
+    # reusing `function_declaration`, so without it a protocol's method contract
+    # is dropped and the protocol becomes an empty node.
+    function_types=frozenset({"function_declaration", "protocol_function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration"}),
     import_types=frozenset({"import_declaration"}),
     call_types=frozenset({"call_expression"}),
     call_function_field="",
@@ -1257,7 +1261,7 @@ _SWIFT_CONFIG = LanguageConfig(
     call_accessor_field="",
     name_fallback_child_types=("simple_identifier", "type_identifier", "user_type"),
     body_fallback_child_types=("class_body", "protocol_body", "function_body", "enum_class_body"),
-    function_boundary_types=frozenset({"function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration"}),
+    function_boundary_types=frozenset({"function_declaration", "protocol_function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration"}),
     import_handler=_import_swift,
 )
 
