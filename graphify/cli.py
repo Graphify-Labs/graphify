@@ -81,6 +81,31 @@ _GEMINI_NUDGE_TEXT = (
 )
 
 
+UNCOVERED_FILES_NAME = ".graphify_uncovered_files.json"
+
+
+def _write_uncovered_files(graphify_out: Path, files: "list[str]") -> "Path | None":
+    """Record the files a semantic extraction dispatched but produced no nodes for.
+
+    The warning names five of them and counts the rest, and the full list was
+    computed and then dropped, so recovering it meant diffing the graph against
+    a filesystem walk (#3574). An empty list removes the file rather than
+    leaving one that describes an earlier run.
+
+    Returns the path written, or None. Never raises: this is a diagnostic, and
+    an output directory that refuses it must not cost the extraction.
+    """
+    target = Path(graphify_out) / UNCOVERED_FILES_NAME
+    try:
+        if not files:
+            target.unlink(missing_ok=True)
+            return None
+        target.write_text(json.dumps(sorted(files), indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return None
+    return target
+
+
 def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
 
@@ -4097,14 +4122,17 @@ def dispatch_command(cmd: str) -> None:
                 # fraction of the graph, so it must arm the guard exactly like a
                 # crashed chunk does. --allow-partial still overrides.
                 _omitted_files = list(fresh.get("uncovered_files") or [])
+                _uncovered_path = _write_uncovered_files(graphify_out, _omitted_files)
                 if _omitted_files or _partial_semantic_files:
                     _extraction_incomplete = True
+                    _where = f" The full list is in {_uncovered_path}." if _uncovered_path else ""
                     print(
                         f"[graphify extract] semantic extraction is incomplete: "
                         f"{len(_omitted_files)} dispatched file(s) produced no nodes and "
                         f"{len(_partial_semantic_files)} came back truncated or hollow. "
                         f"The shrink guard stays armed for this write; pass "
-                        f"--allow-partial to overwrite a larger existing graph anyway.",
+                        f"--allow-partial to overwrite a larger existing graph anyway."
+                        f"{_where}",
                         file=sys.stderr,
                     )
                 try:
