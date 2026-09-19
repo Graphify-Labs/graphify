@@ -394,7 +394,7 @@ from graphify.build import build_from_json
 from graphify.cluster import cluster, score_all
 from graphify.analyze import god_nodes, surprising_connections, suggest_questions
 from graphify.report import generate
-from graphify.export import to_json
+from graphify.export import to_json, backup_if_protected
 from pathlib import Path
 
 extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
@@ -417,6 +417,15 @@ surprises = surprising_connections(G, communities)
 labels = {cid: 'Community ' + str(cid) for cid in communities}
 # Placeholder questions - regenerated with real labels in Step 5
 questions = suggest_questions(G, communities, labels)
+
+# Snapshot the previous run into graphify-out/<date>/ before anything overwrites
+# it. This is the same call the CLI makes in watch._rebuild_code; without it the
+# skill path silently destroys the old graph.json / GRAPH_REPORT.md / graph.html.
+# Runs after the empty-graph guard (nothing to protect if we are about to abort)
+# and before to_json, so it captures graph.html too — Step 6 rewrites that later.
+# No-ops unless the graph is protected (semantic marker or curated labels), never
+# raises, and GRAPHIFY_NO_BACKUP=1 disables it.
+backup_if_protected(Path('graphify-out'))
 
 # Export FIRST and honor the #479 shrink-guard: to_json returns False (writing
 # nothing) when the new graph is smaller than the existing graph.json. Only write

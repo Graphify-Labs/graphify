@@ -890,6 +890,17 @@ def test_backup_semantic_marker(tmp_path):
     assert (result / ".graphify_semantic_marker").exists()
 
 
+def test_backup_includes_graph_html(tmp_path):
+    """graph.html is snapshotted with the rest, so the dated folder is browsable."""
+    from graphify.export import backup_if_protected
+    (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
+    (tmp_path / "graph.html").write_text("<html>old viewer</html>")
+    (tmp_path / ".graphify_semantic_marker").write_text("{}")
+    result = backup_if_protected(tmp_path)
+    assert result is not None
+    assert (result / "graph.html").read_text() == "<html>old viewer</html>"
+
+
 def test_backup_curated_labels(tmp_path):
     """graph.json + non-default label in .graphify_labels.json → backup taken."""
     import json
