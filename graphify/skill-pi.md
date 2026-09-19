@@ -256,6 +256,8 @@ Call the Agent tool multiple times IN THE SAME RESPONSE - one call per chunk. Th
 
 **IMPORTANT - subagent type:** Always use `subagent_type="general-purpose"`. Do NOT use `Explore` - it is read-only and cannot write chunk files to disk, which silently drops extraction results. General-purpose has Write and Bash access which the subagent needs.
 
+**IMPORTANT - no `name`:** Spawn every extraction subagent WITHOUT the `name` parameter. A named agent's report may return only via `SendMessage`; if that path is unavailable the report is unrecoverable and you get a bare idle notification with zero findings - indistinguishable from a chunk that silently failed. An unnamed Agent call returns a real result through the completion notification instead.
+
 Concrete example for 3 chunks:
 ```
 [Agent tool call 1: files 1-15, subagent_type="general-purpose"]

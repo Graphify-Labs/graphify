@@ -16,6 +16,8 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## 0.9.63 (2026-09-16)
 
+- Fix: the `/graphify` skill's Step B2 now warns against dispatching an extraction subagent with the `name` parameter. A named Agent call's report can return only through `SendMessage`; when that path is unavailable the caller gets a bare idle notification with zero findings — indistinguishable from a chunk that silently failed, so Part C's merge quietly proceeded with missing nodes (#2847, thanks @turtoirazvan).
+
 - Feature: Elixir `alias`/`import`/`require`/`use` targets now resolve onto the module's `defmodule` node across files, so the internal module dependency graph is no longer dropped as dangling. Only top-level modules are indexed (a nested `defmodule`, labeled with its bare inner name, cannot capture an unrelated `use <Name>` from another file), and a same-file reference is left unresolved so it cannot clobber the structural `contains` edge (#3603, thanks @ayushcodes10).
 - Feature: a Rust `self.method()` call now resolves to a method defined on the same type in another file (the common split-`impl`-block layout), pooling methods across every `impl` of one type and refusing to link when two unrelated types share a bare name (#3602, thanks @ayushcodes10).
 - Feature: a Ruby member call `obj.foo` on a known-type receiver now resolves to a method `foo` inherited from a superclass, including across files, using the same conservative promotion as the implicit-self resolver — a single owning class, matching method kind, and one unambiguous ancestry chain, or it stays dangling (#3585, thanks @oleksii-tumanov).
