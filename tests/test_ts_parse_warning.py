@@ -14,7 +14,7 @@ import os
 import re
 from pathlib import Path
 
-from graphify.extract import extract
+from graphify.extract import _normalize_ts_export_type_star, extract
 
 
 def _extract(tmp_path, files: dict[str, str]):
@@ -86,6 +86,53 @@ def test_ts_generics_as_and_jsx_logical_and_are_silent(tmp_path, capsys):
     })
     assert {"foo()", "pick()", "view"} <= _labels(r)
     _assert_silent(capsys.readouterr().err)
+
+
+def test_ts_export_type_star_is_silent_and_keeps_offsets(tmp_path, capsys):
+    """TypeScript 5's type-only wildcard re-export must not poison a barrel."""
+    r = _extract(tmp_path, {
+        "dto.ts": "export type Foo = number;\n",
+        "pure_barrel.ts": 'export type * from "./dto";\n',
+        "barrel.ts": (
+            'export type * from "./dto";\n'
+            "export function after() { return 1 }\n"
+        ),
+    })
+    after = next(n for n in r["nodes"] if n["label"] == "after()")
+    assert after["source_location"] == "L2"
+    node_ids = {n["label"]: n["id"] for n in r["nodes"]}
+    assert any(
+        edge["source"] == node_ids["pure_barrel.ts"]
+        and edge["target"] == node_ids["dto.ts"]
+        and edge["relation"] == "re_exports"
+        for edge in r["edges"]
+    )
+    _assert_silent(capsys.readouterr().err)
+
+
+def test_ts_export_type_star_mask_leaves_comments_and_strings_unchanged():
+    source = (
+        b'// export type * from "./comment";\n'
+        b'const text = "export type * from \'./string\'";\n'
+    )
+    assert _normalize_ts_export_type_star(source) is None
+
+
+def test_ts_export_type_star_with_comments_is_stamped_and_keeps_later_exports(tmp_path):
+    r = _extract(tmp_path, {
+        "dto.ts": "export type Foo = number;\n",
+        "barrel.ts": (
+            'export /* token trivia */ type /* more trivia */ * from "./dto";\n'
+            "export function after() { return 1 }\n"
+        ),
+    })
+    assert "after()" in _labels(r)
+    edges = [
+        edge for edge in r["edges"]
+        if edge["source_file"].endswith("barrel.ts")
+        and edge["relation"] in ("imports_from", "re_exports")
+    ]
+    assert edges and all(edge.get("type_only") is True for edge in edges)
 
 
 def test_ts_genuinely_broken_file_still_warns(tmp_path, capsys):

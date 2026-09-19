@@ -60,6 +60,20 @@ def test_export_type_reexport_is_stamped(tmp_path):
     assert stamped and all(e.get("type_only") for e in stamped)
 
 
+def test_runtime_star_reexport_overrides_matching_type_only_star_reexport(tmp_path):
+    r = _extract(tmp_path, {
+        "base.ts": "export const value = 1;\n",
+        "barrel.ts": ('export type * from "./base.js";\n'
+                      'export * from "./base.js";\n'),
+    })
+    reexports = [
+        e for e in r["edges"]
+        if e["source_file"].endswith("barrel.ts") and e["relation"] == "re_exports"
+    ]
+    assert len(reexports) == 1
+    assert not reexports[0].get("type_only")
+
+
 def test_a_default_binding_named_type_is_a_runtime_import(tmp_path):
     """`import type from './x.js'` imports a value whose name is `type` —
     erased by nothing."""
