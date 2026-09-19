@@ -31,7 +31,7 @@ _PYTHON_DETECT = """\
 _GFY_PROBE="import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('graphify') else 1)"
 GRAPHIFY_PYTHON=""
 _PINNED='__PINNED_PYTHON__'
-if [ -n "$_PINNED" ] && [ -x "$_PINNED" ] && "$_PINNED" -c "$_GFY_PROBE" 2>/dev/null; then
+if [ -n "$_PINNED" ] && [ -x "$_PINNED" ] && "$_PINNED" -c "$_GFY_PROBE" >/dev/null 2>&1; then
     GRAPHIFY_PYTHON="$_PINNED"
 fi
 # Second probe: read graphify-out/.graphify_python (written by the skill and
@@ -43,7 +43,7 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
         case "$_FROM_FILE" in
             *[!a-zA-Z0-9/_.@:\\\\-]*) _FROM_FILE="" ;;  # allowlist (covers Windows paths)
         esac
-        if [ -n "$_FROM_FILE" ] && [ -x "$_FROM_FILE" ] && "$_FROM_FILE" -c "$_GFY_PROBE" 2>/dev/null; then
+        if [ -n "$_FROM_FILE" ] && [ -x "$_FROM_FILE" ] && "$_FROM_FILE" -c "$_GFY_PROBE" >/dev/null 2>&1; then
             GRAPHIFY_PYTHON="$_FROM_FILE"
         fi
     fi
@@ -57,9 +57,9 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
         # return the launcher path WITHOUT the .exe suffix, so this cannot key
         # on the extension.
         _GFY_BINDIR=$(dirname "$GRAPHIFY_BIN")
-        if [ -x "$_GFY_BINDIR/../python.exe" ] && "$_GFY_BINDIR/../python.exe" -c "$_GFY_PROBE" 2>/dev/null; then
+        if [ -x "$_GFY_BINDIR/../python.exe" ] && "$_GFY_BINDIR/../python.exe" -c "$_GFY_PROBE" >/dev/null 2>&1; then
             GRAPHIFY_PYTHON="$_GFY_BINDIR/../python.exe"
-        elif [ -x "$_GFY_BINDIR/python.exe" ] && "$_GFY_BINDIR/python.exe" -c "$_GFY_PROBE" 2>/dev/null; then
+        elif [ -x "$_GFY_BINDIR/python.exe" ] && "$_GFY_BINDIR/python.exe" -c "$_GFY_PROBE" >/dev/null 2>&1; then
             GRAPHIFY_PYTHON="$_GFY_BINDIR/python.exe"
         fi
     fi
@@ -83,12 +83,32 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
             */env\\ *) GRAPHIFY_PYTHON="${_SHEBANG#*/env }" ;;
             *)         GRAPHIFY_PYTHON="$_SHEBANG" ;;
         esac
+        # The launcher may be a /bin/sh wrapper (pipx via distlib's exec trick,
+        # emitted when the install path has spaces, e.g. macOS's
+        # "Application Support/pipx"): its shebang names the SHELL, and probing
+        # the shell with -c "import ..." runs whatever `import` is on PATH -
+        # ImageMagick's screenshot tool, which dumped its usage text on every
+        # commit (#3027). The wrapper's second line execs the real interpreter
+        # (exec' "/path/to/python" "$0" "$@"): take it from there, and never
+        # probe anything whose name does not contain python (python3.12,
+        # python@3.12, cpython, pypy3 all pass; sh, bash, node do not).
+        case "$(basename "$GRAPHIFY_PYTHON" 2>/dev/null)" in
+            *python*|*pypy*) ;;
+            *) GRAPHIFY_PYTHON=$(printf '%s\\n' "$_GFY_HEAD" | sed -n '2s/^...exec. *"\\{0,1\\}\\([^"]*\\)"\\{0,1\\} .*/\\1/p') ;;
+        esac
+        case "$(basename "$GRAPHIFY_PYTHON" 2>/dev/null)" in
+            *python*|*pypy*) ;;
+            *) GRAPHIFY_PYTHON= ;;
+        esac
         # Allowlist: only keep characters valid in a filesystem path to prevent
-        # injection if the shebang contains shell metacharacters.
-        case "$GRAPHIFY_PYTHON" in
+        # injection if the shebang contains shell metacharacters. A space is
+        # not one - $GRAPHIFY_PYTHON is always expanded quoted - and a path
+        # that reaches this branch through a wrapper contains one by
+        # construction, so spaces are folded away before the check.
+        case "$(printf '%s' "$GRAPHIFY_PYTHON" | tr ' ' '_')" in
             *[!a-zA-Z0-9/_.@:\\\\-]*) GRAPHIFY_PYTHON="" ;;
         esac
-        if [ -n "$GRAPHIFY_PYTHON" ] && ! "$GRAPHIFY_PYTHON" -c "$_GFY_PROBE" 2>/dev/null; then
+        if [ -n "$GRAPHIFY_PYTHON" ] && ! "$GRAPHIFY_PYTHON" -c "$_GFY_PROBE" >/dev/null 2>&1; then
             GRAPHIFY_PYTHON=""
         fi
     fi
@@ -117,7 +137,7 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
         [ -n "$_GFY_TOOLS" ] || continue
         for _GFY_CAND in "$_GFY_TOOLS"/*/bin/python "$_GFY_TOOLS"/*/Scripts/python.exe; do
             [ -x "$_GFY_CAND" ] || continue
-            if "$_GFY_CAND" -c "$_GFY_PROBE" 2>/dev/null; then
+            if "$_GFY_CAND" -c "$_GFY_PROBE" >/dev/null 2>&1; then
                 GRAPHIFY_PYTHON="$_GFY_CAND"
                 break 2
             fi
@@ -126,9 +146,9 @@ if [ -z "$GRAPHIFY_PYTHON" ]; then
 fi
 # Last resort: try python3 / python (works for system/venv installs on PATH).
 if [ -z "$GRAPHIFY_PYTHON" ]; then
-    if command -v python3 >/dev/null 2>&1 && python3 -c "$_GFY_PROBE" 2>/dev/null; then
+    if command -v python3 >/dev/null 2>&1 && python3 -c "$_GFY_PROBE" >/dev/null 2>&1; then
         GRAPHIFY_PYTHON="python3"
-    elif command -v python >/dev/null 2>&1 && python -c "$_GFY_PROBE" 2>/dev/null; then
+    elif command -v python >/dev/null 2>&1 && python -c "$_GFY_PROBE" >/dev/null 2>&1; then
         GRAPHIFY_PYTHON="python"
     else
         echo "[graphify hook] could not locate a Python with graphify installed. Add the graphify bin dir to PATH or re-run 'graphify hook install' from the env where graphify lives." >&2
