@@ -49,6 +49,25 @@ def test_code_only_succeeds_without_key(tmp_path):
     assert any(str(l).startswith("hello") for l in labels), "code was indexed"
 
 
+def test_advpl_tlpp_repo_code_only_produces_graph(tmp_path):
+    repo = tmp_path / "protheus-repo"
+    repo.mkdir()
+    (repo / "main.prw").write_text(
+        'User Function StartProcess()\nReturn U_Helper()\n', encoding="utf-8"
+    )
+    (repo / "helper.tlpp").write_text(
+        "User Function Helper()\nReturn .T.\n", encoding="utf-8"
+    )
+
+    result = _run(repo, "--code-only", "--no-cluster")
+
+    assert result.returncode == 0, result.stderr
+    graph = json.loads((repo / "graphify-out" / "graph.json").read_text())
+    labels = {node.get("label") for node in graph["nodes"]}
+    assert {"StartProcess()", "Helper()"} <= labels
+    assert any(edge.get("relation") == "calls" for edge in graph["edges"])
+
+
 def test_mixed_repo_without_key_errors_and_points_at_code_only(tmp_path):
     repo = _mixed_repo(tmp_path)
     r = _run(repo)  # no --code-only, no key
