@@ -432,6 +432,13 @@ def _vis_nodes_from_html(content: str) -> list:
     return json.loads(m.group(1).replace("<\\/", "</"))
 
 
+def _vis_edges_from_html(content: str) -> list:
+    """Extract the RAW_EDGES JSON array embedded in the generated HTML."""
+    m = re.search(r"const RAW_EDGES = (\[.*?\]);", content, re.DOTALL)
+    assert m, "RAW_EDGES not found in HTML"
+    return json.loads(m.group(1).replace("<\\/", "</"))
+
+
 def test_to_html_annotated_node_gets_learning_status_and_ring():
     """A node with an overlay entry gets learning_status + learning_stale fields,
     a status-colored ring (border), and a Lesson line in its hover title."""
@@ -492,6 +499,72 @@ def test_to_html_unannotated_identical_to_pre_feature():
         cb = b.read_text().replace("b.html", "X.html")
     assert ca == cb
     assert "learning_status" not in ca
+
+
+def test_to_html_tooltips_preserve_special_characters_without_html_entities(tmp_path):
+    """Issue #3664: Node and edge hover tooltips (vis-network title) must preserve
+    raw characters (&, ', ", <, >) without HTML entity escaping (&amp;, &#x27;, etc.)
+    because vis-network renders title via innerText rather than innerHTML."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label="B-Roll & Filming", source_file="src/a.py", community=0)
+    G.add_node("n2", label="Anna's content batching schedule", source_file="src/b.py", community=0)
+    G.add_node("n3", label='<Widget prop="value" & count > 0>', source_file="src/c.py", community=0)
+    G.add_edge("n1", "n2", relation="reviews & approves", confidence="EXTRACTED")
+    G.add_edge("n2", "n3", relation="calls <indirect>", confidence="INFERRED")
+
+    labels = {0: "Team A & Team B"}
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["n1", "n2", "n3"]}, str(out), community_labels=labels)
+    content = out.read_text(encoding="utf-8")
+
+    nodes = {n["id"]: n for n in _vis_nodes_from_html(content)}
+    assert nodes["n1"]["title"] == "B-Roll & Filming"
+    assert "&amp;" not in nodes["n1"]["title"]
+
+    assert nodes["n2"]["title"] == "Anna's content batching schedule"
+    assert "&#x27;" not in nodes["n2"]["title"]
+    assert "&#39;" not in nodes["n2"]["title"]
+
+    assert nodes["n3"]["title"] == '<Widget prop="value" & count > 0>'
+    for entity in ("&lt;", "&gt;", "&quot;", "&amp;"):
+        assert entity not in nodes["n3"]["title"]
+
+    edges = _vis_edges_from_html(content)
+    edge_map = {(e["from"], e["to"]): e for e in edges}
+    e1 = edge_map[("n1", "n2")]
+    assert e1["title"] == "reviews & approves [EXTRACTED]"
+    assert "&amp;" not in e1["title"]
+
+    e2 = edge_map[("n2", "n3")]
+    assert e2["title"] == "calls <indirect> [INFERRED]"
+    assert "&lt;" not in e2["title"]
+    assert "&gt;" not in e2["title"]
+
+    # In contrast, legend items are injected into innerHTML and MUST remain HTML-escaped.
+    assert "Team A &amp; Team B" in content
+
+
+def test_to_html_learning_overlay_tooltip_preserves_special_characters(tmp_path):
+    """Issue #3664: Node with learning overlay preserves special characters in both
+    the label and lesson text without HTML entity escaping."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label="Anna's & Bob's <Pipeline>", source_file="src/a.py", community=0)
+    overlay = {
+        "n1": {"status": "contested", "uses": 2, "neg": 1, "stale": True}
+    }
+
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["n1"]}, str(out), learning_overlay=overlay)
+    content = out.read_text(encoding="utf-8")
+
+    nodes = {n["id"]: n for n in _vis_nodes_from_html(content)}
+    title = nodes["n1"]["title"]
+    assert "Anna's & Bob's <Pipeline>\n" in title
+    assert "Lesson: contested (useful 2 / dead-end 1) [code changed — re-verify]" in title
+    for entity in ("&amp;", "&#x27;", "&#39;", "&lt;", "&gt;"):
+        assert entity not in title
 
 
 def test_to_canvas_file_paths_relative_to_vault():
