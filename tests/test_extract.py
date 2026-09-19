@@ -4379,17 +4379,17 @@ def test_extract_emits_posix_source_file_for_relative_inputs(tmp_path):
     }
 
 
-def _inferred_uses(result):
-    """(source, target) pairs of every INFERRED cross-file `uses` edge."""
+def _uses_edges(result):
+    """(source, target) pairs of every EXTRACTED cross-file `uses` edge."""
     return {
         (e["source"], e["target"])
         for e in result["edges"]
-        if e.get("relation") == "uses" and e.get("confidence") == "INFERRED"
+        if e.get("relation") == "uses" and e.get("confidence") == "EXTRACTED"
     }
 
 
-def test_inferred_uses_edge_attributes_to_the_referencing_symbol(tmp_path):
-    """A cross-file INFERRED `uses` edge binds to the symbol that actually
+def test_uses_edge_attributes_to_the_referencing_symbol(tmp_path):
+    """A cross-file `uses` edge binds to the symbol that actually
     references the import — a function is a valid source and a co-located class
     that never touches the import gets no edge (#2652)."""
     (tmp_path / "helpers.py").write_text("class Helper:\n    pass\n", encoding="utf-8")
@@ -4401,7 +4401,7 @@ def test_inferred_uses_edge_attributes_to_the_referencing_symbol(tmp_path):
     )
 
     result = extract([tmp_path / "api.py", tmp_path / "helpers.py"], cache_root=tmp_path)
-    uses = _inferred_uses(result)
+    uses = _uses_edges(result)
 
     # handler() references Helper -> it is the source.
     assert ("api_handler", "helpers_helper") in uses
@@ -4409,9 +4409,9 @@ def test_inferred_uses_edge_attributes_to_the_referencing_symbol(tmp_path):
     assert ("api_request", "helpers_helper") not in uses
 
 
-def test_inferred_uses_edge_kept_when_the_class_body_references_the_import(tmp_path):
+def test_uses_edge_kept_when_the_class_body_references_the_import(tmp_path):
     """Positive control: a class that genuinely uses the imported symbol still
-    gets its class-level INFERRED `uses` edge (the DigestAuth->Response case)."""
+    gets its class-level `uses` edge (the DigestAuth->Response case)."""
     (tmp_path / "models.py").write_text("class Response:\n    pass\n", encoding="utf-8")
     (tmp_path / "auth.py").write_text(
         "from models import Response\n\n\n"
@@ -4421,10 +4421,10 @@ def test_inferred_uses_edge_kept_when_the_class_body_references_the_import(tmp_p
 
     result = extract([tmp_path / "auth.py", tmp_path / "models.py"], cache_root=tmp_path)
 
-    assert ("auth_digestauth", "models_response") in _inferred_uses(result)
+    assert ("auth_digestauth", "models_response") in _uses_edges(result)
 
 
-def test_inferred_uses_edge_follows_an_import_alias(tmp_path):
+def test_uses_edge_follows_an_import_alias(tmp_path):
     """`from helpers import Helper as H` attributes via the local alias `H`, so a
     body that only ever names `H` still resolves to the imported target (#2652)."""
     (tmp_path / "helpers.py").write_text("class Helper:\n    pass\n", encoding="utf-8")
@@ -4436,10 +4436,10 @@ def test_inferred_uses_edge_follows_an_import_alias(tmp_path):
 
     result = extract([tmp_path / "api.py", tmp_path / "helpers.py"], cache_root=tmp_path)
 
-    assert ("api_handler", "helpers_helper") in _inferred_uses(result)
+    assert ("api_handler", "helpers_helper") in _uses_edges(result)
 
 
-def test_inferred_uses_edge_emitted_once_per_referencing_symbol(tmp_path):
+def test_uses_edge_emitted_once_per_referencing_symbol(tmp_path):
     """Each symbol that references the import gets its own edge, and only those
     symbols do — guards against the old fan-out (every class in the file) and
     against collapsing distinct sources into one (#2652)."""
@@ -4453,16 +4453,16 @@ def test_inferred_uses_edge_emitted_once_per_referencing_symbol(tmp_path):
     )
 
     result = extract([tmp_path / "api.py", tmp_path / "helpers.py"], cache_root=tmp_path)
-    uses = _inferred_uses(result)
+    uses = _uses_edges(result)
 
     assert ("api_a", "helpers_helper") in uses
     assert ("api_b", "helpers_helper") in uses
     assert ("api_c", "helpers_helper") not in uses
 
 
-def test_inferred_uses_edge_dropped_for_module_top_level_reference(tmp_path):
+def test_uses_edge_dropped_for_module_top_level_reference(tmp_path):
     """A reference at true module top level has no enclosing symbol to anchor on,
-    so no INFERRED `uses` edge is emitted (rather than falling back to the file
+    so no `uses` edge is emitted (rather than falling back to the file
     node) — the deliberate drop documented for #2652."""
     (tmp_path / "helpers.py").write_text("class Helper:\n    pass\n", encoding="utf-8")
     (tmp_path / "api.py").write_text(
@@ -4472,9 +4472,65 @@ def test_inferred_uses_edge_dropped_for_module_top_level_reference(tmp_path):
     )
 
     result = extract([tmp_path / "api.py", tmp_path / "helpers.py"], cache_root=tmp_path)
-    uses = _inferred_uses(result)
+    uses = _uses_edges(result)
 
     assert not any(tgt == "helpers_helper" for _, tgt in uses)
+
+
+# ── #3539: AST uses Edges Confidence (EXTRACTED / 1.0) ────────────────────────
+
+def test_3539_ast_uses_edge_metadata_is_extracted(tmp_path):
+    """#3539: AST cross-file `uses` edges are structurally extracted from explicit
+    source syntax and must carry EXTRACTED / 1.0 / weight 1.0."""
+    (tmp_path / "models.py").write_text("class Response:\n    pass\n", encoding="utf-8")
+    (tmp_path / "auth.py").write_text(
+        "from models import Response\n\n\n"
+        "class DigestAuth:\n"
+        "    def build(self):\n"
+        "        return Response()\n",
+        encoding="utf-8",
+    )
+
+    result = extract([tmp_path / "auth.py", tmp_path / "models.py"], cache_root=tmp_path)
+    uses_edges = [
+        e for e in result["edges"]
+        if e.get("relation") == "uses" and e.get("source") == "auth_digestauth" and e.get("target") == "models_response"
+    ]
+    assert len(uses_edges) == 1
+    edge = uses_edges[0]
+    assert edge["confidence"] == "EXTRACTED"
+    assert edge["confidence_score"] == 1.0
+    assert edge["weight"] == 1.0
+
+
+def test_3539_references_and_uses_collapse_retains_extracted_metadata(tmp_path):
+    """#3539: When a type annotation produces a `references` edge (e.g. parameter_type)
+    and cross-file import resolution produces a `uses` edge for the same pair,
+    collapsing them in build_from_json retains EXTRACTED / 1.0 metadata."""
+    (tmp_path / "types.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "consumer.py").write_text(
+        "from types import StateFrame\n\n\n"
+        "def handle(state: StateFrame):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    result = extract([tmp_path / "types.py", tmp_path / "consumer.py"], cache_root=tmp_path)
+    pair_edges = [
+        e for e in result["edges"]
+        if e.get("source") == "consumer_handle" and e.get("target") == "types_stateframe"
+    ]
+    relations = {e.get("relation") for e in pair_edges}
+    assert "references" in relations
+    assert "uses" in relations
+
+    G = build_from_json(result)
+    assert G.has_edge("consumer_handle", "types_stateframe")
+    collapsed = G.get_edge_data("consumer_handle", "types_stateframe")
+    assert collapsed["confidence"] == "EXTRACTED"
+    assert collapsed["confidence_score"] == 1.0
+    assert collapsed["weight"] == 1.0
+    assert collapsed.get("context") == "parameter_type"
 
 
 def test_extract_declined_data_json_is_not_failed(tmp_path, capsys):
