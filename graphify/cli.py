@@ -11,7 +11,10 @@ import os
 import re
 import sys
 import time
-from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import (
+    GRAPHIFY_OUT as _GRAPHIFY_OUT,
+    write_root_marker,
+)
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
@@ -4352,9 +4355,7 @@ def dispatch_command(cmd: str) -> None:
                 # relativize deleted-file paths correctly even for a custom --out
                 # (its grandparent-of-graph.json fallback points at the wrong dir
                 # otherwise, and deleted files never prune — #2012/#1571).
-                (graphify_out / ".graphify_root").write_text(
-                    str(Path(target).resolve()), encoding="utf-8"
-                )
+                write_root_marker(graphify_out, target)
             except OSError:
                 pass
             stages.mark("write")
@@ -4523,9 +4524,7 @@ def dispatch_command(cmd: str) -> None:
         try:
             # See the --no-cluster path above: persist the scan root so build_merge
             # can relativize deleted-file paths under a custom --out (#2012/#1571).
-            (graphify_out / ".graphify_root").write_text(
-                str(Path(target).resolve()), encoding="utf-8"
-            )
+            write_root_marker(graphify_out, target)
         except OSError:
             pass
         stages.mark("export")
