@@ -193,6 +193,90 @@ def test_tsconfig_wins_when_both_configs_present(tmp_path):
     assert _cid(tmp_path, tmp_path / "js_root" / "mods" / "W.js") not in targets
 
 
+def test_tsconfig_baseurl_is_inherited_from_extended_config(tmp_path):
+    """An inherited baseUrl is relative to the config that declares it (#2200)."""
+    _write(
+        tmp_path / "configs" / "base.json",
+        '{\n'
+        '  "compilerOptions": {\n'
+        '    "baseUrl": "../src"\n'
+        '  }\n'
+        '}\n',
+    )
+    _write(tmp_path / "tsconfig.json", '{"extends": "./configs/base.json"}\n')
+    target = _write(tmp_path / "src" / "mods" / "Widget.js", "export default 1;\n")
+    importer = _write(
+        tmp_path / "packs" / "dashboard.js",
+        "import Widget from 'mods/Widget.js';\n"
+        "export default Widget;\n",
+    )
+
+    result = extract([importer], cache_root=tmp_path)
+
+    assert _cid(tmp_path, target) in _targets(result)
+
+
+def test_tsconfig_child_baseurl_overrides_parent_relative_to_child(tmp_path):
+    """A child baseUrl wins and is resolved from the child config directory (#2200)."""
+    _write(
+        tmp_path / "configs" / "base.json",
+        '{\n'
+        '  "compilerOptions": {"baseUrl": "../parent-src"}\n'
+        '}\n',
+    )
+    _write(
+        tmp_path / "tsconfig.json",
+        '{\n'
+        '  "extends": "./configs/base.json",\n'
+        '  "compilerOptions": {"baseUrl": "./child-src"}\n'
+        '}\n',
+    )
+    parent_target = _write(
+        tmp_path / "parent-src" / "mods" / "Widget.js", "export default 1;\n"
+    )
+    child_target = _write(
+        tmp_path / "child-src" / "mods" / "Widget.js", "export default 2;\n"
+    )
+    importer = _write(
+        tmp_path / "packs" / "dashboard.js",
+        "import Widget from 'mods/Widget.js';\n"
+        "export default Widget;\n",
+    )
+
+    targets = _targets(extract([importer], cache_root=tmp_path))
+
+    assert _cid(tmp_path, child_target) in targets
+    assert _cid(tmp_path, parent_target) not in targets
+
+
+def test_tsconfig_jsonc_parent_and_null_child_options_are_safe(tmp_path):
+    """JSONC parents and ``compilerOptions: null`` must not abort resolution (#2200)."""
+    _write(
+        tmp_path / "configs" / "base.json",
+        '{\n'
+        '  // inherited aliases are valid JSONC\n'
+        '  "compilerOptions": {\n'
+        '    "baseUrl": "../src",\n'
+        '    "paths": {"@shared/*": ["shared/*"],},\n'
+        '  },\n'
+        '}\n',
+    )
+    _write(
+        tmp_path / "tsconfig.json",
+        '{"extends": "./configs/base.json", "compilerOptions": null}\n',
+    )
+    target = _write(tmp_path / "src" / "shared" / "Widget.js", "export default 1;\n")
+    importer = _write(
+        tmp_path / "packs" / "dashboard.js",
+        "import Widget from '@shared/Widget.js';\n"
+        "export default Widget;\n",
+    )
+
+    targets = _targets(extract([importer], cache_root=tmp_path))
+
+    assert _cid(tmp_path, target) in targets
+
+
 # --- config edits must survive the per-process caches (#2917) ---------------
 #
 # `_TSCONFIG_ALIAS_CACHE` and `_TSCONFIG_BASEURL_CACHE` are keyed on the config
