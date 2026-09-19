@@ -50,6 +50,17 @@ if (-not $GRAPHIFY_PYTHON) {
     $GRAPHIFY_PYTHON = Find-GraphifyPython
 }
 
+# #1619 B4: without this gate, a failed install left $GRAPHIFY_PYTHON $null,
+# an empty .graphify_python got written anyway, and every later step then
+# failed with a cryptic error far from the real cause instead of a clear one
+# here.
+if (-not $GRAPHIFY_PYTHON) {
+    Write-Host "ERROR: could not install or locate a Python interpreter with graphify. Try one of:"
+    Write-Host "  uv tool install graphifyy"
+    Write-Host "  pip install graphifyy"
+    exit 1
+}
+
 # Save interpreter path — all subsequent steps read this.
 # `Out-File -Encoding utf8` always writes a BOM on Windows PowerShell 5.1 (utf8NoBOM
 # only exists from PowerShell 6), and that BOM rides into the saved path, so the hook
@@ -58,9 +69,9 @@ if (-not $GRAPHIFY_PYTHON) {
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_python'), [string]$GRAPHIFY_PYTHON, $Utf8NoBom)
 # Save scan root so `graphify update` (no args) knows where to look next time
-[System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path INPUT_PATH).Path, $Utf8NoBom)
+[System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path 'INPUT_PATH').Path, $Utf8NoBom)
 ```
 
-If the import succeeds, print nothing and move straight to Step 2.
+If the import succeeds, print nothing and move straight to Step 2. If it prints the ERROR above, stop and tell the user what happened - do not proceed to Step 2.
 
 **In every subsequent block, run Python through the saved interpreter — `& (Get-Content graphify-out\.graphify_python)` in place of a bare `python3` — so every step uses the interpreter that actually has graphify.**

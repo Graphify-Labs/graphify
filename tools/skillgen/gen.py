@@ -381,7 +381,7 @@ def _render_frontmatter(platform: Platform) -> str:
 # untranslated bash to the Windows variant. ``_POWERSHELL_BANNED_TOKENS`` is the
 # belt-and-braces post-check on the final body.
 
-_PY_INVOKE_POSIX = '$(cat graphify-out/.graphify_python) -c "'
+_PY_INVOKE_POSIX = '"$(cat graphify-out/.graphify_python)" -c "'
 _PY_INVOKE_PS_OPEN = "@'"
 _PY_INVOKE_PS_CLOSE = "'@ | & (Get-Content graphify-out\\.graphify_python) -"
 _MKDIR_POSIX = "mkdir -p graphify-out"
@@ -1142,6 +1142,117 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_no_cluster_force_fix_line(line: str) -> bool:
+    """Whether a line is part of the --no-cluster / --force wiring fix (#1619 C1/C2).
+
+    Step 2 suggested --no-cluster and the #479 shrink-guard error message
+    suggested --force, but neither flag was ever implemented: Step 4 called
+    cluster() unconditionally, and to_json() never received force=. Both are
+    now wired through -- Step 4 builds a single "Full Corpus" community
+    instead of calling cluster() when --no-cluster was given, both to_json()
+    calls take force=IS_FORCE, and Step 5 is skipped when there is nothing to
+    label. These are the added Usage lines, the substitution instructions,
+    and the changed Step 4/5 body lines (old and new forms both sanctioned,
+    matched trimmed so the added lines' extra indentation inside the new
+    if/else does not matter).
+    """
+    stripped = line.strip()
+    return (
+        stripped.startswith('/graphify <path> --no-cluster ')
+        or stripped.startswith('/graphify <path> --force ')
+        or stripped.startswith("Two more substitutions, in this step's block and Step 5's:")
+        or stripped == "if IS_NO_CLUSTER:"
+        or stripped == "communities = {0: list(G.nodes())}"
+        or stripped == "communities = cluster(G)"
+        or stripped
+        == "labels = {0: 'Full Corpus'} if IS_NO_CLUSTER else {cid: 'Community ' + str(cid) for cid in communities}"
+        or stripped == "labels = {cid: 'Community ' + str(cid) for cid in communities}"
+        or "regenerated with real labels in Step 5" in line
+        or "Skip this step entirely if `--no-cluster` was given in Step 4" in line
+        # A review finding on #1619 pointed out the Step 4 to_json() call
+        # (sanctioned above via the #1392 predicate's generic "to_json(G,
+        # communities," match) never received community_labels=labels, so a
+        # --no-cluster build silently lost every node's community_name --
+        # Step 5, which normally supplies it, is skipped for that path. The
+        # explanatory comment added alongside that fix is sanctioned here.
+        or "because --no-cluster skips Step 5 entirely" in line
+        or "the 'Full Corpus' label computed above must reach graph.json" in line
+        or "now or every node silently loses its community_name" in line
+    )
+
+
+def _is_install_failure_gate_fix_line(line: str) -> bool:
+    """Whether a line is part of the #1619 B4 Step 1 failure gate.
+
+    A failed install used to leave PYTHON pointing at an interpreter that
+    still could not import graphify, with nothing checking for it: the step
+    fell through silently, wrote that interpreter's path anyway, and every
+    later step then failed with a cryptic "-c: command not found" far from
+    the real cause. An explicit re-check after the install attempt now stops
+    with an actionable error instead. The extra `fi` (added) and the changed
+    "If the import succeeds..." sentence (both old and new forms) are
+    sanctioned here too.
+    """
+    stripped = line.strip()
+    return (
+        stripped == "fi"
+        or "#1619 B4" in line
+        or "interpreter that still cannot import graphify" in line
+        or "silently, writing that interpreter's path anyway" in line
+        or 'then failed with a cryptic "-c: command not found"' in line
+        or "cause instead of a clear error here" in line
+        or stripped == 'if ! "$PYTHON" -c "import graphify" 2>/dev/null; then'
+        or "could not install or locate a Python interpreter with graphify" in line
+        or "uv tool install graphifyy" in line
+        or "python3 -m pip install graphifyy" in line
+        or stripped == "exit 1"
+        or stripped.startswith("If the import succeeds, print nothing and move straight to Step 2")
+    )
+
+
+def _is_update_backup_reorder_fix_line(line: str) -> bool:
+    """Whether a line is part of the #1619 C4 backup-ordering fix.
+
+    "Before the merge step, save the old graph" appeared AFTER the merge
+    block and the diff block that consumes the backup, so an agent executing
+    top to bottom reached it too late and the post-update diff's `if
+    old_data:` silently no-opped every time. The instruction now appears
+    before the merge block it belongs with; the trailing cleanup line stays
+    where it was, reworded to stop implying a backup step just above it.
+    """
+    stripped = line.strip()
+    return (
+        stripped.startswith("Before the merge step")
+        or stripped.startswith("Clean up after:")
+        or stripped.startswith("Clean up the backup after:")
+    )
+
+
+def _is_quoted_interpreter_cat_fix_line(line: str) -> bool:
+    """Whether a line is part of the #1619 B5 interpreter-substitution quoting fix.
+
+    `$(cat graphify-out/.graphify_python)` was spliced in unquoted everywhere
+    it names the interpreter to run, so an interpreter path containing a
+    space (a venv under `C:\\Users\\First Last\\...`) word-split into
+    multiple arguments. Every occurrence, and the prose line describing the
+    substitution, is now quoted, matching the `"$PYTHON"` form Step 1 already
+    used. Both the old (removed) and new (added) forms match here.
+    """
+    return "$(cat graphify-out/.graphify_python)" in line
+
+
+def _is_input_path_slash_guidance_line(line: str) -> bool:
+    """Whether a line is the #1619 B1 forward-slash INPUT_PATH guidance.
+
+    A Windows path substituted into INPUT_PATH splices raw backslashes into a
+    Python string literal (`\\t` becomes a tab, `\\U` raises a SyntaxError),
+    silently or loudly corrupting the block. One rule near the top of each
+    monolith, right after the path-resolution paragraph it belongs with,
+    tells the agent to substitute with forward slashes instead.
+    """
+    return "substitute it with forward slashes" in line.lower()
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1163,6 +1274,11 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_no_cluster_force_fix_line,
+    _is_input_path_slash_guidance_line,
+    _is_install_failure_gate_fix_line,
+    _is_update_backup_reorder_fix_line,
+    _is_quoted_interpreter_cat_fix_line,
 )
 
 
