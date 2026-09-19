@@ -73,8 +73,13 @@ def extract_apex(path: Path) -> dict:
         r"^\s*trigger\s+(\w+)\s+on\s+(\w+)\s*\(",
         _re.IGNORECASE,
     )
+    # Return type: base token (dotted names, arrays) plus an optional <...>
+    # generic group that may hold commas, spaces, and one nested level. A bare
+    # character class cannot match "Map<String, Object>" (comma, space) or
+    # "Database.QueryLocator" (dot), silently dropping those methods.
+    _RETTYPE = r"[\w.\[\]]+(?:\s*<[^;{}()=]*>)?"
     method_re = _re.compile(
-        rf"^{_ANNOTATION}\s*{_ACCESS}{_MOD}\s*(?:static\s+)?[\w<>\[\]]+\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+\w+\s*)?\{{?",
+        rf"^{_ANNOTATION}\s*{_ACCESS}{_MOD}\s*(?:static\s+)?{_RETTYPE}\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+\w+\s*)?\{{?",
         _re.IGNORECASE,
     )
     annotation_re = _re.compile(r"@(\w+)", _re.IGNORECASE)

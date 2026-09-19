@@ -41,6 +41,18 @@ public with sharing class AccountService {
         delete old;
     }
 
+    public static Map<String, Object> getAccountSummary(Id accountId) {
+        return new Map<String, Object>{ 'id' => accountId };
+    }
+
+    public Database.QueryLocator start(Database.BatchableContext bc) {
+        return Database.getQueryLocator('SELECT Id FROM Account');
+    }
+
+    private static List<Map<String, Id>> buildNameIndex() {
+        return new List<Map<String, Id>>();
+    }
+
     @isTest
     static void testGetAccounts() {
         List<Account> result = getAccounts('Customer');
