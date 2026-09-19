@@ -4714,3 +4714,95 @@ def test_clustered_rebuild_survives_a_permission_error_on_replace(tmp_path, monk
     graph_path = corpus / "graphify-out" / "graph.json"
     labels = {n["label"] for n in json.loads(graph_path.read_text(encoding="utf-8"))["nodes"]}
     assert "added()" in labels, "the fallback must still land the new content"
+
+
+# --- _check_shrink on a full rebuild (#3579) ---
+
+
+def _sourced(*pairs: "tuple[str, int]") -> dict:
+    """Graph data whose nodes carry a source_file: (path, node count) per source."""
+    nodes = []
+    for source, count in pairs:
+        for i in range(count):
+            nodes.append({"id": f"{source}:{i}", "source_file": source})
+    return {"nodes": nodes, "links": []}
+
+
+def test_check_shrink_refuses_a_source_that_produced_nothing_on_a_full_rebuild(capsys):
+    """A full rebuild re-extracts everything, so membership proves nothing.
+
+    `rebuilt_sources` is the whole corpus there, which made every lost node
+    "accounted" and the guard unable to refuse on exactly the path its own
+    refusal message recommends as the remedy.
+    """
+    ok = _check_shrink(
+        force=False,
+        existing_data=_sourced(("a.py", 3), ("b.py", 2)),
+        new_data=_sourced(("b.py", 2)),
+        rebuilt_sources={"a.py", "b.py"},
+    )
+    assert ok is False
+    assert "Refusing to overwrite" in capsys.readouterr().err
+
+
+def test_check_shrink_still_allows_a_symbol_removed_from_a_rebuilt_source(capsys):
+    """The #1116 case must keep working: the file is still there, with fewer nodes."""
+    ok = _check_shrink(
+        force=False,
+        existing_data=_sourced(("a.py", 3), ("b.py", 2)),
+        new_data=_sourced(("a.py", 1), ("b.py", 2)),
+        rebuilt_sources={"a.py", "b.py"},
+    )
+    assert ok is True
+    assert "Refusing to overwrite" not in capsys.readouterr().err
+
+
+def test_check_shrink_allows_a_deleted_source_to_contribute_nothing():
+    """A file that is gone from disk is meant to contribute nothing."""
+    ok = _check_shrink(
+        force=False,
+        existing_data=_sourced(("a.py", 3), ("b.py", 2)),
+        new_data=_sourced(("b.py", 2)),
+        rebuilt_sources={"a.py", "b.py"},
+        deleted_sources={"a.py"},
+    )
+    assert ok is True
+
+
+def test_check_shrink_refuses_a_loss_from_a_source_it_never_rebuilt(capsys):
+    """The incremental case the guard was written for.
+
+    A file that was not re-extracted has no reason to lose nodes: it was
+    preserved from the previous graph verbatim. Losing some of them is the
+    silent shrink, and membership in `rebuilt_sources` is what separates it
+    from a symbol legitimately removed from a file that WAS re-extracted.
+    """
+    ok = _check_shrink(
+        force=False,
+        existing_data=_sourced(("touched.py", 2), ("untouched.py", 5)),
+        new_data=_sourced(("touched.py", 2), ("untouched.py", 2)),
+        rebuilt_sources={"touched.py"},
+    )
+    assert ok is False
+    assert "Refusing to overwrite" in capsys.readouterr().err
+
+
+def test_check_shrink_still_refuses_a_failed_source():
+    """failed_sources keeps its precedence: extraction did not complete."""
+    ok = _check_shrink(
+        force=False,
+        existing_data=_sourced(("a.py", 3), ("b.py", 2)),
+        new_data=_sourced(("a.py", 1), ("b.py", 2)),
+        rebuilt_sources={"a.py", "b.py"},
+        failed_sources={"a.py"},
+    )
+    assert ok is False
+
+
+def test_check_shrink_still_allows_a_loss_with_no_source_file():
+    """Nodes without a source_file were always accounted and still are."""
+    existing = {"nodes": [{"id": "x"}, {"id": "y"}, {"id": "z"}], "links": []}
+    new = {"nodes": [{"id": "x"}], "links": []}
+    assert _check_shrink(
+        force=False, existing_data=existing, new_data=new, rebuilt_sources={"a.py"}
+    ) is True
