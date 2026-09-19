@@ -131,8 +131,6 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         # those two reads could make the recorded hash describe different
         # bytes than what actually gets imported below, corrupting the
         # unchanged-hash skip check on every later call.
-        from graphify.security import check_graph_file_size_cap
-        check_graph_file_size_cap(source_path)
         raw_bytes = source_path.read_bytes()
         src_hash = hashlib.sha256(raw_bytes).hexdigest()[:16]
 
@@ -149,6 +147,14 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
             return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
                     "cross_repo_calls": 0, "shared_type_links": 0}
 
+        # The size cap only guards a file that is actually about to be parsed
+        # and merged -- checking it before the skip check above (a review
+        # finding on the read-consolidation fix) made an unchanged, already
+        # tracked graph error out on every call once it (or the configured
+        # cap) crossed the threshold, instead of continuing to skip exactly
+        # as it did before that fix, since it was never reached at all then.
+        from graphify.security import check_graph_file_size_cap
+        check_graph_file_size_cap(source_path)
         data = json.loads(raw_bytes.decode("utf-8"))
         if "links" not in data and "edges" in data:
             data = dict(data, links=data["edges"])
