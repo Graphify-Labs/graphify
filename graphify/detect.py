@@ -2111,6 +2111,40 @@ def _nfc(s: str) -> str:
     return unicodedata.normalize("NFC", s)
 
 
+def _anchor_under_root(key_path: Path, root_res: Path) -> "str | None":
+    """Relativize ``key_path`` against ``root_res`` by identity, not by text.
+
+    ``os.path.relpath`` is lexical and case-sensitive. Windows paths are not,
+    and a default macOS volume is not either, so a stored key whose case
+    differs from the resolved root ("C:\\Users\\Foo" against "C:\\Users\\foo",
+    a parent directory renamed only in case) reads as out-of-root and stays
+    absolute for ever. An upgrade that changes the key convention then leaves
+    the old key beside the new one rather than replacing it, and the manifest
+    ends up describing the same tree twice (#3581).
+
+    Walks the key's ancestors looking for the one that IS ``root_res``
+    according to the filesystem, and joins the remainder with its original
+    casing intact. Returns None when no ancestor matches, which is the
+    genuinely out-of-root case. Only reached after the lexical attempt has
+    already failed, so the ordinary in-root path costs nothing.
+    """
+    parts: list[str] = []
+    current = key_path
+    while True:
+        parent = current.parent
+        if parent == current:
+            return None
+        parts.append(current.name)
+        current = parent
+        try:
+            if os.path.samefile(current, root_res):
+                return "/".join(reversed(parts))
+        except OSError:
+            # An ancestor we cannot stat cannot be shown to be root; leave the
+            # key absolute, as it was before this fallback existed.
+            return None
+
+
 def _to_relative_for_storage(key: str, root: Path) -> str:
     """Return ``key`` as a forward-slash relative path from ``root``.
 
@@ -2135,15 +2169,19 @@ def _to_relative_for_storage(key: str, root: Path) -> str:
     if not p.is_absolute():
         return key
     try:
-        base = _nfc(str(Path(root).resolve()))
-        rel = os.path.relpath(_nfc(str(p)), base)
+        root_res = Path(root).resolve()
+        rel = os.path.relpath(_nfc(str(p)), _nfc(str(root_res)))
     except (ValueError, OSError):
         return key  # outside root (e.g. Windows cross-drive)
     # ``os.path.relpath`` happily produces ``../foo`` for paths outside
     # root; mirror the prior ``relative_to``-raises-ValueError semantics by
     # keeping out-of-root entries in their absolute form.
     if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
-        return key
+        # Lexically out of root. Before accepting that, ask the filesystem:
+        # the key may denote a path under root that merely spells it
+        # differently (see :func:`_anchor_under_root`).
+        anchored = _anchor_under_root(p, root_res)
+        return anchored if anchored is not None else key
     return rel.replace(os.sep, "/")
 
 
