@@ -125,18 +125,26 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     with _global_store_lock():
         manifest = _load_manifest()
         existing = manifest["repos"].get(repo_tag, {})
+        resolved_source_path = str(source_path.resolve())
 
-        # A stat-only fast path, no read at all: if this file's mtime and size
-        # exactly match what was recorded on the last successful add, it is
-        # unchanged, full stop -- including when it is (or has become)
-        # oversized, since an already-tracked, genuinely untouched file must
-        # keep skipping rather than erroring on every call once it or the
-        # configured cap crosses the threshold. Anything else (first add,
-        # mtime/size differs, or an older manifest that predates this field)
-        # falls through to the cap check and a real read below.
+        # A stat-only fast path, no read at all: if this SAME source path's
+        # mtime and size exactly match what was recorded on the last
+        # successful add, it is unchanged, full stop -- including when it is
+        # (or has become) oversized, since an already-tracked, genuinely
+        # untouched file must keep skipping rather than erroring on every
+        # call once it or the configured cap crosses the threshold. The path
+        # must match too: a repo_tag re-pointed at a genuinely different
+        # file that happens to share the old file's mtime and size (a real
+        # possibility with cp -p/rsync -a/checkout-preserved timestamps)
+        # must never fast-skip on stat coincidence alone, or the store
+        # silently keeps stale data with no warning at all. Anything else
+        # (first add, the path/mtime/size differ, or an older manifest that
+        # predates these fields) falls through to the cap check and a real
+        # read below.
         st = source_path.stat()
         if (
-            existing.get("source_mtime_ns") == st.st_mtime_ns
+            existing.get("source_path") == resolved_source_path
+            and existing.get("source_mtime_ns") == st.st_mtime_ns
             and existing.get("source_size") == st.st_size
         ):
             return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
@@ -160,10 +168,10 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         src_hash = hashlib.sha256(raw_bytes).hexdigest()[:16]
 
         existing_path = existing.get("source_path", "")
-        if existing_path and existing_path != str(source_path.resolve()):
+        if existing_path and existing_path != resolved_source_path:
             print(
                 f"[graphify global] warning: repo tag '{repo_tag}' previously pointed to "
-                f"{existing_path!r}, now updating to {str(source_path.resolve())!r}. "
+                f"{existing_path!r}, now updating to {resolved_source_path!r}. "
                 f"Use --as <tag> to give it a different name.",
                 file=sys.stderr,
             )
@@ -253,7 +261,7 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
 
         manifest["repos"][repo_tag] = {
             "added_at": datetime.now(timezone.utc).isoformat(),
-            "source_path": str(source_path.resolve()),
+            "source_path": resolved_source_path,
             "node_count": added,
             "edge_count": prefixed.number_of_edges(),
             "source_hash": src_hash,
