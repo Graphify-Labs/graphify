@@ -1,6 +1,7 @@
 """Verilog extractor. Moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
+import hashlib
 import re
 
 from pathlib import Path
@@ -23,6 +24,19 @@ def _sv_first_identifier(node, source: bytes) -> str | None:
         if found:
             return found
     return None
+
+def _sv_reference_id(name: str) -> str:
+    """Node ID for a referenced module or package, preserving case.
+
+    `_make_id` lowercases, but SystemVerilog is case-sensitive: `Widget` and
+    `widget` are different modules and must not share a stub, or the one that
+    rewires second binds to the other's definition. An all-lowercase name — the
+    overwhelming majority — keeps its historical id.
+    """
+    nid = _make_id(name)
+    if name == name.lower():
+        return nid
+    return f"{nid}_{hashlib.sha1(name.encode('utf-8')).hexdigest()[:6]}"
 
 def _sv_child(node, type_name: str) -> object | None:
     if node is None:
@@ -234,6 +248,24 @@ def extract_verilog(path: Path) -> dict:
                           "source_file": str_path, "source_location": f"L{line}",
                           "confidence_score": 1.0})
 
+    def add_reference_node(nid: str, label: str) -> None:
+        """A module or package this file references but does not define.
+
+        Emitted as a sourceless stub — like the inheritance-base path in the
+        other extractors — so the corpus-level rewire can collapse it onto the
+        real definition. A sourced node here makes
+        _disambiguate_colliding_node_ids bake the referencing file's path into
+        the id and blocks the rewire, which is the phantom-duplicate-node bug
+        (#1402). `type` marks it a module anchor (#1327), so the same package
+        imported by N files stays one node rather than N same-named ones.
+        """
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({"id": nid, "label": label, "file_type": "code",
+                          "source_file": "", "source_location": "",
+                          "origin_file": str_path, "type": "module",
+                          "confidence_score": 1.0})
+
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", score: float = 1.0) -> None:
         edges.append({"source": src, "target": tgt, "relation": relation,
@@ -293,8 +325,8 @@ def extract_verilog(path: Path) -> dict:
                     pkg_name = pkg_text.split("::")[0].strip()
                     if pkg_name:
                         line = node.start_point[0] + 1
-                        tgt_nid = _make_id(pkg_name)
-                        add_node(tgt_nid, pkg_name, line)
+                        tgt_nid = _sv_reference_id(pkg_name)
+                        add_reference_node(tgt_nid, pkg_name)
                         src_nid = module_nid or file_nid
                         add_edge(src_nid, tgt_nid, "imports_from", line)
 
@@ -309,8 +341,8 @@ def extract_verilog(path: Path) -> dict:
                              else _sv_first_identifier(node, source))
                 if inst_type:
                     line = node.start_point[0] + 1
-                    tgt_nid = _make_id(inst_type)
-                    add_node(tgt_nid, inst_type, line)
+                    tgt_nid = _sv_reference_id(inst_type)
+                    add_reference_node(tgt_nid, inst_type)
                     add_edge(module_nid, tgt_nid, "instantiates", line)
 
         for child in node.children:
