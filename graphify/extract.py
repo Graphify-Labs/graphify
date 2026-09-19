@@ -6393,7 +6393,8 @@ def _is_main_guard_test(test: ast.expr) -> bool:
 
 
 def _caller_main_lacks_guard() -> bool:
-    """#1637: on Windows (spawn start method), a caller script with no
+    """#1637: under the spawn start method (the only one on Windows, and the
+    default on macOS since Python 3.8), a caller script with no
     ``if __name__ == "__main__":`` guard makes every worker re-execute the
     top-level module on import — including, if it calls ``extract()`` at
     module scope, spawning its OWN pool. Each of those child pools spawns
@@ -6463,6 +6464,32 @@ def _caller_main_lacks_guard() -> bool:
     return False
 
 
+def _pool_will_use_spawn() -> bool:
+    """Whether opening a ProcessPoolExecutor here would use the ``spawn``
+    start method (#1637 follow up): the guard-less-caller fork bomb only
+    happens under ``spawn``, which re-imports/re-executes the ``__main__``
+    module in every child. ``fork`` and ``forkserver`` never re-run
+    top-level code, so this check only matters when spawn is actually in
+    play. Checking the literal platform name (``win32`` only) missed macOS,
+    which has defaulted to spawn since Python 3.8 -- the same fork bomb is
+    fully reproducible there, not just on Windows.
+
+    Uses ``allow_none=True`` to read the CURRENT setting without fixing it
+    as a side effect: ``get_start_method()``'s default behavior permanently
+    locks in the platform default the first time it is called, which would
+    wrongly pre-empt a caller that has not yet made its own
+    ``set_start_method()`` call.
+    """
+    import multiprocessing
+
+    method = multiprocessing.get_start_method(allow_none=True)
+    if method is None:
+        # Not yet fixed: peek at the platform default without fixing it.
+        # get_all_start_methods() always lists it first.
+        method = multiprocessing.get_all_start_methods()[0]
+    return method == "spawn"
+
+
 def _extract_parallel(
     uncached_work: list[tuple[int, Path]],
     per_file: list[dict | None],
@@ -6474,7 +6501,7 @@ def _extract_parallel(
     """Extract uncached files in parallel using ProcessPoolExecutor.
 
     Returns True if the pool ran to completion. Returns False if the pool
-    failed in a recoverable way (typically Windows-spawn without an
+    failed in a recoverable way (typically the spawn start method without an
     ``if __name__ == "__main__"`` guard in the calling script, which causes
     BrokenProcessPool); the caller should fall back to sequential extraction.
     """
@@ -6496,7 +6523,7 @@ def _extract_parallel(
         )
         return False
 
-    if sys.platform == "win32" and _caller_main_lacks_guard():
+    if _pool_will_use_spawn() and _caller_main_lacks_guard():
         print(
             "  warning: calling script lacks an `if __name__ == \"__main__\":` "
             "guard; extracting sequentially to avoid runaway process spawning "
