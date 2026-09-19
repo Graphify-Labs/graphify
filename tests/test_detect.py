@@ -3182,6 +3182,41 @@ def test_save_manifest_subset_save_preserves_untouched_rows(tmp_path):
     )
 
 
+def test_save_manifest_subset_save_keeps_a_deleted_files_row(tmp_path):
+    """#3426: without scan_corpus, a row for a file no longer on disk must
+    survive a save too -- not just an untouched one. detect_incremental()
+    is what REPORTS a deletion via deleted_files, and a save that runs
+    without also pruning the graph (a scan-only run, an interrupted
+    pipeline) must not erase the row before any caller gets a chance to
+    act on that report, or the deletion becomes unreportable from the very
+    next run onward."""
+    import json
+    from graphify.detect import detect_incremental
+
+    a = tmp_path / "a.py"
+    gone = tmp_path / "gone.py"
+    a.write_text("x = 1\n")
+    gone.write_text("y = 2\n")
+    manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+    save_manifest({"code": [str(a), str(gone)]}, manifest_path, root=tmp_path)
+
+    gone.unlink()
+    detection = detect_incremental(tmp_path, manifest_path=manifest_path)
+    assert str(gone) in detection["deleted_files"], "must be reported deleted on this pass"
+
+    # A save that is NOT given the full scan corpus (no scan_corpus) --
+    # the row must not disappear before the report above was acted on.
+    save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
+    raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert "gone.py" in raw, (
+        f"a deleted file's row must survive a subset save so it stays reportable, got {set(raw)}"
+    )
+
+    detection2 = detect_incremental(tmp_path, manifest_path=manifest_path)
+    assert str(gone) in detection2["deleted_files"], \
+        "the deletion must still be reportable on the next pass"
+
+
 def test_save_manifest_full_scan_keeps_out_of_root_rows(tmp_path):
     """Out-of-root entries (--include sources, symlinked corpora) are never
     walked by detect, so their absence from the corpus is not exclusion
@@ -3204,6 +3239,65 @@ def test_save_manifest_full_scan_keeps_out_of_root_rows(tmp_path):
         assert "a.py" in raw
         assert str(outside.resolve()) in raw, (
             f"out-of-root rows must never be pruned to the scan, got {set(raw)}"
+        )
+    finally:
+        outside.unlink(missing_ok=True)
+
+
+def test_save_manifest_full_scan_prunes_genuinely_deleted_out_of_root_row(tmp_path):
+    """Review finding on #3426: an out-of-root row must never be pruned
+    merely for being outside the current scan (the test above), but that is
+    different from the file actually being gone from disk. #3426 removed the
+    old unconditional exists() check that used to prune ANY missing file's
+    row regardless of root, and preserved reconciliation only for in-root
+    rows via the scan-exclusion check -- silently leaving a genuinely
+    deleted out-of-root row unprunable forever, even across full scans. A
+    full scan is still detect_incremental()'s chance to report the
+    deletion first, so it is the same safe reconciliation point as the
+    in-root case."""
+    import json
+    a = tmp_path / "a.py"
+    a.write_text("x = 1\n")
+    outside = tmp_path.parent / f"{tmp_path.name}-extern-gone.py"
+    outside.write_text("z = 3\n")
+    try:
+        manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+        save_manifest(
+            {"code": [str(a), str(outside)]}, manifest_path, root=tmp_path
+        )
+        outside.unlink()
+        save_manifest(
+            {"code": [str(a)]}, manifest_path, root=tmp_path,
+            scan_corpus={str(a)},
+        )
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        assert "a.py" in raw
+        assert str(outside.resolve()) not in raw, (
+            f"a genuinely deleted out-of-root row must be pruned on a full scan, got {set(raw)}"
+        )
+    finally:
+        outside.unlink(missing_ok=True)
+
+
+def test_save_manifest_subset_save_keeps_out_of_root_deleted_row(tmp_path):
+    """The fix above must stay scoped to full-scan saves only -- a partial
+    save (no scan_corpus) must still preserve a deleted out-of-root row, the
+    same as it already does for an in-root one (#3426)."""
+    import json
+    a = tmp_path / "a.py"
+    a.write_text("x = 1\n")
+    outside = tmp_path.parent / f"{tmp_path.name}-extern-gone2.py"
+    outside.write_text("z = 3\n")
+    try:
+        manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+        save_manifest(
+            {"code": [str(a), str(outside)]}, manifest_path, root=tmp_path
+        )
+        outside.unlink()
+        save_manifest({"code": [str(a)]}, manifest_path, root=tmp_path)
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        assert str(outside.resolve()) in raw, (
+            f"a subset save must not prune a deleted out-of-root row, got {set(raw)}"
         )
     finally:
         outside.unlink(missing_ok=True)
