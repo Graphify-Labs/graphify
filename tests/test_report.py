@@ -201,3 +201,23 @@ def test_report_hubs_use_wikilinks_when_obsidian():
     labels = {cid: f"Widget {cid}" for cid in communities}
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
     assert "[[_COMMUNITY_" in report
+
+
+def test_report_token_cost_observability():
+    """#3658: Report safely renders None/unobserved tokens as 'unknown' and 0 as 0."""
+    G, communities, cohesion, labels, gods, surprises, detection, _ = make_inputs()
+
+    # Case 1: unobserved input, observed output
+    rep1 = generate(G, communities, cohesion, labels, gods, surprises, detection,
+                    {"input": None, "output": 62833}, "./project")
+    assert "- Token cost: unknown input · 62,833 output" in rep1
+
+    # Case 2: observed input, unobserved output
+    rep2 = generate(G, communities, cohesion, labels, gods, surprises, detection,
+                    {"input": 64786, "output": None}, "./project")
+    assert "- Token cost: 64,786 input · unknown output" in rep2
+
+    # Case 3: explicit zeros
+    rep3 = generate(G, communities, cohesion, labels, gods, surprises, detection,
+                    {"input": 0, "output": 0}, "./project")
+    assert "- Token cost: 0 input · 0 output" in rep3
