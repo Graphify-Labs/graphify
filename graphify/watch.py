@@ -16,6 +16,7 @@ from graphify.paths import (
     GRAPHIFY_OUT as _GRAPHIFY_OUT,
     is_absolute_any_platform,
     os_replace_with_fallback,
+    write_root_marker,
 )
 
 logger = logging.getLogger(__name__)
@@ -386,7 +387,12 @@ class _StoredSourcePaths:
         if root_marker.exists():
             try:
                 saved_root = Path(root_marker.read_text(encoding="utf-8-sig").strip())
-                if saved_root.is_absolute():
+                resolved = saved_root.resolve()
+                invocation_root = Path.cwd().resolve()
+                if resolved == watch_root and _is_relative_to(resolved, invocation_root) and resolved != invocation_root:
+                    self.existing_source_root = invocation_root
+                    relative_marker_prefix = posixpath.normpath(resolved.relative_to(invocation_root).as_posix())
+                elif saved_root.is_absolute():
                     # #2603: the marker holds the SCAN root, but stored
                     # source_file values are relative to the BUILD's cwd
                     # (the skill builds from the repo root scoped to a
@@ -397,7 +403,6 @@ class _StoredSourcePaths:
                     # paths actually resolve under; when none does, keep the
                     # marker (previous behavior) so a fully-deleted corpus
                     # still evicts.
-                    resolved = saved_root.resolve()
                     if self._anchors_stored_sources(existing, resolved):
                         self.existing_source_root = resolved
                     else:
@@ -414,7 +419,6 @@ class _StoredSourcePaths:
                         else:
                             self.existing_source_root = resolved
                 else:
-                    invocation_root = Path.cwd().resolve()
                     if (invocation_root / saved_root).resolve() == watch_root:
                         self.existing_source_root = invocation_root
                         relative_marker_prefix = posixpath.normpath(saved_root.as_posix())
@@ -1937,9 +1941,9 @@ def _rebuild_code(
                 graph_tmp.write_text(candidate_graph_text, encoding="utf-8")
                 os_replace_with_fallback(graph_tmp, existing_graph)
 
-            # Write the user-supplied path only after the candidate graph is
+            # Record the canonical scan root only after the candidate graph is
             # accepted, so a refused shrink cannot mismatch graph and marker.
-            (out / ".graphify_root").write_text(str(watch_path), encoding="utf-8")
+            write_root_marker(out, watch_root)
 
             try:
                 from graphify.detect import save_manifest
@@ -2156,7 +2160,7 @@ def _rebuild_code(
             sig_file.write_text(
                 json.dumps({str(k): v for k, v in cur_sigs.items()}), encoding="utf-8")
 
-        (out / ".graphify_root").write_text(str(watch_path), encoding="utf-8")
+        write_root_marker(out, watch_root)
 
         try:
             from graphify.detect import save_manifest
