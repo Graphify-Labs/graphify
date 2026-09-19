@@ -6412,11 +6412,23 @@ def _caller_main_lacks_guard() -> bool:
     formatting, so both gaps close at once.
 
     Only the module's direct top-level statements are checked, not every
-    node anywhere in the tree: ``ast.walk`` also finds a guard nested inside
-    an unrelated function, class, or dead branch, which never executes at
-    import time and so provides no actual protection at all. The idiom
-    itself only has its intended effect as a bare top-level statement, so
-    that is the only place a real guard can be.
+    node anywhere in the tree: a guard found anywhere in the tree also
+    matches one nested inside an unrelated function, class, or dead branch,
+    which never executes at import time and so provides no actual
+    protection at all. The idiom itself only has its intended effect as a
+    bare top-level statement, so that is the only place a real guard can
+    be.
+
+    A module can have a real top-level guard AND a genuinely unguarded
+    top-level statement that calls ``extract()`` outside it, so finding
+    *some* guard anywhere in the module is not enough either -- the
+    specific top-level statement that led to this call must itself be
+    inside one. That statement is found by walking the call stack for the
+    outermost frame belonging to this module's own top-level code (its
+    ``<module>`` code object): its current line is wherever the chain of
+    calls that reached ``extract()`` started, and is checked against the
+    guards' line ranges directly, without needing to trace the call graph
+    through any intervening function.
     """
     main_file = getattr(sys.modules.get("__main__"), "__file__", None)
     if not main_file:
@@ -6431,10 +6443,24 @@ def _caller_main_lacks_guard() -> bool:
         # Can't tell whether a guard is present -- treated the same as an
         # unreadable file above, not escalated into "assume it's missing".
         return False
-    return not any(
-        isinstance(node, ast.If) and _is_main_guard_test(node.test)
+    guard_ranges = [
+        (node.lineno, node.end_lineno)
         for node in tree.body
-    )
+        if isinstance(node, ast.If) and _is_main_guard_test(node.test)
+    ]
+    if not guard_ranges:
+        return True
+    frame = sys._getframe()
+    while frame is not None:
+        code = frame.f_code
+        if code.co_filename == main_file and code.co_name == "<module>":
+            line = frame.f_lineno
+            return not any(start <= line <= end for start, end in guard_ranges)
+        frame = frame.f_back
+    # Could not find the module's own top-level frame in the call stack
+    # (should not normally happen) -- can't tell where the call originated,
+    # treated the same as the unreadable/unparseable cases above.
+    return False
 
 
 def _extract_parallel(
