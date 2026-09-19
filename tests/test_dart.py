@@ -1,3 +1,4 @@
+import os
 import unittest
 import tempfile
 import sys
@@ -592,8 +593,12 @@ class TestDart(unittest.TestCase):
         child_node = next((n for n in nodes if n["label"] == "child_part.dart"), None)
         self.assertIsNone(child_node)
 
-        # B. Check that defines edge source is parent file ID
-        parent_fid = _make_id(str(parent_file.resolve()))
+        # B. Check that defines edge source is parent file ID.
+        # Minted from the path as PASSED, not from its resolution: the parent's own
+        # extraction below mints its file node the same way, and on a platform where the
+        # two differ (macOS /var -> /private/var) resolving here put the part's symbols in
+        # a different id namespace than the library's own (#3522).
+        parent_fid = _make_id(str(parent_file))
         child_class = next((n for n in nodes if n["label"] == "ChildClass"), None)
         self.assertIsNotNone(child_class)
 
@@ -603,6 +608,11 @@ class TestDart(unittest.TestCase):
         )
         self.assertIsNotNone(def_edge)
         self.assertEqual(def_edge["source"], parent_fid)
+        # ... and that id is the one the parent file itself produces, so the library and
+        # its parts occupy ONE namespace rather than two.
+        parent_nodes = extract_dart(parent_file)["nodes"]
+        parent_file_node = next(n for n in parent_nodes if n["label"] == "parent_lib.dart")
+        self.assertEqual(def_edge["source"], parent_file_node["id"])
 
         # C. Bug A safe generic inheritance commas split: check referenced generics
         # Bloc<Pair<UserEvent, MyState>, State> should reference 'Pair<UserEvent, MyState>' and 'State'
@@ -694,6 +704,47 @@ class TestDart(unittest.TestCase):
         result = extract_dart(path)
         inherits = next(e for e in result["edges"] if e["relation"] == "inherits")
         self.assertEqual(inherits["source_location"], "L3")
+
+
+    def test_part_of_ids_stay_in_the_callers_path_space(self):
+        """#3522: a part file's symbols must share the library's id namespace.
+
+        `extract_dart` was resolving the `part of` target to an absolute path before
+        minting ids, while every non-part file minted from the path it was called with.
+        Called with relative paths, one Dart library then occupied two id namespaces: the
+        part's symbols carried an absolute-derived prefix that encoded the machine's
+        directory layout, and `extract`'s id-canonicalization pass could not repair them
+        (its remap keys come from the item's own `source_file`, which is the child).
+        """
+        lib_dir = self.temp_path / "lib" / "core" / "settlement"
+        lib_dir.mkdir(parents=True)
+        (lib_dir / "settlement.dart").write_text(
+            "library settlement;\npart 'derive.dart';\n\nclass Settlement {}\n", encoding="utf-8")
+        (lib_dir / "derive.dart").write_text(
+            "part of 'settlement.dart';\n\nclass DeriveHelper {}\n", encoding="utf-8")
+
+        cwd = Path.cwd()
+        os.chdir(self.temp_path)
+        try:
+            rel = Path("lib/core/settlement")
+            library_nodes = extract_dart(rel / "settlement.dart")["nodes"]
+            part = extract_dart(rel / "derive.dart")
+        finally:
+            os.chdir(cwd)
+
+        library_id = next(n for n in library_nodes if n["label"] == "settlement.dart")["id"]
+        self.assertEqual(library_id, "lib_core_settlement_settlement_dart")
+
+        helper = next(n for n in part["nodes"] if n["label"] == "DeriveHelper")
+        defines = next(e for e in part["edges"]
+                       if e["target"] == helper["id"] and e["relation"] == "defines")
+        # One namespace: the part's defines edge lands on the library's own file node, and
+        # no id carries the absolute prefix.
+        self.assertEqual(defines["source"], library_id)
+        self.assertTrue(helper["id"].startswith("lib_core_settlement_settlement_"), helper["id"])
+        absolute_marker = _make_id(str(self.temp_path)).split("_")[0]
+        for node in part["nodes"]:
+            self.assertFalse(node["id"].startswith(absolute_marker + "_"), node["id"])
 
 
 if __name__ == "__main__":
