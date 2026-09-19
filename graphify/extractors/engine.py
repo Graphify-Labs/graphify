@@ -1360,11 +1360,25 @@ def _js_collect_pattern_idents(node, source: bytes, bound: set) -> None:
             _js_collect_pattern_idents(c, source, bound)
 
 def _js_local_bound_names(func_node, source: bytes) -> set[str]:
-    """Names bound locally inside a JS/TS function: parameters plus `const`/`let`/
-    `var` declarator targets. Mirrors `_python_local_bound_names`: an argument that
-    is a parameter or local binding names a local value, not a same-named module
-    function, so it must not manufacture an indirect_call edge. Nested function and
-    class scopes are not descended into."""
+    """Names bound locally inside a JS/TS function, into the FUNCTION-WIDE
+    scope: parameters plus `var` declarator targets. Mirrors
+    `_python_local_bound_names`: an argument that is a parameter or local
+    binding names a local value, not a same-named module function, so it
+    must not manufacture an indirect_call edge. Nested function and class
+    scopes are not descended into.
+
+    `let`/`const` declarator targets and `for`/`for-in`/`for-of` loop
+    bindings are NOT collected here (#2822): unlike `var`, which is
+    function-scoped (hoisted) regardless of how deeply it is nested inside
+    an if/try/bare-`{}` block or a loop, `let`/`const` (and a `for`/`for-in`
+    loop's own binding, whatever keyword it uses) are scoped to exactly the
+    block or loop they are declared in. Collecting them into this
+    function-wide set suppressed a genuine reference to a same-named module
+    callable anywhere else in the function, even far outside the block that
+    actually owns the binding. `walk_calls` in this module folds each of
+    those into `extra_locals` for exactly its own block/loop subtree
+    instead, the same mechanism already used for `catch (e)` bindings.
+    """
     bound: set[str] = set()
     params = func_node.child_by_field_name("parameters")
     if params is not None:
@@ -1381,17 +1395,18 @@ def _js_local_bound_names(func_node, source: bytes) -> set[str]:
         for c in n.children:
             if c.type in _JS_SCOPE_BOUNDARY:
                 continue  # inner scope — its bindings are not this function's locals
-            if c.type == "variable_declarator":
+            if c.type == "variable_declarator" and n.type == "variable_declaration":
+                # n.type distinguishes `var` (variable_declaration) from
+                # `let`/`const` (lexical_declaration) — only var belongs in
+                # the function-wide set, see the docstring above (#2822).
                 name = c.child_by_field_name("name")
                 if name is not None:
                     _js_collect_pattern_idents(name, source, bound)
-            elif c.type == "for_in_statement":
-                # `for (const entry of xs)` / `for (const {k} of xs)`: the loop
+            elif c.type == "for_in_statement" and any(gc.type == "var" for gc in c.children):
+                # `for (var entry of xs)`: var is still function-scoped/hoisted
+                # here too, unlike the let/const form (#2822) -- the loop
                 # binding is the `left` pattern, NOT wrapped in a
-                # variable_declarator, so the branch above misses it and `entry`
-                # read as a by-name reference to any same-named module callable
-                # (#2606). C-style `for (let i = 0; ...)` uses a lexical_declaration
-                # with real declarators, already covered by the recursion below.
+                # variable_declarator, so the branch above misses it.
                 left = c.child_by_field_name("left")
                 if left is not None:
                     _js_collect_pattern_idents(left, source, bound)
@@ -1401,6 +1416,27 @@ def _js_local_bound_names(func_node, source: bytes) -> set[str]:
     if body is not None:
         walk(body)
     return bound
+
+
+def _js_direct_lexical_names(node, source: bytes) -> frozenset[str]:
+    """Names bound by `let`/`const` declarators that are DIRECT children of
+    node (not nested inside a further block, loop, function, or class).
+
+    Used to scope a lexical binding to exactly the block or `for` loop it is
+    declared in (#2822), rather than the whole enclosing function: `node` is
+    a `statement_block` or a C-style `for_statement`, both of which have any
+    `lexical_declaration` they directly own as a plain child.
+    """
+    names: set[str] = set()
+    for child in node.children:
+        if child.type != "lexical_declaration":
+            continue
+        for declarator in child.children:
+            if declarator.type == "variable_declarator":
+                name = declarator.child_by_field_name("name")
+                if name is not None:
+                    _js_collect_pattern_idents(name, source, names)
+    return frozenset(names)
 
 def _js_module_bound_names(root, source: bytes) -> set[str]:
     """Module-scope names rebound to NON-function data (`const X = {...}`, `let y = 5`).
@@ -6619,6 +6655,38 @@ def _extract_generic(
                 caught: set[str] = set()
                 _js_collect_pattern_idents(param, source, caught)
                 extra_locals = extra_locals | frozenset(caught)
+
+        # `let`/`const` are block-scoped, unlike `var` (function-scoped,
+        # hoisted) -- _js_local_bound_names only tracks var into the
+        # function-wide set now, so a name declared directly in a
+        # statement_block or a C-style for loop's own initializer must be
+        # folded into extra_locals for exactly that block/loop's subtree, or
+        # a same-named module callable referenced outside it is wrongly
+        # treated as shadowed everywhere in the function (#2822).
+        if (
+            config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+            and node.type in ("statement_block", "for_statement")
+        ):
+            block_locals = _js_direct_lexical_names(node, source)
+            if block_locals:
+                extra_locals = extra_locals | block_locals
+
+        # `for (const entry of xs)` / `for (const {k} of xs)`: the loop
+        # binding is the `left` pattern, not wrapped in a variable_declarator,
+        # and is scoped to the whole loop (condition and body), never the
+        # enclosing function (#2822) -- folding it here regardless of
+        # var/let/const is harmless for the var case, already covered by the
+        # function-wide set.
+        if (
+            config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+            and node.type == "for_in_statement"
+        ):
+            left = node.child_by_field_name("left")
+            if left is not None:
+                loop_locals: set[str] = set()
+                _js_collect_pattern_idents(left, source, loop_locals)
+                if loop_locals:
+                    extra_locals = extra_locals | frozenset(loop_locals)
 
         for child in node.children:
             walk_calls(child, caller_nid, receiver_types, extra_locals)
