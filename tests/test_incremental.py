@@ -167,6 +167,62 @@ def test_extract_no_cluster_incremental_changed_file_preserves_unchanged_files(t
             assert e.get("target") in after_ids, f"dangling target: {e}"
 
 
+def test_update_preserves_generic_rust_self_call_to_unchanged_impl(tmp_path):
+    """The CLI incremental context carries Rust impl-family identity."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "state.rs").write_text(
+        "pub struct Bucket<T> { value: T }\n", encoding="utf-8"
+    )
+    (proj / "method.rs").write_text(
+        "impl<T> Bucket<T> {\n"
+        "    pub fn fetch_value(&self) {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    caller = proj / "caller.rs"
+    caller.write_text(
+        "impl<U> Bucket<U> {\n"
+        "    pub fn run(&self) { self.fetch_value(); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    first = _run(
+        ["extract", str(proj), "--code-only", "--no-cluster"], tmp_path
+    )
+    assert first.returncode == 0, first.stderr
+
+    def has_call() -> bool:
+        graph = json.loads(
+            (proj / "graphify-out" / "graph.json").read_text(encoding="utf-8")
+        )
+        nodes = {
+            (node.get("label"), node.get("source_file")): node["id"]
+            for node in graph.get("nodes", [])
+        }
+        pair = (
+            nodes[(".run()", "caller.rs")],
+            nodes[(".fetch_value()", "method.rs")],
+        )
+        return any(
+            edge.get("relation") == "calls"
+            and (edge.get("source"), edge.get("target")) == pair
+            for edge in graph.get("links", graph.get("edges", []))
+        )
+
+    assert has_call()
+    caller.write_text(
+        "impl<U> Bucket<U> {\n"
+        "    pub fn run(&self) { let marker = 1; self.fetch_value(); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    second = _run(["update", str(proj), "--no-cluster"], tmp_path)
+    assert second.returncode == 0, second.stderr
+    assert has_call()
+
+
 def test_extract_no_cluster_incremental_code_only_preserves_doc_nodes(tmp_path):
     """#2169: an incremental --code-only --no-cluster run over a mixed corpus
     must carry forward doc-sourced nodes it did not re-extract."""

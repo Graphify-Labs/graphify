@@ -1,5 +1,8 @@
 """Tests for serve.py - MCP graph query helpers (no mcp package required)."""
+import importlib.util
 import json
+import subprocess
+import sys
 import unicodedata
 
 import pytest
@@ -1125,6 +1128,22 @@ def test_query_graph_text_context_filter_aliases_resolve():
 
 
 # --- Chinese segmentation ---
+
+def test_serve_import_is_clean_under_syntax_warnings(tmp_path):
+    """Optional tokenizers must remain importable under Python's strict warning mode."""
+    if importlib.util.find_spec("jieba") is None:
+        pytest.skip("jieba tokenizer extra is not installed")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-X", f"pycache_prefix={tmp_path / 'pycache'}",
+            "-W", "error::SyntaxWarning",
+            "-c", "import graphify.serve as serve; assert serve._jieba is not None",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 def test_query_terms_chinese_segments_with_cached_jieba(monkeypatch):
     """Chinese text should use the cached jieba module and keep the original term."""

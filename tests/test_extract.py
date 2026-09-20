@@ -1329,6 +1329,64 @@ def test_python_qualified_class_method_call_resolves_extracted(tmp_path):
     assert call_edges[0]["confidence"] == "EXTRACTED"
 
 
+def test_builtin_named_member_call_still_resolves_cross_file(tmp_path):
+    """#3381: _LANGUAGE_BUILTIN_GLOBALS is one union across every language, right
+    for a BARE call (String(x) really would become a god node) but wrong for a
+    MEMBER call -- `open` is a Python builtin, so Session.open() used to be
+    silently discarded outright: no same-file edge, but also no raw_calls entry,
+    so cross-file resolution never got a chance to try it. A member call carries
+    a receiver, so it isn't the ambiguous case the union guards against."""
+    session = tmp_path / "session.py"
+    user = tmp_path / "user.py"
+    session.write_text(
+        "class Session:\n"
+        "    @staticmethod\n"
+        "    def open():\n"
+        "        return 'opened'\n"
+    )
+    user.write_text(
+        "from session import Session\n\n"
+        "def start():\n"
+        "    Session.open()\n"
+    )
+    result = extract([user, session], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    call_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "start" in nodes[e["source"]]["label"]
+        and "open" in nodes[e["target"]]["label"]
+        and "session.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(call_edges) == 1, f"expected one start->open edge, got {call_edges}"
+    assert call_edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_builtin_named_member_call_does_not_bind_to_unrelated_bare_function(tmp_path):
+    """#3381 follow-up: the god-node guard the builtin filter exists for must
+    still hold. A member call named after a builtin must never fall back to an
+    unrelated same-file bare function sharing that name -- it may only ever
+    resolve through a guarded, receiver-typed path (or not resolve at all)."""
+    p = tmp_path / "sample.py"
+    p.write_text(
+        "def open():\n"
+        "    return 'unrelated top-level function also named open'\n"
+        "\n"
+        "class Session:\n"
+        "    def start(self, other):\n"
+        "        other.open()\n"
+        "        f = open('file.txt')\n"
+    )
+    result = extract([p], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    open_fn = next(n for n in result["nodes"] if n["label"] == "open()")
+    bad_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls" and e["target"] == open_fn["id"]
+    ]
+    assert bad_edges == [], f"member/bare builtin-named calls bound to unrelated open(): {bad_edges}"
+
+
 def test_degenerate_symbol_name_does_not_leak_absolute_id(tmp_path):
     """#1899 variant B: a symbol whose name normalizes to nothing (a minified `$`
     function, a JSONC `"//"` key) must not be minted — `_make_id(stem, "")`
@@ -1711,6 +1769,95 @@ def test_python_relative_from_import_alias_module_call_resolves(tmp_path):
     assert edges[0]["confidence"] == "EXTRACTED"
 
 
+def test_python_namespace_package_submodule_imports_resolve_member_calls(tmp_path):
+    """A PEP 420 namespace package -- a directory with no __init__.py, which
+    `python -m pkg.mod` runs without complaint -- must resolve `from . import
+    brain, ledger` to its sibling module files and then `brain.think()` /
+    `ledger.write()` through the #1883 module arm, exactly as a regular package
+    does. Before this fix the module path resolved to nothing (no __init__.py to
+    probe), the whole statement was skipped, and the most-called functions in
+    such a repo carried in-degree 0 in the graph."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "brain.py").write_text("def think(q):\n    return q\n")
+    (pkg / "ledger.py").write_text("def write(e):\n    return e\n")
+    caller = pkg / "agent.py"
+    caller.write_text(
+        "from . import brain, ledger\n\n"
+        "def cycle(q):\n"
+        "    ledger.write(q)\n"
+        "    return brain.think(q)\n"
+    )
+    result = extract(
+        [caller, pkg / "brain.py", pkg / "ledger.py"], cache_root=tmp_path, root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+
+    def calls(callee: str, in_file: str) -> list[dict]:
+        return [
+            e for e in result["edges"]
+            if e["relation"] == "calls"
+            and "cycle" in nodes[e["source"]]["label"]
+            and callee in nodes[e["target"]]["label"]
+            and in_file in (nodes[e["target"]].get("source_file") or "")
+        ]
+
+    think, write = calls("think", "brain.py"), calls("write", "ledger.py")
+    assert len(think) == 1 and think[0]["confidence"] == "EXTRACTED", think
+    assert len(write) == 1 and write[0]["confidence"] == "EXTRACTED", write
+    imported = {
+        nodes[e["target"]]["label"] for e in result["edges"]
+        if e["relation"] == "imports_from"
+        and nodes.get(e["source"], {}).get("label") == "agent.py"
+        and e["target"] in nodes
+    }
+    assert {"brain.py", "ledger.py"} <= imported, imported
+
+
+def test_python_namespace_package_absolute_and_parent_relative_forms(tmp_path):
+    """The same gap in its other spellings: `from pkg import brain` (absolute,
+    with the scan root as the namespace package's parent) and `from .. import
+    brain` from a nested namespace subpackage."""
+    pkg = tmp_path / "pkg"
+    sub = pkg / "sub"
+    sub.mkdir(parents=True)
+    (pkg / "brain.py").write_text("def think(q):\n    return q\n")
+    absolute = pkg / "abs_caller.py"
+    absolute.write_text("from pkg import brain\n\ndef use_abs(q):\n    return brain.think(q)\n")
+    nested = sub / "deep_caller.py"
+    nested.write_text("from .. import brain\n\ndef use_deep(q):\n    return brain.think(q)\n")
+    result = extract([absolute, nested, pkg / "brain.py"], cache_root=tmp_path, root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    callers = [
+        nodes[e["source"]]["label"] for e in result["edges"]
+        if e["relation"] == "calls" and "think" in nodes[e["target"]]["label"]
+        and e["confidence"] == "EXTRACTED"
+    ]
+    assert any("use_abs" in c for c in callers), callers
+    assert any("use_deep" in c for c in callers), callers
+
+
+def test_python_namespace_package_import_of_non_module_fabricates_nothing(tmp_path):
+    """A namespace-package import whose name is not a module file on disk -- a
+    data directory, or a name that does not exist -- must add no resolved edge
+    and must not raise. A namespace package owns no symbols of its own to bind,
+    so there is nothing to fall back to."""
+    pkg = tmp_path / "pkg"
+    (pkg / "data").mkdir(parents=True)
+    (pkg / "data" / "rows.csv").write_text("a,b\n")
+    caller = pkg / "loader.py"
+    caller.write_text("from . import data, missing\n\ndef load():\n    return data.read()\n")
+    result = extract([caller], cache_root=tmp_path, root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    fabricated = [
+        e for e in result["edges"]
+        if e["relation"] in ("calls", "imports_from")
+        and nodes.get(e["source"], {}).get("label") in ("loader.py", "load()")
+        and e["target"] in nodes
+    ]
+    assert fabricated == [], fabricated
+
+
 def test_python_external_aliased_import_fabricates_no_call_edge(tmp_path):
     """#2082 must not over-resolve: an aliased import of an EXTERNAL/uncorpus
     module (`import numpy as np; np.array()`) has no in-corpus callee, so it must
@@ -2073,6 +2220,34 @@ def test_extract_parallel_returns_false_on_broken_pool(tmp_path, monkeypatch, ca
     out = capsys.readouterr().out
     assert "BrokenProcessPool" in out, "user-facing warning must mention the failure"
     assert "__main__" in out, "warning must hint at the Windows __main__ guard idiom"
+
+
+def test_extract_parallel_returns_false_when_pool_cannot_start(tmp_path, monkeypatch, capsys):
+    """_extract_parallel must fall back, not raise, when the pool cannot be created.
+
+    ProcessPoolExecutor allocates a POSIX named semaphore at construction. On
+    macOS, once leaked semaphores exhaust the system-wide table
+    (kern.posix.sem.max), sem_open fails with OSError(ENOSPC) — "No space left
+    on device" with the disk nowhere near full — and the whole extraction died
+    instead of running sequentially.
+    """
+    import concurrent.futures
+    # Loaded lazily on first ProcessPoolExecutor access; with that patched out,
+    # the BrokenProcessPool handler's attribute lookup would itself raise.
+    import concurrent.futures.process  # noqa: F401
+    import errno
+    from graphify import extract as extract_mod
+
+    def no_semaphores(*a, **kw):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", no_semaphores)
+
+    uncached = [(0, FIXTURES / "sample.py")]
+    per_file: list = [None]
+    ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, 2, 1)
+    assert ok is False, "a pool that cannot start must hand back to sequential, not raise"
+    assert "No space left on device" in capsys.readouterr().out, "warning must name the OS error"
 
 
 def test_extract_parallel_skips_pool_when_max_workers_is_one(tmp_path, monkeypatch):
@@ -2548,6 +2723,110 @@ def test_extract_bash_attributes_script_invocation_to_function(tmp_path):
     helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
     script = tmp_path / "deploy.sh"
     script.write_text("#!/bin/bash\ndeploy() { bash ./helpers.sh; }\n", encoding="utf-8")
+
+    result = extract_bash(script)
+    deploy = next(node for node in result["nodes"] if node["label"] == "deploy()")
+    invocation = next(edge for edge in result["edges"] if edge.get("context") == "script_invocation")
+
+    assert invocation["source"] == deploy["id"]
+
+
+@pytest.mark.parametrize("invocation", [
+    '"$script_dir/helpers.sh"',
+    '"${script_dir}/helpers.sh"',
+    '"$script_dir/helpers.sh" --flag value',
+    '$script_dir/helpers.sh',
+])
+def test_extract_bash_script_invocation_via_variable_built_path(tmp_path, invocation):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        f"{invocation}\n",
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+    invocations = [
+        edge for edge in result["edges"]
+        if edge.get("relation") == "calls" and edge.get("context") == "script_invocation"
+    ]
+
+    assert invocations == [{
+        "source": _make_id(str(script)) + "__entry",
+        "target": _make_id(str(helpers.resolve())) + "__entry",
+        "relation": "calls",
+        "confidence": "EXTRACTED",
+        "source_file": str(script),
+        "source_location": "L3",
+        "weight": 1.0,
+        "context": "script_invocation",
+        # Transient canonicalization hint (#2243); popped before persist.
+        "target_file": str(helpers.resolve()),
+    }]
+
+
+def test_extract_bash_variable_built_invocation_with_dynamic_stem_emits_no_edge(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        '"$script_dir/$name.sh"\n',
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+
+    assert not any(edge.get("context") == "script_invocation" for edge in result["edges"])
+
+
+def test_extract_bash_variable_built_invocation_no_on_disk_match_emits_no_edge(tmp_path):
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        '"$script_dir/missing.sh"\n',
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+
+    assert not any(edge.get("context") == "script_invocation" for edge in result["edges"])
+
+
+def test_extract_bash_variable_built_invocation_targets_existing_entrypoint(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        '"$script_dir/helpers.sh"\n',
+        encoding="utf-8",
+    )
+
+    result = extract([script, helpers], cache_root=tmp_path, parallel=False)
+    node_ids = {node["id"] for node in result["nodes"]}
+    invocation = next(edge for edge in result["edges"] if edge.get("context") == "script_invocation")
+
+    assert invocation["source"] in node_ids
+    assert invocation["target"] in node_ids
+
+
+def test_extract_bash_attributes_variable_built_invocation_to_function(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'deploy() { "$script_dir/helpers.sh"; }\n',
+        encoding="utf-8",
+    )
 
     result = extract_bash(script)
     deploy = next(node for node in result["nodes"] if node["label"] == "deploy()")
@@ -3897,6 +4176,17 @@ def test_get_extractor_routes_matlab_m_away_from_objc(tmp_path):
     assert _get_extractor(matlab_fn) is None               # MATLAB function -> no garbage
     assert _get_extractor(matlab_cls) is None              # MATLAB classdef -> no garbage
     assert _get_extractor(mm) is extract_objc              # .mm is unambiguously ObjC++
+
+
+def test_markdown_dispatch_matches_resolution_suffixes():
+    from graphify.extract import _DISPATCH, extract_markdown
+    from graphify.markdown_resolution import MARKDOWN_MENTION_SUFFIXES
+
+    dispatched = {
+        suffix for suffix, extractor in _DISPATCH.items()
+        if extractor is extract_markdown
+    }
+    assert dispatched == MARKDOWN_MENTION_SUFFIXES
 
 
 def test_matlab_m_not_extracted_as_garbage(tmp_path, capsys):

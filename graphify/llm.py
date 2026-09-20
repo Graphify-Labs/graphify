@@ -3144,6 +3144,31 @@ def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
         )
 
 
+# Everything detect_backend() reads besides the per-backend API keys. Kept next to
+# the function so a new probe below is added here too; tests clear this whole set
+# (tests/conftest.py) so a developer's own keys can never steer them (#3481).
+_BACKEND_DETECTION_EXTRA_ENV = (
+    "AZURE_OPENAI_ENDPOINT",
+    "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
+    "OLLAMA_BASE_URL", "OLLAMA_HOST",
+)
+
+
+def backend_detection_env_vars() -> tuple[str, ...]:
+    """Every environment variable ``detect_backend()`` consults, in probe order.
+
+    Covers the API-key variables of every registered backend (built-in and
+    custom) plus the endpoint/region/host variables checked directly.
+    """
+    seen: dict[str, None] = {}
+    for name in BACKENDS:
+        for env_key in _backend_env_keys(name):
+            seen.setdefault(env_key, None)
+    for env_key in _BACKEND_DETECTION_EXTRA_ENV:
+        seen.setdefault(env_key, None)
+    return tuple(seen)
+
+
 def detect_backend() -> str | None:
     """Return the name of whichever backend has an API key set, or None.
 
@@ -3175,6 +3200,21 @@ def detect_backend() -> str | None:
             if _get_backend_api_key(name):
                 return name
     return None
+
+
+def _claude_cli_available() -> bool:
+    """True if the Claude Code CLI can actually be launched.
+
+    Mirrors the resolution in the claude-cli request path: a bare ``claude`` on
+    POSIX, and ``claude.cmd`` on Windows, where CreateProcess cannot resolve the
+    npm shim from the bare name.
+    """
+    import platform
+    import shutil
+
+    if platform.system() == "Windows":
+        return bool(shutil.which("claude.cmd") or shutil.which("claude"))
+    return shutil.which("claude") is not None
 
 
 # ── Community labeling ────────────────────────────────────────────────────────
@@ -3470,6 +3510,15 @@ def generate_community_labels(
             backend = detect_backend()
         except Exception:
             backend = None
+    if not backend and _claude_cli_available():
+        # `detect_backend` is key-based, and claude-cli is the one backend with no
+        # key to find, so it can never be detected there — and widening detection
+        # itself would change extraction's contract, which deliberately refuses to
+        # run without a configured backend. Here the alternative is not an error but
+        # a SILENT DOWNGRADE: replacing every real community name with
+        # "Community N" and exiting 0, which overwrites a good graph with a worse
+        # one while reporting success. An installed CLI is better than that.
+        backend = "claude-cli"
     if not backend:
         if not quiet:
             print(
