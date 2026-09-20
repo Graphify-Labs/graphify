@@ -6,8 +6,7 @@ import {
   expandDelimitedPathEntries,
   isInternalUrlPath,
   normalizePathLikeInput,
-  parseSearchPath,
-  resolveReadPath,
+  resolveReadPathAsync,
   splitPathAndSelPreferringLiteral,
 } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import { isReadableUrlPath } from "@oh-my-pi/pi-tui/tools/read";
@@ -16,8 +15,22 @@ const INPUT_LIMIT = 256 * 1024;
 const OUTPUT_LIMIT = 64 * 1024;
 const TIMEOUT_MS = 2000;
 const TOOL_NAMES = { bash: "Bash", grep: "Grep", read: "Read", glob: "Glob" } as const;
+const FILE_URL_RE = /^file:\/\//i;
 
+// isInternalUrlPath/isReadableUrlPath still earn their place even though the
+// guard now defends itself against URL-shaped input: resolveReadPathAsync
+// below pre-resolves a rootless value to an absolute path
+// (`path.resolve(cwd, x)`) before the guard ever sees it, which for a
+// *foreign*-scheme value glues it onto cwd into something that looks
+// exactly like a real in-project file (`<cwd>/https:/example.com/x`,
+// `<cwd>/local:/x`) -- a guard fix the bridge then defeats by mangling its
+// input first is not a fix. file:// is the one exception: OMP's own
+// resolveReadPathAsync already strips it down to the real local path (its
+// resolveToCwd -> expandPath -> stripFileUrl, deliberately excluded from
+// the external-URL fast path), so routing it through here yields the
+// correct absolute path rather than a mangled one.
 function isRemote(path: string): boolean {
+  if (FILE_URL_RE.test(path)) return false;
   return isInternalUrlPath(path) || isReadableUrlPath(path) || path.includes("://");
 }
 
@@ -81,13 +94,13 @@ export default function graphify(api: ExtensionAPI): void {
       const rawPath = typeof event.input.path === "string" ? normalizePathLikeInput(event.input.path) : ".";
       if (isRemote(rawPath)) return;
       const paths = toolName === "Read" || toolName === "Bash" ? [rawPath] :
-        await expandDelimitedPathEntries([rawPath], ctx.cwd, { splitter: parseSearchPath });
+        await expandDelimitedPathEntries([rawPath], ctx.cwd);
       for (const path of paths) {
         if (isRemote(path)) continue;
         const input: Record<string, unknown> = { ...event.input };
         if (toolName !== "Bash") {
           const target = toolName === "Glob" ? path : (await splitPathAndSelPreferringLiteral(path, ctx.cwd)).path;
-          const resolved = resolveReadPath(target, ctx.cwd);
+          const resolved = await resolveReadPathAsync(target, ctx.cwd);
           delete input.path;
           if (toolName === "Read") input.file_path = resolved;
           else if (toolName === "Glob") input.pattern = resolved;
