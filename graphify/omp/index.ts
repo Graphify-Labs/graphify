@@ -5,12 +5,12 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import {
   expandDelimitedPathEntries,
   isInternalUrlPath,
-  isReadableUrlPath,
   normalizePathLikeInput,
   parseSearchPath,
   resolveReadPath,
   splitPathAndSelPreferringLiteral,
 } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
+import { isReadableUrlPath } from "@oh-my-pi/pi-tui/tools/read";
 
 const INPUT_LIMIT = 256 * 1024;
 const OUTPUT_LIMIT = 64 * 1024;
