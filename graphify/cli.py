@@ -13,6 +13,7 @@ import sys
 import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from urllib.parse import unquote, urlsplit
 
 
 _SEARCH_NUDGE = json.dumps({
@@ -894,10 +895,26 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             if explicit:
                 in_project = False
                 for v in explicit:
+                    v = _normalize_hook_path(v)
+                    # A bare www.host/... value is remote only when nothing
+                    # identically named exists locally, mirroring OMP's own
+                    # "an existing local path wins over URL" precedence
+                    # (resolveToolSearchScope). Decided here, not inside
+                    # _is_cwd_relative, which has no cwd/root of its own.
+                    if _is_external_www_target(v, root):
+                        continue
                     p = Path(v)
                     if _is_cwd_relative(v):
                         in_project = True  # relative -> anchored at cwd == in project
                         break
+                    # _is_cwd_relative already rejects a *whole-value*
+                    # scheme://... prefix above (a rootless URL never reaches
+                    # here). This catches the same URL after some upstream
+                    # host has already glued it onto an absolute prefix
+                    # (`<root>/local:/x`), which looks exactly like a real
+                    # file to the containment check below.
+                    if _has_embedded_url_scheme_segment(v):
+                        continue
                     try:
                         p.resolve().relative_to(root)
                         in_project = True
@@ -942,6 +959,55 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
         pass
 
 
+_URL_SCHEME_PREFIX_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
+_URL_SCHEME_SEGMENT_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:$")
+_FILE_URL_RE = re.compile(r"^file://", re.IGNORECASE)
+_WWW_HOST_RE = re.compile(r"^www\.", re.IGNORECASE)
+
+
+def _normalize_hook_path(value: str) -> str:
+    r"""Trim padding whitespace and a matching pair of outer double quotes,
+    then strip a leading ``file://`` scheme down to the local path it names.
+
+    Mirrors what OMP's own path pipeline already does to a raw tool argument
+    before a hook would ever see it: ``normalizePathLikeInput`` (trim +
+    de-quote) and ``file://`` -> ``url.fileURLToPath`` (its own
+    ``strictExternalUrlRe`` deliberately omits ``file``, routing it through
+    the ordinary local-file path instead of the external-URL one). The guard
+    must classify identical text identically whether or not a given host
+    bothered to normalize it first -- a classifier that only agrees with its
+    own host after trimming/de-quoting is exactly the kind of gap a prior
+    review flagged.
+    """
+    value = value.strip()
+    if len(value) > 1 and value[0] == value[-1] == '"':
+        value = value[1:-1]
+    if _FILE_URL_RE.match(value):
+        path = unquote(urlsplit(value).path) or "/"
+        # file:///C:/proj/a.py -> C:/proj/a.py: drop the URL's extra root
+        # slash in front of a Windows drive letter.
+        if os.name == "nt" and re.match(r"^/[A-Za-z]:", path):
+            path = path[1:]
+        return path
+    return value
+
+
+def _is_foreign_url_scheme(value: str) -> bool:
+    """Whether *value* is itself a ``scheme://...`` value -- everything
+    except ``file://``, which ``_normalize_hook_path`` has already reduced
+    to a plain local path by the time this runs, so it never matches here.
+
+    Deliberately does not enumerate OMP's (or any other harness's) internal
+    scheme allow-list (``local://``, ``artifact://``, ...): this guard is
+    embedded by multiple hosts (#522), and hard-coding one of them would
+    silently stop matching the day that host adds a scheme. Any scheme this
+    function doesn't specifically know to be local -- only ``file://`` is --
+    is treated as not-a-local-source-file: a missed nudge on a remote URL is
+    a far safer wrong answer than a wrong nudge on an unrelated file.
+    """
+    return bool(_URL_SCHEME_PREFIX_RE.match(value))
+
+
 def _is_cwd_relative(value: str) -> bool:
     r"""Whether *value* is anchored at the current working directory.
 
@@ -964,9 +1030,61 @@ def _is_cwd_relative(value: str) -> bool:
     so ``paths.is_absolute_any_platform`` (for stored, portable paths) is
     deliberately not used. On POSIX ``root`` is set exactly when the path is
     absolute and ``drive`` is always empty, so this is unchanged there.
+
+    A URL is rootless and driveless by that exact same test -- ``https://x``
+    and ``myscheme://x`` have no ``root`` and no ``drive`` in either flavour
+    -- so without checking the scheme first, this rule alone short-circuits
+    the caller straight to "in project" for a value that names no filesystem
+    path at all (the bug this guards against, #522 follow-up).
+    ``_normalize_hook_path`` and ``_is_foreign_url_scheme`` reject that
+    shape, and strip a ``file://`` wrapper down to its local path, before
+    the root/drive test below ever runs.
     """
+    value = _normalize_hook_path(value)
+    if _is_foreign_url_scheme(value):
+        return False
     pure = PureWindowsPath(value) if os.name == "nt" else PurePosixPath(value)
     return not pure.root and not pure.drive
+
+
+def _has_embedded_url_scheme_segment(value: str) -> bool:
+    """Whether an already-absolute *value* still carries a collapsed
+    ``scheme://`` marker as one of its OWN path segments, e.g.
+    ``<root>/local:/x`` -- what a naive host-side path-join leaves behind
+    when it glues a rootless ``scheme://...`` value onto a root/cwd prefix
+    instead of routing it through a URL handler, defeating the whole-value
+    check in ``_is_cwd_relative`` above.
+
+    Only meaningful once a value is already known to have a root or drive
+    (``_is_cwd_relative`` returned ``False``): the leading component IS that
+    root/drive marker, so it is skipped here on purpose -- a genuinely
+    relative, colon-bearing POSIX filename like ``C:/proj/a.py`` never
+    reaches this function at all (it takes the cwd-relative shortcut above
+    and stays in-project, matching POSIX semantics where a colon has no
+    special meaning).
+    """
+    pure = PureWindowsPath(value) if os.name == "nt" else PurePosixPath(value)
+    parts = pure.parts[1:] if (pure.root or pure.drive) else pure.parts
+    return any(_URL_SCHEME_SEGMENT_RE.match(part) for part in parts)
+
+
+def _is_external_www_target(value: str, root: "Path") -> bool:
+    """Whether *value* is a bare ``www.host/...`` external-read shape with no
+    identically named local file to override it.
+
+    Mirrors OMP's own ``isReadableUrlPath``/``resolveToolSearchScope``
+    precedence: a ``www.`` value carries no ``://`` at all, so no scheme rule
+    catches it, and it is remote only when nothing local shares its exact
+    name ("an existing local path wins over URL"). A project that genuinely
+    has a top-level path named e.g. ``www.example.com`` stays classified as
+    local; only the common case -- no such path -- is treated as external.
+    """
+    if not _WWW_HOST_RE.match(value):
+        return False
+    try:
+        return not (root / value).exists()
+    except OSError:
+        return False
 
 
 def _target_is_indexed(file_path: str, root: "Path") -> bool:
