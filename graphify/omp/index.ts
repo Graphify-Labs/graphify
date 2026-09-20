@@ -35,13 +35,28 @@ const FILE_URL_RE = /^file:\/\//i;
 // *foreign*-scheme value glues it onto cwd into something that looks
 // exactly like a real in-project file (`<cwd>/https:/example.com/x`,
 // `<cwd>/local:/x`) -- a guard fix the bridge then defeats by mangling its
-// input first is not a fix. file:// is the one exception: OMP's own
-// resolveReadPath already strips it down to the real local path (its
+// input first is not a fix. A *local* file:// is the one exception: OMP's
+// own resolveReadPath already strips it down to the real local path (its
 // resolveToCwd -> expandPath -> stripFileUrl, deliberately excluded from
 // the external-URL fast path), so routing it through here yields the
 // correct absolute path rather than a mangled one.
+
+// RFC 8089 / Node's url.fileURLToPath (throws ERR_INVALID_FILE_URL_HOST for
+// anything else): a file:// URL is local only when its authority is empty
+// or `localhost`. Any other authority names a remote host and must fall
+// through to the generic `scheme://` check below like any other foreign
+// scheme -- treating every file:// as local let
+// `file://evil.com/<in-project path>` alias a real local file.
 function isRemote(path: string): boolean {
-  if (FILE_URL_RE.test(path)) return false;
+  if (FILE_URL_RE.test(path)) {
+    try {
+      const { hostname } = new URL(path);
+      if (hostname === "" || hostname.toLowerCase() === "localhost") return false;
+    } catch {
+      // Malformed file:// URL: not a trustworthy local path either, fall
+      // through to the generic checks below.
+    }
+  }
   return isInternalUrlPath(path) || isReadableUrlPath(path) || path.includes("://");
 }
 
