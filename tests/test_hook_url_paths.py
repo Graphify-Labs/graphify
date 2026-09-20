@@ -123,6 +123,18 @@ def test_normalize_hook_path_strips_padding_quotes_and_file_scheme():
     assert _normalize_hook_path("file:///abs/proj/foo.py") == "/abs/proj/foo.py"
 
 
+def test_normalize_hook_path_file_url_authority_rows():
+    """RFC 8089 / Node's ``url.fileURLToPath`` (throws
+    ``ERR_INVALID_FILE_URL_HOST`` for anything else): a ``file://`` URL is
+    local only when its authority is empty or ``localhost``. Only those two
+    forms may be reduced to their bare path component; any other authority
+    names a remote host and must be left intact for `_is_foreign_url_scheme`
+    to classify."""
+    assert _normalize_hook_path("file:///abs/proj/foo.py") == "/abs/proj/foo.py"
+    assert _normalize_hook_path("file://localhost/abs/proj/foo.py") == "/abs/proj/foo.py"
+    assert _normalize_hook_path("file://evil.com/abs/proj/foo.py") == "file://evil.com/abs/proj/foo.py"
+
+
 # ---------------------------------------------------------------------------
 # End-to-end through the guard (real stdin JSON, cwd at a graphed project)
 # ---------------------------------------------------------------------------
@@ -198,6 +210,19 @@ def test_file_url_to_an_indexed_in_project_file_still_nudges(tmp_path, monkeypat
     """Trap 1: file:// must NOT regress to silent."""
     f = _project(tmp_path)
     assert "MANDATORY" in _invoke(tmp_path, monkeypatch, f"file://{f.as_posix()}")
+
+
+def test_file_url_with_remote_authority_is_silent(tmp_path, monkeypatch):
+    """VALID #4: a non-local authority (RFC 8089) names a remote host, not
+    the in-project file it happens to share a path with -- must NOT nudge."""
+    f = _project(tmp_path)
+    assert _invoke(tmp_path, monkeypatch, f"file://evil.com{f.as_posix()}").strip() == ""
+
+
+def test_file_url_with_localhost_authority_still_nudges(tmp_path, monkeypatch):
+    """localhost is local per RFC 8089 / Node's url.fileURLToPath."""
+    f = _project(tmp_path)
+    assert "MANDATORY" in _invoke(tmp_path, monkeypatch, f"file://localhost{f.as_posix()}")
 
 
 def test_quoted_and_padded_https_url_is_silent(tmp_path, monkeypatch):
