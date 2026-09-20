@@ -535,6 +535,91 @@ def test_global_add_never_reads_a_new_oversized_file_into_memory(tmp_path, monke
     )
 
 
+def test_global_add_skips_a_legacy_manifest_entry_that_becomes_oversized(tmp_path, monkeypatch):
+    """Review finding: a manifest entry written before the mtime/size fields
+    existed (every manifest from before this fix) has no stat baseline for
+    the fast path, so it fell straight through to the size cap and errored
+    on an unchanged file that merely became oversized -- exactly the
+    regression the fast path exists to prevent, just for the subset of
+    manifests that predate it. A streaming hash (bounded memory regardless
+    of size) must still recognize the file as unchanged and skip."""
+    import hashlib
+
+    src_graph = tmp_path / "graph.json"
+    G = _make_graph([{"id": "x", "label": "X", "source_file": "src/x.py"}])
+    _graph_to_json(G, src_graph)
+    content = src_graph.read_bytes()
+    legacy_hash = hashlib.sha256(content).hexdigest()[:16]
+
+    global_dir = tmp_path / ".graphify"
+    global_dir.mkdir()
+    (global_dir / "global-manifest.json").write_text(json.dumps({
+        "version": 1,
+        "repos": {
+            "repoA": {
+                "added_at": "2020-01-01T00:00:00+00:00",
+                "source_path": str(src_graph.resolve()),
+                "node_count": 1,
+                "edge_count": 0,
+                "source_hash": legacy_hash,
+                # No source_mtime_ns/source_size: predates this fix.
+            }
+        },
+    }))
+
+    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 8)
+
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add
+        result = global_add(src_graph, "repoA")
+
+    assert result["skipped"] is True, (
+        "an unchanged file tracked by a legacy (pre-stat-fields) manifest "
+        "entry must still skip, not error, once it becomes oversized"
+    )
+
+
+def test_global_add_rejects_a_legacy_manifest_entry_with_changed_oversized_content(
+    tmp_path, monkeypatch
+):
+    """Companion to the finding above: a legacy manifest entry whose file
+    genuinely changed (not just became oversized) must still be rejected by
+    the cap -- the streaming-hash fallback only rescues a truly unchanged
+    file, it does not bypass the cap for new content."""
+    import hashlib
+
+    src_graph = tmp_path / "graph.json"
+    G = _make_graph([{"id": "x", "label": "X", "source_file": "src/x.py"}])
+    _graph_to_json(G, src_graph)
+    stale_hash = hashlib.sha256(b"not the current content").hexdigest()[:16]
+
+    global_dir = tmp_path / ".graphify"
+    global_dir.mkdir()
+    (global_dir / "global-manifest.json").write_text(json.dumps({
+        "version": 1,
+        "repos": {
+            "repoA": {
+                "added_at": "2020-01-01T00:00:00+00:00",
+                "source_path": str(src_graph.resolve()),
+                "node_count": 1,
+                "edge_count": 0,
+                "source_hash": stale_hash,
+            }
+        },
+    }))
+
+    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 8)
+
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add
+        with pytest.raises(ValueError, match="exceeds"):
+            global_add(src_graph, "repoA")
+
+
 def test_global_add_does_not_skip_a_different_file_with_matching_stat(tmp_path):
     """Review finding: the mtime/size fast path checked only the stat pair,
     never the source path itself. A repo_tag re-pointed at a genuinely
