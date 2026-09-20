@@ -5003,6 +5003,8 @@ def test_issue_3695_symlink_worker_fail_closed_rebuild(tmp_path, monkeypatch, ca
 
     # Assert worker nodes are preserved in candidate graph
     after_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    after_node_ids = {n["id"] for n in after_data["nodes"]}
+    assert initial_worker_ids.issubset(after_node_ids)
     after_labels = {n.get("label") for n in after_data["nodes"]}
     assert "run_worker()" in after_labels
     assert "process_task()" in after_labels
@@ -5028,6 +5030,13 @@ def test_issue_3695_symlink_worker_clustered_rebuild(tmp_path, monkeypatch, caps
 
     assert _rebuild_code(corpus, acquire_lock=False) is True
     graph_path = corpus / "graphify-out" / "graph.json"
+    initial_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    initial_worker_ids = {
+        n["id"]
+        for n in initial_data["nodes"]
+        if "worker.py" in (n.get("source_file") or "")
+    }
+    assert len(initial_worker_ids) >= 2
 
     fpm_worker = corpus / "plugins" / "fpm-core" / "services" / "hub" / "worker.py"
     fpm_worker.parent.mkdir(parents=True)
@@ -5078,6 +5087,8 @@ def test_issue_3695_symlink_worker_clustered_rebuild(tmp_path, monkeypatch, caps
     assert "fail-closed: kept" in out
 
     after_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    after_node_ids = {n["id"] for n in after_data["nodes"]}
+    assert initial_worker_ids.issubset(after_node_ids)
     after_labels = {n.get("label") for n in after_data["nodes"]}
     assert "run_worker()" in after_labels
     assert "process_task()" in after_labels
