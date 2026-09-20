@@ -264,9 +264,9 @@ def test_rebuild_lock_does_not_accumulate_pids_across_runs(tmp_path):
 
 
 def test_graphify_root_preserves_relative_when_invoked_with_relative_path(tmp_path, monkeypatch):
-    """#777: ``.graphify_root`` stores the user-supplied path (``.``), not the
-    resolved absolute, so a committed ``graphify-out/.graphify_root`` is
-    portable across clones and CI runners."""
+    """#777 / #3375: ``.graphify_root`` records the canonical scan-root path
+    even when invoked with a relative path (``.``), so subsequent recovery
+    from another CWD or Git hook reliably resolves the original scan root."""
     from graphify.watch import _rebuild_code
 
     corpus = tmp_path / "corpus"
@@ -277,8 +277,57 @@ def test_graphify_root_preserves_relative_when_invoked_with_relative_path(tmp_pa
     assert _rebuild_code(Path("."), acquire_lock=False) is True
 
     saved = (corpus / "graphify-out" / ".graphify_root").read_text(encoding="utf-8")
-    assert saved == ".", (
-        f".graphify_root must preserve the user-supplied path; got {saved!r}"
+    assert saved == str(corpus.resolve()), (
+        f".graphify_root must record canonical absolute scan root; got {saved!r}"
+    )
+
+
+def test_graphify_root_relative_subfolder_records_canonical_root(tmp_path, monkeypatch):
+    """#3375: invoking with a relative subfolder (``./src``) stores the canonical
+    absolute path to the subfolder rather than raw ``./src``."""
+    from graphify.watch import _rebuild_code
+
+    repo = tmp_path / "repo"
+    src = repo / "src"
+    src.mkdir(parents=True)
+    (src / "lib.py").write_text("def f(): pass\n", encoding="utf-8")
+
+    monkeypatch.chdir(repo)
+    assert _rebuild_code(Path("./src"), acquire_lock=False) is True
+
+    saved = (src / "graphify-out" / ".graphify_root").read_text(encoding="utf-8")
+    assert saved == str(src.resolve()), (
+        f".graphify_root must store canonical subfolder root; got {saved!r}"
+    )
+    assert saved != "./src" and saved != "src"
+
+
+def test_graphify_root_recovery_from_different_cwd(tmp_path, monkeypatch):
+    """#3375: after building with a relative path (``.``), scan-root recovery
+    from a different CWD must resolve to the original corpus root, not the new CWD."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "lib.py").write_text("def f(): pass\n", encoding="utf-8")
+    subdir = corpus / "nested" / "deep"
+    subdir.mkdir(parents=True)
+
+    monkeypatch.chdir(corpus)
+    assert _rebuild_code(Path("."), acquire_lock=False) is True
+
+    marker = corpus / "graphify-out" / ".graphify_root"
+    assert marker.exists()
+
+    # Change working directory to a completely different location
+    monkeypatch.chdir(subdir)
+
+    # Recover the scan root as cli.py does
+    recovered = Path(marker.read_text(encoding="utf-8-sig").strip())
+    assert recovered.exists(), f"recovered marker path {recovered} must exist from CWD {subdir}"
+    assert recovered.resolve() == corpus.resolve(), (
+        f"recovered scan root must resolve to original corpus {corpus.resolve()}, "
+        f"not {recovered.resolve()} from CWD {subdir.resolve()}"
     )
 
 

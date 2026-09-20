@@ -164,6 +164,19 @@ def write_json_atomic(path: "str | Path", obj, *, indent: "int | None" = None, e
     UTF-8 (non-ASCII labels/paths) keep byte-for-byte output. See :func:`_atomic_replace`."""
     _atomic_replace(path, lambda f: json.dump(obj, f, indent=indent, ensure_ascii=ensure_ascii))
 
+
+def write_root_marker(out_dir: "str | Path", scan_path: "str | Path") -> Path:
+    """Atomically record the canonical scan-root path in ``<out_dir>/.graphify_root``.
+
+    Resolves ``scan_path`` to its absolute canonical form so subsequent updates,
+    Git hooks, and build passes recover the true scan root regardless of the
+    caller's working directory (#2012, #3375).
+    """
+    marker = Path(out_dir) / ".graphify_root"
+    resolved = Path(scan_path).resolve()
+    write_text_atomic(marker, str(resolved))
+    return marker
+
 # Directory segments that, when they appear as a whole path component, mark the
 # whole path as a test location. Matched against path *segments* (not raw
 # substrings) so "src/contest.py" / "latest/x.py" / "src/greatest/x.py" do NOT
