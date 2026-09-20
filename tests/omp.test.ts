@@ -205,3 +205,17 @@ test("missing or project-local executables never fall back to project Python cod
   await api.emit("tool_call", { toolName: "read", input: { path: "source.py" }, toolCallId: "call-2" });
   expect(existsSync(started)).toBe(false);
 });
+
+test("index.ts imports only packages the host actually provides -- no dependency the wheel's node_modules-less install can never resolve", () => {
+  // The extension loads from a site-packages install with no node_modules at
+  // all (see graphify/omp/package.json's "files" list). The host supplies
+  // exactly @oh-my-pi/pi-coding-agent to legacy extensions; anything else
+  // bare-imported here -- however cleanly `bun test` resolves it via this
+  // repo's own dev node_modules -- is unresolvable in production.
+  const source = readFileSync(join(import.meta.dir, "../graphify/omp/index.ts"), "utf8");
+  const specifiers = [...source.matchAll(/from\s+"([^"]+)"/g)].map(m => m[1]);
+  const allowed = (specifier: string) =>
+    specifier.startsWith("node:") || specifier === "@oh-my-pi/pi-coding-agent" || specifier.startsWith("@oh-my-pi/pi-coding-agent/");
+  expect(specifiers.length).toBeGreaterThan(0);
+  expect(specifiers.filter(specifier => !allowed(specifier))).toEqual([]);
+});
