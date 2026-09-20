@@ -80,10 +80,12 @@ jobs:
 
   omp-bridge:
     # tests/omp.test.ts drives the real OMP extension: bun resolves the
-    # path-utils and pi-tui helpers it imports from the pinned
-    # @oh-my-pi/pi-coding-agent and @oh-my-pi/pi-tui devDependencies in
-    # graphify/omp/, and the policy assertions run against the real installed
-    # Python CLI, so this job needs both toolchains.
+    # path-utils helpers it imports from the pinned @oh-my-pi/pi-coding-agent
+    # devDependency in graphify/omp/ (the only package the host provides;
+    # graphify/omp/index.ts vendors isReadableUrlPath locally instead of
+    # importing it from @oh-my-pi/pi-tui, which the host never resolves), and
+    # the policy assertions run against the real installed Python CLI, so
+    # this job needs both toolchains.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -109,14 +111,17 @@ jobs:
       - name: Run OMP bridge tests against the latest OMP (advisory)
         # bun install --frozen-lockfile above only proves the bridge works
         # against the exact pinned version. Upstream OMP has moved exported
-        # symbols between minor releases before (isReadableUrlPath: pi-coding-agent
-        # -> pi-tui) without the frozen lockfile ever seeing it. Install
-        # whatever OMP publishes today and re-run the suite so a future move
-        # surfaces here. continue-on-error: an unrelated upstream release must
-        # not block a merge; the frozen run above stays the blocking gate.
+        # symbols between minor releases before (isReadableUrlPath moved from
+        # pi-coding-agent to pi-tui) without the frozen lockfile ever seeing
+        # it; index.ts now vendors that predicate locally instead of tracking
+        # whichever package currently exports it. Install whatever OMP
+        # publishes today and re-run the suite so a future move to
+        # @oh-my-pi/pi-coding-agent's exports still surfaces here.
+        # continue-on-error: an unrelated upstream release must not block a
+        # merge; the frozen run above stays the blocking gate.
         continue-on-error: true
         run: |
-          bun add --cwd graphify/omp -d @oh-my-pi/pi-coding-agent@latest @oh-my-pi/pi-tui@latest
+          bun add --cwd graphify/omp -d @oh-my-pi/pi-coding-agent@latest
           GRAPHIFY_TEST_CLI=$PWD/.venv/bin/graphify bun test tests/omp.test.ts
 
   security-scan:

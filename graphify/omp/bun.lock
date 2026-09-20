@@ -6,7 +6,6 @@
       "name": "graphify-omp",
       "devDependencies": {
         "@oh-my-pi/pi-coding-agent": "^18.2.6",
-        "@oh-my-pi/pi-tui": "^18.2.6",
       },
     },
   },

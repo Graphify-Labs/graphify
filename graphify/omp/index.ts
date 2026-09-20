@@ -9,7 +9,16 @@ import {
   resolveReadPathAsync,
   splitPathAndSelPreferringLiteral,
 } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
-import { isReadableUrlPath } from "@oh-my-pi/pi-tui/tools/read";
+
+// Mirrors the upstream isReadableUrlPath predicate, kept as a same-named
+// local copy (not imported): the wheel ships no node_modules, so this
+// extension may import only host-provided packages, and the host provides
+// @oh-my-pi/pi-coding-agent alone -- a scoped subpath import of any other
+// package is unresolvable at runtime. Named to match so a future reader can
+// diff them.
+function isReadableUrlPath(value: string): boolean {
+  return /^https?:\/\/?/i.test(value) || /^www\./i.test(value);
+}
 
 const INPUT_LIMIT = 256 * 1024;
 const OUTPUT_LIMIT = 64 * 1024;
