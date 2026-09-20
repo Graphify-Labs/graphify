@@ -953,6 +953,8 @@ def _reconcile_existing_graph(
         # COEXIST — the AST and semantic layers of a file coexist).
         # Incremental extraction owns only nodes from rebuilt or deleted
         # sources. Semantic-tier nodes (per _is_ast_tier) remain preserved.
+        # Nodes explicitly classified as fail-closed preserved (#3695) must
+        # not subsequently be removed by this AST ownership pass.
         preserved_nodes = [
             node
             for node in existing.get("nodes", [])
@@ -967,10 +969,14 @@ def _reconcile_existing_graph(
                     or (
                         full_rebuild
                         and source_paths.is_evicted(node, rebuilt_source_identities)
+                        and not source_paths.is_evicted(node, excluded_alive_files)
                     )
                 )
             )
-            and not source_paths.is_evicted(node, node_evicted_source_identities)
+            and not (
+                source_paths.is_evicted(node, node_evicted_source_identities)
+                and not source_paths.is_evicted(node, excluded_alive_files)
+            )
         ]
         all_ids = new_ast_ids | {node["id"] for node in preserved_nodes}
 
@@ -985,10 +991,14 @@ def _reconcile_existing_graph(
             for edge in existing.get("links", existing.get("edges", []))
             if edge.get("source") in all_ids
             and edge.get("target") in all_ids
-            and not source_paths.is_evicted(edge, edge_evicted_source_identities)
+            and not (
+                source_paths.is_evicted(edge, edge_evicted_source_identities)
+                and not source_paths.is_evicted(edge, excluded_alive_files)
+            )
             and not (
                 _is_ast_tier(edge)
                 and source_paths.is_evicted(edge, rebuilt_source_identities)
+                and not source_paths.is_evicted(edge, excluded_alive_files)
             )
         ]
 
@@ -1009,8 +1019,11 @@ def _reconcile_existing_graph(
         preserved_hyperedges = []
         for edge in existing.get("hyperedges", []):
             members = edge.get("nodes", edge.get("members", edge.get("node_ids", [])))
-            if edge.get("id") in new_hyperedge_ids or source_paths.is_evicted(
-                edge, hyperedge_evicted_source_identities
+            if edge.get("id") in new_hyperedge_ids:
+                continue
+            if (
+                source_paths.is_evicted(edge, hyperedge_evicted_source_identities)
+                and not source_paths.is_evicted(edge, excluded_alive_files)
             ):
                 continue
             if isinstance(members, list) and any(member not in all_ids for member in members):
