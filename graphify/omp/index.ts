@@ -2,11 +2,13 @@ import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { delimiter, isAbsolute, relative, sep } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+// resolveReadPath, not the async sibling: the async variant is missing from
+// older host-provided pi-coding-agent copies -- a blocked statSync beats an unloadable extension.
 import {
   expandDelimitedPathEntries,
   isInternalUrlPath,
   normalizePathLikeInput,
-  resolveReadPathAsync,
+  resolveReadPath,
   splitPathAndSelPreferringLiteral,
 } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 
@@ -27,14 +29,14 @@ const TOOL_NAMES = { bash: "Bash", grep: "Grep", read: "Read", glob: "Glob" } as
 const FILE_URL_RE = /^file:\/\//i;
 
 // isInternalUrlPath/isReadableUrlPath still earn their place even though the
-// guard now defends itself against URL-shaped input: resolveReadPathAsync
+// guard now defends itself against URL-shaped input: resolveReadPath
 // below pre-resolves a rootless value to an absolute path
 // (`path.resolve(cwd, x)`) before the guard ever sees it, which for a
 // *foreign*-scheme value glues it onto cwd into something that looks
 // exactly like a real in-project file (`<cwd>/https:/example.com/x`,
 // `<cwd>/local:/x`) -- a guard fix the bridge then defeats by mangling its
 // input first is not a fix. file:// is the one exception: OMP's own
-// resolveReadPathAsync already strips it down to the real local path (its
+// resolveReadPath already strips it down to the real local path (its
 // resolveToCwd -> expandPath -> stripFileUrl, deliberately excluded from
 // the external-URL fast path), so routing it through here yields the
 // correct absolute path rather than a mangled one.
@@ -109,7 +111,7 @@ export default function graphify(api: ExtensionAPI): void {
         const input: Record<string, unknown> = { ...event.input };
         if (toolName !== "Bash") {
           const target = toolName === "Glob" ? path : (await splitPathAndSelPreferringLiteral(path, ctx.cwd)).path;
-          const resolved = await resolveReadPathAsync(target, ctx.cwd);
+          const resolved = resolveReadPath(target, ctx.cwd);
           delete input.path;
           if (toolName === "Read") input.file_path = resolved;
           else if (toolName === "Glob") input.pattern = resolved;

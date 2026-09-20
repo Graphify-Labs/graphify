@@ -219,3 +219,28 @@ test("index.ts imports only packages the host actually provides -- no dependency
   expect(specifiers.length).toBeGreaterThan(0);
   expect(specifiers.filter(specifier => !allowed(specifier))).toEqual([]);
 });
+
+test("every named import from @oh-my-pi/pi-coding-agent/tools/path-utils is exported by the oldest host-provided copy", () => {
+  // Being on the allow-list above is not enough: @oh-my-pi/pi-coding-agent
+  // itself is allow-listed, but a symbol added to the bridge's import list
+  // can still be missing from an older copy the live host actually binds
+  // (see resolveReadPathAsync, absent from 18.1.17). Parse the real import
+  // list out of index.ts -- never hardcode it -- so a future added symbol
+  // is checked automatically.
+  const oldestRoot = "/root/.omp/plugins/node_modules/@oh-my-pi/pi-coding-agent";
+  const oldestPathUtils = join(oldestRoot, "src/tools/path-utils.ts");
+  if (!existsSync(oldestPathUtils)) {
+    console.warn(`skipping: oldest pi-coding-agent copy not found at ${oldestPathUtils}`);
+    return;
+  }
+  const source = readFileSync(join(import.meta.dir, "../graphify/omp/index.ts"), "utf8");
+  const importBlock = source.match(/import\s*{([^}]+)}\s*from\s*"@oh-my-pi\/pi-coding-agent\/tools\/path-utils"/);
+  expect(importBlock).not.toBeNull();
+  const imported = importBlock![1].split(",").map(name => name.trim()).filter(Boolean);
+  expect(imported.length).toBeGreaterThan(0);
+  const exportedSource = readFileSync(oldestPathUtils, "utf8");
+  const exported = new Set(
+    [...exportedSource.matchAll(/^export\s+(?:async\s+function|function)\s+(\w+)/gm)].map(m => m[1]),
+  );
+  expect(imported.filter(name => !exported.has(name))).toEqual([]);
+});
