@@ -152,6 +152,21 @@ test("URLs, internal resources, literal selector-like names and false trust do n
   expect(await api.emit("tool_result", { toolCallId: "call-3", content: [] })).toBeUndefined();
 });
 
+test("a file:// read target resolves to the real local path and still reaches the guard", async () => {
+  // file:// is the one scheme isRemote lets through to resolveReadPathAsync
+  // (which OMP's own path pipeline also resolves down to a local path, not
+  // an external URL) -- an in-project file:// target must still nudge...
+  const api = harness();
+  await api.emit("tool_call", { toolName: "read", input: { path: `file://${join(cwd, "source.py")}` }, toolCallId: "call-1" });
+  const inProject = await api.emit("tool_result", { toolCallId: "call-1", content: [] });
+  expect(inProject?.content?.[0]?.text).toContain("graphify");
+  // ...while one outside the project still resolves (the CLI subprocess
+  // runs), but the guard's own containment check stays silent, same as any
+  // other out-of-project absolute path.
+  await api.emit("tool_call", { toolName: "read", input: { path: `file://${join(root, "outside.py")}` }, toolCallId: "call-2" });
+  expect(await api.emit("tool_result", { toolCallId: "call-2", content: [] })).toBeUndefined();
+});
+
 test("navigation cancels in-flight guidance before the next session's tool results", async () => {
   for (const navigation of ["session_start", "session_switch", "session_tree", "session_branch", "session_shutdown", "before_agent_start"]) {
     rmSync(started, { force: true });
