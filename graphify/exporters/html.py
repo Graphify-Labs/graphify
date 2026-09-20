@@ -151,6 +151,8 @@ function esc(s) {{
 const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
   id: n.id, label: n.label, color: n.color, size: n.size,
   font: n.font, title: n.title,
+  x: 30 * Math.sqrt(i) * Math.cos(i * 2.4),
+  y: 30 * Math.sqrt(i) * Math.sin(i * 2.4),
   _community: n.community, _community_name: n.community_name,
   _source_file: n.source_file, _file_type: n.file_type, _degree: n.degree,
 }})));
