@@ -4964,21 +4964,20 @@ def test_issue_3695_symlink_worker_fail_closed_rebuild(tmp_path, monkeypatch, ca
             encoding="utf-8",
         )
 
-    if not can_symlink:
-        # Simulate detect()'s follow_symlinks=False behavior where symlink
-        # services/hub/worker.py is dropped from scan corpus, leaving plugins/.../worker.py
-        real_detect = detect_mod.detect
+    # Simulate detect()'s follow_symlinks=False behavior where symlink
+    # services/hub/worker.py is dropped from scan corpus, leaving plugins/.../worker.py
+    real_detect = detect_mod.detect
 
-        def symlink_simulated_detect(root, **kwargs):
-            res = real_detect(root, **kwargs)
-            res["files"]["code"] = [
-                f for f in res["files"]["code"]
-                if not (Path(f).as_posix().endswith("services/hub/worker.py")
-                        and "plugins" not in Path(f).as_posix())
-            ]
-            return res
+    def symlink_simulated_detect(root, **kwargs):
+        res = real_detect(root, **kwargs)
+        res["files"]["code"] = [
+            f for f in res["files"]["code"]
+            if not (Path(f).as_posix().endswith("services/hub/worker.py")
+                    and "plugins" not in Path(f).as_posix())
+        ]
+        return res
 
-        monkeypatch.setattr(detect_mod, "detect", symlink_simulated_detect)
+    monkeypatch.setattr(detect_mod, "detect", symlink_simulated_detect)
 
     hub_id = Path(os.path.abspath(hub_worker)).as_posix()
     real_reconcile = watch_mod._reconcile_existing_graph
@@ -5056,19 +5055,20 @@ def test_issue_3695_symlink_worker_clustered_rebuild(tmp_path, monkeypatch, caps
             encoding="utf-8",
         )
 
-    if not can_symlink:
-        real_detect = detect_mod.detect
+    # Simulate detect()'s follow_symlinks=False behavior where symlink
+    # services/hub/worker.py is dropped from scan corpus, leaving plugins/.../worker.py
+    real_detect = detect_mod.detect
 
-        def symlink_simulated_detect(root, **kwargs):
-            res = real_detect(root, **kwargs)
-            res["files"]["code"] = [
-                f for f in res["files"]["code"]
-                if not (Path(f).as_posix().endswith("services/hub/worker.py")
-                        and "plugins" not in Path(f).as_posix())
-            ]
-            return res
+    def symlink_simulated_detect(root, **kwargs):
+        res = real_detect(root, **kwargs)
+        res["files"]["code"] = [
+            f for f in res["files"]["code"]
+            if not (Path(f).as_posix().endswith("services/hub/worker.py")
+                    and "plugins" not in Path(f).as_posix())
+        ]
+        return res
 
-        monkeypatch.setattr(detect_mod, "detect", symlink_simulated_detect)
+    monkeypatch.setattr(detect_mod, "detect", symlink_simulated_detect)
 
     hub_id = Path(os.path.abspath(hub_worker)).as_posix()
     real_reconcile = watch_mod._reconcile_existing_graph
