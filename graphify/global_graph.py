@@ -110,6 +110,26 @@ def _save_global_graph(G: nx.Graph) -> None:
     write_json_atomic(_GLOBAL_GRAPH, data, indent=2)
 
 
+def _hash_file_streaming(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """SHA256 hash of path's content, read in bounded chunks.
+
+    Unlike a single ``read_bytes()`` call, this never depends on the file's
+    size for its own memory use, so it is safe to run even on a file that
+    would fail the size cap for a full in-memory parse -- the cap protects
+    against *parsing* an oversized payload, not against determining whether
+    its content changed at all, which hashing alone never requires holding
+    the whole file in memory to do.
+    """
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()[:16]
+
+
 def global_add(source_path: Path, repo_tag: str) -> dict:
     """Add or update a project graph in the global graph.
 
@@ -151,19 +171,34 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
                     "cross_repo_calls": 0, "shared_type_links": 0}
 
         # The cap is a stat-based check too (no read), and must run before
-        # ANY read of the file's bytes -- reading it first (even just to hash
-        # it) defeats the cap's whole purpose of failing fast before a
-        # multi-GiB file is loaded into memory, for exactly the case that
-        # matters most: a new or genuinely changed oversized file, which the
-        # fast path above cannot have already caught.
+        # any FULL read of the file's bytes -- reading the whole thing first
+        # (even just to hash it, as a single read_bytes() call would) defeats
+        # the cap's purpose of failing fast before a multi-GiB file is
+        # loaded into memory for parsing. But the fast path above cannot
+        # catch every unchanged file: a manifest entry that predates the
+        # mtime/size fields (every manifest written before this fix existed)
+        # has no stat baseline to compare against, and would otherwise fall
+        # straight through to the cap and error on an unchanged file that
+        # merely became oversized, exactly the regression the fast path was
+        # meant to close. So an oversized file gets one more chance: a
+        # streaming hash (bounded memory regardless of size) against the
+        # stored content hash, before finally raising the cap's own error
+        # for a file that is both oversized and genuinely different.
         from graphify.security import check_graph_file_size_cap
-        check_graph_file_size_cap(source_path)
+        try:
+            check_graph_file_size_cap(source_path)
+        except ValueError as cap_error:
+            if existing.get("source_hash") == _hash_file_streaming(source_path):
+                return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
+                        "cross_repo_calls": 0, "shared_type_links": 0}
+            raise cap_error
 
         # Hash and parse the SAME read of source_path, inside the lock.
         # Reading it twice at two different times (once to hash, once to
         # parse) would let a concurrent writer to source_path in between make
         # the recorded hash describe different bytes than what actually gets
-        # imported below.
+        # imported below. Only reached once the cap has already passed, so
+        # buffering the whole file here is safe.
         raw_bytes = source_path.read_bytes()
         src_hash = hashlib.sha256(raw_bytes).hexdigest()[:16]
 
