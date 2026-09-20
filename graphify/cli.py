@@ -967,7 +967,8 @@ _WWW_HOST_RE = re.compile(r"^www\.", re.IGNORECASE)
 
 def _normalize_hook_path(value: str) -> str:
     r"""Trim padding whitespace and a matching pair of outer double quotes,
-    then strip a leading ``file://`` scheme down to the local path it names.
+    then strip a *local* leading ``file://`` scheme down to the local path
+    it names.
 
     Mirrors what OMP's own path pipeline already does to a raw tool argument
     before a hook would ever see it: ``normalizePathLikeInput`` (trim +
@@ -978,12 +979,24 @@ def _normalize_hook_path(value: str) -> str:
     bothered to normalize it first -- a classifier that only agrees with its
     own host after trimming/de-quoting is exactly the kind of gap a prior
     review flagged.
+
+    Per RFC 8089, a ``file://`` URL is local only when its authority is
+    empty (``file:///path``) or ``localhost``; Node's own
+    ``url.fileURLToPath`` enforces exactly this, throwing
+    ``ERR_INVALID_FILE_URL_HOST`` for any other host. Any other authority
+    names a *remote* host, not a local path -- reducing it here would
+    discard the host and let ``file://evil.com/<in-project path>`` alias a
+    real local file, so it is left untouched for ``_is_foreign_url_scheme``
+    to classify instead.
     """
     value = value.strip()
     if len(value) > 1 and value[0] == value[-1] == '"':
         value = value[1:-1]
     if _FILE_URL_RE.match(value):
-        path = unquote(urlsplit(value).path) or "/"
+        split = urlsplit(value)
+        if split.hostname and split.hostname.lower() != "localhost":
+            return value
+        path = unquote(split.path) or "/"
         # file:///C:/proj/a.py -> C:/proj/a.py: drop the URL's extra root
         # slash in front of a Windows drive letter.
         if os.name == "nt" and re.match(r"^/[A-Za-z]:", path):
@@ -994,16 +1007,21 @@ def _normalize_hook_path(value: str) -> str:
 
 def _is_foreign_url_scheme(value: str) -> bool:
     """Whether *value* is itself a ``scheme://...`` value -- everything
-    except ``file://``, which ``_normalize_hook_path`` has already reduced
-    to a plain local path by the time this runs, so it never matches here.
+    except a *local* ``file://`` (empty or ``localhost`` authority, RFC
+    8089), which ``_normalize_hook_path`` has already reduced to a plain
+    local path by the time this runs, so it never matches here. A
+    ``file://`` with any other authority is NOT reduced by
+    ``_normalize_hook_path`` and so matches here like any other foreign
+    scheme, naming a remote host rather than a local file.
 
     Deliberately does not enumerate OMP's (or any other harness's) internal
     scheme allow-list (``local://``, ``artifact://``, ...): this guard is
     embedded by multiple hosts (#522), and hard-coding one of them would
     silently stop matching the day that host adds a scheme. Any scheme this
-    function doesn't specifically know to be local -- only ``file://`` is --
-    is treated as not-a-local-source-file: a missed nudge on a remote URL is
-    a far safer wrong answer than a wrong nudge on an unrelated file.
+    function doesn't specifically know to be local -- only a local
+    ``file://`` is -- is treated as not-a-local-source-file: a missed nudge
+    on a remote URL is a far safer wrong answer than a wrong nudge on an
+    unrelated file.
     """
     return bool(_URL_SCHEME_PREFIX_RE.match(value))
 
