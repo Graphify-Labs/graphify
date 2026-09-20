@@ -167,6 +167,24 @@ test("a file:// read target resolves to the real local path and still reaches th
   expect(await api.emit("tool_result", { toolCallId: "call-2", content: [] })).toBeUndefined();
 });
 
+test("a file:// read target with a non-local authority never reaches the guard", async () => {
+  // VALID #2: RFC 8089 / Node's url.fileURLToPath (ERR_INVALID_FILE_URL_HOST)
+  // -- only an empty or `localhost` authority names a local file. Any other
+  // authority names a remote host and must not alias an in-project file
+  // merely by sharing its path component.
+  const api = harness();
+  await api.emit("tool_call", { toolName: "read", input: { path: `file://evil.com${join(cwd, "source.py")}` }, toolCallId: "call-1" });
+  expect(existsSync(started)).toBe(false);
+  expect(await api.emit("tool_result", { toolCallId: "call-1", content: [] })).toBeUndefined();
+});
+
+test("a file:// read target with an explicit localhost authority still reaches the guard", async () => {
+  const api = harness();
+  await api.emit("tool_call", { toolName: "read", input: { path: `file://localhost${join(cwd, "source.py")}` }, toolCallId: "call-1" });
+  const result = await api.emit("tool_result", { toolCallId: "call-1", content: [] });
+  expect(result?.content?.[0]?.text).toContain("graphify");
+});
+
 test("navigation cancels in-flight guidance before the next session's tool results", async () => {
   for (const navigation of ["session_start", "session_switch", "session_tree", "session_branch", "session_shutdown", "before_agent_start"]) {
     rmSync(started, { force: true });
