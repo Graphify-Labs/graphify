@@ -1350,6 +1350,14 @@ def _backend_pkg_hint(pkg: str, extra: str) -> str:
     )
 
 
+def _sanitize_extra_headers(extra_headers: dict | None) -> dict[str, str] | None:
+    """Filter out authorization headers case-insensitively; return None if empty."""
+    if not isinstance(extra_headers, dict):
+        return None
+    cleaned = {k: v for k, v in extra_headers.items() if str(k).lower() != "authorization"}
+    return cleaned if cleaned else None
+
+
 def _call_openai_compat(
     base_url: str,
     api_key: str,
@@ -1363,6 +1371,7 @@ def _call_openai_compat(
     deep_mode: bool = False,
     images: list[_ImageRef] | None = None,
     extra_body: dict | None = None,
+    extra_headers: dict | None = None,
 ) -> dict:
     """Call any OpenAI-compatible API (Kimi, OpenAI, etc.) and return parsed JSON."""
     try:
@@ -1386,8 +1395,16 @@ def _call_openai_compat(
     _retries = _resolve_max_retries()
     if backend == "ollama" and not os.environ.get("GRAPHIFY_MAX_RETRIES", "").strip():
         _retries = 0
-    client = OpenAI(api_key=api_key, base_url=base_url, timeout=_resolve_api_timeout(),
-                    max_retries=_retries)
+    client_kwargs: dict = {
+        "api_key": api_key,
+        "base_url": base_url,
+        "timeout": _resolve_api_timeout(),
+        "max_retries": _retries,
+    }
+    usable_headers = _sanitize_extra_headers(extra_headers)
+    if usable_headers is not None:
+        client_kwargs["default_headers"] = usable_headers
+    client = OpenAI(**client_kwargs)
     kwargs: dict = {
         "model": model,
         "messages": [
@@ -2036,6 +2053,7 @@ def extract_files_direct(
             deep_mode=deep_mode,
             images=image_refs,
             extra_body=cfg.get("extra_body"),
+            extra_headers=cfg.get("extra_headers"),
         )
 
     # Verify code-typed nodes against the source the model read and downgrade the
@@ -3029,7 +3047,16 @@ def _call_llm(
         from openai import OpenAI
     except ImportError as exc:
         raise ImportError(_backend_pkg_hint("openai", "openai")) from exc
-    client = OpenAI(api_key=key, base_url=cfg["base_url"], timeout=_resolve_api_timeout(), max_retries=_resolve_max_retries())
+    usable_headers = _sanitize_extra_headers(cfg.get("extra_headers"))
+    client_kwargs: dict = {
+        "api_key": key,
+        "base_url": cfg["base_url"],
+        "timeout": _resolve_api_timeout(),
+        "max_retries": _resolve_max_retries(),
+    }
+    if usable_headers is not None:
+        client_kwargs["default_headers"] = usable_headers
+    client = OpenAI(**client_kwargs)
     kwargs: dict = {
         "model": mdl,
         "messages": [{"role": "user", "content": prompt}],
