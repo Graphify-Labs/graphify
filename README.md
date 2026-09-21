@@ -64,6 +64,22 @@ graphify-out/
 └── graph.json       the full graph — query it anytime without re-reading your files
 ```
 
+### Experimental Jev semantic shadow
+
+`graphify jev-shadow --task task.json` is an opt-in experiment that sends a
+small, deterministic graph-metadata slice to TypeSafe Jev and writes derived
+judgments to `graphify-out/.graphify_jev.json`. It never changes `graph.json`:
+that file remains Graphify's structural authority, and Jev output is
+shadow-only evidence rather than a basis for graph changes or external actions.
+
+Use `graphify jev-shadow --task task.json --dry-run` to inspect the exact
+outbound state and questions without an API key or network call. A live run
+requires `TYPESAFE_API_KEY`; even node labels, paths, and relationships can
+reveal private project structure, so invoking it is an explicit outbound-data
+action. The sidecar retains raw Noul probabilities and Choice selections,
+confidence, and complete probability distributions; it deliberately sets no
+production thresholds.
+
 **Works in** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, and 15+ more — [pick your platform](#install).
 
 ---
