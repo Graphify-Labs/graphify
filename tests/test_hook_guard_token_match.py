@@ -39,6 +39,9 @@ pytestmark = pytest.mark.skipif(_bash_invokes_search is None, reason="pre-fix tr
     "FOO=1 grep x f",
     "echo done; rg leftover",
     "result=$(grep -c x f)",
+    "timeout 10 grep -rn foo .",
+    "timeout -k 5 10 rg foo",
+    "nice -n 5 grep x f",
 ])
 def test_real_searches_fire(cmd):
     assert _bash_invokes_search(cmd) is True
@@ -57,6 +60,9 @@ def test_real_searches_fire(cmd):
     "echo 'grep is a fine tool'",
     "printf 'use find sparingly'",
     "magick convert x.png y.jpg",
+    "timeout 10 cargo build",          # a wrapper with a positional arg,
+    "timeout 5 make test",             # but no search behind it, stays quiet
+    "nice 5 python run.py",            # 'nice' without flags, non-search target
 ])
 def test_prose_and_lookalikes_stay_quiet(cmd):
     assert _bash_invokes_search(cmd) is False

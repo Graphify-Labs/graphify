@@ -1510,6 +1510,10 @@ function bashInvokesSearch(cmdStr) {
       if (COMMAND_WRAPPERS.has(name)) {
         i++;
         while (i < tokens.length && tokens[i].startsWith("-")) i++;
+        // skip positional wrapper arguments (`timeout 10`, `timeout -k 5 10`,
+        // `nice -n 5`): non-flag tokens until the wrapped command (a search
+        // tool, git, a path or VAR=value)
+        while (i < tokens.length && !tokens[i].startsWith("-") && !SEARCH_COMMANDS.has(tokens[i].toLowerCase()) && tokens[i].toLowerCase() !== "git" && !/[/=]/.test(tokens[i])) i++;
         continue;
       }
       if (SEARCH_COMMANDS.has(name)) return true;
@@ -1598,6 +1602,10 @@ function fileTails(vals) {
 export const GraphifyPlugin = async ({ directory }) => {
   const graphPath = join(directory, OUT, "graph.json");
   const oriented = new Set();
+  // Cap the per-session set so a long-lived server process can't grow it
+  // without bound (one sessionID per opencode session, but the plugin module
+  // outlives any single session).
+  const ORIENTED_CAP = 256;
 
   function inProject(v) {
     if (!isAbsolute(v)) return true; // relative paths anchor at the project cwd
@@ -1649,6 +1657,7 @@ export const GraphifyPlugin = async ({ directory }) => {
         const nudges = [];
         if (!oriented.has(input.sessionID)) {
           oriented.add(input.sessionID);
+          if (oriented.size > ORIENTED_CAP) oriented.delete(oriented.values().next().value);
           nudges.push(ORIENT_ECHO);
         }
         if (cmd && bashInvokesSearch(cmd)) nudges.push(SEARCH_ECHO);

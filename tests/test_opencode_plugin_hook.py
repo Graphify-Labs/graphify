@@ -141,6 +141,9 @@ FIRE = [
     "FOO=1 grep x f",
     "echo done; rg leftover",
     "result=$(grep -c x f)",
+    "timeout 10 grep -rn foo .",
+    "timeout -k 5 10 rg foo",
+    "nice -n 5 grep x f",
 ]
 QUIET = [
     "git commit -m x",
@@ -155,6 +158,9 @@ QUIET = [
     "echo 'grep is a fine tool'",
     "printf 'use find sparingly'",
     "magick convert x.png y.jpg",
+    "timeout 10 cargo build",          # a wrapper with a positional arg,
+    "timeout 5 make test",             # but no search behind it, stays quiet
+    "nice 5 python run.py",            # 'nice' without flags, non-search target
 ]
 
 
@@ -307,3 +313,23 @@ def test_js_echo_is_shell_inert(tmp_path, extracted_js):
     assert "`" not in echo_part
     assert "$" not in echo_part.replace("' ;", "")
     assert cmd.split("' ; ", 1)[1] == "grep -rn foo ."
+
+
+def test_js_oriented_set_is_capped(tmp_path, extracted_js):
+    """The in-memory oriented set is capped so a long-lived server process
+    can't grow it unbounded. Eviction trades one extra echo for bounded
+    memory: an evicted session re-fires exactly once, then goes quiet again —
+    the once-per-session budget still holds."""
+    calls = [
+        {"hook": "before", "tool": "bash", "command": "echo hi", "sid": f"s{i}"}
+        for i in range(600)
+    ] + [
+        {"hook": "before", "tool": "bash", "command": "echo again", "sid": "s7"},
+        {"hook": "before", "tool": "bash", "command": "echo once more", "sid": "s7"},
+    ]
+    outs = _run_plugin(_plugin_path(extracted_js, tmp_path), calls, tmp_path)
+    # s7's first call (index 7) consumed its echo; the cap (256) evicted it
+    # long before call 600, so this re-fire is the eviction tradeoff.
+    assert "knowledge graph" in outs[600]["command"]
+    # Re-added on that call, the echo is again once-per-session: quiet now.
+    assert "knowledge graph" not in outs[601]["command"]
