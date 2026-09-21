@@ -140,6 +140,13 @@ def prepare(cases: list[dict[str, Any]]) -> None:
                     payload_path = _root("state") / "payloads" / f"{case['case_id']}.json"
                     _write(payload_path, payload)
                     record.update({"prepare_status": "PREPARED", "base_present_changed_files": present, "base_missing_changed_files": missing, "task": task, "task_fingerprint": _fingerprint(task), "graph_path": str(graph), "graph_fingerprint": graph_fingerprint, "seed_node_ids": seeds, "candidate_node_count": len(payload["state"]["candidates"]["nodes"]), "candidate_edge_count": len(payload["state"]["candidates"]["edges"]), "question_count": len(payload["questions"]), "payload_path": str(payload_path), "payload_fingerprint": _sha(payload), "cache_hit": hit})
+        except JevShadowError as exc:
+            # A graph with no deterministic changed-file seed is an expected,
+            # evidence-bearing historical outcome, not a failed extraction.
+            if "seeds matched no graph nodes" in str(exc):
+                record.update({"prepare_status": "PREPARE_UNRESOLVED", "reason": "changed-file seeding matched no graph nodes"})
+            else:
+                record["error"] = type(exc).__name__ + ": " + str(exc)
         except Exception as exc:
             record["error"] = type(exc).__name__ + ": " + str(exc)
         _write(_record_path(case["case_id"]), record)

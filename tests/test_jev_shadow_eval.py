@@ -44,3 +44,12 @@ def test_collect_without_live_never_reads_key(monkeypatch):
 
 def test_task_only_uses_base_present_files():
     assert evaluation._task(case(), ["a.py"])["changed_files"] == ["a.py"]
+
+
+def test_no_graph_seed_is_an_unresolved_prepare(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    monkeypatch.setattr(evaluation, "_git", lambda *_args: "f" * 40 if "rev-parse" in _args else "a.py")
+    monkeypatch.setattr(evaluation, "_ensure_object", lambda _sha: None)
+    monkeypatch.setattr(evaluation, "_extract", lambda *_args: (_ for _ in ()).throw(evaluation.JevShadowError("task seeds matched no graph nodes")))
+    evaluation.prepare([case()])
+    assert evaluation._read_record("graphify-pr-1")["prepare_status"] == "PREPARE_UNRESOLVED"
