@@ -167,3 +167,39 @@ def test_python_indirect_call_enclosing_scope_over_module(tmp_path: Path):
     }
     assert (caller_id, nested) in indirect_edges
     assert (caller_id, module_level) not in indirect_edges
+
+
+def test_python_indirect_call_enclosing_parameter_shadows_module(tmp_path: Path):
+    """A closure reference to an outer parameter must not bind to a same-named
+    module function.
+    """
+    f = tmp_path / "test_enclosing_parameter.py"
+    f.write_text(
+        "def callback():\n"
+        "    return 'module'\n"
+        "\n"
+        "def dispatch(fn):\n"
+        "    return fn()\n"
+        "\n"
+        "def outer(callback):\n"
+        "    def caller():\n"
+        "        return dispatch(callback)\n"
+        "    return caller()\n"
+    )
+    result = extract([f], root=tmp_path)
+    by_label_id = {}
+    for node in result["nodes"]:
+        by_label_id.setdefault(node["label"], []).append(node["id"])
+
+    outer_id = by_label_id["outer()"][0]
+    caller_id = next(i for i in by_label_id["caller()"] if i.startswith(outer_id))
+    module_callback_id = next(
+        i for i in by_label_id["callback()"] if not i.startswith(outer_id)
+    )
+    indirect_edges = {
+        (edge["source"], edge["target"])
+        for edge in result["edges"]
+        if edge["relation"] == "indirect_call"
+    }
+
+    assert (caller_id, module_callback_id) not in indirect_edges

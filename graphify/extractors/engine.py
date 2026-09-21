@@ -5719,6 +5719,17 @@ def _extract_generic(
         # shadowing: a param / local binding names a local value, not the module fn
         if ident_name in enclosing_locals or ident_name in ("self", "cls"):
             return
+        # A nested caller can close over a parameter/local from an enclosing
+        # function.  Stop at the first enclosing scope that binds the name:
+        # a nested callable is resolvable by _emit_indirect_by_name, while any
+        # other binding shadows same-named module/corpus callables.
+        enclosing_scope = scope_parents.get(scope_nid)
+        while enclosing_scope is not None:
+            if ident_name in lexical_nids_by_scope.get(enclosing_scope, {}):
+                break
+            if ident_name in local_bound_names.get(enclosing_scope, frozenset()):
+                return
+            enclosing_scope = scope_parents.get(enclosing_scope)
         # An import from outside the corpus binds the name for the whole module, so
         # it shadows in every scope — no unique same-named definition elsewhere in
         # the corpus is what this identifier refers to.
