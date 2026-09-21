@@ -1197,3 +1197,37 @@ def test_to_html_spiral_seed_uses_a_real_map_index():
                 "spiral seed references `i` but the node map has no index param "
                 "-> ReferenceError: i is not defined (#3699)"
             )
+
+
+def test_to_json_persists_degraded_passes_at_top_level_and_omits_from_graph(tmp_path):
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("a", label="A")
+    G.graph["degraded_passes"] = [
+        {"pass": "python_imports", "error": "syntax err", "error_type": "SyntaxError", "suffixes": [".py"]}
+    ]
+    out_file = tmp_path / "graph.json"
+    to_json(G, {0: ["a"]}, str(out_file))
+
+    data = json.loads(out_file.read_text(encoding="utf-8"))
+    assert "degraded_passes" in data
+    assert data["degraded_passes"] == [
+        {"pass": "python_imports", "error": "syntax err", "error_type": "SyntaxError", "suffixes": [".py"]}
+    ]
+    assert "degraded_passes" not in data.get("graph", {})
+
+    # Verify round-trip through build_from_json
+    G2 = build_from_json(data)
+    assert G2.graph.get("degraded_passes") == data["degraded_passes"]
+
+
+def test_to_json_omits_degraded_passes_when_clean(tmp_path):
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("a", label="A")
+    out_file = tmp_path / "graph.json"
+    to_json(G, {0: ["a"]}, str(out_file))
+
+    data = json.loads(out_file.read_text(encoding="utf-8"))
+    assert "degraded_passes" not in data
+    assert "degraded_passes" not in data.get("graph", {})

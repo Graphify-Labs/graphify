@@ -4932,3 +4932,134 @@ def test_requires_symlinks_rebuild_symlink_worker(requires_symlinks, tmp_path, c
     data = json.loads(graph_path.read_text(encoding="utf-8"))
     labels = {n.get("label") for n in data["nodes"]}
     assert "run_worker()" in labels
+
+
+def test_reconcile_existing_graph_preserves_degraded_passes_when_unreextracted(tmp_path):
+    from graphify.watch import _reconcile_existing_graph
+
+    existing_graph = tmp_path / "graph.json"
+    existing_payload = {
+        "nodes": [{"id": "a_f", "label": "f", "source_file": "a.py", "_origin": "ast"}],
+        "links": [],
+        "degraded_passes": [
+            {"pass": "python_imports", "error": "err", "error_type": "RuntimeError", "suffixes": [".py"]}
+        ],
+    }
+    existing_graph.write_text(json.dumps(existing_payload), encoding="utf-8")
+
+    code_files = [tmp_path / "a.py", tmp_path / "b.js"]
+    extract_targets = [tmp_path / "b.js"]
+    fresh_result = {"nodes": [{"id": "b_g", "label": "g", "source_file": "b.js", "_origin": "ast"}], "edges": []}
+
+    reconciled, _ = _reconcile_existing_graph(
+        existing_graph,
+        fresh_result,
+        out=tmp_path,
+        project_root=tmp_path,
+        watch_root=tmp_path,
+        code_files=code_files,
+        extract_targets=extract_targets,
+        full_rebuild=False,
+        deleted_paths=set(),
+        deleted_source_identities=set(),
+    )
+    assert "degraded_passes" in reconciled
+    assert reconciled["degraded_passes"][0]["pass"] == "python_imports"
+
+
+def test_reconcile_existing_graph_clears_recovered_degraded_passes(tmp_path):
+    from graphify.watch import _reconcile_existing_graph
+
+    existing_graph = tmp_path / "graph.json"
+    existing_payload = {
+        "nodes": [{"id": "a_f", "label": "f", "source_file": "a.py", "_origin": "ast"}],
+        "links": [],
+        "degraded_passes": [
+            {"pass": "python_imports", "error": "err", "error_type": "RuntimeError", "suffixes": [".py"]}
+        ],
+    }
+    existing_graph.write_text(json.dumps(existing_payload), encoding="utf-8")
+
+    code_files = [tmp_path / "a.py"]
+    extract_targets = [tmp_path / "a.py"]
+    fresh_result = {"nodes": [{"id": "a_f", "label": "f", "source_file": "a.py", "_origin": "ast"}], "edges": []}
+
+    reconciled, _ = _reconcile_existing_graph(
+        existing_graph,
+        fresh_result,
+        out=tmp_path,
+        project_root=tmp_path,
+        watch_root=tmp_path,
+        code_files=code_files,
+        extract_targets=extract_targets,
+        full_rebuild=False,
+        deleted_paths=set(),
+        deleted_source_identities=set(),
+    )
+    assert "degraded_passes" not in reconciled
+
+
+def test_reconcile_existing_graph_full_rebuild_clears_stale_degraded_passes(tmp_path):
+    from graphify.watch import _reconcile_existing_graph
+
+    existing_graph = tmp_path / "graph.json"
+    existing_payload = {
+        "nodes": [{"id": "a_f", "label": "f", "source_file": "a.py", "_origin": "ast"}],
+        "links": [],
+        "degraded_passes": [
+            {"pass": "python_imports", "error": "err", "error_type": "RuntimeError", "suffixes": [".py"]}
+        ],
+    }
+    existing_graph.write_text(json.dumps(existing_payload), encoding="utf-8")
+
+    code_files = [tmp_path / "a.py", tmp_path / "b.py"]
+    extract_targets = [tmp_path / "a.py", tmp_path / "b.py"]
+    fresh_result = {"nodes": [{"id": "a_f", "label": "f", "source_file": "a.py", "_origin": "ast"}], "edges": []}
+
+    reconciled, _ = _reconcile_existing_graph(
+        existing_graph,
+        fresh_result,
+        out=tmp_path,
+        project_root=tmp_path,
+        watch_root=tmp_path,
+        code_files=code_files,
+        extract_targets=extract_targets,
+        full_rebuild=True,
+        deleted_paths=set(),
+        deleted_source_identities=set(),
+    )
+    assert "degraded_passes" not in reconciled
+
+
+def test_topology_from_graph_and_canonical_topology_match_existing_degraded_graph(tmp_path):
+    """Unchanged degraded graphs must match candidate topology to short-circuit rebuilds."""
+    import networkx as nx
+    from graphify.export import to_json
+    from graphify.watch import _canonical_topology_for_compare, _topology_from_graph
+
+    degraded_entry = [{"pass": "foo", "error": "bar", "error_type": "ValueError", "suffixes": [".py"]}]
+    G = nx.Graph()
+    G.add_node("a", label="A")
+    G.graph["degraded_passes"] = degraded_entry
+
+    candidate = _topology_from_graph(G)
+    assert "degraded_passes" in candidate
+    assert candidate["degraded_passes"] == degraded_entry
+    assert "degraded_passes" not in candidate.get("graph", {})
+
+    graph_file = tmp_path / "graph.json"
+    to_json(G, {}, str(graph_file))
+    existing_graph_data = json.loads(graph_file.read_text(encoding="utf-8"))
+
+    assert (
+        json.dumps(_canonical_topology_for_compare(existing_graph_data), sort_keys=True)
+        == json.dumps(_canonical_topology_for_compare(candidate), sort_keys=True)
+    )
+
+    # If existing graph was clean, they must not match so rebuild triggers
+    clean_existing = dict(existing_graph_data)
+    del clean_existing["degraded_passes"]
+    assert (
+        json.dumps(_canonical_topology_for_compare(clean_existing), sort_keys=True)
+        != json.dumps(_canonical_topology_for_compare(candidate), sort_keys=True)
+    )

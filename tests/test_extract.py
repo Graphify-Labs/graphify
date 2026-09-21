@@ -4698,3 +4698,29 @@ def test_3252_metadata_preservation(tmp_path):
     assert param_ref["source_location"] == "L2"
     assert node_by_id[param_ref["target"]]["label"] == "User"
     assert node_by_id[param_ref["target"]]["source_file"] == "models.py"
+
+
+def test_extract_captures_degraded_passes_on_hand_wired_failure(monkeypatch, tmp_path):
+    import graphify.extract as extractmod
+
+    def _broken_resolver(*args, **kwargs):
+        raise RuntimeError("fake resolver crash")
+
+    monkeypatch.setattr(extractmod, "_resolve_cross_file_imports", _broken_resolver)
+    f = tmp_path / "hello.py"
+    f.write_text("x = 1\n", encoding="utf-8")
+    res = extractmod.extract([f], root=tmp_path, cache_root=tmp_path)
+    assert len(res.get("degraded_passes", [])) == 1
+    dp = res["degraded_passes"][0]
+    assert dp["pass"] == "python_imports"
+    assert dp["error"] == "fake resolver crash"
+    assert dp["error_type"] == "RuntimeError"
+    assert dp["suffixes"] == [".py"]
+
+
+def test_extract_clean_has_empty_degraded_passes(tmp_path):
+    import graphify.extract as extractmod
+    f = tmp_path / "hello.py"
+    f.write_text("x = 1\n", encoding="utf-8")
+    res = extractmod.extract([f], root=tmp_path, cache_root=tmp_path)
+    assert res.get("degraded_passes") == []

@@ -4200,6 +4200,8 @@ def dispatch_command(cmd: str) -> None:
             "output_tokens": ast_result.get("output_tokens", 0) + sem_result.get("output_tokens", 0),
             "extracted_sources": list(ast_result.get("extracted_sources", [])),
         }
+        if ast_result.get("degraded_passes"):
+            merged["degraded_passes"] = list(ast_result["degraded_passes"])
 
         graph_json_path = graphify_out / "graph.json"
         analysis_path = graphify_out / ".graphify_analysis.json"
