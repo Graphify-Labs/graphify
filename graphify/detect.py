@@ -7,6 +7,7 @@ import re
 import shlex
 import stat
 import subprocess
+import sys
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
@@ -554,6 +555,14 @@ def extract_pdf_text(path: Path) -> str:
         return ""
     try:
         from pypdf import PdfReader
+    except ImportError:
+        print(
+            f"[graphify] WARNING: {path.name}: PDF text extraction skipped: 'pypdf' is not installed. "
+            "Install the pdf extra via: uv tool install 'graphifyy[pdf]'",
+            file=sys.stderr,
+        )
+        return ""
+    try:
         reader = PdfReader(str(path))
         pages = []
         for page in reader.pages:
@@ -561,7 +570,11 @@ def extract_pdf_text(path: Path) -> str:
             if text:
                 pages.append(text)
         return "\n".join(pages)
-    except Exception:
+    except Exception as exc:
+        print(
+            f"[graphify] WARNING: {path.name}: failed to extract text from PDF: {exc}",
+            file=sys.stderr,
+        )
         return ""
 
 
