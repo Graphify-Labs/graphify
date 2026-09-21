@@ -1068,6 +1068,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     _loc_collisions: set[tuple[str, str]] = set()  # keys shared by 2+ AST nodes
     _noloc_nodes: dict[tuple[str, str], str] = {}  # (source_file, label) -> ghost node id
     _ast_file_nodes: list[tuple[str, str]] = []  # (node_id, source_file) for AST file-self nodes (#3344)
+    _ast_method_nodes: dict[tuple[str, str], list[str]] = {}  # (source_file, norm_method) -> [ast_nid, ...]
 
     # Pass 1: collect canonical nodes — AST-origin nodes take precedence over LLM nodes.
     # When 2+ AST nodes share a key (same-named symbols in same-named files across
@@ -1124,6 +1125,9 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 # Pass 2b below can catch these by label alone.
                 if _is_file_node_label(label, sf):
                     _ast_file_nodes.append((nid, sf))
+                if label.startswith("."):
+                    m_name = label.removeprefix(".").removesuffix("()")
+                    _ast_method_nodes.setdefault((sf, m_name), []).append(nid)
             else:
                 # First non-AST node for this (file, label) wins as canonical; a
                 # later same-key node is a genuine same-file duplicate and still
@@ -1131,6 +1135,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 _loc_nodes.setdefault(key, nid)
 
     # Pass 2: find ghosts — non-AST nodes that have an AST canonical twin.
+    _ghost_remap: dict[str, str] = {}  # ghost_id -> canonical_id
     for nid in sorted(node_set):
         attrs = G.nodes[nid]
         if attrs.get("_origin") == "ast":
@@ -1144,8 +1149,13 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             continue  # ambiguous key: no safe canonical winner, leave ghost intact
         if key in _loc_nodes and _loc_nodes[key] != nid:
             _noloc_nodes[key] = nid
+        elif key not in _loc_nodes:
+            # Spec-conformant method ghost omitting class segment / leading dot (#3705)
+            m_name = label.removeprefix(".").removesuffix("()")
+            m_candidates = _ast_method_nodes.get((sf, m_name), [])
+            if len(m_candidates) == 1:
+                _ghost_remap[nid] = m_candidates[0]
     # For every ghost that has an AST counterpart, record a remap.
-    _ghost_remap: dict[str, str] = {}  # ghost_id -> canonical_id
     for key, sem_id in _noloc_nodes.items():
         ast_id = _loc_nodes.get(key)
         if ast_id is not None:
@@ -1246,6 +1256,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             alias = old_stem + suffix
             _alias_candidates.setdefault(_normalize_id(alias), set()).add(nid)
             _alias_candidates.setdefault(alias, set()).add(nid)
+        if attrs.get("_origin") == "ast" and str(attrs.get("label", "")).startswith("."):
+            m_name = make_id(str(attrs.get("label", "")).strip().removeprefix(".").removesuffix("()"))
+            m_alias = f"{new_stem}_{m_name}"
+            if _normalize_id(nid) != _normalize_id(m_alias):
+                _alias_candidates.setdefault(_normalize_id(m_alias), set()).add(nid)
+                _alias_candidates.setdefault(m_alias, set()).add(nid)
     for alias_key, candidates in _alias_candidates.items():
         if len(candidates) == 1:
             norm_to_id.setdefault(alias_key, next(iter(candidates)))

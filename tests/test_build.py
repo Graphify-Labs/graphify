@@ -2001,3 +2001,50 @@ def test_build_annotations_all_resolve():
             except NameError as exc:
                 unresolvable.append(f"{name}: {exc}")
     assert not unresolvable, "\n".join(unresolvable)
+
+
+def test_method_ghost_dedupe_and_alias_resolution_3705():
+    from graphify.build import build_from_json
+
+    extraction = {
+        "nodes": [
+            # AST node with class segment and leading dot
+            {
+                "id": "broker_mock_tda_mocktdaaccount_save_state",
+                "label": ".save_state()",
+                "file_type": "code",
+                "source_file": "broker/mock_tda.py",
+                "source_location": "L220",
+                "_origin": "ast",
+            },
+            # Spec-conformant semantic ghost node (no class segment, no leading dot)
+            {
+                "id": "broker_mock_tda_save_state",
+                "label": "save_state()",
+                "file_type": "code",
+                "source_file": "broker/mock_tda.py",
+            },
+            {
+                "id": "doc_summary",
+                "label": "Doc Summary",
+                "file_type": "document",
+                "source_file": "docs/summary.md",
+            },
+        ],
+        "edges": [
+            {
+                "source": "doc_summary",
+                "target": "broker_mock_tda_save_state",
+                "relation": "references",
+                "confidence": "INFERRED",
+                "confidence_score": 0.85,
+                "source_file": "docs/summary.md",
+            }
+        ],
+    }
+    G = build_from_json(extraction)
+    # The ghost node should be removed/remapped into the canonical AST node
+    assert "broker_mock_tda_save_state" not in G.nodes
+    assert "broker_mock_tda_mocktdaaccount_save_state" in G.nodes
+    assert G.has_edge("doc_summary", "broker_mock_tda_mocktdaaccount_save_state")
+
