@@ -8,6 +8,7 @@ import os
 import urllib.error
 import urllib.request
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,13 @@ class JevShadowError(ValueError):
     """A fail-closed Jev shadow input, graph, or response error."""
 
 
+@dataclass(frozen=True)
+class _GraphSnapshot:
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
+    fingerprint: str
+
+
 def _fingerprint(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
@@ -30,7 +38,7 @@ def _fingerprint(value: Any) -> str:
 def load_task(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise JevShadowError(f"invalid task JSON: {exc}") from exc
     if not isinstance(value, dict) or set(value) - {"schema_version", "case_id", "objective", "changed_files", "seed_nodes"}:
         raise JevShadowError("task must be an object with only supported v1 fields")
@@ -78,15 +86,25 @@ def _nodes_edges(graph: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict
     return nodes, edges
 
 
-def candidate_slice(graph_path: Path, task: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+def _read_graph_snapshot(graph_path: Path) -> tuple[dict[str, Any], str]:
     try:
-        graph = json.loads(graph_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        graph_bytes = graph_path.read_bytes()
+        graph = json.loads(graph_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise JevShadowError(f"invalid graph JSON: {exc}") from exc
+    return graph, hashlib.sha256(graph_bytes).hexdigest()
+
+
+def _candidate_slice_snapshot(graph_path: Path, task: dict[str, Any]) -> _GraphSnapshot:
+    graph, fingerprint = _read_graph_snapshot(graph_path)
     nodes, edges = _nodes_edges(graph)
     node_map = {node["id"]: node for node in nodes}
     changed = set(task["changed_files"])
-    seeds = set(task["seed_nodes"]) | {node["id"] for node in nodes if node["source_file"] in changed}
+    explicit_seeds = set(task["seed_nodes"])
+    unknown_seeds = explicit_seeds - node_map.keys()
+    if unknown_seeds:
+        raise JevShadowError("task seed_nodes contain unknown graph node ids")
+    seeds = explicit_seeds | {node["id"] for node in nodes if node["source_file"] in changed}
     if not seeds:
         raise JevShadowError("task seeds matched no graph nodes")
     adjacent: dict[str, list[str]] = {node_id: [] for node_id in node_map}
@@ -103,12 +121,18 @@ def candidate_slice(graph_path: Path, task: dict[str, Any]) -> dict[str, list[di
         queue.extend(neighbor for neighbor in sorted(adjacent[node_id]) if neighbor not in seen)
     selected_set = set(selected)
     selected_edges = [edge for edge in edges if edge["source"] in selected_set and edge["target"] in selected_set][:MAX_EDGES]
-    return {"nodes": [node_map[node_id] for node_id in selected], "edges": selected_edges}
+    return _GraphSnapshot([node_map[node_id] for node_id in selected], selected_edges, fingerprint)
+
+
+def candidate_slice(graph_path: Path, task: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    snapshot = _candidate_slice_snapshot(graph_path, task)
+    return {"nodes": snapshot.nodes, "edges": snapshot.edges}
 
 
 def outbound_payload(task: dict[str, Any], graph_path: Path) -> dict[str, Any]:
-    candidates = candidate_slice(graph_path, task)
-    state = {"case_id": task["case_id"], "objective": task["objective"], "changed_files": task["changed_files"], "candidates": candidates}
+    snapshot = _candidate_slice_snapshot(graph_path, task)
+    candidates = {"nodes": snapshot.nodes, "edges": snapshot.edges}
+    state = {"case_id": task["case_id"], "objective": task["objective"], "changed_files": task["changed_files"], "candidates": candidates, "graph_fingerprint": snapshot.fingerprint}
     choices = {
         "localized": "A localized implementation area.", "multi_layer_feature": "Multiple layers of one feature.",
         "cross_cutting": "Multiple independent areas are materially involved.", "uncertain": "The bounded graph metadata is insufficient.",
@@ -130,7 +154,7 @@ def outbound_payload(task: dict[str, Any], graph_path: Path) -> dict[str, Any]:
 
 
 def _validated_response(payload: dict[str, Any], response: Any) -> dict[str, Any]:
-    if not isinstance(response, dict) or not isinstance(response.get("model"), str) or not isinstance(response.get("usage"), dict) or not isinstance(response.get("answers"), dict):
+    if not isinstance(response, dict) or not isinstance(response.get("model"), str) or not response["model"].strip() or not isinstance(response.get("usage"), dict) or not isinstance(response.get("answers"), dict):
         raise JevShadowError("TypeSafe response is missing model, usage, or answers")
     answers = response["answers"]
     if set(answers) != set(payload["questions"]):
@@ -140,11 +164,19 @@ def _validated_response(payload: dict[str, Any], response: Any) -> dict[str, Any
         if not isinstance(answer, dict) or answer.get("type") != question["type"]:
             raise JevShadowError(f"malformed answer for {question_id}")
         if question["type"] == "choice":
-            if answer.get("choice") not in question["criteria"] or not isinstance(answer.get("confidence"), (int, float)) or not isinstance(answer.get("probabilities"), dict) or set(answer["probabilities"]) != set(question["criteria"]):
+            confidence = answer.get("confidence")
+            probabilities = answer.get("probabilities")
+            if (answer.get("choice") not in question["criteria"] or not _valid_probability(confidence)
+                    or not isinstance(probabilities, dict) or set(probabilities) != set(question["criteria"])
+                    or any(not _valid_probability(value) for value in probabilities.values())):
                 raise JevShadowError(f"malformed Choice answer for {question_id}")
-        elif not isinstance(answer.get("noul"), (int, float)) or not 0 <= answer["noul"] <= 1:
+        elif not _valid_probability(answer.get("noul")):
             raise JevShadowError(f"malformed Noul answer for {question_id}")
     return response
+
+
+def _valid_probability(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and 0 <= value <= 1
 
 
 def call_typesafe(payload: dict[str, Any], api_key: str) -> dict[str, Any]:
@@ -156,11 +188,11 @@ def call_typesafe(payload: dict[str, Any], api_key: str) -> dict[str, Any]:
         raise JevShadowError(f"TypeSafe request failed: {getattr(exc, 'code', type(exc).__name__)}") from exc
 
 
-def sidecar(payload: dict[str, Any], task: dict[str, Any], graph_path: Path, response: dict[str, Any]) -> dict[str, Any]:
+def sidecar(payload: dict[str, Any], task: dict[str, Any], _graph_path: Path, response: dict[str, Any]) -> dict[str, Any]:
     answers = response["answers"]
     nodes = {node["id"]: node for node in payload["state"]["candidates"]["nodes"]}
     edges = {edge["id"]: edge for edge in payload["state"]["candidates"]["edges"]}
-    return {"schema_version": 1, "provenance": "JEV_INFERRED", "question_set_version": QUESTION_SET_VERSION, "case_id": task["case_id"], "graph_fingerprint": hashlib.sha256(graph_path.read_bytes()).hexdigest(), "task_fingerprint": _fingerprint(task), "model": response["model"], "usage": response["usage"], "graph_judgments": {key: answers[key] for key in ("blast_radius", "consumer_discovery_needed", "test_evidence_discovery_needed")}, "node_judgments": [{"node": nodes[node_id], "task_relevance": answers[f"node_relevant:{node_id}"], "semantic_role": answers[f"node_role:{node_id}"]} for node_id in nodes], "edge_judgments": [{"edge": edges[edge_id], "task_relevance_or_reverification": answers[f"edge_relevant:{edge_id}"]} for edge_id in edges]}
+    return {"schema_version": 1, "provenance": "JEV_INFERRED", "question_set_version": QUESTION_SET_VERSION, "case_id": task["case_id"], "graph_fingerprint": payload["state"]["graph_fingerprint"], "task_fingerprint": _fingerprint(task), "model": response["model"], "usage": response["usage"], "graph_judgments": {key: answers[key] for key in ("blast_radius", "consumer_discovery_needed", "test_evidence_discovery_needed")}, "node_judgments": [{"node": nodes[node_id], "task_relevance": answers[f"node_relevant:{node_id}"], "semantic_role": answers[f"node_role:{node_id}"]} for node_id in nodes], "edge_judgments": [{"edge": edges[edge_id], "task_relevance_or_reverification": answers[f"edge_relevant:{edge_id}"]} for edge_id in edges]}
 
 
 def run(argv: list[str]) -> None:
@@ -176,8 +208,12 @@ def run(argv: list[str]) -> None:
         if not api_key:
             raise JevShadowError("TYPESAFE_API_KEY is required for live jev-shadow runs")
         response = call_typesafe(payload, api_key)
+        sidecar_value = sidecar(payload, task, graph_path, response)
+        _, current_fingerprint = _read_graph_snapshot(graph_path)
+        if current_fingerprint != payload["state"]["graph_fingerprint"]:
+            raise JevShadowError("graph changed during live evaluation; refusing to write Jev sidecar")
         output = graph_path.parent / ".graphify_jev.json"
-        write_json_atomic(output, sidecar(payload, task, graph_path, response), indent=2, ensure_ascii=False)
+        write_json_atomic(output, sidecar_value, indent=2, ensure_ascii=False)
         print(f"Wrote derived Jev sidecar: {output}")
     except JevShadowError as exc:
         parser.error(str(exc))
