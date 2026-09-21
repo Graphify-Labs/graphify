@@ -53,6 +53,16 @@ def test_matcher_targets_bash_and_grep():
     assert _search_matcher()["matcher"] == "Bash|Grep"
 
 
+def test_search_hook_has_a_timeout():
+    # #3314: an unset command hook defaults to Claude Code's 600s timeout, so a
+    # single wedged guard stalls a Bash/Grep call -- the highest-frequency
+    # tools an agent uses -- for ten minutes. Guard measures ~170ms warm; a
+    # generous but bounded timeout must be present.
+    entry = _search_matcher()["hooks"][0]
+    assert isinstance(entry.get("timeout"), (int, float))
+    assert 0 < entry["timeout"] <= 30
+
+
 def test_hook_command_has_no_backslashes(monkeypatch):
     # On Windows the resolved exe is a backslash path; Claude Code runs command
     # hooks through Git Bash by default, which treats an unquoted backslash as an

@@ -26,9 +26,18 @@ def extract_dart(path: Path) -> dict:
     def _comment_replace(match: re.Match) -> str:
         token = match.group(0)
         if token.startswith("/"):
-            return ""
+            # Blank to the SAME number of newlines the comment spanned, not
+            # to an empty string: every offset computed against src_clean
+            # below (including every source_location line number) is only
+            # valid if src_clean's line count tracks the original file's.
+            # Deleting a multi-line comment outright shifted every later
+            # line number up by the comment's own height (#3365).
+            return "\n" * token.count("\n")
         return token
     src_clean = comment_string_pattern.sub(_comment_replace, src)
+
+    def _line_at(offset: int) -> int:
+        return src_clean[:offset].count("\n") + 1
 
     stem = _file_stem(path)
     file_nid = _make_id(str(path))
@@ -55,16 +64,20 @@ def extract_dart(path: Path) -> dict:
     edges = []
     defined: set[str] = set()
 
-    def add_node(nid: str, label: str, ftype: str = "code", source_file: str | None = str(path)) -> None:
+    def add_node(nid: str, label: str, ftype: str = "code", source_file: str | None = str(path),
+                 line: int | None = None) -> None:
         if nid not in defined:
             nodes.append({"id": nid, "label": label, "file_type": ftype,
-                          "source_file": source_file, "source_location": None})
+                          "source_file": source_file,
+                          "source_location": f"L{line}" if line else None})
             defined.add(nid)
 
-    def add_edge(src_id: str, tgt_id: str, relation: str, weight: float = 1.0, context: str | None = None) -> None:
+    def add_edge(src_id: str, tgt_id: str, relation: str, weight: float = 1.0, context: str | None = None,
+                 line: int | None = None) -> None:
         edge = {"source": src_id, "target": tgt_id, "relation": relation,
                 "confidence": "EXTRACTED", "confidence_score": 1.0,
-                "source_file": str(path), "source_location": None, "weight": weight}
+                "source_file": str(path),
+                "source_location": f"L{line}" if line else None, "weight": weight}
         if context:
             edge["context"] = context
         edges.append(edge)
@@ -141,9 +154,13 @@ def extract_dart(path: Path) -> dict:
     class_pattern = r"^\s*(?:(?:abstract|sealed|base|interface|final|mixin)\s+)*(?:class|mixin|enum|extension\s+type)\s+(\w+)"
     for m in re.finditer(class_pattern, src_clean, re.MULTILINE):
         class_name = m.group(1)
+        # Anchor on the capture group, not the whole match: the pattern's
+        # leading ^\s* makes m.start() land before the blank/indent lines
+        # that precede the declaration, reporting the line too early (#3365).
+        class_line = _line_at(m.start(1))
         class_nid = _make_id(stem, class_name)
-        add_node(class_nid, class_name)
-        add_edge(file_nid, class_nid, "defines")
+        add_node(class_nid, class_name, line=class_line)
+        add_edge(file_nid, class_nid, "defines", line=class_line)
 
         # Manually parse extends/on, with, and implements in header to handle nested generics brackets balanced
         start_idx = m.end()
@@ -230,7 +247,7 @@ def extract_dart(path: Path) -> dict:
         if base_class:
             base_nid = _make_id(base_class)
             add_node(base_nid, base_class, source_file=None)
-            add_edge(class_nid, base_nid, "inherits")
+            add_edge(class_nid, base_nid, "inherits", line=class_line)
 
             # Map generic type arguments (e.g. MyBloc extends Bloc<MyEvent, MyState>)
             if generics:
@@ -239,21 +256,21 @@ def extract_dart(path: Path) -> dict:
                     if gen_clean not in {"String", "int", "double", "bool", "num", "dynamic", "Object", "void"}:
                         gen_nid = _make_id(gen_clean)
                         add_node(gen_nid, gen_clean, source_file=None)
-                        add_edge(class_nid, gen_nid, "references")
+                        add_edge(class_nid, gen_nid, "references", line=class_line)
 
         # Map mixins
         for mixin in mixins_list:
             mixin_clean = mixin.split("<")[0].strip()
             mixin_nid = _make_id(mixin_clean)
             add_node(mixin_nid, mixin_clean, source_file=None)
-            add_edge(class_nid, mixin_nid, "mixes_in")
+            add_edge(class_nid, mixin_nid, "mixes_in", line=class_line)
 
         # Map interfaces
         for interface in interfaces_list:
             interface_clean = interface.split("<")[0].strip()
             interface_nid = _make_id(interface_clean)
             add_node(interface_nid, interface_clean, source_file=None)
-            add_edge(class_nid, interface_nid, "implements")
+            add_edge(class_nid, interface_nid, "implements", line=class_line)
 
         # Extract class body for precise framework dependencies and event handling
         start_idx = m.start()
@@ -273,7 +290,8 @@ def extract_dart(path: Path) -> dict:
                 event_name = em.group(1)
                 event_nid = _make_id(event_name)
                 add_node(event_nid, event_name, source_file=None)
-                add_edge(class_nid, event_nid, "calls", context="bloc_event")
+                add_edge(class_nid, event_nid, "calls", context="bloc_event",
+                          line=_line_at(brace_pos + em.start(1)))
 
             # Bloc state emissions: emit(MyState) or yield MyState
             for sm in re.finditer(r"\b(?:emit|yield)\s*\(?\s*(?:const\s+)?([A-Z]\w*)\b", class_body):
@@ -281,7 +299,8 @@ def extract_dart(path: Path) -> dict:
                 if state_name not in {"String", "List", "Map", "Set", "Future", "Stream", "Object"}:
                     state_nid = _make_id(state_name)
                     add_node(state_nid, state_name, source_file=None)
-                    add_edge(class_nid, state_nid, "calls", context="emit_state")
+                    add_edge(class_nid, state_nid, "calls", context="emit_state",
+                              line=_line_at(brace_pos + sm.start(1)))
 
             # Bloc event additions: widget.add(MyEvent()) or bloc.add(MyEvent())
             for am in re.finditer(r"\b(?:\w*[Bb]loc\w*|context\.read<\w+>\(\))\.add\(\s*(?:const\s+)?([A-Z]\w*)\b", class_body):
@@ -289,14 +308,16 @@ def extract_dart(path: Path) -> dict:
                 if event_name not in {"String", "List", "Map", "Set", "Future", "Stream", "Object"}:
                     event_nid = _make_id(event_name)
                     add_node(event_nid, event_name, source_file=None)
-                    add_edge(class_nid, event_nid, "calls", context="bloc_add_event")
+                    add_edge(class_nid, event_nid, "calls", context="bloc_add_event",
+                              line=_line_at(brace_pos + am.start(1)))
 
             # Riverpod provider references: ref.watch(provider)
             for rm in re.finditer(r"\bref\.(?:watch|read|listen)\s*\(\s*(\w+)\b", class_body):
                 provider_name = rm.group(1)
                 provider_nid = _make_id(provider_name)
                 add_node(provider_nid, provider_name, source_file=None)
-                add_edge(class_nid, provider_nid, "references", context="riverpod_reference")
+                add_edge(class_nid, provider_nid, "references", context="riverpod_reference",
+                          line=_line_at(brace_pos + rm.start(1)))
 
             # Widget to Bloc references: BlocBuilder<MyBloc, ...>
             for bm in re.finditer(r"\bBloc(?:Builder|Listener|Consumer|Provider|Selector)\s*<\s*([a-zA-Z0-9_]+)\b", class_body):
@@ -304,7 +325,8 @@ def extract_dart(path: Path) -> dict:
                 if bloc_name not in {"String", "int", "double", "bool", "num", "dynamic", "Object", "void"}:
                     bloc_nid = _make_id(bloc_name)
                     add_node(bloc_nid, bloc_name, source_file=None)
-                    add_edge(class_nid, bloc_nid, "references", context="bloc_widget_binding")
+                    add_edge(class_nid, bloc_nid, "references", context="bloc_widget_binding",
+                              line=_line_at(brace_pos + bm.start(1)))
 
             # context.read<MyBloc>() or BlocProvider.of<MyBloc>(context)
             for lm in re.finditer(r"\b(?:read|watch|select|of)\s*<([a-zA-Z0-9_]+)>", class_body):
@@ -312,7 +334,8 @@ def extract_dart(path: Path) -> dict:
                 if bloc_name not in {"String", "int", "double", "bool", "num", "dynamic", "Object", "void"}:
                     bloc_nid = _make_id(bloc_name)
                     add_node(bloc_nid, bloc_name, source_file=None)
-                    add_edge(class_nid, bloc_nid, "references", context="bloc_lookup")
+                    add_edge(class_nid, bloc_nid, "references", context="bloc_lookup",
+                              line=_line_at(brace_pos + lm.start(1)))
 
     # 2. Annotations mapping (class, mixin, enum, or function level annotations)
     # Support: @riverpod, @Riverpod(...), @injectable, @singleton, @RoutePage(), @HiveType(typeId: 0), @RestApi()
@@ -353,9 +376,10 @@ def extract_dart(path: Path) -> dict:
         if target_nid and target_name:
             actual_intervening = intervening_text[:min(class_m.start() if class_m else 300, func_m.start() if func_m else 300)]
             if ";" not in actual_intervening and "}" not in actual_intervening and "{" not in actual_intervening:
+                annotation_line = _line_at(am.start(1))
                 annotation_nid = _make_id("annotation", annotation_name.lower())
                 add_node(annotation_nid, f"@{annotation_name}", ftype="concept", source_file=None)
-                add_edge(target_nid, annotation_nid, "configures")
+                add_edge(target_nid, annotation_nid, "configures", line=annotation_line)
 
                 # Riverpod specific provider generation mapping (supports camelCase class and functional providers)
                 if annotation_name.lower() == "riverpod":
@@ -364,36 +388,38 @@ def extract_dart(path: Path) -> dict:
                      else:
                          provider_name = target_name + "Provider"
                      provider_nid = _make_id(provider_name)
-                     add_node(provider_nid, provider_name, ftype="concept", source_file=str(path))
-                     add_edge(target_nid, provider_nid, "defines", context="riverpod_provider")
+                     add_node(provider_nid, provider_name, ftype="concept", source_file=str(path), line=annotation_line)
+                     add_edge(target_nid, provider_nid, "defines", context="riverpod_provider", line=annotation_line)
 
     # 2.5 Typedefs (Type Aliases)
     typedef_pattern = r"^\s*typedef\s+(\w+)\s*(?:<[^>]+>)?\s*=\s*([a-zA-Z0-9_<>,.?\s]+);"
     for m in re.finditer(typedef_pattern, src_clean, re.MULTILINE):
         typedef_name = m.group(1)
+        typedef_line = _line_at(m.start(1))
         target_type = m.group(2).split("<")[0].split(".")[-1].strip()
         if target_type not in {"String", "int", "double", "bool", "num", "dynamic", "Object", "List", "Map", "Set", "void", "Function"}:
             typedef_nid = _make_id(stem, typedef_name)
-            add_node(typedef_nid, typedef_name)
-            add_edge(file_nid, typedef_nid, "defines")
+            add_node(typedef_nid, typedef_name, line=typedef_line)
+            add_edge(file_nid, typedef_nid, "defines", line=typedef_line)
             target_nid = _make_id(target_type)
             add_node(target_nid, target_type, source_file=None)
-            add_edge(typedef_nid, target_nid, "references", context="typedef")
+            add_edge(typedef_nid, target_nid, "references", context="typedef", line=typedef_line)
 
     # 3. Extensions (extension MyExt on MyClass)
     ext_pattern = r"^\s{0,4}extension\s+(\w+)?(?:<[^>]+>)?\s+on\s+(\w+)"
     for m in re.finditer(ext_pattern, src_clean, re.MULTILINE):
         ext_name = m.group(1) or f"{stem}_anonymous_extension"
         target_class = m.group(2)
+        ext_line = _line_at(m.start(2))
 
         ext_nid = _make_id(stem, ext_name)
         label = m.group(1) or f"Extension on {target_class}"
-        add_node(ext_nid, label)
-        add_edge(file_nid, ext_nid, "defines")
+        add_node(ext_nid, label, line=ext_line)
+        add_edge(file_nid, ext_nid, "defines", line=ext_line)
 
         target_nid = _make_id(target_class)
         add_node(target_nid, target_class, source_file=None)
-        add_edge(ext_nid, target_nid, "extends")
+        add_edge(ext_nid, target_nid, "extends", line=ext_line)
 
     # 4. Top-level and class-level variable declarations (generic variables, records, late, and destructuring)
     # Restrict indentation to 0-2 spaces to avoid matching local variables inside functions or switch expressions
@@ -408,24 +434,26 @@ def extract_dart(path: Path) -> dict:
 
         if single_name:
             if single_name not in {"if", "for", "while", "switch", "catch", "return"}:
+                var_line = _line_at(m.start(2))
                 var_nid = _make_id(stem, single_name)
-                add_node(var_nid, single_name)
-                add_edge(file_nid, var_nid, "defines")
+                add_node(var_nid, single_name, line=var_line)
+                add_edge(file_nid, var_nid, "defines", line=var_line)
 
                 if var_type and var_type not in {"String", "int", "double", "bool", "num", "dynamic", "Object", "List", "Map", "Set", "void"}:
                     clean_type = var_type.split("<")[0].split(".")[-1].strip()
                     type_nid = _make_id(clean_type)
                     add_node(type_nid, clean_type, source_file=None)
-                    add_edge(file_nid, type_nid, "references", context="variable_type")
+                    add_edge(file_nid, type_nid, "references", context="variable_type", line=var_line)
         elif destructured_names:
+            destructure_line = _line_at(m.start(3))
             for name in [n.strip() for n in destructured_names.split(",") if n.strip()]:
                 if ":" in name:
                     name = name.split(":")[-1].strip()
                 if re.match(r"^[a-zA-Z_]\w*$", name) and not re.match(r"^[A-Z]", name):
                     if name not in {"if", "for", "while", "switch", "catch", "return"}:
                         var_nid = _make_id(stem, name)
-                        add_node(var_nid, name)
-                        add_edge(file_nid, var_nid, "defines")
+                        add_node(var_nid, name, line=destructure_line)
+                        add_edge(file_nid, var_nid, "defines", line=destructure_line)
 
     # 5. Top-level and member functions/methods (supports typed/generic/record return types and Riverpod/Bloc references)
     # Restrict indentation to 0-2 spaces to avoid matching nested local functions or methods inside multiline switch statements
@@ -437,9 +465,10 @@ def extract_dart(path: Path) -> dict:
             continue
         if re.match(r"^[A-Z]", name):
             continue
+        method_line = _line_at(m.start(1))
         nid = _make_id(stem, name)
-        add_node(nid, name)
-        add_edge(file_nid, nid, "defines")
+        add_node(nid, name, line=method_line)
+        add_edge(file_nid, nid, "defines", line=method_line)
 
         # Get function body using matching brace to extract Riverpod reference patterns
         start_idx = m.start()
@@ -462,7 +491,8 @@ def extract_dart(path: Path) -> dict:
                 provider_name = rm.group(1)
                 provider_nid = _make_id(provider_name)
                 add_node(provider_nid, provider_name, source_file=None)
-                add_edge(nid, provider_nid, "references", context="riverpod_reference")
+                add_edge(nid, provider_nid, "references", context="riverpod_reference",
+                          line=_line_at(brace_pos + rm.start(1)))
 
             # Extract Bloc event additions: widget.add(MyEvent()) or bloc.add(MyEvent())
             for am in re.finditer(r"\b(?:\w*[Bb]loc\w*|context\.read<\w+>\(\))\.add\(\s*(?:const\s+)?([A-Z]\w*)\b", func_body):
@@ -470,7 +500,8 @@ def extract_dart(path: Path) -> dict:
                 if event_name not in {"String", "List", "Map", "Set", "Future", "Stream", "Object"}:
                     event_nid = _make_id(event_name)
                     add_node(event_nid, event_name, source_file=None)
-                    add_edge(nid, event_nid, "calls", context="bloc_add_event")
+                    add_edge(nid, event_nid, "calls", context="bloc_add_event",
+                              line=_line_at(brace_pos + am.start(1)))
 
             # context.read<MyBloc>() or BlocProvider.of<MyBloc>(context)
             for lm in re.finditer(r"\b(?:read|watch|select|of)\s*<([a-zA-Z0-9_]+)>", func_body):
@@ -478,39 +509,43 @@ def extract_dart(path: Path) -> dict:
                 if bloc_name not in {"String", "int", "double", "bool", "num", "dynamic", "Object", "void"}:
                     bloc_nid = _make_id(bloc_name)
                     add_node(bloc_nid, bloc_name, source_file=None)
-                    add_edge(nid, bloc_nid, "references", context="bloc_lookup")
+                    add_edge(nid, bloc_nid, "references", context="bloc_lookup",
+                              line=_line_at(brace_pos + lm.start(1)))
 
             # Universal Navigation Patters (GoRouter, AutoRoute, Navigator)
             for nm in re.finditer(r"\b(?:go|push|goNamed|pushNamed|replace|replaceNamed)\s*\(\s*(?:context\s*,\s*)?['\"]([a-zA-Z0-9_/?=&%-]+)['\"]", func_body):
                 route_path = nm.group(1)
                 route_nid = _make_id("route", route_path.replace("/", "_").replace("?", "_").replace("=", "_").replace("&", "_"))
                 add_node(route_nid, f"Route {route_path}", ftype="concept", source_file=None)
-                add_edge(nid, route_nid, "navigates", context="route_path")
+                add_edge(nid, route_nid, "navigates", context="route_path",
+                          line=_line_at(brace_pos + nm.start(1)))
 
             for cm in re.finditer(r"\b(?:go|push|goNamed|pushNamed|replace|replaceNamed)\s*\(\s*(?:context\s*,\s*)?([A-Z][a-zA-Z0-9_]*\.[a-zA-Z0-9_]+)", func_body):
                 route_const = cm.group(1)
                 route_nid = _make_id("route", route_const.replace(".", "_"))
                 add_node(route_nid, route_const, ftype="concept", source_file=None)
-                add_edge(nid, route_nid, "navigates", context="route_const")
+                add_edge(nid, route_nid, "navigates", context="route_const",
+                          line=_line_at(brace_pos + cm.start(1)))
 
             for om in re.finditer(r"\b(?:push|replace)\s*\(\s*(?:context\s*,\s*)?.*?\b([A-Z]\w*(?:Route|Screen|Page))\b", func_body):
                 route_class = om.group(1)
                 route_nid = _make_id(route_class)
                 add_node(route_nid, route_class, source_file=None)
-                add_edge(nid, route_nid, "navigates", context="route_object")
+                add_edge(nid, route_nid, "navigates", context="route_object",
+                          line=_line_at(brace_pos + om.start(1)))
 
     # 6. Imports and Exports
     for m in re.finditer(r"""^\s*import\s+['"]([^'"]+)['"]""", src_clean, re.MULTILINE):
         pkg = m.group(1)
         tgt_nid = _make_id(pkg)
         add_node(tgt_nid, pkg, source_file=None)
-        add_edge(file_nid, tgt_nid, "imports")
+        add_edge(file_nid, tgt_nid, "imports", line=_line_at(m.start(1)))
 
     for m in re.finditer(r"""^\s*export\s+['"]([^'"]+)['"]""", src_clean, re.MULTILINE):
         pkg = m.group(1)
         tgt_nid = _make_id(pkg)
         add_node(tgt_nid, pkg, source_file=None)
-        add_edge(file_nid, tgt_nid, "exports")
+        add_edge(file_nid, tgt_nid, "exports", line=_line_at(m.start(1)))
 
     # 7. Generic Invocations / Type Lookups (Universal Dependency Lookup)
     # Matches any method call with type parameters: methodName<Type>() or object.methodName<Type>()
@@ -523,6 +558,7 @@ def extract_dart(path: Path) -> dict:
         if clean_name not in type_blacklist:
             target_nid = _make_id(clean_name)
             add_node(target_nid, clean_name, source_file=None)
-            add_edge(file_nid, target_nid, "references", context="type_lookup")
+            add_edge(file_nid, target_nid, "references", context="type_lookup",
+                      line=_line_at(m.start(1)))
 
     return {"nodes": nodes, "edges": edges}

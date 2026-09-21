@@ -622,6 +622,7 @@ class TestDart(unittest.TestCase):
         # E. Bug E object destructuring variables: myVar, myAge
         self.assertIsNotNone(next((n for n in nodes if n["label"] == "myVar"), None))
         self.assertIsNotNone(next((n for n in nodes if n["label"] == "myAge"), None))
+
         # Ensure "name: myVar" or ":myVar" are NOT registered as variables!
         self.assertIsNone(
             next((n for n in nodes if "name" in n["label"] or "age" in n["label"]), None)
@@ -634,6 +635,65 @@ class TestDart(unittest.TestCase):
         )
         self.assertIsNotNone(nav_edge)
         self.assertEqual(nav_edge["target"], "route_home_id_123_type_auth")
+
+    def test_source_location_matches_declaration_line(self):
+        """#3365: every declared node must carry its real line, not None."""
+        code = textwrap.dedent("""\
+        class Greeter {
+          final String name;
+          Greeter(this.name);
+
+          String greet() {
+            return 'hello $name';
+          }
+        }
+
+        int add(int a, int b) => a + b;
+        """)
+        path = self.temp_path / "sample.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+        loc_by_label = {n["label"]: n["source_location"] for n in result["nodes"]}
+        self.assertEqual(loc_by_label["Greeter"], "L1")
+        self.assertEqual(loc_by_label["greet"], "L5")
+        self.assertEqual(loc_by_label["add"], "L10")
+        # The file node itself has no single line, unlike every other extractor.
+        self.assertIsNone(loc_by_label["sample.dart"])
+
+    def test_source_location_survives_a_leading_multiline_comment(self):
+        """#3365 trap: blanking a comment must preserve its newline count, or
+        every line number after it is undercounted by the comment's height."""
+        code = textwrap.dedent("""\
+        /*
+         * A multi-line header comment.
+         * It spans several lines.
+         */
+        class AfterComment {
+          void method() {}
+        }
+        """)
+        path = self.temp_path / "commented.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+        loc_by_label = {n["label"]: n["source_location"] for n in result["nodes"]}
+        self.assertEqual(loc_by_label["AfterComment"], "L5")
+        self.assertEqual(loc_by_label["method"], "L6")
+
+    def test_source_location_on_edges_not_just_nodes(self):
+        """#3365 follow-up: edges attributed to a declaration must also carry a
+        line, not just the nodes at either end."""
+        code = textwrap.dedent("""\
+        class Base {}
+
+        class Child extends Base {
+          void run() {}
+        }
+        """)
+        path = self.temp_path / "inherit.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+        inherits = next(e for e in result["edges"] if e["relation"] == "inherits")
+        self.assertEqual(inherits["source_location"], "L3")
 
 
 if __name__ == "__main__":

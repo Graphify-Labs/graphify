@@ -17,6 +17,7 @@ from pathlib import Path
 # absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
 # (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
 
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the version that wrote them: keying purely on file
@@ -35,7 +36,7 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 2
+_AST_CACHE_SCHEMA = 4  # Rust generic-impl identity markers + Terraform block attributes.
 
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()
@@ -399,7 +400,7 @@ def _flush_stat_index() -> None:
         try:
             os.write(fd, json.dumps(on_disk, separators=(",", ":")).encode())
             os.close(fd)
-            os.replace(tmp, p)
+            _os_replace_with_fallback(tmp, p)
         except Exception:
             try:
                 os.close(fd)
@@ -606,31 +607,35 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
     # source_file the same way nodes/edges/hyperedges do, so it needs the same
     # portable-path treatment for cache entries to round-trip correctly across
     # machines/checkout directories.
+    # definition_file (#2990) is a path into the scanned tree exactly like
+    # source_file; a cache entry keeping it absolute replayed the build host's
+    # layout on every warm hit (#3223).
     for bucket in ("nodes", "edges", "hyperedges", "raw_calls"):
         for item in payload.get(bucket, []):
             if not isinstance(item, dict):
                 continue
-            source = item.get("source_file")
-            if not source:
-                continue
-            sp = Path(source)
-            if not sp.is_absolute():
-                # os.path.abspath is lexical (no symlink resolution), matching
-                # the symbolic relativization below.
-                cwd_form = Path(os.path.abspath(sp))
-                try:
-                    if cwd_form == root_resolved / sp or not cwd_form.exists():
-                        continue  # already root-relative, or a ghost path
-                except OSError:
+            for key in ("source_file", "definition_file"):
+                source = item.get(key)
+                if not source:
                     continue
-                sp = cwd_form
-            try:
-                rel = os.path.relpath(sp, root_resolved)
-            except (ValueError, OSError):
-                continue  # out-of-root (e.g. Windows cross-drive)
-            if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
-                continue  # escaped root — keep absolute
-            item["source_file"] = rel.replace(os.sep, "/")
+                sp = Path(source)
+                if not sp.is_absolute():
+                    # os.path.abspath is lexical (no symlink resolution),
+                    # matching the symbolic relativization below.
+                    cwd_form = Path(os.path.abspath(sp))
+                    try:
+                        if cwd_form == root_resolved / sp or not cwd_form.exists():
+                            continue  # already root-relative, or a ghost path
+                    except OSError:
+                        continue
+                    sp = cwd_form
+                try:
+                    rel = os.path.relpath(sp, root_resolved)
+                except (ValueError, OSError):
+                    continue  # out-of-root (e.g. Windows cross-drive)
+                if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+                    continue  # escaped root — keep absolute
+                item[key] = rel.replace(os.sep, "/")
 
 
 def _normalize_source_file_value(src: "str | Path", root_resolved: Path) -> str:
@@ -911,16 +916,18 @@ def _absolutize_source_files_in(payload: dict, root: Path) -> None:
         for item in payload.get(bucket, []):
             if not isinstance(item, dict):
                 continue
-            source = item.get("source_file")
-            if not source:
-                continue
-            sp = Path(source)
-            if sp.is_absolute():
-                continue
-            try:
-                item["source_file"] = str(root_resolved / sp)
-            except (TypeError, OSError):
-                continue
+            # Mirror of the relativize side: definition_file re-anchors too (#3223).
+            for key in ("source_file", "definition_file"):
+                source = item.get(key)
+                if not source:
+                    continue
+                sp = Path(source)
+                if sp.is_absolute():
+                    continue
+                try:
+                    item[key] = str(root_resolved / sp)
+                except (TypeError, OSError):
+                    continue
 
 
 def cache_dir(root: Path = Path("."), kind: str = "ast",
@@ -1120,14 +1127,7 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     try:
         os.write(fd, json.dumps(on_disk).encode())
         os.close(fd)
-        try:
-            os.replace(tmp_path, entry)
-        except PermissionError:
-            # Windows: os.replace can fail with WinError 5 if the target is
-            # briefly locked. Fall back to copy-then-delete.
-            import shutil
-            shutil.copy2(tmp_path, entry)
-            os.unlink(tmp_path)
+        _os_replace_with_fallback(tmp_path, entry)
     except Exception:
         try:
             os.close(fd)
@@ -1490,6 +1490,31 @@ def save_semantic_cache(
     if allowed_source_files is not None:
         allowed_paths = {source_path(path) for path in allowed_source_files}
 
+    def _recover_group_path(fpath: str) -> tuple[Path, Path]:
+        """Return ``(cache_path, resolved_path)`` for one ``by_file`` group,
+        recovering an unresolvable ``source_file`` via an unambiguous
+        basename match against ``allowed_paths`` when one is available (#2973).
+
+        The adaptive-retry split path (``llm.py``'s bisect-and-retry on a
+        chunk that overflowed a weak/local backend's context) sometimes
+        re-prompts with a reduced file subset and loses track of which of
+        the original chunk's files a given node came from, so its
+        ``source_file`` never resolves to a real path at all. Recovering it
+        against the known-good, already-dispatched allowlist -- and ONLY
+        when the basename is unambiguous there -- lets that group's nodes
+        and edges reach the cache instead of silently vanishing on every
+        incremental run. A genuinely bogus or ambiguous basename still
+        falls through unrecovered to the existing skip behavior below.
+        """
+        cache_path = source_path(fpath)
+        resolved = resolved_source_path(fpath)
+        if not resolved.is_file() and allowed_paths is not None:
+            candidates = [ap for ap in allowed_paths if ap.name == cache_path.name]
+            if len(candidates) == 1:
+                cache_path = candidates[0]
+                resolved = candidates[0]
+        return cache_path, resolved
+
     partial_paths = None
     if partial_source_files is not None:
         partial_paths = {source_path(path) for path in partial_source_files}
@@ -1506,9 +1531,9 @@ def save_semantic_cache(
 
     def group_skipped(fpath: str) -> bool:
         """Mirror the write-loop skip condition for one source_file group."""
-        p = resolved_source_path(fpath)
+        cache_path, p = _recover_group_path(fpath)
         return not p.is_file() or (
-            allowed_paths is not None and source_path(fpath) not in allowed_paths
+            allowed_paths is not None and cache_path not in allowed_paths
         )
 
     # Dangling-reference pruning (#1916). A node group is skipped by the write
@@ -1565,9 +1590,26 @@ def save_semantic_cache(
     saved = 0
     skipped_not_file = 0
     for fpath, result in by_file.items():
-        cache_path = source_path(fpath)
-        p = resolved_source_path(fpath)
+        cache_path, p = _recover_group_path(fpath)
         if p.is_file():
+            if cache_path != source_path(fpath):
+                # #2973: recovery only redirected the WRITE KEY. Each item in
+                # this group still carries the original unresolvable
+                # source_file string, and _semantic_entry_matches_path
+                # rejects an entry on read if any item's source_file doesn't
+                # match the path it was loaded under -- so leaving the old
+                # value in place would write a "successful" entry that can
+                # never actually be read back, silently reproducing the same
+                # loss this recovery exists to fix.
+                corrected = _normalize_value(str(cache_path))
+                result = {
+                    **result,
+                    "nodes": [{**n, "source_file": corrected} for n in result["nodes"]],
+                    "edges": [{**e, "source_file": corrected} for e in result["edges"]],
+                    "hyperedges": [
+                        {**h, "source_file": corrected} for h in result["hyperedges"]
+                    ],
+                }
             if allowed_paths is not None and cache_path not in allowed_paths:
                 warnings.warn(
                     "semantic cache skipped out-of-scope source_file "

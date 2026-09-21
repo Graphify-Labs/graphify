@@ -1524,6 +1524,40 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     return result
 
 
+def _envelope_after_preamble(stdout: str):
+    """Recover the envelope when `claude -p` prefixes it with a diagnostic line.
+
+    The CLI shares stdout with its own subsystems, so the JSON is not always the
+    first thing on it. An attached MCP server that advertises no tools makes
+    every invocation emit
+
+        Client.listTools() called but server does not advertise tools capability
+        - returning empty list
+
+    ahead of the envelope, and `json.loads` then fails on the whole buffer.
+    Because that failure is raised after the model has already answered, the
+    chunk is discarded with its tokens spent -- on a mid-size corpus a run could
+    burn the whole budget and return nothing, and the error names the JSON
+    rather than the preamble that caused it, so the log points at the wrong
+    thing. Any user with an MCP server configured hits this on every chunk.
+
+    Scans for the first `[`/`{` that begins a valid JSON document. `raw_decode`
+    ignores trailing bytes, so a diagnostic on either side is tolerated, and
+    stdout carrying no JSON at all still returns None for the caller to raise on.
+    """
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(stdout):
+        if ch not in "[{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(stdout, idx)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, (dict, list)):
+            return value
+    return None
+
+
 def _claude_cli_envelope(stdout: str) -> dict:
     """Parse the JSON returned by `claude -p --output-format json`.
 
@@ -1536,10 +1570,12 @@ def _claude_cli_envelope(stdout: str) -> dict:
     try:
         envelope = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"claude -p produced unparseable JSON envelope: {exc}; "
-            f"first 500 chars of stdout: {stdout[:500]!r}"
-        ) from exc
+        envelope = _envelope_after_preamble(stdout)
+        if envelope is None:
+            raise RuntimeError(
+                f"claude -p produced unparseable JSON envelope: {exc}; "
+                f"first 500 chars of stdout: {stdout[:500]!r}"
+            ) from exc
     if isinstance(envelope, list):
         result_events = [
             e for e in envelope
@@ -3108,6 +3144,31 @@ def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
         )
 
 
+# Everything detect_backend() reads besides the per-backend API keys. Kept next to
+# the function so a new probe below is added here too; tests clear this whole set
+# (tests/conftest.py) so a developer's own keys can never steer them (#3481).
+_BACKEND_DETECTION_EXTRA_ENV = (
+    "AZURE_OPENAI_ENDPOINT",
+    "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
+    "OLLAMA_BASE_URL", "OLLAMA_HOST",
+)
+
+
+def backend_detection_env_vars() -> tuple[str, ...]:
+    """Every environment variable ``detect_backend()`` consults, in probe order.
+
+    Covers the API-key variables of every registered backend (built-in and
+    custom) plus the endpoint/region/host variables checked directly.
+    """
+    seen: dict[str, None] = {}
+    for name in BACKENDS:
+        for env_key in _backend_env_keys(name):
+            seen.setdefault(env_key, None)
+    for env_key in _BACKEND_DETECTION_EXTRA_ENV:
+        seen.setdefault(env_key, None)
+    return tuple(seen)
+
+
 def detect_backend() -> str | None:
     """Return the name of whichever backend has an API key set, or None.
 
@@ -3139,6 +3200,21 @@ def detect_backend() -> str | None:
             if _get_backend_api_key(name):
                 return name
     return None
+
+
+def _claude_cli_available() -> bool:
+    """True if the Claude Code CLI can actually be launched.
+
+    Mirrors the resolution in the claude-cli request path: a bare ``claude`` on
+    POSIX, and ``claude.cmd`` on Windows, where CreateProcess cannot resolve the
+    npm shim from the bare name.
+    """
+    import platform
+    import shutil
+
+    if platform.system() == "Windows":
+        return bool(shutil.which("claude.cmd") or shutil.which("claude"))
+    return shutil.which("claude") is not None
 
 
 # ── Community labeling ────────────────────────────────────────────────────────
@@ -3434,6 +3510,15 @@ def generate_community_labels(
             backend = detect_backend()
         except Exception:
             backend = None
+    if not backend and _claude_cli_available():
+        # `detect_backend` is key-based, and claude-cli is the one backend with no
+        # key to find, so it can never be detected there — and widening detection
+        # itself would change extraction's contract, which deliberately refuses to
+        # run without a configured backend. Here the alternative is not an error but
+        # a SILENT DOWNGRADE: replacing every real community name with
+        # "Community N" and exiting 0, which overwrites a good graph with a worse
+        # one while reporting success. An installed CLI is better than that.
+        backend = "claude-cli"
     if not backend:
         if not quiet:
             print(
