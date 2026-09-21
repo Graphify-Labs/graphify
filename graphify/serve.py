@@ -180,6 +180,18 @@ class _GraphContextCache:
             return entry["G"], entry["communities"]
 
 
+def _node_arg(arguments: dict) -> str:
+    """The node identifier a lookup tool was called with.
+
+    ``get_node``/``get_neighbors`` historically read ``arguments["label"]`` only, so a client that
+    passes the node under ``node_id`` (or ``id``) — several of the agent frameworks graphify targets
+    do — raised ``KeyError('label')`` instead of being served. Accept the common spellings; callers
+    treat an empty string as "no identifier given" and answer with guidance rather than a traceback.
+    """
+    v = arguments.get("label") or arguments.get("node_id") or arguments.get("id") or ""
+    return v if isinstance(v, str) else str(v)
+
+
 def _strip_diacritics(text: str | None) -> str:
     import unicodedata
     if not isinstance(text, str):
@@ -1890,8 +1902,10 @@ def _build_server(graph_path: str):
                 description="Get full details for a specific node by label or ID.",
                 inputSchema={
                     "type": "object",
-                    "properties": {"label": {"type": "string", "description": "Node label or ID to look up"}},
-                    "required": ["label"],
+                    "properties": {
+                        "label": {"type": "string", "description": "Node label or ID to look up"},
+                        "node_id": {"type": "string", "description": "Alias for label (node id)"},
+                    },
                 },
             ),
             types.Tool(
@@ -1901,10 +1915,10 @@ def _build_server(graph_path: str):
                     "type": "object",
                     "properties": {
                         "label": {"type": "string"},
+                        "node_id": {"type": "string", "description": "Alias for label (node id)"},
                         "relation_filter": {"type": "string", "description": "Optional: filter by relation type"},
                         "token_budget": {"type": "integer", "default": 2000, "description": "Max output tokens"},
                     },
-                    "required": ["label"],
                 },
             ),
             types.Tool(
@@ -2049,7 +2063,10 @@ def _build_server(graph_path: str):
         return result
 
     def _tool_get_node(arguments: dict) -> str:
-        label = arguments["label"].lower()
+        raw = _node_arg(arguments)
+        if not raw:
+            return "Provide a node label or id (accepted keys: label, node_id, id)."
+        label = raw.lower()
         nid, err = _resolve_single_node(G, label)
         if err:
             return err
@@ -2079,7 +2096,10 @@ def _build_server(graph_path: str):
         ])
 
     def _tool_get_neighbors(arguments: dict) -> str:
-        label = arguments["label"].lower()
+        raw = _node_arg(arguments)
+        if not raw:
+            return "Provide a node label or id (accepted keys: label, node_id, id)."
+        label = raw.lower()
         rel_filter = arguments.get("relation_filter", "").lower()
         nid, err = _resolve_single_node(G, label)
         if err:
