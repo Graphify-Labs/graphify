@@ -514,8 +514,9 @@ def _infer_merge_root(graph_path: Path) -> str | None:
         marker = parent / ".graphify_root"
         if marker.exists():
             recorded = marker.read_text(encoding="utf-8-sig").strip()
-            if recorded:
-                return str(Path(recorded).resolve())
+            recorded_path = Path(recorded)
+            if recorded and recorded_path.is_dir():
+                return str(recorded_path.resolve())
     except OSError:
         pass
     from .paths import GRAPHIFY_OUT
