@@ -61,7 +61,7 @@ def _is_ast_tier(item: dict) -> bool:
 # every relation: ranking `contains` against `calls` would be inventing a
 # cross-axis judgement, whereas "specific beats generic" is the only comparison
 # this collapse actually needs.
-_GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"})
+_GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions", "contains"})
 
 # Import-family relations whose target may legitimately be a module OUTSIDE the
 # graph (stdlib, a third-party dependency, another repo). Historically the edge

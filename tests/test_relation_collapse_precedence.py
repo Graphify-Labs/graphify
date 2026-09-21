@@ -24,8 +24,8 @@ import pytest
 from graphify.build import build_from_json, edge_data
 
 SPECIFIC = ["calls", "imports", "imports_from", "inherits", "implements",
-            "method", "indirect_call", "re_exports", "contains"]
-GENERIC = ["references", "uses", "mentions"]
+            "method", "indirect_call", "re_exports"]
+GENERIC = ["references", "uses", "mentions", "contains"]
 
 
 def _extraction(edges):
@@ -99,10 +99,18 @@ def test_two_generic_relations_keep_previous_behaviour():
 
 
 def test_two_specific_relations_keep_previous_behaviour():
-    """Deliberately NOT ranked against each other — `contains` vs `calls` is a
+    """Deliberately NOT ranked against each other — `inherits` vs `calls` is a
     cross-axis judgement this collapse does not need to make."""
-    G = build_from_json(_extraction([_edge("calls"), _edge("contains")]))
-    assert _relation(G) in {"calls", "contains"}
+    G = build_from_json(_extraction([_edge("calls"), _edge("inherits")]))
+    assert _relation(G) in {"calls", "inherits"}
+
+
+def test_specific_beats_contains():
+    """Issue #3704: specific relations like indirect_call beat contains regardless of arrival order."""
+    G1 = build_from_json(_extraction([_edge("indirect_call"), _edge("contains")]))
+    assert _relation(G1) == "indirect_call"
+    G2 = build_from_json(_extraction([_edge("contains"), _edge("indirect_call")]))
+    assert _relation(G2) == "indirect_call"
 
 
 def test_collapse_still_yields_exactly_one_edge():
