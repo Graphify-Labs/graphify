@@ -1062,6 +1062,9 @@ def _reenter_main() -> None:
 
 
 def dispatch_command(cmd: str) -> None:
+    if cmd == "jev-shadow":
+        from graphify.jev_shadow import run as _jev_shadow_run
+        return _jev_shadow_run(sys.argv[2:])
     if cmd == "provider":
         from graphify.llm import _custom_providers_path, BACKENDS
         import json as _json
