@@ -478,3 +478,102 @@ def test_clojure_inline_reify_and_proxy_implement_protocols(tmp_path):
     assert ("make-list", "log") in calls
     # the impl heads are definitions, not calls to the protocol method
     assert ("make-listener", "on-message") not in calls
+
+
+def test_clojure_file_without_ns_form_attaches_to_file_node(tmp_path):
+    source = tmp_path / "script.clj"
+    source.write_text(
+        "(defn helper [] 1)\n(defn run [] (helper))\n(run)\n", encoding="utf-8"
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    assert {"script.clj", "helper", "run"} <= {node["label"] for node in result["nodes"]}
+    contains = _edge_labels(result, "contains")
+    assert ("script.clj", "run") in contains
+    calls = _edge_labels(result, "calls")
+    assert ("run", "helper") in calls
+    assert ("script.clj", "run") in calls  # top-level call attributed to the file
+
+
+def test_clojure_arrow_prefixed_functions_are_calls_not_constructors(tmp_path):
+    cookies = tmp_path / "cookies.clj"
+    cookies.write_text(
+        "(ns app.cookies)\n"
+        "(defn ->seconds [interval] (* 60 interval))\n"
+        "(defrecord Cookie [v])\n"
+        "(defn expiry [n] (->seconds n) (->Cookie 1))\n",
+        encoding="utf-8",
+    )
+    core = tmp_path / "core.clj"
+    core.write_text(
+        "(ns app.core (:require [app.cookies :as c]))\n"
+        "(defn run [] (c/->seconds 5) (c/->Cookie 2))\n",
+        encoding="utf-8",
+    )
+
+    result = extract([core, cookies], cache_root=tmp_path)
+
+    calls = _edge_labels(result, "calls")
+    references = _edge_labels(result, "references")
+    assert ("expiry", "->seconds") in calls
+    assert ("run", "->seconds") in calls
+    assert ("expiry", "Cookie") in references
+    assert ("run", "Cookie") in references
+
+
+def test_clojure_shadowing_is_lexically_scoped(tmp_path):
+    source = tmp_path / "scope.clj"
+    source.write_text(
+        "(ns app.scope)\n"
+        "(defn status [x] x)\n"
+        "(defn handler [x] x)\n"
+        "(defn f [x]\n"
+        "  (let [status 1] (+ status x))\n"
+        "  (status x))\n"
+        "(defn g [x]\n"
+        "  ((fn [handler] (handler x)) inc)\n"
+        "  (handler x))\n"
+        "(defn h [x]\n"
+        "  (try (status x) (catch Exception status (str status))))\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    calls = _edge_labels(result, "calls")
+    references = _edge_labels(result, "references")
+    # the call outside the shadowing form still resolves
+    assert ("f", "status") in calls
+    assert ("g", "handler") in calls
+    assert ("h", "status") in calls
+    # but nothing inside the shadowing form points at the def
+    lines_status_f = [
+        edge["source_location"] for edge in result["edges"]
+        if edge["relation"] in {"calls", "references"}
+        and edge["source_location"] == "L5"
+    ]
+    assert lines_status_f == []
+    assert ("g", "status") not in calls and ("g", "status") not in references
+
+
+def test_clojure_qualified_call_ignores_refer_all_namespaces(tmp_path):
+    a = tmp_path / "a.clj"
+    a.write_text("(ns a)\n(defn thing [] 1)\n", encoding="utf-8")
+    b = tmp_path / "b.clj"
+    b.write_text("(ns b)\n(defn thing [] 2)\n", encoding="utf-8")
+    core = tmp_path / "core.clj"
+    core.write_text(
+        "(ns core (:require [a :as a] [b :refer :all]))\n(defn run [] (a/thing))\n",
+        encoding="utf-8",
+    )
+
+    result = extract([core, a, b], cache_root=tmp_path)
+
+    labels = {node["id"]: node for node in result["nodes"]}
+    targets = [
+        labels[edge["target"]]["metadata"]["namespace"]
+        for edge in result["edges"]
+        if edge["relation"] == "calls" and labels[edge["source"]]["label"] == "run"
+    ]
+    assert targets == ["a"]
