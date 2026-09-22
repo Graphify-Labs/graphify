@@ -6950,6 +6950,34 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     return idx, result
 
 
+def _spawn_cannot_reimport_main() -> bool:
+    """True when a spawn-based process pool cannot bootstrap because the caller's
+    ``__main__`` has no importable file — stdin (``… | python -``), ``python -c``,
+    or a REPL.
+
+    Under the spawn start method (the Windows default, and macOS since 3.8) each
+    worker re-imports the parent's ``__main__`` by its ``__file__`` path. For a
+    stdin/-c/REPL caller that path is missing or bogus (``<stdin>``), so every
+    worker dies during bootstrap and the pool raises ``BrokenProcessPool`` before
+    any work is done. The shipped SKILL.md pipes a heredoc into the interpreter,
+    so on Windows this is the common path, not an edge case — detecting it up
+    front lets the caller run sequentially without a wall of worker tracebacks
+    (#3669). A script WITH a real ``__main__`` file but no ``if __name__ ==
+    "__main__"`` guard is a different failure this does not (and cannot) catch
+    here; that one still surfaces via the ``BrokenProcessPool`` fallback."""
+    import multiprocessing
+
+    if (
+        multiprocessing.get_start_method(allow_none=True) != "spawn"
+        and sys.platform != "win32"
+    ):
+        return False
+    import __main__
+
+    main_file = getattr(__main__, "__file__", None)
+    return main_file is None or not os.path.isfile(main_file)
+
+
 def _extract_parallel(
     uncached_work: list[tuple[int, Path]],
     per_file: list[dict | None],
@@ -7277,6 +7305,26 @@ def extract(
 
     # Phase 2: extract uncached files (parallel or sequential)
     if uncached_work:
+        # Skip the pool up front when spawn workers could not re-import our
+        # __main__ (stdin/-c/REPL) — otherwise every worker dies on bootstrap and
+        # the run is a wall of BrokenProcessPool tracebacks before falling back to
+        # the same sequential path anyway. This is exactly what SKILL.md's stdin
+        # invocation triggers on Windows (#3669).
+        if (
+            parallel
+            and len(uncached_work) >= _PARALLEL_THRESHOLD
+            and _spawn_cannot_reimport_main()
+        ):
+            print(
+                "  note: running AST extraction sequentially — a parallel pool "
+                "needs an importable __main__ to relaunch workers, which a stdin "
+                "(`… | python -`), `python -c`, or REPL invocation does not have. "
+                "Write the step to a .py file (or pass parallel=False) to silence "
+                "this.",
+                file=sys.stderr,
+                flush=True,
+            )
+            parallel = False
         ran_parallel = False
         if parallel and len(uncached_work) >= _PARALLEL_THRESHOLD:
             ran_parallel = _extract_parallel(
