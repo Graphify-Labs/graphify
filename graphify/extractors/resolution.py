@@ -93,9 +93,11 @@ def _strip_jsonc(text: str) -> str:
     return stripped
 
 def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[str, list[str]]:
-    """Recursively read path aliases from a tsconfig, following extends chains.
+    """Recursively read path aliases from a tsconfig, following extends chains
+    and `references` project links (the solution-file layout, #3745).
 
-    Child config paths override parent. Circular extends are detected via seen set.
+    Child config paths override parent. Circular extends/references are detected
+    via seen set.
     npm package configs (e.g. @tsconfig/svelte) are skipped since they're not on disk.
     Handles JSONC (comments + trailing commas) which is the default tsconfig format
     for SvelteKit, NestJS, Vite, T3, Astro, etc. (#700).
@@ -143,6 +145,33 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
             extended_path = extended_path.with_suffix(".json")
         if extended_path.exists():
             aliases.update(_read_tsconfig_aliases(extended_path, extended_path.parent, seen))
+
+    # `references` — the solution-file / `tsc -b` layout (Vite, React, many
+    # monorepos): the root tsconfig.json is a solution file (`"files": []` with
+    # `references: [{path: ...}]`) that carries no `paths` of its own; every
+    # compilerOptions.paths block lives in a referenced project config
+    # (tsconfig.app.json, tsconfig.node.json, …). `extends` is not involved, so
+    # without following references the walk-up finds the solution file, sees no
+    # paths and no extends, and stops — every alias import then silently gets no
+    # edge (#3745). Merge each referenced config like an additional parent (the
+    # referencing config's own `paths` below still override), guarded by the same
+    # `seen` set that already protects extends against cycles. A reference `path`
+    # may name a directory (resolved to its tsconfig.json, per `tsc -b`) or a file.
+    references = data.get("references")
+    if isinstance(references, list):
+        for ref in references:
+            if not isinstance(ref, dict):
+                continue
+            ref_path = ref.get("path")
+            if not isinstance(ref_path, str) or not ref_path:
+                continue
+            referenced = _resolve_cached(base_dir / ref_path)
+            if referenced.is_dir():
+                referenced = referenced / "tsconfig.json"
+            elif not referenced.suffix:
+                referenced = referenced.with_suffix(".json")
+            if referenced.exists():
+                aliases.update(_read_tsconfig_aliases(referenced, referenced.parent, seen))
 
     # tsconfig `paths` are resolved relative to `baseUrl` (itself relative to
     # the tsconfig's directory), not the tsconfig directory directly. Honoring
@@ -212,7 +241,9 @@ def _find_js_config(start_dir: Path) -> "tuple[Path, Path] | None":
 def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
     """Walk up from start_dir to find tsconfig/jsconfig.json and return compilerOptions.paths aliases.
 
-    Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
+    Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included,
+    and `references` so a Vite/`tsc -b` solution-file root reaches the per-project
+    `paths` (#3745).
     Returns a dict mapping alias patterns to ordered resolved target patterns;
     wildcard tokens remain intact for substitution during resolution (#927).
     Result is cached by config path string. The cache has no mtime/content
