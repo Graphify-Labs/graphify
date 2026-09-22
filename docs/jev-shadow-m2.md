@@ -23,14 +23,20 @@ Changed-file symbols are T1 eligible and rank ahead of unrelated expansion
 nodes. The remaining eligible set is the two-hop structural neighbourhood.
 Selection has stable id tie-breaking and an inspectable candidate fingerprint.
 
-Offline references are independent of Jev: file anchors, old-side
-patch-hunk-overlapping pre-change symbols where source ranges exist, and their
-direct call/import/reference/inheritance/test relationships. Added symbols are
-`not_prechange_referenceable`, not false negatives.
+Offline references are independent of Jev and are reported in separate tiers:
+R0 file anchors, R1 old-side patch-hunk-overlapping pre-change symbols where
+source ranges exist, and R2 direct call/import/reference/inheritance/test
+relationships from R1 symbols or explicit task seeds. File membership is
+descriptive only; `contains` and `defines` edges from file anchors are not
+reference evidence. Added symbols are `NOT_REFERENCEABLE`, not false negatives.
+
+Changed-file coverage separately records base-present files, graph-represented
+files, resolved or ambiguous file anchors, and graph-unrepresented files.
+Ambiguous file anchors are never guessed. Historical diff extraction uses the
+Graphify repository root explicitly, so evaluation is independent of shell CWD.
 
 The repaired retained-M1 run had no T0 overflow at 8, 12, 20, or 40 nodes and
-retained all resolved file anchors. Its snapshots lack source ranges, so
-patch-touched-symbol recall is not referenceable. The result is
-`M2_EVIDENCE_REJECTS_COMPACTION`: no compact strategy is promoted and no new
-Jev calls are made. A future file/subsystem-first experiment may be warranted
-if range-equipped evidence continues to show weak symbol-level recall.
+retained all resolved file anchors. The offline result is
+`M2_EVIDENCE_INCONCLUSIVE`: no compact strategy is promoted and no new Jev
+calls are made. Omitted changed-file symbols, omitted membership edges, and
+`NOT_REFERENCEABLE` patch symbols do not by themselves reject compaction.

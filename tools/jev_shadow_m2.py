@@ -14,7 +14,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from graphify.jev_shadow import JevShadowError, _file_anchors, _nodes_edges, _same_source_file, candidate_selection
+from graphify.jev_shadow import JevShadowError, _file_anchor_statuses, _file_anchors, _is_file_node, _nodes_edges, _same_source_file, candidate_selection
 try:  # package import in tests; direct sibling import when run as a script
     from tools import jev_shadow_eval as m1
 except ModuleNotFoundError:  # pragma: no cover - exercised by the CLI
@@ -26,10 +26,10 @@ STRATEGIES = ("distance-v2", "ranked-v2")
 
 def _old_hunks(merge_base: str, head: str, path: str) -> list[tuple[int, int]]:
     """Old-side modified/deleted ranges; evaluation-only historical evidence."""
-    output = subprocess.run(["git", "diff", "--unified=0", merge_base, head, "--", path], check=True,
+    output = subprocess.run(["git", "-C", str(m1.ROOT), "diff", "--unified=0", merge_base, head, "--", path], check=True,
                             text=True, stdout=subprocess.PIPE).stdout
     ranges = []
-    for start, count in re.findall(r"@@ -(\\d+)(?:,(\\d+))? ", output):
+    for start, count in re.findall(r"@@ -(\d+)(?:,(\d+))? ", output):
         if int(count or 1):
             ranges.append((int(start), int(count or 1)))
     return ranges
@@ -37,7 +37,7 @@ def _old_hunks(merge_base: str, head: str, path: str) -> list[tuple[int, int]]:
 
 def _source_range(node: dict[str, Any]) -> tuple[int, int] | None:
     value = str(node.get("source_location") or "")
-    match = re.search(r"L?(\\d+)(?:\\s*(?:-|–|to)\\s*L?(\\d+))?", value)
+    match = re.search(r"L?(\d+)(?:\s*(?:-|–|to)\s*L?(\d+))?", value)
     if not match:
         return None
     return int(match.group(1)), int(match.group(2) or match.group(1))
@@ -54,10 +54,11 @@ def _reference(graph_path: Path, task: dict[str, Any], *, merge_base: str, head:
             end = start + count - 1
             for node in nodes:
                 source_range = _source_range(node)
-                if _same_source_file(node["source_file"], changed) and source_range and source_range[0] <= end and start <= source_range[1]:
+                if (_same_source_file(node["source_file"], changed) and not _is_file_node(node)
+                        and source_range and source_range[0] <= end and start <= source_range[1]):
                     patch_ids.add(node["id"])
-    seeds = set(anchor_ids) | patch_ids | set(task["seed_nodes"])
-    useful = {"calls", "imports", "contains", "defines", "inherits", "implements", "references", "tests"}
+    seeds = patch_ids | set(task["seed_nodes"])
+    useful = {"calls", "imports", "inherits", "implements", "references", "tests"}
     reference_edges = {edge["id"] for edge in edges if (edge["source"] in seeds or edge["target"] in seeds) and edge["relationship"].lower() in useful}
     structural_ids = set(seeds)
     for edge in edges:
@@ -97,8 +98,11 @@ def evaluate(cases: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         graph_path, task = Path(record["graph_path"]), record["task"]
         references, reference_edges = _reference(graph_path, task, merge_base=record["merge_base_sha"], head=record["head_sha"])
+        nodes, _ = _nodes_edges(json.loads(graph_path.read_text(encoding="utf-8")))
+        anchor_statuses = _file_anchor_statuses(nodes, case["changed_files"])
+        patch_referenceable = bool(references["patch_touched_prechange"])
         reference_nodes = set().union(*references.values())
-        base = {"case_id": case["case_id"], "pr": case["pr"], "baseline": _baseline_details(record), "reference_provenance": {key: sorted(value) for key, value in references.items()}, "reference_node_count": len(reference_nodes), "reference_edge_count": len(reference_edges), "patch_categories": sorted({"test" if path.startswith("tests/") else "documentation" if path.endswith((".md", ".rst")) else "configuration" if path.endswith((".yml", ".yaml", ".toml", ".json")) else "code" for path in case["changed_files"]}), "runs": []}
+        base = {"case_id": case["case_id"], "pr": case["pr"], "baseline": _baseline_details(record), "reference_provenance": {key: sorted(value) for key, value in references.items()}, "reference_node_count": len(reference_nodes), "reference_edge_count": len(reference_edges), "patch_referenceability": "REFERENCEABLE" if patch_referenceable else "NOT_REFERENCEABLE", "changed_file_coverage": {"base_present": sorted(task["changed_files"]), "graph_represented": sorted(path for path, status in anchor_statuses.items() if status != "GRAPH_UNREPRESENTED"), "file_anchor_resolved": sorted(path for path, status in anchor_statuses.items() if status == "ANCHOR_RESOLVED"), "file_anchor_ambiguous": sorted(path for path, status in anchor_statuses.items() if status == "ANCHOR_AMBIGUOUS"), "graph_unrepresented": sorted(path for path, status in anchor_statuses.items() if status == "GRAPH_UNREPRESENTED")}, "patch_categories": sorted({"test" if path.startswith("tests/") else "documentation" if path.endswith((".md", ".rst")) else "configuration" if path.endswith((".yml", ".yaml", ".toml", ".json")) else "code" for path in case["changed_files"]}), "runs": []}
         for strategy in STRATEGIES:
             for budget in BUDGETS:
                 try:
@@ -106,11 +110,11 @@ def evaluate(cases: list[dict[str, Any]]) -> dict[str, Any]:
                     selected_nodes = {node["id"] for node in result["nodes"]}
                     selected_edges = {edge["id"] for edge in result["edges"]}
                     recall = lambda key: len(selected_nodes & references[key]) / len(references[key]) if references[key] else None
-                    base["runs"].append({"strategy": strategy, "budget": budget, "status": "OK", "candidate_nodes": len(selected_nodes), "candidate_edges": len(selected_edges), "file_anchor_recall": recall("file_anchors"), "patch_touched_prechange_recall": recall("patch_touched_prechange"), "structural_consequence_recall": recall("structural_consequences"), "reference_node_recall": len(selected_nodes & reference_nodes) / len(reference_nodes) if reference_nodes else None, "reference_edge_recall": len(selected_edges & reference_edges) / len(reference_edges) if reference_edges else None, "mandatory_retained": set(result["metadata"]["mandatory_node_ids"]).issubset(selected_nodes), "anchor_unresolved_files": result["metadata"]["anchor_unresolved_files"], "source_file_coverage": len({node["source_file"] for node in result["nodes"] if node["source_file"]}), "test_evidence_retained": any(node["source_file"].startswith("tests/") for node in result["nodes"]), "consumer_evidence_retained": bool(selected_edges & reference_edges), "node_cap_reached": result["metadata"]["node_cap_reached"], "edge_cap_reached": result["metadata"]["edge_cap_reached"], "candidate_fingerprint": result["candidate_fingerprint"]})
+                    base["runs"].append({"strategy": strategy, "budget": budget, "status": "OK", "candidate_nodes": len(selected_nodes), "candidate_edges": len(selected_edges), "file_anchor_recall": recall("file_anchors"), "patch_touched_prechange_recall": recall("patch_touched_prechange"), "structural_consequence_recall": recall("structural_consequences"), "reference_node_recall": len(selected_nodes & reference_nodes) / len(reference_nodes) if reference_nodes else None, "reference_edge_recall": len(selected_edges & reference_edges) / len(reference_edges) if reference_edges else None, "mandatory_retained": set(result["metadata"]["mandatory_node_ids"]).issubset(selected_nodes), "anchor_unresolved_files": result["metadata"]["anchor_unresolved_files"], "anchor_ambiguous_files": result["metadata"]["anchor_ambiguous_files"], "graph_unrepresented_files": result["metadata"]["graph_unrepresented_files"], "source_file_coverage": len({node["source_file"] for node in result["nodes"] if node["source_file"]}), "test_evidence_retained": any(node["source_file"].startswith("tests/") for node in result["nodes"]), "consumer_evidence_retained": bool(selected_edges & reference_edges), "node_cap_reached": result["metadata"]["node_cap_reached"], "edge_cap_reached": result["metadata"]["edge_cap_reached"], "candidate_fingerprint": result["candidate_fingerprint"]})
                 except JevShadowError as exc:
                     base["runs"].append({"strategy": strategy, "budget": budget, "status": str(exc)})
         rows.append(base)
-    return {"schema_version": 1, "m1_prepared_cases": len(rows), "m1_unresolved_cases": len(cases) - len(rows), "budgets": list(BUDGETS), "strategies": list(STRATEGIES), "cases": rows}
+    return {"schema_version": 2, "m1_prepared_cases": len(rows), "m1_unresolved_cases": len(cases) - len(rows), "not_referenceable_case_count": sum(case["patch_referenceability"] == "NOT_REFERENCEABLE" for case in rows), "anchor_ambiguity_case_count": sum(bool(case["changed_file_coverage"]["file_anchor_ambiguous"]) for case in rows), "graph_unrepresented_case_count": sum(bool(case["changed_file_coverage"]["graph_unrepresented"]) for case in rows), "budgets": list(BUDGETS), "strategies": list(STRATEGIES), "conclusion": "M2_EVIDENCE_INCONCLUSIVE", "cases": rows}
 
 
 def report(results: dict[str, Any]) -> Path:
@@ -126,7 +130,7 @@ def report(results: dict[str, Any]) -> Path:
         recall = lambda key: sum(run[key] for run in ok if run[key] is not None) / max(1, sum(run[key] is not None for run in ok))
         test_consumer = sum(run['consumer_evidence_retained'] and run['test_evidence_retained'] for run in ok)
         lines.append(f"| {strategy} | {budget} | {len(ok)} | {mean('candidate_nodes'):.1f} | {mean('candidate_edges'):.1f} | {recall('file_anchor_recall'):.1%} | {recall('patch_touched_prechange_recall'):.1%} | {recall('structural_consequence_recall'):.1%} | {test_consumer}/{len(ok)} | {overflow} |")
-    lines.extend(["", "Reference provenance and per-case source coverage, unresolved anchors, edge recall, consumer evidence, and test evidence are in `m2.json`. Added-only symbols are not pre-change referenceable. A small candidate set alone is not a production-default decision.", ""])
+    lines.extend(["", f"Conclusion: **{results['conclusion']}**.", f"NOT_REFERENCEABLE cases: {results['not_referenceable_case_count']}; anchor-ambiguous cases: {results['anchor_ambiguity_case_count']}; graph-unrepresented cases: {results['graph_unrepresented_case_count']}.", "Reference provenance and per-case source coverage, unresolved anchors, edge recall, consumer evidence, and test evidence are in `m2.json`. Added-only symbols are not pre-change referenceable. A small candidate set alone is not a production-default decision.", ""])
     path = m1._root("state") / "reports" / "m2.md"
     path.parent.mkdir(parents=True, exist_ok=True); path.write_text("\n".join(lines), encoding="utf-8")
     return path

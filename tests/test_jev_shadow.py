@@ -185,6 +185,19 @@ def test_multiple_file_anchors_explicit_seed_and_missing_anchor_are_truthful(tmp
     assert result["metadata"]["anchor_unresolved_files"] == ["src/missing.py"]
 
 
+def test_ambiguous_file_anchor_is_not_guessed(tmp_path):
+    graph = tmp_path / "graph.json"
+    graph.write_text(json.dumps({"nodes": [
+        {"id": "file-a", "label": "a.py", "node_type": "file", "source_file": "src/a.py"},
+        {"id": "file-a-duplicate", "label": "a.py", "node_type": "file", "source_file": "src/a.py"},
+    ], "links": []}), encoding="utf-8")
+    task = _task(tmp_path, seed_nodes=["file-a"])
+    result = candidate_selection(graph, task, node_budget=2)
+    assert result["metadata"]["mandatory_node_ids"] == ["file-a"]
+    assert result["metadata"]["anchor_ambiguous_files"] == ["src/a.py"]
+    assert result["metadata"]["file_anchor_node_ids"] == []
+
+
 def test_ranked_payload_records_selector_and_never_calls_typesafe(tmp_path, monkeypatch):
     graph, task = _graph(tmp_path), _task(tmp_path, seed_nodes=["a"])
     monkeypatch.setattr("graphify.jev_shadow.call_typesafe", lambda *_args: pytest.fail("offline selection called TypeSafe"))

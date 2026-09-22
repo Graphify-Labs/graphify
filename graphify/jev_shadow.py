@@ -115,11 +115,30 @@ def _file_anchors(nodes: list[dict[str, Any]], changed_files: list[str]) -> tupl
     anchors, unresolved = [], []
     for changed in sorted(set(changed_files)):
         matches = sorted(node["id"] for node in nodes if _same_source_file(node["source_file"], changed) and _is_file_node(node))
-        if matches:
+        if len(matches) == 1:
             anchors.append(matches[0])
+        elif len(matches) > 1:
+            unresolved.append(changed)
         else:
             unresolved.append(changed)
     return anchors, unresolved
+
+
+def _file_anchor_statuses(nodes: list[dict[str, Any]], changed_files: list[str]) -> dict[str, str]:
+    """Classify changed paths without conflating absent and ambiguous anchors."""
+    statuses: dict[str, str] = {}
+    for changed in sorted(set(changed_files)):
+        represented = any(_same_source_file(node["source_file"], changed) for node in nodes)
+        matches = [node for node in nodes if _same_source_file(node["source_file"], changed) and _is_file_node(node)]
+        if len(matches) > 1:
+            statuses[changed] = "ANCHOR_AMBIGUOUS"
+        elif len(matches) == 1:
+            statuses[changed] = "ANCHOR_RESOLVED"
+        elif represented:
+            statuses[changed] = "ANCHOR_UNRESOLVED"
+        else:
+            statuses[changed] = "GRAPH_UNREPRESENTED"
+    return statuses
 
 
 def _read_graph_snapshot(graph_path: Path) -> tuple[dict[str, Any], str]:
@@ -189,6 +208,7 @@ def _ranked_selection(graph_path: Path, task: dict[str, Any], *, node_budget: in
     if unknown:
         raise JevShadowError("task seed_nodes contain unknown graph node ids")
     anchors, unresolved_anchors = _file_anchors(nodes, task["changed_files"])
+    anchor_statuses = _file_anchor_statuses(nodes, task["changed_files"])
     seeds = explicit | set(anchors)
     if not seeds:
         raise JevShadowError("ANCHOR_UNRESOLVED: no deterministic file anchors resolved (" + ", ".join(unresolved_anchors) + ")")
@@ -263,6 +283,9 @@ def _ranked_selection(graph_path: Path, task: dict[str, Any], *, node_budget: in
         "selector_version": strategy, "node_budget": node_budget,
         "edge_budget": effective_edge_budget, "mandatory_node_ids": mandatory,
         "file_anchor_node_ids": sorted(anchors), "anchor_unresolved_files": unresolved_anchors,
+        "file_anchor_statuses": anchor_statuses,
+        "anchor_ambiguous_files": sorted(path for path, status in anchor_statuses.items() if status == "ANCHOR_AMBIGUOUS"),
+        "graph_unrepresented_files": sorted(path for path, status in anchor_statuses.items() if status == "GRAPH_UNREPRESENTED"),
         "changed_file_eligible_node_ids": sorted(changed_symbols),
         "eligible_node_count": len(distance), "selection_order": selected,
         "distance": {node_id: distance[node_id] for node_id in selected},
