@@ -94,7 +94,10 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
         failures = []
         for name in artifacts:
             try:
-                shutil.copy2(out / name, backup_dir / name)
+                destination = backup_dir / name
+                if destination.is_dir():
+                    raise IsADirectoryError(f"backup destination is a directory: {destination}")
+                shutil.copy2(out / name, destination)
             except Exception as exc:
                 failures.append(f"{name}: {exc}")
         if failures:

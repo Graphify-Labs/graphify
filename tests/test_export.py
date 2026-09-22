@@ -1063,6 +1063,30 @@ def test_backup_copy_failure_and_retry(tmp_path, monkeypatch, capsys, failed):
     assert captured.err == ""
 
 
+@pytest.mark.parametrize("obstructed", ["graph.json", ".graphify_semantic_marker"])
+def test_backup_directory_destination_is_not_success(tmp_path, capsys, obstructed):
+    from datetime import date
+    from graphify.export import backup_if_protected
+
+    artifacts = {"graph.json": '{"nodes":[],"links":[]}', ".graphify_semantic_marker": "{}"}
+    for name, content in artifacts.items():
+        (tmp_path / name).write_text(content)
+    backup = tmp_path / date.today().isoformat()
+    destination = backup / obstructed
+    destination.mkdir(parents=True)
+
+    assert backup_if_protected(tmp_path) is None
+    captured = capsys.readouterr()
+    assert "backed up" not in captured.out
+    assert "warning: backup failed" in captured.err
+    assert obstructed in captured.err
+    assert destination.is_dir()
+    assert list(destination.iterdir()) == []
+    for name, content in artifacts.items():
+        if name != obstructed:
+            assert (backup / name).read_text() == content
+
+
 def test_backup_same_day_changed_sidecar(tmp_path):
     from graphify.export import backup_if_protected
 
