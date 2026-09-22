@@ -22,8 +22,9 @@ recall rather than Jev failure.
 It reads only fingerprint-verified retained M1 graph records; it never
 re-extracts historical graphs. `--live` is deliberately explicit, performs the
 bounded preselected folds only, and requires `TYPESAFE_API_KEY`. Each candidate
-gets one `file_relevant:<candidate_id>` Noul under `jev-latest`; returned model
-and token usage are recorded only in local state.
+gets exactly one candidate-bound Noul with an explicit `candidate_path` under
+`jev-latest`; `baseline_score` is excluded from the outbound payload. Returned
+model and token usage are recorded only in local state.
 
 The payload includes an opaque fold ID, task objective, visible seed metadata,
 candidate metadata, and cross-file structural evidence. It excludes PR number,
@@ -32,6 +33,9 @@ source, and post-change graph data. Jev output remains derived
 `JEV_INFERRED`; it cannot mutate a Graphify graph or affect CI/default behavior.
 
 Reports are written to `~/.local/state/graphify/jev-eval/reports/m3.md` (and
-optional `m3.json`). They show candidate recall separately from ranking,
-Graphify-versus-Jev Top-1/Top-3/MRR/median rank, per-PR aggregation, actual
-tokens, and one of the M3 evidence conclusions.
+optional `m3.json` plus `m3-population.json`). They show candidate recall
+separately from ranking, Graphify-versus-Jev Top-1/Top-3/MRR/median rank for
+budgets 8, 12, and 20, per-PR/per-budget aggregation, population and payload
+fingerprints, actual tokens, and one of the M3 evidence conclusions. The
+earlier 36-call M3A collection is retained as
+`SUPERSEDED_UNBOUND_CANDIDATE_QUESTIONS` and is excluded from the conclusion.
