@@ -209,6 +209,10 @@ def _ranked_selection(graph_path: Path, task: dict[str, Any], *, node_budget: in
         raise JevShadowError("task seed_nodes contain unknown graph node ids")
     anchors, unresolved_anchors = _file_anchors(nodes, task["changed_files"])
     anchor_statuses = _file_anchor_statuses(nodes, task["changed_files"])
+    ambiguous_anchors = sorted(path for path, status in anchor_statuses.items()
+                               if status == "ANCHOR_AMBIGUOUS")
+    if ambiguous_anchors:
+        raise JevShadowError("ANCHOR_AMBIGUOUS: " + ", ".join(ambiguous_anchors))
     seeds = explicit | set(anchors)
     if not seeds:
         raise JevShadowError("ANCHOR_UNRESOLVED: no deterministic file anchors resolved (" + ", ".join(unresolved_anchors) + ")")

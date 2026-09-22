@@ -185,17 +185,16 @@ def test_multiple_file_anchors_explicit_seed_and_missing_anchor_are_truthful(tmp
     assert result["metadata"]["anchor_unresolved_files"] == ["src/missing.py"]
 
 
-def test_ambiguous_file_anchor_is_not_guessed(tmp_path):
+def test_ambiguous_file_anchor_fails_closed_even_with_explicit_seed(tmp_path):
     graph = tmp_path / "graph.json"
     graph.write_text(json.dumps({"nodes": [
         {"id": "file-a", "label": "a.py", "node_type": "file", "source_file": "src/a.py"},
         {"id": "file-a-duplicate", "label": "a.py", "node_type": "file", "source_file": "src/a.py"},
+        {"id": "explicit", "label": "Explicit", "source_file": "elsewhere.py"},
     ], "links": []}), encoding="utf-8")
-    task = _task(tmp_path, seed_nodes=["file-a"])
-    result = candidate_selection(graph, task, node_budget=2)
-    assert result["metadata"]["mandatory_node_ids"] == ["file-a"]
-    assert result["metadata"]["anchor_ambiguous_files"] == ["src/a.py"]
-    assert result["metadata"]["file_anchor_node_ids"] == []
+    task = _task(tmp_path, seed_nodes=["explicit"])
+    with pytest.raises(JevShadowError, match=r"^ANCHOR_AMBIGUOUS: src/a\.py$"):
+        candidate_selection(graph, task, node_budget=2)
 
 
 def test_ranked_payload_records_selector_and_never_calls_typesafe(tmp_path, monkeypatch):
@@ -210,6 +209,14 @@ def test_explicit_seed_selects_node_without_changed_file_match(tmp_path):
     graph = _graph(tmp_path)
     task = _task(tmp_path, changed_files=["does-not-exist.py"], seed_nodes=["c"])
     assert [node["id"] for node in candidate_slice(graph, task)["nodes"]] == ["c", "b", "a"]
+
+
+def test_graph_unrepresented_changed_file_with_explicit_seed_is_not_ambiguous(tmp_path):
+    graph = _graph(tmp_path)
+    task = _task(tmp_path, changed_files=["does-not-exist.py"], seed_nodes=["c"])
+    result = candidate_selection(graph, task, node_budget=3)
+    assert result["metadata"]["file_anchor_statuses"] == {"does-not-exist.py": "GRAPH_UNREPRESENTED"}
+    assert result["metadata"]["anchor_ambiguous_files"] == []
 
 
 def test_unknown_explicit_seed_fails_closed(tmp_path):
