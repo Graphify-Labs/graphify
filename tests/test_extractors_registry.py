@@ -42,3 +42,12 @@ def test_terraform_migrated():
 
     assert facade.extract_terraform is extract_terraform
     assert LANGUAGE_EXTRACTORS["terraform"] is extract_terraform
+
+
+def test_gdscript_registered():
+    # GDScript was born in extractors/ (it never lived in extract.py): the facade
+    # re-export and the registry both point at the one module-level object.
+    from graphify.extractors.gdscript import extract_gdscript
+
+    assert facade.extract_gdscript is extract_gdscript
+    assert LANGUAGE_EXTRACTORS["gdscript"] is extract_gdscript
