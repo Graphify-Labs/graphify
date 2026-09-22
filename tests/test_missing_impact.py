@@ -56,15 +56,38 @@ def test_git_discovery_includes_staged_unstaged_untracked_but_not_ignored(tmp_pa
     import subprocess
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / ".gitignore").write_text("ignored.py\n")
-    (tmp_path / "staged.py").write_text("x")
-    subprocess.run(["git", "-C", str(tmp_path), "add", ".gitignore", "staged.py"], check=True)
-    (tmp_path / "unstaged.py").write_text("x")
+    (tmp_path / "staged.py").write_text("x\n")
+    (tmp_path / "unstaged.py").write_text("x\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", ".gitignore", "staged.py", "unstaged.py"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], check=True)
+    (tmp_path / "staged.py").write_text("staged\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "staged.py"], check=True)
+    (tmp_path / "unstaged.py").write_text("unstaged\n")
     (tmp_path / "untracked.py").write_text("x")
     (tmp_path / "ignored.py").write_text("x")
     active, deleted = mi.discover_git_changes(tmp_path)
     assert {"staged.py", "unstaged.py", "untracked.py"} <= set(active)
     assert "ignored.py" not in active
     assert deleted == []
+
+
+def test_run_from_subdirectory_resolves_git_root_and_relative_graph(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "repo"
+    (root / "pkg" / "nested").mkdir(parents=True)
+    graph_path = root / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir()
+    graph_path.write_text(json.dumps(_graph()))
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "pkg" / "a.py").write_text("x\n")
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(root), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"], check=True)
+    (root / "pkg" / "a.py").write_text("changed\n")
+    monkeypatch.chdir(root / "pkg" / "nested")
+    mi.run(["--task", "fix", "--graph", "graphify-out/graph.json", "--json"])
+    value = json.loads(capsys.readouterr().out)
+    assert value["repo_root"] == str(root)
+    assert value["graph_path"] == str(graph_path)
 
 
 def test_run_offline_is_deterministic_and_never_calls_jev(tmp_path, monkeypatch, capsys):

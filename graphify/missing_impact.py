@@ -108,6 +108,20 @@ def discover_git_changes(root: Path) -> tuple[list[str], list[str]]:
     return active, deleted
 
 
+def _resolve_repo_root(requested: Path, *, explicit_changed: bool) -> Path:
+    """Resolve a requested path to its Git worktree root when possible."""
+    completed = subprocess.run(
+        ["git", "-C", str(requested), "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode == 0:
+        return Path(completed.stdout.decode("utf-8", "surrogateescape").strip()).resolve()
+    if explicit_changed:
+        return requested
+    raise MissingImpactError("--repo is not a Git repository; use --changed for explicit paths")
+
+
 def classify_seeds(paths: list[str], projection: dict[str, Any], deleted: list[str] = []) -> tuple[list[str], list[str], list[str]]:
     represented = {row["path"] for row in projection["files"]}
     deleted_set = set(deleted)
@@ -195,8 +209,9 @@ def run(argv: list[str]) -> None:
     try:
         if not args.task.strip(): raise MissingImpactError("task objective must be non-empty")
         if not 1 <= args.top <= CANDIDATE_BUDGET: raise MissingImpactError("top must be between 1 and 12")
-        root = Path(args.repo).resolve()
-        graph_path = Path(args.graph).resolve() if args.graph else root / "graphify-out" / "graph.json"
+        requested = Path(args.repo).resolve()
+        root = _resolve_repo_root(requested, explicit_changed=bool(args.changed))
+        graph_path = (root / args.graph).resolve() if args.graph and not Path(args.graph).is_absolute() else (Path(args.graph).resolve() if args.graph else root / "graphify-out" / "graph.json")
         graph, graph_fingerprint = load_graph(graph_path); projection = project_graph(graph)
         if args.changed:
             changed, deleted = normalize_changed(args.changed, root), []
