@@ -1062,6 +1062,9 @@ def _reenter_main() -> None:
 
 
 def dispatch_command(cmd: str) -> None:
+    if cmd == "missing-impact":
+        from graphify.missing_impact import run as _missing_impact_run
+        return _missing_impact_run(sys.argv[2:])
     if cmd == "jev-shadow":
         from graphify.jev_shadow import run as _jev_shadow_run
         return _jev_shadow_run(sys.argv[2:])

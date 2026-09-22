@@ -80,6 +80,22 @@ action. The sidecar retains raw Noul probabilities and Choice selections,
 confidence, and complete probability distributions; it deliberately sets no
 production thresholds.
 
+### Missing-impact discovery
+
+`graphify missing-impact --task "..."` finds a bounded set of additional
+source files worth verifying after an implementation. It derives changed files
+from staged, unstaged, and untracked non-ignored Git files, or accepts repeated
+`--changed` paths. Offline mode produces deterministic structural candidates;
+`--live` makes one explicit TypeSafe Jev request to rerank those candidates.
+
+Jev output is always `JEV_INFERRED`: a hypothesis, not a required change or
+source-verified fact. This is distinct from `graphify affected`, which performs
+deterministic reverse graph reachability. A coding-agent workflow is: implement,
+test, run `graphify missing-impact --task "..." --live --json`, source-verify
+the high-ranked hypotheses, repair only confirmed omissions, then verify the
+affected slice. The command never edits files, mutates `graph.json`, runs
+automatically, or becomes a CI gate.
+
 **Works in** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, and 15+ more — [pick your platform](#install).
 
 ---
