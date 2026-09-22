@@ -143,11 +143,22 @@ def per_pr_budget_metrics(rows: list[dict[str, Any]], field: str) -> dict[str, d
 
 def corrected_conclusion(viable: bool, live: bool, baseline_by_budget: dict[str, dict[str, float | None]], jev_by_budget: dict[str, dict[str, float | None]], baseline_by_pr: dict[str, dict[str, float | None]], jev_by_pr: dict[str, dict[str, float | None]]) -> str:
     if not viable or not live: return "M3_EVIDENCE_INSUFFICIENT"
-    budget = [jev_by_budget[k]["mrr"] - baseline_by_budget[k]["mrr"] for k in baseline_by_budget if jev_by_budget[k]["mrr"] is not None and baseline_by_budget[k]["mrr"] is not None]
-    prs = [jev_by_pr[k]["mrr"] - baseline_by_pr[k]["mrr"] for k in baseline_by_pr if jev_by_pr[k]["mrr"] is not None and baseline_by_pr[k]["mrr"] is not None]
+    threshold = 0.10
+    budget_keys = [key for key in baseline_by_budget if key in jev_by_budget]
+    budget = [jev_by_budget[key]["mrr"] - baseline_by_budget[key]["mrr"] for key in budget_keys
+              if jev_by_budget[key]["mrr"] is not None and baseline_by_budget[key]["mrr"] is not None]
+    prs = [jev_by_pr[key]["mrr"] - baseline_by_pr[key]["mrr"] for key in baseline_by_pr
+           if key in jev_by_pr and jev_by_pr[key]["mrr"] is not None and baseline_by_pr[key]["mrr"] is not None]
+    top3_regresses = any(jev_by_budget[key]["top3"] < baseline_by_budget[key]["top3"] for key in budget_keys
+                         if jev_by_budget[key]["top3"] is not None and baseline_by_budget[key]["top3"] is not None)
     if len(budget) < len(BUDGETS) or len(prs) < 2: return "M3_EVIDENCE_INSUFFICIENT"
-    if all(delta >= .10 for delta in budget) and all(delta >= .10 for delta in prs): return "M3_JEV_ADDS_SIGNAL"
-    if all(delta <= -.10 for delta in budget) and all(delta <= -.10 for delta in prs): return "M3_JEV_HURTS_RANKING"
+    materially_positive = lambda delta: delta >= threshold - 1e-9
+    materially_negative = lambda delta: delta <= -threshold + 1e-9
+    positive_prs = sum(materially_positive(delta) for delta in prs)
+    negative_prs = sum(materially_negative(delta) for delta in prs)
+    if (all(materially_positive(delta) for delta in budget) and not top3_regresses
+            and positive_prs >= 2 and negative_prs == 0): return "M3_JEV_ADDS_SIGNAL"
+    if all(materially_negative(delta) for delta in budget) and negative_prs >= 2 and not any(materially_positive(delta) for delta in prs): return "M3_JEV_HURTS_RANKING"
     return "M3_JEV_NO_CLEAR_GAIN"
 
 

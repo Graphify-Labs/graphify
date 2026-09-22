@@ -47,3 +47,38 @@ def test_missing_target_is_not_a_ranking_sample():
     result = m3.metrics([{"graphify_rank": 1}], "graphify_rank")
     assert result["mrr"] == 1.0
     assert m3.metrics([], "jev_rank")["mrr"] is None
+
+
+def _evidence(budget_deltas, pr_deltas, *, top3_deltas=None):
+    top3_deltas = top3_deltas or {"8": 0.0, "12": 0.0, "20": 0.0}
+    baseline_budget = {key: {"mrr": 0.5, "top3": 0.5} for key in budget_deltas}
+    jev_budget = {key: {"mrr": 0.5 + delta, "top3": 0.5 + top3_deltas.get(key, 0.0)}
+                  for key, delta in budget_deltas.items()}
+    baseline_pr = {key: {"mrr": 0.5} for key in pr_deltas}
+    jev_pr = {key: {"mrr": 0.5 + delta} for key, delta in pr_deltas.items()}
+    return baseline_budget, jev_budget, baseline_pr, jev_pr
+
+
+def test_conclusion_all_positive_budgets_allow_neutral_prs():
+    evidence = _evidence({"8": .14, "12": .22, "20": .21}, {"a": .12, "b": .11, "c": 0.0})
+    assert m3.corrected_conclusion(True, True, *evidence) == "M3_JEV_ADDS_SIGNAL"
+
+
+def test_conclusion_materially_negative_pr_prevents_adds_signal():
+    evidence = _evidence({"8": .14, "12": .22, "20": .21}, {"a": .12, "b": .11, "c": -.10})
+    assert m3.corrected_conclusion(True, True, *evidence) == "M3_JEV_NO_CLEAR_GAIN"
+
+
+def test_conclusion_mixed_budget_evidence_is_unclear():
+    evidence = _evidence({"8": .14, "12": -.01, "20": .21}, {"a": .12, "b": .11, "c": 0.0})
+    assert m3.corrected_conclusion(True, True, *evidence) == "M3_JEV_NO_CLEAR_GAIN"
+
+
+def test_conclusion_symmetric_negative_case_hurts_ranking():
+    evidence = _evidence({"8": -.14, "12": -.22, "20": -.21}, {"a": -.12, "b": -.11, "c": 0.0})
+    assert m3.corrected_conclusion(True, True, *evidence) == "M3_JEV_HURTS_RANKING"
+
+
+def test_conclusion_insufficient_evidence_is_unchanged():
+    evidence = _evidence({"8": .14, "12": .22}, {"a": .12, "b": .11})
+    assert m3.corrected_conclusion(True, True, *evidence) == "M3_EVIDENCE_INSUFFICIENT"
