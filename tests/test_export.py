@@ -3,6 +3,7 @@ import math
 import re
 import tempfile
 from pathlib import Path
+import pytest
 from graphify.build import build_from_json
 from graphify.cluster import cluster
 from graphify.export import to_json, to_cypher, to_graphml, to_html, to_canvas, to_obsidian
@@ -949,7 +950,7 @@ def test_backup_no_markers(tmp_path):
     assert backup_if_protected(tmp_path) is None
 
 
-def test_backup_semantic_marker(tmp_path):
+def test_backup_semantic_marker(tmp_path, capsys):
     """graph.json + .graphify_semantic_marker → backup taken."""
     from graphify.export import backup_if_protected
     (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
@@ -961,6 +962,9 @@ def test_backup_semantic_marker(tmp_path):
     assert (result / "graph.json").exists()
     assert (result / "GRAPH_REPORT.md").exists()
     assert (result / ".graphify_semantic_marker").exists()
+    captured = capsys.readouterr()
+    assert "backed up semantic graph (3 files)" in captured.out
+    assert captured.err == ""
 
 
 def test_backup_curated_labels(tmp_path):
@@ -982,13 +986,14 @@ def test_backup_default_labels_only(tmp_path):
     assert backup_if_protected(tmp_path) is None
 
 
-def test_backup_same_day_no_accumulation(tmp_path):
+def test_backup_same_day_no_accumulation(tmp_path, monkeypatch):
     """Same content on same day returns existing backup dir without re-copying."""
     from graphify.export import backup_if_protected
     from datetime import date
     (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
     (tmp_path / ".graphify_semantic_marker").write_text("{}")
     b1 = backup_if_protected(tmp_path)
+    monkeypatch.setattr("graphify.export.shutil.copy2", lambda *_: pytest.fail("copied again"))
     b2 = backup_if_protected(tmp_path)
     assert b1 is not None and b2 is not None
     assert b1 == b2  # same dir, no _2 accumulation
@@ -1014,6 +1019,109 @@ def test_backup_env_disable(tmp_path, monkeypatch):
     monkeypatch.setenv("GRAPHIFY_NO_BACKUP", "1")
     (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
     (tmp_path / ".graphify_semantic_marker").write_text("{}")
+    assert backup_if_protected(tmp_path) is None
+
+
+@pytest.mark.parametrize("failed", [
+    {"graph.json"},
+    {".graphify_semantic_marker"},
+    {"graph.json", ".graphify_semantic_marker"},
+])
+def test_backup_copy_failure_and_retry(tmp_path, monkeypatch, capsys, failed):
+    import shutil
+    from graphify.export import backup_if_protected
+
+    artifacts = {"graph.json": '{"nodes":[],"links":[]}', ".graphify_semantic_marker": "{}"}
+    for name, content in artifacts.items():
+        (tmp_path / name).write_text(content)
+    copy2 = shutil.copy2
+    attempted = []
+
+    def fail_selected(src, dst):
+        attempted.append(src.name)
+        if src.name in failed:
+            raise OSError("copy denied")
+        return copy2(src, dst)
+
+    monkeypatch.setattr("graphify.export.shutil.copy2", fail_selected)
+    assert backup_if_protected(tmp_path) is None
+    assert set(attempted) == set(artifacts)
+    captured = capsys.readouterr()
+    assert "backed up" not in captured.out
+    assert "warning: backup failed" in captured.err
+    for name in failed:
+        assert name in captured.err
+
+    # In particular, a copied graph must not hide a missing sidecar on retry.
+    monkeypatch.setattr("graphify.export.shutil.copy2", copy2)
+    result = backup_if_protected(tmp_path)
+    assert result is not None
+    for name, content in artifacts.items():
+        assert (result / name).read_text() == content
+    captured = capsys.readouterr()
+    assert "backed up" in captured.out
+    assert captured.err == ""
+
+
+def test_backup_same_day_changed_sidecar(tmp_path):
+    from graphify.export import backup_if_protected
+
+    (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
+    marker = tmp_path / ".graphify_semantic_marker"
+    marker.write_text("{}")
+    first = backup_if_protected(tmp_path)
+    marker.write_text('{"output_tokens": 1234}')
+    assert backup_if_protected(tmp_path) == first
+    assert (first / marker.name).read_bytes() == marker.read_bytes()
+
+
+def test_backup_comparison_failure_still_copies(tmp_path, monkeypatch, capsys):
+    from graphify.export import backup_if_protected
+
+    graph = tmp_path / "graph.json"
+    graph.write_text('{"nodes":[],"links":[]}')
+    (tmp_path / ".graphify_semantic_marker").write_text("{}")
+    first = backup_if_protected(tmp_path)
+    capsys.readouterr()
+    graph.write_text('{"nodes":[{"id":"new"}],"links":[]}')
+    read_bytes = Path.read_bytes
+
+    def fail_comparison(path):
+        if path == first / "graph.json":
+            raise PermissionError("comparison denied")
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_comparison)
+    assert backup_if_protected(tmp_path) == first
+    assert (first / "graph.json").read_text() == graph.read_text()
+    assert capsys.readouterr().err == ""
+
+
+def test_backup_closed_stdout_preserves_success(tmp_path, monkeypatch):
+    from io import StringIO
+    from graphify.export import backup_if_protected
+
+    (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
+    (tmp_path / ".graphify_semantic_marker").write_text("{}")
+    closed = StringIO()
+    closed.close()
+    monkeypatch.setattr("sys.stdout", closed)
+    result = backup_if_protected(tmp_path)
+    assert result is not None
+    assert (result / "graph.json").read_bytes() == (tmp_path / "graph.json").read_bytes()
+
+
+def test_backup_closed_stderr_does_not_raise_on_setup_failure(tmp_path, monkeypatch):
+    from datetime import date
+    from io import StringIO
+    from graphify.export import backup_if_protected
+
+    (tmp_path / "graph.json").write_text('{"nodes":[],"links":[]}')
+    (tmp_path / ".graphify_semantic_marker").write_text("{}")
+    (tmp_path / date.today().isoformat()).write_text("not a directory")
+    closed = StringIO()
+    closed.close()
+    monkeypatch.setattr("sys.stderr", closed)
     assert backup_if_protected(tmp_path) is None
 
 
