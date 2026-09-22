@@ -125,6 +125,7 @@ def test_candidate_slice_enforces_edge_bound(tmp_path):
 def test_ranked_selector_is_stable_and_preserves_mandatory_seeds(tmp_path):
     graph = tmp_path / "graph.json"
     graph.write_text(json.dumps({"nodes": [
+        {"id": "file-a", "label": "a.py", "source_file": "src/a.py"},
         {"id": "seed-b", "source_file": "src/a.py"}, {"id": "seed-a", "source_file": "src/a.py"},
         {"id": "near-call", "source_file": "src/b.py"}, {"id": "near-import", "source_file": "src/c.py"},
         {"id": "hub", "source_file": "src/hub.py"},
@@ -135,16 +136,17 @@ def test_ranked_selector_is_stable_and_preserves_mandatory_seeds(tmp_path):
     ]}), encoding="utf-8")
     result = candidate_selection(graph, _task(tmp_path), node_budget=4)
     assert result == candidate_selection(graph, _task(tmp_path), node_budget=4)
-    assert result["metadata"]["mandatory_node_ids"] == ["seed-a", "seed-b"]
-    assert [node["id"] for node in result["nodes"][:2]] == ["seed-a", "seed-b"]
+    assert result["metadata"]["mandatory_node_ids"] == ["file-a"]
+    assert [node["id"] for node in result["nodes"][:3]] == ["file-a", "seed-a", "seed-b"]
     assert result["candidate_fingerprint"]
 
 
 @pytest.mark.parametrize("budget", [8, 12, 20, 40])
 def test_ranked_selector_respects_budget_and_fingerprints(tmp_path, budget):
     graph = tmp_path / "graph.json"
-    graph.write_text(json.dumps({"nodes": [{"id": str(n), "source_file": "src/a.py" if n == 0 else "src/b.py"} for n in range(60)], "links": [
-        {"id": str(n), "source": "0", "target": str(n), "relation": "calls"} for n in range(1, 60)
+    graph.write_text(json.dumps({"nodes": [{"id": "file-a", "label": "a.py", "source_file": "src/a.py"}] + [{"id": str(n), "source_file": "src/a.py" if n == 0 else "src/b.py"} for n in range(60)], "links": [
+        {"id": "contains", "source": "file-a", "target": "0", "relation": "contains"},
+        *[{"id": str(n), "source": "0", "target": str(n), "relation": "calls"} for n in range(1, 60)]
     ]}), encoding="utf-8")
     result = candidate_selection(graph, _task(tmp_path), node_budget=budget)
     assert len(result["nodes"]) == budget
@@ -154,13 +156,37 @@ def test_ranked_selector_respects_budget_and_fingerprints(tmp_path, budget):
 
 def test_ranked_selector_fails_closed_when_mandatory_tier_overflows(tmp_path):
     graph = tmp_path / "graph.json"
-    graph.write_text(json.dumps({"nodes": [{"id": str(n), "source_file": "src/a.py"} for n in range(9)], "links": []}), encoding="utf-8")
+    graph.write_text(json.dumps({"nodes": [{"id": str(n), "label": f"a{n}.py", "node_type": "file", "source_file": f"src/a{n}.py"} for n in range(9)], "links": []}), encoding="utf-8")
     with pytest.raises(JevShadowError, match="SLICE_OVERFLOW"):
-        candidate_selection(graph, _task(tmp_path), node_budget=8)
+        candidate_selection(graph, _task(tmp_path, changed_files=[f"src/a{n}.py" for n in range(9)]), node_budget=8)
+
+
+def test_changed_file_uses_one_file_anchor_and_symbols_are_only_eligible(tmp_path):
+    graph = tmp_path / "graph.json"
+    graph.write_text(json.dumps({"nodes": [
+        {"id": "file-a", "label": "a.py", "source_file": "src/a.py"},
+        *[{"id": f"symbol-{n}", "label": f"f{n}", "source_file": "src/a.py"} for n in range(100)],
+    ], "links": []}), encoding="utf-8")
+    result = candidate_selection(graph, _task(tmp_path), node_budget=8)
+    assert result["metadata"]["mandatory_node_ids"] == ["file-a"]
+    assert len(result["metadata"]["changed_file_eligible_node_ids"]) == 100
+    assert len(result["nodes"]) == 8
+
+
+def test_multiple_file_anchors_explicit_seed_and_missing_anchor_are_truthful(tmp_path):
+    graph = tmp_path / "graph.json"
+    graph.write_text(json.dumps({"nodes": [
+        {"id": "file-a", "label": "a.py", "source_file": "src/a.py"},
+        {"id": "file-b", "label": "b.py", "source_file": "src/b.py"},
+        {"id": "explicit", "label": "Explicit", "source_file": "elsewhere.py"},
+    ], "links": []}), encoding="utf-8")
+    result = candidate_selection(graph, _task(tmp_path, changed_files=["src/a.py", "src/b.py", "src/missing.py"], seed_nodes=["explicit"]), node_budget=4)
+    assert result["metadata"]["mandatory_node_ids"] == ["explicit", "file-a", "file-b"]
+    assert result["metadata"]["anchor_unresolved_files"] == ["src/missing.py"]
 
 
 def test_ranked_payload_records_selector_and_never_calls_typesafe(tmp_path, monkeypatch):
-    graph, task = _graph(tmp_path), _task(tmp_path)
+    graph, task = _graph(tmp_path), _task(tmp_path, seed_nodes=["a"])
     monkeypatch.setattr("graphify.jev_shadow.call_typesafe", lambda *_args: pytest.fail("offline selection called TypeSafe"))
     payload = outbound_payload(task, graph, node_budget=8, strategy="ranked-v2")
     assert payload["state"]["selection"]["selector_version"] == "ranked-v2"
