@@ -126,15 +126,11 @@ def _parse_frontmatter_fallback(fm_lines: list[str]) -> dict:
 _MD_LINK_INDEX_CACHE: "dict[str, dict[str, list[tuple[int, str, Path]]]]" = {}
 
 
-def _active_scan_root() -> "Path | None":
-    """The scan root of the extraction in flight, or None outside extract().
-
-    _safe_extract_with_xaml_root sets this for every extraction despite its
-    XAML-era name; a direct extract_markdown() call has no root and the
-    fallback stays off.
-    """
-    import graphify.extract as _extract
-    return getattr(_extract, "_XAML_ACTIVE_EXTRACT_ROOT", None)
+# The in-flight scan root now lives on extractors.base (correct import
+# direction: extract.py -> extractors/, never back), so a rename can no longer
+# silently disable link resolution the way the old getattr(graphify.extract, …,
+# None) could (#3666).
+from graphify.extractors.base import active_scan_root as _active_scan_root
 
 
 def _nfc(s: str) -> str:
