@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
@@ -43,8 +44,9 @@ _READ_NUDGE_STALE = json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "additionalContext": (
-            'graphify-out/graph.json exists but may be STALE for this file (the file '
-            'changed after the last build). Prefer `graphify query "<question>"` for '
+            'graphify-out/graph.json exists but may be STALE for this file or repository '
+            '(the file or a recent commit changed after the last build). Prefer '
+            '`graphify query "<question>"` for '
             'orientation, and run `graphify update` to refresh the graph. Reading the '
             'file directly is fine.'
         ),
@@ -920,6 +922,22 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     stale = os.stat(fp).st_mtime > gmtime
                 except OSError:
                     stale = False
+            # A repository can be stale even when the file being read has not
+            # changed since the graph build: commits may add or delete nearby
+            # modules, so per-file mtime cannot see the missing graph coverage
+            # (#3718).  Git is optional and this check fails open outside a repo.
+            if not stale:
+                try:
+                    latest = subprocess.run(
+                        ["git", "-C", str(root), "log", "-1", "--format=%ct"],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=2,
+                    ).stdout.strip()
+                    stale = bool(latest) and float(latest) > gmtime
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    pass
             try:
                 if out_path("needs_update").exists():
                     stale = True
