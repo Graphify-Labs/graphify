@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from tools import jev_shadow_eval as evaluation
+from tools import jev_shadow_m2 as m2
 
 
 def case(**changes):
@@ -272,6 +273,25 @@ def test_merge_base_patch_excludes_diverged_base_changes(monkeypatch, tmp_path):
     monkeypatch.setattr(evaluation, "ROOT", repo)
     assert evaluation.authoritative_changed_files(reported_base, pr_head) == [{"path": "pr.py", "status": "added"}]
     assert git("merge-base", reported_base, pr_head) == base_parent
+
+
+def test_old_hunks_are_independent_of_cwd(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.check_output(["git", *args], cwd=repo, text=True).strip()
+    git("init", "-q")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    (repo / "a.py").write_text("one\ntwo\n")
+    git("add", "."); git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    (repo / "a.py").write_text("one\nchanged\n")
+    git("commit", "-qam", "change")
+    head = git("rev-parse", "HEAD")
+    monkeypatch.setattr(m2.m1, "ROOT", repo)
+    monkeypatch.chdir(tmp_path)
+    assert m2._old_hunks(base, head, "a.py") == [(2, 1)]
 
 
 def test_prepare_uses_merge_base_for_tree_and_extraction(monkeypatch, tmp_path):
