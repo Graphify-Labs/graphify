@@ -4182,6 +4182,14 @@ def dispatch_command(cmd: str) -> None:
             print("[graphify extract] introspecting Cargo workspace...")
             try:
                 cargo_result = introspect_cargo(target)
+            except FileNotFoundError:
+                # No Cargo.toml at the scan root is an ordinary condition
+                # (e.g. Tauri keeps its manifest under src-tauri/), not a
+                # failure — the AST pass already completed and cargo_result
+                # is already the empty, handled shape the merge below
+                # expects, so degrade instead of discarding that work (#3677).
+                print("[graphify extract] --cargo: no Cargo.toml at scan root, "
+                      "skipping crate edges")
             except (ConnectionError, ImportError, OSError) as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 sys.exit(1)
