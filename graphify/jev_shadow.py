@@ -17,6 +17,7 @@ from graphify.paths import GRAPHIFY_OUT, write_json_atomic
 QUESTION_SET_VERSION = "graphify-jev-v1"
 MAX_NODES = 40
 MAX_EDGES = 80
+SELECTOR_VERSION = "ranked-v2"
 API_URL = "https://api.typesafe.ai/v1/systemone"
 
 
@@ -29,6 +30,14 @@ class _GraphSnapshot:
     nodes: list[dict[str, Any]]
     edges: list[dict[str, Any]]
     fingerprint: str
+
+
+@dataclass(frozen=True)
+class _Selection:
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
+    fingerprint: str
+    metadata: dict[str, Any]
 
 
 def _fingerprint(value: Any) -> str:
@@ -124,15 +133,129 @@ def _candidate_slice_snapshot(graph_path: Path, task: dict[str, Any]) -> _GraphS
     return _GraphSnapshot([node_map[node_id] for node_id in selected], selected_edges, fingerprint)
 
 
+def _relation_priority(relation: str) -> int:
+    """Small, explicit preference for Graphify's structural edge vocabulary."""
+    return {
+        "calls": 7, "imports": 6, "contains": 5, "defines": 5,
+        "inherits": 5, "implements": 5, "references": 4,
+        "tests": 4, "relates": 1,
+    }.get(relation.lower(), 2)
+
+
+def _ranked_selection(graph_path: Path, task: dict[str, Any], *, node_budget: int,
+                      edge_budget: int | None, strategy: str) -> _Selection:
+    """Select deterministic task-local graph evidence without consulting Jev.
+
+    Eligibility is the seed set plus the two-hop structural neighbourhood.  The
+    bounded expansion deliberately prevents unrelated component-wide hubs from
+    becoming eligible just because a task has one broad changed file.
+    """
+    if node_budget <= 0:
+        raise JevShadowError("node budget must be positive")
+    graph, fingerprint = _read_graph_snapshot(graph_path)
+    nodes, edges = _nodes_edges(graph)
+    node_map = {node["id"]: node for node in nodes}
+    explicit = set(task["seed_nodes"])
+    unknown = explicit - node_map.keys()
+    if unknown:
+        raise JevShadowError("task seed_nodes contain unknown graph node ids")
+    seeds = explicit | {node["id"] for node in nodes if node["source_file"] in set(task["changed_files"])}
+    if not seeds:
+        raise JevShadowError("task seeds matched no graph nodes")
+    mandatory = sorted(seeds)
+    if len(mandatory) > node_budget:
+        raise JevShadowError(f"SLICE_OVERFLOW: mandatory tier has {len(mandatory)} nodes for budget {node_budget}")
+
+    adjacent: dict[str, list[tuple[str, str]]] = {node_id: [] for node_id in node_map}
+    degree: dict[str, int] = {node_id: 0 for node_id in node_map}
+    for edge in edges:
+        source, target, relation = edge["source"], edge["target"], edge["relationship"]
+        adjacent[source].append((target, relation)); adjacent[target].append((source, relation))
+        degree[source] += 1; degree[target] += 1
+    for values in adjacent.values():
+        values.sort(key=lambda value: (value[0], value[1]))
+
+    distance = {seed: 0 for seed in mandatory}
+    support = {seed: 1 for seed in mandatory}
+    best_relation: dict[str, int] = {seed: 99 for seed in mandatory}
+    queue = deque(mandatory)
+    while queue:
+        current = queue.popleft()
+        if distance[current] >= 2:
+            continue
+        for neighbor, relation in adjacent[current]:
+            candidate_distance = distance[current] + 1
+            if neighbor not in distance:
+                distance[neighbor] = candidate_distance
+                support[neighbor] = support[current]
+                best_relation[neighbor] = _relation_priority(relation)
+                queue.append(neighbor)
+            elif distance[neighbor] == candidate_distance:
+                support[neighbor] += 1
+                best_relation[neighbor] = max(best_relation[neighbor], _relation_priority(relation))
+
+    def sort_key(node_id: str) -> tuple[Any, ...]:
+        if node_id in mandatory:
+            return (0, node_id)
+        # The distance-only variant is a deliberately simpler ablation.  The
+        # ranked variant adds relation strength, independent seed support and a
+        # modest generic-hub penalty; ids provide the final stable tie-break.
+        if strategy == "distance-v2":
+            return (1, distance[node_id], node_id)
+        if strategy != SELECTOR_VERSION:
+            raise JevShadowError(f"unsupported selector strategy: {strategy}")
+        score = (1000 - 100 * distance[node_id] + 10 * best_relation[node_id]
+                 + 5 * min(support[node_id], 3) - min(degree[node_id], 20))
+        return (1, -score, distance[node_id], node_id)
+
+    ordered = mandatory + sorted((node_id for node_id in distance if node_id not in mandatory), key=sort_key)
+    selected = ordered[:node_budget]
+    selected_set = set(selected)
+    effective_edge_budget = edge_budget if edge_budget is not None else min(MAX_EDGES, node_budget * 2)
+    if effective_edge_budget < 0:
+        raise JevShadowError("edge budget must not be negative")
+    selected_edges = sorted(
+        (edge for edge in edges if edge["source"] in selected_set and edge["target"] in selected_set),
+        key=lambda edge: (-_relation_priority(edge["relationship"]), edge["source"], edge["target"], edge["id"]),
+    )[:effective_edge_budget]
+    metadata = {
+        "selector_version": strategy, "node_budget": node_budget,
+        "edge_budget": effective_edge_budget, "mandatory_node_ids": mandatory,
+        "eligible_node_count": len(distance), "selection_order": selected,
+        "distance": {node_id: distance[node_id] for node_id in selected},
+        "node_cap_reached": len(ordered) > node_budget,
+        "edge_cap_reached": len(selected_edges) == effective_edge_budget and len(selected_edges) < sum(1 for edge in edges if edge["source"] in selected_set and edge["target"] in selected_set),
+    }
+    return _Selection([node_map[node_id] for node_id in selected], selected_edges, fingerprint, metadata)
+
+
+def candidate_selection(graph_path: Path, task: dict[str, Any], *, node_budget: int = MAX_NODES,
+                        edge_budget: int | None = None, strategy: str = SELECTOR_VERSION) -> dict[str, Any]:
+    """Return the inspectable M2 eligibility, ranking, and bounded-slice result."""
+    selection = _ranked_selection(graph_path, task, node_budget=node_budget, edge_budget=edge_budget, strategy=strategy)
+    result = {"nodes": selection.nodes, "edges": selection.edges, "metadata": selection.metadata}
+    result["candidate_fingerprint"] = _fingerprint(result)
+    return result
+
+
 def candidate_slice(graph_path: Path, task: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     snapshot = _candidate_slice_snapshot(graph_path, task)
     return {"nodes": snapshot.nodes, "edges": snapshot.edges}
 
 
-def outbound_payload(task: dict[str, Any], graph_path: Path) -> dict[str, Any]:
-    snapshot = _candidate_slice_snapshot(graph_path, task)
-    candidates = {"nodes": snapshot.nodes, "edges": snapshot.edges}
-    state = {"case_id": task["case_id"], "objective": task["objective"], "changed_files": task["changed_files"], "candidates": candidates, "graph_fingerprint": snapshot.fingerprint}
+def outbound_payload(task: dict[str, Any], graph_path: Path, *, node_budget: int | None = None,
+                     edge_budget: int | None = None, strategy: str | None = None) -> dict[str, Any]:
+    if strategy is None:
+        snapshot = _candidate_slice_snapshot(graph_path, task)
+        candidates = {"nodes": snapshot.nodes, "edges": snapshot.edges}
+        selection_state: dict[str, Any] = {"selector_version": "traversal-v1", "node_budget": MAX_NODES, "edge_budget": MAX_EDGES}
+    else:
+        selection = candidate_selection(graph_path, task, node_budget=node_budget or MAX_NODES,
+                                        edge_budget=edge_budget, strategy=strategy)
+        candidates = {"nodes": selection["nodes"], "edges": selection["edges"]}
+        snapshot = _GraphSnapshot(selection["nodes"], selection["edges"], _read_graph_snapshot(graph_path)[1])
+        selection_state = {**selection["metadata"], "candidate_fingerprint": selection["candidate_fingerprint"]}
+    state = {"case_id": task["case_id"], "objective": task["objective"], "changed_files": task["changed_files"], "candidates": candidates, "graph_fingerprint": snapshot.fingerprint, "selection": selection_state}
     choices = {
         "localized": "A localized implementation area.", "multi_layer_feature": "Multiple layers of one feature.",
         "cross_cutting": "Multiple independent areas are materially involved.", "uncertain": "The bounded graph metadata is insufficient.",

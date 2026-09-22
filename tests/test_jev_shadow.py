@@ -3,7 +3,7 @@ import urllib.error
 
 import pytest
 
-from graphify.jev_shadow import JevShadowError, call_typesafe, candidate_slice, load_task, outbound_payload, run, sidecar
+from graphify.jev_shadow import JevShadowError, call_typesafe, candidate_selection, candidate_slice, load_task, outbound_payload, run, sidecar
 
 
 def _graph(tmp_path):
@@ -120,6 +120,51 @@ def test_candidate_slice_enforces_edge_bound(tmp_path):
     links += [{"id": f"extra-{i}", "source": "0", "target": "1", "relation": "relates"} for i in range(50)]
     graph.write_text(json.dumps({"nodes": nodes, "links": links}))
     assert len(candidate_slice(graph, _task(tmp_path))["edges"]) == 80
+
+
+def test_ranked_selector_is_stable_and_preserves_mandatory_seeds(tmp_path):
+    graph = tmp_path / "graph.json"
+    graph.write_text(json.dumps({"nodes": [
+        {"id": "seed-b", "source_file": "src/a.py"}, {"id": "seed-a", "source_file": "src/a.py"},
+        {"id": "near-call", "source_file": "src/b.py"}, {"id": "near-import", "source_file": "src/c.py"},
+        {"id": "hub", "source_file": "src/hub.py"},
+    ], "links": [
+        {"id": "a-call", "source": "seed-a", "target": "near-call", "relation": "calls"},
+        {"id": "b-import", "source": "seed-b", "target": "near-import", "relation": "imports"},
+        *[{"id": f"hub-{n}", "source": "hub", "target": "near-call", "relation": "relates"} for n in range(10)],
+    ]}), encoding="utf-8")
+    result = candidate_selection(graph, _task(tmp_path), node_budget=4)
+    assert result == candidate_selection(graph, _task(tmp_path), node_budget=4)
+    assert result["metadata"]["mandatory_node_ids"] == ["seed-a", "seed-b"]
+    assert [node["id"] for node in result["nodes"][:2]] == ["seed-a", "seed-b"]
+    assert result["candidate_fingerprint"]
+
+
+@pytest.mark.parametrize("budget", [8, 12, 20, 40])
+def test_ranked_selector_respects_budget_and_fingerprints(tmp_path, budget):
+    graph = tmp_path / "graph.json"
+    graph.write_text(json.dumps({"nodes": [{"id": str(n), "source_file": "src/a.py" if n == 0 else "src/b.py"} for n in range(60)], "links": [
+        {"id": str(n), "source": "0", "target": str(n), "relation": "calls"} for n in range(1, 60)
+    ]}), encoding="utf-8")
+    result = candidate_selection(graph, _task(tmp_path), node_budget=budget)
+    assert len(result["nodes"]) == budget
+    assert len(result["edges"]) <= budget * 2
+    assert result["metadata"]["node_cap_reached"]
+
+
+def test_ranked_selector_fails_closed_when_mandatory_tier_overflows(tmp_path):
+    graph = tmp_path / "graph.json"
+    graph.write_text(json.dumps({"nodes": [{"id": str(n), "source_file": "src/a.py"} for n in range(9)], "links": []}), encoding="utf-8")
+    with pytest.raises(JevShadowError, match="SLICE_OVERFLOW"):
+        candidate_selection(graph, _task(tmp_path), node_budget=8)
+
+
+def test_ranked_payload_records_selector_and_never_calls_typesafe(tmp_path, monkeypatch):
+    graph, task = _graph(tmp_path), _task(tmp_path)
+    monkeypatch.setattr("graphify.jev_shadow.call_typesafe", lambda *_args: pytest.fail("offline selection called TypeSafe"))
+    payload = outbound_payload(task, graph, node_budget=8, strategy="ranked-v2")
+    assert payload["state"]["selection"]["selector_version"] == "ranked-v2"
+    assert payload["state"]["selection"]["candidate_fingerprint"]
 
 
 def test_explicit_seed_selects_node_without_changed_file_match(tmp_path):
