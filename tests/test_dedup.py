@@ -94,6 +94,24 @@ def test_self_loops_dropped_after_merge():
     assert result_edges == []
 
 
+def test_inline_parameter_marker_self_loops_survive_dedup():
+    """`inline_parameter` self-loops are intentional arity markers (opt-in
+    `--inline-params`), not noise — dedup must keep them while still dropping
+    ordinary self-loops. Forces a real merge so the edge-rewrite/self-loop pass
+    actually runs."""
+    nodes = _make_nodes("GraphExtractor", "Graph Extractor")
+    edges = [
+        {"source": "graphextractor", "target": "graphextractor", "relation": "references",
+         "context": "inline_parameter", "source_file": "a.ts"},
+        {"source": "graph_extractor", "target": "graph_extractor", "relation": "references",
+         "context": "parameter_type", "source_file": "a.ts"},
+    ]
+    _, result_edges = deduplicate_entities(nodes, edges, communities={})
+    kept = [e for e in result_edges if e.get("source") == e.get("target")]
+    assert len(kept) == 1
+    assert kept[0]["context"] == "inline_parameter"
+
+
 def test_community_boost_aids_merge():
     # Two nodes in same community with score in 0.75-0.85 zone get boosted
     nodes = _make_nodes("AuthManager", "Auth Manager")
