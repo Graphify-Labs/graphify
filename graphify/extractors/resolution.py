@@ -1179,15 +1179,20 @@ def _apply_symbol_resolution_facts(
             str(edge.get("target")),
             str(edge.get("relation")),
             str(edge.get("context") or ""),
-        )
+        ): edge
         for edge in edges
     }
 
     def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None, type_only: bool = False) -> None:
         key = (source, target, relation, context or "")
-        if key in existing_edges:
+        existing_edge = existing_edges.get(key)
+        if existing_edge is not None:
+            # A module can re-export the same target in both type-only and
+            # runtime declarations. The deduplicated edge is runtime when any
+            # of those declarations survives compilation.
+            if relation == "re_exports" and context == "export" and not type_only:
+                existing_edge.pop("type_only", None)
             return
-        existing_edges.add(key)
         edge = {
             "source": source,
             "target": target,
@@ -1212,6 +1217,21 @@ def _apply_symbol_resolution_facts(
         if type_only:
             edge["type_only"] = True
         edges.append(edge)
+        existing_edges[key] = edge
+
+    def is_extracted_type_only_reexport(
+        source: str, target: str, line: int, fact_type_only: bool
+    ) -> bool:
+        """Reuse a marker preserved by source normalization before AST recovery."""
+        return fact_type_only or any(
+            edge.get("source") == source
+            and edge.get("target") == target
+            and edge.get("relation") == "imports_from"
+            and edge.get("context") == "re-export"
+            and edge.get("source_location") == f"L{line}"
+            and edge.get("type_only")
+            for edge in edges
+        )
 
     for declaration in facts.declarations:
         ensure_symbol_node(declaration.file_path, declaration.name, declaration.line)
@@ -1251,15 +1271,18 @@ def _apply_symbol_resolution_facts(
         star_exports_by_file.setdefault(source_path, []).append(target_path)
         source_id = source_file_id.get(source_path)
         if source_id is not None:
+            target_id = _make_id(str(path_by_resolved.get(target_path, target_path)))
             add_edge(
                 source_id,
-                _make_id(str(path_by_resolved.get(target_path, target_path))),
+                target_id,
                 "re_exports",
                 "export",
                 star_fact.line,
                 star_fact.file_path,
                 target_file=str(path_by_resolved.get(target_path, target_path)),
-                type_only=star_fact.type_only,
+                type_only=is_extracted_type_only_reexport(
+                    source_id, target_id, star_fact.line, star_fact.type_only
+                ),
             )
 
     for namespace_fact in facts.namespace_exports:
@@ -1283,15 +1306,18 @@ def _apply_symbol_resolution_facts(
                 namespace_fact.line,
                 namespace_fact.file_path,
             )
+            target_id = _make_id(str(path_by_resolved.get(target_path, target_path)))
             add_edge(
                 source_id,
-                _make_id(str(path_by_resolved.get(target_path, target_path))),
+                target_id,
                 "re_exports",
                 "export",
                 namespace_fact.line,
                 namespace_fact.file_path,
                 target_file=str(path_by_resolved.get(target_path, target_path)),
-                type_only=namespace_fact.type_only,
+                type_only=is_extracted_type_only_reexport(
+                    source_id, target_id, namespace_fact.line, namespace_fact.type_only
+                ),
             )
 
     for export_fact in facts.exports:
@@ -1316,15 +1342,18 @@ def _apply_symbol_resolution_facts(
         if origin[0] != file_path:
             source_id = source_file_id.get(file_path)
             if source_id is not None:
+                target_id = _make_id(str(path_by_resolved.get(origin[0], origin[0])))
                 add_edge(
                     source_id,
-                    _make_id(str(path_by_resolved.get(origin[0], origin[0]))),
+                    target_id,
                     "re_exports",
                     "export",
                     export_fact.line,
                     export_fact.file_path,
                     target_file=str(path_by_resolved.get(origin[0], origin[0])),
-                    type_only=export_fact.type_only,
+                    type_only=is_extracted_type_only_reexport(
+                        source_id, target_id, export_fact.line, export_fact.type_only
+                    ),
                 )
 
     def resolve_exported_origin(target_path: Path, imported_name: str, seen: set[tuple[Path, str]] | None = None) -> tuple[Path, str]:

@@ -3459,13 +3459,18 @@ def _lua_is_require_call(node, source: bytes) -> bool:
 
 
 def _extract_generic(
-    path: Path, config: LanguageConfig, *, source_override: bytes | None = None
+    path: Path,
+    config: LanguageConfig,
+    *,
+    source_override: bytes | None = None,
+    type_only_export_star_ranges: tuple[tuple[int, int], ...] = (),
 ) -> dict:
     """Generic AST extractor driven by LanguageConfig.
 
     ``source_override`` parses the given bytes instead of reading ``path``, while
     still keying nodes/edges off ``path``. Lets container formats (e.g. Vue SFCs)
-    mask the wrapper and parse just the embedded ``<script>``.
+    mask the wrapper and parse just the embedded ``<script>``. TypeScript
+    wildcard re-export mask ranges are forwarded to the JS import handler.
     """
     try:
         mod = importlib.import_module(config.ts_module)
@@ -3707,7 +3712,21 @@ def _extract_generic(
         # Import types
         if t in config.import_types:
             if config.import_handler:
-                imported_modules = config.import_handler(node, source, file_nid, stem, edges, str_path, scope_stack)
+                if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+                    imported_modules = config.import_handler(
+                        node,
+                        source,
+                        file_nid,
+                        stem,
+                        edges,
+                        str_path,
+                        scope_stack,
+                        type_only_export_star_ranges=type_only_export_star_ranges,
+                    )
+                else:
+                    imported_modules = config.import_handler(
+                        node, source, file_nid, stem, edges, str_path, scope_stack
+                    )
                 # Module-level import handlers (Swift) name a module, not a file
                 # path, so there is no pre-existing node to anchor the edge to.
                 # They return (id, label) pairs for which we materialize a
