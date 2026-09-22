@@ -13,6 +13,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: the incremental rebuild no longer purges AST nodes it just reported as fail-closed "kept" — the eviction pass re-checks the kept set, so a moved-file/symlink layout can't deadlock the shrink guard into refusing every update (#3697, #3695, thanks @hopstreax).
 - Fix: `graph.html` no longer crashes vis-network with a stack overflow on large graphs — nodes are seeded on a spiral before physics runs so overlap-avoidance can't blow the layout recursion (#3699, thanks @sanjaiyan-dev).
 - Fix: node and edge tooltips now show special characters literally (C++ templates like `vector<int>`, generics, `&`, quotes) instead of raw HTML entities, while the HTML sinks that need escaping keep it (#3686, #3664, thanks @hopstreax).
+- Fix: `graphify update`/`extract`/`cluster-only`/`label` now pin `PYTHONHASHSEED=0`, matching what the generated git hooks already do — a bare `graphify update .` (the command the CLAUDE.md template tells agents to run after every code change) previously re-clustered with a different, per-process-random hash seed every time, producing a large, spurious diff with no actual code change (#3641, thanks @lkiii).
 - Docs: repository links now point at `Graphify-Labs/graphify` instead of the old account (including in generated wiki output), translated READMEs use the current logo, GitHub issue/PR templates were added, and the Enterprise link was corrected (#3692, #3694, #3693, thanks @Abdul535).
 
 ## 0.9.64 (2026-09-18)
