@@ -365,6 +365,82 @@ def test_collect_stale_evaluator_makes_zero_typesafe_calls(monkeypatch, tmp_path
     assert evaluation._read_record("graphify-pr-1")["collection_status"] == "STALE"
 
 
+def _collect_record(tmp_path, *, attempt_count=None, payload=None):
+    graph = tmp_path / "graph.json"
+    graph.write_bytes(b"graph")
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps(payload or {"model": "model"}))
+    record = {
+        "prepare_status": "PREPARED", "graph_path": str(graph), "payload_path": str(payload_path),
+        "graph_fingerprint": evaluation._graph_bytes_fingerprint(graph),
+        "payload_fingerprint": evaluation._sha(evaluation._json(payload_path)),
+        "task": {},
+    }
+    if attempt_count is not None:
+        record["attempt_count"] = attempt_count
+    return record
+
+
+def test_collect_fingerprint_failure_records_no_new_attempt(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    monkeypatch.setattr(evaluation, "_stale_reasons", lambda *_args: [])
+    record = _collect_record(tmp_path, attempt_count=2)
+    record["payload_fingerprint"] = "wrong"
+    evaluation._write(evaluation._record_path("graphify-pr-1"), record)
+    monkeypatch.setattr(evaluation, "call_typesafe", lambda *_args: pytest.fail("transport must not run"))
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-only")
+    evaluation.collect([case()], live=True)
+    result = evaluation._read_record("graphify-pr-1")
+    assert result["attempt_count"] == 2
+
+
+def test_collect_payload_read_failure_records_no_new_attempt(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    monkeypatch.setattr(evaluation, "_stale_reasons", lambda *_args: [])
+    record = _collect_record(tmp_path, attempt_count=2)
+    Path(record["payload_path"]).unlink()
+    evaluation._write(evaluation._record_path("graphify-pr-1"), record)
+    monkeypatch.setattr(evaluation, "call_typesafe", lambda *_args: pytest.fail("transport must not run"))
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-only")
+    evaluation.collect([case()], live=True)
+    assert evaluation._read_record("graphify-pr-1")["attempt_count"] == 2
+
+
+def test_collect_failed_transport_attempts_accumulate_once(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    monkeypatch.setattr(evaluation, "_stale_reasons", lambda *_args: [])
+    evaluation._write(evaluation._record_path("graphify-pr-1"), _collect_record(tmp_path, attempt_count=2))
+    monkeypatch.setattr(evaluation, "call_typesafe", lambda *_args: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-only")
+    evaluation.collect([case()], live=True)
+    assert evaluation._read_record("graphify-pr-1")["attempt_count"] == 3
+    evaluation.collect([case()], live=True)
+    assert evaluation._read_record("graphify-pr-1")["attempt_count"] == 4
+
+
+@pytest.mark.parametrize("field, value", [("usage", {"input_tokens": 99, "output_tokens": 101}), ("returned_model", "stale-model")])
+def test_report_excludes_stale_and_failed_current_evidence(monkeypatch, tmp_path, field, value):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    evaluation._write(evaluation._record_path("graphify-pr-1"), {
+        "prepare_status": "PREPARED", "collection_status": "LIVE_FAILED", field: value,
+    })
+    text = evaluation.report([case()]).read_text()
+    assert "Tokens: 0 input, 0 output" in text
+    assert "Returned Jev models: []" in text
+
+
+def test_report_includes_live_usage_and_returned_model(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    monkeypatch.setattr(evaluation, "_stale_reasons", lambda *_args: [])
+    evaluation._write(evaluation._record_path("graphify-pr-1"), {
+        "prepare_status": "PREPARED", "collection_status": "LIVE_PASS",
+        "usage": {"input_tokens": 7, "output_tokens": 11}, "returned_model": "live-model",
+    })
+    text = evaluation.report([case()]).read_text()
+    assert "Tokens: 7 input, 11 output" in text
+    assert 'Returned Jev models: ["live-model"]' in text
+
+
 def test_report_has_saturation_and_noul_columns(monkeypatch, tmp_path):
     monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
     evaluation._write(evaluation._record_path("graphify-pr-1"), {

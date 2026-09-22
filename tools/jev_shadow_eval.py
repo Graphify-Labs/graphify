@@ -443,10 +443,9 @@ def collect(cases: list[dict[str, Any],], live: bool) -> None:
             derived = sidecar(payload, record["task"], graph_path, response)
             record.update({"collection_status": "LIVE_PASS", "request_model_alias": payload["model"], "returned_model": response["model"], "usage": response["usage"], "raw_answers": response["answers"], "result": derived, "collected_at": datetime.now(timezone.utc).isoformat()})
         except Exception as exc:
-            # Count transport attempts at the boundary when possible, while
-            # retaining any earlier successful evidence for historical use.
-            if record.get("prepare_status") == "PREPARED" and "attempt_count" not in record:
-                record["attempt_count"] = 1
+            # Only failures after entering the transport boundary are
+            # transport attempts. Earlier preparation/read/validation errors
+            # must not be inferred to be attempts.
             record.update({"collection_status": "LIVE_FAILED", "error_category": type(exc).__name__, "error": str(exc)})
         _write(_record_path(case["case_id"]), record)
 
@@ -458,7 +457,7 @@ def report(cases: list[dict[str, Any]]) -> Path:
         state = _classification(case, record)
         result = record.get("result", {}) if state == "live-collected" else {}
         judgments = result.get("graph_judgments", {})
-        usage = record.get("usage", {})
+        usage = record.get("usage", {}) if state == "live-collected" else {}
         inputs += usage.get("input_tokens", 0); outputs += usage.get("output_tokens", 0)
         choice = judgments.get("blast_radius", {}).get("choice", "-")
         if choice != "-": blast[choice] = blast.get(choice, 0) + 1
@@ -473,7 +472,7 @@ def report(cases: list[dict[str, Any]]) -> Path:
     verified = all(_historical_provenance_verified(c, _read_record(c["case_id"])) for c in cases)
     provenance = "PR-patch provenance verified 12/12" if verified and len(cases) == 12 else "PR-patch provenance unresolved"
     divergence = sum(_reported_base(c) != c["merge_base_sha"] for c in cases)
-    returned_models = sorted({(_read_record(c["case_id"]) or {}).get("returned_model") for c in cases if (_read_record(c["case_id"]) or {}).get("returned_model")})
+    returned_models = sorted({(_read_record(c["case_id"]) or {}).get("returned_model") for c, state in zip(cases, classifications) if state == "live-collected" and (_read_record(c["case_id"]) or {}).get("returned_model")})
     history_dir = _root("state") / "history"
     superseded_invalid = sum((_json(path).get("archive_reason") == "SUPERSEDED_INVALID_SOURCE_SNAPSHOT") for path in history_dir.glob("*.json")) if history_dir.exists() else 0
     source_provenance = "historical source snapshot = merge-base" if verified else "historical source snapshot provenance unresolved"
