@@ -118,14 +118,15 @@ def report(results: dict[str, Any]) -> Path:
     for case in results["cases"]:
         for run in case["runs"]:
             aggregates[(run["strategy"], run["budget"])].append(run)
-    lines = ["# Graphify Jev M2 candidate-slice evaluation", "", "Offline only: this report uses M1's retained public merge-base graphs and deterministic patch/graph evidence. It makes zero TypeSafe calls; selector recall is deliberately reported separately from Jev stability.", "", "| Strategy | Budget | Cases | Mean nodes | Mean edges | Node reference recall | Edge reference recall | Mandatory retained | Overflow |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    lines = ["# Graphify Jev M2 candidate-slice evaluation", "", "Offline only: this report uses M1's retained public merge-base graphs and deterministic patch/graph evidence. It makes zero TypeSafe calls; selector recall is deliberately reported separately from Jev stability.", "", "| Strategy | Budget | Cases | Mean nodes | Mean edges | File-anchor recall | Patch pre-change recall | Structural recall | Consumer/test cases | Overflow |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for (strategy, budget), runs in sorted(aggregates.items()):
         ok = [run for run in runs if run["status"] == "OK"]
         overflow = len(runs) - len(ok)
         mean = lambda key: sum(run[key] for run in ok) / len(ok) if ok else 0
         recall = lambda key: sum(run[key] for run in ok if run[key] is not None) / max(1, sum(run[key] is not None for run in ok))
-        lines.append(f"| {strategy} | {budget} | {len(ok)} | {mean('candidate_nodes'):.1f} | {mean('candidate_edges'):.1f} | {recall('reference_node_recall'):.1%} | {recall('reference_edge_recall'):.1%} | {sum(run['mandatory_retained'] for run in ok)}/{len(ok)} | {overflow} |")
-    lines.extend(["", "Reference nodes are deterministic T0 changed-file anchors plus direct structural call/import/containment/inheritance/reference/test neighbours in the historical pre-change graph. They are not derived from Jev judgments. A small candidate set alone is not a production-default decision.", ""])
+        test_consumer = sum(run['consumer_evidence_retained'] and run['test_evidence_retained'] for run in ok)
+        lines.append(f"| {strategy} | {budget} | {len(ok)} | {mean('candidate_nodes'):.1f} | {mean('candidate_edges'):.1f} | {recall('file_anchor_recall'):.1%} | {recall('patch_touched_prechange_recall'):.1%} | {recall('structural_consequence_recall'):.1%} | {test_consumer}/{len(ok)} | {overflow} |")
+    lines.extend(["", "Reference provenance and per-case source coverage, unresolved anchors, edge recall, consumer evidence, and test evidence are in `m2.json`. Added-only symbols are not pre-change referenceable. A small candidate set alone is not a production-default decision.", ""])
     path = m1._root("state") / "reports" / "m2.md"
     path.parent.mkdir(parents=True, exist_ok=True); path.write_text("\n".join(lines), encoding="utf-8")
     return path
