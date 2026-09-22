@@ -1409,14 +1409,12 @@ def _query_graph_text(
 
 
 def _resolve_path_scoped_symbol(G: nx.Graph, path_part: str, symbol_part: str) -> list[str]:
-    """Nodes whose source_file matches path_part and label/id matches symbol_part.
+    """Resolve `path::symbol` to node IDs whose `source_file` matches *path_part*
+    and whose label/ID matches *symbol_part*.
 
-    Backs the `path::Symbol` query form (#3485): a bare path resolves to the
-    FILE node (`_find_node_tiers`'s own `source_exact` tier, which prefers
-    the file over its members once #2032-disambiguated), and a bare symbol
-    name can be ambiguous across files -- the same-named local declaration
-    guard from #3176 exists for exactly that case, and its own suggested
-    retry ("the repo-relative path") pointed at a form that resolved to the
+    Fixes #3485: a bare path query resolves to the FILE node (`_find_node_tiers`'s
+    own `source_exact` tier, which prefers L1 file-level nodes), so the ambiguity
+    retry hint `graphify explain "<path>"` either reports `Node: <path>` for the
     wrong node or nothing at all, since no prior tier combined a path with
     a label. This combines both constraints in one query, so a specific
     symbol in a specific file is reachable without needing its opaque id.
@@ -1454,6 +1452,14 @@ def _resolve_path_scoped_symbol(G: nx.Graph, path_part: str, symbol_part: str) -
             or norm_symbol_query == norm_label or norm_symbol_query == bare_label
         ):
             matches.append(nid)
+    if len(matches) > 1:
+        case_matches = [
+            nid for nid in matches
+            if str(G.nodes[nid].get("label") or "").strip() == symbol_part
+            or str(G.nodes[nid].get("label") or "").rstrip("()").strip() == symbol_part
+        ]
+        if len(case_matches) == 1:
+            return case_matches
     return matches
 
 
@@ -1488,8 +1494,8 @@ def _label_has_literal_exact_match(G: nx.Graph, term: str, norm_query: str) -> b
 
 def _find_node_tiers(
     G: nx.Graph, label: str
-) -> tuple[list[str], list[str], list[str], list[str]]:
-    """Return match tiers in precedence order: (source_exact, exact, prefix, substring).
+) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
+    """Return match tiers in precedence order: (source_exact, case_exact, exact, prefix, substring).
 
     Split out of `_find_node` so callers that must not guess between equally-good
     matches can inspect the winning tier alone. `_find_node` flattens these, and
@@ -1506,6 +1512,8 @@ def _find_node_tiers(
     # `nid_norm` below extends that symmetry to node ids, which keep their
     # punctuation too and are compared raw against the tokenized `term` (#2467).
     norm_query = _strip_diacritics(str(label)).lower().strip()
+    raw_query = str(label).strip()
+    clean_query = _strip_diacritics(raw_query)
 
     # `path::Symbol` restricts the label match to nodes defined in that
     # file (#3485) -- checked before the ordinary tiers below so a
@@ -1525,11 +1533,12 @@ def _find_node_tiers(
         if path_part and symbol_part:
             scoped = _resolve_path_scoped_symbol(G, path_part, symbol_part)
             if scoped:
-                return scoped, [], [], []
+                return scoped, [], [], [], []
 
     if not term:
-        return [], [], [], []
+        return [], [], [], [], []
     source_exact: list[str] = []
+    case_exact: list[str] = []
     exact: list[str] = []
     prefix: list[str] = []
     substring: list[str] = []
@@ -1541,9 +1550,14 @@ def _find_node_tiers(
         else ((nid, G.nodes[nid]) for nid in candidate_ids)
     )
     for nid, d in node_iter:
-        norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
+        raw_node_label = str(d.get("label") or "").strip()
+        raw_bare_label = raw_node_label.rstrip("()")
+        clean_node_label = _strip_diacritics(raw_node_label)
+        clean_bare_label = clean_node_label.rstrip("()")
+
+        norm_label = d.get("norm_label") or _strip_diacritics(raw_node_label).lower()
         bare_label = norm_label.rstrip("()")
-        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
+        label_tokens = " ".join(_search_tokens(raw_node_label))
         source_tokens = " ".join(_search_tokens(d.get("source_file") or ""))
         nid_lower = nid.lower()
         # `_strip_diacritics` is the identity on ASCII, so the NFKD fold is only
@@ -1551,6 +1565,14 @@ def _find_node_tiers(
         nid_norm = nid_lower if nid.isascii() else _strip_diacritics(nid).lower()
         if term == source_tokens:
             source_exact.append(nid)
+        elif (
+            raw_query == raw_node_label
+            or raw_query == raw_bare_label
+            or clean_query == clean_node_label
+            or clean_query == clean_bare_label
+            or raw_query == nid
+        ):
+            case_exact.append(nid)
         elif (
             term == norm_label or term == bare_label or term == label_tokens or term == nid_lower
             or norm_query == norm_label or norm_query == bare_label or norm_query == nid_norm
@@ -1582,22 +1604,23 @@ def _find_node_tiers(
         if len(preferred) == 1:
             source_exact = preferred + [nid for nid in source_exact if nid != preferred[0]]
 
-    return source_exact, exact, prefix, substring
+    return source_exact, case_exact, exact, prefix, substring
 
 
 def _find_node(G: nx.Graph, label: str) -> list[str]:
     """Return node IDs whose label or ID matches the search term (diacritic-insensitive).
 
     Results are ordered by precedence: exact source-file path match first, then
-    exact (label/ID) match, then prefix match, then substring match. Node-ID exact
-    matches are grouped with label exact matches.
+    exact-case symbol match, then exact (label/ID) match, then prefix match, then
+    substring match. Node-ID exact matches are grouped with label exact matches.
     """
-    source_exact, exact, prefix, substring = _find_node_tiers(G, label)
-    return source_exact + exact + prefix + substring
+    source_exact, case_exact, exact, prefix, substring = _find_node_tiers(G, label)
+    return source_exact + case_exact + exact + prefix + substring
 
 
 def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
-    """Return rival candidates when the winning match tier spans several source files.
+    """Return rival candidates when the winning match tier spans several source files
+    or multiple case-colliding symbols within the same file.
 
     `_find_node` ranks matches but never reports that a tie was broken, so callers
     taking `[0]` present one arbitrary file as the answer. Two workspaces that each
@@ -1606,8 +1629,10 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     a different file, equally confidently.
 
     Returns one representative node id per distinct source file when the winning
-    tier is split that way, else `[]`. Several matches *within one file* (a file
-    node plus its members) are ordinary precedence, not ambiguity, and return `[]`.
+    tier is split that way, or representative node ids when distinct symbols within
+    the same source file collide by case, else `[]`. Several matches within one file
+    that represent the same logical symbol or ordinary file/member hierarchy are not
+    ambiguous and return `[]`.
 
     `_disambiguate_file_node_labels` (#2032) already relabels colliding *file*
     nodes; this covers the symbol case it does not reach.
@@ -1619,7 +1644,23 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
         for nid in tier:
             source = str(G.nodes[nid].get("source_file") or "")
             by_source.setdefault(source, nid)
-        return list(by_source.values()) if len(by_source) > 1 else []
+        if len(by_source) > 1:
+            return list(by_source.values())
+
+        # If candidates are within a single source file, check for distinct
+        # symbols that differ only by case.
+        seen_bare: dict[str, str] = {}
+        for nid in tier:
+            raw = str(G.nodes[nid].get("label") or "")
+            bare = raw.rstrip("()").strip()
+            if not bare:
+                bare = nid
+            if bare not in seen_bare:
+                seen_bare[bare] = nid
+        if len(seen_bare) > 1 and len({b.lower() for b in seen_bare}) == 1:
+            return list(seen_bare.values())
+
+        return []
     return []
 
 
@@ -1637,11 +1678,18 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
         return None, f"No node matching '{label}' found."
     rivals = find_node_ambiguity(G, label)
     if rivals:
+        same_file = len({str(G.nodes[r].get("source_file") or "") for r in rivals}) == 1
+        if same_file:
+            sf = G.nodes[rivals[0]].get("source_file")
+            scope_str = f"in {sf}" if sf else "in the same file"
+        else:
+            scope_str = "in different files"
         listing = "\n".join(
-            f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
+            f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" + (f"\n    label: {G.nodes[r].get('label')}" if G.nodes[r].get('label') else "")
+            for r in rivals
         )
         return None, (
-            f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
+            f"Ambiguous: '{label}' matches {len(rivals)} nodes {scope_str}.\n"
             f"{listing}\n"
             f"Retry with path::symbol using one of the paths above (e.g. "
             f"<path>::{label}) or the full node id."
