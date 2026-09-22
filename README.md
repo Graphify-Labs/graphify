@@ -96,6 +96,20 @@ the high-ranked hypotheses, repair only confirmed omissions, then verify the
 affected slice. The command never edits files, mutates `graph.json`, runs
 automatically, or becomes a CI gate.
 
+### Change-completeness verification plan
+
+`graphify change-completeness --task "..."` presents changed-file evidence and
+the same bounded Missing Impact hypotheses as a source-verification plan across
+implementation, consumers, tests, configuration, migration/schema, and
+documentation. `affected` is deterministic reverse reachability;
+`missing-impact` is task-aware additional-file discovery; and
+`change-completeness` is their changed-files-plus-hypotheses verification view.
+
+For a coding agent: implement → test → `graphify change-completeness --task
+"..." --live --json` → source-verify `VERIFY_CANDIDATE` files → repair
+confirmed omissions → rerun affected verification. Change Completeness produces
+a verification plan, not a completeness certification.
+
 **Works in** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, and 15+ more — [pick your platform](#install).
 
 ---

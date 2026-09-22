@@ -189,6 +189,47 @@ def build_result(*, objective: str, root: Path, graph_path: Path, graph_fingerpr
     return result
 
 
+def prepare_analysis(*, objective: str, repo: str | Path = ".", graph: str | None = None,
+                     changed_paths: list[str] | None = None, live: bool = False) -> dict[str, Any]:
+    """Build the deterministic Missing Impact analysis shared by related views."""
+    if not objective.strip():
+        raise MissingImpactError("task objective must be non-empty")
+    changed_paths = changed_paths or []
+    root = _resolve_repo_root(Path(repo).resolve(), explicit_changed=bool(changed_paths))
+    graph_path = (root / graph).resolve() if graph and not Path(graph).is_absolute() else (Path(graph).resolve() if graph else root / "graphify-out" / "graph.json")
+    graph_value, graph_fingerprint = load_graph(graph_path)
+    projection = project_graph(graph_value)
+    changed, deleted = (normalize_changed(changed_paths, root), []) if changed_paths else discover_git_changes(root)
+    represented, unrepresented, deleted = classify_seeds(changed, projection, deleted)
+    if not changed and not deleted:
+        return {"status": "NO_CHANGED_FILES", "result": {"schema_version": SCHEMA_VERSION, "status": "NO_CHANGED_FILES", "objective": objective, "changed_files": []}}
+    if not represented:
+        return {"status": "NO_GRAPH_REPRESENTED_SEEDS", "result": {"schema_version": SCHEMA_VERSION, "status": "NO_GRAPH_REPRESENTED_SEEDS", "objective": objective, "changed_files": changed, "unrepresented_seeds": unrepresented, "deleted_or_unavailable_seeds": deleted}}
+    rows = candidates(projection, represented)
+    result = build_result(objective=objective, root=root, graph_path=graph_path, graph_fingerprint=graph_fingerprint, projection=projection, changed=changed, represented=represented, unrepresented=unrepresented, deleted=deleted, rows=rows, live=live)
+    status = "NO_MISSING_IMPACT_CANDIDATES" if not rows else None
+    if status:
+        result["status"] = status
+    return {"status": status, "result": result, "projection": projection, "represented": represented, "rows": rows}
+
+
+def rerank_live(analysis: dict[str, Any]) -> None:
+    """Apply Missing Impact's single authorized Jev rerank to prepared rows."""
+    result, rows = analysis["result"], analysis.get("rows", [])
+    if not rows:
+        return
+    key = os.environ.get("TYPESAFE_API_KEY")
+    if not key:
+        raise MissingImpactError("TYPESAFE_API_KEY is required for --live")
+    response = call_typesafe(jev_payload(result["objective"], analysis["projection"], analysis["represented"], rows), key)
+    scores = {row["path"]: response["answers"][_question_id(row["path"])]["noul"] for row in rows}
+    result["returned_model"], result["usage"] = response["model"], response["usage"]
+    ranked = sorted(result["candidates"], key=lambda row: (-scores[row["path"]], row["path"]))
+    for rank, row in enumerate(ranked, 1):
+        row["semantic_rank"], row["jev_noul"], row["provenance"] = rank, scores[row["path"]], "JEV_INFERRED"
+    result["candidates"] = ranked
+
+
 def _human(result: dict[str, Any], status: str | None = None) -> str:
     if status: return status
     lines = ["Missing-impact candidates", f"Task: {result['objective']}", "", "Changed files:"]
@@ -207,37 +248,11 @@ def run(argv: list[str]) -> None:
     parser.add_argument("--task", required=True); parser.add_argument("--repo", default="."); parser.add_argument("--graph"); parser.add_argument("--changed", action="append", default=[]); parser.add_argument("--top", type=int, default=5); parser.add_argument("--live", action="store_true"); parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
-        if not args.task.strip(): raise MissingImpactError("task objective must be non-empty")
         if not 1 <= args.top <= CANDIDATE_BUDGET: raise MissingImpactError("top must be between 1 and 12")
-        requested = Path(args.repo).resolve()
-        root = _resolve_repo_root(requested, explicit_changed=bool(args.changed))
-        graph_path = (root / args.graph).resolve() if args.graph and not Path(args.graph).is_absolute() else (Path(args.graph).resolve() if args.graph else root / "graphify-out" / "graph.json")
-        graph, graph_fingerprint = load_graph(graph_path); projection = project_graph(graph)
-        if args.changed:
-            changed, deleted = normalize_changed(args.changed, root), []
-        else:
-            changed, deleted = discover_git_changes(root)
-        represented, unrepresented, deleted = classify_seeds(changed, projection, deleted)
-        if not changed and not deleted:
-            status = "NO_CHANGED_FILES"; result = {"schema_version": SCHEMA_VERSION, "status": status, "objective": args.task, "changed_files": []}
-        elif not represented:
-            status = "NO_GRAPH_REPRESENTED_SEEDS"; result = {"schema_version": SCHEMA_VERSION, "status": status, "objective": args.task, "changed_files": changed, "unrepresented_seeds": unrepresented, "deleted_or_unavailable_seeds": deleted}
-        else:
-            rows = candidates(projection, represented)
-            if not rows:
-                status = "NO_MISSING_IMPACT_CANDIDATES"; result = build_result(objective=args.task, root=root, graph_path=graph_path, graph_fingerprint=graph_fingerprint, projection=projection, changed=changed, represented=represented, unrepresented=unrepresented, deleted=deleted, rows=[], live=args.live)
-                result["status"] = status
-            else:
-                status = None; result = build_result(objective=args.task, root=root, graph_path=graph_path, graph_fingerprint=graph_fingerprint, projection=projection, changed=changed, represented=represented, unrepresented=unrepresented, deleted=deleted, rows=rows, live=args.live)
-                if args.live:
-                    key = os.environ.get("TYPESAFE_API_KEY")
-                    if not key: raise MissingImpactError("TYPESAFE_API_KEY is required for --live")
-                    response = call_typesafe(jev_payload(args.task, projection, represented, rows), key)
-                    scores = {row["path"]: response["answers"][_question_id(row["path"])]["noul"] for row in rows}
-                    result["returned_model"], result["usage"] = response["model"], response["usage"]
-                    ranked = sorted(result["candidates"], key=lambda row: (-scores[row["path"]], row["path"]))
-                    for rank, row in enumerate(ranked, 1): row["semantic_rank"], row["jev_noul"], row["provenance"] = rank, scores[row["path"]], "JEV_INFERRED"
-                    result["candidates"] = ranked
+        analysis = prepare_analysis(objective=args.task, repo=args.repo, graph=args.graph, changed_paths=args.changed, live=args.live)
+        status, result = analysis["status"], analysis["result"]
+        if args.live:
+            rerank_live(analysis)
         if "candidates" in result: result["candidates"] = result["candidates"][:args.top]
         print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False) if args.json else _human(result, status))
     except (MissingImpactError, JevShadowError) as exc:
