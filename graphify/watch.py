@@ -289,6 +289,30 @@ def _report_root_label(watch_path: Path) -> str:
     return Path.cwd().name if watch_path == Path(".") else str(watch_path)
 
 
+def _graphify_root_marker_value(watch_path: Path) -> str:
+    """The value to write into ``.graphify_root``.
+
+    Ordinarily preserves the caller-supplied path verbatim (relative or
+    absolute) so a committed ``graphify-out/.graphify_root`` stays portable
+    across clones and CI runners (#777): a relative marker like ``.`` is
+    meaningless outside the CWD it was written from, but every normal reader
+    of it (the generated git hooks, an unqualified ``graphify watch``) only
+    runs with that same CWD anyway.
+
+    That assumption breaks when ``GRAPHIFY_OUT`` itself is an absolute,
+    shared location (the multi-worktree / shared-output setup from #686):
+    the same marker file is then reachable from any worktree's CWD, not just
+    the one that wrote it, so a relative value silently resolves against
+    whichever worktree happens to be reading it instead of the one that was
+    actually scanned (#3375). Resolve to an absolute path in that case, since
+    portability across clones is not the goal there to begin with, the
+    output directory is already outside any one clone.
+    """
+    if Path(_GRAPHIFY_OUT).is_absolute():
+        return str(watch_path.resolve())
+    return str(watch_path)
+
+
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -1950,9 +1974,13 @@ def _rebuild_code(
                 graph_tmp.write_text(candidate_graph_text, encoding="utf-8")
                 os_replace_with_fallback(graph_tmp, existing_graph)
 
-            # Write the user-supplied path only after the candidate graph is
-            # accepted, so a refused shrink cannot mismatch graph and marker.
-            (out / ".graphify_root").write_text(str(watch_path), encoding="utf-8")
+            # Write the scan root only after the candidate graph is accepted,
+            # so a refused shrink cannot mismatch graph and marker. See
+            # _graphify_root_marker_value for why this isn't always the raw
+            # caller-supplied value (#3375).
+            (out / ".graphify_root").write_text(
+                _graphify_root_marker_value(watch_path), encoding="utf-8"
+            )
 
             try:
                 from graphify.detect import save_manifest
@@ -2169,7 +2197,11 @@ def _rebuild_code(
             sig_file.write_text(
                 json.dumps({str(k): v for k, v in cur_sigs.items()}), encoding="utf-8")
 
-        (out / ".graphify_root").write_text(str(watch_path), encoding="utf-8")
+        # See _graphify_root_marker_value for why this isn't always the raw
+        # caller-supplied value (#3375).
+        (out / ".graphify_root").write_text(
+            _graphify_root_marker_value(watch_path), encoding="utf-8"
+        )
 
         try:
             from graphify.detect import save_manifest
