@@ -8016,6 +8016,42 @@ def extract(
                 "weight": 1.0,
             })
 
+    # Go: repoint intra-module `imports_from` edges from the synthetic
+    # `go_pkg_<import path>` sink onto the imported package's file nodes.
+    # extractors/go.py mints the sink from the raw import string with no module
+    # lookup, so the edge never reaches a file and `affected` / reachability miss
+    # every consumer that arrives through an import. The inverse mapping is one
+    # dict away: _go_import_path_for_file (used above to bind qualified calls to
+    # the exact package) gives every Go file its canonical import path. Stdlib
+    # and external imports have no file here and stay sinks by design. (#3746)
+    go_pkg_files: dict[str, list[str]] = {}
+    for sf, fnid in sf_to_file_nid.items():
+        if not sf.endswith(".go"):
+            continue
+        import_path = _go_import_path_for_file(sf, root, _go_module_cache)
+        if import_path:
+            go_pkg_files.setdefault(import_path, []).append(fnid)
+    if go_pkg_files:
+        go_pkg_sink_ids = {_make_id("go", "pkg", ip): ip for ip in go_pkg_files}
+        rewritten_edges: list[dict] = []
+        for e in all_edges:
+            import_path = (
+                go_pkg_sink_ids.get(e.get("target", ""))
+                if e.get("relation") == "imports_from"
+                else None
+            )
+            if import_path is None:
+                rewritten_edges.append(e)
+                continue
+            for fnid in go_pkg_files[import_path]:
+                if fnid == e["source"] or (e["source"], fnid) in existing_pairs:
+                    continue
+                repointed = dict(e)
+                repointed["target"] = fnid
+                rewritten_edges.append(repointed)
+                existing_pairs.add((e["source"], fnid))
+        all_edges[:] = rewritten_edges
+
     # Cross-file, language-specific member-call resolution. Runs after the shared
     # call pass so node ids/caller_nids are final; each pass is additive (only the
     # receiver-typed/qualified calls the shared pass skipped) with its own
