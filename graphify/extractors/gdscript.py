@@ -58,7 +58,10 @@ class _GodotProject:
         self.root = root
         self.autoloads: dict[str, Path] = {}
         self.class_names: dict[str, Path] = {}
-        uids: dict[str, Path] = {}
+        # always present: a project.godot that cannot be read returns early below,
+        # and resolve() must still answer None for a uid:// rather than raise
+        self._uids: dict[str, Path] = {}
+        uids = self._uids
         try:
             for uid_file in root.rglob("*.gd.uid"):
                 if ".godot" in uid_file.parts:
@@ -89,7 +92,6 @@ class _GodotProject:
                 target = self.resolve(m.group(2), uids)
                 if target is not None:
                     self.autoloads[m.group(1)] = target
-        self._uids = uids
 
     def resolve(self, ref: str, uids: dict[str, Path] | None = None) -> Path | None:
         """A ``res://`` or ``uid://`` reference as an absolute path, or None."""
@@ -547,12 +549,23 @@ def extract_gdscript(path: Path) -> dict:
         return file_nid
 
     def section_node(page: str, section: str, line: int) -> str:
+        # The caller hands a basename, but the resolver enforces containment itself:
+        # a page is looked up under the project root (or its docs/), and only a real
+        # file that RESOLVES inside the root is allowed to rewrite the recorded path.
         page_rel = page.lstrip("./")
-        if project is not None:
-            for candidate in (project.root / page_rel, project.root / "docs" / page_rel):
-                if candidate.is_file():
-                    page_rel = candidate.relative_to(project.root).as_posix()
-                    break
+        if project is not None and ".." not in Path(page_rel).parts:
+            try:
+                root = project.root.resolve()
+            except OSError:
+                root = project.root
+            for candidate in (root / page_rel, root / "docs" / page_rel):
+                try:
+                    resolved = candidate.resolve()
+                    if resolved.is_file() and resolved.is_relative_to(root):
+                        page_rel = resolved.relative_to(root).as_posix()
+                        break
+                except OSError:
+                    continue
         nid = _make_id("doc", page_rel, "s" + section)
         if nid not in seen_ids:
             seen_ids.add(nid)
@@ -569,17 +582,20 @@ def extract_gdscript(path: Path) -> dict:
             text = _read_text(node, source)
             line = line_of(node)
             src = enclosing(node.start_byte)
-            explicit: list[tuple[int, int]] = []
-            for m in _CITATION_RE.finditer(text):
-                page = m.group(1).split("/")[-1]
-                last_page = page
-                explicit.append((m.start(), m.end()))
-                add_edge(src, section_node(page, m.group(2), line), "references", line, context="citation")
-            for m in _BARE_CITATION_RE.finditer(text):
-                if last_page is None or any(a <= m.start() < b for a, b in explicit):
-                    continue
-                add_edge(src, section_node(last_page, m.group(1), line), "references", line,
-                         confidence="INFERRED", context="citation")
+            explicit = list(_CITATION_RE.finditer(text))
+            spans = [(m.start(), m.end()) for m in explicit]
+            bare = [m for m in _BARE_CITATION_RE.finditer(text)
+                    if not any(a <= m.start() < b for a, b in spans)]
+            # walk every citation in the order it appears, so a bare section takes the
+            # page named before it — never one named later on the same line
+            for m in sorted(explicit + bare, key=lambda m: m.start()):
+                if m.re is _CITATION_RE:
+                    last_page = m.group(1).split("/")[-1]
+                    add_edge(src, section_node(last_page, m.group(2), line), "references", line,
+                             context="citation")
+                elif last_page is not None:
+                    add_edge(src, section_node(last_page, m.group(1), line), "references", line,
+                             confidence="INFERRED", context="citation")
             return
         for c in node.children:
             walk_comments(c)

@@ -4771,3 +4771,50 @@ def test_gdscript_is_dispatched_to_its_own_extractor_only(tmp_path):
     assert _lang_family("src/thing.gd") == "gdscript"
     assert ".gd" in CODE_EXTENSIONS and ".gd" in _WATCHED_EXTENSIONS
     assert sum(1 for _suffix, fn in _DISPATCH.items() if fn is extract_gdscript) == 1
+
+
+def test_gdscript_project_index_survives_an_unreadable_project_file(tmp_path):
+    """A project.godot that cannot be read leaves an index that still answers, never
+    raises: uid:// lookups return None (review finding on the early return)."""
+    from graphify.extractors.gdscript import _GodotProject
+
+    (tmp_path / "autoload").mkdir()
+    (tmp_path / "autoload" / "audio_bus.gd.uid").write_text("uid://bprobe1234\n", encoding="utf-8")
+    project = _GodotProject(tmp_path)          # no project.godot on disk: the read fails
+    assert project.autoloads == {}
+    assert project.resolve("uid://bprobe1234") == tmp_path / "autoload" / "audio_bus.gd"
+    assert project.resolve("uid://missing") is None
+
+
+@_needs_gdscript
+def test_gdscript_citation_pages_never_resolve_outside_the_project(tmp_path):
+    (tmp_path / "outside.md").write_text("# outside\n", encoding="utf-8")
+    (tmp_path / "proj").mkdir()
+    root = _godot_project(tmp_path / "proj")
+    script = root / "actors" / "cite.gd"
+    script.write_text("## Rules in ../../outside.md §1 and docs/../../outside.md §2.\nextends Node\n",
+                      encoding="utf-8")
+    r = extract_gdscript(script)
+    sections = [n for n in r["nodes"] if n.get("type") == "section"]
+    assert {n["label"] for n in sections} == {"outside.md §1", "outside.md §2"}
+    for n in sections:
+        assert ".." not in n["source_file"] and n["source_file"] == "outside.md"
+
+
+@_needs_gdscript
+def test_gdscript_bare_citation_takes_the_page_named_before_it(tmp_path):
+    root = _godot_project(tmp_path)
+    script = root / "actors" / "order.gd"
+    script.write_text(
+        "## See §9.9 first, then guide.md §1.1 and §1.2.\n"
+        "## Later, §1.3 alone.\n"
+        "extends Node\n", encoding="utf-8")
+    r = extract_gdscript(script)
+    by_label = {}
+    for e in (e for e in r["edges"] if e.get("context") == "citation"):
+        node = next(n for n in r["nodes"] if n["id"] == e["target"])
+        by_label[node["label"]] = e["confidence"]
+    # no page precedes §9.9, so it is not attributed to a page named after it
+    assert "guide.md §9.9" not in by_label
+    assert by_label == {"guide.md §1.1": "EXTRACTED", "guide.md §1.2": "INFERRED",
+                        "guide.md §1.3": "INFERRED"}
