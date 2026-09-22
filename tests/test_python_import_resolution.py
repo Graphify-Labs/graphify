@@ -96,6 +96,32 @@ def test_relative_subpackage_import_from_targets_package_init(tmp_path: Path):
     assert all(t.endswith("graphs_init") for t in health_targets), health_targets
 
 
+def test_absolute_package_import_targets_package_init(tmp_path: Path):
+    """Absolute package imports must not leave dotted-name dangling edges (#3723)."""
+    files = [
+        _write(tmp_path / "pkg/__init__.py", ""),
+        _write(tmp_path / "pkg/sub/__init__.py", ""),
+        _write(tmp_path / "pkg/sub/thing.py", "def run():\n    return 1\n"),
+        _write(tmp_path / "pkg/consumer.py", "from pkg import sub\n"),
+        _write(tmp_path / "user.py", "from pkg.sub import thing\n"),
+    ]
+
+    result = extract(files, cache_root=tmp_path)
+
+    consumer = _node_id(result, "consumer.py", "pkg/consumer.py")
+    user = _node_id(result, "user.py", "user.py")
+    import_targets = {
+        edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "imports_from"
+        and edge["source"] in {consumer, user}
+    }
+
+    assert {"pkg_init", "pkg_sub_init"} <= import_targets
+    assert "pkg" not in import_targets
+    assert "pkg_sub" not in import_targets
+
+
 def test_python_package_reexport_resolves_import_and_call_to_origin_symbol(tmp_path: Path):
     origin = _write(tmp_path / "pkg/foo.py", "def Foo():\n    return 1\n")
     barrel = _write(tmp_path / "pkg/__init__.py", "from .foo import Foo as PublicFoo\n")

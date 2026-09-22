@@ -482,7 +482,37 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                     target_path = base / rel
                 tgt_nid = _make_id(str(target_path))
             else:
-                tgt_nid = _make_id(raw)
+                # Absolute imports need the same package/file probing as the
+                # relative arm.  Keeping the dotted-name slug here makes
+                # ``from pkg.sub import thing`` point at ``pkg_sub`` even when
+                # the real node is ``pkg_sub_init``; the symbol-resolution pass
+                # may add a second, correct edge, but it cannot repair this
+                # malformed file-level edge (#3723).  Search upward from the
+                # importer and only probe non-package ancestors, mirroring the
+                # resolver's sys.path-root rule without requiring the scan root
+                # at per-file extraction time.
+                module_rel = raw.replace(".", "/")
+                current_path = Path(str_path)
+                try:
+                    current_path = current_path.resolve()
+                except OSError:
+                    pass
+                for ancestor in (current_path.parent, *current_path.parent.parents):
+                    if (ancestor / "__init__.py").is_file():
+                        continue
+                    resolved = _probe_python_module_candidate(ancestor / module_rel)
+                    if resolved is not None:
+                        try:
+                            if resolved.resolve() == current_path:
+                                # An external import can share the importing
+                                # file's basename; never turn that coincidence
+                                # into a self-loop.
+                                continue
+                        except OSError:
+                            pass
+                        target_path = resolved
+                        break
+                tgt_nid = _make_id(str(target_path)) if target_path is not None else _make_id(raw)
             edge = {
                 "source": file_nid,
                 "target": tgt_nid,
