@@ -12,6 +12,18 @@
       "changed_files": [
         "docs/how-it-works.md",
         "docs/node-summaries-rfc.md"
+      ],
+      "merge_base_sha": "079b34da7851e6f7c7ae8347853c4dfd93f818ff",
+      "changed_file_count": 2,
+      "github_changed_files": [
+        {
+          "path": "docs/how-it-works.md",
+          "status": "modified"
+        },
+        {
+          "path": "docs/node-summaries-rfc.md",
+          "status": "added"
+        }
       ]
     },
     {
@@ -24,6 +36,14 @@
       "head_sha": "39afb2d8efd3ffee8ea943b96411c88283a52944",
       "changed_files": [
         ".github/workflows/ci.yml"
+      ],
+      "merge_base_sha": "137bc2d95139ba7b8b04e1014fe4bcf249668539",
+      "changed_file_count": 1,
+      "github_changed_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "status": "modified"
+        }
       ]
     },
     {
@@ -35,45 +55,15 @@
       "base_sha": "1bb30fcc567a72280f4dc1763947140268f101c5",
       "head_sha": "c4d6b412cabf422bbac72874933e43e196568690",
       "changed_files": [
-        ".github/workflows/release-graph.yml",
-        "CHANGELOG.md",
-        "README.md",
-        "SECURITY.md",
-        "graphify/__main__.py",
-        "graphify/_minhash.py",
-        "graphify/affected.py",
-        "graphify/analyze.py",
-        "graphify/build.py",
-        "graphify/cache.py",
-        "graphify/cargo_introspect.py",
-        "graphify/dedup.py",
-        "graphify/detect.py",
-        "graphify/export.py",
-        "graphify/extract.py",
-        "graphify/global_graph.py",
-        "graphify/llm.py",
-        "graphify/security.py",
-        "graphify/watch.py",
-        "pyproject.toml",
-        "tests/fixtures/sample.sv",
-        "tests/test_affected_cli.py",
-        "tests/test_cache.py",
-        "tests/test_cargo_introspect.py",
-        "tests/test_claude_cli_backend.py",
-        "tests/test_dart.py",
-        "tests/test_dedup.py",
-        "tests/test_detect.py",
-        "tests/test_extract.py",
-        "tests/test_extract_cli.py",
-        "tests/test_global_graph.py",
-        "tests/test_js_import_resolution.py",
-        "tests/test_languages.py",
-        "tests/test_llm_backends.py",
-        "tests/test_minhash.py",
-        "tests/test_obsidian_dangling_member.py",
-        "tests/test_pg_introspect.py",
-        "tests/test_watch.py",
-        "uv.lock"
+        "graphify/dedup.py"
+      ],
+      "merge_base_sha": "137bc2d95139ba7b8b04e1014fe4bcf249668539",
+      "changed_file_count": 1,
+      "github_changed_files": [
+        {
+          "path": "graphify/dedup.py",
+          "status": "modified"
+        }
       ]
     },
     {
@@ -87,6 +77,18 @@
       "changed_files": [
         "graphify/affected.py",
         "tests/test_affected_cli.py"
+      ],
+      "merge_base_sha": "1bb30fcc567a72280f4dc1763947140268f101c5",
+      "changed_file_count": 2,
+      "github_changed_files": [
+        {
+          "path": "graphify/affected.py",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_affected_cli.py",
+          "status": "modified"
+        }
       ]
     },
     {
@@ -98,34 +100,40 @@
       "base_sha": "3a47091021e94da07d5dfaa52e679d4f1d307385",
       "head_sha": "17c28040da9347be088874ba908c68c6b91992c0",
       "changed_files": [
-        "CHANGELOG.md",
         "README.md",
         "docs/translations/README.uk-UA.md",
         "graphify/__main__.py",
-        "graphify/affected.py",
-        "graphify/cache.py",
-        "graphify/cargo_introspect.py",
-        "graphify/dedup.py",
-        "graphify/extract.py",
-        "graphify/global_graph.py",
         "graphify/llm.py",
-        "graphify/watch.py",
-        "tests/fixtures/sample.sv",
-        "tests/test_affected_cli.py",
         "tests/test_anthropic_custom_endpoint.py",
-        "tests/test_cache.py",
-        "tests/test_cargo_introspect.py",
-        "tests/test_claude_cli_backend.py",
-        "tests/test_dart.py",
-        "tests/test_dedup.py",
-        "tests/test_extract.py",
-        "tests/test_extract_cli.py",
-        "tests/test_global_graph.py",
-        "tests/test_js_import_resolution.py",
-        "tests/test_languages.py",
-        "tests/test_openai_custom_endpoint.py",
-        "tests/test_watch.py",
-        "uv.lock"
+        "tests/test_openai_custom_endpoint.py"
+      ],
+      "merge_base_sha": "cce26730212baab6d92ce5f390ef5aae56268f31",
+      "changed_file_count": 6,
+      "github_changed_files": [
+        {
+          "path": "README.md",
+          "status": "modified"
+        },
+        {
+          "path": "docs/translations/README.uk-UA.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/__main__.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/llm.py",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_anthropic_custom_endpoint.py",
+          "status": "added"
+        },
+        {
+          "path": "tests/test_openai_custom_endpoint.py",
+          "status": "added"
+        }
       ]
     },
     {
@@ -140,16 +148,11 @@
         "CHANGELOG.md",
         "README.md",
         "graphify/__main__.py",
-        "graphify/affected.py",
-        "graphify/detect.py",
         "graphify/export.py",
-        "graphify/hooks.py",
-        "graphify/skill-aider.md",
         "graphify/skill-amp.md",
         "graphify/skill-claw.md",
         "graphify/skill-codex.md",
         "graphify/skill-copilot.md",
-        "graphify/skill-devin.md",
         "graphify/skill-droid.md",
         "graphify/skill-kilo.md",
         "graphify/skill-kiro.md",
@@ -173,18 +176,12 @@
         "graphify/skills/vscode/references/exports.md",
         "graphify/skills/windows/references/exports.md",
         "pyproject.toml",
-        "tests/test_affected_cli.py",
         "tests/test_cli_export.py",
-        "tests/test_detect.py",
         "tests/test_falkordb_integration.py",
-        "tests/test_hooks.py",
-        "tests/test_skillgen.py",
-        "tools/skillgen/expected/graphify__skill-aider.md",
         "tools/skillgen/expected/graphify__skill-amp.md",
         "tools/skillgen/expected/graphify__skill-claw.md",
         "tools/skillgen/expected/graphify__skill-codex.md",
         "tools/skillgen/expected/graphify__skill-copilot.md",
-        "tools/skillgen/expected/graphify__skill-devin.md",
         "tools/skillgen/expected/graphify__skill-droid.md",
         "tools/skillgen/expected/graphify__skill-kilo.md",
         "tools/skillgen/expected/graphify__skill-kiro.md",
@@ -207,11 +204,256 @@
         "tools/skillgen/expected/graphify__skills__trae__references__exports.md",
         "tools/skillgen/expected/graphify__skills__vscode__references__exports.md",
         "tools/skillgen/expected/graphify__skills__windows__references__exports.md",
-        "tools/skillgen/fragments/core/aider.md",
         "tools/skillgen/fragments/core/core.md",
-        "tools/skillgen/fragments/core/devin.md",
-        "tools/skillgen/fragments/references/shared/exports.md",
-        "tools/skillgen/gen.py"
+        "tools/skillgen/fragments/references/shared/exports.md"
+      ],
+      "merge_base_sha": "a8dbbe59cfa7bb87d124fb85297b475d8d3fdb91",
+      "changed_file_count": 61,
+      "github_changed_files": [
+        {
+          "path": "CHANGELOG.md",
+          "status": "modified"
+        },
+        {
+          "path": "README.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/__main__.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/export.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-amp.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-claw.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-codex.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-copilot.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-droid.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-kilo.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-kiro.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-opencode.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-pi.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-trae.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-vscode.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-windows.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/amp/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/claude/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/claw/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/codex/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/copilot/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/droid/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/kilo/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/kiro/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/opencode/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/pi/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/trae/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/vscode/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/windows/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "pyproject.toml",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_cli_export.py",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_falkordb_integration.py",
+          "status": "added"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-amp.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-claw.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-codex.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-copilot.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-droid.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-kilo.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-kiro.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-opencode.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-pi.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-trae.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-vscode.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-windows.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__amp__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__claude__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__claw__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__codex__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__copilot__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__droid__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__kilo__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__kiro__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__opencode__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__pi__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__trae__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__vscode__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__windows__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/fragments/core/core.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/fragments/references/shared/exports.md",
+          "status": "modified"
+        }
       ]
     },
     {
@@ -225,6 +467,18 @@
       "changed_files": [
         "graphify/build.py",
         "tests/test_build.py"
+      ],
+      "merge_base_sha": "be3dcfca083f58b9cf8392c6ddeb6ac66f477e92",
+      "changed_file_count": 2,
+      "github_changed_files": [
+        {
+          "path": "graphify/build.py",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_build.py",
+          "status": "modified"
+        }
       ]
     },
     {
@@ -239,6 +493,22 @@
         "graphify/extract.py",
         "graphify/llm.py",
         "graphify/tree_html.py"
+      ],
+      "merge_base_sha": "be3dcfca083f58b9cf8392c6ddeb6ac66f477e92",
+      "changed_file_count": 3,
+      "github_changed_files": [
+        {
+          "path": "graphify/extract.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/llm.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/tree_html.py",
+          "status": "modified"
+        }
       ]
     },
     {
@@ -250,29 +520,40 @@
       "base_sha": "58271fb5af4c0c123ddbad9c689ee1e220360be8",
       "head_sha": "af15e33f577f3ae11d2892a779d0a3e14f829fac",
       "changed_files": [
-        "CHANGELOG.md",
         "README.md",
-        "graphify/__main__.py",
-        "graphify/analyze.py",
-        "graphify/cache.py",
         "graphify/detect.py",
-        "graphify/export.py",
         "graphify/extract.py",
-        "graphify/hooks.py",
-        "graphify/ingest.py",
-        "graphify/llm.py",
-        "graphify/serve.py",
-        "graphify/skill-pi.md",
-        "graphify/skill-trae.md",
-        "graphify/skill-windows.md",
-        "graphify/skill.md",
-        "graphify/transcribe.py",
-        "graphify/watch.py",
-        "graphify/wiki.py",
         "pyproject.toml",
         "tests/fixtures/sample.vb",
-        "tests/test_detect.py",
         "tests/test_languages.py"
+      ],
+      "merge_base_sha": "8a6306f769be7a71ee458337e32bdb3943cf7943",
+      "changed_file_count": 6,
+      "github_changed_files": [
+        {
+          "path": "README.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/detect.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/extract.py",
+          "status": "modified"
+        },
+        {
+          "path": "pyproject.toml",
+          "status": "modified"
+        },
+        {
+          "path": "tests/fixtures/sample.vb",
+          "status": "added"
+        },
+        {
+          "path": "tests/test_languages.py",
+          "status": "modified"
+        }
       ]
     },
     {
@@ -317,6 +598,142 @@
         "graphify/extractors/verilog.py",
         "graphify/install.py",
         "pyproject.toml"
+      ],
+      "merge_base_sha": "20bfdf60ac7187edc2f8594252222dc8e9b96399",
+      "changed_file_count": 33,
+      "github_changed_files": [
+        {
+          "path": "graphify/__main__.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/cli.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/export.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/exporters/__init__.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/exporters/base.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/exporters/graphdb.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/exporters/html.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extract.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/extractors/MIGRATION.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/extractors/__init__.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/extractors/apex.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/bash.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/dart.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/dm.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/engine.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/fortran.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/go.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/json_config.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/julia.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/markdown.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/models.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/objc.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/pascal.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/pascal_forms.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/powershell.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/resolution.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/rust.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/sln.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/sql.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/terraform.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/verilog.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/install.py",
+          "status": "added"
+        },
+        {
+          "path": "pyproject.toml",
+          "status": "modified"
+        }
       ]
     },
     {
@@ -330,6 +747,18 @@
       "changed_files": [
         "graphify/detect.py",
         "tests/test_detect.py"
+      ],
+      "merge_base_sha": "ee1df22b25c1c2e79817783cbcf00f1b3f86f60f",
+      "changed_file_count": 2,
+      "github_changed_files": [
+        {
+          "path": "graphify/detect.py",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_detect.py",
+          "status": "modified"
+        }
       ]
     },
     {
@@ -385,6 +814,186 @@
         "tools/skillgen/fragments/references/shared/extraction-spec-compact.md",
         "tools/skillgen/fragments/references/shared/extraction-spec.md",
         "tools/skillgen/fragments/references/shared/update.md"
+      ],
+      "merge_base_sha": "8437ef465e00c35bb7bb735612f348b0d28d8889",
+      "changed_file_count": 44,
+      "github_changed_files": [
+        {
+          "path": "graphify/skill-amp.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-claw.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-codex.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-copilot.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-droid.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-kilo.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-kiro.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-opencode.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-pi.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-trae.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-vscode.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-windows.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/amp/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/amp/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/claude/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/claude/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/claw/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/claw/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/codex/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/codex/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/copilot/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/copilot/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/droid/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/droid/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/kilo/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/kilo/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/kiro/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/kiro/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/opencode/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/opencode/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/pi/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/pi/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/trae/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/trae/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/vscode/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/vscode/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/windows/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/windows/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_build.py",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/fragments/core/core.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/fragments/references/shared/extraction-spec-compact.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/fragments/references/shared/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/fragments/references/shared/update.md",
+          "status": "modified"
+        }
       ]
     }
   ]
