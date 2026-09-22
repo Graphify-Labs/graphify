@@ -290,3 +290,134 @@ def test_clojure_missing_parser_reports_install_hint(tmp_path, monkeypatch, caps
 
     assert result["nodes"] == []
     assert 'pip install "graphifyy[clojure]"' in capsys.readouterr().err
+
+
+def test_clojure_operator_symbols_get_distinct_ids(tmp_path):
+    source = tmp_path / "ops.clj"
+    source.write_text(
+        "(ns ops)\n"
+        "(defn <!! [port] port)\n"
+        "(defn >!! [port val] val)\n"
+        "(defn valid? [x] x)\n"
+        "(defn valid! [x] x)\n"
+        "(defn valid [x] x)\n"
+        "(defn run [p] (<!! p) (>!! p 1) (valid? p) (valid! p) (valid p))\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    labels = [node["label"] for node in result["nodes"]]
+    assert {"<!!", ">!!", "valid?", "valid!", "valid"} <= set(labels)
+    assert len(labels) == len(set(labels))
+    calls = _edge_labels(result, "calls")
+    assert {("run", "<!!"), ("run", ">!!"), ("run", "valid?"), ("run", "valid!"), ("run", "valid")} <= calls
+
+
+def test_clojure_calls_resolve_to_protocol_method_not_implementations(tmp_path):
+    store = tmp_path / "store.clj"
+    store.write_text(
+        "(ns app.store)\n"
+        "(defprotocol Store\n"
+        "  (read-item [store k]))\n"
+        "(defrecord MemoryStore [m]\n"
+        "  Store\n"
+        "  (read-item [_ k] (get m k)))\n"
+        "(defrecord NullStore []\n"
+        "  Store\n"
+        "  (read-item [_ _] nil))\n",
+        encoding="utf-8",
+    )
+    core = tmp_path / "core.clj"
+    core.write_text(
+        "(ns app.core (:require [app.store :as store]))\n"
+        "(defn fetch [s k] (store/read-item s k))\n",
+        encoding="utf-8",
+    )
+
+    result = extract([core, store], cache_root=tmp_path)
+
+    kinds_by_id = {node["id"]: node["metadata"].get("kind") for node in result["nodes"]}
+    labels = {node["id"]: node["label"] for node in result["nodes"]}
+    targets = [
+        (labels[edge["target"]], kinds_by_id[edge["target"]])
+        for edge in result["edges"]
+        if edge["relation"] == "calls" and labels[edge["source"]] == "fetch"
+    ]
+    assert targets == [("read-item", "protocol_method")]
+    assert {"MemoryStore/read-item", "NullStore/read-item"} <= set(labels.values())
+
+
+def test_clojure_namespaced_and_nested_definers(tmp_path):
+    source = tmp_path / "ui.cljs"
+    source.write_text(
+        "(ns app.ui (:require [helix.core :as helix] [cljs.test :as t]))\n"
+        "(defn render [] 1)\n"
+        "(helix/defnc button [props] (render))\n"
+        "(t/deftest button-test (render))\n"
+        "(if-not goog.DEBUG\n"
+        "  (defn debug-cell [title c] [])\n"
+        "  (defn debug-cell [title c] (render)))\n"
+        "(when true\n"
+        "  (def enabled? true)\n"
+        "  (render))\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    kinds = _kinds(result)
+    assert kinds["button"] == "definition"
+    assert kinds["button-test"] == "definition"
+    assert kinds["debug-cell"] == "function"
+    assert kinds["enabled?"] == "var"
+    definers = {
+        node["label"]: node["metadata"].get("definer") for node in result["nodes"]
+    }
+    assert definers["button"] == "helix/defnc"
+    assert definers["button-test"] == "t/deftest"
+
+    calls = _edge_labels(result, "calls")
+    assert ("button", "render") in calls
+    assert ("button-test", "render") in calls
+    assert ("debug-cell", "render") in calls
+    # the bare `(render)` inside `when` belongs to the namespace, and the nested
+    # def bodies are not double-attributed to it
+    assert ("app.ui", "render") in calls
+    assert ("app.ui", "debug-cell") not in calls
+
+
+def test_clojure_aliased_record_constructor_resolves_across_namespaces(tmp_path):
+    store = tmp_path / "store.clj"
+    store.write_text("(ns app.store)\n(defrecord Batch [ops])\n", encoding="utf-8")
+    core = tmp_path / "core.clj"
+    core.write_text(
+        "(ns app.core (:require [app.store :as store]))\n"
+        "(defn run [] (store/->Batch []) (store/map->Batch {}))\n",
+        encoding="utf-8",
+    )
+
+    result = extract([core, store], cache_root=tmp_path)
+
+    assert ("run", "Batch") in _edge_labels(result, "references")
+    assert not any(target == "Batch" for _, target in _edge_labels(result, "calls"))
+
+
+def test_clojure_protocol_with_docstrings_and_metadata_keeps_its_methods(tmp_path):
+    source = tmp_path / "protocols.clj"
+    source.write_text(
+        "(ns app.protocols)\n"
+        "(defprotocol ^{:added \"1.6\"} Streamable\n"
+        "  \"A protocol docstring.\"\n"
+        "  (write-body [body out] \"method docstring\")\n"
+        "  (close-body [body]))\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    kinds = _kinds(result)
+    assert kinds["Streamable"] == "protocol"
+    assert kinds["write-body"] == "protocol_method"
+    assert kinds["close-body"] == "protocol_method"
+    assert ("Streamable", "write-body") in _edge_labels(result, "contains")

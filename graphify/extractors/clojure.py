@@ -72,12 +72,33 @@ _SPECIAL_FORMS = frozenset({
     "true", "false", "nil",
 })
 
+# Kinds a cross-namespace call may resolve to. Record/type method
+# implementations (`method`) are deliberately absent: several records in one
+# namespace usually implement the same protocol method, and a call names the
+# protocol signature (`protocol_method`), not one implementation.
 _CALLABLE_KINDS = frozenset({
-    "function", "macro", "multimethod", "method", "protocol_method", "var",
-    "definition",
+    "function", "macro", "multimethod", "protocol_method", "var", "definition",
 })
 
+_TYPE_KINDS = frozenset({"record", "type", "struct"})
+
 _SUFFIXES = frozenset({".clj", ".cljs", ".cljc", ".edn"})
+
+
+# Clojure symbols routinely carry operator characters (`<!!`, `>!!`, `foo?`,
+# `foo!`, `->Record`, `+`, `*ns*`) that the generic ``_make_id`` strips, which
+# would collapse distinct definitions onto one node id. Map them to readable
+# tokens first, the way the Common Lisp extractor does.
+_CLJ_CHAR_MAP = {
+    "=": "_eq", "<": "_lt", ">": "_gt", "?": "_p", "!": "_bang",
+    "+": "_plus", "*": "_star", "/": "_slash", "%": "_pct", "&": "_amp",
+    "'": "_quote", "#": "_hash", "$": "_dollar", "|": "_pipe", "~": "_tilde",
+    "^": "_caret", ":": "_colon",
+}
+
+
+def _clj_id(*parts: str) -> str:
+    return _make_id(*("".join(_CLJ_CHAR_MAP.get(c, c) for c in part) for part in parts))
 
 
 def _values(node: Node) -> list[Node]:
@@ -248,6 +269,7 @@ def resolve_clojure_namespaces(
     """
     namespaces: dict[str, list[str]] = {}
     callables: dict[tuple[str, str], list[str]] = {}
+    types: dict[tuple[str, str], list[str]] = {}
     for node in all_nodes:
         metadata = node.get("metadata")
         if not isinstance(metadata, dict) or metadata.get("language") != "clojure":
@@ -261,6 +283,8 @@ def resolve_clojure_namespaces(
             namespaces.setdefault(namespace, []).append(node["id"])
         elif kind in _CALLABLE_KINDS and isinstance(name, str):
             callables.setdefault((namespace, name), []).append(node["id"])
+        elif kind in _TYPE_KINDS and isinstance(name, str):
+            types.setdefault((namespace, name), []).append(node["id"])
 
     existing = {
         (edge.get("source"), edge.get("target"), edge.get("relation"))
@@ -301,7 +325,7 @@ def resolve_clojure_namespaces(
                     for target in targets:
                         add_edge(caller, target, "imports", "require", raw)
                     continue
-                external_id = _make_id("clojure", "namespace", namespace)
+                external_id = _clj_id("clojure", "namespace", namespace)
                 if external_id not in external_ids:
                     external_ids.add(external_id)
                     all_nodes.append({
@@ -326,6 +350,20 @@ def resolve_clojure_namespaces(
             if raw.get("remote_namespace"):
                 candidate_namespaces.append(str(raw["remote_namespace"]))
             candidate_namespaces.extend(str(n) for n in raw.get("refer_all", []) or [])
+            # `alias/->Record` and `alias/map->Record` construct a record defined
+            # in another namespace: a `references` edge to the record node.
+            type_name = None
+            if callee.startswith("map->"):
+                type_name = callee[len("map->"):]
+            elif callee.startswith("->") and len(callee) > 2:
+                type_name = callee[2:]
+            if type_name:
+                type_candidates: list[str] = []
+                for namespace in candidate_namespaces:
+                    type_candidates.extend(types.get((namespace, type_name), []))
+                if len(type_candidates) == 1 and type_candidates[0] != caller:
+                    add_edge(caller, type_candidates[0], "references", "constructor", raw)
+                continue
             candidates: list[str] = []
             for namespace in candidate_namespaces:
                 candidates.extend(callables.get((namespace, callee), []))
@@ -430,7 +468,7 @@ def extract_clojure(path: Path) -> dict:
             break
     if ns_form is not None:
         ns_id = add_node(
-            _make_id(stem, "namespace", namespace),
+            _clj_id(stem, "namespace", namespace),
             namespace,
             ns_form,
             kind="namespace",
@@ -467,7 +505,7 @@ def extract_clojure(path: Path) -> dict:
             if not class_name:
                 continue
             target = add_node(
-                _make_id("clojure", "import", class_name),
+                _clj_id("clojure", "import", class_name),
                 class_name,
                 node,
                 kind="class",
@@ -524,7 +562,7 @@ def extract_clojure(path: Path) -> dict:
     pending_impls: list[tuple[str, str, Node]] = []  # (type_id, protocol name, node)
 
     def def_id(kind: str, name: str) -> str:
-        return _make_id(ns_id, kind, name)
+        return _clj_id(ns_id, kind, name)
 
     def define(
         name: str, node: Node, *, kind: str, callable_node: bool, metadata: dict[str, Any] | None = None
@@ -557,7 +595,7 @@ def extract_clojure(path: Path) -> dict:
                 continue
             method_label = method_name[1]
             method_id = add_node(
-                _make_id(owner_id, "method", method_label),
+                _clj_id(owner_id, "method", method_label),
                 f"{owner_name}/{method_label}",
                 item,
                 kind="method",
@@ -572,21 +610,31 @@ def extract_clojure(path: Path) -> dict:
             add_edge(owner_id, method_id, "contains", item)
             bodies.append((impl_values[1:], method_id))
 
-    for form in top_forms:
-        head = _head_symbol(form, source)
-        if head is None or head[0] is not None:
-            continue
-        head_name = head[1]
+    def process_definition(form: Node, head: tuple[str | None, str]) -> bool:
+        """Register one `def*` form. Returns True when the form was consumed."""
+        head_ns, head_name = head
         values = _values(form)
         args = values[1:]
 
-        if head_name in {"ns", "in-ns", "require", "use", "import", "require-macros", "comment"}:
-            continue
+        if head_ns is not None:
+            # Namespaced custom definer (`helix/defnc`, `t/deftest`, `s/fdef`).
+            if not head_name.startswith("def") or head_name in _NOT_DEFINERS or not args:
+                return False
+            name = _sym_name(args[0], source)
+            if not name:
+                return False
+            custom_id = define(
+                name, form, kind="definition", callable_node=True,
+                metadata={"definer": f"{head_ns}/{head_name}"},
+            )
+            local_defs.setdefault(name, custom_id)
+            bodies.append((args[1:], custom_id))
+            return True
 
         if head_name == "defprotocol" and args:
             name = _sym_name(args[0], source)
             if not name:
-                continue
+                return True
             protocol_id = define(name, form, kind="protocol", callable_node=False)
             protocols[name] = protocol_id
             local_defs.setdefault(name, protocol_id)
@@ -600,7 +648,7 @@ def extract_clojure(path: Path) -> dict:
                 if not method_name:
                     continue
                 method_id = add_node(
-                    _make_id(protocol_id, "method", method_name),
+                    _clj_id(protocol_id, "method", method_name),
                     method_name,
                     sig,
                     kind="protocol_method",
@@ -610,19 +658,19 @@ def extract_clojure(path: Path) -> dict:
                 add_edge(protocol_id, method_id, "contains", sig)
                 local_defs.setdefault(method_name, method_id)
                 callable_ids.add(method_id)
-            continue
+            return True
 
         if head_name in _TYPE_DEFINERS and args:
             name = _sym_name(args[0], source)
             if not name:
-                continue
+                return True
             type_id = define(name, form, kind=_TYPE_DEFINERS[head_name], callable_node=False)
             types[name] = type_id
             local_defs.setdefault(name, type_id)
             # args[1] is the field vector; everything after it is protocol
             # symbols and method impls.
             define_impl_methods(type_id, name, args[2:])
-            continue
+            return True
 
         if head_name == "extend-protocol" and args:
             protocol_name = _sym_name(args[0], source)
@@ -636,7 +684,7 @@ def extract_clojure(path: Path) -> dict:
                 owner_id = types.get(owner_name)
                 if owner_id is None:
                     owner_id = add_node(
-                        _make_id("clojure", "type", owner_name),
+                        _clj_id("clojure", "type", owner_name),
                         owner_name,
                         form,
                         kind="type",
@@ -655,16 +703,16 @@ def extract_clojure(path: Path) -> dict:
                 else:
                     group.append(item)
             flush(current_type, group)
-            continue
+            return True
 
         if head_name == "extend-type" and args:
             type_name = _sym_name(args[0], source)
             if not type_name:
-                continue
+                return True
             owner_id = types.get(type_name)
             if owner_id is None:
                 owner_id = add_node(
-                    _make_id("clojure", "type", type_name),
+                    _clj_id("clojure", "type", type_name),
                     type_name,
                     form,
                     kind="type",
@@ -672,15 +720,15 @@ def extract_clojure(path: Path) -> dict:
                     metadata={"name": type_name, "external": True},
                 )
             define_impl_methods(owner_id, type_name, args[1:])
-            continue
+            return True
 
         if head_name == "defmethod" and len(args) >= 2:
             multi_name = _sym_name(args[0], source)
             if not multi_name:
-                continue
+                return True
             dispatch = _read_text(args[1], source).strip()
             method_id = add_node(
-                _make_id(ns_id, "defmethod", multi_name, dispatch),
+                _clj_id(ns_id, "defmethod", multi_name, dispatch),
                 f"{multi_name} {dispatch}",
                 form,
                 kind="method",
@@ -690,44 +738,89 @@ def extract_clojure(path: Path) -> dict:
             add_edge(ns_id, method_id, "contains", form)
             pending_multimethods.append((multi_name, form, method_id))
             bodies.append((args[2:], method_id))
-            continue
+            return True
 
         if head_name in _FN_DEFINERS and args:
             name = _sym_name(args[0], source)
             if not name:
-                continue
+                return True
             fn_id = define(name, form, kind=_FN_DEFINERS[head_name], callable_node=True,
                            metadata={"private": head_name == "defn-"} if head_name == "defn-" else None)
             local_defs[name] = fn_id
             bodies.append((args[1:], fn_id))
-            continue
+            return True
 
         if head_name in _VAR_DEFINERS and args:
             name = _sym_name(args[0], source)
             if not name:
-                continue
+                return True
             value = args[-1] if len(args) >= 2 else None
             is_fn = value is not None and _value_is_fn(value, source)
             var_id = define(name, form, kind="var", callable_node=is_fn)
             local_defs[name] = var_id
             bodies.append((args[1:], var_id))
-            continue
+            return True
 
         if head_name.startswith("def") and head_name not in _NOT_DEFINERS and args:
             # Custom definer (deftest, defspec, defroutes, defstate, ...).
             name = _sym_name(args[0], source)
             if not name:
-                continue
+                return True
             custom_id = define(
                 name, form, kind="definition", callable_node=True,
                 metadata={"definer": head_name},
             )
             local_defs.setdefault(name, custom_id)
             bodies.append((args[1:], custom_id))
-            continue
+            return True
 
-        # Any other top-level form (side effects, `(run-tests)`, ...) — attribute
-        # its calls to the namespace so nothing is silently dropped.
+
+        return False
+
+    def _is_definer_head(head: tuple[str | None, str] | None) -> bool:
+        return (
+            head is not None
+            and head[1].startswith("def")
+            and head[1] not in _NOT_DEFINERS
+        )
+
+    def nested_definitions(form: Node) -> list[Node]:
+        """`def*` forms wrapped in a top-level `when` / `if` / `do` / `let` ..."""
+        found: list[Node] = []
+        stack = list(reversed(_values(form)[1:]))
+        while stack:
+            node = stack.pop()
+            if node.type in {"quoting_lit", "syn_quoting_lit", "comment", "dis_expr"}:
+                continue
+            if node.type == "list_lit":
+                head = _head_symbol(node, source)
+                if head is not None and head[0] is None and head[1] == "comment":
+                    continue
+                if _is_definer_head(head):
+                    found.append(node)
+                    continue
+            stack.extend(reversed(node.named_children))
+        return found
+
+    skip_spans: set[tuple[int, int]] = set()
+
+    for form in top_forms:
+        head = _head_symbol(form, source)
+        if head is None:
+            continue
+        if head[0] is None and head[1] in {
+            "ns", "in-ns", "require", "use", "import", "require-macros", "comment",
+        }:
+            continue
+        if process_definition(form, head):
+            continue
+        # Not a definition itself: pick up `(when debug? (defn ...))`-style
+        # nested definitions, then attribute the wrapper's remaining calls to
+        # the namespace so nothing is silently dropped.
+        for nested in nested_definitions(form):
+            nested_head = _head_symbol(nested, source)
+            if nested_head is not None and process_definition(nested, nested_head):
+                skip_spans.add((nested.start_byte, nested.end_byte))
         if ns_form is not None:
             bodies.append(([form], ns_id))
 
@@ -763,7 +856,7 @@ def extract_clojure(path: Path) -> dict:
         # Not defined here: a non-source-backed protocol node keeps the
         # implements edge visible (java.lang.Object, clojure.lang.IFn, ...).
         ghost = add_node(
-            _make_id("clojure", "protocol", resolved_ns or "", label),
+            _clj_id("clojure", "protocol", resolved_ns or "", label),
             f"{resolved_ns}/{label}" if resolved_ns else label,
             node,
             kind="protocol_ref",
@@ -837,6 +930,8 @@ def extract_clojure(path: Path) -> dict:
         while stack:
             node = stack.pop()
             if node.type in {"quoting_lit", "comment", "dis_expr", "str_lit", "regex_lit"}:
+                continue
+            if (node.start_byte, node.end_byte) in skip_spans:
                 continue
             if node.type in {"list_lit", "anon_fn_lit"}:
                 head = _head_symbol(node, source)
