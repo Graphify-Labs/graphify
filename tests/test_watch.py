@@ -282,6 +282,57 @@ def test_graphify_root_preserves_relative_when_invoked_with_relative_path(tmp_pa
     )
 
 
+def test_graphify_root_is_resolved_when_graphify_out_is_shared_and_absolute(
+    tmp_path, monkeypatch
+):
+    """#3375: when GRAPHIFY_OUT is an absolute, shared location (the
+    multi worktree setup from #686), the same marker file is reachable from
+    any worktree's CWD, not just the one that wrote it. Preserving a raw
+    relative value there, as #777 does for the default, git portable case,
+    would make the marker resolve against whichever worktree happens to read
+    it later instead of the one that was actually scanned. It must be
+    written as an absolute path in this case."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "lib.py").write_text("def f(): pass\n", encoding="utf-8")
+
+    shared_out = tmp_path / "shared-graphify-out"
+    monkeypatch.setattr("graphify.watch._GRAPHIFY_OUT", str(shared_out))
+    monkeypatch.chdir(corpus)
+
+    assert _rebuild_code(Path("."), acquire_lock=False) is True
+
+    saved = (shared_out / ".graphify_root").read_text(encoding="utf-8")
+    assert saved == str(corpus.resolve()), (
+        f".graphify_root must be resolved when GRAPHIFY_OUT is absolute; got {saved!r}"
+    )
+
+
+def test_graphify_root_still_preserves_relative_when_graphify_out_is_relative(
+    tmp_path, monkeypatch
+):
+    """Companion to the fix above: an ordinary, relative GRAPHIFY_OUT (the
+    default, no #686 shared output configured) must keep the #777 behaviour
+    of preserving the caller supplied relative path, so this fix only
+    changes the shared output case and does not regress the common one."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "lib.py").write_text("def f(): pass\n", encoding="utf-8")
+
+    monkeypatch.chdir(corpus)
+    assert _rebuild_code(Path("."), acquire_lock=False) is True
+
+    saved = (corpus / "graphify-out" / ".graphify_root").read_text(encoding="utf-8")
+    assert saved == ".", (
+        f"a relative GRAPHIFY_OUT must still preserve the caller supplied "
+        f"path; got {saved!r}"
+    )
+
+
 def test_rebuild_code_writes_community_name(tmp_path):
     """#1808: `graphify update` / _rebuild_code must forward community_labels to
     to_json, so graph.json nodes carry a human-readable community_name (hub-derived
