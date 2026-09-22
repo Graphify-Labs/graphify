@@ -7,7 +7,7 @@
       "url": "https://github.com/Graphify-Labs/graphify/pull/1166",
       "title": "docs: add RFC for file-level node summaries",
       "category": "documentation_only",
-      "base_sha": "079b34da7851e6f7c7ae8347853c4dfd93f818ff",
+      "reported_base_sha": "079b34da7851e6f7c7ae8347853c4dfd93f818ff",
       "head_sha": "3e8afc9192283805df52f52cc07da85856815c14",
       "changed_files": [
         "docs/how-it-works.md",
@@ -32,7 +32,7 @@
       "url": "https://github.com/Graphify-Labs/graphify/pull/1209",
       "title": "Wire bandit and pip-audit into CI",
       "category": "ci_security_workflow",
-      "base_sha": "137bc2d95139ba7b8b04e1014fe4bcf249668539",
+      "reported_base_sha": "137bc2d95139ba7b8b04e1014fe4bcf249668539",
       "head_sha": "39afb2d8efd3ffee8ea943b96411c88283a52944",
       "changed_files": [
         ".github/workflows/ci.yml"
@@ -52,7 +52,7 @@
       "url": "https://github.com/Graphify-Labs/graphify/pull/1289",
       "title": "perf: fix O(n^2) -> O(n) LSH neighbor lookup in dedup",
       "category": "performance_internal",
-      "base_sha": "1bb30fcc567a72280f4dc1763947140268f101c5",
+      "reported_base_sha": "1bb30fcc567a72280f4dc1763947140268f101c5",
       "head_sha": "c4d6b412cabf422bbac72874933e43e196568690",
       "changed_files": [
         "graphify/dedup.py"
@@ -72,7 +72,7 @@
       "url": "https://github.com/Graphify-Labs/graphify/pull/1280",
       "title": "fix(affected): handle \"edges\"-keyed graph.json in load_graph (KeyError: 'links')",
       "category": "localized_compatibility_bugfix",
-      "base_sha": "1bb30fcc567a72280f4dc1763947140268f101c5",
+      "reported_base_sha": "1bb30fcc567a72280f4dc1763947140268f101c5",
       "head_sha": "2ab2302112ff1ef81785e6accbb078a60292863c",
       "changed_files": [
         "graphify/affected.py",
@@ -97,7 +97,7 @@
       "url": "https://github.com/Graphify-Labs/graphify/pull/1273",
       "title": "feat: custom endpoints via OPENAI_BASE_URL/OPENAI_MODEL and ANTHROPIC_BASE_URL/ANTHROPIC_MODEL",
       "category": "external_provider_boundary",
-      "base_sha": "3a47091021e94da07d5dfaa52e679d4f1d307385",
+      "reported_base_sha": "3a47091021e94da07d5dfaa52e679d4f1d307385",
       "head_sha": "17c28040da9347be088874ba908c68c6b91992c0",
       "changed_files": [
         "README.md",
@@ -142,7 +142,7 @@
       "url": "https://github.com/Graphify-Labs/graphify/pull/1176",
       "title": "feat: add FalkorDB export backend (#1175)",
       "category": "external_export_boundary",
-      "base_sha": "3744e6e2207d22550a349670945872e61e18b72c",
+      "reported_base_sha": "3744e6e2207d22550a349670945872e61e18b72c",
       "head_sha": "418604f32a45540f52754368c53b1efe2dd5b371",
       "changed_files": [
         "CHANGELOG.md",
@@ -462,7 +462,7 @@
       "url": "https://github.com/Graphify-Labs/graphify/pull/1344",
       "title": "fix(build_merge): replace re-extracted files instead of accumulating stale edges",
       "category": "graph_semantics",
-      "base_sha": "be3dcfca083f58b9cf8392c6ddeb6ac66f477e92",
+      "reported_base_sha": "be3dcfca083f58b9cf8392c6ddeb6ac66f477e92",
       "head_sha": "6db3c933aeaee556fd724c107dd4ceedf21f78a1",
       "changed_files": [
         "graphify/build.py",
@@ -487,7 +487,7 @@
       "url": "https://github.com/Graphify-Labs/graphify/pull/1357",
       "title": "Harden HTML output against U+2028 XSS + two crash-on-adversarial-input fixes",
       "category": "security_and_robustness",
-      "base_sha": "be3dcfca083f58b9cf8392c6ddeb6ac66f477e92",
+      "reported_base_sha": "be3dcfca083f58b9cf8392c6ddeb6ac66f477e92",
       "head_sha": "28de79e72c12eac8b58cbe9e0e6a5e212ca6ad13",
       "changed_files": [
         "graphify/extract.py",
@@ -517,7 +517,7 @@
       "url": "https://github.com/Graphify-Labs/graphify/pull/648",
       "title": "feat: add VB.NET (.vb) language support via tree-sitter",
       "category": "language_extractor_feature",
-      "base_sha": "58271fb5af4c0c123ddbad9c689ee1e220360be8",
+      "reported_base_sha": "58271fb5af4c0c123ddbad9c689ee1e220360be8",
       "head_sha": "af15e33f577f3ae11d2892a779d0a3e14f829fac",
       "changed_files": [
         "README.md",
@@ -562,7 +562,7 @@
       "url": "https://github.com/Graphify-Labs/graphify/pull/1737",
       "title": "refactor: decompose extract.py and __main__.py into focused modules",
       "category": "behavior_preserving_refactor",
-      "base_sha": "20bfdf60ac7187edc2f8594252222dc8e9b96399",
+      "reported_base_sha": "20bfdf60ac7187edc2f8594252222dc8e9b96399",
       "head_sha": "247b2ae603dd021e2a1ca5f76058d34b0863e927",
       "changed_files": [
         "graphify/__main__.py",
@@ -742,7 +742,7 @@
       "url": "https://github.com/Graphify-Labs/graphify/pull/583",
       "title": "feat(detect): add hidden path allowlist",
       "category": "discovery_policy",
-      "base_sha": "ee1df22b25c1c2e79817783cbcf00f1b3f86f60f",
+      "reported_base_sha": "ee1df22b25c1c2e79817783cbcf00f1b3f86f60f",
       "head_sha": "e56e1bf38365e3e7dcfd59f3aaee2711d19968d9",
       "changed_files": [
         "graphify/detect.py",
@@ -767,7 +767,7 @@
       "url": "https://github.com/Graphify-Labs/graphify/pull/1366",
       "title": "fix(skill): pin extraction source_file + root the full build so --update stops duplicating",
       "category": "incremental_provenance",
-      "base_sha": "8437ef465e00c35bb7bb735612f348b0d28d8889",
+      "reported_base_sha": "8437ef465e00c35bb7bb735612f348b0d28d8889",
       "head_sha": "5b988974ca6f2aa93c8923c07daea85d5ac3beda",
       "changed_files": [
         "graphify/skill-amp.md",

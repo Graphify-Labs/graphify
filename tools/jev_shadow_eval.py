@@ -51,14 +51,19 @@ def load_manifest(path: Path) -> list[dict[str, Any]]:
     cases = value["cases"]
     ids, prs = set(), set()
     for case in cases:
-        required = ("case_id", "pr", "url", "title", "category", "base_sha", "head_sha", "merge_base_sha", "changed_file_count", "changed_files", "github_changed_files")
+        required = ("case_id", "pr", "url", "title", "category", "head_sha", "merge_base_sha", "changed_file_count", "changed_files", "github_changed_files")
         if not isinstance(case, dict) or any(not case.get(key) for key in required):
+            raise ValueError("case is missing required fields")
+        if not case.get("reported_base_sha") and not case.get("base_sha"):
             raise ValueError("case is missing required fields")
         if not isinstance(case["case_id"], str) or case["case_id"] in ids:
             raise ValueError("duplicate case ID")
         if not isinstance(case["pr"], int) or case["pr"] in prs:
             raise ValueError("duplicate PR")
-        if any(not isinstance(case[key], str) or len(case[key]) != 40 or any(c not in "0123456789abcdef" for c in case[key]) for key in ("base_sha", "head_sha", "merge_base_sha")):
+        if any(not isinstance(case[key], str) or len(case[key]) != 40 or any(c not in "0123456789abcdef" for c in case[key]) for key in ("head_sha", "merge_base_sha")):
+            raise ValueError("malformed base/head SHA")
+        reported_base_sha = case.get("reported_base_sha", case.get("base_sha"))
+        if not isinstance(reported_base_sha, str) or len(reported_base_sha) != 40 or any(c not in "0123456789abcdef" for c in reported_base_sha):
             raise ValueError("malformed base/head SHA")
         if not isinstance(case["changed_file_count"], int) or case["changed_file_count"] <= 0:
             raise ValueError("invalid changed file count")
@@ -75,6 +80,11 @@ def load_manifest(path: Path) -> list[dict[str, Any]]:
     return cases
 
 
+def _reported_base(case: dict[str, Any]) -> str:
+    """Return the GitHub-reported base, accepting v1's legacy spelling."""
+    return case.get("reported_base_sha", case.get("base_sha", ""))
+
+
 def _git(*args: str, capture: bool = True) -> str:
     return subprocess.run(["git", "-C", str(ROOT), *args], check=True, text=True, stdout=subprocess.PIPE if capture else None, stderr=subprocess.PIPE if capture else None).stdout.strip()
 
@@ -88,22 +98,61 @@ def _ensure_object(sha: str) -> None:
             raise RuntimeError(f"historical Git object is unavailable: {sha}")
 
 
+def canonicalize_changed_files(output: str) -> list[dict[str, Any]]:
+    """Convert Git name-status output to the GitHub evidence vocabulary."""
+    changes: list[dict[str, Any]] = []
+    for line in output.splitlines():
+        fields = line.split("\t")
+        if len(fields) < 2:
+            raise ValueError(f"malformed Git name-status output: {line!r}")
+        code = fields[0]
+        kind = code[:1]
+        if kind == "M":
+            if len(fields) != 2:
+                raise ValueError(f"malformed modified name-status output: {line!r}")
+            changes.append({"path": fields[1], "status": "modified"})
+        elif kind == "A":
+            if len(fields) != 2:
+                raise ValueError(f"malformed added name-status output: {line!r}")
+            changes.append({"path": fields[1], "status": "added"})
+        elif kind == "D":
+            if len(fields) != 2:
+                raise ValueError(f"malformed deleted name-status output: {line!r}")
+            changes.append({"path": fields[1], "status": "removed"})
+        elif kind == "R":
+            if len(fields) != 3:
+                raise ValueError(f"malformed renamed name-status output: {line!r}")
+            changes.append({"previous_path": fields[1], "path": fields[2], "status": "renamed"})
+        else:
+            raise ValueError(f"unsupported Git name-status code: {code!r}")
+    return changes
+
+
+def _evidence_key(item: dict[str, Any]) -> tuple[str, str, str]:
+    return (item.get("status", ""), item.get("previous_path", ""), item.get("path", ""))
+
+
+def verify_changed_file_evidence(derived: list[dict[str, Any]], expected: list[dict[str, Any]]) -> None:
+    """Fail closed when Git and committed GitHub PR evidence disagree."""
+    normalized_expected = []
+    for item in expected:
+        value = {"path": item["path"], "status": item["status"]}
+        if item.get("previous_path") is not None:
+            value["previous_path"] = item["previous_path"]
+        normalized_expected.append(value)
+    if len(derived) != len(normalized_expected):
+        raise ValueError("GitHub changed-file count mismatch")
+    if sorted(map(_evidence_key, derived)) != sorted(map(_evidence_key, normalized_expected)):
+        raise ValueError("GitHub changed-file path/status/rename-source mismatch")
+
+
 def authoritative_changed_files(base_sha: str, head_sha: str) -> list[dict[str, Any]]:
     """Return the PR patch as merge-base-to-head paths and Git status."""
     _ensure_object(base_sha)
     _ensure_object(head_sha)
     merge_base = _git("merge-base", base_sha, head_sha)
     output = _git("diff", "--name-status", "--find-renames", merge_base, head_sha)
-    changes: list[dict[str, Any]] = []
-    for line in output.splitlines():
-        fields = line.split("\t")
-        if len(fields) < 2:
-            raise ValueError(f"malformed Git name-status output: {line!r}")
-        status = fields[0]
-        paths = fields[1:] if status.startswith("R") or status.startswith("C") else fields[1:2]
-        for path in paths:
-            changes.append({"path": path, "status": status})
-    return changes
+    return canonicalize_changed_files(output)
 
 
 def _case_identity(case: dict[str, Any]) -> str:
@@ -128,12 +177,12 @@ def _archive(sha: str, destination: Path) -> None:
             archive.extractall(destination, filter="data")
 
 
-def _cache_key(evaluator_sha: str, base_sha: str) -> str:
-    return _sha({"schema_version": SCHEMA_VERSION, "evaluator_sha": evaluator_sha, "base_sha": base_sha, "extract": ["code-only", "no-cluster", "force"]})
+def _cache_key(evaluator_sha: str, source_snapshot_sha: str) -> str:
+    return _sha({"schema_version": SCHEMA_VERSION, "evaluator_sha": evaluator_sha, "source_snapshot_sha": source_snapshot_sha, "extract": ["code-only", "no-cluster", "force"]})
 
 
-def _extract(base_sha: str, evaluator_sha: str) -> tuple[Path, bool]:
-    cache = _root("cache") / _cache_key(evaluator_sha, base_sha)
+def _extract(source_snapshot_sha: str, evaluator_sha: str) -> tuple[Path, bool]:
+    cache = _root("cache") / _cache_key(evaluator_sha, source_snapshot_sha)
     graph = cache / "graphify-out" / "graph.json"
     if graph.exists():
         return graph, True
@@ -142,7 +191,7 @@ def _extract(base_sha: str, evaluator_sha: str) -> tuple[Path, bool]:
     staging = Path(tempfile.mkdtemp(prefix="graphify-jev-eval-", dir=str(cache_root)))
     try:
         source, output = staging / "source", staging / "out"
-        _archive(base_sha, source)
+        _archive(source_snapshot_sha, source)
         subprocess.run([sys.executable, "-m", "graphify", "extract", str(source), "--code-only", "--no-cluster", "--force", "--out", str(output)], cwd=ROOT, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         generated = output / "graphify-out" / "graph.json"
         if not generated.exists():
@@ -167,25 +216,32 @@ def prepare(cases: list[dict[str, Any]]) -> None:
     for case in cases:
         previous = _read_record(case["case_id"])
         if previous:
-            _archive_record(previous, case["case_id"], "SUPERSEDED_INVALID_PR_DIFF" if previous.get("evaluator_sha") == "0aed15bf9f59d75fa24b27aa48dfe8d2e1b6c540" else "SUPERSEDED_PREVIOUS_PREPARATION")
-        record: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "case": case, "case_identity": _case_identity(case), "evaluator_sha": evaluator_sha, "prepare_status": "PREPARE_FAILED", "cache_hit": False, "historical_diff_method": "merge-base-to-head", "historical_provenance": "PR_PATCH_PROVENANCE_VERIFIED"}
+            old_reported = previous.get("reported_base_sha", previous.get("case", {}).get("base_sha", _reported_base(case)))
+            old_merge = previous.get("merge_base_sha", previous.get("case", {}).get("merge_base_sha"))
+            old_source = previous.get("source_snapshot_sha")
+            invalid_source = old_merge and ((old_source and old_source != old_merge) or (not old_source and old_reported != old_merge))
+            reason = "SUPERSEDED_INVALID_SOURCE_SNAPSHOT" if invalid_source else "SUPERSEDED_PREVIOUS_PREPARATION"
+            _archive_record(previous, case["case_id"], reason)
+        reported_base_sha = _reported_base(case)
+        record: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "case": case, "case_identity": _case_identity(case), "evaluator_sha": evaluator_sha, "prepare_status": "PREPARE_FAILED", "cache_hit": False, "reported_base_sha": reported_base_sha, "head_sha": case["head_sha"], "merge_base_sha": case["merge_base_sha"], "source_snapshot_sha": case["merge_base_sha"], "historical_diff_method": "merge-base-to-head", "historical_provenance": "PR_PATCH_PROVENANCE_VERIFIED"}
         try:
-            authoritative = authoritative_changed_files(case["base_sha"], case["head_sha"])
-            merge_base_sha = _git("merge-base", case["base_sha"], case["head_sha"])
+            authoritative = authoritative_changed_files(reported_base_sha, case["head_sha"])
+            merge_base_sha = _git("merge-base", reported_base_sha, case["head_sha"])
             actual_paths = {item["path"] for item in authoritative}
             if merge_base_sha != case["merge_base_sha"]:
                 raise ValueError("manifest merge-base does not match historical Git ancestry")
-            if len(authoritative) != case["changed_file_count"] or actual_paths != set(case["changed_files"]):
+            verify_changed_file_evidence(authoritative, case["github_changed_files"])
+            if actual_paths != set(case["changed_files"]):
                 raise ValueError("manifest changed files do not exactly match historical PR patch")
-            record.update({"reported_base_sha": case["base_sha"], "head_sha": case["head_sha"], "merge_base_sha": merge_base_sha, "pr_changed_file_count": case["changed_file_count"], "pr_changed_files": case["changed_files"]})
-            base_paths = set(_git("ls-tree", "-r", "--name-only", case["base_sha"]).splitlines())
+            record.update({"merge_base_sha": merge_base_sha, "source_snapshot_sha": merge_base_sha, "pr_changed_file_count": case["changed_file_count"], "pr_changed_files": case["changed_files"], "changed_file_status": authoritative})
+            base_paths = set(_git("ls-tree", "-r", "--name-only", merge_base_sha).splitlines())
             present = [path for path in case["changed_files"] if path in base_paths]
             missing = [path for path in case["changed_files"] if path not in base_paths]
             task = _task(case, present)
             if not present:
                 record.update({"prepare_status": "PREPARE_UNRESOLVED", "reason": "no changed file exists in base snapshot", "base_present_changed_files": present, "base_missing_changed_files": missing})
             else:
-                graph, hit = _extract(case["base_sha"], evaluator_sha)
+                graph, hit = _extract(merge_base_sha, evaluator_sha)
                 payload = outbound_payload(task, graph)
                 seeds = [node["id"] for node in payload["state"]["candidates"]["nodes"] if node["source_file"] in present]
                 if not seeds:
@@ -194,7 +250,7 @@ def prepare(cases: list[dict[str, Any]]) -> None:
                     graph_fingerprint = payload["state"]["graph_fingerprint"]
                     payload_path = _root("state") / "payloads" / f"{case['case_id']}.json"
                     _write(payload_path, payload)
-                    record.update({"prepare_status": "PREPARED", "changed_file_status": authoritative, "base_present_changed_files": present, "base_missing_changed_files": missing, "task": task, "task_fingerprint": _fingerprint(task), "graph_path": str(graph), "graph_fingerprint": graph_fingerprint, "seed_node_ids": seeds, "candidate_node_count": len(payload["state"]["candidates"]["nodes"]), "candidate_edge_count": len(payload["state"]["candidates"]["edges"]), "node_cap_reached": len(payload["state"]["candidates"]["nodes"]) >= 40, "edge_cap_reached": len(payload["state"]["candidates"]["edges"]) >= 80, "question_count": len(payload["questions"]), "payload_path": str(payload_path), "payload_fingerprint": _sha(payload), "payload_graph_fingerprint": payload["state"]["graph_fingerprint"], "cache_hit": hit})
+                    record.update({"prepare_status": "PREPARED", "base_present_changed_files": present, "base_missing_changed_files": missing, "task": task, "task_fingerprint": _fingerprint(task), "graph_path": str(graph), "graph_fingerprint": graph_fingerprint, "seed_node_ids": seeds, "candidate_node_count": len(payload["state"]["candidates"]["nodes"]), "candidate_edge_count": len(payload["state"]["candidates"]["edges"]), "node_cap_reached": len(payload["state"]["candidates"]["nodes"]) >= 40, "edge_cap_reached": len(payload["state"]["candidates"]["edges"]) >= 80, "question_count": len(payload["questions"]), "payload_path": str(payload_path), "payload_fingerprint": _sha(payload), "payload_graph_fingerprint": payload["state"]["graph_fingerprint"], "cache_hit": hit})
             record["changed_file_status"] = authoritative
         except JevShadowError as exc:
             # A graph with no deterministic changed-file seed is an expected,
@@ -219,6 +275,10 @@ def _stale_reasons(case: dict[str, Any], record: dict[str, Any], evaluator_sha: 
         reasons.append("evaluator SHA changed")
     if record.get("case_identity") != _case_identity(case):
         reasons.append("manifest case changed")
+    if record.get("source_snapshot_sha") != record.get("merge_base_sha"):
+        reasons.append("source snapshot is not merge base")
+    if record.get("source_snapshot_sha") != case.get("merge_base_sha"):
+        reasons.append("source snapshot differs from manifest merge base")
     task = record.get("task")
     if not isinstance(task, dict) or record.get("task_fingerprint") != _fingerprint(task):
         reasons.append("task fingerprint changed")
@@ -297,15 +357,29 @@ def report(cases: list[dict[str, Any]]) -> Path:
         rows.append(f"| #{case['pr']} | {case['category']} | {state} | {record.get('candidate_node_count','-')} | {record.get('candidate_edge_count','-')} | {'yes' if record.get('node_cap_reached') else 'no'} | {'yes' if record.get('edge_cap_reached') else 'no'} | {record.get('question_count','-')} | {choice} | {consumer} | {tests} | {usage.get('input_tokens','-')}/{usage.get('output_tokens','-')} |")
     prepared = sum((_read_record(c["case_id"]) or {}).get("prepare_status") == "PREPARED" for c in cases)
     live = sum((_read_record(c["case_id"]) or {}).get("collection_status") == "LIVE_PASS" for c in cases)
-    verified = all((_read_record(c["case_id"]) or {}).get("historical_provenance") == "PR_PATCH_PROVENANCE_VERIFIED" for c in cases)
+    verified = all((_read_record(c["case_id"]) or {}).get("historical_provenance") == "PR_PATCH_PROVENANCE_VERIFIED" and (_read_record(c["case_id"]) or {}).get("source_snapshot_sha") == c["merge_base_sha"] for c in cases)
     provenance = "PR-patch provenance verified 12/12" if verified and len(cases) == 12 else "PR-patch provenance unresolved"
-    text = f"# Graphify Jev historical evaluation M1\n\n{provenance}. Current Graphify evaluated exact historical PR patch base snapshots; Jev received only title-derived objective and bounded structural metadata, never source or diff text. Results are descriptive evidence, not production policy.\n\n"
+    divergence = sum(_reported_base(c) != c["merge_base_sha"] for c in cases)
+    returned_models = sorted({(_read_record(c["case_id"]) or {}).get("returned_model") for c in cases if (_read_record(c["case_id"]) or {}).get("returned_model")})
+    history_dir = _root("state") / "history"
+    superseded_invalid = sum((_json(path).get("archive_reason") == "SUPERSEDED_INVALID_SOURCE_SNAPSHOT") for path in history_dir.glob("*.json")) if history_dir.exists() else 0
+    source_provenance = "historical source snapshot = merge-base" if verified else "historical source snapshot provenance unresolved"
+    text = f"# Graphify Jev historical evaluation M1\n\n{provenance}; {source_provenance}. Reported-base/merge-base divergences: {divergence}. Current Graphify evaluated exact historical PR patch base snapshots; Jev received only title-derived objective and bounded structural metadata, never source or diff text. Results are descriptive evidence, not production policy.\n\n"
     unresolved = sum((_read_record(c["case_id"]) or {}).get("prepare_status") == "PREPARE_UNRESOLVED" for c in cases)
     node_caps = sum((_read_record(c["case_id"]) or {}).get("node_cap_reached", False) for c in cases)
     edge_caps = sum((_read_record(c["case_id"]) or {}).get("edge_cap_reached", False) for c in cases)
     failures = sum((_read_record(c["case_id"]) or {}).get("collection_status") == "LIVE_FAILED" for c in cases)
-    text += f"Preparation: {prepared} prepared, {unresolved} unresolved. Live pass/fail: {live} pass / {failures} failed. Node-cap saturation: {node_caps}. Edge-cap saturation: {edge_caps}. Tokens: {inputs} input, {outputs} output. Blast-radius distribution: {json.dumps(blast, sort_keys=True)}. Noul observations: {json.dumps(nouls)}.\n\n"
-    text += "| PR | Category | State | Nodes | Edges | Node cap? | Edge cap? | Questions | Blast radius | Consumer Noul | Test Noul | Tokens in/out |\n|---|---|---|---:|---:|---|---|---:|---|---:|---:|---|\n" + "\n".join(rows) + "\n"
+    text += f"Preparation: {prepared} prepared, {unresolved} unresolved. Live pass/fail: {live} pass / {failures} failed. Actual TypeSafe calls: {live}. Returned Jev models: {json.dumps(returned_models)}. Superseded invalid-source records: {superseded_invalid}. Node-cap saturation: {node_caps}. Edge-cap saturation: {edge_caps}. Tokens: {inputs} input, {outputs} output. Blast-radius distribution: {json.dumps(blast, sort_keys=True)}. Noul observations: {json.dumps(nouls)}.\n\n"
+    text += "| PR | Category | State | Nodes | Edges | Node cap? | Edge cap? | Questions | Blast radius | Consumer Noul | Test Noul | Tokens in/out |\n|---|---|---|---:|---:|---|---|---:|---|---:|---:|---|\n" + "\n".join(rows) + "\n\n"
+    text += "| PR | Reported base | Merge-base | Same? | Changed files | Evidence match |\n|---:|---|---|---|---:|---|\n"
+    for case in cases:
+        record = _read_record(case["case_id"]) or {}
+        try:
+            verify_changed_file_evidence(record.get("changed_file_status", []), case["github_changed_files"])
+            evidence_ok = record.get("historical_provenance") == "PR_PATCH_PROVENANCE_VERIFIED" and record.get("pr_changed_file_count") == case["changed_file_count"]
+        except (TypeError, ValueError):
+            evidence_ok = False
+        text += f"| #{case['pr']} | {_reported_base(case)} | {case['merge_base_sha']} | {'yes' if _reported_base(case) == case['merge_base_sha'] else 'no'} | {case['changed_file_count']} | {'yes' if evidence_ok else 'no'} |\n"
     path = _root("state") / "reports" / "m1.md"; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(text, encoding="utf-8")
     print(path); return path
 

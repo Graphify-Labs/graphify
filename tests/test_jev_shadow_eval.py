@@ -37,6 +37,10 @@ def test_cache_key_includes_evaluator_and_base():
     assert evaluation._cache_key("a" * 40, "b" * 40) != evaluation._cache_key("a" * 40, "c" * 40)
 
 
+def test_cache_key_names_actual_source_snapshot():
+    assert evaluation._cache_key("a" * 40, "source" * 8) != evaluation._cache_key("a" * 40, "reported" * 8)
+
+
 def test_collect_without_live_never_reads_key(monkeypatch):
     monkeypatch.setenv("TYPESAFE_API_KEY", "should-not-be-read")
     with pytest.raises(ValueError, match="--live"):
@@ -50,7 +54,7 @@ def test_task_only_uses_base_present_files():
 def test_no_graph_seed_is_an_unresolved_prepare(monkeypatch, tmp_path):
     monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
     monkeypatch.setattr(evaluation, "_git", lambda *_args: "f" * 40 if "rev-parse" in _args else ("c" * 40 if "merge-base" in _args else "a.py"))
-    monkeypatch.setattr(evaluation, "authoritative_changed_files", lambda *_args: [{"path": "a.py", "status": "M"}])
+    monkeypatch.setattr(evaluation, "authoritative_changed_files", lambda *_args: [{"path": "a.py", "status": "modified"}])
     monkeypatch.setattr(evaluation, "_ensure_object", lambda _sha: None)
     monkeypatch.setattr(evaluation, "_extract", lambda *_args: (_ for _ in ()).throw(evaluation.JevShadowError("task seeds matched no graph nodes")))
     evaluation.prepare([case()])
@@ -61,9 +65,34 @@ def test_authoritative_changed_files_uses_name_status(monkeypatch):
     monkeypatch.setattr(evaluation, "_ensure_object", lambda _sha: None)
     monkeypatch.setattr(evaluation, "_git", lambda *args: "c" * 40 if args and args[0] == "merge-base" else "A\tsrc/new.py\nM\tsrc/old.py")
     assert evaluation.authoritative_changed_files("a" * 40, "b" * 40) == [
-        {"path": "src/new.py", "status": "A"},
-        {"path": "src/old.py", "status": "M"},
+        {"path": "src/new.py", "status": "added"},
+        {"path": "src/old.py", "status": "modified"},
     ]
+
+
+def test_canonicalize_changed_files_supports_delete_and_rename():
+    assert evaluation.canonicalize_changed_files("D\told.py\nR100\tbefore.py\tafter.py\n") == [
+        {"path": "old.py", "status": "removed"},
+        {"previous_path": "before.py", "path": "after.py", "status": "renamed"},
+    ]
+
+
+@pytest.mark.parametrize("bad", [
+    [{"path": "a.py", "status": "added"}],
+    [{"path": "b.py", "status": "removed"}],
+    [],
+    [{"previous_path": "wrong.py", "path": "b.py", "status": "renamed"}],
+])
+def test_github_evidence_mismatch_fails_closed(bad):
+    with pytest.raises(ValueError, match="mismatch"):
+        evaluation.verify_changed_file_evidence([{"path": "b.py", "status": "modified"}], bad)
+
+
+def test_github_evidence_matches_rename_source():
+    evaluation.verify_changed_file_evidence(
+        [{"previous_path": "before.py", "path": "after.py", "status": "renamed"}],
+        [{"previous_path": "before.py", "path": "after.py", "status": "renamed"}],
+    )
 
 
 def test_manifest_requires_expected_count_and_github_evidence(tmp_path):
@@ -75,12 +104,24 @@ def test_manifest_requires_expected_count_and_github_evidence(tmp_path):
 def test_prepare_archives_same_identity_previous_record(monkeypatch, tmp_path):
     monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
     monkeypatch.setattr(evaluation, "_git", lambda *args: "c" * 40 if args and args[0] == "merge-base" else ("a" * 40 if args and args[0] == "rev-parse" else "a.py"))
-    monkeypatch.setattr(evaluation, "authoritative_changed_files", lambda *_args: [{"path": "a.py", "status": "M"}])
+    monkeypatch.setattr(evaluation, "authoritative_changed_files", lambda *_args: [{"path": "a.py", "status": "modified"}])
     evaluation._write(evaluation._record_path("graphify-pr-1"), {"evaluator_sha": "a" * 40, "case_identity": evaluation._case_identity(case()), "prepare_status": "PREPARED", "collection_status": "LIVE_PASS"})
     monkeypatch.setattr(evaluation, "_extract", lambda *_args: (_ for _ in ()).throw(evaluation.JevShadowError("task seeds matched no graph nodes")))
     evaluation.prepare([case()])
     history = list((tmp_path / "history").glob("*.json"))
     assert len(history) == 1
+    assert evaluation._json(history[0])["archive_reason"] == "SUPERSEDED_PREVIOUS_PREPARATION"
+
+
+def test_prepare_does_not_rearchive_repaired_diverged_record_as_invalid(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    repaired = {"evaluator_sha": "a" * 40, "case_identity": evaluation._case_identity(case()), "prepare_status": "PREPARED", "reported_base_sha": "a" * 40, "merge_base_sha": "c" * 40, "source_snapshot_sha": "c" * 40}
+    evaluation._write(evaluation._record_path("graphify-pr-1"), repaired)
+    monkeypatch.setattr(evaluation, "_git", lambda *args: "c" * 40 if args and args[0] == "merge-base" else ("a" * 40 if args and args[0] == "rev-parse" else "a.py"))
+    monkeypatch.setattr(evaluation, "authoritative_changed_files", lambda *_args: [{"path": "a.py", "status": "modified"}])
+    monkeypatch.setattr(evaluation, "_extract", lambda *_args: (_ for _ in ()).throw(evaluation.JevShadowError("task seeds matched no graph nodes")))
+    evaluation.prepare([case()])
+    history = list((tmp_path / "history").glob("*.json"))
     assert evaluation._json(history[0])["archive_reason"] == "SUPERSEDED_PREVIOUS_PREPARATION"
 
 
@@ -104,8 +145,36 @@ def test_merge_base_patch_excludes_diverged_base_changes(monkeypatch, tmp_path):
     git("add", "."); git("commit", "-qm", "unrelated")
     reported_base = git("rev-parse", "HEAD")
     monkeypatch.setattr(evaluation, "ROOT", repo)
-    assert evaluation.authoritative_changed_files(reported_base, pr_head) == [{"path": "pr.py", "status": "A"}]
+    assert evaluation.authoritative_changed_files(reported_base, pr_head) == [{"path": "pr.py", "status": "added"}]
     assert git("merge-base", reported_base, pr_head) == base_parent
+
+
+def test_prepare_uses_merge_base_for_tree_and_extraction(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    calls = []
+
+    def fake_git(*args):
+        calls.append(args)
+        if args[0] == "rev-parse":
+            return "e" * 40
+        if args[0] == "merge-base":
+            return "c" * 40
+        if args[0] == "ls-tree":
+            return "a.py"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(evaluation, "_git", fake_git)
+    monkeypatch.setattr(evaluation, "authoritative_changed_files", lambda *_args: [{"path": "a.py", "status": "modified"}])
+    graph = tmp_path / "graph.json"
+    graph.write_bytes(b"graph")
+    monkeypatch.setattr(evaluation, "_extract", lambda source, evaluator: (calls.append(("extract", source, evaluator)) or (graph, False)))
+    monkeypatch.setattr(evaluation, "outbound_payload", lambda *_args: {"state": {"candidates": {"nodes": [{"id": "n", "source_file": "a.py"}], "edges": []}, "graph_fingerprint": "g"}, "questions": [], "model": "model"})
+    evaluation.prepare([case()])
+    record = evaluation._read_record("graphify-pr-1")
+    assert record["reported_base_sha"] == "a" * 40
+    assert record["source_snapshot_sha"] == record["merge_base_sha"] == "c" * 40
+    assert ("ls-tree", "-r", "--name-only", "c" * 40) in calls
+    assert ("extract", "c" * 40, "e" * 40) in calls
 
 
 def test_collect_stale_evaluator_makes_zero_typesafe_calls(monkeypatch, tmp_path):
