@@ -18,6 +18,7 @@ from typing import Any
 from graphify.jev_shadow import JevShadowError, _fingerprint, call_typesafe, load_task, outbound_payload, sidecar
 
 SCHEMA_VERSION = 1
+CACHE_METADATA_VERSION = 1
 EXTRACTION_IDENTITY_VERSION = 1
 EXTRACTION_OPTIONS = ("code-only", "no-cluster", "force")
 ROOT = Path(__file__).resolve().parents[1]
@@ -208,22 +209,55 @@ def _cache_key(extraction_identity: str, source_snapshot_sha: str) -> str:
     return _sha({"schema_version": SCHEMA_VERSION, "extraction_identity": extraction_identity, "source_snapshot_sha": source_snapshot_sha, "extract": EXTRACTION_OPTIONS})
 
 
+def _graph_bytes_fingerprint(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _cache_metadata(cache: Path) -> Path:
+    return cache / "cache-metadata.json"
+
+
+def _valid_cache_hit(cache: Path, graph: Path, extraction_identity: str, source_snapshot_sha: str) -> bool:
+    """Accept a cache only when its independently-written completion proof matches."""
+    if not graph.is_file() or not _cache_metadata(cache).is_file():
+        return False
+    try:
+        metadata = _json(_cache_metadata(cache))
+        return (
+            metadata.get("schema_version") == CACHE_METADATA_VERSION
+            and metadata.get("status") == "COMPLETED"
+            and metadata.get("source_snapshot_sha") == source_snapshot_sha
+            and metadata.get("extraction_identity") == extraction_identity
+            and metadata.get("graph_fingerprint") == _graph_bytes_fingerprint(graph)
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _valid_legacy_record(previous: dict[str, Any], source_snapshot_sha: str, extraction_identity: str) -> bool:
+    """Validate retained pre-metadata evidence before adopting a legacy graph."""
+    if previous.get("source_snapshot_sha") != source_snapshot_sha:
+        return False
+    if previous.get("prepare_status") != "PREPARED":
+        return False
+    old_identity = previous.get("evaluator_identity")
+    if not old_identity and previous.get("evaluator_sha"):
+        try:
+            old_identity = _extraction_identity_at_commit(previous["evaluator_sha"])
+        except (OSError, subprocess.CalledProcessError):
+            old_identity = None
+    graph = Path(previous.get("graph_path", ""))
+    fingerprint = previous.get("graph_fingerprint")
+    return bool(old_identity == extraction_identity and graph.is_file() and fingerprint and fingerprint == _graph_bytes_fingerprint(graph))
+
+
 def _extract(source_snapshot_sha: str, extraction_identity: str, previous: dict[str, Any] | None = None) -> tuple[Path, bool]:
     cache = _root("cache") / _cache_key(extraction_identity, source_snapshot_sha)
     graph = cache / "graphify-out" / "graph.json"
-    if graph.exists():
+    if _valid_cache_hit(cache, graph, extraction_identity, source_snapshot_sha):
         return graph, True
-    if previous and previous.get("source_snapshot_sha") == source_snapshot_sha:
-        previous_graph = Path(previous.get("graph_path", ""))
-        previous_fingerprint = previous.get("graph_fingerprint")
-        old_identity = previous.get("evaluator_identity")
-        if not old_identity and previous.get("evaluator_sha"):
-            try:
-                old_identity = _extraction_identity_at_commit(previous["evaluator_sha"])
-            except (OSError, subprocess.CalledProcessError):
-                old_identity = None
-        if old_identity == extraction_identity and previous_graph.exists() and previous_fingerprint == hashlib.sha256(previous_graph.read_bytes()).hexdigest():
-            return previous_graph, True
+    if previous and _valid_legacy_record(previous, source_snapshot_sha, extraction_identity):
+        return Path(previous["graph_path"]), True
     cache_root = _root("cache")
     cache_root.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix="graphify-jev-eval-", dir=str(cache_root)))
@@ -236,6 +270,9 @@ def _extract(source_snapshot_sha: str, extraction_identity: str, previous: dict[
             raise RuntimeError("current Graphify did not produce graph.json")
         cache.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(output, cache, dirs_exist_ok=True)
+        # The completion marker is written last. A graph left by an interrupted
+        # copy is therefore never treated as a completed reusable extraction.
+        _write(_cache_metadata(cache), {"schema_version": CACHE_METADATA_VERSION, "status": "COMPLETED", "source_snapshot_sha": source_snapshot_sha, "extraction_identity": extraction_identity, "graph_fingerprint": _graph_bytes_fingerprint(graph)})
         return graph, False
     finally:
         shutil.rmtree(staging, ignore_errors=True)
@@ -352,13 +389,27 @@ def _stale_reasons(case: dict[str, Any], record: dict[str, Any], evaluator_sha: 
     return reasons
 
 
+def _classification(case: dict[str, Any], record: dict[str, Any] | None) -> str:
+    """Single current-evidence decision used by both status and report."""
+    if not record:
+        return "missing"
+    if record.get("collection_status") == "LIVE_FAILED":
+        return "failed"
+    if record.get("prepare_status") == "PREPARE_UNRESOLVED":
+        return "structurally unresolved"
+    if record.get("prepare_status") != "PREPARED":
+        return "failed"
+    if _stale_reasons(case, record, _git("rev-parse", "HEAD")):
+        return "stale"
+    if record.get("collection_status") == "LIVE_PASS":
+        return "live-collected"
+    return "prepared"
+
+
 def status(cases: list[dict[str, Any]]) -> None:
-    totals = {"prepared": 0, "unresolved": 0, "stale": 0, "live-collected": 0, "failed": 0}
-    evaluator_sha = _git("rev-parse", "HEAD")
+    totals = {"missing": 0, "structurally unresolved": 0, "prepared": 0, "stale": 0, "live-collected": 0, "failed": 0}
     for case in cases:
-        record = _read_record(case["case_id"])
-        stale = bool(record and record.get("prepare_status") == "PREPARED" and _stale_reasons(case, record, evaluator_sha))
-        value = "unresolved" if not record else ("stale" if stale else ("live-collected" if record.get("collection_status") == "LIVE_PASS" else {"PREPARED": "prepared", "PREPARE_UNRESOLVED": "unresolved"}.get(record.get("prepare_status"), "failed")))
+        value = _classification(case, _read_record(case["case_id"]))
         totals[value] += 1
         print(f"{case['case_id']}: {value}")
     print(json.dumps(totals, sort_keys=True))
@@ -386,10 +437,16 @@ def collect(cases: list[dict[str, Any],], live: bool) -> None:
             current = hashlib.sha256(graph_path.read_bytes()).hexdigest()
             if current != record["graph_fingerprint"] or _sha(payload) != record["payload_fingerprint"]:
                 raise JevShadowError("prepared input fingerprint mismatch")
+            record["attempt_count"] = record.get("attempt_count", 0) + 1
+            record["last_attempt_at"] = datetime.now(timezone.utc).isoformat()
             response = call_typesafe(payload, key)
             derived = sidecar(payload, record["task"], graph_path, response)
             record.update({"collection_status": "LIVE_PASS", "request_model_alias": payload["model"], "returned_model": response["model"], "usage": response["usage"], "raw_answers": response["answers"], "result": derived, "collected_at": datetime.now(timezone.utc).isoformat()})
         except Exception as exc:
+            # Count transport attempts at the boundary when possible, while
+            # retaining any earlier successful evidence for historical use.
+            if record.get("prepare_status") == "PREPARED" and "attempt_count" not in record:
+                record["attempt_count"] = 1
             record.update({"collection_status": "LIVE_FAILED", "error_category": type(exc).__name__, "error": str(exc)})
         _write(_record_path(case["case_id"]), record)
 
@@ -398,7 +455,8 @@ def report(cases: list[dict[str, Any]]) -> Path:
     rows, inputs, outputs, blast, nouls = [], 0, 0, {}, []
     for case in cases:
         record = _read_record(case["case_id"]) or {}
-        result = record.get("result", {})
+        state = _classification(case, record)
+        result = record.get("result", {}) if state == "live-collected" else {}
         judgments = result.get("graph_judgments", {})
         usage = record.get("usage", {})
         inputs += usage.get("input_tokens", 0); outputs += usage.get("output_tokens", 0)
@@ -408,10 +466,10 @@ def report(cases: list[dict[str, Any]]) -> Path:
             if key in judgments: nouls.append(judgments[key].get("noul"))
         consumer = judgments.get("consumer_discovery_needed", {}).get("noul", "-")
         tests = judgments.get("test_evidence_discovery_needed", {}).get("noul", "-")
-        state = "stale" if record.get("collection_status") == "STALE" else ("live-collected" if record.get("collection_status") == "LIVE_PASS" else record.get("prepare_status", "MISSING"))
         rows.append(f"| #{case['pr']} | {case['category']} | {state} | {record.get('candidate_node_count','-')} | {record.get('candidate_edge_count','-')} | {'yes' if record.get('node_cap_reached') else 'no'} | {'yes' if record.get('edge_cap_reached') else 'no'} | {record.get('question_count','-')} | {choice} | {consumer} | {tests} | {usage.get('input_tokens','-')}/{usage.get('output_tokens','-')} |")
-    prepared = sum((_read_record(c["case_id"]) or {}).get("prepare_status") == "PREPARED" for c in cases)
-    live = sum((_read_record(c["case_id"]) or {}).get("collection_status") == "LIVE_PASS" for c in cases)
+    classifications = [_classification(c, _read_record(c["case_id"])) for c in cases]
+    prepared = classifications.count("prepared") + classifications.count("live-collected")
+    live = classifications.count("live-collected")
     verified = all(_historical_provenance_verified(c, _read_record(c["case_id"])) for c in cases)
     provenance = "PR-patch provenance verified 12/12" if verified and len(cases) == 12 else "PR-patch provenance unresolved"
     divergence = sum(_reported_base(c) != c["merge_base_sha"] for c in cases)
@@ -420,11 +478,17 @@ def report(cases: list[dict[str, Any]]) -> Path:
     superseded_invalid = sum((_json(path).get("archive_reason") == "SUPERSEDED_INVALID_SOURCE_SNAPSHOT") for path in history_dir.glob("*.json")) if history_dir.exists() else 0
     source_provenance = "historical source snapshot = merge-base" if verified else "historical source snapshot provenance unresolved"
     text = f"# Graphify Jev historical evaluation M1\n\n{provenance}; {source_provenance}. Reported-base/merge-base divergences: {divergence}. Current Graphify evaluated exact historical PR patch base snapshots; Jev received only title-derived objective and bounded structural metadata, never source or diff text. Results are descriptive evidence, not production policy.\n\n"
-    unresolved = sum((_read_record(c["case_id"]) or {}).get("prepare_status") == "PREPARE_UNRESOLVED" for c in cases)
+    unresolved = classifications.count("structurally unresolved")
     node_caps = sum((_read_record(c["case_id"]) or {}).get("node_cap_reached", False) for c in cases)
     edge_caps = sum((_read_record(c["case_id"]) or {}).get("edge_cap_reached", False) for c in cases)
-    failures = sum((_read_record(c["case_id"]) or {}).get("collection_status") == "LIVE_FAILED" for c in cases)
-    text += f"Preparation: {prepared} prepared, {unresolved} unresolved. Live pass/fail: {live} pass / {failures} failed. Actual TypeSafe calls: {live}. Returned Jev models: {json.dumps(returned_models)}. Superseded invalid-source records: {superseded_invalid}. Node-cap saturation: {node_caps}. Edge-cap saturation: {edge_caps}. Tokens: {inputs} input, {outputs} output. Blast-radius distribution: {json.dumps(blast, sort_keys=True)}. Noul observations: {json.dumps(nouls)}.\n\n"
+    failures = classifications.count("failed")
+    records = [(_read_record(c["case_id"]) or {}) for c in cases]
+    attempted = [record for record in records if record.get("collection_status") in {"LIVE_PASS", "LIVE_FAILED"} or "result" in record]
+    known_attempts = [record.get("attempt_count") for record in attempted]
+    attempts = sum(value for value in known_attempts if isinstance(value, int))
+    unknown_attempts = any(not isinstance(value, int) for value in known_attempts)
+    attempt_text = str(attempts) if not unknown_attempts else f"{attempts} known; additional attempts unknown"
+    text += f"Preparation: {prepared} prepared, {unresolved} structurally unresolved. Live pass/fail: {live} pass / {failures} failed. Actual TypeSafe attempts: {attempt_text}. Returned Jev models: {json.dumps(returned_models)}. Superseded invalid-source records: {superseded_invalid}. Node-cap saturation: {node_caps}. Edge-cap saturation: {edge_caps}. Tokens: {inputs} input, {outputs} output. Blast-radius distribution: {json.dumps(blast, sort_keys=True)}. Noul observations: {json.dumps(nouls)}.\n\n"
     text += "| PR | Category | State | Nodes | Edges | Node cap? | Edge cap? | Questions | Blast radius | Consumer Noul | Test Noul | Tokens in/out |\n|---|---|---|---:|---:|---|---|---:|---|---:|---:|---|\n" + "\n".join(rows) + "\n\n"
     text += "| PR | Reported base | Merge-base | Same? | Changed files | Evidence match |\n|---:|---|---|---|---:|---|\n"
     for case in cases:

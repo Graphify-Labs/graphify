@@ -76,6 +76,89 @@ def test_source_snapshot_change_invalidates_graph_cache_key():
     assert evaluation._cache_key(identity, "a" * 40) != evaluation._cache_key(identity, "b" * 40)
 
 
+def _cache_fixture(tmp_path, identity="identity", source="source"):
+    cache = tmp_path / evaluation._cache_key(identity, source)
+    graph = cache / "graphify-out" / "graph.json"
+    graph.parent.mkdir(parents=True)
+    graph.write_text('{"nodes": [], "links": []}')
+    evaluation._write(cache / "cache-metadata.json", {
+        "schema_version": evaluation.CACHE_METADATA_VERSION,
+        "status": "COMPLETED",
+        "source_snapshot_sha": source,
+        "extraction_identity": identity,
+        "graph_fingerprint": evaluation._graph_bytes_fingerprint(graph),
+    })
+    return cache, graph
+
+
+def test_cache_hit_requires_completed_metadata_and_graph_fingerprint(tmp_path):
+    cache, graph = _cache_fixture(tmp_path)
+    assert evaluation._valid_cache_hit(cache, graph, "identity", "source")
+    graph.write_text('{"nodes": [{"id": "changed"}], "links": []}')
+    assert not evaluation._valid_cache_hit(cache, graph, "identity", "source")
+
+
+def test_cache_hit_without_metadata_is_not_accepted(tmp_path):
+    cache, graph = _cache_fixture(tmp_path)
+    (cache / "cache-metadata.json").unlink()
+    assert not evaluation._valid_cache_hit(cache, graph, "identity", "source")
+
+
+def test_valid_existing_cache_is_reused_without_extraction(tmp_path, monkeypatch):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    _cache_fixture(tmp_path)
+    monkeypatch.setattr(evaluation, "subprocess", pytest.fail)
+    graph, hit = evaluation._extract("source", "identity")
+    assert hit and graph.is_file()
+
+
+def test_legacy_adoption_requires_matching_prior_completed_evidence(tmp_path, monkeypatch):
+    graph = tmp_path / "legacy-graph.json"
+    graph.write_text('{"nodes": [], "links": []}')
+    previous = {"prepare_status": "PREPARED", "source_snapshot_sha": "source",
+                "evaluator_identity": "identity", "graph_path": str(graph),
+                "graph_fingerprint": evaluation._graph_bytes_fingerprint(graph)}
+    assert evaluation._valid_legacy_record(previous, "source", "identity")
+    graph.write_text('{"nodes": [{"id": "changed"}], "links": []}')
+    assert not evaluation._valid_legacy_record(previous, "source", "identity")
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    monkeypatch.setattr(evaluation, "_archive", lambda *_args: pytest.fail("legacy proof should be reused"))
+
+
+def test_classification_distinguishes_missing_unresolved_and_failed(monkeypatch):
+    item = case()
+    assert evaluation._classification(item, None) == "missing"
+    unresolved = {"prepare_status": "PREPARE_UNRESOLVED"}
+    assert evaluation._classification(item, unresolved) == "structurally unresolved"
+    failed = {"prepare_status": "PREPARED", "collection_status": "LIVE_FAILED"}
+    assert evaluation._classification(item, failed) == "failed"
+
+
+def test_report_counts_recorded_attempts_not_successes(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    first = case(case_id="first")
+    second = case(case_id="second")
+    for item, status in ((first, "LIVE_PASS"), (second, "LIVE_FAILED")):
+        evaluation._write(evaluation._record_path(item["case_id"]), {
+            "prepare_status": "PREPARED", "collection_status": status,
+            "attempt_count": 1,
+        })
+    # The records are intentionally not current-applicable enough to count as
+    # successful results, but their transport attempts remain reportable.
+    text = evaluation.report([first, second]).read_text()
+    assert "Actual TypeSafe attempts: 2" in text
+    assert "Actual TypeSafe calls" not in text
+
+
+def test_legacy_attempt_count_is_explicitly_unknown(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    item = case()
+    evaluation._write(evaluation._record_path(item["case_id"]), {
+        "prepare_status": "PREPARED", "collection_status": "LIVE_FAILED",
+    })
+    assert "additional attempts unknown" in evaluation.report([item]).read_text()
+
+
 def test_extraction_options_change_invalidates_extraction_identity(tmp_path, monkeypatch):
     root = _identity_fixture(tmp_path)
     first = evaluation._extraction_identity(root)
