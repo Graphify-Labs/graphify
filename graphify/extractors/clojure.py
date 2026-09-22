@@ -82,6 +82,114 @@ _CALLABLE_KINDS = frozenset({
 
 _TYPE_KINDS = frozenset({"record", "type", "struct"})
 
+# Forms whose second element is a binding vector (`[name value ...]`).
+_BINDING_FORMS = frozenset({
+    "let", "let*", "loop", "loop*", "for", "doseq", "dotimes", "binding",
+    "with-open", "with-local-vars", "if-let", "when-let", "if-some", "when-some",
+    "when-first", "as->",
+})
+
+# Forms whose parameters (a vector, or one per arity list) follow the head.
+_FN_FORMS = frozenset({
+    "fn", "fn*", "defn", "defn-", "defmacro", "defmethod", "definline",
+    "deftest", "bound-fn",
+})
+
+# Forms that host protocol / interface method implementations inline:
+# `(reify P (m [this] ...))`, `(proxy [Class] [args] (m [x] ...))`.
+_IMPL_HOSTS = frozenset({
+    "reify", "proxy", "extend-protocol", "extend-type", "deftype", "defrecord",
+    "specify", "specify!",
+})
+
+
+def _binding_symbols(node: Node, source: bytes, into: set[str]) -> None:
+    """Collect every symbol a binding/destructuring form introduces."""
+    if node.type == "sym_lit":
+        parts = _sym_parts(node, source)
+        if parts is not None and parts[0] is None and parts[1] not in {"&", "_"}:
+            into.add(parts[1])
+        return
+    if node.type == "vec_lit":
+        for child in _values(node):
+            _binding_symbols(child, source, into)
+        return
+    if node.type == "map_lit":
+        # `{:keys [a b] :as m x :x}` — keys of the map bind (except keyword
+        # options, whose values bind instead).
+        values = _values(node)
+        index = 0
+        while index < len(values):
+            key = values[index]
+            value = values[index + 1] if index + 1 < len(values) else None
+            if key.type == "kwd_lit":
+                if value is not None:
+                    _binding_symbols(value, source, into)
+            else:
+                _binding_symbols(key, source, into)
+            index += 2
+
+
+def _local_bindings(items: list[Node], source: bytes) -> set[str]:
+    """Names bound anywhere inside a definition body.
+
+    Form-level rather than exactly scoped: a parameter or `let` name shadows
+    a same-named top-level def for the whole form, which trades a few missed
+    edges in unusual code for never mistaking `(handler req)` on a `handler`
+    parameter for a call to a `handler` function.
+    """
+    bound: set[str] = set()
+    # The items of a definition body start with its own parameter vector (or
+    # one `([params] body)` clause per arity) — those have no symbol head.
+    for item in items:
+        if item.type == "vec_lit":
+            _binding_symbols(item, source, bound)
+            break
+        if item.type == "list_lit":
+            clause = _values(item)
+            if clause and clause[0].type == "vec_lit":
+                _binding_symbols(clause[0], source, bound)
+    stack = list(items)
+    while stack:
+        node = stack.pop()
+        if node.type in {"quoting_lit", "comment", "dis_expr"}:
+            continue
+        if node.type in {"list_lit", "anon_fn_lit"}:
+            head = _head_symbol(node, source)
+            values = _values(node)
+            if head is not None and head[0] is None:
+                name = head[1]
+                if name in _FN_FORMS:
+                    # optional fn name, then either a params vector or arity lists
+                    for value in values[1:]:
+                        if value.type == "vec_lit":
+                            _binding_symbols(value, source, bound)
+                            break
+                        if value.type == "list_lit":
+                            arity = _values(value)
+                            if arity and arity[0].type == "vec_lit":
+                                _binding_symbols(arity[0], source, bound)
+                elif name in _BINDING_FORMS and len(values) > 1 and values[1].type == "vec_lit":
+                    pairs = _values(values[1])
+                    for target in pairs[0::2]:
+                        _binding_symbols(target, source, bound)
+                elif name == "letfn" and len(values) > 1 and values[1].type == "vec_lit":
+                    for fn_form in _values(values[1]):
+                        if fn_form.type == "list_lit":
+                            fn_values = _values(fn_form)
+                            if fn_values:
+                                _binding_symbols(fn_values[0], source, bound)
+                elif name == "catch" and len(values) > 2:
+                    _binding_symbols(values[2], source, bound)
+                elif name in _IMPL_HOSTS:
+                    for value in values[1:]:
+                        if value.type == "list_lit":
+                            impl = _values(value)
+                            if len(impl) > 1 and impl[1].type == "vec_lit":
+                                _binding_symbols(impl[1], source, bound)
+        stack.extend(node.named_children)
+    return bound
+
 _SUFFIXES = frozenset({".clj", ".cljs", ".cljc", ".edn"})
 
 
@@ -866,10 +974,14 @@ def extract_clojure(path: Path) -> dict:
         add_edge(owner_id, ghost, "implements", node)
 
     # --- calls ----------------------------------------------------------------
-    def record_call(head: tuple[str | None, str], caller_id: str, node: Node) -> None:
+    def record_call(
+        head: tuple[str | None, str], caller_id: str, node: Node, bound: set[str]
+    ) -> None:
         sym_ns, name = head
         if sym_ns is None:
             if name in _SPECIAL_FORMS or name.startswith(".") or name.endswith("."):
+                return
+            if name in bound:
                 return
             bare = name
             if name.startswith("map->"):
@@ -925,7 +1037,50 @@ def extract_clojure(path: Path) -> dict:
             "source_location": line(node),
         })
 
+    def implement_inline(node: Node, caller_id: str, head_name: str, stack: list[Node]) -> None:
+        """`(reify P (m [this] body))` / `(proxy [C] [args] (m [x] body))` inside a body.
+
+        Protocol symbols become `implements` edges from the enclosing definition;
+        method impl heads are definitions, not calls, so only their bodies are
+        pushed for walking.
+        """
+        values = _values(node)[1:]
+        if head_name == "proxy":
+            # (proxy [Class Iface ...] [ctor-args] impls...)
+            if values and values[0].type == "vec_lit":
+                for sym in _values(values[0]):
+                    parts = _sym_parts(sym, source)
+                    if parts is not None and parts[0] is None and parts[1] in protocols:
+                        add_edge(caller_id, protocols[parts[1]], "implements", sym)
+                values = values[1:]
+            if values and values[0].type == "vec_lit":
+                stack.append(values[0])
+                values = values[1:]
+        elif head_name in {"extend-type", "deftype", "defrecord", "specify", "specify!"}:
+            values = values[1:]  # type / target expression
+            if head_name in {"deftype", "defrecord"} and values and values[0].type == "vec_lit":
+                values = values[1:]  # fields
+        elif head_name == "extend-protocol":
+            if values:
+                parts = _sym_parts(values[0], source)
+                if parts is not None and parts[0] is None and parts[1] in protocols:
+                    add_edge(caller_id, protocols[parts[1]], "implements", values[0])
+                values = values[1:]
+        for item in values:
+            if item.type == "sym_lit":
+                parts = _sym_parts(item, source)
+                if parts is not None and parts[0] is None and parts[1] in protocols:
+                    add_edge(caller_id, protocols[parts[1]], "implements", item)
+                continue
+            if item.type == "list_lit":
+                impl = _values(item)
+                start = 2 if len(impl) > 1 and impl[1].type == "vec_lit" else 1
+                stack.extend(reversed(impl[start:]))
+                continue
+            stack.append(item)
+
     def walk_body(items: list[Node], caller_id: str) -> None:
+        bound = _local_bindings(items, source)
         stack = list(reversed(items))
         while stack:
             node = stack.pop()
@@ -936,12 +1091,20 @@ def extract_clojure(path: Path) -> dict:
             if node.type in {"list_lit", "anon_fn_lit"}:
                 head = _head_symbol(node, source)
                 if head is not None:
-                    record_call(head, caller_id, node)
+                    if head[0] is None and head[1] in _IMPL_HOSTS:
+                        implement_inline(node, caller_id, head[1], stack)
+                        continue
+                    record_call(head, caller_id, node, bound)
             elif node.type == "sym_lit":
                 # Higher-order use: (map helper xs), `str/join` passed as a value,
                 # or `#'foo` var refs.
                 parts = _sym_parts(node, source)
-                if parts is not None and parts[0] is None and parts[1] in local_defs:
+                if (
+                    parts is not None
+                    and parts[0] is None
+                    and parts[1] in local_defs
+                    and parts[1] not in bound
+                ):
                     target = local_defs[parts[1]]
                     if target != caller_id and not (parts[1] in types or parts[1] in protocols):
                         relation = "calls" if target in callable_ids else "references"

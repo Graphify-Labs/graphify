@@ -421,3 +421,60 @@ def test_clojure_protocol_with_docstrings_and_metadata_keeps_its_methods(tmp_pat
     assert kinds["write-body"] == "protocol_method"
     assert kinds["close-body"] == "protocol_method"
     assert ("Streamable", "write-body") in _edge_labels(result, "contains")
+
+
+def test_clojure_local_bindings_shadow_same_named_defs(tmp_path):
+    source = tmp_path / "response.clj"
+    source.write_text(
+        "(ns app.response)\n"
+        "(defn status [resp code] (assoc resp :status code))\n"
+        "(defn handler [req] req)\n"
+        "(defn app [] 1)\n"
+        "(defn redirect\n"
+        "  ([url] (redirect url 302))\n"
+        "  ([url status] {:status status :headers {\"Location\" url}}))\n"
+        "(defn wrap [handler] (fn [req] (handler req)))\n"
+        "(defn run [] (let [app (fn [] 2) {:keys [handler]} {}] (app) (handler 1)))\n"
+        "(defn keep-real [x] (status x 200) (let [y 1] (handler y)))\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    calls = _edge_labels(result, "calls")
+    references = _edge_labels(result, "references")
+    # parameters / let / destructured names shadow the top-level defs
+    assert ("redirect", "status") not in calls and ("redirect", "status") not in references
+    assert ("wrap", "handler") not in calls
+    assert ("run", "app") not in calls
+    assert ("run", "handler") not in calls
+    # unshadowed uses still resolve
+    assert ("keep-real", "status") in calls
+    assert ("keep-real", "handler") in calls
+
+
+def test_clojure_inline_reify_and_proxy_implement_protocols(tmp_path):
+    source = tmp_path / "listener.clj"
+    source.write_text(
+        "(ns app.listener (:import (java.util AbstractList)))\n"
+        "(defprotocol Listener\n"
+        "  (on-message [this msg]))\n"
+        "(defn log [x] x)\n"
+        "(defn make-listener []\n"
+        "  (reify Listener\n"
+        "    (on-message [_ msg] (log msg))))\n"
+        "(defn make-list []\n"
+        "  (proxy [AbstractList] []\n"
+        "    (get [i] (log i))\n"
+        "    (size [] 0)))\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    assert ("make-listener", "Listener") in _edge_labels(result, "implements")
+    calls = _edge_labels(result, "calls")
+    assert ("make-listener", "log") in calls
+    assert ("make-list", "log") in calls
+    # the impl heads are definitions, not calls to the protocol method
+    assert ("make-listener", "on-message") not in calls
