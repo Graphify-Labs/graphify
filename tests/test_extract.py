@@ -988,6 +988,63 @@ def test_extract_js_commonjs_exports_assignment(tmp_path):
     assert "beta()" in labels
 
 
+def test_extract_js_commonjs_exports_hof_assignment(tmp_path):
+    """#3035: `exports.X = wrap(...)` and `module.exports.X = wrap(...)` must produce function nodes."""
+    from graphify.extract import extract_js
+    f = tmp_path / "mod.js"
+    f.write_text(
+        "function wrap(fn) { return fn; }\n"
+        "exports.assignedCall = wrap(async (x) => x);\n"
+        "module.exports.moduleAssignedCall = wrap(function(y) { return y; });\n"
+    )
+    res = extract_js(f)
+    by_label = {n["label"]: n for n in res["nodes"]}
+    assert "assignedCall()" in by_label
+    assert "moduleAssignedCall()" in by_label
+    assert by_label["assignedCall()"].get("_callable") is True
+    assert by_label["moduleAssignedCall()"].get("_callable") is True
+    file_nid = next(n["id"] for n in res["nodes"] if n["label"] == "mod.js")
+    edges = {(e["source"], e["relation"], e["target"]) for e in res["edges"]}
+    assert (file_nid, "contains", by_label["assignedCall()"]["id"]) in edges
+    assert (file_nid, "contains", by_label["moduleAssignedCall()"]["id"]) in edges
+
+
+def test_extract_js_commonjs_exports_hof_options_and_calls(tmp_path):
+    """#3035: Calls inside HOF-wrapped export callbacks (with options) are attributed to the exported node."""
+    from graphify.extract import extract_js
+    f = tmp_path / "handler.js"
+    f.write_text(
+        "function onCall(opts, fn) { return fn; }\n"
+        "function helperA() {}\n"
+        "function helperB() {}\n"
+        "exports.apiHandler = onCall({ cors: true }, async (req) => {\n"
+        "    helperA();\n"
+        "});\n"
+        "module.exports.otherHandler = onCall({ timeout: 5000 }, (req) => helperB());\n"
+    )
+    res = extract_js(f)
+    by_label = {n["label"]: n for n in res["nodes"]}
+    assert {"apiHandler()", "otherHandler()", "helperA()", "helperB()"} <= set(by_label)
+    edges = {(e["source"], e["relation"], e["target"]) for e in res["edges"]}
+    assert (by_label["apiHandler()"]["id"], "calls", by_label["helperA()"]["id"]) in edges
+    assert (by_label["otherHandler()"]["id"], "calls", by_label["helperB()"]["id"]) in edges
+
+
+def test_extract_js_arbitrary_member_hof_assignment_not_captured(tmp_path):
+    """#3035 / #1077: Arbitrary `obj.x = wrap(...)` must NOT produce a node."""
+    from graphify.extract import extract_js
+    f = tmp_path / "noise.js"
+    f.write_text(
+        "function wrap(fn) { return fn; }\n"
+        "const obj = {};\n"
+        "obj.assignedCall = wrap(async () => {});\n"
+    )
+    labels = [n["label"] for n in extract_js(f)["nodes"]]
+    assert "assignedCall()" not in labels
+    assert ".assignedCall()" not in labels
+    assert "assignedCall" not in labels
+
+
 def test_extract_js_prototype_method_assignment(tmp_path):
     """`Foo.prototype.bar = fn` must be captured as a method owned by Foo."""
     from graphify.extract import extract_js
@@ -1270,6 +1327,64 @@ def test_python_qualified_class_method_call_resolves_extracted(tmp_path):
     ]
     assert len(call_edges) == 1, f"expected one handle->approve edge, got {call_edges}"
     assert call_edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_builtin_named_member_call_still_resolves_cross_file(tmp_path):
+    """#3381: _LANGUAGE_BUILTIN_GLOBALS is one union across every language, right
+    for a BARE call (String(x) really would become a god node) but wrong for a
+    MEMBER call -- `open` is a Python builtin, so Session.open() used to be
+    silently discarded outright: no same-file edge, but also no raw_calls entry,
+    so cross-file resolution never got a chance to try it. A member call carries
+    a receiver, so it isn't the ambiguous case the union guards against."""
+    session = tmp_path / "session.py"
+    user = tmp_path / "user.py"
+    session.write_text(
+        "class Session:\n"
+        "    @staticmethod\n"
+        "    def open():\n"
+        "        return 'opened'\n"
+    )
+    user.write_text(
+        "from session import Session\n\n"
+        "def start():\n"
+        "    Session.open()\n"
+    )
+    result = extract([user, session], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    call_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "start" in nodes[e["source"]]["label"]
+        and "open" in nodes[e["target"]]["label"]
+        and "session.py" in (nodes[e["target"]].get("source_file") or "")
+    ]
+    assert len(call_edges) == 1, f"expected one start->open edge, got {call_edges}"
+    assert call_edges[0]["confidence"] == "EXTRACTED"
+
+
+def test_builtin_named_member_call_does_not_bind_to_unrelated_bare_function(tmp_path):
+    """#3381 follow-up: the god-node guard the builtin filter exists for must
+    still hold. A member call named after a builtin must never fall back to an
+    unrelated same-file bare function sharing that name -- it may only ever
+    resolve through a guarded, receiver-typed path (or not resolve at all)."""
+    p = tmp_path / "sample.py"
+    p.write_text(
+        "def open():\n"
+        "    return 'unrelated top-level function also named open'\n"
+        "\n"
+        "class Session:\n"
+        "    def start(self, other):\n"
+        "        other.open()\n"
+        "        f = open('file.txt')\n"
+    )
+    result = extract([p], cache_root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    open_fn = next(n for n in result["nodes"] if n["label"] == "open()")
+    bad_edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls" and e["target"] == open_fn["id"]
+    ]
+    assert bad_edges == [], f"member/bare builtin-named calls bound to unrelated open(): {bad_edges}"
 
 
 def test_degenerate_symbol_name_does_not_leak_absolute_id(tmp_path):
@@ -1654,6 +1769,95 @@ def test_python_relative_from_import_alias_module_call_resolves(tmp_path):
     assert edges[0]["confidence"] == "EXTRACTED"
 
 
+def test_python_namespace_package_submodule_imports_resolve_member_calls(tmp_path):
+    """A PEP 420 namespace package -- a directory with no __init__.py, which
+    `python -m pkg.mod` runs without complaint -- must resolve `from . import
+    brain, ledger` to its sibling module files and then `brain.think()` /
+    `ledger.write()` through the #1883 module arm, exactly as a regular package
+    does. Before this fix the module path resolved to nothing (no __init__.py to
+    probe), the whole statement was skipped, and the most-called functions in
+    such a repo carried in-degree 0 in the graph."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "brain.py").write_text("def think(q):\n    return q\n")
+    (pkg / "ledger.py").write_text("def write(e):\n    return e\n")
+    caller = pkg / "agent.py"
+    caller.write_text(
+        "from . import brain, ledger\n\n"
+        "def cycle(q):\n"
+        "    ledger.write(q)\n"
+        "    return brain.think(q)\n"
+    )
+    result = extract(
+        [caller, pkg / "brain.py", pkg / "ledger.py"], cache_root=tmp_path, root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+
+    def calls(callee: str, in_file: str) -> list[dict]:
+        return [
+            e for e in result["edges"]
+            if e["relation"] == "calls"
+            and "cycle" in nodes[e["source"]]["label"]
+            and callee in nodes[e["target"]]["label"]
+            and in_file in (nodes[e["target"]].get("source_file") or "")
+        ]
+
+    think, write = calls("think", "brain.py"), calls("write", "ledger.py")
+    assert len(think) == 1 and think[0]["confidence"] == "EXTRACTED", think
+    assert len(write) == 1 and write[0]["confidence"] == "EXTRACTED", write
+    imported = {
+        nodes[e["target"]]["label"] for e in result["edges"]
+        if e["relation"] == "imports_from"
+        and nodes.get(e["source"], {}).get("label") == "agent.py"
+        and e["target"] in nodes
+    }
+    assert {"brain.py", "ledger.py"} <= imported, imported
+
+
+def test_python_namespace_package_absolute_and_parent_relative_forms(tmp_path):
+    """The same gap in its other spellings: `from pkg import brain` (absolute,
+    with the scan root as the namespace package's parent) and `from .. import
+    brain` from a nested namespace subpackage."""
+    pkg = tmp_path / "pkg"
+    sub = pkg / "sub"
+    sub.mkdir(parents=True)
+    (pkg / "brain.py").write_text("def think(q):\n    return q\n")
+    absolute = pkg / "abs_caller.py"
+    absolute.write_text("from pkg import brain\n\ndef use_abs(q):\n    return brain.think(q)\n")
+    nested = sub / "deep_caller.py"
+    nested.write_text("from .. import brain\n\ndef use_deep(q):\n    return brain.think(q)\n")
+    result = extract([absolute, nested, pkg / "brain.py"], cache_root=tmp_path, root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    callers = [
+        nodes[e["source"]]["label"] for e in result["edges"]
+        if e["relation"] == "calls" and "think" in nodes[e["target"]]["label"]
+        and e["confidence"] == "EXTRACTED"
+    ]
+    assert any("use_abs" in c for c in callers), callers
+    assert any("use_deep" in c for c in callers), callers
+
+
+def test_python_namespace_package_import_of_non_module_fabricates_nothing(tmp_path):
+    """A namespace-package import whose name is not a module file on disk -- a
+    data directory, or a name that does not exist -- must add no resolved edge
+    and must not raise. A namespace package owns no symbols of its own to bind,
+    so there is nothing to fall back to."""
+    pkg = tmp_path / "pkg"
+    (pkg / "data").mkdir(parents=True)
+    (pkg / "data" / "rows.csv").write_text("a,b\n")
+    caller = pkg / "loader.py"
+    caller.write_text("from . import data, missing\n\ndef load():\n    return data.read()\n")
+    result = extract([caller], cache_root=tmp_path, root=tmp_path)
+    nodes = {n["id"]: n for n in result["nodes"]}
+    fabricated = [
+        e for e in result["edges"]
+        if e["relation"] in ("calls", "imports_from")
+        and nodes.get(e["source"], {}).get("label") in ("loader.py", "load()")
+        and e["target"] in nodes
+    ]
+    assert fabricated == [], fabricated
+
+
 def test_python_external_aliased_import_fabricates_no_call_edge(tmp_path):
     """#2082 must not over-resolve: an aliased import of an EXTERNAL/uncorpus
     module (`import numpy as np; np.array()`) has no in-corpus callee, so it must
@@ -2016,6 +2220,34 @@ def test_extract_parallel_returns_false_on_broken_pool(tmp_path, monkeypatch, ca
     out = capsys.readouterr().out
     assert "BrokenProcessPool" in out, "user-facing warning must mention the failure"
     assert "__main__" in out, "warning must hint at the Windows __main__ guard idiom"
+
+
+def test_extract_parallel_returns_false_when_pool_cannot_start(tmp_path, monkeypatch, capsys):
+    """_extract_parallel must fall back, not raise, when the pool cannot be created.
+
+    ProcessPoolExecutor allocates a POSIX named semaphore at construction. On
+    macOS, once leaked semaphores exhaust the system-wide table
+    (kern.posix.sem.max), sem_open fails with OSError(ENOSPC) — "No space left
+    on device" with the disk nowhere near full — and the whole extraction died
+    instead of running sequentially.
+    """
+    import concurrent.futures
+    # Loaded lazily on first ProcessPoolExecutor access; with that patched out,
+    # the BrokenProcessPool handler's attribute lookup would itself raise.
+    import concurrent.futures.process  # noqa: F401
+    import errno
+    from graphify import extract as extract_mod
+
+    def no_semaphores(*a, **kw):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(concurrent.futures, "ProcessPoolExecutor", no_semaphores)
+
+    uncached = [(0, FIXTURES / "sample.py")]
+    per_file: list = [None]
+    ok = extract_mod._extract_parallel(uncached, per_file, tmp_path, 2, 1)
+    assert ok is False, "a pool that cannot start must hand back to sequential, not raise"
+    assert "No space left on device" in capsys.readouterr().out, "warning must name the OS error"
 
 
 def test_extract_parallel_skips_pool_when_max_workers_is_one(tmp_path, monkeypatch):
@@ -2499,6 +2731,110 @@ def test_extract_bash_attributes_script_invocation_to_function(tmp_path):
     assert invocation["source"] == deploy["id"]
 
 
+@pytest.mark.parametrize("invocation", [
+    '"$script_dir/helpers.sh"',
+    '"${script_dir}/helpers.sh"',
+    '"$script_dir/helpers.sh" --flag value',
+    '$script_dir/helpers.sh',
+])
+def test_extract_bash_script_invocation_via_variable_built_path(tmp_path, invocation):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        f"{invocation}\n",
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+    invocations = [
+        edge for edge in result["edges"]
+        if edge.get("relation") == "calls" and edge.get("context") == "script_invocation"
+    ]
+
+    assert invocations == [{
+        "source": _make_id(str(script)) + "__entry",
+        "target": _make_id(str(helpers.resolve())) + "__entry",
+        "relation": "calls",
+        "confidence": "EXTRACTED",
+        "source_file": str(script),
+        "source_location": "L3",
+        "weight": 1.0,
+        "context": "script_invocation",
+        # Transient canonicalization hint (#2243); popped before persist.
+        "target_file": str(helpers.resolve()),
+    }]
+
+
+def test_extract_bash_variable_built_invocation_with_dynamic_stem_emits_no_edge(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        '"$script_dir/$name.sh"\n',
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+
+    assert not any(edge.get("context") == "script_invocation" for edge in result["edges"])
+
+
+def test_extract_bash_variable_built_invocation_no_on_disk_match_emits_no_edge(tmp_path):
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        '"$script_dir/missing.sh"\n',
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+
+    assert not any(edge.get("context") == "script_invocation" for edge in result["edges"])
+
+
+def test_extract_bash_variable_built_invocation_targets_existing_entrypoint(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        '"$script_dir/helpers.sh"\n',
+        encoding="utf-8",
+    )
+
+    result = extract([script, helpers], cache_root=tmp_path, parallel=False)
+    node_ids = {node["id"] for node in result["nodes"]}
+    invocation = next(edge for edge in result["edges"] if edge.get("context") == "script_invocation")
+
+    assert invocation["source"] in node_ids
+    assert invocation["target"] in node_ids
+
+
+def test_extract_bash_attributes_variable_built_invocation_to_function(tmp_path):
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(
+        "#!/bin/bash\n"
+        'script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+        'deploy() { "$script_dir/helpers.sh"; }\n',
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+    deploy = next(node for node in result["nodes"] if node["label"] == "deploy()")
+    invocation = next(edge for edge in result["edges"] if edge.get("context") == "script_invocation")
+
+    assert invocation["source"] == deploy["id"]
+
+
 def test_extract_bash_no_self_loops():
     result = extract_bash(FIXTURES / "sample.sh")
     for e in result["edges"]:
@@ -2567,6 +2903,41 @@ def test_extract_bash_rejects_command_substitution_as_call(tmp_path):
         if e["relation"] == "calls"
     ]
     assert call_pairs == [], f"Command substitution erroneously emitted call edges: {call_pairs}"
+
+
+def test_extract_bash_command_substitution_in_assignment_emits_call(tmp_path):
+    """#2978: x=$(helper) inside a function must emit a calls edge to helper()."""
+    script = tmp_path / "a.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        "helper() { echo ok; }\n"
+        "bare()      { helper; }\n"
+        "subst()     { x=$(helper); echo \"$x\"; }\n"
+        "orlist()    { helper || return 1; }\n"
+        "andlist()   { true && helper; }\n"
+        "pipe()      { helper | cat; }\n"
+        "cond()      { if helper; then :; fi; }\n"
+        "loop()      { while helper; do break; done; }\n"
+        "redir()     { helper >/dev/null; }\n"
+        "neg()       { ! helper; }\n",
+        encoding="utf-8",
+    )
+    result = extract_bash(script)
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    call_pairs = [
+        (labels.get(e["source"], e["source"]), labels.get(e["target"], e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "calls"
+    ]
+    assert ("subst()", "helper()") in call_pairs
+    assert ("bare()", "helper()") in call_pairs
+    assert ("orlist()", "helper()") in call_pairs
+    assert ("andlist()", "helper()") in call_pairs
+    assert ("pipe()", "helper()") in call_pairs
+    assert ("cond()", "helper()") in call_pairs
+    assert ("loop()", "helper()") in call_pairs
+    assert ("redir()", "helper()") in call_pairs
+    assert ("neg()", "helper()") in call_pairs
 
 
 def test_extract_bash_process_substitution_not_recorded(tmp_path):
@@ -3197,6 +3568,65 @@ def test_extract_json_extends_resolved():
     assert extends_edges[0].get("context") == "import"
 
 
+def test_extract_json_dependency_edges_are_not_label_self_loops(tmp_path):
+    """A dependency must not point at another node carrying its own label.
+
+    test_extract_json_import_and_extends_targets_are_real_nodes already forbids
+    self-loops, but it compares node *ids*. The dependency branch minted a
+    second node for the same name under a different id, so every dependency
+    rendered as ``react --imports--> react`` -- a self-loop by label that an
+    id-based guard cannot see.
+    """
+    package_json = tmp_path / "package.json"
+    package_json.write_text(json.dumps({
+        "name": "demo",
+        "dependencies": {"react": "^19.0.0", "next": "^15.0.0"},
+        "devDependencies": {"wrangler": "^4.71.0"},
+    }))
+
+    result = extract_json(package_json)
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    offenders = [
+        (labels.get(e["source"]), e["relation"], labels.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "imports"
+        and labels.get(e["source"]) == labels.get(e["target"])
+    ]
+    assert offenders == [], f"label self-loop: {offenders}"
+
+    # The dependency structure #1764 restored is still present.
+    imports = [e for e in result["edges"] if e["relation"] == "imports"]
+    assert {labels.get(e["target"]) for e in imports} == {"react", "next", "wrangler"}
+
+    # External dependency ids stay "ref"-namespaced (J-4), so build.py's alias
+    # index cannot collapse a dep named `utils`/`colors` onto a local module.
+    assert all(e["target"].startswith("ref") for e in imports), [e["target"] for e in imports]
+
+
+def test_extract_json_non_extends_arrays_are_not_inheritance(tmp_path):
+    """Only an ``extends`` array is inheritance.
+
+    ``compilerOptions.lib`` and ``exclude`` are ordinary string lists; emitting
+    ``extends`` for them turns array membership into a supertype relation and
+    manufactures a hub out of a build-output glob.
+    """
+    tsconfig = tmp_path / "tsconfig.json"
+    tsconfig.write_text(json.dumps({
+        "extends": ["./base.json", "./strict.json"],
+        "compilerOptions": {"lib": ["dom", "esnext"]},
+        "exclude": ["node_modules", ".next"],
+    }))
+
+    result = extract_json(tsconfig)
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    extends_targets = {
+        labels.get(e["target"]) for e in result["edges"] if e["relation"] == "extends"
+    }
+    assert extends_targets == {"./base.json", "./strict.json"}
+    for not_inheritance in ("dom", "esnext", ".next", "node_modules"):
+        assert not_inheritance not in extends_targets
+
+
 def test_extract_json_import_and_extends_targets_are_real_nodes(tmp_path):
     package_json = tmp_path / "package.json"
     package_json.write_text(json.dumps({
@@ -3748,6 +4178,17 @@ def test_get_extractor_routes_matlab_m_away_from_objc(tmp_path):
     assert _get_extractor(mm) is extract_objc              # .mm is unambiguously ObjC++
 
 
+def test_markdown_dispatch_matches_resolution_suffixes():
+    from graphify.extract import _DISPATCH, extract_markdown
+    from graphify.markdown_resolution import MARKDOWN_MENTION_SUFFIXES
+
+    dispatched = {
+        suffix for suffix, extractor in _DISPATCH.items()
+        if extractor is extract_markdown
+    }
+    assert dispatched == MARKDOWN_MENTION_SUFFIXES
+
+
 def test_matlab_m_not_extracted_as_garbage(tmp_path, capsys):
     # End to end: a MATLAB .m produces no (garbage) nodes and is surfaced by the
     # no-AST-extractor warning (#1702 + #1689), rather than mis-parsed as ObjC.
@@ -3817,6 +4258,74 @@ def test_rewire_does_not_bind_supertype_stub_to_function():
               "source_file": "store.py", "weight": 1.0}]
     _rewire_unique_stub_nodes(nodes, edges)
     assert edges[0]["target"] == "BookStore"  # inherits stub not bound to function
+
+
+def test_rewire_does_not_bind_supertype_stub_across_language():
+    """#2812: a bare `extends Exception` in PHP is the language's own built-in.
+    It must not fuse onto a unique same-named TypeScript class."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "app_exception_Exception", "label": "Exception", "file_type": "code",
+         "source_file": "app/exception.ts", "source_location": "L1"},
+        {"id": "Exception", "label": "Exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_FooApiException", "target": "Exception", "relation": "inherits",
+              "source_file": "pkg/FooApiException.php", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "Exception"  # unchanged — cross-language blocked
+    assert "Exception" in {n["id"] for n in nodes}  # stub kept as the external base
+
+
+def test_rewire_binds_builtin_named_supertype_stub_within_same_language():
+    """#2812 control: the guard is per language family, not a name blocklist — a
+    PHP corpus that declares its own `Exception` must still absorb the stub."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "pkg_support_Exception", "label": "Exception", "file_type": "code",
+         "source_file": "pkg/Support/Exception.php", "source_location": "L1"},
+        {"id": "Exception", "label": "Exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_FooApiException", "target": "Exception", "relation": "inherits",
+              "source_file": "pkg/FooApiException.php", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "pkg_support_Exception"
+
+
+def test_rewire_builtin_supertype_guard_folds_case_insensitive_languages():
+    """#2812: PHP resolves class names case-insensitively, so `extends \\exception`
+    names the same built-in as `extends \\Exception` and must be blocked too."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "app_exception_exception", "label": "exception", "file_type": "code",
+         "source_file": "app/exception.ts", "source_location": "L1"},
+        {"id": "exception", "label": "exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "pkg_FooApiException", "target": "exception", "relation": "inherits",
+              "source_file": "pkg/FooApiException.php", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "exception"
+
+
+def test_rewire_builtin_supertype_guard_is_per_edge_not_per_stub():
+    """#2812: one sourceless `Exception` stub collects referrers from every
+    language that names it. A TypeScript referrer sharing the stub must not
+    re-open the cross-language bind for the PHP one — the guard reads the
+    referring file, not the union of the stub's referrer families."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "app_exception_Exception", "label": "Exception", "file_type": "code",
+         "source_file": "app/exception.ts", "source_location": "L1"},
+        {"id": "Exception", "label": "Exception", "file_type": "code", "source_file": ""},
+    ]
+    edges = [
+        {"source": "pkg_FooApiException", "target": "Exception", "relation": "inherits",
+         "source_file": "pkg/FooApiException.php", "weight": 1.0},
+        {"source": "app_http_HttpError", "target": "Exception", "relation": "inherits",
+         "source_file": "app/http.ts", "weight": 1.0},
+    ]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "Exception"                 # PHP still blocked
+    assert edges[1]["target"] == "app_exception_Exception"   # TS still resolves
 
 
 def test_extract_emits_posix_source_file_for_relative_inputs(tmp_path):
@@ -4005,3 +4514,187 @@ def test_extract_genuinely_empty_json_still_failed(tmp_path, monkeypatch):
     p.write_text("{}\n")
     result = _ex.extract([p], cache_root=tmp_path)
     assert [Path(x).name for x in result.get("failed_sources", [])] == ["meta.json"]
+
+
+# ── #3252: Authoritative Python Type Reference and Inheritance Rewiring ────────
+
+def test_3252_exact_import_beats_global_ambiguity(tmp_path):
+    """#3252: When two packages define same-named types, exact import resolution
+    repoints references to the imported canonical definition without ghost stubs."""
+    (tmp_path / "pkg_a").mkdir()
+    (tmp_path / "pkg_b").mkdir()
+    (tmp_path / "pkg_a" / "types.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "pkg_b" / "types.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "consumer_a.py").write_text(
+        "from pkg_a.types import StateFrame\ndef foo_a(x: StateFrame):\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "consumer_b.py").write_text(
+        "from pkg_b.types import StateFrame\ndef foo_b(x: StateFrame):\n    pass\n", encoding="utf-8"
+    )
+
+    files = [
+        tmp_path / "pkg_a" / "types.py",
+        tmp_path / "pkg_b" / "types.py",
+        tmp_path / "consumer_a.py",
+        tmp_path / "consumer_b.py",
+    ]
+    res = extract(files, root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    ref_edges = [e for e in res["edges"] if e.get("relation") == "references"]
+    ref_a = next(e for e in ref_edges if "consumer_a_foo_a" in e["source"])
+    ref_b = next(e for e in ref_edges if "consumer_b_foo_b" in e["source"])
+
+    assert node_by_id[ref_a["target"]]["source_file"] == "pkg_a/types.py"
+    assert node_by_id[ref_b["target"]]["source_file"] == "pkg_b/types.py"
+
+    # All StateFrame nodes in the graph must be source-backed definitions (0 stubs)
+    sf_nodes = [n for n in res["nodes"] if n.get("label") == "StateFrame"]
+    assert len(sf_nodes) == 2
+    assert all(n.get("source_file") for n in sf_nodes)
+
+
+def test_3252_aliased_import_repoints_references(tmp_path):
+    """#3252: Aliased import (`from state import StateFrame as SF`) repoints
+    references to the canonical StateFrame and removes the SF stub."""
+    (tmp_path / "state.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "consumer.py").write_text(
+        "from state import StateFrame as SF\ndef foo(x: SF):\n    pass\n", encoding="utf-8"
+    )
+
+    res = extract([tmp_path / "state.py", tmp_path / "consumer.py"], root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    ref_edge = next(e for e in res["edges"] if e.get("relation") == "references")
+    assert ref_edge["source"] == "consumer_foo"
+    assert node_by_id[ref_edge["target"]]["label"] == "StateFrame"
+    assert node_by_id[ref_edge["target"]]["source_file"] == "state.py"
+    assert ref_edge["context"] == "parameter_type"
+    assert ref_edge["confidence"] == "EXTRACTED"
+
+    # SF stub removed
+    assert not any(n.get("label") == "SF" for n in res["nodes"])
+
+
+def test_3252_inheritance_repoints_inherits_edge(tmp_path):
+    """#3252: Class inheritance (`class Child(StateFrame):`) repoints the inherits
+    edge to the canonical definition without ghost stubs."""
+    (tmp_path / "state.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "consumer.py").write_text(
+        "from state import StateFrame\nclass Child(StateFrame):\n    pass\n", encoding="utf-8"
+    )
+
+    res = extract([tmp_path / "state.py", tmp_path / "consumer.py"], root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    inherits_edge = next(e for e in res["edges"] if e.get("relation") == "inherits")
+    assert inherits_edge["source"] == "consumer_child"
+    assert node_by_id[inherits_edge["target"]]["label"] == "StateFrame"
+    assert node_by_id[inherits_edge["target"]]["source_file"] == "state.py"
+
+    # No sourceless StateFrame stubs remain
+    sf_nodes = [n for n in res["nodes"] if n.get("label") == "StateFrame"]
+    assert len(sf_nodes) == 1
+    assert sf_nodes[0].get("source_file") == "state.py"
+
+
+def test_3252_relative_imports(tmp_path):
+    """#3252: Relative imports (`from .types import StateFrame`) repoint accurately."""
+    (tmp_path / "pkg" / "sub").mkdir(parents=True)
+    (tmp_path / "pkg" / "sub" / "types.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "pkg" / "sub" / "consumer.py").write_text(
+        "from .types import StateFrame\ndef foo(x: StateFrame):\n    pass\n", encoding="utf-8"
+    )
+
+    files = [tmp_path / "pkg" / "sub" / "types.py", tmp_path / "pkg" / "sub" / "consumer.py"]
+    res = extract(files, root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    ref_edge = next(e for e in res["edges"] if e.get("relation") == "references")
+    assert node_by_id[ref_edge["target"]]["source_file"] == "pkg/sub/types.py"
+    assert not any(n.get("label") == "StateFrame" and not n.get("source_file") for n in res["nodes"])
+
+
+def test_3252_unimported_ambiguous_type_remains_unresolved(tmp_path):
+    """#3252: When multiple definitions exist but consumer has no import, Graphify
+    must NOT guess or collapse to an arbitrary definition."""
+    (tmp_path / "pkg_a").mkdir()
+    (tmp_path / "pkg_b").mkdir()
+    (tmp_path / "pkg_a" / "types.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "pkg_b" / "types.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "consumer.py").write_text(
+        "def foo(x: StateFrame):\n    pass\n", encoding="utf-8"
+    )
+
+    files = [
+        tmp_path / "pkg_a" / "types.py",
+        tmp_path / "pkg_b" / "types.py",
+        tmp_path / "consumer.py",
+    ]
+    res = extract(files, root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    ref_edge = next(e for e in res["edges"] if e.get("relation") == "references")
+    # Stub must NOT have bound to either definition
+    target_node = node_by_id[ref_edge["target"]]
+    assert not target_node.get("source_file")
+
+
+def test_3252_cross_language_same_name_definition(tmp_path):
+    """#3252: Python import resolution resolves only to Python definitions, not
+    same-named TypeScript definitions."""
+    pytest.importorskip("tree_sitter_typescript")
+    (tmp_path / "types.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "types.ts").write_text("export interface StateFrame { id: string; }\n", encoding="utf-8")
+    (tmp_path / "consumer.py").write_text(
+        "from types import StateFrame\ndef foo(x: StateFrame):\n    pass\n", encoding="utf-8"
+    )
+
+    files = [tmp_path / "types.py", tmp_path / "types.ts", tmp_path / "consumer.py"]
+    res = extract(files, root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    ref_edge = next(e for e in res["edges"] if e.get("relation") == "references")
+    assert node_by_id[ref_edge["target"]]["source_file"] == "types.py"
+
+
+def test_3252_alias_and_inheritance(tmp_path):
+    """#3252: Aliased import in inheritance (`class Child(SF):`) repoints inherits
+    edge to canonical StateFrame and drops the SF stub."""
+    (tmp_path / "state.py").write_text("class StateFrame:\n    pass\n", encoding="utf-8")
+    (tmp_path / "consumer.py").write_text(
+        "from state import StateFrame as SF\nclass Child(SF):\n    pass\n", encoding="utf-8"
+    )
+
+    res = extract([tmp_path / "state.py", tmp_path / "consumer.py"], root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    inherits_edge = next(e for e in res["edges"] if e.get("relation") == "inherits")
+    assert inherits_edge["source"] == "consumer_child"
+    assert node_by_id[inherits_edge["target"]]["label"] == "StateFrame"
+    assert node_by_id[inherits_edge["target"]]["source_file"] == "state.py"
+    assert not any(n.get("label") == "SF" for n in res["nodes"])
+
+
+def test_3252_metadata_preservation(tmp_path):
+    """#3252: Repointing mutates only edge['target'] while preserving relation,
+    context, confidence, confidence_score, source_file, and source_location."""
+    (tmp_path / "models.py").write_text("class User:\n    pass\n", encoding="utf-8")
+    (tmp_path / "service.py").write_text(
+        "from models import User\ndef get_user(u: User) -> User:\n    pass\n", encoding="utf-8"
+    )
+
+    res = extract([tmp_path / "models.py", tmp_path / "service.py"], root=tmp_path, cache_root=tmp_path)
+    node_by_id = {n["id"]: n for n in res["nodes"]}
+
+    param_ref = next(
+        e for e in res["edges"]
+        if e.get("relation") == "references" and e.get("context") == "parameter_type"
+    )
+    assert param_ref["relation"] == "references"
+    assert param_ref["context"] == "parameter_type"
+    assert param_ref["confidence"] == "EXTRACTED"
+    assert param_ref["source_file"] == "service.py"
+    assert param_ref["source_location"] == "L2"
+    assert node_by_id[param_ref["target"]]["label"] == "User"
+    assert node_by_id[param_ref["target"]]["source_file"] == "models.py"

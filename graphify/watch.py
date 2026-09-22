@@ -2,6 +2,7 @@
 from __future__ import annotations
 import contextlib
 import json
+import logging
 import os
 import posixpath
 import re
@@ -11,7 +12,13 @@ from pathlib import Path
 from typing import Callable
 
 # Single source of truth in graphify.paths (#1423); re-exported as _GRAPHIFY_OUT.
-from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT, is_absolute_any_platform
+from graphify.paths import (
+    GRAPHIFY_OUT as _GRAPHIFY_OUT,
+    is_absolute_any_platform,
+    os_replace_with_fallback,
+)
+
+logger = logging.getLogger(__name__)
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_DRAIN_MAX_PASSES = 20
 
@@ -315,22 +322,30 @@ def _changed_path_candidates(raw: Path, *, change_root: Path, watch_root: Path) 
     return candidates
 
 
+# Every stored path that names a file in the scanned tree. ``definition_file``
+# is the implementation site recorded when a C/C++/ObjC declaration and its
+# definition merge into one node; it must stay repo-relative like its sibling
+# ``source_file`` so a graph built on one machine reads on another.
+_PORTABLE_PATH_KEYS = ("source_file", "definition_file")
+
+
 def _relativize_source_files(payload: dict, root: Path, *, scope: Path | None = None) -> None:
     for bucket in ("nodes", "edges", "hyperedges"):
         for item in payload.get(bucket, []):
-            source = item.get("source_file")
-            if not source:
-                continue
-            source_path = Path(source)
-            if not source_path.is_absolute():
-                continue
-            try:
-                resolved = source_path.resolve()
-                if scope is not None and not _is_relative_to(resolved, scope):
+            for key in _PORTABLE_PATH_KEYS:
+                source = item.get(key)
+                if not source:
                     continue
-                item["source_file"] = resolved.relative_to(root).as_posix()
-            except ValueError:
-                continue
+                source_path = Path(source)
+                if not source_path.is_absolute():
+                    continue
+                try:
+                    resolved = source_path.resolve()
+                    if scope is not None and not _is_relative_to(resolved, scope):
+                        continue
+                    item[key] = resolved.relative_to(root).as_posix()
+                except ValueError:
+                    continue
 
 
 def _rebase_relative_source_files(payload: dict, source_root: Path, target_root: Path) -> None:
@@ -339,13 +354,14 @@ def _rebase_relative_source_files(payload: dict, source_root: Path, target_root:
         return
     for bucket in ("nodes", "edges", "hyperedges"):
         for item in payload.get(bucket, []):
-            source = item.get("source_file")
-            if not source or Path(source).is_absolute():
-                continue
-            try:
-                item["source_file"] = (source_root / source).relative_to(target_root).as_posix()
-            except ValueError:
-                continue
+            for key in _PORTABLE_PATH_KEYS:
+                source = item.get(key)
+                if not source or Path(source).is_absolute():
+                    continue
+                try:
+                    item[key] = (source_root / source).relative_to(target_root).as_posix()
+                except ValueError:
+                    continue
 
 
 class _StoredSourcePaths:
@@ -369,7 +385,7 @@ class _StoredSourcePaths:
         root_marker = out / ".graphify_root"
         if root_marker.exists():
             try:
-                saved_root = Path(root_marker.read_text(encoding="utf-8").strip())
+                saved_root = Path(root_marker.read_text(encoding="utf-8-sig").strip())
                 if saved_root.is_absolute():
                     # #2603: the marker holds the SCAN root, but stored
                     # source_file values are relative to the BUILD's cwd
@@ -504,6 +520,235 @@ _REMOTE_SOURCE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]+://?")
 
 def _is_remote_source(source_file: str) -> bool:
     return bool(_REMOTE_SOURCE_RE.match(source_file))
+
+
+def _reconcile_markdown_links(
+    result: dict,
+    preserved_edges: list[dict],
+    preserved_nodes: list[dict],
+    code_files: list[Path],
+    extract_targets: list[Path],
+    full_rebuild: bool,
+    project_root: Path,
+    source_paths,
+) -> list[dict]:
+    """Reconcile Markdown links without losing semantic-backed targets.
+
+    Semantic-backed documents are deliberately skipped by the AST quick scan
+    (#1915/#1954), so their canonical file node can be absent. Re-point an
+    authored link only when both files have unique representatives. If either
+    side is ambiguous, retain the existing AST edge instead of guessing or
+    deleting it. A link removed from its owning Markdown source is pruned.
+
+    Only authored links are owned here. A code-span mention (a ``references``
+    edge the markdown_mentions resolver emits) targets a code symbol rather
+    than a file representative, so it is left to the AST ownership rule above:
+    re-extracting the document regenerates it and re-extracting the code side
+    keeps or drops it with the target node.
+    """
+    from graphify.build import _is_ast_tier
+    from graphify.extract import _file_node_id, _safe_extract_with_xaml_root
+    from graphify.extractors.base import _make_id
+    from graphify.extractors.markdown import extract_markdown
+    from graphify.markdown_resolution import MARKDOWN_MENTION_SUFFIXES, _is_file_node
+
+    all_nodes = result.get("nodes", []) + preserved_nodes
+    nodes_by_id = {node["id"]: node for node in all_nodes if node.get("id")}
+    nodes_by_source: dict[str, list[dict]] = {}
+    for node in all_nodes:
+        if source_file := node.get("source_file"):
+            normalized = source_paths.normalize(source_file)
+            nodes_by_source.setdefault(normalized, []).append(node)
+
+    representatives: dict[str, str | None] = {}
+    for source_file, nodes in nodes_by_source.items():
+        canonical_id = _file_node_id(Path(source_file))
+        canonical = [node for node in nodes if node["id"] == canonical_id]
+        pages = [node for node in nodes if node.get("node_kind") == "page"]
+        semantic_documents = [
+            node
+            for node in nodes
+            if node.get("file_type") == "document" and node.get("_origin") != "ast"
+        ]
+        if len(canonical) == 1:
+            representatives[source_file] = canonical[0]["id"]
+        elif len(pages) == 1:
+            representatives[source_file] = pages[0]["id"]
+        elif len(semantic_documents) == 1:
+            representatives[source_file] = semantic_documents[0]["id"]
+        else:
+            representatives[source_file] = None
+
+    markdown_files = code_files if full_rebuild else extract_targets
+    markdown_files = [
+        path
+        for path in markdown_files
+        if path.suffix.lower() in MARKDOWN_MENTION_SUFFIXES
+    ]
+    parsed_sources: set[str] = set()
+    authored_links: set[tuple[str, str]] = set()
+    authored_raw_pairs: set[frozenset[str]] = set()
+    unresolved_authored_sites: dict[tuple[str, str], set[str]] = {}
+    resolved_raw_pairs: dict[frozenset[str], frozenset[str]] = {}
+    desired_edges: list[tuple[str, str, dict, str, str]] = []
+    node_sources = {
+        node["id"]: source_paths.normalize(node["source_file"])
+        for node in all_nodes
+        if node.get("source_file")
+    }
+
+    for markdown_file in markdown_files:
+        try:
+            relative_source = markdown_file.relative_to(project_root)
+        except ValueError:
+            relative_source = markdown_file
+        source_file = source_paths.normalize(str(relative_source))
+        source_rep = representatives.get(source_file)
+
+        extraction = _safe_extract_with_xaml_root(
+            extract_markdown, markdown_file, project_root
+        )
+        if extraction.get("error"):
+            continue
+        parsed_sources.add(source_file)
+        for edge in extraction.get("edges", []):
+            if edge.get("relation") != "references":
+                continue
+            if not edge.get("target_file"):
+                source_location = str(edge.get("source_location") or "")
+                if source_location:
+                    unresolved_authored_sites.setdefault(
+                        (source_file, source_location), set()
+                    ).add(str(edge.get("target") or ""))
+                continue
+            target_path = Path(edge["target_file"])
+            try:
+                target_path = target_path.relative_to(project_root)
+            except ValueError:
+                pass
+            target_file = source_paths.normalize(str(target_path))
+            authored_links.add((source_file, target_file))
+            raw_pair = frozenset(
+                (_file_node_id(Path(source_file)), _file_node_id(Path(target_file)))
+            )
+            authored_raw_pairs.add(raw_pair)
+
+            target_rep = representatives.get(target_file)
+            if not source_rep or not target_rep:
+                logger.debug(
+                    "Preserving ambiguous Markdown link %s -> %s",
+                    source_file,
+                    target_file,
+                )
+                continue
+            if source_rep != target_rep:
+                resolved_raw_pairs[raw_pair] = frozenset((source_rep, target_rep))
+                desired_edges.append(
+                    (source_rep, target_rep, edge, source_file, target_file)
+                )
+
+    desired_file_pairs = {
+        frozenset((source_file, target_file))
+        for _, _, _, source_file, target_file in desired_edges
+    }
+    desired_reps_by_file_pair = {
+        frozenset((source_file, target_file)): frozenset((source_rep, target_rep))
+        for source_rep, target_rep, _, source_file, target_file in desired_edges
+    }
+
+    def _matches_unresolved_target(
+        raw_target: str, owner: str, target_source: str
+    ) -> bool:
+        candidate = project_root / Path(owner).parent / Path(target_source).name
+        return raw_target == _make_id(str(candidate))
+
+    def _is_code_span_mention(edge: dict) -> bool:
+        target = nodes_by_id.get(edge.get("target"))
+        return (
+            target is not None
+            and target.get("file_type") == "code"
+            and not _is_file_node(target)
+        )
+
+    def _keep_edge(edge: dict) -> bool:
+        if not (_is_ast_tier(edge) and edge.get("relation") == "references"):
+            return True
+        if _is_code_span_mention(edge):
+            return True
+        owner = source_paths.normalize(edge.get("source_file"))
+        if owner not in parsed_sources:
+            return True
+
+        unresolved_targets = unresolved_authored_sites.get(
+            (owner, str(edge.get("source_location") or "")), set()
+        )
+        if unresolved_targets:
+            target_sources = {
+                source
+                for endpoint in (edge.get("source"), edge.get("target"))
+                if (source := node_sources.get(endpoint)) and source != owner
+            }
+            if any(
+                _matches_unresolved_target(raw_target, owner, target_source)
+                for raw_target in unresolved_targets
+                for target_source in target_sources
+            ):
+                return True
+
+        raw_pair = frozenset((edge.get("source"), edge.get("target")))
+        if raw_pair in authored_raw_pairs:
+            desired_pair = resolved_raw_pairs.get(raw_pair)
+            return desired_pair is None or raw_pair == desired_pair
+
+        endpoint_files = {
+            node_sources.get(edge.get("source")),
+            node_sources.get(edge.get("target")),
+        }
+        endpoint_files.discard(None)
+        targets = endpoint_files - {owner}
+        if len(targets) == 1:
+            target_file = targets.pop()
+        elif edge.get("target_file"):
+            target_path = Path(edge["target_file"])
+            try:
+                target_path = target_path.relative_to(project_root)
+            except ValueError:
+                pass
+            target_file = source_paths.normalize(str(target_path))
+        else:
+            return True
+
+        file_pair = frozenset((owner, target_file))
+        if (owner, target_file) not in authored_links:
+            return False
+        if file_pair not in desired_file_pairs:
+            return True
+        return raw_pair == desired_reps_by_file_pair[file_pair]
+
+    result["edges"] = [edge for edge in result.get("edges", []) if _keep_edge(edge)]
+    preserved_edges = [edge for edge in preserved_edges if _keep_edge(edge)]
+    existing_pairs = {
+        frozenset((edge.get("source"), edge.get("target")))
+        for edge in result["edges"] + preserved_edges
+    }
+    for source_rep, target_rep, edge, source_file, _ in desired_edges:
+        pair = frozenset((source_rep, target_rep))
+        # graphify uses a simple graph. Never overwrite another relation that
+        # already occupies the representative pair.
+        if pair in existing_pairs:
+            continue
+        reconciled = edge.copy()
+        reconciled.pop("target_file", None)
+        reconciled.update(
+            source=source_rep,
+            target=target_rep,
+            source_file=source_file,
+            _origin="ast",
+        )
+        result["edges"].append(reconciled)
+        existing_pairs.add(pair)
+
+    return preserved_edges
 
 
 def _reconcile_existing_graph(
@@ -708,6 +953,8 @@ def _reconcile_existing_graph(
         # COEXIST — the AST and semantic layers of a file coexist).
         # Incremental extraction owns only nodes from rebuilt or deleted
         # sources. Semantic-tier nodes (per _is_ast_tier) remain preserved.
+        # Nodes explicitly classified as fail-closed preserved (#3695) must
+        # not subsequently be removed by this AST ownership pass.
         preserved_nodes = [
             node
             for node in existing.get("nodes", [])
@@ -722,10 +969,14 @@ def _reconcile_existing_graph(
                     or (
                         full_rebuild
                         and source_paths.is_evicted(node, rebuilt_source_identities)
+                        and not source_paths.is_evicted(node, excluded_alive_files)
                     )
                 )
             )
-            and not source_paths.is_evicted(node, node_evicted_source_identities)
+            and not (
+                source_paths.is_evicted(node, node_evicted_source_identities)
+                and not source_paths.is_evicted(node, excluded_alive_files)
+            )
         ]
         all_ids = new_ast_ids | {node["id"] for node in preserved_nodes}
 
@@ -740,12 +991,27 @@ def _reconcile_existing_graph(
             for edge in existing.get("links", existing.get("edges", []))
             if edge.get("source") in all_ids
             and edge.get("target") in all_ids
-            and not source_paths.is_evicted(edge, edge_evicted_source_identities)
+            and not (
+                source_paths.is_evicted(edge, edge_evicted_source_identities)
+                and not source_paths.is_evicted(edge, excluded_alive_files)
+            )
             and not (
                 _is_ast_tier(edge)
                 and source_paths.is_evicted(edge, rebuilt_source_identities)
+                and not source_paths.is_evicted(edge, excluded_alive_files)
             )
         ]
+
+        preserved_edges = _reconcile_markdown_links(
+            result,
+            preserved_edges,
+            preserved_nodes,
+            code_files,
+            extract_targets,
+            full_rebuild,
+            project_root,
+            source_paths,
+        )
 
         new_hyperedge_ids = {
             edge.get("id") for edge in result.get("hyperedges", []) if edge.get("id")
@@ -753,8 +1019,11 @@ def _reconcile_existing_graph(
         preserved_hyperedges = []
         for edge in existing.get("hyperedges", []):
             members = edge.get("nodes", edge.get("members", edge.get("node_ids", [])))
-            if edge.get("id") in new_hyperedge_ids or source_paths.is_evicted(
-                edge, hyperedge_evicted_source_identities
+            if edge.get("id") in new_hyperedge_ids:
+                continue
+            if (
+                source_paths.is_evicted(edge, hyperedge_evicted_source_identities)
+                and not source_paths.is_evicted(edge, excluded_alive_files)
             ):
                 continue
             if isinstance(members, list) and any(member not in all_ids for member in members):
@@ -1233,6 +1502,20 @@ def _rebuild_code(
         )
         code_files = [Path(f) for f in detected['files']['code']]
 
+        # #3511: `graphify extract` has surfaced files it saw but could not
+        # classify since #1692; this update/watch rebuild path never did,
+        # so a corpus in a language with no extractor (no supported
+        # extension or shebang) rebuilt "successfully" with those files
+        # silently absent from the graph. Same wording as the extract path.
+        _unclassified = detected.get("unclassified", []) if isinstance(detected, dict) else []
+        if _unclassified:
+            _names = ", ".join(sorted({Path(p).name for p in _unclassified})[:6])
+            _more = f" (+{len(_unclassified) - 6} more)" if len(_unclassified) > 6 else ""
+            print(
+                f"[graphify watch] {len(_unclassified)} file(s) not classified "
+                f"(no supported extension or shebang), skipped: {_names}{_more}"
+            )
+
         # #2495: hand reconcile the same ignore decisions the detect() call
         # above made, so a newly-ignored file that still exists on disk is
         # purged from the graph instead of preserved forever by the fail-closed
@@ -1387,6 +1670,8 @@ def _rebuild_code(
                     # File was deleted or renamed away inside the watched root.
                     # Evict preserved nodes that still claim this source path.
                     _add_deleted_source(deleted_in_root)
+            from graphify.extractors.terraform import refresh_terraform_paths
+            wanted = refresh_terraform_paths(wanted, code_files, changed_paths)
             if not wanted and not deleted_paths:
                 print("[graphify watch] No tracked code files in change set - skipping rebuild.")
                 return True
@@ -1406,9 +1691,8 @@ def _rebuild_code(
         # evicts the old one as AST-tier output of a re-extracted source, and
         # nothing regenerates it). Hand extract() read-only resolution context:
         # the persisted AST nodes of files this run is NOT re-extracting —
-        # including their `_callable`/`_callable_class` markers, so the
-        # indirect_call guard keeps working (#2438) — plus their contains/method
-        # edges, which the member-call resolvers walk (#2437).
+        # including bounded resolver metadata and callability markers — plus
+        # the structural edges needed to resolve against unchanged types.
         #
         # Scoping rules, in order of importance:
         #   * AST-tier only — semantic/LLM nodes are not symbol definitions.
@@ -1452,31 +1736,73 @@ def _rebuild_code(
                         "file_type": node.get("file_type"),
                         "type": node.get("type"),
                     }
-                    # #2438: the persisted callability markers are the only
-                    # thing that lets an unchanged target pass the
-                    # indirect_call guard — never re-derived from the label.
-                    for marker in ("_callable", "_callable_class"):
+                    # Persisted resolver markers are never re-derived from a
+                    # label: callability protects indirect calls (#2438), and
+                    # Rust impl identity connects alpha-renamed generic blocks.
+                    for marker in (
+                        "_callable", "_callable_class", "_elixir_module",
+                        "_rust_impl_key", "_rust_declaration_count",
+                    ):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
+                    metadata = node.get("metadata")
+                    if isinstance(metadata, dict):
+                        ruby_metadata = {
+                            key: metadata[key]
+                            for key in (
+                                "ruby_resolution_schema",
+                                "ruby_method_kind",
+                                "ruby_lookup_unsafe",
+                                "ruby_reopened",
+                                "ruby_external_method_owners",
+                            )
+                            if key in metadata
+                        }
+                        if ruby_metadata:
+                            ctx_node["metadata"] = ruby_metadata
                     resolution_context_nodes.append(ctx_node)
                 # #2437: the member-call resolvers map receiver type -> owning
                 # class -> method through contains/method edges; hand over the
                 # unchanged corpus's, scoped exactly like the nodes above so a
                 # deleted/re-extracted file's edges can never resurrect.
                 for edge in ctx_graph.get("links", ctx_graph.get("edges", [])):
-                    if edge.get("relation") not in ("contains", "method"):
+                    if edge.get("relation") not in (
+                        "contains", "method", "inherits"
+                    ):
                         continue
                     if not _is_ast_tier(edge):
                         continue
                     source_file = edge.get("source_file")
                     if not source_file or ctx_paths.identity(source_file) not in ctx_live:
                         continue
-                    resolution_context_edges.append({
+                    context_edge = {
                         "source": edge.get("source"),
                         "target": edge.get("target"),
                         "relation": edge.get("relation"),
                         "source_file": source_file,
-                    })
+                    }
+                    edge_metadata = edge.get("metadata")
+                    if (
+                        isinstance(edge_metadata, dict)
+                        and isinstance(
+                            edge_metadata.get("ruby_superclass_ref"), str
+                        )
+                    ):
+                        context_edge["metadata"] = {
+                            "ruby_superclass_ref": edge_metadata[
+                                "ruby_superclass_ref"
+                            ]
+                        }
+                        lexical_scopes = edge_metadata.get(
+                            "ruby_lexical_scopes"
+                        )
+                        if isinstance(lexical_scopes, list) and all(
+                            isinstance(scope, str) for scope in lexical_scopes
+                        ):
+                            context_edge["metadata"]["ruby_lexical_scopes"] = list(
+                                lexical_scopes
+                            )
+                    resolution_context_edges.append(context_edge)
             except Exception:
                 # Unreadable/oversized graph: resolve with the changed batch only
                 # (pre-#2406 behavior). Reconcile below still fails closed on it.
@@ -1588,16 +1914,29 @@ def _rebuild_code(
             # Dedupe parallel edges (the clustered path's DiGraph collapses them implicitly);
             # without it, --no-cluster + repeated `update` accumulate duplicates and edge
             # counts diverge across build modes (#1317).
-            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
+            from graphify.build import (
+                dedupe_edges as _dedupe_edges,
+                dedupe_nodes as _dedupe_nodes,
+                disambiguate_file_labels_in_nodes as _disamb_labels,
+                mint_external_stubs_in_data as _mint_external_stubs_in_data,
+            )
+            raw_nodes = _dedupe_nodes(result.get("nodes", []))
+            _disamb_labels(raw_nodes)
             candidate_graph_data = {
                 **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
-                "nodes": _dedupe_nodes(result.get("nodes", [])),
+                "nodes": raw_nodes,
                 "links": _dedupe_edges(result.get("edges", [])),
                 # Inherit the existing graph's directed flag (#2342) so
                 # `graphify update --no-cluster` can't silently drop it -
                 # `result` (the raw merged extraction) never carries one.
                 "directed": bool((existing_graph_data or {}).get("directed", False)),
             }
+            # This path writes the raw merged extraction, not a build_from_json
+            # graph, so mint the same external stubs the builder does — otherwise
+            # an import to stdlib / a third-party module leaves an undeclared
+            # endpoint in graph.json that every loader materialises as an
+            # attribute-less phantom (#2873).
+            _mint_external_stubs_in_data(candidate_graph_data)
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
             existing_payload = None
@@ -1637,12 +1976,17 @@ def _rebuild_code(
                 _backup(out)
                 # Atomic replace via tmp file, matching the clustered path: a
                 # crash mid-write must not leave a truncated graph.json.
+                # os_replace_with_fallback, not a plain Path.replace (#2689):
+                # this function just read existing_graph a few lines up, and
+                # on a VMware HGFS shared folder a replace over a destination
+                # read earlier in the same process raises PermissionError
+                # even on the same drive.
                 graph_tmp = out / ".graph.tmp.json"
                 graph_tmp.write_text(candidate_graph_text, encoding="utf-8")
                 force_summary = _force_shrink_summary(
                     force, existing_payload, candidate_graph_data,
                 )
-                graph_tmp.replace(existing_graph)
+                os_replace_with_fallback(graph_tmp, existing_graph)
                 _emit_force_shrink_summary(force_summary)
 
             # Write the user-supplied path only after the candidate graph is
@@ -1666,11 +2010,6 @@ def _rebuild_code(
             except Exception:
                 pass
 
-            # clear stale needs_update flag if present
-            flag = out / "needs_update"
-            if flag.exists():
-                flag.unlink()
-
             if same_graph:
                 print("[graphify watch] No code-graph changes detected (--no-cluster); outputs left untouched.")
             else:
@@ -1686,6 +2025,7 @@ def _rebuild_code(
             "files": {"code": [str(f) for f in code_files], "document": [], "paper": [], "image": []},
             "total_files": len(code_files),
             "total_words": detected.get("total_words", 0),
+            "unclassified": detected.get("unclassified", []),
         }
 
         # Inherit the existing graph's directed flag (#2342) so `graphify
@@ -1714,9 +2054,6 @@ def _rebuild_code(
                     )
                 except Exception:
                     pass
-                flag = out / "needs_update"
-                if flag.exists():
-                    flag.unlink()
                 html_action = _reconcile_graph_html(out, existing_graph_data)
                 if html_action == "rendered":
                     print(
@@ -1861,7 +2198,12 @@ def _rebuild_code(
             force_summary = _force_shrink_summary(
                 force, existing_payload, candidate_graph_data,
             )
-            graph_tmp.replace(existing_graph)
+            # os_replace_with_fallback, not a plain Path.replace (#2689): this
+            # function read existing_graph a few lines up for the same_graph
+            # comparison, and on a VMware HGFS shared folder a replace over a
+            # destination read earlier in the same process raises
+            # PermissionError even on the same drive.
+            os_replace_with_fallback(graph_tmp, existing_graph)
             _emit_force_shrink_summary(force_summary)
             report_path.write_text(report, encoding="utf-8")
             labels_file.write_text(labels_json, encoding="utf-8")
@@ -1911,11 +2253,6 @@ def _rebuild_code(
                     )
             except Exception as cf_err:
                 print(f"[graphify watch] callflow HTML update skipped: {cf_err}")
-
-        # clear stale needs_update flag if present
-        flag = out / "needs_update"
-        if flag.exists():
-            flag.unlink()
 
         if not no_change:
             print(f"[graphify watch] Rebuilt: {G.number_of_nodes()} nodes, "
@@ -1975,6 +2312,24 @@ def _batch_triggers_rebuild(batch: list[Path]) -> bool:
     return has_code or has_deletion
 
 
+_READ_ONLY_EVENT_TYPES = frozenset({"opened", "closed_no_write"})
+
+
+def _is_read_only_event(event) -> bool:
+    """True for watchdog events that mean a file was merely READ, not changed.
+
+    On Linux, inotify (watchdog >= 2.3) reports ``opened`` and, since watchdog 4,
+    ``closed_no_write`` for every file open/close — including the watcher's own
+    AST rebuild reading the tree, hook guards stat-ing sources, and editors or
+    agents reading files. Counting those as changes makes the watcher re-trigger
+    itself forever ("N file(s) changed" while nothing was modified), burn CPU and
+    keep re-writing the ``needs_update`` flag. Only creation, modification, move,
+    deletion and close-after-write are changes; macOS (PollingObserver) never
+    emits these, so the filter is a no-op there.
+    """
+    return getattr(event, "event_type", None) in _READ_ONLY_EVENT_TYPES
+
+
 def _batch_needs_llm_flag(batch: list[Path]) -> bool:
     """True when the batch contains a non-code file that still exists on disk.
 
@@ -2022,7 +2377,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
             nonlocal last_trigger, pending
-            if event.is_directory:
+            if event.is_directory or _is_read_only_event(event):
                 return
             path = Path(os.fsdecode(event.src_path))
             # Check .graphifyignore BEFORE the extension/dotfile/out filters so

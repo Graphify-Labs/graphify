@@ -2,6 +2,8 @@
 import os
 import shutil
 import subprocess
+import sys
+import textwrap
 from types import SimpleNamespace
 from pathlib import Path
 import pytest
@@ -320,7 +322,9 @@ def test_rebuild_bodies_read_graphify_root(name, body):
     # The recovered root is what gets rebuilt, not a hardcoded cwd.
     assert "_rebuild_code(_root" in body, f"{name} does not pass the recovered root"
     # Quote-safe inside the shell-double-quoted launcher: single quotes only.
-    assert "read_text(encoding='utf-8')" in body, f"{name} root read is not single-quoted"
+    # `utf-8-sig` rather than `utf-8` so a Windows PowerShell 5.1 BOM cannot ride
+    # into the path (#3028); the codec is a no-op on a BOM-less marker.
+    assert "read_text(encoding='utf-8-sig')" in body, f"{name} root read is not single-quoted"
 
 
 def test_rebuild_bodies_with_graphify_root_are_valid_python():
@@ -328,6 +332,78 @@ def test_rebuild_bodies_with_graphify_root_are_valid_python():
     that crashes the moment git fires it (#1173)."""
     for body in (_REBUILD_BODY_COMMIT, _REBUILD_BODY_CHECKOUT):
         ast.parse(body)
+
+
+def _extract_root_resolution(body: str) -> str:
+    """Pull the `.graphify_root` -> `_root` snippet out of a rebuild body, so a
+    test can execute the shipped logic itself rather than a hand copy that could
+    quietly drift from it."""
+    match = re.search(r"(    _root = Path\('\.'\).*?)\n    _rebuild_code\(", body, re.DOTALL)
+    assert match, "root resolution snippet not found"
+    return textwrap.dedent(match.group(1))
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_reject_an_out_of_repo_graphify_root(name, body, tmp_path, monkeypatch):
+    """#3265: `.graphify_root` sits inside graphify-out/, a directory the
+    documented team workflow says to commit, so its contents are checkout
+    controlled. Without a bound, a value planted there by a malicious fork or PR
+    (an absolute path outside the repository) would steer the rebuild -- and so
+    what gets read, and what gets written into the same committed graphify-out/
+    -- to wherever the checkout names, not the repository the hook was installed
+    into. The recovered root must stay inside the working tree the hook actually
+    runs from."""
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    (repo / "graphify-out").mkdir(parents=True)
+    outside.mkdir()
+    (repo / "graphify-out" / ".graphify_root").write_text(str(outside), encoding="utf-8")
+    monkeypatch.chdir(repo)
+    ns = {"Path": Path, "os": os}
+    exec(compile(_extract_root_resolution(body), "<rebuild_body>", "exec"), ns)
+    assert ns["_root"].resolve() == repo.resolve(), f"{name} honoured an out-of-repo root"
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_honour_an_in_repo_graphify_root(name, body, tmp_path, monkeypatch):
+    """The legitimate case the #3265 guard must not break: a subdirectory-scoped
+    root (#1173) is still recovered."""
+    repo = tmp_path / "repo"
+    (repo / "graphify-out").mkdir(parents=True)
+    (repo / "backend").mkdir()
+    (repo / "graphify-out" / ".graphify_root").write_text("backend", encoding="utf-8")
+    monkeypatch.chdir(repo)
+    ns = {"Path": Path, "os": os}
+    exec(compile(_extract_root_resolution(body), "<rebuild_body>", "exec"), ns)
+    assert ns["_root"].resolve() == (repo / "backend").resolve(), f"{name} lost the scoped root"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink setup differs on Windows")
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_survive_a_graphify_root_symlink_loop(name, body, tmp_path, monkeypatch):
+    """A committed `.graphify_root` naming a path that resolves through a
+    symlink loop (two symlinks pointing at each other) must fall back to the
+    repo top rather than let `Path.resolve()`'s RuntimeError escape the #3265
+    guard uncaught -- the guard's own `except OSError` doesn't catch it, since
+    a symlink loop is a RuntimeError on this platform, not an OSError."""
+    repo = tmp_path / "repo"
+    (repo / "graphify-out").mkdir(parents=True)
+    (repo / "loop_a").symlink_to(repo / "loop_b")
+    (repo / "loop_b").symlink_to(repo / "loop_a")
+    (repo / "graphify-out" / ".graphify_root").write_text("loop_a", encoding="utf-8")
+    monkeypatch.chdir(repo)
+    ns = {"Path": Path, "os": os}
+    exec(compile(_extract_root_resolution(body), "<rebuild_body>", "exec"), ns)
+    assert ns["_root"].resolve() == repo.resolve(), f"{name} did not fall back on a symlink loop"
 
 
 @pytest.mark.parametrize(
@@ -353,6 +429,111 @@ def test_rebuild_bodies_arm_a_timeout_without_sigalrm(name, body):
     # rest of the body, or the same event reads differently per platform.
     prefixes = set(re.findall(r"print\(f'\[([a-z ]+)\]", body))
     assert len(prefixes) == 1, f"{name} mixes log prefixes {sorted(prefixes)} (#2148)"
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_kill_children_before_os_exit(name, body):
+    """os._exit() terminates only the rebuild process itself, not any
+    ProcessPoolExecutor worker it spawned for a large corpus -- os._exit skips
+    every cleanup path, including the pool's own context-manager shutdown, so a
+    worker mid-task at the moment the watchdog fires is orphaned (reparented to
+    PID 1 on POSIX) and keeps running, unsupervised, for as long as whatever it
+    was doing takes. A worker stuck in catastrophic regex backtracking (the
+    exact shape #3341 fixed) has been observed surviving 2.5 days that way. The
+    watchdog owns no reference to the pool object (it fires on a separate timer
+    thread, unrelated to whichever stack frame currently holds the pool), but
+    multiprocessing.active_children() enumerates every live worker process
+    regardless of which thread asks, so the fallback kills them by SIGKILL
+    (not terminate/SIGTERM, which a process stuck in a C-level call like
+    regex backtracking never gets a chance to act on) before exiting itself."""
+    fallbacks = [
+        node.orelse
+        for node in ast.walk(ast.parse(body))
+        if isinstance(node, ast.If) and "'SIGALRM'" in ast.dump(node.test) and node.orelse
+    ]
+    assert fallbacks, f"{name} has no else-branch for the missing-SIGALRM case"
+    dumped = "".join(ast.dump(stmt) for stmt in fallbacks[0])
+    assert "attr='active_children'" in dumped, (
+        f"{name} fallback does not enumerate live workers before exiting (#3341 follow-up)"
+    )
+    assert "attr='kill'" in dumped, (
+        f"{name} fallback does not SIGKILL orphaned workers before exiting (#3341 follow-up)"
+    )
+    # The kill loop must run BEFORE os._exit, not after (dead code) or replacing
+    # it (the rebuild process itself still has to exit on timeout). _bail's body
+    # is a straight-line statement list (no branching), so statement POSITION is
+    # execution order -- unlike ast.walk's traversal, which is breadth-first and
+    # would visit os._exit's Call node (a direct child of a top-level Expr)
+    # before a Call nested one level deeper inside the for loop's body, even
+    # though the for loop is written, and runs, first.
+    bail_def = next(
+        n for n in ast.walk(ast.parse(body))
+        if isinstance(n, ast.FunctionDef) and n.name == "_bail"
+    )
+    def _stmt_index_calling(attr: str) -> int:
+        for i, stmt in enumerate(bail_def.body):
+            if any(
+                isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == attr
+                for n in ast.walk(stmt)
+            ):
+                return i
+        raise AssertionError(f"{name}: no statement in _bail calls .{attr}(...)")
+    assert _stmt_index_calling("active_children") < _stmt_index_calling("_exit"), (
+        f"{name} kills workers after os._exit instead of before"
+    )
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_sigalrm_handler_kills_children_before_raising(name, body):
+    """The no-SIGALRM fallback killing children before os._exit is not enough:
+    on POSIX, where SIGALRM IS available, a TimeoutError raised while the main
+    thread is waiting inside the ProcessPoolExecutor with-block propagates
+    straight through that block's own __exit__, which calls
+    shutdown(wait=True) and blocks until every worker exits -- forever, for a
+    worker stuck in a C-level call the alarm firing does nothing to stop
+    (reproduced: a worker in an unconditional loop left the process still
+    running 15s after a 2s alarm). The except TimeoutError handler is never
+    reached, so the timeout provides no bound at all in that case. Killing
+    workers INSIDE the signal handler, before it raises, means shutdown has
+    nothing left to wait for by the time the exception reaches it."""
+    handler_def = next(
+        n for n in ast.walk(ast.parse(body))
+        if isinstance(n, ast.FunctionDef) and n.name == "_sigalrm_bail"
+    )
+    dumped = "".join(ast.dump(stmt) for stmt in handler_def.body)
+    assert "attr='active_children'" in dumped, (
+        f"{name} SIGALRM handler does not enumerate live workers (#3397 follow-up)"
+    )
+    assert "attr='kill'" in dumped, (
+        f"{name} SIGALRM handler does not SIGKILL workers (#3397 follow-up)"
+    )
+
+    def _stmt_index_calling(attr: str) -> int:
+        for i, stmt in enumerate(handler_def.body):
+            if any(
+                isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == attr
+                for n in ast.walk(stmt)
+            ):
+                return i
+        raise AssertionError(f"{name}: no statement in _sigalrm_bail calls .{attr}(...)")
+    kill_idx = _stmt_index_calling("kill")
+    raise_idx = next(
+        i for i, stmt in enumerate(handler_def.body) if isinstance(stmt, ast.Raise)
+    )
+    assert kill_idx < raise_idx, (
+        f"{name} raises TimeoutError before killing workers, defeating the fix"
+    )
+    # signal.signal must be wired to this handler, not still the old inline
+    # lambda that only threw the exception.
+    assert re.search(r"signal\.signal\(signal\.SIGALRM,\s*_sigalrm_bail\)", body), (
+        f"{name} does not register _sigalrm_bail as the SIGALRM handler"
+    )
 
 
 def test_detached_launch_targets_graphify_python():
@@ -448,6 +629,148 @@ def test_probe_prefers_sibling_python_exe_on_windows_layouts():
     from graphify.hooks import _PYTHON_DETECT
     assert "/../python.exe" in _PYTHON_DETECT
     assert "/python.exe" in _PYTHON_DETECT
+
+
+# ── #2852: interpreter resolution under uv tool installs ───────────────────
+
+def _detect_run(tmp_path, home, stub_bin, env_extra=None):
+    """Run the emitted _PYTHON_DETECT under a real sh in a controlled
+    environment — dead pin, no .graphify_python, an unparseable launcher first
+    on PATH, and a python3 that cannot import graphify (#2852's uv-tool
+    Windows machine reproduced on POSIX) — and report what GRAPHIFY_PYTHON
+    resolved to. Behavior of the emitted script, not the source string
+    (per the #2126/#2641 convention)."""
+    from graphify.hooks import _PYTHON_DETECT
+    script = tmp_path / "detect_run.sh"
+    script.write_text(
+        _PYTHON_DETECT + '\necho "RESOLVED=$GRAPHIFY_PYTHON"\n',
+        encoding="utf-8", newline="\n",
+    )
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env.pop("UV_TOOL_DIR", None)
+    if env_extra:
+        env.update(env_extra)
+    env["PATH"] = str(stub_bin) + os.pathsep + env["PATH"]
+    return subprocess.run(
+        ["sh", script.name], capture_output=True, text=True,
+        cwd=str(tmp_path), env=env,
+    )
+
+
+def _broken_uv_machine(tmp_path):
+    """#2852's machine: the only graphify-importable python lives in the uv
+    tool venv; the launcher on PATH is a binary trampoline reached WITHOUT its
+    .exe suffix (Git-Bash command -v); ambient python3 cannot import graphify.
+    Returns (home, stub_bin)."""
+    home = tmp_path / "home"
+    stub_bin = tmp_path / "stubbin"
+    stub_bin.mkdir(parents=True)
+    launcher = stub_bin / "graphify"
+    launcher.write_bytes(b"MZ\x90\x00\x03" + bytes(range(60)))
+    launcher.chmod(0o755)
+    # Ambient pythons answer the probe with "no module named graphify" —
+    # under uv tool install no system python can see the isolated venv (#2852).
+    for name in ("python3", "python"):
+        py = stub_bin / name
+        py.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8", newline="\n")
+        py.chmod(0o755)
+    return home, stub_bin
+
+
+def _tool_venv(home, tool, rel, ok):
+    """Create a fake uv tool env python under <home>/.local/share/uv/tools;
+    ok=False simulates a venv without graphify (the probe must reject it)."""
+    py = home / ".local" / "share" / "uv" / "tools" / tool / rel
+    py.parent.mkdir(parents=True, exist_ok=True)
+    py.write_text(
+        "#!/bin/sh\nexit 0\n" if ok else "#!/bin/sh\nexit 1\n",
+        encoding="utf-8", newline="\n",
+    )
+    py.chmod(0o755)
+    return py
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh required to run emitted probe chain")
+def test_uv_tool_env_rescues_hook_when_pin_and_launcher_fail(tmp_path):
+    """#2852: `uv tool install` puts graphify in an isolated venv no ambient
+    python can import, and on Windows the launcher is a binary trampoline with
+    no shebang to parse. With the pin dead (git-template hooks, a pin rejected
+    by the allowlist, or a venv moved by an upgrade), every earlier probe
+    missed and the hook no-op'd with only a warning. The uv tool-env scan must
+    adopt the venv whose python passes the probe — and keep walking past
+    sibling tool envs that do not (glob order puts aaa-tool first)."""
+    home, stub_bin = _broken_uv_machine(tmp_path)
+    other = _tool_venv(home, "aaa-plain-tool", "bin/python", ok=False)
+    mine = _tool_venv(home, "graphifyy", "bin/python", ok=True)
+    res = _detect_run(tmp_path, home, stub_bin)
+    assert res.returncode == 0, res.stderr
+    assert f"RESOLVED={mine}" in res.stdout, res.stdout + res.stderr
+    assert f"RESOLVED={other}" not in res.stdout
+    assert "could not locate" not in res.stderr
+
+
+@pytest.mark.skipif(shutil.which("sh") is None or os.name == "nt",
+                    reason="sh required; a sh-script named python.exe only execs on POSIX")
+def test_uv_tool_env_honors_uv_tool_dir_and_windows_layout(tmp_path):
+    """UV_TOOL_DIR overrides the default location, and the Windows layout
+    (`<tool>\\Scripts\\python.exe`) is scanned too — the reporter's exact
+    machine (#2852)."""
+    home, stub_bin = _broken_uv_machine(tmp_path)
+    tools = tmp_path / "custom-tools"
+    py = tools / "graphifyy" / "Scripts" / "python.exe"
+    py.parent.mkdir(parents=True)
+    py.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+    py.chmod(0o755)
+    res = _detect_run(tmp_path, home, stub_bin, env_extra={"UV_TOOL_DIR": str(tools)})
+    assert res.returncode == 0, res.stderr
+    assert f"RESOLVED={py}" in res.stdout, res.stdout + res.stderr
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh required to run emitted probe chain")
+def test_uv_tool_env_without_graphify_still_fails_loudly(tmp_path):
+    """The scan must not adopt a tool env whose python lacks graphify; the
+    chain still ends in the loud 'could not locate' warning on stderr — never
+    a bare silent exit (#2852's diagnosis ask)."""
+    home, stub_bin = _broken_uv_machine(tmp_path)
+    _tool_venv(home, "aaa-tool", "bin/python", ok=False)
+    res = _detect_run(tmp_path, home, stub_bin)
+    assert "could not locate" in res.stderr
+    # the sentinel must NOT print: the chain exited at the warning
+    assert res.stdout == ""
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh required to run emitted probe chain")
+def test_shebang_parse_requires_leading_hash_bang(tmp_path):
+    """The launcher read must gate on a leading '#!': a non-script launcher
+    whose first line merely NAMES a working python must not be adopted as the
+    interpreter. Pre-gate code parsed any first line, so trampoline bytes
+    (and here, a decoy path) reached the shebang parse (#2852)."""
+    home, stub_bin = _broken_uv_machine(tmp_path)
+    mine = _tool_venv(home, "graphifyy", "bin/python", ok=True)
+    decoy = stub_bin / "fakepy"
+    decoy.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+    decoy.chmod(0o755)
+    launcher = stub_bin / "graphify"
+    launcher.write_text(
+        f"{decoy}\nnot a script — the first line just names a python\n",
+        encoding="utf-8", newline="\n",
+    )
+    launcher.chmod(0o755)
+    res = _detect_run(tmp_path, home, stub_bin)
+    assert res.returncode == 0, res.stderr
+    assert f"RESOLVED={mine}" in res.stdout, res.stdout + res.stderr
+    assert "fakepy" not in res.stdout
+
+
+def test_uv_tool_probe_present_in_emitted_detect():
+    """Static companion to the runtime tests above (same convention as the
+    NUL-safe read): the emitted chain must scan uv tool envs and honor
+    UV_TOOL_DIR."""
+    from graphify.hooks import _PYTHON_DETECT
+    assert "UV_TOOL_DIR" in _PYTHON_DETECT
+    assert '"$HOME/.local/share/uv/tools"' in _PYTHON_DETECT
+    assert '"$HOME/AppData/Roaming/uv/tools"' in _PYTHON_DETECT
 
 
 def _extract_case_pattern(marker: str) -> str:
@@ -625,7 +948,8 @@ def test_checkout_hook_skips_same_head_noop_at_runtime():
     assert guard in _CHECKOUT_SCRIPT, "guard missing from the checkout script"
     # Real script through the same-head guard, then a sentinel — stops before the
     # graphify-out check / detached launch so nothing is actually rebuilt.
-    prefix = _CHECKOUT_SCRIPT.split(guard)[0] + guard + "\necho RAN\n"
+    # The block runs inside a subshell (#2986); close it after the sentinel.
+    prefix = _CHECKOUT_SCRIPT.split(guard)[0] + guard + "\necho RAN\n)\n"
 
     def run(prev, new, flag):
         # sh -c CMD name arg1 arg2 arg3  ->  $0=name $1=prev $2=new $3=flag
@@ -1002,3 +1326,210 @@ def test_both_hooks_configured(tmp_path):
     for name in ("post-commit", "post-checkout"):
         hook_text = (repo / ".git" / "hooks" / name).read_text()
         assert 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-42}"' in hook_text
+
+
+@pytest.mark.parametrize(
+    "name,body",
+    [("post-commit", _REBUILD_BODY_COMMIT), ("post-checkout", _REBUILD_BODY_CHECKOUT)],
+)
+def test_rebuild_bodies_tolerate_a_bom_in_graphify_root(name, body):
+    """The rebuild must survive a marker written by Windows PowerShell 5.1 (#3028).
+
+    `Out-File -Encoding utf8` on 5.1 always writes a UTF-8 BOM, so the path the
+    hook reads back begins with U+FEFF. `strip()` does not remove it, and it rode
+    straight into a Windows path API: every post-commit rebuild died with
+    `WinError 123` while `hook install` / `hook status` still reported success.
+    `utf-8-sig` drops an optional BOM and is a no-op on a clean file.
+    """
+    assert "encoding='utf-8-sig'" in body, (
+        f"{name} rebuild body must read .graphify_root BOM-tolerantly"
+    )
+    assert "encoding='utf-8')" not in body, (
+        f"{name} rebuild body still has a BOM-intolerant read"
+    )
+
+
+@pytest.mark.parametrize("exe", [
+    "/home/dev/snap/code/259/.local/share/uv/tools/graphifyy/bin/python",
+    "/home/dev/snap/code/current/.local/share/uv/tools/graphifyy/bin/python",
+    "/root/snap/pycharm-community/42/.local/share/uv/tools/graphifyy/bin/python",
+])
+def test_pinned_python_refuses_a_rotating_snap_revision(exe, monkeypatch):
+    """A pin is only worth writing if it still resolves tomorrow.
+
+    graphify installed from inside a snap-confined editor lives under
+    ``~/snap/<app>/<revision>/``. Snap swaps that revision on update and prunes the
+    old tree, so the pin dies silently — observed across 15 repositories at once
+    when an editor snap moved past revision 259. Every commit then printed "could
+    not locate a Python with graphify installed" and the graphs quietly stopped
+    tracking the code.
+
+    Empty is the documented safe degradation: the hook falls through to its other
+    probes, and the uv-tools probe searches snap homes by glob.
+    """
+    import sys as _sys
+
+    from graphify.hooks import _pinned_python
+
+    monkeypatch.setattr(_sys, "executable", exe)
+    assert _pinned_python() == "", "a path under a rotating snap revision must not be pinned"
+
+
+def test_pinned_python_still_pins_a_stable_path(monkeypatch):
+    """The rotating-prefix rule must not swallow ordinary installs.
+
+    Control for the test above: 'snap' appearing anywhere else in a path — a user
+    named snap, a project directory called snap — is not a snap revision tree.
+    """
+    import sys as _sys
+
+    from graphify.hooks import _pinned_python
+
+    for exe in (
+        "/home/dev/.local/share/uv/tools/graphifyy/bin/python",
+        "/usr/bin/python3",
+        "/home/snap/projects/venv/bin/python",
+    ):
+        monkeypatch.setattr(_sys, "executable", exe)
+        assert _pinned_python() == exe, f"{exe} is stable and must still be pinned"
+
+
+def test_hook_probes_snap_confined_uv_tool_dirs():
+    """The uv-tools probe must look inside snap-confined HOMEs.
+
+    An install made from a snap-confined editor lands in that snap's private HOME.
+    Once the hook runs from an ordinary shell, $HOME is the real one, so the plain
+    roots never see it — which is what left the pin as the only thing that could
+    ever find such an install.
+    """
+    from graphify.hooks import _HOOK_SCRIPT
+
+    assert '"$HOME"/snap/*/[0-9]*/.local/share/uv/tools' in _HOOK_SCRIPT
+    assert '"$HOME"/snap/*/current/.local/share/uv/tools' in _HOOK_SCRIPT
+
+
+# ── GRAPHIFY_OUT: the shell gates in front of the rebuild must honour it ─────
+#
+# #1423 moved the Python rebuild bodies onto GRAPHIFY_OUT, but the sh that runs
+# BEFORE them still hardcoded graphify-out/: post-checkout exited unless a
+# literal graphify-out/ directory existed, and post-commit's "only graph
+# artifacts changed" filter only recognised graphify-out/ paths. With the
+# documented override (#686) the branch-switch rebuild therefore never launched
+# and a commit touching only the renamed output dir triggered a full rebuild.
+# Behaviour of the emitted script under a real sh, per the #2126/#2641
+# convention, with the launcher stubbed so the test observes whether the hook
+# REACHES the launch rather than running a rebuild.
+
+_LAUNCH_LINE = "launching background rebuild"
+
+
+def _stub_python(tmp_path: Path) -> Path:
+    """A 'python' that passes the find_spec probe and swallows the launcher."""
+    py = tmp_path / "stubpy"
+    py.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+    py.chmod(0o755)
+    return py
+
+
+def _emitted_hook_run(repo: Path, script: str, args: list[str], env_extra: dict[str, str]):
+    stub = _stub_python(repo.parent)
+    rendered = script.replace("__PINNED_PYTHON__", str(stub)).replace("__VIZ_LIMIT_EXPORT__", "")
+    hook = repo.parent / "emitted-hook.sh"
+    hook.write_text(rendered, encoding="utf-8", newline="\n")
+    env = dict(os.environ)
+    env["HOME"] = str(repo.parent / "home")
+    for key in ("GIT_DIR", "GRAPHIFY_OUT", "GRAPHIFY_SKIP_HOOK"):
+        env.pop(key, None)
+    env.update(env_extra)
+    return subprocess.run(
+        ["sh", str(hook), *args], capture_output=True, text=True, cwd=str(repo), env=env,
+    )
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
+         "-c", "core.hooksPath=/dev/null", "-C", str(repo), *args],
+        check=True, capture_output=True,
+    )
+
+
+def _repo_with_graph_only_commit(tmp_path: Path, out_dir: str) -> Path:
+    """Two commits: a source file, then ONLY <out_dir>/graph.json — the
+    tracked-output case the post-commit filter exists for."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "a.py")
+    _git(repo, "commit", "-q", "-m", "src")
+    (repo / out_dir).mkdir()
+    (repo / out_dir / "graph.json").write_text("{}", encoding="utf-8")
+    _git(repo, "add", f"{out_dir}/graph.json")
+    _git(repo, "commit", "-q", "-m", "graph")
+    return repo
+
+
+_SH_ONLY = pytest.mark.skipif(
+    shutil.which("sh") is None or os.name == "nt", reason="sh required to run the emitted hook"
+)
+
+
+@_SH_ONLY
+def test_checkout_hook_rebuilds_when_graphify_out_is_renamed(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "custom-out").mkdir()  # the configured output dir; no graphify-out/
+    result = _emitted_hook_run(repo, _CHECKOUT_SCRIPT, ["aaa", "bbb", "1"], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE in result.stdout, (
+        "post-checkout exited before the launch: it gates on a literal graphify-out/ "
+        f"instead of $GRAPHIFY_OUT\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
+
+
+@_SH_ONLY
+def test_checkout_hook_still_skips_when_no_graph_was_built(tmp_path):
+    """Control: with neither the default nor the configured dir present there is
+    no graph to refresh, so the branch-switch hook stays a no-op."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    result = _emitted_hook_run(repo, _CHECKOUT_SCRIPT, ["aaa", "bbb", "1"], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE not in result.stdout
+
+
+@_SH_ONLY
+def test_commit_hook_skips_graph_only_commit_when_graphify_out_is_renamed(tmp_path):
+    repo = _repo_with_graph_only_commit(tmp_path, "custom-out")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE not in result.stdout, (
+        "post-commit launched a rebuild for a commit that only touched the configured "
+        f"output dir\nstdout={result.stdout!r}"
+    )
+
+
+@_SH_ONLY
+def test_commit_hook_skips_graph_only_commit_under_default_dir(tmp_path):
+    """Control: the default-name case the filter always handled keeps working."""
+    repo = _repo_with_graph_only_commit(tmp_path, "graphify-out")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE not in result.stdout
+
+
+@_SH_ONLY
+def test_commit_hook_still_rebuilds_for_a_source_change(tmp_path):
+    """Control: a commit that touches source alongside the renamed output dir
+    must still launch — the filter drops output-dir paths, not the rebuild."""
+    repo = _repo_with_graph_only_commit(tmp_path, "custom-out")
+    (repo / "b.py").write_text("y = 2\n", encoding="utf-8")
+    (repo / "custom-out" / "graph.json").write_text("{\"n\": 1}", encoding="utf-8")
+    _git(repo, "add", "b.py", "custom-out/graph.json")
+    _git(repo, "commit", "-q", "-m", "src+graph")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE in result.stdout, result.stdout

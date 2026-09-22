@@ -31,11 +31,13 @@ def extract_elixir(path: Path) -> dict:
     seen_ids: set[str] = set()
     function_bodies: list[tuple[str, Any]] = []
 
-    def add_node(nid: str, label: str, line: int) -> None:
+    def add_node(nid: str, label: str, line: int, **attrs) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({"id": nid, "label": label, "file_type": "code",
-                          "source_file": str_path, "source_location": f"L{line}"})
+            node = {"id": nid, "label": label, "file_type": "code",
+                    "source_file": str_path, "source_location": f"L{line}"}
+            node.update(attrs)
+            nodes.append(node)
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -117,7 +119,14 @@ def extract_elixir(path: Path) -> dict:
             if not module_name:
                 return
             module_nid = _make_id(stem, module_name)
-            add_node(module_nid, module_name, line)
+            # Only a top-level module is a safe cross-file resolution target
+            # (#3603 follow-up): a nested `defmodule Supervisor` is labeled with
+            # its bare inner name and would otherwise capture an unrelated
+            # `use Supervisor` from another file. Mark just the top-level ones;
+            # the marker rides through incremental rebuilds via the
+            # resolution-context allow-list in watch.py / cli.py.
+            add_node(module_nid, module_name, line,
+                     **({"_elixir_module": True} if parent_module_nid is None else {}))
             add_edge(file_nid, module_nid, "contains", line)
             if do_block_node:
                 for child in do_block_node.children:
@@ -128,6 +137,19 @@ def extract_elixir(path: Path) -> dict:
             func_name = None
             if arguments_node:
                 for child in arguments_node.children:
+                    # tree-sitter-elixir wraps a guarded head
+                    # (`def f(x) when guard`) in `binary_operator`;
+                    # without unwrapping, a function whose only clause
+                    # carries `when` is dropped (#3111).
+                    while child.type == "binary_operator":
+                        head = None
+                        for sub in child.children:
+                            if sub.type in ("call", "identifier", "binary_operator"):
+                                head = sub
+                                break
+                        if head is None:
+                            break
+                        child = head
                     if child.type == "call":
                         for sub in child.children:
                             if sub.type == "identifier":

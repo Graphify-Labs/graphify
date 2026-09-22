@@ -194,6 +194,24 @@ def extract_bash(path: Path) -> dict:
             parent = parent.parent
         return False
 
+    def _bash_call_in_command_allowed(cmd_node) -> bool:
+        """Whether a command node should emit call edges.
+
+        Bare ``$(fn)`` at script level and process substitutions stay suppressed
+        (#2141). Value capture via ``x=$(fn)`` is a real invocation (#2978).
+        """
+        parent = cmd_node.parent
+        saw_command_substitution = False
+        while parent is not None:
+            if parent.type == "process_substitution":
+                return False
+            if parent.type == "command_substitution":
+                saw_command_substitution = True
+            if parent.type == "variable_assignment" and saw_command_substitution:
+                return True
+            parent = parent.parent
+        return not saw_command_substitution
+
     def literal(node) -> str | None:
         # Token-level filter: rejects names containing shell metacharacters.
         # Combined with `is_inside_expansion` for parent-context rejection.
@@ -223,7 +241,7 @@ def extract_bash(path: Path) -> dict:
                 # separately, so we don't attribute their calls to the
                 # enclosing scope.
                 continue
-            if child.type == "command" and not is_inside_expansion(child):
+            if child.type == "command" and _bash_call_in_command_allowed(child):
                 cmd_name_node = child.child_by_field_name("name")
                 if cmd_name_node is None and child.children:
                     cmd_name_node = child.children[0]
@@ -455,10 +473,25 @@ def extract_bash(path: Path) -> dict:
                                 if tgt_nid:
                                     add_edge(file_nid, tgt_nid, "imports", line,
                                              context="import")
-                elif cmd and cmd not in defined_functions:
-                    raw = cmd if cmd.endswith(".sh") else None
-                    if cmd in _BASH_SCRIPT_RUNNERS and args:
+                elif cmd not in defined_functions:
+                    raw = cmd if (cmd and cmd.endswith(".sh")) else None
+                    if cmd and cmd in _BASH_SCRIPT_RUNNERS and args:
                         raw = literal(args[0])
+                    if raw is None:
+                        # The command name is itself an expansion, e.g.
+                        # `"$script_dir/x.sh" --flag`. `literal()` rejects any
+                        # candidate containing "$", so `cmd` is None and neither
+                        # of the two branches above can see the path. Read the
+                        # node's raw text the way the `source` branch does and
+                        # strip the leading ${VAR}/ segments -- the same
+                        # script-dir assumption already used for `source
+                        # "$DIR/lib/x.sh"` (#2079). `_bash_source_suffix`
+                        # rejects a remainder that still holds an expansion or
+                        # a `..` segment, and the `resolved.is_file()` gate
+                        # below means a wrong script-dir guess emits nothing.
+                        cand = _read_text(cmd_name_node, source).strip().strip("'\"")
+                        if cand.endswith(".sh") and "$" in cand:
+                            raw = _bash_source_suffix(cand) or None
                     if raw and raw.endswith(".sh"):
                         resolved = (path.parent / raw).resolve()
                         if resolved.is_file():
