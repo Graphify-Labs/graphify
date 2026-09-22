@@ -1,0 +1,1000 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "case_id": "graphify-pr-1166",
+      "pr": 1166,
+      "url": "https://github.com/Graphify-Labs/graphify/pull/1166",
+      "title": "docs: add RFC for file-level node summaries",
+      "category": "documentation_only",
+      "reported_base_sha": "079b34da7851e6f7c7ae8347853c4dfd93f818ff",
+      "head_sha": "3e8afc9192283805df52f52cc07da85856815c14",
+      "changed_files": [
+        "docs/how-it-works.md",
+        "docs/node-summaries-rfc.md"
+      ],
+      "merge_base_sha": "079b34da7851e6f7c7ae8347853c4dfd93f818ff",
+      "changed_file_count": 2,
+      "github_changed_files": [
+        {
+          "path": "docs/how-it-works.md",
+          "status": "modified"
+        },
+        {
+          "path": "docs/node-summaries-rfc.md",
+          "status": "added"
+        }
+      ]
+    },
+    {
+      "case_id": "graphify-pr-1209",
+      "pr": 1209,
+      "url": "https://github.com/Graphify-Labs/graphify/pull/1209",
+      "title": "Wire bandit and pip-audit into CI",
+      "category": "ci_security_workflow",
+      "reported_base_sha": "137bc2d95139ba7b8b04e1014fe4bcf249668539",
+      "head_sha": "39afb2d8efd3ffee8ea943b96411c88283a52944",
+      "changed_files": [
+        ".github/workflows/ci.yml"
+      ],
+      "merge_base_sha": "137bc2d95139ba7b8b04e1014fe4bcf249668539",
+      "changed_file_count": 1,
+      "github_changed_files": [
+        {
+          "path": ".github/workflows/ci.yml",
+          "status": "modified"
+        }
+      ]
+    },
+    {
+      "case_id": "graphify-pr-1289",
+      "pr": 1289,
+      "url": "https://github.com/Graphify-Labs/graphify/pull/1289",
+      "title": "perf: fix O(n^2) -> O(n) LSH neighbor lookup in dedup",
+      "category": "performance_internal",
+      "reported_base_sha": "1bb30fcc567a72280f4dc1763947140268f101c5",
+      "head_sha": "c4d6b412cabf422bbac72874933e43e196568690",
+      "changed_files": [
+        "graphify/dedup.py"
+      ],
+      "merge_base_sha": "137bc2d95139ba7b8b04e1014fe4bcf249668539",
+      "changed_file_count": 1,
+      "github_changed_files": [
+        {
+          "path": "graphify/dedup.py",
+          "status": "modified"
+        }
+      ]
+    },
+    {
+      "case_id": "graphify-pr-1280",
+      "pr": 1280,
+      "url": "https://github.com/Graphify-Labs/graphify/pull/1280",
+      "title": "fix(affected): handle \"edges\"-keyed graph.json in load_graph (KeyError: 'links')",
+      "category": "localized_compatibility_bugfix",
+      "reported_base_sha": "1bb30fcc567a72280f4dc1763947140268f101c5",
+      "head_sha": "2ab2302112ff1ef81785e6accbb078a60292863c",
+      "changed_files": [
+        "graphify/affected.py",
+        "tests/test_affected_cli.py"
+      ],
+      "merge_base_sha": "1bb30fcc567a72280f4dc1763947140268f101c5",
+      "changed_file_count": 2,
+      "github_changed_files": [
+        {
+          "path": "graphify/affected.py",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_affected_cli.py",
+          "status": "modified"
+        }
+      ]
+    },
+    {
+      "case_id": "graphify-pr-1273",
+      "pr": 1273,
+      "url": "https://github.com/Graphify-Labs/graphify/pull/1273",
+      "title": "feat: custom endpoints via OPENAI_BASE_URL/OPENAI_MODEL and ANTHROPIC_BASE_URL/ANTHROPIC_MODEL",
+      "category": "external_provider_boundary",
+      "reported_base_sha": "3a47091021e94da07d5dfaa52e679d4f1d307385",
+      "head_sha": "17c28040da9347be088874ba908c68c6b91992c0",
+      "changed_files": [
+        "README.md",
+        "docs/translations/README.uk-UA.md",
+        "graphify/__main__.py",
+        "graphify/llm.py",
+        "tests/test_anthropic_custom_endpoint.py",
+        "tests/test_openai_custom_endpoint.py"
+      ],
+      "merge_base_sha": "cce26730212baab6d92ce5f390ef5aae56268f31",
+      "changed_file_count": 6,
+      "github_changed_files": [
+        {
+          "path": "README.md",
+          "status": "modified"
+        },
+        {
+          "path": "docs/translations/README.uk-UA.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/__main__.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/llm.py",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_anthropic_custom_endpoint.py",
+          "status": "added"
+        },
+        {
+          "path": "tests/test_openai_custom_endpoint.py",
+          "status": "added"
+        }
+      ]
+    },
+    {
+      "case_id": "graphify-pr-1176",
+      "pr": 1176,
+      "url": "https://github.com/Graphify-Labs/graphify/pull/1176",
+      "title": "feat: add FalkorDB export backend (#1175)",
+      "category": "external_export_boundary",
+      "reported_base_sha": "3744e6e2207d22550a349670945872e61e18b72c",
+      "head_sha": "418604f32a45540f52754368c53b1efe2dd5b371",
+      "changed_files": [
+        "CHANGELOG.md",
+        "README.md",
+        "graphify/__main__.py",
+        "graphify/export.py",
+        "graphify/skill-amp.md",
+        "graphify/skill-claw.md",
+        "graphify/skill-codex.md",
+        "graphify/skill-copilot.md",
+        "graphify/skill-droid.md",
+        "graphify/skill-kilo.md",
+        "graphify/skill-kiro.md",
+        "graphify/skill-opencode.md",
+        "graphify/skill-pi.md",
+        "graphify/skill-trae.md",
+        "graphify/skill-vscode.md",
+        "graphify/skill-windows.md",
+        "graphify/skill.md",
+        "graphify/skills/amp/references/exports.md",
+        "graphify/skills/claude/references/exports.md",
+        "graphify/skills/claw/references/exports.md",
+        "graphify/skills/codex/references/exports.md",
+        "graphify/skills/copilot/references/exports.md",
+        "graphify/skills/droid/references/exports.md",
+        "graphify/skills/kilo/references/exports.md",
+        "graphify/skills/kiro/references/exports.md",
+        "graphify/skills/opencode/references/exports.md",
+        "graphify/skills/pi/references/exports.md",
+        "graphify/skills/trae/references/exports.md",
+        "graphify/skills/vscode/references/exports.md",
+        "graphify/skills/windows/references/exports.md",
+        "pyproject.toml",
+        "tests/test_cli_export.py",
+        "tests/test_falkordb_integration.py",
+        "tools/skillgen/expected/graphify__skill-amp.md",
+        "tools/skillgen/expected/graphify__skill-claw.md",
+        "tools/skillgen/expected/graphify__skill-codex.md",
+        "tools/skillgen/expected/graphify__skill-copilot.md",
+        "tools/skillgen/expected/graphify__skill-droid.md",
+        "tools/skillgen/expected/graphify__skill-kilo.md",
+        "tools/skillgen/expected/graphify__skill-kiro.md",
+        "tools/skillgen/expected/graphify__skill-opencode.md",
+        "tools/skillgen/expected/graphify__skill-pi.md",
+        "tools/skillgen/expected/graphify__skill-trae.md",
+        "tools/skillgen/expected/graphify__skill-vscode.md",
+        "tools/skillgen/expected/graphify__skill-windows.md",
+        "tools/skillgen/expected/graphify__skill.md",
+        "tools/skillgen/expected/graphify__skills__amp__references__exports.md",
+        "tools/skillgen/expected/graphify__skills__claude__references__exports.md",
+        "tools/skillgen/expected/graphify__skills__claw__references__exports.md",
+        "tools/skillgen/expected/graphify__skills__codex__references__exports.md",
+        "tools/skillgen/expected/graphify__skills__copilot__references__exports.md",
+        "tools/skillgen/expected/graphify__skills__droid__references__exports.md",
+        "tools/skillgen/expected/graphify__skills__kilo__references__exports.md",
+        "tools/skillgen/expected/graphify__skills__kiro__references__exports.md",
+        "tools/skillgen/expected/graphify__skills__opencode__references__exports.md",
+        "tools/skillgen/expected/graphify__skills__pi__references__exports.md",
+        "tools/skillgen/expected/graphify__skills__trae__references__exports.md",
+        "tools/skillgen/expected/graphify__skills__vscode__references__exports.md",
+        "tools/skillgen/expected/graphify__skills__windows__references__exports.md",
+        "tools/skillgen/fragments/core/core.md",
+        "tools/skillgen/fragments/references/shared/exports.md"
+      ],
+      "merge_base_sha": "a8dbbe59cfa7bb87d124fb85297b475d8d3fdb91",
+      "changed_file_count": 61,
+      "github_changed_files": [
+        {
+          "path": "CHANGELOG.md",
+          "status": "modified"
+        },
+        {
+          "path": "README.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/__main__.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/export.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-amp.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-claw.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-codex.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-copilot.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-droid.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-kilo.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-kiro.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-opencode.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-pi.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-trae.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-vscode.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-windows.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/amp/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/claude/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/claw/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/codex/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/copilot/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/droid/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/kilo/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/kiro/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/opencode/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/pi/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/trae/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/vscode/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/windows/references/exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "pyproject.toml",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_cli_export.py",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_falkordb_integration.py",
+          "status": "added"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-amp.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-claw.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-codex.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-copilot.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-droid.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-kilo.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-kiro.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-opencode.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-pi.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-trae.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-vscode.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill-windows.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skill.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__amp__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__claude__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__claw__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__codex__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__copilot__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__droid__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__kilo__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__kiro__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__opencode__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__pi__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__trae__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__vscode__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/expected/graphify__skills__windows__references__exports.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/fragments/core/core.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/fragments/references/shared/exports.md",
+          "status": "modified"
+        }
+      ]
+    },
+    {
+      "case_id": "graphify-pr-1344",
+      "pr": 1344,
+      "url": "https://github.com/Graphify-Labs/graphify/pull/1344",
+      "title": "fix(build_merge): replace re-extracted files instead of accumulating stale edges",
+      "category": "graph_semantics",
+      "reported_base_sha": "be3dcfca083f58b9cf8392c6ddeb6ac66f477e92",
+      "head_sha": "6db3c933aeaee556fd724c107dd4ceedf21f78a1",
+      "changed_files": [
+        "graphify/build.py",
+        "tests/test_build.py"
+      ],
+      "merge_base_sha": "be3dcfca083f58b9cf8392c6ddeb6ac66f477e92",
+      "changed_file_count": 2,
+      "github_changed_files": [
+        {
+          "path": "graphify/build.py",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_build.py",
+          "status": "modified"
+        }
+      ]
+    },
+    {
+      "case_id": "graphify-pr-1357",
+      "pr": 1357,
+      "url": "https://github.com/Graphify-Labs/graphify/pull/1357",
+      "title": "Harden HTML output against U+2028 XSS + two crash-on-adversarial-input fixes",
+      "category": "security_and_robustness",
+      "reported_base_sha": "be3dcfca083f58b9cf8392c6ddeb6ac66f477e92",
+      "head_sha": "28de79e72c12eac8b58cbe9e0e6a5e212ca6ad13",
+      "changed_files": [
+        "graphify/extract.py",
+        "graphify/llm.py",
+        "graphify/tree_html.py"
+      ],
+      "merge_base_sha": "be3dcfca083f58b9cf8392c6ddeb6ac66f477e92",
+      "changed_file_count": 3,
+      "github_changed_files": [
+        {
+          "path": "graphify/extract.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/llm.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/tree_html.py",
+          "status": "modified"
+        }
+      ]
+    },
+    {
+      "case_id": "graphify-pr-648",
+      "pr": 648,
+      "url": "https://github.com/Graphify-Labs/graphify/pull/648",
+      "title": "feat: add VB.NET (.vb) language support via tree-sitter",
+      "category": "language_extractor_feature",
+      "reported_base_sha": "58271fb5af4c0c123ddbad9c689ee1e220360be8",
+      "head_sha": "af15e33f577f3ae11d2892a779d0a3e14f829fac",
+      "changed_files": [
+        "README.md",
+        "graphify/detect.py",
+        "graphify/extract.py",
+        "pyproject.toml",
+        "tests/fixtures/sample.vb",
+        "tests/test_languages.py"
+      ],
+      "merge_base_sha": "8a6306f769be7a71ee458337e32bdb3943cf7943",
+      "changed_file_count": 6,
+      "github_changed_files": [
+        {
+          "path": "README.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/detect.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/extract.py",
+          "status": "modified"
+        },
+        {
+          "path": "pyproject.toml",
+          "status": "modified"
+        },
+        {
+          "path": "tests/fixtures/sample.vb",
+          "status": "added"
+        },
+        {
+          "path": "tests/test_languages.py",
+          "status": "modified"
+        }
+      ]
+    },
+    {
+      "case_id": "graphify-pr-1737",
+      "pr": 1737,
+      "url": "https://github.com/Graphify-Labs/graphify/pull/1737",
+      "title": "refactor: decompose extract.py and __main__.py into focused modules",
+      "category": "behavior_preserving_refactor",
+      "reported_base_sha": "20bfdf60ac7187edc2f8594252222dc8e9b96399",
+      "head_sha": "247b2ae603dd021e2a1ca5f76058d34b0863e927",
+      "changed_files": [
+        "graphify/__main__.py",
+        "graphify/cli.py",
+        "graphify/export.py",
+        "graphify/exporters/__init__.py",
+        "graphify/exporters/base.py",
+        "graphify/exporters/graphdb.py",
+        "graphify/exporters/html.py",
+        "graphify/extract.py",
+        "graphify/extractors/MIGRATION.md",
+        "graphify/extractors/__init__.py",
+        "graphify/extractors/apex.py",
+        "graphify/extractors/bash.py",
+        "graphify/extractors/dart.py",
+        "graphify/extractors/dm.py",
+        "graphify/extractors/engine.py",
+        "graphify/extractors/fortran.py",
+        "graphify/extractors/go.py",
+        "graphify/extractors/json_config.py",
+        "graphify/extractors/julia.py",
+        "graphify/extractors/markdown.py",
+        "graphify/extractors/models.py",
+        "graphify/extractors/objc.py",
+        "graphify/extractors/pascal.py",
+        "graphify/extractors/pascal_forms.py",
+        "graphify/extractors/powershell.py",
+        "graphify/extractors/resolution.py",
+        "graphify/extractors/rust.py",
+        "graphify/extractors/sln.py",
+        "graphify/extractors/sql.py",
+        "graphify/extractors/terraform.py",
+        "graphify/extractors/verilog.py",
+        "graphify/install.py",
+        "pyproject.toml"
+      ],
+      "merge_base_sha": "20bfdf60ac7187edc2f8594252222dc8e9b96399",
+      "changed_file_count": 33,
+      "github_changed_files": [
+        {
+          "path": "graphify/__main__.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/cli.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/export.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/exporters/__init__.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/exporters/base.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/exporters/graphdb.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/exporters/html.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extract.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/extractors/MIGRATION.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/extractors/__init__.py",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/extractors/apex.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/bash.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/dart.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/dm.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/engine.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/fortran.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/go.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/json_config.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/julia.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/markdown.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/models.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/objc.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/pascal.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/pascal_forms.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/powershell.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/resolution.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/rust.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/sln.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/sql.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/terraform.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/extractors/verilog.py",
+          "status": "added"
+        },
+        {
+          "path": "graphify/install.py",
+          "status": "added"
+        },
+        {
+          "path": "pyproject.toml",
+          "status": "modified"
+        }
+      ]
+    },
+    {
+      "case_id": "graphify-pr-583",
+      "pr": 583,
+      "url": "https://github.com/Graphify-Labs/graphify/pull/583",
+      "title": "feat(detect): add hidden path allowlist",
+      "category": "discovery_policy",
+      "reported_base_sha": "ee1df22b25c1c2e79817783cbcf00f1b3f86f60f",
+      "head_sha": "e56e1bf38365e3e7dcfd59f3aaee2711d19968d9",
+      "changed_files": [
+        "graphify/detect.py",
+        "tests/test_detect.py"
+      ],
+      "merge_base_sha": "ee1df22b25c1c2e79817783cbcf00f1b3f86f60f",
+      "changed_file_count": 2,
+      "github_changed_files": [
+        {
+          "path": "graphify/detect.py",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_detect.py",
+          "status": "modified"
+        }
+      ]
+    },
+    {
+      "case_id": "graphify-pr-1366",
+      "pr": 1366,
+      "url": "https://github.com/Graphify-Labs/graphify/pull/1366",
+      "title": "fix(skill): pin extraction source_file + root the full build so --update stops duplicating",
+      "category": "incremental_provenance",
+      "reported_base_sha": "8437ef465e00c35bb7bb735612f348b0d28d8889",
+      "head_sha": "5b988974ca6f2aa93c8923c07daea85d5ac3beda",
+      "changed_files": [
+        "graphify/skill-amp.md",
+        "graphify/skill-claw.md",
+        "graphify/skill-codex.md",
+        "graphify/skill-copilot.md",
+        "graphify/skill-droid.md",
+        "graphify/skill-kilo.md",
+        "graphify/skill-kiro.md",
+        "graphify/skill-opencode.md",
+        "graphify/skill-pi.md",
+        "graphify/skill-trae.md",
+        "graphify/skill-vscode.md",
+        "graphify/skill-windows.md",
+        "graphify/skill.md",
+        "graphify/skills/amp/references/extraction-spec.md",
+        "graphify/skills/amp/references/update.md",
+        "graphify/skills/claude/references/extraction-spec.md",
+        "graphify/skills/claude/references/update.md",
+        "graphify/skills/claw/references/extraction-spec.md",
+        "graphify/skills/claw/references/update.md",
+        "graphify/skills/codex/references/extraction-spec.md",
+        "graphify/skills/codex/references/update.md",
+        "graphify/skills/copilot/references/extraction-spec.md",
+        "graphify/skills/copilot/references/update.md",
+        "graphify/skills/droid/references/extraction-spec.md",
+        "graphify/skills/droid/references/update.md",
+        "graphify/skills/kilo/references/extraction-spec.md",
+        "graphify/skills/kilo/references/update.md",
+        "graphify/skills/kiro/references/extraction-spec.md",
+        "graphify/skills/kiro/references/update.md",
+        "graphify/skills/opencode/references/extraction-spec.md",
+        "graphify/skills/opencode/references/update.md",
+        "graphify/skills/pi/references/extraction-spec.md",
+        "graphify/skills/pi/references/update.md",
+        "graphify/skills/trae/references/extraction-spec.md",
+        "graphify/skills/trae/references/update.md",
+        "graphify/skills/vscode/references/extraction-spec.md",
+        "graphify/skills/vscode/references/update.md",
+        "graphify/skills/windows/references/extraction-spec.md",
+        "graphify/skills/windows/references/update.md",
+        "tests/test_build.py",
+        "tools/skillgen/fragments/core/core.md",
+        "tools/skillgen/fragments/references/shared/extraction-spec-compact.md",
+        "tools/skillgen/fragments/references/shared/extraction-spec.md",
+        "tools/skillgen/fragments/references/shared/update.md"
+      ],
+      "merge_base_sha": "8437ef465e00c35bb7bb735612f348b0d28d8889",
+      "changed_file_count": 44,
+      "github_changed_files": [
+        {
+          "path": "graphify/skill-amp.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-claw.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-codex.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-copilot.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-droid.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-kilo.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-kiro.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-opencode.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-pi.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-trae.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-vscode.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill-windows.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skill.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/amp/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/amp/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/claude/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/claude/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/claw/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/claw/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/codex/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/codex/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/copilot/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/copilot/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/droid/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/droid/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/kilo/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/kilo/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/kiro/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/kiro/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/opencode/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/opencode/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/pi/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/pi/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/trae/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/trae/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/vscode/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/vscode/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/windows/references/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "graphify/skills/windows/references/update.md",
+          "status": "modified"
+        },
+        {
+          "path": "tests/test_build.py",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/fragments/core/core.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/fragments/references/shared/extraction-spec-compact.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/fragments/references/shared/extraction-spec.md",
+          "status": "modified"
+        },
+        {
+          "path": "tools/skillgen/fragments/references/shared/update.md",
+          "status": "modified"
+        }
+      ]
+    }
+  ]
+}
