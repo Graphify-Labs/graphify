@@ -3342,42 +3342,60 @@ def _label_batch_with_retry(
     # gemini) often prepend a short preamble or reasoning that eats the
     # completion and truncates the JSON mid-object, which used to fail the whole
     # batch (#1690). The old 64 + 24*n floor left no headroom.
-    max_tokens = _resolve_max_tokens(min(256 + 48 * len(batch_cids), 8192))
-    call_kwargs: dict = {"backend": backend, "max_tokens": max_tokens}
-    if model is not None:
-        call_kwargs["model"] = model
-    # Only forward usage_out when the caller wants accounting, so existing
-    # callers (and their test doubles) see the unchanged _call_llm signature.
-    if usage_out is not None:
-        call_kwargs["usage_out"] = usage_out
+    budget = min(256 + 48 * len(batch_cids), 8192)
+    while True:
+        max_tokens = _resolve_max_tokens(budget)
+        call_kwargs: dict = {"backend": backend, "max_tokens": max_tokens}
+        if model is not None:
+            call_kwargs["model"] = model
+        # Only forward usage_out when the caller wants accounting, so existing
+        # callers (and their test doubles) see the unchanged _call_llm signature.
+        if usage_out is not None:
+            call_kwargs["usage_out"] = usage_out
 
-    try:
-        text = _call_llm(prompt, **call_kwargs)
-        return _parse_label_response(text, batch_cids)
-    except (json.JSONDecodeError, ValueError) as exc:
-        # Parse failure. If we can still split, retry each half on a smaller
-        # prompt (smaller output → less likely to truncate/mangle). At the base
-        # case (single community or max depth) re-raise so the caller skips it.
-        if len(batch_cids) <= 1 or depth >= max_depth:
-            print(
-                f"[graphify label] batch of {len(batch_cids)} still unparseable "
-                f"at depth {depth} (cids={batch_cids[:5]}"
-                f"{'...' if len(batch_cids) > 5 else ''}): {exc}",
-                file=sys.stderr,
-            )
-            raise
-        mid = len(batch_cids) // 2
-        left = _label_batch_with_retry(
-            batch_cids[:mid], batch_lines[:mid],
-            backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
-            usage_out=usage_out,
+        text: "str | None" = None
+        try:
+            text = _call_llm(prompt, **call_kwargs)
+            return _parse_label_response(text, batch_cids)
+        except (json.JSONDecodeError, ValueError) as exc:
+            # A blank completion with room left in the budget is the signature of
+            # a reasoning model that spent its whole completion allowance on the
+            # (separately-returned) chain-of-thought and emitted empty content
+            # with finish_reason=length. Splitting the batch only SHRINKS the
+            # budget (min(256 + 48*n, 8192)), so it can never recover — escalate
+            # the budget first, doubling up to the 8192 cap, and only split once
+            # more room stops helping (#3747). A non-empty but malformed reply is
+            # a parse problem a bigger budget won't fix, so that splits at once.
+            if text is not None and not text.strip() and budget < 8192:
+                budget = min(budget * 2, 8192)
+                continue
+            last_exc = exc
+            break
+
+    # Parse failure the larger budget didn't resolve. If we can still split,
+    # retry each half on a smaller prompt (smaller output → less likely to
+    # truncate/mangle). At the base case (single community or max depth) re-raise
+    # so the caller skips it.
+    if len(batch_cids) <= 1 or depth >= max_depth:
+        print(
+            f"[graphify label] batch of {len(batch_cids)} still unparseable "
+            f"at depth {depth} (cids={batch_cids[:5]}"
+            f"{'...' if len(batch_cids) > 5 else ''}): {last_exc}",
+            file=sys.stderr,
         )
-        right = _label_batch_with_retry(
-            batch_cids[mid:], batch_lines[mid:],
-            backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
-            usage_out=usage_out,
-        )
-        return left | right
+        raise last_exc
+    mid = len(batch_cids) // 2
+    left = _label_batch_with_retry(
+        batch_cids[:mid], batch_lines[:mid],
+        backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+        usage_out=usage_out,
+    )
+    right = _label_batch_with_retry(
+        batch_cids[mid:], batch_lines[mid:],
+        backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+        usage_out=usage_out,
+    )
+    return left | right
 
 
 def label_communities(
