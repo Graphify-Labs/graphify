@@ -13,6 +13,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: the incremental rebuild no longer purges AST nodes it just reported as fail-closed "kept" — the eviction pass re-checks the kept set, so a moved-file/symlink layout can't deadlock the shrink guard into refusing every update (#3697, #3695, thanks @hopstreax).
 - Fix: `graph.html` no longer crashes vis-network with a stack overflow on large graphs — nodes are seeded on a spiral before physics runs so overlap-avoidance can't blow the layout recursion (#3699, thanks @sanjaiyan-dev).
 - Fix: node and edge tooltips now show special characters literally (C++ templates like `vector<int>`, generics, `&`, quotes) instead of raw HTML entities, while the HTML sinks that need escaping keep it (#3686, #3664, thanks @hopstreax).
+- Fix: `graphify extract --cargo` no longer aborts the whole extraction, discarding the AST pass that already completed, when no `Cargo.toml` exists at the scan root — an ordinary condition for any repo whose manifest lives in a subdirectory. It now prints a note and continues with an empty cargo result instead, matching the merge step's existing handling of that shape (#3677, thanks @ExhibitJ).
 - Docs: repository links now point at `Graphify-Labs/graphify` instead of the old account (including in generated wiki output), translated READMEs use the current logo, GitHub issue/PR templates were added, and the Enterprise link was corrected (#3692, #3694, #3693, thanks @Abdul535).
 
 ## 0.9.64 (2026-09-18)
