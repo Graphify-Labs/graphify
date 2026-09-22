@@ -285,7 +285,8 @@ def report(cases: list[dict[str, Any]]) -> Path:
     unresolved = sum((_read_record(c["case_id"]) or {}).get("prepare_status") == "PREPARE_UNRESOLVED" for c in cases)
     node_caps = sum((_read_record(c["case_id"]) or {}).get("node_cap_reached", False) for c in cases)
     edge_caps = sum((_read_record(c["case_id"]) or {}).get("edge_cap_reached", False) for c in cases)
-    text += f"Preparation: {prepared} prepared, {unresolved} unresolved. Live pass/fail: {live}/{sum((_read_record(c['case_id']) or {}).get('collection_status') in ('LIVE_PASS', 'LIVE_FAILED') for c in cases)}. Node-cap saturation: {node_caps}. Edge-cap saturation: {edge_caps}. Tokens: {inputs} input, {outputs} output. Blast-radius distribution: {json.dumps(blast, sort_keys=True)}. Noul observations: {json.dumps(nouls)}.\n\n"
+    failures = sum((_read_record(c["case_id"]) or {}).get("collection_status") == "LIVE_FAILED" for c in cases)
+    text += f"Preparation: {prepared} prepared, {unresolved} unresolved. Live pass/fail: {live} pass / {failures} failed. Node-cap saturation: {node_caps}. Edge-cap saturation: {edge_caps}. Tokens: {inputs} input, {outputs} output. Blast-radius distribution: {json.dumps(blast, sort_keys=True)}. Noul observations: {json.dumps(nouls)}.\n\n"
     text += "| PR | Category | State | Nodes | Edges | Node cap? | Edge cap? | Questions | Blast radius | Consumer Noul | Test Noul | Tokens in/out |\n|---|---|---|---:|---:|---|---|---:|---|---:|---:|---|\n" + "\n".join(rows) + "\n"
     path = _root("state") / "reports" / "m1.md"; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(text, encoding="utf-8")
     print(path); return path
