@@ -247,3 +247,60 @@ def test_merge_graphs_reads_top_level_only_hyperedges(tmp_path):
     assert [h["id"] for h in data["hyperedges"]] == ["alpha::h_top"]
     assert data["hyperedges"][0]["nodes"] == ["alpha::x"]
 
+
+
+def _write_with_communities(p: Path, nodes):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [{"id": nid, "community": cid} for nid, cid in nodes],
+        "links": [],
+    }))
+
+
+def test_merge_graphs_offsets_communities_so_repos_do_not_fuse(tmp_path):
+    # #3014: every input numbers its communities from 0, so merge-graphs
+    # carrying ids across unchanged made community 0 of repo alpha and
+    # community 0 of repo beta the SAME community — the aggregated community
+    # view then fused unrelated communities into one meta-node. Each input's
+    # ids must be offset into a shared id space, with the per-repo partition
+    # kept in local_community.
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    _write_with_communities(a, [("a0", 0), ("a1", 0), ("a2", 1)])
+    _write_with_communities(b, [("b0", 0), ("b1", 1), ("b2", 1), ("b3", 2)])
+    out = tmp_path / "merged.json"
+
+    r = _run(["merge-graphs", str(a), str(b), "--out", str(out)], tmp_path)
+    assert r.returncode == 0, r.stderr
+    data = json.loads(out.read_text())
+    a_nodes = [n for n in data["nodes"] if n["id"].startswith("alpha::")]
+    b_nodes = [n for n in data["nodes"] if n["id"].startswith("beta::")]
+    # the first input keeps its original ids (offset 0)
+    assert {n["community"] for n in a_nodes} == {0, 1}
+    # the second input is shifted past the first: {2, 3, 4}, disjoint
+    assert {n["community"] for n in b_nodes} == {2, 3, 4}
+    assert not (
+        {n["community"] for n in a_nodes} & {n["community"] for n in b_nodes}
+    ), "community ids still collide across repos (#3014)"
+    # all five distinct communities survive the merge
+    assert len({n["community"] for n in data["nodes"]}) == 5
+    # the per-repo partition is preserved
+    assert {n["local_community"] for n in b_nodes} == {0, 1, 2}
+
+
+def test_merge_graphs_community_offset_is_byte_reproducible(tmp_path):
+    """For a FIXED input order, the offset assignment must be deterministic:
+    merging the same inputs twice produces byte-identical output. (Offsets are
+    position-dependent by design — reordering inputs may renumber — so this pins
+    only same-order reproducibility, which is what consumers rely on. #3014.)"""
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    _write_with_communities(a, [("a0", 0), ("a1", 0), ("a2", 1)])
+    _write_with_communities(b, [("b0", 0), ("b1", 1), ("b2", 2)])
+
+    out1 = tmp_path / "m1.json"
+    out2 = tmp_path / "m2.json"
+    assert _run(["merge-graphs", str(a), str(b), "--out", str(out1)], tmp_path).returncode == 0
+    assert _run(["merge-graphs", str(a), str(b), "--out", str(out2)], tmp_path).returncode == 0
+    assert out1.read_bytes() == out2.read_bytes(), "same-order merge is not byte-reproducible"

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from unittest.mock import patch
 
 import pytest
+
+PYTHON = sys.executable
 
 
 def _invoke_main(monkeypatch, capsys, tmp_path, args: list[str]):
@@ -72,3 +75,32 @@ def test_other_help_shapes_remain_behind_universal_guard(
     assert captured.out == "Run 'graphify --help' for full usage.\n"
     assert captured.err == ""
     assert list(tmp_path.iterdir()) == []
+
+
+def test_help_lists_prs_provider_and_export_formats():
+    """#3140: `graphify --help` must advertise prs, provider, and all export formats."""
+    r = subprocess.run(
+        [PYTHON, "-m", "graphify", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, f"--help should exit 0: {r.stderr}"
+    out = r.stdout
+    assert "  prs" in out, "`graphify --help` must list prs (#3140)"
+    assert "provider" in out, "`graphify --help` must list provider (#3140)"
+    for fmt in (
+        "html",
+        "callflow-html",
+        "obsidian",
+        "wiki",
+        "svg",
+        "graphml",
+        "neo4j",
+        "falkordb",
+    ):
+        assert f"export {fmt}" in out, (
+            f"`graphify --help` must list export {fmt} (#3140)"
+        )
+    # Silent hook internals — deliberately excluded from user-facing help.
+    assert "hook-check" not in out
+    assert "hook-guard" not in out

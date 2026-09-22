@@ -4,7 +4,7 @@ from __future__ import annotations
 import warnings
 from pathlib import Path
 
-from graphify.extractors.base import _make_id
+from graphify.extractors.base import _file_stem, _make_id
 
 
 # Standard CL definer forms that introduce data/type/variable bindings
@@ -84,7 +84,11 @@ def extract_commonlisp(path: Path) -> dict:
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
-    stem = path.stem
+    # Path-qualified, not the bare `path.stem`: same-named .lisp files in
+    # different directories must not collide (#1504). Pre-collapsed through
+    # `_make_id` because `_cl_id` would otherwise map the `/` separators to
+    # `_slash` via _CL_CHAR_MAP.
+    stem = _make_id(_file_stem(path))
     str_path = str(path)
     nodes: list[dict] = []
     edges: list[dict] = []
@@ -153,6 +157,31 @@ def extract_commonlisp(path: Path) -> dict:
                 "origin_file": str_path,
             })
         return nid
+
+    def ensure_class_ref(name: str, line: int) -> str:
+        """Resolve a superclass name to a node id.
+
+        If the class is defined in THIS file, bind to its local node. Otherwise
+        mint a SOURCELESS stub (like `add_import_stub`) so the corpus-level
+        rewire can collapse it onto the real `defclass` in another file. Without
+        this, a cross-file superclass had no matching node and its `inherits`
+        edge was pruned by the dangling-edge filter — silently erasing every
+        inheritance edge whose parent lives in a different file."""
+        local = _cl_id(stem, name)
+        if local in seen_ids:
+            return local
+        stub = _cl_id(name)
+        if stub not in seen_ids:
+            seen_ids.add(stub)
+            nodes.append({
+                "id": stub,
+                "label": name,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+                "origin_file": str_path,
+            })
+        return stub
 
     def _first_sym(node) -> str | None:
         """Get the first sym_lit text from a list_lit's children."""
@@ -227,7 +256,7 @@ def extract_commonlisp(path: Path) -> dict:
             for sc in superclass_list.children:
                 if sc.type == "sym_lit":
                     sc_name = _text(sc)
-                    sc_nid = _cl_id(stem, sc_name)
+                    sc_nid = ensure_class_ref(sc_name, superclass_list.start_point[0] + 1)
                     add_edge(class_nid, sc_nid, "inherits",
                              superclass_list.start_point[0] + 1)
 

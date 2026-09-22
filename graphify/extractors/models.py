@@ -47,6 +47,9 @@ class LanguageConfig:
     # Optional custom name resolver for functions (C, C++ declarator unwrapping)
     resolve_function_name_fn: Callable | None = None
 
+    # Optional symbol name sanitizer for node ID generation (e.g. Ruby suffixed methods)
+    sanitize_symbol_name_fn: Callable[[str], str] | None = None
+
     # Extra label formatting for functions: if True, functions get "name()" label
     function_label_parens: bool = True
 
@@ -82,12 +85,18 @@ class _SymbolExportFact:
     local_name: str | None = None
     target_path: Path | None = None
     target_name: str | None = None
+    # `export type { X } from ...`: erased at compile time, so the re-export
+    # edge it produces is stamped type_only and excluded from Import Cycles
+    # (#3123). The fact itself still participates in symbol resolution - a
+    # type import resolved through a type-only barrel is itself type-only.
+    type_only: bool = False
 
 @dataclass(frozen=True)
 class _StarExportFact:
     file_path: Path
     target_path: Path
     line: int
+    type_only: bool = False
 
 @dataclass(frozen=True)
 class _NamespaceExportFact:
@@ -95,6 +104,7 @@ class _NamespaceExportFact:
     exported_name: str
     target_path: Path
     line: int
+    type_only: bool = False
 
 @dataclass(frozen=True)
 class _SymbolUseFact:

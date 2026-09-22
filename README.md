@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/logo.png" width="300" height="140" alt="Graphify"/></a>
+  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graphify-logo.png" width="480" height="252" alt="Graphify"/></a>
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
-  <a href="https://discord.gg/598Ad9zQZ"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/2DDrEgvZb4"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
@@ -159,6 +159,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 > **Official package:** The PyPI package is `graphifyy` (double-y). Other `graphify*` packages on PyPI are not affiliated. The CLI command is still `graphify`.
 
+The official source repository is [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
+
 **Step 1 — install the package:**
 
 ```bash
@@ -255,7 +257,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
 | `falkordb` | FalkorDB push support | `uv tool install "graphifyy[falkordb]"` |
 | `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
-| `leiden` | Leiden community detection (Python < 3.13 only) | `uv tool install "graphifyy[leiden]"` |
+| `leiden` | Leiden community detection (graspologic on Python < 3.13; native backend on 3.13+) | `uv tool install "graphifyy[leiden]"` |
 | `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
 | `openai` | OpenAI / OpenAI-compatible APIs | `uv tool install "graphifyy[openai]"` |
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
@@ -269,6 +271,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST extraction (more accurate `calls`/`inherits` edges; falls back to a regex extractor when absent) | `uv tool install "graphifyy[pascal]"` |
 | `ocaml` | OCaml `.ml`/`.mli` AST extraction | `uv tool install "graphifyy[ocaml]"` |
 | `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST extraction | `uv tool install "graphifyy[commonlisp]"` |
+| `robot` | Robot Framework `.robot`/`.resource` extraction (suites, test cases, keywords, keyword-call and resource/library import edges) | `uv tool install "graphifyy[robot]"` |
 | `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
 | `all` | Everything above | `uv tool install "graphifyy[all]"` |
 
@@ -343,6 +346,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install graphifyy[terraform]`) |
 | OCaml | `.ml .mli` (requires `uv tool install graphifyy[ocaml]`) |
 | Common Lisp | `.lisp .cl .lsp .asd` (requires `uv tool install graphifyy[commonlisp]`) |
+| Robot Framework | `.robot .resource` (via the official `robot.api` parser, requires `uv tool install graphifyy[robot]`; suites, test cases, user keywords, keyword-call and Resource/Library/Variables import edges) |
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
 | Package manifests | `apm.yml` `pyproject.toml` `go.mod` `pom.xml` — one canonical package node per package (by name) plus `depends_on` edges, so a package referenced from many manifests is a single hub |
 | Docs | `.md .mdx .qmd .html .txt .rst .yaml .yml` (markdown `[text](./other.md)` links and `[[wikilinks]]` become `references` edges between docs) |
@@ -352,6 +356,21 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | Images | `.png .jpg .webp .gif` |
 | Video / Audio | `.mp4 .mov .mp3 .wav` and more (requires `uv tool install graphifyy[video]`) |
 | YouTube / URLs | any video URL (requires `uv tool install graphifyy[video]`) |
+
+Terraform module calls with a literal local `source` (`./...` or `../...`) link
+to a directory module node through an `EXTRACTED` `module_source` edge. Each
+directory node contains its scanned `.tf` files, so nested calls expose paths
+such as environment → application → base → resource. Scan the common repository
+root to include both callers and implementations. Paths resolve relative to the
+calling module, and excluded or out-of-root files are never loaded implicitly.
+
+Remote sources and source expressions are not resolved; `.tfvars`, generic
+`.hcl`, and `.tf.json` files do not define module-source targets. References to
+`module.app.output` still target the module call rather than its implementation's
+output. The graph represents source configuration, not evaluated Terraform
+instances. Incremental Terraform changes reconcile the scanned `.tf` corpus,
+reusing cached syntax for unchanged files. After upgrading an existing graph,
+run `graphify update .` once to regenerate Terraform IDs and topology.
 
 Code is extracted **locally with no API calls** (AST via tree-sitter). Everything else goes through your AI assistant's model API.
 
@@ -390,7 +409,7 @@ graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-r
 /graphify add https://arxiv.org/abs/1706.03762   # fetch a paper and add it
 /graphify add <youtube-url>                       # transcribe and add a video
 
-graphify hook install              # auto-rebuild on git commit
+graphify hook install              # auto-rebuild on commit + branch checkout (run `graphify update .` after `git pull` — see "Recommended workflow" below)
 graphify merge-graphs a.json b.json              # combine two graphs
 
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
@@ -437,11 +456,29 @@ graphify-out/cost.json        # local only
 
 > `manifest.json` is now portable — keys are stored as relative paths and re-anchored on load, so committing it is safe and avoids a full rebuild on first checkout.
 
-**Workflow:**
-1. One person runs `/graphify .` and commits `graphify-out/`.
-2. Everyone pulls — their assistant reads the graph immediately.
-3. Run `graphify hook install` to auto-rebuild after each commit (AST only, no API cost). This also sets up a git merge driver so `graph.json` is never left with conflict markers — two devs committing in parallel get their graphs union-merged automatically.
-4. When docs or papers change, run `/graphify --update` to refresh those nodes.
+### Recommended workflow
+
+Set this up once per clone. From then on, three of your normal git commands keep the graph current by themselves, and one keeps it in sync with your team:
+
+| you do | graphify does |
+|---|---|
+| `graphify hook install` (once, right after cloning) | installs the hooks below, plus a merge driver so `graph.json` never shows conflict markers |
+| `git commit` | rebuilds automatically — AST only, no API cost |
+| `git checkout` / `git switch` (branches) | rebuilds automatically (a file-only `git checkout -- <path>` does not) |
+| `git pull` / `git merge` | run `graphify update .` right after |
+| `git push` | nothing to do |
+
+The commit and branch-switch rebuilds run in the background and return immediately, so on a large repo the graph can lag the commit by a few seconds — step 5 covers the rare case where you query before it catches up.
+
+**Step by step:**
+1. Clone the repo and run `graphify hook install` once.
+2. Commit and switch branches as normal — the graph stays current on its own.
+3. After every `git pull` (or merge), run `graphify update .` to bring the graph in sync with what you just pulled. On a large or active repo, put it on autopilot with a pull alias:
+   ```bash
+   git config --global alias.gpull '!git pull && graphify update .'
+   ```
+4. When docs or papers change, run `/graphify --update` to refresh those nodes too (code and docs update independently).
+5. If a query ever seems to be missing something you just added, run `graphify update .` first, then ask again.
 
 ---
 
@@ -613,6 +650,13 @@ graphify query "..."
 
 **`graph.json` has conflict markers after two devs commit at once**
 Run `graphify hook install` — it sets up a git merge driver that union-merges `graph.json` automatically so conflicts never happen.
+
+**Graph doesn't reflect a teammate's recent changes**
+Run `graphify update .` right after `git pull` or any merge — see [Recommended workflow](#recommended-workflow). Commits and branch switches update the graph automatically via the installed hooks; syncing with a pull is the one step you run yourself. Fold it into a pull alias so it's one command either way:
+```bash
+git config --global alias.gpull '!git pull && graphify update .'
+```
+Confirm the hooks are active with `graphify hook status`; re-run `graphify hook install` after an interpreter upgrade/reinstall to refresh them.
 
 **Extraction returns empty nodes/edges for docs or PDFs**
 Docs, PDFs, and images require an LLM call — code-only corpora need no key. Check that your API key is set and the backend is correct:
@@ -807,7 +851,7 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 
 ## graphify Enterprise
 
-[**graphify Enterprise**](https://graphify.com) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working context: meetings, files, docs, and code, updating continuously in the background.
+[**graphify Enterprise**](https://graphify.com/enterprise) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working context: meetings, files, docs, and code, updating continuously in the background.
 
 Built for people and teams whose work lives across hundreds of conversations and documents they can never fully reconstruct.
 
@@ -823,7 +867,7 @@ Built for people and teams whose work lives across hundreds of conversations and
 The project uses [uv](https://docs.astral.sh/uv/) for dev workflow. Install it once, then:
 
 ```bash
-git clone https://github.com/safishamsi/graphify.git
+git clone https://github.com/Graphify-Labs/graphify.git
 cd graphify
 git checkout v8                        # active development branch
 
@@ -850,7 +894,7 @@ uv run pytest tests/ -q -k "python"    # filter by name
 ### CI parity checks
 
 The authoritative CI commands live in [`.github/workflows/`](.github/workflows/).
-For local CI-style verification, use Python 3.10 or 3.12 and run:
+For local CI-style verification, use Python 3.10, 3.12, 3.13, or 3.14 and run:
 
 ```bash
 uv sync --all-extras --frozen
@@ -878,7 +922,7 @@ is added to CI later. The Bandit and pip-audit CI steps currently use
 > policy before relying on long-path tests. Restart affected shells or applications
 > after changing either setting. For exact parity with the blocking GitHub Actions
 > test matrix, run the suite in WSL or Linux; CI currently runs on Ubuntu with
-> Python 3.10 and 3.12. Pyright is available as a local advisory check, but it is
+> Python 3.10, 3.12, 3.13, and 3.14. Pyright is available as a local advisory check, but it is
 > not currently a blocking CI job.
 
 ### Git workflow
@@ -904,7 +948,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for module responsibilities and how to ad
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://discord.gg/598Ad9zQZ"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/2DDrEgvZb4"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>

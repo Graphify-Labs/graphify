@@ -127,6 +127,32 @@ def extract_powershell(path: Path) -> dict:
                     walk(body, parent_class_nid)
             return
 
+        if t == "enum_statement":
+            # PowerShell enums are first-class type definitions (referenced via
+            # `[Color]` type literals) but were not extracted at all, so those
+            # references resolved to a sourceless phantom stub instead of the real
+            # in-file definition — and the enum's members were lost entirely.
+            name_node = next((c for c in node.children if c.type == "simple_name"), None)
+            if name_node:
+                enum_name = _read_text(name_node, source)
+                line = node.start_point[0] + 1
+                enum_nid = _make_id(stem, enum_name)
+                add_node(enum_nid, enum_name, line)
+                add_edge(file_nid, enum_nid, "contains", line)
+                for member in node.children:
+                    if member.type != "enum_member":
+                        continue
+                    mname_node = next(
+                        (c for c in member.children if c.type == "simple_name"), None)
+                    if mname_node is None:
+                        continue
+                    member_name = _read_text(mname_node, source)
+                    m_line = member.start_point[0] + 1
+                    member_nid = _make_id(enum_nid, member_name)
+                    add_node(member_nid, member_name, m_line)
+                    add_edge(enum_nid, member_nid, "contains", m_line)
+            return
+
         if t == "class_statement":
             name_node = next((c for c in node.children if c.type == "simple_name"), None)
             if name_node:
