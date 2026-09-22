@@ -4568,3 +4568,253 @@ def test_robot_path_variables_match_case_space_underscore_insensitively():
     assert _resolve_robot_import("..${/}Resource${/}common.robot", rel_src) == P("Tests/Resource/common.robot")
     # any other variable, in any casing, still yields no edge
     assert _resolve_robot_import("${Root_Dir}/x.robot", rel_src) is None
+
+
+# ---------------------------------------------------------------------------
+# GDScript (Godot 4)
+# ---------------------------------------------------------------------------
+from graphify.extract import extract_gdscript
+
+_needs_gdscript = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_gdscript") is None,
+    reason="tree-sitter-gdscript not installed",
+)
+
+
+def _godot_project(tmp_path: Path) -> Path:
+    """A minimal Godot project: two autoloads, a preload-only movement helper, an inventory."""
+    (tmp_path / "project.godot").write_text(
+        "config_version=5\n\n[application]\n\nconfig/name=\"Probe\"\n\n[autoload]\n\n"
+        "GameState=\"*res://autoload/game_state.gd\"\n"
+        "AudioBus=\"*uid://bprobe1234\"\n\n[display]\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "autoload").mkdir()
+    (tmp_path / "actors").mkdir()
+    (tmp_path / "autoload" / "game_state.gd").write_text(
+        "extends Node\n\nsignal paused\n\n\nfunc add_score(points: int) -> void:\n\tpass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "autoload" / "audio_bus.gd").write_text(
+        "extends Node\n\n\nfunc play_sfx(name: String) -> void:\n\tpass\n", encoding="utf-8",
+    )
+    (tmp_path / "autoload" / "audio_bus.gd.uid").write_text("uid://bprobe1234\n", encoding="utf-8")
+    (tmp_path / "actors" / "movement.gd").write_text(
+        "## No class_name: preload this script.\nextends RefCounted\n\n\n"
+        "static func walk_vector(direction: float) -> Vector2:\n\treturn Vector2(direction, 0.0)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "actors" / "inventory.gd").write_text(
+        "extends RefCounted\n\n\nfunc add_item(item: String) -> void:\n\tpass\n", encoding="utf-8",
+    )
+    return tmp_path
+
+
+def _by_label(result: dict, label: str) -> dict:
+    hits = [n for n in result["nodes"] if n["label"] == label]
+    assert len(hits) == 1, f"expected one node labelled {label!r}, got {hits}"
+    return hits[0]
+
+
+def _edges(result: dict, relation: str, src_label: str | None = None) -> list[dict]:
+    src_id = _by_label(result, src_label)["id"] if src_label else None
+    return [e for e in result["edges"]
+            if e["relation"] == relation and (src_id is None or e["source"] == src_id)]
+
+
+@_needs_gdscript
+def test_gdscript_fixture_declares_every_shape(tmp_path):
+    root = _godot_project(tmp_path)
+    (root / "docs").mkdir()
+    (root / "docs" / "physics.md").write_text("# Physics\n", encoding="utf-8")
+    script = root / "actors" / "player.gd"
+    script.write_text((FIXTURES / "sample.gd").read_text(encoding="utf-8"), encoding="utf-8")
+
+    r = extract_gdscript(script)
+    assert "error" not in r
+    labels = {n["label"] for n in r["nodes"]}
+    # the file node wears the class_name; members are typed
+    file_node = _by_label(r, "PlayerController")
+    assert file_node["type"] == "class" and file_node["source_location"] == "L1"
+    for want in ("clamp_speed()", "_ready()", "walk()", "jump()", "_on_jumped()", "_on_landed()",
+                 "signal jumped", "signal landed", "enum State", "MAX_JUMPS", "Movement",
+                 "Stats", ".speed_for()"):
+        assert want in labels, want
+    assert _by_label(r, "signal jumped")["type"] == "signal"
+    assert _by_label(r, "enum State")["type"] == "enum"
+    assert _by_label(r, "MAX_JUMPS")["type"] == "constant"
+    # an inner class holds its function as a method
+    inner_methods = _edges(r, "method", "Stats")
+    assert [e["target"] for e in inner_methods] == [_by_label(r, ".speed_for()")["id"]]
+
+    # imports: the two .gd preload/load targets, never the .tscn
+    imports = _edges(r, "imports", "PlayerController")
+    assert len(imports) == 2
+    assert {e["target"].endswith("_movement_gd") or e["target"].endswith("_inventory_gd")
+            for e in imports} == {True}
+    assert all(e["confidence"] == "EXTRACTED" for e in imports)
+    # `extends CharacterBody2D` is an engine class: no inherits edge at all
+    assert _edges(r, "inherits") == []
+
+    ready = _by_label(r, "_ready()")["id"]
+    use_targets = {e["target"] for e in _edges(r, "uses", "_ready()")}
+    jumped, landed = _by_label(r, "signal jumped")["id"], _by_label(r, "signal landed")["id"]
+    # connect + emit on one signal is ONE uses edge; the autoload's signal resolves too
+    assert jumped in use_targets and landed in use_targets
+    assert any(t.endswith("_game_state_paused") for t in use_targets), "autoload signal not resolved"
+    assert len(use_targets) == 3
+    # a connect names its callback
+    refs = _edges(r, "references", "_ready()")
+    callbacks = {e["target"] for e in refs if e.get("context") == "connect"}
+    assert callbacks == {_by_label(r, "_on_jumped()")["id"], _by_label(r, "_on_landed()")["id"]}
+    # Inventory.new() references the inventory script through its load alias
+    assert any(e["context"] == "instantiates" and e["target"].endswith("_inventory_gd") for e in refs)
+
+    calls = _edges(r, "calls", "_ready()")
+    targets = {e["target"] for e in calls}
+    assert _by_label(r, "clamp_speed()")["id"] in targets   # clamp_speed(3.0) and self.clamp_speed(4.0), once
+    assert any(t.endswith("_game_state_add_score") for t in targets), "autoload call not resolved"
+    assert any(t.endswith("_movement_walk_vector") for t in targets), "preload-alias call not resolved"
+    assert all(e["confidence"] == "EXTRACTED" for e in calls)
+    assert all(e["source"] == ready for e in calls)
+    # what could not be resolved is counted, never guessed, and never handed to the
+    # shared name-matching resolver
+    assert r["raw_calls"] == []
+    unresolved = {u["callee"] for u in r["unresolved_calls"]}
+    assert {"GameState.unknown_method", "apply_gravity", "unknown_free_call"} <= unresolved
+    assert "add_score" not in unresolved and "clamp_speed" not in unresolved
+
+    # documentation citations: explicit pages EXTRACTED, a bare section INFERRED
+    # against the last page named in the file; the page resolves to docs/ when it exists
+    cites = [e for e in r["edges"] if e.get("context") == "citation"]
+    by_label = {}
+    for e in cites:
+        node = next(n for n in r["nodes"] if n["id"] == e["target"])
+        by_label[node["label"]] = (e["source"], e["confidence"], node["source_file"])
+    assert by_label["movement.md §2.1"] == (file_node["id"], "EXTRACTED", "movement.md")
+    assert by_label["movement.md §2.3"] == (file_node["id"], "INFERRED", "movement.md")
+    assert by_label["conventions.md §1.2"][1] == "EXTRACTED"
+    walk = _by_label(r, "walk()")["id"]
+    assert by_label["physics.md §3.4"] == (walk, "EXTRACTED", "docs/physics.md")
+    assert by_label["physics.md §3.5"] == (walk, "INFERRED", "docs/physics.md")
+    section = next(n for n in r["nodes"] if n["label"] == "physics.md §3.4")
+    assert section["file_type"] == "doc" and section["type"] == "section"
+    assert section["source_location"] == "§3.4"
+
+
+@_needs_gdscript
+def test_gdscript_inherits_and_ancestor_calls(tmp_path):
+    root = _godot_project(tmp_path)
+    (root / "actors" / "actor.gd").write_text(
+        "extends CharacterBody2D\nclass_name Actor\n\nsignal died\n\n\n"
+        "func take_damage(amount: int) -> void:\n\tpass\n", encoding="utf-8")
+    (root / "actors" / "enemy.gd").write_text(
+        "extends Actor\n\n\nfunc patrol() -> void:\n\tpass\n", encoding="utf-8")
+    grunt = root / "actors" / "grunt.gd"
+    grunt.write_text(
+        "extends \"res://actors/enemy.gd\"\n\n\nfunc _ready() -> void:\n"
+        "\ttake_damage(1)\n\tsuper.patrol()\n\tdied.emit()\n\tActor.take_damage(2)\n",
+        encoding="utf-8")
+
+    r = extract_gdscript(grunt)
+    inherits = _edges(r, "inherits", "grunt.gd")
+    assert len(inherits) == 1 and inherits[0]["target"].endswith("_enemy_gd")
+    calls = {e["target"] for e in _edges(r, "calls", "_ready()")}
+    assert any(t.endswith("_actor_take_damage") for t in calls), "grandparent method not resolved"
+    assert any(t.endswith("_enemy_patrol") for t in calls), "super call not resolved"
+    uses = {e["target"] for e in _edges(r, "uses", "_ready()")}
+    assert any(t.endswith("_actor_died") for t in uses), "inherited signal not resolved"
+    assert r["unresolved_calls"] == []
+
+    enemy = extract_gdscript(root / "actors" / "enemy.gd")
+    assert [e["target"].endswith("_actor_gd") for e in _edges(enemy, "inherits", "enemy.gd")] == [True]
+
+
+@_needs_gdscript
+def test_gdscript_autoload_scripts_wear_their_autoload_name(tmp_path):
+    root = _godot_project(tmp_path)
+    state = extract_gdscript(root / "autoload" / "game_state.gd")
+    assert _by_label(state, "GameState")["type"] == "class"
+    # a uid:// autoload resolves through its .gd.uid sidecar
+    bus = extract_gdscript(root / "autoload" / "audio_bus.gd")
+    assert "AudioBus" in {n["label"] for n in bus["nodes"]}
+    caller = root / "actors" / "door.gd"
+    caller.write_text("extends Node\n\n\nfunc _ready() -> void:\n\tAudioBus.play_sfx(\"creak\")\n",
+                      encoding="utf-8")
+    r = extract_gdscript(caller)
+    assert any(e["target"].endswith("_audio_bus_play_sfx") for e in _edges(r, "calls", "_ready()"))
+
+
+@_needs_gdscript
+def test_gdscript_outside_a_project_still_extracts(tmp_path):
+    lone = tmp_path / "lone.gd"
+    lone.write_text(
+        "extends Node\n\nsignal done\n\n\nfunc go() -> void:\n\tdone.emit()\n\tGameState.x()\n\thelp()\n\n\n"
+        "func help() -> void:\n\tpass\n", encoding="utf-8")
+    r = extract_gdscript(lone)
+    assert "error" not in r
+    assert {n["label"] for n in r["nodes"]} >= {"lone.gd", "signal done", "go()", "help()"}
+    assert [e["target"] for e in _edges(r, "uses", "go()")] == [_by_label(r, "signal done")["id"]]
+    assert [e["target"] for e in _edges(r, "calls", "go()")] == [_by_label(r, "help()")["id"]]
+    assert {u["callee"] for u in r["unresolved_calls"]} == {"GameState.x"}
+
+
+def test_gdscript_is_dispatched_to_its_own_extractor_only(tmp_path):
+    """No other grammar reaches a .gd file: the dispatch, the family table, the
+    detect set and the watcher all name the GDScript extractor for it."""
+    from graphify.detect import CODE_EXTENSIONS
+    from graphify.extract import _DISPATCH, _get_extractor, _lang_family
+    from graphify.watch import _WATCHED_EXTENSIONS
+
+    assert _DISPATCH[".gd"] is extract_gdscript
+    assert _get_extractor(tmp_path / "thing.gd") is extract_gdscript
+    assert _lang_family("src/thing.gd") == "gdscript"
+    assert ".gd" in CODE_EXTENSIONS and ".gd" in _WATCHED_EXTENSIONS
+    assert sum(1 for _suffix, fn in _DISPATCH.items() if fn is extract_gdscript) == 1
+
+
+def test_gdscript_project_index_survives_an_unreadable_project_file(tmp_path):
+    """A project.godot that cannot be read leaves an index that still answers, never
+    raises: uid:// lookups return None (review finding on the early return)."""
+    from graphify.extractors.gdscript import _GodotProject
+
+    (tmp_path / "autoload").mkdir()
+    (tmp_path / "autoload" / "audio_bus.gd.uid").write_text("uid://bprobe1234\n", encoding="utf-8")
+    project = _GodotProject(tmp_path)          # no project.godot on disk: the read fails
+    assert project.autoloads == {}
+    assert project.resolve("uid://bprobe1234") == tmp_path / "autoload" / "audio_bus.gd"
+    assert project.resolve("uid://missing") is None
+
+
+@_needs_gdscript
+def test_gdscript_citation_pages_never_resolve_outside_the_project(tmp_path):
+    (tmp_path / "outside.md").write_text("# outside\n", encoding="utf-8")
+    (tmp_path / "proj").mkdir()
+    root = _godot_project(tmp_path / "proj")
+    script = root / "actors" / "cite.gd"
+    script.write_text("## Rules in ../../outside.md §1 and docs/../../outside.md §2.\nextends Node\n",
+                      encoding="utf-8")
+    r = extract_gdscript(script)
+    sections = [n for n in r["nodes"] if n.get("type") == "section"]
+    assert {n["label"] for n in sections} == {"outside.md §1", "outside.md §2"}
+    for n in sections:
+        assert ".." not in n["source_file"] and n["source_file"] == "outside.md"
+
+
+@_needs_gdscript
+def test_gdscript_bare_citation_takes_the_page_named_before_it(tmp_path):
+    root = _godot_project(tmp_path)
+    script = root / "actors" / "order.gd"
+    script.write_text(
+        "## See §9.9 first, then guide.md §1.1 and §1.2.\n"
+        "## Later, §1.3 alone.\n"
+        "extends Node\n", encoding="utf-8")
+    r = extract_gdscript(script)
+    by_label = {}
+    for e in (e for e in r["edges"] if e.get("context") == "citation"):
+        node = next(n for n in r["nodes"] if n["id"] == e["target"])
+        by_label[node["label"]] = e["confidence"]
+    # no page precedes §9.9, so it is not attributed to a page named after it
+    assert "guide.md §9.9" not in by_label
+    assert by_label == {"guide.md §1.1": "EXTRACTED", "guide.md §1.2": "INFERRED",
+                        "guide.md §1.3": "INFERRED"}
