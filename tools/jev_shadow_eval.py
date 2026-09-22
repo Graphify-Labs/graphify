@@ -18,6 +18,8 @@ from typing import Any
 from graphify.jev_shadow import JevShadowError, _fingerprint, call_typesafe, load_task, outbound_payload, sidecar
 
 SCHEMA_VERSION = 1
+EXTRACTION_IDENTITY_VERSION = 1
+EXTRACTION_OPTIONS = ("code-only", "no-cluster", "force")
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "eval" / "jev-shadow" / "cases-v1.json"
 
@@ -177,15 +179,51 @@ def _archive(sha: str, destination: Path) -> None:
             archive.extractall(destination, filter="data")
 
 
-def _cache_key(evaluator_sha: str, source_snapshot_sha: str) -> str:
-    return _sha({"schema_version": SCHEMA_VERSION, "evaluator_sha": evaluator_sha, "source_snapshot_sha": source_snapshot_sha, "extract": ["code-only", "no-cluster", "force"]})
+def _extraction_paths(root: Path = ROOT) -> list[Path]:
+    paths = [path for path in (root / "graphify").rglob("*") if path.is_file() and "__pycache__" not in path.parts and path.suffix not in {".pyc", ".pyo"}]
+    paths.extend(path for path in (root / "pyproject.toml", root / "uv.lock") if path.is_file())
+    return sorted(paths)
 
 
-def _extract(source_snapshot_sha: str, evaluator_sha: str) -> tuple[Path, bool]:
-    cache = _root("cache") / _cache_key(evaluator_sha, source_snapshot_sha)
+def _extraction_identity(root: Path = ROOT) -> str:
+    """Identify inputs that can change historical Graphify extraction."""
+    files = []
+    for path in _extraction_paths(root):
+        files.append({"path": path.relative_to(root).as_posix(), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    return _sha({"version": EXTRACTION_IDENTITY_VERSION, "options": EXTRACTION_OPTIONS, "files": files})
+
+
+def _extraction_identity_at_commit(commit: str) -> str:
+    """Compute the same inspectable identity for a historical evaluator commit."""
+    names = _git("ls-tree", "-r", "--name-only", commit).splitlines()
+    wanted = [name for name in names if name.startswith("graphify/") or name in {"pyproject.toml", "uv.lock"}]
+    files = []
+    for name in wanted:
+        content = subprocess.run(["git", "-C", str(ROOT), "show", f"{commit}:{name}"], check=True, stdout=subprocess.PIPE).stdout
+        files.append({"path": name, "sha256": hashlib.sha256(content).hexdigest()})
+    return _sha({"version": EXTRACTION_IDENTITY_VERSION, "options": EXTRACTION_OPTIONS, "files": files})
+
+
+def _cache_key(extraction_identity: str, source_snapshot_sha: str) -> str:
+    return _sha({"schema_version": SCHEMA_VERSION, "extraction_identity": extraction_identity, "source_snapshot_sha": source_snapshot_sha, "extract": EXTRACTION_OPTIONS})
+
+
+def _extract(source_snapshot_sha: str, extraction_identity: str, previous: dict[str, Any] | None = None) -> tuple[Path, bool]:
+    cache = _root("cache") / _cache_key(extraction_identity, source_snapshot_sha)
     graph = cache / "graphify-out" / "graph.json"
     if graph.exists():
         return graph, True
+    if previous and previous.get("source_snapshot_sha") == source_snapshot_sha:
+        previous_graph = Path(previous.get("graph_path", ""))
+        previous_fingerprint = previous.get("graph_fingerprint")
+        old_identity = previous.get("evaluator_identity")
+        if not old_identity and previous.get("evaluator_sha"):
+            try:
+                old_identity = _extraction_identity_at_commit(previous["evaluator_sha"])
+            except (OSError, subprocess.CalledProcessError):
+                old_identity = None
+        if old_identity == extraction_identity and previous_graph.exists() and previous_fingerprint == hashlib.sha256(previous_graph.read_bytes()).hexdigest():
+            return previous_graph, True
     cache_root = _root("cache")
     cache_root.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix="graphify-jev-eval-", dir=str(cache_root)))
@@ -213,6 +251,7 @@ def _record_path(case_id: str) -> Path:
 
 def prepare(cases: list[dict[str, Any]]) -> None:
     evaluator_sha = _git("rev-parse", "HEAD")
+    extraction_identity = _extraction_identity()
     for case in cases:
         previous = _read_record(case["case_id"])
         if previous:
@@ -223,7 +262,7 @@ def prepare(cases: list[dict[str, Any]]) -> None:
             reason = "SUPERSEDED_INVALID_SOURCE_SNAPSHOT" if invalid_source else "SUPERSEDED_PREVIOUS_PREPARATION"
             _archive_record(previous, case["case_id"], reason)
         reported_base_sha = _reported_base(case)
-        record: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "case": case, "case_identity": _case_identity(case), "evaluator_sha": evaluator_sha, "prepare_status": "PREPARE_FAILED", "cache_hit": False, "reported_base_sha": reported_base_sha, "head_sha": case["head_sha"], "merge_base_sha": case["merge_base_sha"], "source_snapshot_sha": case["merge_base_sha"], "historical_diff_method": "merge-base-to-head", "historical_provenance": "PR_PATCH_PROVENANCE_VERIFIED"}
+        record: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "case": case, "case_identity": _case_identity(case), "evaluator_sha": evaluator_sha, "evaluator_identity": extraction_identity, "prepare_status": "PREPARE_FAILED", "cache_hit": False, "reported_base_sha": reported_base_sha, "head_sha": case["head_sha"], "merge_base_sha": case["merge_base_sha"], "source_snapshot_sha": case["merge_base_sha"], "historical_diff_method": "merge-base-to-head", "historical_provenance": "UNVERIFIED"}
         try:
             authoritative = authoritative_changed_files(reported_base_sha, case["head_sha"])
             merge_base_sha = _git("merge-base", reported_base_sha, case["head_sha"])
@@ -234,6 +273,7 @@ def prepare(cases: list[dict[str, Any]]) -> None:
             if actual_paths != set(case["changed_files"]):
                 raise ValueError("manifest changed files do not exactly match historical PR patch")
             record.update({"merge_base_sha": merge_base_sha, "source_snapshot_sha": merge_base_sha, "pr_changed_file_count": case["changed_file_count"], "pr_changed_files": case["changed_files"], "changed_file_status": authoritative})
+            record["historical_provenance"] = "PR_PATCH_PROVENANCE_VERIFIED"
             base_paths = set(_git("ls-tree", "-r", "--name-only", merge_base_sha).splitlines())
             present = [path for path in case["changed_files"] if path in base_paths]
             missing = [path for path in case["changed_files"] if path not in base_paths]
@@ -241,7 +281,7 @@ def prepare(cases: list[dict[str, Any]]) -> None:
             if not present:
                 record.update({"prepare_status": "PREPARE_UNRESOLVED", "reason": "no changed file exists in base snapshot", "base_present_changed_files": present, "base_missing_changed_files": missing})
             else:
-                graph, hit = _extract(merge_base_sha, evaluator_sha)
+                graph, hit = _extract(merge_base_sha, extraction_identity, previous)
                 payload = outbound_payload(task, graph)
                 seeds = [node["id"] for node in payload["state"]["candidates"]["nodes"] if node["source_file"] in present]
                 if not seeds:
@@ -269,10 +309,25 @@ def _read_record(case_id: str) -> dict[str, Any] | None:
     return _json(path) if path.exists() else None
 
 
+def _historical_provenance_verified(case: dict[str, Any], record: dict[str, Any] | None) -> bool:
+    """Require current, complete historical evidence before reporting verification."""
+    if not record or record.get("error") or record.get("historical_provenance") != "PR_PATCH_PROVENANCE_VERIFIED":
+        return False
+    if record.get("merge_base_sha") != case.get("merge_base_sha") or record.get("source_snapshot_sha") != case.get("merge_base_sha"):
+        return False
+    if record.get("pr_changed_file_count") != case.get("changed_file_count"):
+        return False
+    try:
+        verify_changed_file_evidence(record.get("changed_file_status", []), case["github_changed_files"])
+    except (TypeError, ValueError, KeyError):
+        return False
+    return {item.get("path") for item in record.get("changed_file_status", [])} == set(case.get("changed_files", []))
+
+
 def _stale_reasons(case: dict[str, Any], record: dict[str, Any], evaluator_sha: str) -> list[str]:
     reasons = []
-    if record.get("evaluator_sha") != evaluator_sha:
-        reasons.append("evaluator SHA changed")
+    if record.get("evaluator_identity") != _extraction_identity():
+        reasons.append("extraction identity changed")
     if record.get("case_identity") != _case_identity(case):
         reasons.append("manifest case changed")
     if record.get("source_snapshot_sha") != record.get("merge_base_sha"):
@@ -357,7 +412,7 @@ def report(cases: list[dict[str, Any]]) -> Path:
         rows.append(f"| #{case['pr']} | {case['category']} | {state} | {record.get('candidate_node_count','-')} | {record.get('candidate_edge_count','-')} | {'yes' if record.get('node_cap_reached') else 'no'} | {'yes' if record.get('edge_cap_reached') else 'no'} | {record.get('question_count','-')} | {choice} | {consumer} | {tests} | {usage.get('input_tokens','-')}/{usage.get('output_tokens','-')} |")
     prepared = sum((_read_record(c["case_id"]) or {}).get("prepare_status") == "PREPARED" for c in cases)
     live = sum((_read_record(c["case_id"]) or {}).get("collection_status") == "LIVE_PASS" for c in cases)
-    verified = all((_read_record(c["case_id"]) or {}).get("historical_provenance") == "PR_PATCH_PROVENANCE_VERIFIED" and (_read_record(c["case_id"]) or {}).get("source_snapshot_sha") == c["merge_base_sha"] for c in cases)
+    verified = all(_historical_provenance_verified(c, _read_record(c["case_id"])) for c in cases)
     provenance = "PR-patch provenance verified 12/12" if verified and len(cases) == 12 else "PR-patch provenance unresolved"
     divergence = sum(_reported_base(c) != c["merge_base_sha"] for c in cases)
     returned_models = sorted({(_read_record(c["case_id"]) or {}).get("returned_model") for c in cases if (_read_record(c["case_id"]) or {}).get("returned_model")})
@@ -376,7 +431,7 @@ def report(cases: list[dict[str, Any]]) -> Path:
         record = _read_record(case["case_id"]) or {}
         try:
             verify_changed_file_evidence(record.get("changed_file_status", []), case["github_changed_files"])
-            evidence_ok = record.get("historical_provenance") == "PR_PATCH_PROVENANCE_VERIFIED" and record.get("pr_changed_file_count") == case["changed_file_count"]
+            evidence_ok = _historical_provenance_verified(case, record)
         except (TypeError, ValueError):
             evidence_ok = False
         text += f"| #{case['pr']} | {_reported_base(case)} | {case['merge_base_sha']} | {'yes' if _reported_base(case) == case['merge_base_sha'] else 'no'} | {case['changed_file_count']} | {'yes' if evidence_ok else 'no'} |\n"

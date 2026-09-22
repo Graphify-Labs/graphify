@@ -41,6 +41,48 @@ def test_cache_key_names_actual_source_snapshot():
     assert evaluation._cache_key("a" * 40, "source" * 8) != evaluation._cache_key("a" * 40, "reported" * 8)
 
 
+def _identity_fixture(tmp_path):
+    (tmp_path / "graphify").mkdir()
+    (tmp_path / "graphify" / "extract.py").write_text("extract-v1")
+    (tmp_path / "pyproject.toml").write_text("project-v1")
+    (tmp_path / "uv.lock").write_text("lock-v1")
+    return tmp_path
+
+
+def test_eval_only_source_change_does_not_invalidate_extraction_identity(tmp_path):
+    root = _identity_fixture(tmp_path)
+    first = evaluation._extraction_identity(root)
+    (root / "tools").mkdir()
+    (root / "tools" / "jev_shadow_eval.py").write_text("eval-v2")
+    assert evaluation._extraction_identity(root) == first
+
+
+def test_production_graphify_change_invalidates_extraction_identity(tmp_path):
+    root = _identity_fixture(tmp_path)
+    first = evaluation._extraction_identity(root)
+    (root / "graphify" / "extract.py").write_text("extract-v2")
+    assert evaluation._extraction_identity(root) != first
+
+
+def test_dependency_lock_change_invalidates_extraction_identity(tmp_path):
+    root = _identity_fixture(tmp_path)
+    first = evaluation._extraction_identity(root)
+    (root / "uv.lock").write_text("lock-v2")
+    assert evaluation._extraction_identity(root) != first
+
+
+def test_source_snapshot_change_invalidates_graph_cache_key():
+    identity = "identity"
+    assert evaluation._cache_key(identity, "a" * 40) != evaluation._cache_key(identity, "b" * 40)
+
+
+def test_extraction_options_change_invalidates_extraction_identity(tmp_path, monkeypatch):
+    root = _identity_fixture(tmp_path)
+    first = evaluation._extraction_identity(root)
+    monkeypatch.setattr(evaluation, "EXTRACTION_OPTIONS", ("code-only", "clustered", "force"))
+    assert evaluation._extraction_identity(root) != first
+
+
 def test_collect_without_live_never_reads_key(monkeypatch):
     monkeypatch.setenv("TYPESAFE_API_KEY", "should-not-be-read")
     with pytest.raises(ValueError, match="--live"):
@@ -167,14 +209,60 @@ def test_prepare_uses_merge_base_for_tree_and_extraction(monkeypatch, tmp_path):
     monkeypatch.setattr(evaluation, "authoritative_changed_files", lambda *_args: [{"path": "a.py", "status": "modified"}])
     graph = tmp_path / "graph.json"
     graph.write_bytes(b"graph")
-    monkeypatch.setattr(evaluation, "_extract", lambda source, evaluator: (calls.append(("extract", source, evaluator)) or (graph, False)))
+    monkeypatch.setattr(evaluation, "_extract", lambda source, evaluator, previous=None: (calls.append(("extract", source, evaluator)) or (graph, False)))
     monkeypatch.setattr(evaluation, "outbound_payload", lambda *_args: {"state": {"candidates": {"nodes": [{"id": "n", "source_file": "a.py"}], "edges": []}, "graph_fingerprint": "g"}, "questions": [], "model": "model"})
     evaluation.prepare([case()])
     record = evaluation._read_record("graphify-pr-1")
     assert record["reported_base_sha"] == "a" * 40
     assert record["source_snapshot_sha"] == record["merge_base_sha"] == "c" * 40
     assert ("ls-tree", "-r", "--name-only", "c" * 40) in calls
-    assert ("extract", "c" * 40, "e" * 40) in calls
+    assert ("extract", "c" * 40, evaluation._extraction_identity()) in calls
+
+
+def _verified_record(value=None, **extra):
+    record = {"historical_provenance": "PR_PATCH_PROVENANCE_VERIFIED", "merge_base_sha": "c" * 40,
+              "source_snapshot_sha": "c" * 40, "pr_changed_file_count": 1,
+              "changed_file_status": [{"path": "a.py", "status": "modified"}]}
+    record.update(extra)
+    return record
+
+
+def test_changed_file_evidence_mismatch_leaves_provenance_unverified(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    monkeypatch.setattr(evaluation, "_git", lambda *args: "c" * 40 if args and args[0] == "merge-base" else ("e" * 40 if args and args[0] == "rev-parse" else "a.py"))
+    monkeypatch.setattr(evaluation, "authoritative_changed_files", lambda *_args: [{"path": "wrong.py", "status": "modified"}])
+    evaluation.prepare([case()])
+    record = evaluation._read_record("graphify-pr-1")
+    assert record["historical_provenance"] == "UNVERIFIED"
+
+
+def test_merge_base_mismatch_leaves_provenance_unverified(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    monkeypatch.setattr(evaluation, "_git", lambda *args: "d" * 40 if args and args[0] == "merge-base" else "e" * 40)
+    monkeypatch.setattr(evaluation, "authoritative_changed_files", lambda *_args: [{"path": "a.py", "status": "modified"}])
+    evaluation.prepare([case()])
+    assert evaluation._read_record("graphify-pr-1")["historical_provenance"] == "UNVERIFIED"
+
+
+def test_report_does_not_overclaim_after_failed_case(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    evaluation._write(evaluation._record_path("graphify-pr-1"), _verified_record(error="historical mismatch"))
+    text = evaluation.report([case()] * 12).read_text()
+    assert "PR-patch provenance verified 12/12" not in text
+
+
+def test_unresolved_structural_case_with_git_evidence_is_verified(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    evaluation._write(evaluation._record_path("graphify-pr-1"), _verified_record(prepare_status="PREPARE_UNRESOLVED"))
+    assert evaluation._historical_provenance_verified(case(), evaluation._read_record("graphify-pr-1"))
+
+
+def test_all_valid_cases_retain_verified_report_wording(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    cases = [case(case_id=f"graphify-pr-{i}", pr=i) for i in range(1, 13)]
+    for item in cases:
+        evaluation._write(evaluation._record_path(item["case_id"]), _verified_record())
+    assert "PR-patch provenance verified 12/12" in evaluation.report(cases).read_text()
 
 
 def test_collect_stale_evaluator_makes_zero_typesafe_calls(monkeypatch, tmp_path):
