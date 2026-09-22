@@ -200,7 +200,7 @@ def test_repointed_target_file_tracks_definition_and_preserves_source_site(tmp_p
     original = resolution._apply_symbol_resolution_facts
     observed = []
 
-    def tracked(paths, nodes, edges, root, facts):
+    def tracked(paths, nodes, edges, root, facts, context_nodes=None):
         def authored():
             return next(
                 e
@@ -211,7 +211,7 @@ def test_repointed_target_file_tracks_definition_and_preserves_source_site(tmp_p
             )
 
         before = dict(authored())
-        original(paths, nodes, edges, root, facts)
+        original(paths, nodes, edges, root, facts, context_nodes)
         observed.append((before, dict(authored())))
 
     monkeypatch.setattr(resolution, "_apply_symbol_resolution_facts", tracked)

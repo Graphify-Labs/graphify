@@ -1117,6 +1117,7 @@ def _apply_symbol_resolution_facts(
     edges: list[dict],
     root: Path,
     facts: _SymbolResolutionFacts,
+    context_nodes: list[dict] | None = None,
 ) -> None:
     """Apply language-provided import/export/use facts to graph edges."""
     if not (
@@ -1155,6 +1156,33 @@ def _apply_symbol_resolution_facts(
             member_symbol_keys.add(key)
         else:
             member_symbol_keys.discard(key)
+        symbol_nodes[key] = str(node["id"])
+
+    # #2230: `nodes` covers only files extracted THIS run. On an incremental
+    # rebuild that re-extracts a single changed file, an import target
+    # defined in an unchanged neighbor (e.g. `exc.py`) has no node in `nodes`,
+    # so the lookups below found nothing and the resulting INFERRED
+    # calls/imports edge was silently dropped — even though the neighbor's
+    # node still exists in the merged graph. `context_nodes` is the same
+    # caller-supplied unchanged-corpus set that already widens the direct-
+    # call/indirect-call indexes further down in extract() (#2406); folding
+    # it in here too lets cross-file symbol resolution bind to it. Batch
+    # nodes win on key collision (skip keys `nodes` already populated), and
+    # nothing here is appended to `nodes`/`all_nodes` — ownership of these
+    # symbols stays with the unchanged files that already emit them.
+    for node in context_nodes or ():
+        source_path = _js_source_path(str(node.get("source_file", "")), root)
+        if source_path is None:
+            continue
+        raw_label = str(node.get("label", "")).strip()
+        label = raw_label.strip("()").lstrip(".")
+        if not label or not node.get("id"):
+            continue
+        key = (source_path, label)
+        if key in symbol_nodes:
+            continue
+        if raw_label.startswith("."):
+            member_symbol_keys.add(key)
         symbol_nodes[key] = str(node["id"])
 
     def ensure_symbol_node(path: Path, name: str, line: int) -> str:
@@ -2399,17 +2427,20 @@ def _augment_symbol_resolution_edges(
     nodes: list[dict],
     edges: list[dict],
     root: Path,
+    context_nodes: list[dict] | None = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
     _collect_js_symbol_resolution_facts(paths, facts)
     _collect_python_symbol_resolution_facts(paths, root, facts)
-    _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
+    _apply_symbol_resolution_facts(paths, nodes, edges, root, facts, context_nodes)
 
 def _resolve_cross_file_imports(
     per_file: list[dict],
     paths: list[Path],
     all_nodes: list[dict] | None = None,
     all_edges: list[dict] | None = None,
+    context_nodes: list[dict] | None = None,
+    root: Path | None = None,
 ) -> list[dict]:
     """
     Two-pass import resolution: turn file-level imports into class-level edges.
@@ -2460,6 +2491,44 @@ def _resolve_cross_file_imports(
                 stem_to_entities.setdefault(fq_stem, {})[label] = nid
                 if src_path.stem not in bare_to_qualified:
                     bare_to_qualified[src_path.stem] = fq_stem
+
+    # #2230: `per_file` covers only files re-extracted THIS run, so on an
+    # incremental run that re-extracts a single changed file, a class it
+    # imports from an unchanged neighbor is absent from stem_to_entities and
+    # `resolve_import` below silently finds nothing — the resulting `uses`
+    # edge disappears even though the neighbor's node still exists in the
+    # merged graph. `context_nodes` is the same caller-supplied
+    # unchanged-corpus set threaded through `_apply_symbol_resolution_facts`
+    # above; folding it into Pass 1's index (but never into `paths`/`per_file`,
+    # so Pass 2 below still only walks the re-extracted files) lets an import
+    # of an unchanged symbol resolve again. Batch entries win on collision.
+    for node in context_nodes or ():
+        src = node.get("source_file", "")
+        if not src:
+            continue
+        src_path = Path(src)
+        # Persisted context nodes (from the caller's stored graph) carry a
+        # root-relative source_file, while this batch's own nodes carry the
+        # absolute path form extract() was invoked with; _file_stem stringifies
+        # whatever it is given, so the two forms mint different keys for the
+        # same file unless anchored to a common (absolute) form first.
+        if root is not None and not src_path.is_absolute():
+            try:
+                src_path = (root / src_path).resolve()
+            except (OSError, RuntimeError):
+                pass
+        fq_stem = _file_stem(src_path)
+        label = node.get("label", "")
+        nid = node.get("id", "")
+        if (
+            label
+            and not label.endswith((")", ".py"))
+            and "_" not in label[:1]
+            and node.get("file_type") != "rationale"
+            and label not in stem_to_entities.get(fq_stem, {})
+        ):
+            stem_to_entities.setdefault(fq_stem, {})[label] = nid
+            bare_to_qualified.setdefault(src_path.stem, fq_stem)
 
     # Pass 2: for each file, find `from .X import A, B, C`, then attribute the
     # `uses` edge to the specific local symbol (class OR function) whose body

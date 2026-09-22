@@ -7165,7 +7165,16 @@ def extract(
     # marker set in the per-file extractor. Populated just before the pass that uses it.
     callable_nids: set[str] = set()
 
-    _augment_symbol_resolution_edges(paths, all_nodes, all_edges, root)
+    # #2230: extend cross-file symbol resolution with the same caller-supplied
+    # unchanged-corpus nodes (resolution_context_nodes) that already widen the
+    # direct-call/indirect-call indexes below (#2406) — otherwise an
+    # incremental run that re-extracts only a changed file can never rebind
+    # its INFERRED calls/imports edges to a symbol defined in an unchanged
+    # neighbor, and the merge drops the graph's old copies of those edges
+    # since the changed file's per-file result replaced them.
+    _augment_symbol_resolution_edges(
+        paths, all_nodes, all_edges, root, resolution_context_nodes
+    )
 
     # Merge a header-declared class (and its methods) with its sibling-impl
     # definition into ONE node (C/C++/ObjC #1547/#1556). Runs BEFORE the id-remap
@@ -7641,7 +7650,10 @@ def extract(
     if py_paths:
         py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
         try:
-            cross_file_edges = _resolve_cross_file_imports(py_results, py_paths, all_nodes, all_edges)
+            cross_file_edges = _resolve_cross_file_imports(
+                py_results, py_paths, all_nodes, all_edges,
+                resolution_context_nodes, root,
+            )
             all_edges.extend(cross_file_edges)
         except Exception as exc:
             import logging
