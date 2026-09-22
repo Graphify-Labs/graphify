@@ -165,3 +165,63 @@ def test_interface_method_signature_keeps_type_references(tmp_path: Path, signat
     warm = _extract(tmp_path)
     assert _signature_refs(warm, "Service") == (interface_id, interface_refs)
     assert _signature_refs(warm, "Impl") == (concrete_id, concrete_refs)
+
+
+@pytest.mark.parametrize("names", [("Run", "run"), ("run", "Run"), ("Run", "RUN"), ("RUN", "Run")])
+def test_case_only_interface_methods_keep_separate_signature_owners(tmp_path: Path, names):
+    path = tmp_path / "contract.go"
+    path.write_text(
+        "package contracts\n\n"
+        "type InputA struct{}\n"
+        "type InputB struct{}\n"
+        "type Service interface {\n"
+        f"    {names[0]}(InputA)\n"
+        f"    {names[1]}(InputB)\n"
+        "}\n"
+        "type Other interface { Run(InputA) }\n",
+        encoding="utf-8",
+    )
+
+    def owned_refs(result):
+        by_id = {node["id"]: node for node in result["nodes"]}
+        methods = {
+            by_id[edge["target"]]["label"]: edge["target"]
+            for edge in result["edges"]
+            if edge.get("relation") == "method"
+            and by_id[edge["source"]].get("label") == "Service"
+        }
+        assert set(methods) == {f".{name}()" for name in names}
+        assert len(set(methods.values())) == 2
+        for name, expected in zip(names, ("InputA", "InputB")):
+            refs = [
+                edge for edge in result["edges"]
+                if edge.get("relation") == "references"
+                and edge["source"] == methods[f".{name}()"]
+            ]
+            assert len(refs) == 1
+            assert by_id[refs[0]["target"]]["label"] == expected
+            assert refs[0]["context"] == "parameter_type"
+        other_id, other_refs = _signature_refs(result, "Other")
+        assert other_id not in methods.values()
+        assert [edge["target_label"] for edge in other_refs] == ["InputA"]
+        return methods, other_id
+
+    result = _extract(tmp_path)
+    methods, other_id = owned_refs(result)
+    assert owned_refs(_extract(tmp_path)) == (methods, other_id)
+
+    # Declaration order cannot choose the canonical owner of a collision.
+    path.write_text(path.read_text().replace(
+        f"    {names[0]}(InputA)\n    {names[1]}(InputB)\n",
+        f"    {names[1]}(InputB)\n    {names[0]}(InputA)\n",
+    ))
+    assert owned_refs(_extract(tmp_path)) == (methods, other_id)
+
+    # Removing the private sibling preserves the exported ID and other owners.
+    if "run" in names:
+        source = path.read_text()
+        path.write_text("\n".join(line for line in source.splitlines() if "    run(" not in line))
+        without_private = _extract(tmp_path)
+        exported_id, _ = _signature_refs(without_private, "Service")
+        assert exported_id == methods[".Run()"]
+        assert _signature_refs(without_private, "Other")[0] == other_id
