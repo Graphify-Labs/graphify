@@ -390,6 +390,7 @@ def extract_go(path: Path) -> dict:
                             m_nid = symbol_nid(_make_id(type_nid, m_name), m_name)
                             add_node(m_nid, f".{m_name}()", m_line)
                             add_edge(type_nid, m_nid, "method", m_line)
+                            emit_go_method_refs(elem, m_nid, m_line)
                             continue
                         if elem.type != "type_elem":
                             continue
