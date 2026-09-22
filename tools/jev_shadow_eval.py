@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -71,7 +72,39 @@ def _git(*args: str, capture: bool = True) -> str:
 
 def _ensure_object(sha: str) -> None:
     if subprocess.run(["git", "-C", str(ROOT), "cat-file", "-e", f"{sha}^{{commit}}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
-        subprocess.run(["git", "-C", str(ROOT), "fetch", "upstream", sha], check=True)
+        for remote in ("origin", "upstream"):
+            if subprocess.run(["git", "-C", str(ROOT), "fetch", remote, sha], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                break
+        else:
+            raise RuntimeError(f"historical Git object is unavailable: {sha}")
+
+
+def authoritative_changed_files(base_sha: str, head_sha: str) -> list[dict[str, Any]]:
+    """Return the exact changed paths and Git status for the historical pair."""
+    _ensure_object(base_sha)
+    _ensure_object(head_sha)
+    output = _git("diff", "--name-status", "--find-renames", base_sha, head_sha)
+    changes: list[dict[str, Any]] = []
+    for line in output.splitlines():
+        fields = line.split("\t")
+        if len(fields) < 2:
+            raise ValueError(f"malformed Git name-status output: {line!r}")
+        status = fields[0]
+        paths = fields[1:] if status.startswith("R") or status.startswith("C") else fields[1:2]
+        for path in paths:
+            changes.append({"path": path, "status": status})
+    return changes
+
+
+def _case_identity(case: dict[str, Any]) -> str:
+    return _fingerprint(case)
+
+
+def _archive_record(record: dict[str, Any], case_id: str) -> None:
+    if not record:
+        return
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    _write(_root("state") / "history" / f"{stamp}-{case_id}.json", record)
 
 
 def _archive(sha: str, destination: Path) -> None:
@@ -120,9 +153,15 @@ def _record_path(case_id: str) -> Path:
 def prepare(cases: list[dict[str, Any]]) -> None:
     evaluator_sha = _git("rev-parse", "HEAD")
     for case in cases:
-        record: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "case": case, "evaluator_sha": evaluator_sha, "prepare_status": "PREPARE_FAILED", "cache_hit": False}
+        previous = _read_record(case["case_id"])
+        if previous and (previous.get("evaluator_sha") != evaluator_sha or previous.get("case_identity") != _case_identity(case)):
+            _archive_record(previous, case["case_id"])
+        record: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "case": case, "case_identity": _case_identity(case), "evaluator_sha": evaluator_sha, "prepare_status": "PREPARE_FAILED", "cache_hit": False}
         try:
-            _ensure_object(case["base_sha"])
+            authoritative = authoritative_changed_files(case["base_sha"], case["head_sha"])
+            actual_paths = [item["path"] for item in authoritative]
+            if actual_paths != case["changed_files"]:
+                raise ValueError("manifest changed_files does not exactly match historical Git diff")
             base_paths = set(_git("ls-tree", "-r", "--name-only", case["base_sha"]).splitlines())
             present = [path for path in case["changed_files"] if path in base_paths]
             missing = [path for path in case["changed_files"] if path not in base_paths]
@@ -139,7 +178,8 @@ def prepare(cases: list[dict[str, Any]]) -> None:
                     graph_fingerprint = payload["state"]["graph_fingerprint"]
                     payload_path = _root("state") / "payloads" / f"{case['case_id']}.json"
                     _write(payload_path, payload)
-                    record.update({"prepare_status": "PREPARED", "base_present_changed_files": present, "base_missing_changed_files": missing, "task": task, "task_fingerprint": _fingerprint(task), "graph_path": str(graph), "graph_fingerprint": graph_fingerprint, "seed_node_ids": seeds, "candidate_node_count": len(payload["state"]["candidates"]["nodes"]), "candidate_edge_count": len(payload["state"]["candidates"]["edges"]), "question_count": len(payload["questions"]), "payload_path": str(payload_path), "payload_fingerprint": _sha(payload), "cache_hit": hit})
+                    record.update({"prepare_status": "PREPARED", "changed_file_status": authoritative, "base_present_changed_files": present, "base_missing_changed_files": missing, "task": task, "task_fingerprint": _fingerprint(task), "graph_path": str(graph), "graph_fingerprint": graph_fingerprint, "seed_node_ids": seeds, "candidate_node_count": len(payload["state"]["candidates"]["nodes"]), "candidate_edge_count": len(payload["state"]["candidates"]["edges"]), "node_cap_reached": len(payload["state"]["candidates"]["nodes"]) >= 40, "edge_cap_reached": len(payload["state"]["candidates"]["edges"]) >= 80, "question_count": len(payload["questions"]), "payload_path": str(payload_path), "payload_fingerprint": _sha(payload), "payload_graph_fingerprint": payload["state"]["graph_fingerprint"], "cache_hit": hit})
+            record["changed_file_status"] = authoritative
         except JevShadowError as exc:
             # A graph with no deterministic changed-file seed is an expected,
             # evidence-bearing historical outcome, not a failed extraction.
@@ -157,11 +197,37 @@ def _read_record(case_id: str) -> dict[str, Any] | None:
     return _json(path) if path.exists() else None
 
 
+def _stale_reasons(case: dict[str, Any], record: dict[str, Any], evaluator_sha: str) -> list[str]:
+    reasons = []
+    if record.get("evaluator_sha") != evaluator_sha:
+        reasons.append("evaluator SHA changed")
+    if record.get("case_identity") != _case_identity(case):
+        reasons.append("manifest case changed")
+    task = record.get("task")
+    if not isinstance(task, dict) or record.get("task_fingerprint") != _fingerprint(task):
+        reasons.append("task fingerprint changed")
+    graph_path = Path(record["graph_path"]) if record.get("graph_path") else None
+    payload_path = Path(record["payload_path"]) if record.get("payload_path") else None
+    try:
+        if not graph_path or hashlib.sha256(graph_path.read_bytes()).hexdigest() != record.get("graph_fingerprint"):
+            reasons.append("graph fingerprint changed")
+        payload = _json(payload_path) if payload_path else None
+        if payload is None or _sha(payload) != record.get("payload_fingerprint"):
+            reasons.append("payload fingerprint changed")
+        if payload is None or payload.get("state", {}).get("graph_fingerprint") != record.get("payload_graph_fingerprint", record.get("graph_fingerprint")):
+            reasons.append("payload graph fingerprint changed")
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        reasons.append("prepared evidence is unavailable")
+    return reasons
+
+
 def status(cases: list[dict[str, Any]]) -> None:
     totals = {"prepared": 0, "unresolved": 0, "stale": 0, "live-collected": 0, "failed": 0}
+    evaluator_sha = _git("rev-parse", "HEAD")
     for case in cases:
         record = _read_record(case["case_id"])
-        value = "unresolved" if not record else ("live-collected" if record.get("collection_status") == "LIVE_PASS" else {"PREPARED": "prepared", "PREPARE_UNRESOLVED": "unresolved"}.get(record.get("prepare_status"), "failed"))
+        stale = bool(record and record.get("prepare_status") == "PREPARED" and _stale_reasons(case, record, evaluator_sha))
+        value = "unresolved" if not record else ("stale" if stale else ("live-collected" if record.get("collection_status") == "LIVE_PASS" else {"PREPARED": "prepared", "PREPARE_UNRESOLVED": "unresolved"}.get(record.get("prepare_status"), "failed")))
         totals[value] += 1
         print(f"{case['case_id']}: {value}")
     print(json.dumps(totals, sort_keys=True))
@@ -173,11 +239,17 @@ def collect(cases: list[dict[str, Any],], live: bool) -> None:
     key = os.environ.get("TYPESAFE_API_KEY")
     if not key:
         raise ValueError("TYPESAFE_API_KEY is required")
+    evaluator_sha = _git("rev-parse", "HEAD")
     for case in cases:
         record = _read_record(case["case_id"])
         if not record or record.get("prepare_status") != "PREPARED":
             continue
         try:
+            reasons = _stale_reasons(case, record, evaluator_sha)
+            if reasons:
+                record.update({"collection_status": "STALE", "stale_reasons": reasons})
+                _write(_record_path(case["case_id"]), record)
+                continue
             payload = _json(Path(record["payload_path"]))
             graph_path = Path(record["graph_path"])
             current = hashlib.sha256(graph_path.read_bytes()).hexdigest()
@@ -203,12 +275,18 @@ def report(cases: list[dict[str, Any]]) -> Path:
         if choice != "-": blast[choice] = blast.get(choice, 0) + 1
         for key in ("consumer_discovery_needed", "test_evidence_discovery_needed"):
             if key in judgments: nouls.append(judgments[key].get("noul"))
-        rows.append(f"| #{case['pr']} | {case['category']} | {record.get('prepare_status','MISSING')} | {record.get('candidate_node_count','-')} | {record.get('candidate_edge_count','-')} | {record.get('question_count','-')} | {record.get('collection_status','-')} | {choice} | {usage.get('input_tokens','-')}/{usage.get('output_tokens','-')} |")
+        consumer = judgments.get("consumer_discovery_needed", {}).get("noul", "-")
+        tests = judgments.get("test_evidence_discovery_needed", {}).get("noul", "-")
+        state = "stale" if record.get("collection_status") == "STALE" else ("live-collected" if record.get("collection_status") == "LIVE_PASS" else record.get("prepare_status", "MISSING"))
+        rows.append(f"| #{case['pr']} | {case['category']} | {state} | {record.get('candidate_node_count','-')} | {record.get('candidate_edge_count','-')} | {'yes' if record.get('node_cap_reached') else 'no'} | {'yes' if record.get('edge_cap_reached') else 'no'} | {record.get('question_count','-')} | {choice} | {consumer} | {tests} | {usage.get('input_tokens','-')}/{usage.get('output_tokens','-')} |")
     prepared = sum((_read_record(c["case_id"]) or {}).get("prepare_status") == "PREPARED" for c in cases)
     live = sum((_read_record(c["case_id"]) or {}).get("collection_status") == "LIVE_PASS" for c in cases)
     text = "# Graphify Jev historical evaluation M1\n\nCurrent Graphify evaluated exact historical PR base snapshots; Jev received only title-derived objective and bounded structural metadata, never source or diff text. Results are descriptive evidence, not production policy.\n\n"
-    text += f"Preparation: {prepared}/{len(cases)}. Live collection: {live}/{prepared}. Tokens: {inputs} input, {outputs} output. Blast-radius distribution: {json.dumps(blast, sort_keys=True)}. Noul observations: {json.dumps(nouls)}.\n\n"
-    text += "| PR | Category | Prepare | Nodes | Edges | Questions | Live | Blast radius | Tokens in/out |\n|---|---|---|---:|---:|---:|---|---|---|\n" + "\n".join(rows) + "\n"
+    unresolved = sum((_read_record(c["case_id"]) or {}).get("prepare_status") == "PREPARE_UNRESOLVED" for c in cases)
+    node_caps = sum((_read_record(c["case_id"]) or {}).get("node_cap_reached", False) for c in cases)
+    edge_caps = sum((_read_record(c["case_id"]) or {}).get("edge_cap_reached", False) for c in cases)
+    text += f"Preparation: {prepared} prepared, {unresolved} unresolved. Live pass/fail: {live}/{sum((_read_record(c['case_id']) or {}).get('collection_status') in ('LIVE_PASS', 'LIVE_FAILED') for c in cases)}. Node-cap saturation: {node_caps}. Edge-cap saturation: {edge_caps}. Tokens: {inputs} input, {outputs} output. Blast-radius distribution: {json.dumps(blast, sort_keys=True)}. Noul observations: {json.dumps(nouls)}.\n\n"
+    text += "| PR | Category | State | Nodes | Edges | Node cap? | Edge cap? | Questions | Blast radius | Consumer Noul | Test Noul | Tokens in/out |\n|---|---|---|---:|---:|---|---|---:|---|---:|---:|---|\n" + "\n".join(rows) + "\n"
     path = _root("state") / "reports" / "m1.md"; path.parent.mkdir(parents=True, exist_ok=True); path.write_text(text, encoding="utf-8")
     print(path); return path
 

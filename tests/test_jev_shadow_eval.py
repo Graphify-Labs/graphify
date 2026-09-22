@@ -49,7 +49,51 @@ def test_task_only_uses_base_present_files():
 def test_no_graph_seed_is_an_unresolved_prepare(monkeypatch, tmp_path):
     monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
     monkeypatch.setattr(evaluation, "_git", lambda *_args: "f" * 40 if "rev-parse" in _args else "a.py")
+    monkeypatch.setattr(evaluation, "authoritative_changed_files", lambda *_args: [{"path": "a.py", "status": "M"}])
     monkeypatch.setattr(evaluation, "_ensure_object", lambda _sha: None)
     monkeypatch.setattr(evaluation, "_extract", lambda *_args: (_ for _ in ()).throw(evaluation.JevShadowError("task seeds matched no graph nodes")))
     evaluation.prepare([case()])
     assert evaluation._read_record("graphify-pr-1")["prepare_status"] == "PREPARE_UNRESOLVED"
+
+
+def test_authoritative_changed_files_uses_name_status(monkeypatch):
+    monkeypatch.setattr(evaluation, "_ensure_object", lambda _sha: None)
+    monkeypatch.setattr(evaluation, "_git", lambda *_args: "A\tsrc/new.py\nM\tsrc/old.py")
+    assert evaluation.authoritative_changed_files("a" * 40, "b" * 40) == [
+        {"path": "src/new.py", "status": "A"},
+        {"path": "src/old.py", "status": "M"},
+    ]
+
+
+def test_collect_stale_evaluator_makes_zero_typesafe_calls(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    record = {
+        "prepare_status": "PREPARED", "evaluator_sha": "a" * 40,
+        "case_identity": evaluation._case_identity(case()),
+        "task": evaluation._task(case(), ["a.py"]), "task_fingerprint": evaluation._fingerprint(evaluation._task(case(), ["a.py"])),
+        "graph_path": str(tmp_path / "graph.json"), "payload_path": str(tmp_path / "payload.json"),
+        "graph_fingerprint": "b" * 64, "payload_fingerprint": "c" * 64,
+    }
+    evaluation._write(evaluation._record_path("graphify-pr-1"), record)
+    monkeypatch.setattr(evaluation, "_git", lambda *_args: "d" * 40)
+    monkeypatch.setattr(evaluation, "call_typesafe", lambda *_args: pytest.fail("stale evidence called TypeSafe"))
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-only")
+    evaluation.collect([case()], live=True)
+    assert evaluation._read_record("graphify-pr-1")["collection_status"] == "STALE"
+
+
+def test_report_has_saturation_and_noul_columns(monkeypatch, tmp_path):
+    monkeypatch.setattr(evaluation, "_root", lambda _kind: tmp_path)
+    evaluation._write(evaluation._record_path("graphify-pr-1"), {
+        "prepare_status": "PREPARED", "candidate_node_count": 40, "candidate_edge_count": 80,
+        "node_cap_reached": True, "edge_cap_reached": True, "question_count": 3,
+        "collection_status": "LIVE_PASS", "usage": {"input_tokens": 2, "output_tokens": 3},
+        "result": {"graph_judgments": {
+            "blast_radius": {"choice": "localized"},
+            "consumer_discovery_needed": {"noul": 0.1},
+            "test_evidence_discovery_needed": {"noul": 0.2},
+        }},
+    })
+    path = evaluation.report([case()])
+    text = path.read_text()
+    assert "Node cap?" in text and "Edge cap?" in text and "Consumer Noul" in text and "Test Noul" in text
