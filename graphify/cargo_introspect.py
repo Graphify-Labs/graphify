@@ -49,6 +49,10 @@ def introspect_cargo(root: str | Path) -> dict[str, Any]:
     root_path = Path(root).resolve()
     root_manifest = root_path / "Cargo.toml"
     root_data = _load_toml(root_manifest)
+    workspace = root_data.get("workspace")
+    workspace_dependencies = workspace.get("dependencies", {}) if isinstance(workspace, dict) else {}
+    if not isinstance(workspace_dependencies, dict):
+        workspace_dependencies = {}
 
     manifests = _member_manifest_paths(root_path, root_data)
     crates: dict[str, tuple[str, Path, dict[str, Any]]] = {}
@@ -79,6 +83,13 @@ def introspect_cargo(root: str | Path) -> dict[str, Any]:
             continue
         source_file = manifest.relative_to(root_path).as_posix()
         for dep_key, spec in sorted(dependencies.items()):
+            inherited = isinstance(spec, dict) and "workspace" in spec
+            if inherited:
+                if spec["workspace"] is not True:
+                    continue
+                spec = workspace_dependencies.get(dep_key)
+                if not isinstance(spec, dict) or not isinstance(spec.get("path"), str):
+                    continue
             # Cargo lets a dep table entry rename the crate via `package = "..."`:
             #   db = { path = "../storage", package = "internal-storage" }
             # The key `db` is the name used in `use db::…;`; the actual crate
@@ -93,6 +104,12 @@ def introspect_cargo(root: str | Path) -> dict[str, Any]:
             target = crates.get(real_name)
             if target is None:
                 continue
+            if inherited:
+                # Shared paths are relative to the workspace root, not the member.
+                # A matching name alone cannot prove a registry/git dep is local.
+                inherited_manifest = (root_path / spec["path"] / "Cargo.toml").resolve()
+                if inherited_manifest != target[1].resolve():
+                    continue
             edges.append(
                 {
                     "source": source_id,

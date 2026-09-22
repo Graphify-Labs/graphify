@@ -455,3 +455,119 @@ tokio_rt = { version = "1", package = "tokio" }
 
     assert {node["id"] for node in result["nodes"]} == {"crate:app"}
     assert result["edges"] == []
+
+
+@pytest.mark.parametrize("root_package", [False, True], ids=["virtual", "root-package"])
+def test_cargo_inherited_rename_uses_workspace_dependency_identity(tmp_path, root_package):
+    root_header = '[package]\nname = "root-app"\nversion = "0.1.0"\n' if root_package else ""
+    root_dependency = '[dependencies]\ndb.workspace = true\n' if root_package else ""
+    _write_manifest(
+        tmp_path / "Cargo.toml",
+        root_header
+        + '[workspace]\nmembers = ["app", "storage"]\n'
+        + '[workspace.dependencies]\n'
+        + 'db = { path = "storage", package = "internal-storage" }\n'
+        + root_dependency,
+    )
+    app = tmp_path / "app"
+    storage = tmp_path / "storage"
+    app.mkdir()
+    storage.mkdir()
+    _write_manifest(
+        app / "Cargo.toml",
+        '[package]\nname = "app"\nversion = "0.1.0"\n'
+        '[dependencies]\ndb = { workspace = true, features = ["fast"] }\n',
+    )
+    _write_manifest(
+        storage / "Cargo.toml",
+        '[package]\nname = "internal-storage"\nversion = "0.1.0"\n'
+        '[features]\nfast = []\n',
+    )
+
+    result = introspect_cargo(tmp_path)
+    expected_sources = {"crate:app"}
+    if root_package:
+        expected_sources.add("crate:root-app")
+    assert {node["id"] for node in result["nodes"]} == expected_sources | {"crate:internal-storage"}
+    assert len(result["edges"]) == len(expected_sources)
+    assert {(edge["source"], edge["target"]) for edge in result["edges"]} == {
+        (source, "crate:internal-storage") for source in expected_sources
+    }
+    for edge in result["edges"]:
+        assert edge["source_file"] == ("Cargo.toml" if edge["source"] == "crate:root-app" else "app/Cargo.toml")
+        assert edge["relation"] == "crate_depends_on"
+        assert edge["context"] == "cargo_dependency"
+        assert edge["confidence"] == "EXTRACTED"
+    assert introspect_cargo(tmp_path) == result
+
+
+@pytest.mark.parametrize(
+    ("root_declaration", "member_declaration", "expected"),
+    [
+        ('db = { path = "db" }', 'db.workspace = true', True),
+        ('db = "1"', 'db.workspace = true', False),
+        ('db = { version = "1" }', 'db.workspace = true', False),
+        ('db = { git = "https://example.com/db" }', 'db.workspace = true', False),
+        ('db = { path = "missing" }', 'db.workspace = true', False),
+        ('db = { path = "app" }', 'db.workspace = true', False),
+        ('db = { path = 42 }', 'db.workspace = true', False),
+        ('db = false', 'db.workspace = true', False),
+        ('', 'db.workspace = true', False),
+        ('db = { path = "db" }', 'db.workspace = false', False),
+        ('db = { path = "db" }', 'db.workspace = "true"', False),
+        ('db = { path = "missing" }', 'db = { path = "../db" }', True),
+    ],
+)
+def test_cargo_inherited_dependency_requires_matching_local_path(
+    tmp_path, root_declaration, member_declaration, expected
+):
+    _write_manifest(
+        tmp_path / "Cargo.toml",
+        '[workspace]\nmembers = ["app", "db"]\n'
+        '[workspace.dependencies]\n' + root_declaration + '\n',
+    )
+    for name in ("app", "db"):
+        crate = tmp_path / name
+        crate.mkdir()
+        _write_manifest(
+            crate / "Cargo.toml",
+            f'[package]\nname = "{name}"\nversion = "0.1.0"\n'
+            + (f'[dependencies]\n{member_declaration}\n' if name == "app" else ""),
+        )
+
+    result = introspect_cargo(tmp_path)
+    assert {node["id"] for node in result["nodes"]} == {"crate:app", "crate:db"}
+    assert [(edge["source"], edge["target"]) for edge in result["edges"]] == (
+        [("crate:app", "crate:db")] if expected else []
+    )
+
+
+@pytest.mark.parametrize("root_path", [".", ""])
+def test_cargo_inherited_dependency_can_target_root_package(tmp_path, root_path):
+    _write_manifest(
+        tmp_path / "Cargo.toml",
+        '[package]\nname = "db"\nversion = "0.1.0"\n'
+        '[workspace]\nmembers = ["app"]\n'
+        f'[workspace.dependencies]\ndb = {{ path = "{root_path}" }}\n',
+    )
+    app = tmp_path / "app"
+    app.mkdir()
+    _write_manifest(
+        app / "Cargo.toml",
+        '[package]\nname = "app"\nversion = "0.1.0"\n'
+        '[dependencies]\ndb.workspace = true\n',
+    )
+    result = introspect_cargo(tmp_path)
+    assert [(edge["source"], edge["target"]) for edge in result["edges"]] == [
+        ("crate:app", "crate:db")
+    ]
+
+
+@pytest.mark.parametrize("workspace", ["", "workspace = false\n", "[workspace]\n", "[workspace]\ndependencies = false\n"])
+def test_cargo_missing_or_malformed_workspace_dependencies_are_ignored(tmp_path, workspace):
+    _write_manifest(
+        tmp_path / "Cargo.toml",
+        workspace + '[package]\nname = "db"\nversion = "0.1.0"\n'
+        '[dependencies]\ndb.workspace = true\n',
+    )
+    assert introspect_cargo(tmp_path)["edges"] == []
