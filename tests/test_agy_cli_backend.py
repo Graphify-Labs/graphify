@@ -22,6 +22,8 @@ _GRAPH = {
 def fake_agy(monkeypatch):
     monkeypatch.delenv("GRAPHIFY_AGY_CLI_MODEL", raising=False)
     monkeypatch.delenv("GRAPHIFY_AGY_CLI_PARALLEL", raising=False)
+    monkeypatch.delenv("GRAPHIFY_TRIAGE_BACKEND", raising=False)
+    monkeypatch.delenv("GRAPHIFY_TRIAGE_MODEL", raising=False)
     completed = MagicMock(returncode=0, stderr="", stdout=json.dumps({
         "status": "SUCCESS", "structured_output": _GRAPH,
         "response": '{"nodes":[],"edges":[],"toolAction":"ignore"}',
@@ -205,3 +207,72 @@ def test_labeling_dispatch_usage_and_parallel_guard(fake_agy, monkeypatch, paral
     assert pool.called is parallel
     assert "--json-schema" not in fake_agy.call_args.args[0]
     assert "semantic extraction agent" not in fake_agy.call_args.args[0][1]
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_extract_cli_validates_agy_on_path(fake_agy, monkeypatch, tmp_path, capsys, available):
+    import graphify.__main__ as mainmod
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "notes.md").write_text("# Notes\nA documented concept.\n")
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", [
+        "graphify", "extract", str(corpus), "--backend", "agy-cli",
+        "--out", str(tmp_path / "out"),
+    ])
+    # Stop at the semantic extraction boundary after real CLI validation.
+    with patch("shutil.which", return_value="/fake/bin/agy" if available else None) as which, \
+         patch.object(llm, "extract_corpus_parallel", side_effect=SystemExit(0)) as extract:
+        with pytest.raises(SystemExit) as exc:
+            mainmod.main()
+    assert exc.value.code == (0 if available else 1)
+    which.assert_any_call("agy")
+    stderr = capsys.readouterr().err
+    assert "AWS_PROFILE" not in stderr
+    assert "AWS_REGION" not in stderr
+    if available:
+        extract.assert_called_once()
+        assert extract.call_args.kwargs["backend"] == "agy-cli"
+    else:
+        extract.assert_not_called()
+        assert "backend 'agy-cli' requires the `agy` CLI on $PATH" in stderr
+    fake_agy.assert_not_called()
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_label_falls_back_to_agy(monkeypatch, available):
+    monkeypatch.setattr(llm, "detect_backend", lambda: None)
+    monkeypatch.setattr(llm, "_claude_cli_available", lambda: False)
+    graph = nx.Graph()
+    graph.add_node("a", label="A")
+    with patch("shutil.which", return_value="/fake/bin/agy" if available else None), \
+         patch.object(llm, "label_communities", return_value={0: "Alpha"}) as label:
+        labels, source = llm.generate_community_labels(graph, {0: ["a"]}, quiet=True)
+    assert source == ("llm" if available else "placeholder")
+    assert labels == {0: "Alpha" if available else "Community 0"}
+    if available:
+        assert label.call_args.kwargs["backend"] == "agy-cli"
+    else:
+        label.assert_not_called()
+
+
+def test_triage_falls_back_to_agy():
+    from graphify.prs import _resolve_triage_backend
+
+    with patch("shutil.which", side_effect=lambda name: "/fake/bin/agy" if name == "agy" else None):
+        assert _resolve_triage_backend() == ("agy-cli", llm._default_model_for_backend("agy-cli"))
+
+
+def test_triage_dispatches_explicit_agy(monkeypatch, capsys):
+    from graphify.prs import triage_with_opus
+
+    monkeypatch.setenv("GRAPHIFY_TRIAGE_BACKEND", "agy-cli")
+    monkeypatch.setenv("GRAPHIFY_TRIAGE_MODEL", "gemini-3.1-pro-low")
+    pr = MagicMock(base_branch="v8", status="READY")
+    with patch.object(llm, "_call_llm", return_value="#1 — Review this PR.") as call:
+        triage_with_opus([pr], "v8")
+    assert call.call_args.kwargs == {
+        "backend": "agy-cli", "model": "gemini-3.1-pro-low", "max_tokens": 1024,
+    }
+    assert "#1 — Review this PR." in capsys.readouterr().out

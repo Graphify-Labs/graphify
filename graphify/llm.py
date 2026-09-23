@@ -3757,14 +3757,18 @@ def generate_community_labels(
         except Exception:
             backend = None
     if not backend and _claude_cli_available():
-        # `detect_backend` is key-based, and claude-cli is the one backend with no
-        # key to find, so it can never be detected there — and widening detection
+        # `detect_backend` is key-based, and subscription CLIs have no
+        # key to find, so they cannot be detected there — and widening detection
         # itself would change extraction's contract, which deliberately refuses to
         # run without a configured backend. Here the alternative is not an error but
         # a SILENT DOWNGRADE: replacing every real community name with
         # "Community N" and exiting 0, which overwrites a good graph with a worse
         # one while reporting success. An installed CLI is better than that.
         backend = "claude-cli"
+    if not backend:
+        import shutil
+        if shutil.which("agy") is not None:
+            backend = "agy-cli"
     if not backend:
         if not quiet:
             print(

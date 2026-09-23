@@ -206,6 +206,7 @@ def test_generate_community_labels_no_backend(monkeypatch):
     # Keep hermetic: the claude-cli labelling fallback (#3475) probes PATH, so a
     # machine with `claude` installed would otherwise take the CLI path here.
     monkeypatch.setattr("graphify.llm._claude_cli_available", lambda: False)
+    monkeypatch.setattr("shutil.which", lambda _: None)
     labels, source = generate_community_labels(G, communities, backend=None, quiet=True)
     assert source == "placeholder"
     assert labels == {0: "Community 0", 1: "Community 1"}
