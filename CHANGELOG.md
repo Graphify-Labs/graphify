@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Feature: `agy-cli` routes semantic extraction and community labeling through the Antigravity subscription without a Gemini API key, with structured extraction, image paths, model overrides, and opt-in parallel calls.
+
 ## 0.9.67 (2026-09-23)
 
 - Fix: the PYTHONHASHSEED determinism pin (0.9.66) now re-execs via `python -m graphify` instead of replaying `argv[0]`, fixing a Windows regression where `update`/`extract`/`cluster-only`/`label` failed to re-launch through the console-script `.exe` launcher (#3780, thanks @ayushcodes10).
