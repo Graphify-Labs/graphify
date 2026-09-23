@@ -2312,7 +2312,9 @@ def _collect_python_symbol_resolution_facts(
     paths: list[Path],
     root: Path,
     facts: _SymbolResolutionFacts,
+    ambiguous_python_modules: set[str] | None = None,
 ) -> None:
+    ambiguous_python_modules = ambiguous_python_modules or set()
     py_paths = [path for path in paths if path.suffix == ".py"]
     if not py_paths:
         return
@@ -2332,6 +2334,8 @@ def _collect_python_symbol_resolution_facts(
             if module is None:
                 continue
             level, module_name = module
+            if level == 0 and _make_id(module_name) in ambiguous_python_modules:
+                continue
             target_path = _resolve_python_module_path(module_name, path, root, level)
             if target_path is not None:
                 # #1146: `from pkg import submod` — if the target is a package
@@ -2355,6 +2359,15 @@ def _collect_python_symbol_resolution_facts(
                     sub_pkg = pkg_dir / imported_name / "__init__.py"
                     submodule = sub_py if sub_py.is_file() else (sub_pkg if sub_pkg.is_file() else None)
                     if submodule is not None:
+                        imported_module = (
+                            f"{module_name}.{imported_name}"
+                            if module_name else imported_name
+                        )
+                        if (
+                            level == 0
+                            and _make_id(imported_module) in ambiguous_python_modules
+                        ):
+                            continue
                         facts.module_imports.append((path, submodule, line, local_name))
                         continue
                 if target_path is None:
@@ -2399,10 +2412,14 @@ def _augment_symbol_resolution_edges(
     nodes: list[dict],
     edges: list[dict],
     root: Path,
+    ambiguous_python_modules: set[str] | None = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
     _collect_js_symbol_resolution_facts(paths, facts)
-    _collect_python_symbol_resolution_facts(paths, root, facts)
+    _collect_python_symbol_resolution_facts(
+        paths, root, facts,
+        ambiguous_python_modules=ambiguous_python_modules,
+    )
     _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 
 def _resolve_cross_file_imports(
@@ -2410,6 +2427,7 @@ def _resolve_cross_file_imports(
     paths: list[Path],
     all_nodes: list[dict] | None = None,
     all_edges: list[dict] | None = None,
+    ambiguous_python_modules: set[str] | None = None,
 ) -> list[dict]:
     """
     Two-pass import resolution: turn file-level imports into class-level edges.
@@ -2429,6 +2447,7 @@ def _resolve_cross_file_imports(
         import tree_sitter_python  # noqa: F401  (availability check only)
     except ImportError:
         return []
+    ambiguous_python_modules = ambiguous_python_modules or set()
 
     # Pass 1: _file_stem(path) → {ClassName: node_id}
     # Keyed by directory-qualified stem (e.g. "auth_models") to avoid collisions
@@ -2519,6 +2538,7 @@ def _resolve_cross_file_imports(
             # importing file's directory; absolute imports fall back to the
             # bare-stem secondary index (first-writer-wins when names collide).
             target_fq: str | None = None
+            absolute_module: str | None = None
             for child in node.children:
                 if child.type == "relative_import":
                     prefix_text = ""
@@ -2540,6 +2560,9 @@ def _resolve_cross_file_imports(
                     break
                 if child.type == "dotted_name" and target_fq is None:
                     dotted_name = _text(child)
+                    absolute_module = dotted_name
+                    if _make_id(dotted_name) in ambiguous_python_modules:
+                        return
                     dotted_as_path = "/".join(dotted_name.split("."))
                     if dotted_as_path in stem_to_entities:
                         target_fq = dotted_as_path
@@ -2577,6 +2600,12 @@ def _resolve_cross_file_imports(
                         imported_name = _text(name_node)
                         local_name = _text(alias_node) if alias_node is not None else imported_name
                 if not imported_name or not local_name:
+                    continue
+                if (
+                    absolute_module is not None
+                    and _make_id(f"{absolute_module}.{imported_name}")
+                    in ambiguous_python_modules
+                ):
                     continue
                 tgt_nid = stem_to_entities[target_fq].get(imported_name)
                 if tgt_nid:

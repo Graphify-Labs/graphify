@@ -139,9 +139,30 @@ def test_plain_absolute_import_targets_package_module(tmp_path: Path):
     assert _has_edge(result, consumer, subpackage, "imports")
 
 
+def test_nested_plain_import_target_is_stamped_for_incremental_remap(tmp_path: Path):
+    """A changed importer can target an unchanged module outside its batch."""
+    _write(tmp_path / "src/pkg/__init__.py", "")
+    target = _write(tmp_path / "src/pkg/sub/__init__.py", "")
+    app_path = _write(tmp_path / "src/pkg/app.py", "import pkg.sub\n")
+
+    result = extract(
+        [app_path], cache_root=tmp_path / "cache", root=tmp_path, parallel=False
+    )
+
+    app = next(
+        node["id"] for node in result["nodes"] if node.get("label") == "app.py"
+    )
+    target_id = "src_pkg_sub_init"
+    assert _has_edge(result, app, target_id, "imports")
+    assert target.is_file()
+
+
 def test_absolute_import_does_not_resolve_above_scan_root(tmp_path: Path):
     scan_root = tmp_path / "scan"
-    source = _write(scan_root / "app.py", "from outside_pkg import thing\n")
+    source = _write(
+        scan_root / "app.py",
+        "from outside_pkg import thing\nimport outside_pkg\n",
+    )
     _write(tmp_path / "outside_pkg/__init__.py", "")
     _write(tmp_path / "outside_pkg/thing.py", "def run():\n    return 1\n")
 
@@ -151,11 +172,15 @@ def test_absolute_import_does_not_resolve_above_scan_root(tmp_path: Path):
 
     app = _node_id(result, "app.py", "app.py")
     targets = {
-        edge["target"]
+        (edge["relation"], edge["target"])
         for edge in result["edges"]
-        if edge["source"] == app and edge["relation"] == "imports_from"
+        if edge["source"] == app
+        and edge["relation"] in ("imports", "imports_from")
     }
-    assert targets == {"outside_pkg"}
+    assert targets == {
+        ("imports", "outside_pkg"),
+        ("imports_from", "outside_pkg"),
+    }
 
 
 def test_absolute_from_import_keeps_namespace_package_submodule_edge(tmp_path: Path):
