@@ -126,6 +126,30 @@ def test_perl_fixture_uses_normal_extract_path(tmp_path):
     assert ("run()", "helper()") in _edge_labels(result, "calls")
 
 
+def test_perl_statement_package_is_scoped_to_enclosing_block(tmp_path):
+    source = tmp_path / "scoped.pl"
+    source.write_text(
+        "package Outer {\n"
+        "    sub first { return 1; }\n"
+        "    package Inner;\n"
+        "    sub second { return 2; }\n"
+        "}\n"
+        "sub third { return 3; }\n"
+        "package Later;\n"
+        "sub fourth { return 4; }\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    contains = _edge_labels(result, "contains")
+    assert ("Outer", "first()") in contains
+    assert ("Inner", "second()") in contains
+    assert ("scoped.pl", "third()") in contains
+    assert ("Later", "fourth()") in contains
+    assert ("Inner", "third()") not in contains
+    assert ("Outer", "second()") not in contains
+
 def test_perl_malformed_file_does_not_create_phantoms(tmp_path):
     source = tmp_path / "broken.pl"
     source.write_text(

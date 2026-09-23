@@ -245,24 +245,37 @@ def extract_perl(path: Path) -> dict:
         target_id = _make_id(str(target))
         add_edge(owner, target_id, "imports_from", node, target_file=str(target))
 
-    def handle_statement(node: Node, current_package: str, current_package_name: str | None) -> None:
+    def handle_statements(
+        statements: list[Node], current_package: str, current_package_name: str | None,
+    ) -> None:
+        # A statement-form ``package Foo;`` switches the package until the end
+        # of the enclosing block (or file), so the state is local to this scope.
+        for child in statements:
+            switched = handle_statement(child, current_package, current_package_name)
+            if switched is not None:
+                current_package, current_package_name = switched
+
+    def handle_package(node: Node) -> tuple[str, str] | None:
+        name_node = node.child_by_field_name("name") or next(
+            (c for c in node.named_children if c.type == "package"), None
+        )
+        if name_node is None:
+            return None
+        name = _read_text(name_node, source)
+        package_id = add_package(name, node)
+        add_edge(file_id, package_id, "contains", node)
+        block = next((c for c in node.named_children if c.type == "block"), None)
+        if block is not None:
+            handle_statements(block.named_children, package_id, name)
+            return None
+        return package_id, name
+
+    def handle_statement(
+        node: Node, current_package: str, current_package_name: str | None,
+    ) -> tuple[str, str] | None:
+        """Handle one statement; return the new package if it switches scope."""
         if node.type == "package_statement":
-            name_node = node.child_by_field_name("name") or next(
-                (c for c in node.named_children if c.type == "package"), None
-            )
-            block = next((c for c in node.named_children if c.type == "block"), None)
-            if name_node is None:
-                return
-            name = _read_text(name_node, source)
-            package_id = add_package(name, node)
-            add_edge(file_id, package_id, "contains", node)
-            if block is not None:
-                for child in block.named_children:
-                    handle_statement(child, package_id, name)
-            else:
-                nonlocal_package[0] = package_id
-                nonlocal_package[1] = name
-            return
+            return handle_package(node)
 
         if node.type == "subroutine_declaration_statement":
             name_node = next(
@@ -293,27 +306,28 @@ def extract_perl(path: Path) -> dict:
 
         if node.type == "expression_statement":
             inner = node.named_children[0] if node.named_children else None
-            if inner is None:
-                return
-            if inner.type == "require_expression":
-                target = next(iter(inner.named_children), None)
-                if target is None:
-                    return
-                if target.type == "bareword":
-                    handle_use_or_require(
-                        _read_text(target, source), None, node, current_package,
-                    )
-                elif target.type in {"string_literal", "interpolated_string_literal"}:
-                    literals = _string_literals(target, source)
-                    if literals and literals[0]:
-                        handle_require_path(literals[0], node, current_package)
-                return
-            if inner.type == "assignment_expression":
+            if inner is not None and inner.type == "require_expression":
+                handle_require(inner, node, current_package)
+            elif inner is not None and inner.type == "assignment_expression":
                 handle_isa_assignment(inner, current_package)
-            return
+            return None
 
         if node.type == "assignment_expression":
             handle_isa_assignment(node, current_package)
+        return None
+
+    def handle_require(inner: Node, node: Node, current_package: str) -> None:
+        target = next(iter(inner.named_children), None)
+        if target is None:
+            return
+        if target.type == "bareword":
+            handle_use_or_require(
+                _read_text(target, source), None, node, current_package,
+            )
+        elif target.type in {"string_literal", "interpolated_string_literal"}:
+            literals = _string_literals(target, source)
+            if literals and literals[0]:
+                handle_require_path(literals[0], node, current_package)
 
     def handle_isa_assignment(node: Node, current_package: str) -> None:
         children = node.named_children
@@ -334,10 +348,7 @@ def extract_perl(path: Path) -> dict:
             if base:
                 add_inherits(current_package, base, node)
 
-    nonlocal_package = [file_id, None]
-    for child in root.named_children:
-        current_package, current_package_name = nonlocal_package[0], nonlocal_package[1]
-        handle_statement(child, current_package, current_package_name)
+    handle_statements(root.named_children, file_id, None)
 
     def resolve_bareword_call(callee: str, current_package_name: str | None) -> str | None:
         if current_package_name is not None:
