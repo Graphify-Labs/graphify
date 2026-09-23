@@ -5,8 +5,11 @@ Without this fix, a callback passed by name from one function resolves to a
 same-named nested function defined in a SIBLING function's scope, because the
 cross-file fallback in extract.py matches purely by bare label across the
 whole corpus with no scope information.
+
+The enclosing-scope walk also skips an intermediate function that does not bind
+the name, then either resolves a module-level callable or honors a farther
+parameter/local shadow.
 """
-import pytest
 from pathlib import Path
 
 from graphify.extract import extract
@@ -203,3 +206,161 @@ def test_python_indirect_call_enclosing_parameter_shadows_module(tmp_path: Path)
     }
 
     assert (caller_id, module_callback_id) not in indirect_edges
+
+
+def test_python_indirect_call_skips_unrelated_enclosing_scope(tmp_path: Path):
+    """An intermediate function that binds neither the name nor a same-named
+    nested callable must not stop the enclosing-scope walk. Once that chain is
+    exhausted, the reference resolves to the module-level callable.
+
+    def target():
+        return 1
+
+    def dispatch(fn):
+        return fn()
+
+    def outer():
+        def middle():
+            def caller():
+                return dispatch(target)
+            return caller()
+        return middle()
+    """
+    f = tmp_path / "test_skip_unrelated_scope.py"
+    f.write_text(
+        "def target():\n"
+        "    return 1\n"
+        "\n"
+        "def dispatch(fn):\n"
+        "    return fn()\n"
+        "\n"
+        "def outer():\n"
+        "    def middle():\n"
+        "        def caller():\n"
+        "            return dispatch(target)\n"
+        "        return caller()\n"
+        "    return middle()\n"
+    )
+    result = extract([f], root=tmp_path)
+    by_label_id = {}
+    for node in result["nodes"]:
+        by_label_id.setdefault(node["label"], []).append(node["id"])
+
+    outer_id = by_label_id["outer()"][0]
+    middle_id = next(i for i in by_label_id["middle()"] if i.startswith(outer_id))
+    caller_id = next(i for i in by_label_id["caller()"] if i.startswith(middle_id))
+    target_id = by_label_id["target()"][0]
+    indirect_edges = {
+        (edge["source"], edge["target"])
+        for edge in result["edges"]
+        if edge["relation"] == "indirect_call"
+    }
+
+    assert (caller_id, target_id) in indirect_edges
+
+
+def test_python_indirect_call_enclosing_shadow_past_unrelated_scope(tmp_path: Path):
+    """A parameter on a grandparent scope still shadows a module function when
+    the intermediate function does not bind that name.
+
+    def callback():
+        return "module"
+
+    def dispatch(fn):
+        return fn()
+
+    def outer(callback):
+        def middle():
+            def caller():
+                return dispatch(callback)
+            return caller()
+        return middle()
+    """
+    f = tmp_path / "test_shadow_past_unrelated_scope.py"
+    f.write_text(
+        "def callback():\n"
+        "    return 'module'\n"
+        "\n"
+        "def dispatch(fn):\n"
+        "    return fn()\n"
+        "\n"
+        "def outer(callback):\n"
+        "    def middle():\n"
+        "        def caller():\n"
+        "            return dispatch(callback)\n"
+        "        return caller()\n"
+        "    return middle()\n"
+    )
+    result = extract([f], root=tmp_path)
+    by_label_id = {}
+    for node in result["nodes"]:
+        by_label_id.setdefault(node["label"], []).append(node["id"])
+
+    outer_id = by_label_id["outer()"][0]
+    middle_id = next(i for i in by_label_id["middle()"] if i.startswith(outer_id))
+    caller_id = next(i for i in by_label_id["caller()"] if i.startswith(middle_id))
+    module_callback_id = next(
+        i for i in by_label_id["callback()"] if not i.startswith(outer_id)
+    )
+    indirect_edges = {
+        (edge["source"], edge["target"])
+        for edge in result["edges"]
+        if edge["relation"] == "indirect_call"
+    }
+
+    assert (caller_id, module_callback_id) not in indirect_edges
+
+
+def test_python_indirect_call_method_bare_name_is_not_a_sibling_method(tmp_path: Path):
+    """A bare name inside a method is not a class-scope lookup. It must not bind
+    to a sibling method. A same-named module function remains the target.
+    """
+    sibling = tmp_path / "method_sibling.py"
+    sibling.write_text(
+        "def dispatch(fn):\n"
+        "    return fn()\n"
+        "\n"
+        "class C:\n"
+        "    def helper(self):\n"
+        "        return 1\n"
+        "    def run(self):\n"
+        "        return dispatch(helper)\n"
+    )
+    both = tmp_path / "method_and_module.py"
+    both.write_text(
+        "def helper():\n"
+        "    return 'module'\n"
+        "\n"
+        "def dispatch(fn):\n"
+        "    return fn()\n"
+        "\n"
+        "class C:\n"
+        "    def helper(self):\n"
+        "        return 1\n"
+        "    def run(self):\n"
+        "        return dispatch(helper)\n"
+    )
+    sibling_result = extract([sibling], root=tmp_path)
+    sibling_edges = {
+        (edge["source"], edge["target"])
+        for edge in sibling_result["edges"]
+        if edge["relation"] == "indirect_call"
+    }
+    run_id = next(n["id"] for n in sibling_result["nodes"] if n["label"] == ".run()")
+    helper_id = next(n["id"] for n in sibling_result["nodes"] if n["label"] == ".helper()")
+    assert (run_id, helper_id) not in sibling_edges
+
+    both_result = extract([both], root=tmp_path)
+    by_label = {}
+    for node in both_result["nodes"]:
+        by_label.setdefault(node["label"], []).append(node["id"])
+    module_helper = by_label["helper()"][0]
+    method_helper = by_label[".helper()"][0]
+    run_both = by_label[".run()"][0]
+    both_edges = {
+        (edge["source"], edge["target"])
+        for edge in both_result["edges"]
+        if edge["relation"] == "indirect_call"
+    }
+    assert (run_both, module_helper) in both_edges
+    assert (run_both, method_helper) not in both_edges
