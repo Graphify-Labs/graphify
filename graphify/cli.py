@@ -3884,9 +3884,12 @@ def dispatch_command(cmd: str) -> None:
                                     # an unchanged callee module must keep its
                                     # module/name/arity so `foo:bar()` still
                                     # resolves on an incremental rebuild.
+                                    # `package` is Perl's analogous key for
+                                    # `Pkg::func()`/`Pkg->method()` resolution.
                                     "language",
                                     "kind",
                                     "module",
+                                    "package",
                                     "name",
                                     "arity",
                                 )

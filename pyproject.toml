@@ -111,6 +111,7 @@ vbnet = ["tree-sitter-vb-dotnet==0.3.0"]
 # Optional extras (large shared dep, resolved once in `all`).
 r = ["tree-sitter-language-pack==0.11.0"]
 erlang = ["tree-sitter-language-pack==0.11.0"]
+perl = ["tree-sitter-language-pack==0.11.0"]
 solidity = ["tree-sitter-solidity==1.2.13"]
 all = ["mcp>=1,<3", "starlette>=1.3.1,<2", "neo4j", "falkordb", "pypdf>=6.16.1", "markdownify", "watchdog", "graspologic; python_version < '3.13'", "graspologic-native>=1.3.1,<2; python_version >= '3.13'", "python-docx", "openpyxl", "psycopg[binary]", "faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.7.4", "matplotlib", "pillow>=12.3.0", "numpy>=2.0; python_version >= '3.13'", "openai", "tiktoken", "boto3", "anthropic", "tree-sitter-sql", "jieba; python_version < '3.12'", "jieba-py>=0.46.12,<1; python_version >= '3.12'", "tree-sitter-dm", "tree-sitter-hcl", "tree-sitter-pascal", "tree-sitter-ocaml", "tree-sitter-commonlisp", "robotframework>=4.0", "tree-sitter-vb-dotnet==0.3.0", "tree-sitter-language-pack==0.11.0", "tree-sitter-solidity==1.2.13"]
 

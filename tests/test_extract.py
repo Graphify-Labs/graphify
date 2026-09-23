@@ -3786,9 +3786,9 @@ def test_extensionless_without_usable_shebang_stays_unsupported(tmp_path):
 
     # Interpreter known to detect but with no AST extractor: stays skipped
     # rather than being mis-parsed by a wrong grammar.
-    perl = tmp_path / "legacy"
-    perl.write_text("#!/usr/bin/env perl\nprint 1;\n")
-    assert _get_extractor(perl) is None
+    fish = tmp_path / "legacy"
+    fish.write_text("#!/usr/bin/env fish\necho hi\n")
+    assert _get_extractor(fish) is None
 
 
 def test_extract_extensionless_bash_cli_end_to_end(tmp_path):
