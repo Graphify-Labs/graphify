@@ -3,6 +3,7 @@ import contextlib
 import json
 import hashlib
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 import networkx as nx
@@ -161,11 +162,42 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         # (first add, the path/mtime/size differ, or an older manifest that
         # predates these fields) falls through to the cap check and a real
         # read below.
+        #
+        # mtime+size matching alone is not proof of unchanged content within
+        # a filesystem's mtime tick: a write that lands in the same tick as
+        # the one we last recorded could leave both untouched. Require the
+        # last successful read to have been observed strictly after that
+        # tick closed too -- the same racily-clean guard graphify.cache's
+        # own stat index already uses for exactly this reason. A manifest
+        # entry written before this field existed has no baseline to prove
+        # freshness against, so it is treated as untrusted (one re-read),
+        # same as a missing mtime/size baseline already is.
+        #
+        # mtime and size are also both directly settable by the caller (a
+        # tool that writes new content and then restores an old mtime, e.g.
+        # cp -p/rsync -a against an unchanged-looking source, or a build step
+        # that pins timestamps for reproducibility), so matching them alone
+        # cannot rule out a genuine, well-separated-in-time content change --
+        # only a same-tick race. ctime (POSIX "inode change time") cannot be
+        # forged the same way: writing content, or the utime() call that
+        # resets mtime, both bump it to the real current time regardless of
+        # what mtime is set to afterward, so it still moves even when mtime
+        # and size are deliberately restored. On Windows, st_ctime instead
+        # reports file CREATION time (unaffected by editing existing
+        # content), so this check adds no protection there -- silently a
+        # no-op rather than wrongly rejecting an unchanged file, since it can
+        # only ever agree, never disagree, in that case.
+        from graphify.cache import _mtime_granularity_ns
+
         st = source_path.stat()
+        indexed_at = existing.get("source_indexed_at_ns")
         if (
             existing.get("source_path") == resolved_source_path
             and existing.get("source_mtime_ns") == st.st_mtime_ns
             and existing.get("source_size") == st.st_size
+            and existing.get("source_ctime_ns") == st.st_ctime_ns
+            and isinstance(indexed_at, int)
+            and st.st_mtime_ns + _mtime_granularity_ns() <= indexed_at
         ):
             return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
                     "cross_repo_calls": 0, "shared_type_links": 0}
@@ -199,6 +231,13 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         # the recorded hash describe different bytes than what actually gets
         # imported below. Only reached once the cap has already passed, so
         # buffering the whole file here is safe.
+        #
+        # observed_at is captured BEFORE the read, mirroring cache.py's own
+        # racily-clean guard: it must describe a moment no later than when
+        # the bytes below were actually read, so a write landing between
+        # this stamp and the read can never be mistaken for one that landed
+        # before it.
+        observed_at_ns = time.time_ns()
         raw_bytes = source_path.read_bytes()
         src_hash = hashlib.sha256(raw_bytes).hexdigest()[:16]
 
@@ -302,6 +341,8 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
             "source_hash": src_hash,
             "source_mtime_ns": st.st_mtime_ns,
             "source_size": st.st_size,
+            "source_ctime_ns": st.st_ctime_ns,
+            "source_indexed_at_ns": observed_at_ns,
         }
         _save_manifest(manifest)
 
