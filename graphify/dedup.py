@@ -1066,8 +1066,8 @@ def _content_richness(n: dict) -> int:
 
 
 def _pick_winner(nodes: list[dict]) -> dict:
-    """Pick the canonical survivor: no chunk suffix, then richer content,
-    then shorter ID.
+    """Pick the canonical survivor: no chunk suffix, then real provenance,
+    then richer content, then shorter ID.
 
     ID length used to be the primary signal after the chunk-suffix check,
     which made a passing one-line mention on a shallow page (short id, one
@@ -1076,13 +1076,24 @@ def _pick_winner(nodes: list[dict]) -> dict:
     discarded (#3372). Content richness now decides first; ID shape only
     breaks ties between equally-rich candidates, preserving the old
     deterministic ordering there.
+
+    ``source_file``/``source_location`` are in ``_RICHNESS_IGNORED_KEYS``, so
+    richness alone cannot tell a real, located declaration apart from a
+    source-less stub carrying a couple of incidental bookkeeping keys (e.g.
+    ``external``/``type``/``_origin``) — the stub could out-score and replace
+    the genuine record purely on field count (#3775). Provenance is checked
+    ahead of richness so a node with a real source location always wins over
+    one without; it only changes the outcome when the two sides disagree on
+    provenance, so every case where both (or neither) side has a source file
+    keeps the existing richness-then-length ordering.
     """
     if not nodes:
         raise ValueError("Cannot pick winner from empty list")
 
-    def _score(n: dict) -> tuple[int, int, int]:
+    def _score(n: dict) -> tuple[int, int, int, int]:
         has_suffix = bool(_CHUNK_SUFFIX.search(n["id"]))
-        return (1 if has_suffix else 0, -_content_richness(n), len(n["id"]))
+        no_source = 0 if n.get("source_file") else 1
+        return (1 if has_suffix else 0, no_source, -_content_richness(n), len(n["id"]))
 
     return min(nodes, key=_score)
 
