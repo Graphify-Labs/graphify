@@ -161,3 +161,162 @@ void top_log_test(void) {
     assert edges[0]["source"].endswith("_top_log_test")
     assert edges[0]["target"] == 'log_debug("Top level debug log")'
 
+
+def test_generic_logging_cache_invalidation_and_consistency(tmp_path, monkeypatch):
+    """Test that toggling logging on/off does not leak stale cache entries or bypass extraction."""
+    monkeypatch.chdir(tmp_path)
+    config_file = tmp_path / "logging_config.yaml"
+    config_file.write_text("""
+logging_rules:
+  c:
+    query: |
+      (call_expression
+        function: (identifier) @log_obj (#match? @log_obj "{pattern}")
+        arguments: (argument_list) @args
+      )
+    pattern: "(?i)^(log_.*)$"
+""")
+
+    c_file = tmp_path / "service.c"
+    c_file.write_text("""
+void handle_request(void) {
+    log_info("Handling service request");
+}
+""")
+
+    shared_cache = tmp_path / "shared_cache"
+    from graphify.generic_logger import GenericLogExtractor
+
+    # Run 1: Logging disabled. Must produce 0 log edges in the shared cache.
+    monkeypatch.delenv("GRAPHIFY_EXTRACT_LOGS", raising=False)
+    monkeypatch.setattr(ex, "log_extractor", GenericLogExtractor(str(config_file)))
+    ex.log_extractor._loaded = False
+
+    r1 = ex.extract([c_file], cache_root=shared_cache, parallel=False)
+    edges1 = [e for e in r1.get("edges", []) if e.get("relation") == "PRINTS_LOG"]
+    assert len(edges1) == 0
+
+    # Run 2: Logging enabled. Must NOT be bypassed by Run 1's cache hit.
+    monkeypatch.setenv("GRAPHIFY_EXTRACT_LOGS", "1")
+    monkeypatch.setattr(ex, "log_extractor", GenericLogExtractor(str(config_file)))
+    ex.log_extractor._loaded = False
+
+    r2 = ex.extract([c_file], cache_root=shared_cache, parallel=False)
+    edges2 = [e for e in r2.get("edges", []) if e.get("relation") == "PRINTS_LOG"]
+    assert len(edges2) == 1
+    assert edges2[0]["target"] == 'log_info("Handling service request")'
+
+    # Run 3: Logging disabled again. Must NOT serve Run 2's cached log edges.
+    monkeypatch.delenv("GRAPHIFY_EXTRACT_LOGS", raising=False)
+    monkeypatch.setattr(ex, "log_extractor", GenericLogExtractor(str(config_file)))
+    ex.log_extractor._loaded = False
+
+    r3 = ex.extract([c_file], cache_root=shared_cache, parallel=False)
+    edges3 = [e for e in r3.get("edges", []) if e.get("relation") == "PRINTS_LOG"]
+    assert len(edges3) == 0
+
+    # Run 4: Logging enabled, cache hit from Run 2 should be preserved.
+    monkeypatch.setenv("GRAPHIFY_EXTRACT_LOGS", "1")
+    monkeypatch.setattr(ex, "log_extractor", GenericLogExtractor(str(config_file)))
+    ex.log_extractor._loaded = False
+
+    r4 = ex.extract([c_file], cache_root=shared_cache, parallel=False)
+    edges4 = [e for e in r4.get("edges", []) if e.get("relation") == "PRINTS_LOG"]
+    assert len(edges4) == 1
+
+
+def test_generic_logging_precise_function_name_resolution(tmp_path, monkeypatch):
+    """Test that function names are accurately identified and not confused with return types or annotations."""
+    monkeypatch.chdir(tmp_path)
+    config_file = tmp_path / "logging_config.yaml"
+    config_file.write_text("""
+logging_rules:
+  c:
+    query: |
+      (call_expression
+        function: (identifier) @log_obj (#match? @log_obj "{pattern}")
+        arguments: (argument_list) @args
+      )
+    pattern: "(?i)^(log_.*)$"
+  java:
+    query: |
+      (method_invocation
+        object: (identifier) @log_obj (#match? @log_obj "{pattern}")
+        name: (identifier) @log_level
+        arguments: (argument_list) @args
+      )
+    pattern: "(?i)^(logger)$"
+""")
+
+    # C source where return type is an identifier (size_t)
+    c_file = tmp_path / "buffer.c"
+    c_file.write_text("""
+static size_t calculate_buffer_size(int count) {
+    log_debug("Calculating buffer");
+    return (size_t)count * 1024;
+}
+""")
+
+    # Java source with annotation and generic return type
+    java_file = tmp_path / "Worker.java"
+    java_file.write_text("""
+class Worker {
+    @Override
+    public <T> CustomResponse processTask(T task) {
+        logger.info("Executing task");
+        return null;
+    }
+}
+""")
+
+    monkeypatch.setenv("GRAPHIFY_EXTRACT_LOGS", "1")
+    from graphify.generic_logger import GenericLogExtractor
+    monkeypatch.setattr(ex, "log_extractor", GenericLogExtractor(str(config_file)))
+    ex.log_extractor._loaded = False
+
+    result = ex.extract([c_file, java_file], cache_root=tmp_path / "cache_precise", parallel=False)
+    edges = [e for e in result.get("edges", []) if e.get("relation") == "PRINTS_LOG"]
+
+    # C edge source must end with _calculate_buffer_size (NOT _size_t)
+    c_edge = next(e for e in edges if e.get("metadata", {}).get("lang") == "c")
+    assert c_edge["source"].endswith("_calculate_buffer_size")
+    assert not c_edge["source"].endswith("_size_t")
+
+    # Java edge source must end with _processtask (NOT _override or _customresponse)
+    java_edge = next(e for e in edges if e.get("metadata", {}).get("lang") == "java")
+    assert java_edge["source"].endswith("_processtask")
+    assert not java_edge["source"].endswith("_override")
+    assert not java_edge["source"].endswith("_customresponse")
+
+
+def test_cli_logging_flags_dispatch(monkeypatch, tmp_path):
+    """Test CLI dispatch handling for --enable-logging and --logging-config options."""
+    import sys
+    from graphify.cli import dispatch_command
+
+    cfg = tmp_path / "custom_logging.yaml"
+    cfg.write_text("logging_rules: {}")
+
+    monkeypatch.delenv("GRAPHIFY_EXTRACT_LOGS", raising=False)
+    monkeypatch.delenv("GRAPHIFY_LOGGING_CONFIG", raising=False)
+
+    # Test 'update' dispatch with --enable-logging and --logging-config
+    monkeypatch.setattr(sys, "argv", ["graphify", "update", "--enable-logging", f"--logging-config={cfg}", str(tmp_path)])
+    
+    called = {}
+    def mock_rebuild(*args, **kwargs):
+        called["rebuild"] = True
+        return True
+
+    import graphify.watch
+    monkeypatch.setattr(graphify.watch, "_rebuild_code", mock_rebuild)
+    try:
+        dispatch_command("update")
+        assert os.environ.get("GRAPHIFY_EXTRACT_LOGS") == "1"
+        assert os.environ.get("GRAPHIFY_LOGGING_CONFIG") == str(cfg)
+        assert called.get("rebuild") is True
+    finally:
+        os.environ.pop("GRAPHIFY_EXTRACT_LOGS", None)
+        os.environ.pop("GRAPHIFY_LOGGING_CONFIG", None)
+
+

@@ -926,7 +926,7 @@ def cache_dir(root: Path = Path("."), kind: str = "ast",
     _out = Path(_GRAPHIFY_OUT)
     base = _out if _out.is_absolute() else Path(root).resolve() / _out
     d = base / "cache" / kind
-    if kind == "ast":
+    if kind == "ast" or kind.startswith("ast-"):
         d = d / f"v{_EXTRACTOR_VERSION}-s{_AST_CACHE_SCHEMA}"
         _cleanup_stale_ast_entries(d.parent, d)
     elif prompt_fp:

@@ -5518,10 +5518,11 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     cache_location = Path(cache_location_str)
     _raise_recursion_limit()
     bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
+    cache_kind = log_extractor.get_cache_kind()
 
     # Check cache first (avoid re-extraction)
     if not bypass_cache:
-        cached = load_cached(path, root, cache_root=cache_location)
+        cached = load_cached(path, root, kind=cache_kind, cache_root=cache_location)
         if cached is not None:
             return idx, cached
 
@@ -5543,7 +5544,7 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     # byte-stable across runs and silently blinds affected/explain to and
     # through the file (#1666); skipping the write lets a rerun self-heal.
     if not bypass_cache and "error" not in result and result.get("nodes"):
-        save_cached(path, result, root, cache_root=cache_location)
+        save_cached(path, result, root, kind=cache_kind, cache_root=cache_location)
     return idx, result
 
 
@@ -5689,6 +5690,7 @@ def _extract_sequential(
 ) -> None:
     """Extract uncached files sequentially (fallback for small batches)."""
     _PROGRESS_INTERVAL = 100
+    cache_kind = log_extractor.get_cache_kind()
     for work_idx, (idx, path) in enumerate(uncached_work):
         if (
             total_files >= _PROGRESS_INTERVAL
@@ -5715,7 +5717,7 @@ def _extract_sequential(
                 print(f"[LogExtractor Hook Error] {e}", file=sys.stderr, flush=True)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666).
         if not bypass_cache and "error" not in result and result.get("nodes"):
-            save_cached(path, result, root, cache_root=cache_location)
+            save_cached(path, result, root, kind=cache_kind, cache_root=cache_location)
         per_file[idx] = result
     if total_files >= _PROGRESS_INTERVAL:
         # Consistent denominator with the intermediate lines (#1693).
@@ -5828,6 +5830,7 @@ def extract(
     # cache directory's location diverges from it.
     cache_location = (cache_root if cache_root is not None else Path(".")).resolve()
     total = len(paths)
+    cache_kind = log_extractor.get_cache_kind()
 
     # Phase 1: separate cached hits from uncached work
     per_file: list[dict | None] = [None] * total
@@ -5839,7 +5842,7 @@ def extract(
             continue
         bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
         if not bypass_cache:
-            cached = load_cached(path, root, cache_root=cache_location)
+            cached = load_cached(path, root, kind=cache_kind, cache_root=cache_location)
             if cached is not None:
                 per_file[i] = cached
                 continue
