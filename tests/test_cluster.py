@@ -46,6 +46,34 @@ def test_cohesion_score_range():
         score = cohesion_score(G, nodes)
         assert 0.0 <= score <= 1.0
 
+def test_cohesion_score_ignores_self_loops():
+    # #3558: a recursive calls self-loop must not inflate the ratio. Two nodes
+    # with one real edge plus a self-loop is still fully cohesive (1.0), not 2.0.
+    G = nx.Graph()
+    G.add_edge("a", "b")
+    G.add_edge("a", "a")  # recursion self-loop
+    score = cohesion_score(G, ["a", "b"])
+    assert score == 1.0
+
+def test_cohesion_score_self_loops_only_is_zero():
+    # Self-loops alone are not inter-node connectivity.
+    G = nx.Graph()
+    G.add_nodes_from(["a", "b", "c"])
+    for n in ("a", "b", "c"):
+        G.add_edge(n, n)
+    score = cohesion_score(G, ["a", "b", "c"])
+    assert score == 0.0
+
+def test_cohesion_score_range_with_self_loops():
+    # The 0..1 bound holds even when every node carries a self-loop.
+    G = nx.complete_graph(4)
+    G = nx.relabel_nodes(G, {i: str(i) for i in G.nodes})
+    for n in list(G.nodes):
+        G.add_edge(n, n)
+    score = cohesion_score(G, list(G.nodes))
+    assert 0.0 <= score <= 1.0
+    assert score == 1.0
+
 def test_score_all_keys_match_communities():
     G = make_graph()
     communities = cluster(G)

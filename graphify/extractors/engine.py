@@ -1361,11 +1361,25 @@ def _js_collect_pattern_idents(node, source: bytes, bound: set) -> None:
             _js_collect_pattern_idents(c, source, bound)
 
 def _js_local_bound_names(func_node, source: bytes) -> set[str]:
-    """Names bound locally inside a JS/TS function: parameters plus `const`/`let`/
-    `var` declarator targets. Mirrors `_python_local_bound_names`: an argument that
-    is a parameter or local binding names a local value, not a same-named module
-    function, so it must not manufacture an indirect_call edge. Nested function and
-    class scopes are not descended into."""
+    """Names bound locally inside a JS/TS function, into the FUNCTION-WIDE
+    scope: parameters plus `var` declarator targets. Mirrors
+    `_python_local_bound_names`: an argument that is a parameter or local
+    binding names a local value, not a same-named module function, so it
+    must not manufacture an indirect_call edge. Nested function and class
+    scopes are not descended into.
+
+    `let`/`const` declarator targets and `for`/`for-in`/`for-of` loop
+    bindings are NOT collected here (#2822): unlike `var`, which is
+    function-scoped (hoisted) regardless of how deeply it is nested inside
+    an if/try/bare-`{}` block or a loop, `let`/`const` (and a `for`/`for-in`
+    loop's own binding, whatever keyword it uses) are scoped to exactly the
+    block or loop they are declared in. Collecting them into this
+    function-wide set suppressed a genuine reference to a same-named module
+    callable anywhere else in the function, even far outside the block that
+    actually owns the binding. `walk_calls` in this module folds each of
+    those into `extra_locals` for exactly its own block/loop subtree
+    instead, the same mechanism already used for `catch (e)` bindings.
+    """
     bound: set[str] = set()
     params = func_node.child_by_field_name("parameters")
     if params is not None:
@@ -1382,17 +1396,18 @@ def _js_local_bound_names(func_node, source: bytes) -> set[str]:
         for c in n.children:
             if c.type in _JS_SCOPE_BOUNDARY:
                 continue  # inner scope — its bindings are not this function's locals
-            if c.type == "variable_declarator":
+            if c.type == "variable_declarator" and n.type == "variable_declaration":
+                # n.type distinguishes `var` (variable_declaration) from
+                # `let`/`const` (lexical_declaration) — only var belongs in
+                # the function-wide set, see the docstring above (#2822).
                 name = c.child_by_field_name("name")
                 if name is not None:
                     _js_collect_pattern_idents(name, source, bound)
-            elif c.type == "for_in_statement":
-                # `for (const entry of xs)` / `for (const {k} of xs)`: the loop
+            elif c.type == "for_in_statement" and any(gc.type == "var" for gc in c.children):
+                # `for (var entry of xs)`: var is still function-scoped/hoisted
+                # here too, unlike the let/const form (#2822) -- the loop
                 # binding is the `left` pattern, NOT wrapped in a
-                # variable_declarator, so the branch above misses it and `entry`
-                # read as a by-name reference to any same-named module callable
-                # (#2606). C-style `for (let i = 0; ...)` uses a lexical_declaration
-                # with real declarators, already covered by the recursion below.
+                # variable_declarator, so the branch above misses it.
                 left = c.child_by_field_name("left")
                 if left is not None:
                     _js_collect_pattern_idents(left, source, bound)
@@ -1402,6 +1417,27 @@ def _js_local_bound_names(func_node, source: bytes) -> set[str]:
     if body is not None:
         walk(body)
     return bound
+
+
+def _js_direct_lexical_names(node, source: bytes) -> frozenset[str]:
+    """Names bound by `let`/`const` declarators that are DIRECT children of
+    node (not nested inside a further block, loop, function, or class).
+
+    Used to scope a lexical binding to exactly the block or `for` loop it is
+    declared in (#2822), rather than the whole enclosing function: `node` is
+    a `statement_block` or a C-style `for_statement`, both of which have any
+    `lexical_declaration` they directly own as a plain child.
+    """
+    names: set[str] = set()
+    for child in node.children:
+        if child.type != "lexical_declaration":
+            continue
+        for declarator in child.children:
+            if declarator.type == "variable_declarator":
+                name = declarator.child_by_field_name("name")
+                if name is not None:
+                    _js_collect_pattern_idents(name, source, names)
+    return frozenset(names)
 
 def _js_module_bound_names(root, source: bytes) -> set[str]:
     """Module-scope names rebound to NON-function data (`const X = {...}`, `let y = 5`).
@@ -2398,6 +2434,22 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                         add_node_fn=add_node_fn, add_edge_fn=add_edge_fn,
                         function_bodies=function_bodies,
                     )
+                    # #3124: calls made directly inside this closure (not just
+                    # `this.X = fn` member assignments) were dropped entirely,
+                    # since walk_calls only ever runs on function_bodies
+                    # entries and this closure has no named owner to seed one.
+                    # `it("...", async () => { register(...) })` is exactly
+                    # this shape: the nearest enclosing scope is anonymous, so
+                    # #1740's "attribute to the enclosing function" fix never
+                    # applies and nothing is emitted, not even to the file
+                    # node #1740 itself named as the fallback. Attribute calls
+                    # here to the file node instead, mirroring the member
+                    # assignment attribution just above -- a nested member
+                    # function's own body is appended with its own real id by
+                    # `_js_scan_member_assignments`, so it lands in
+                    # `_tracked_body_ids` and walk_calls' own boundary check
+                    # skips re-descending into it from here.
+                    function_bodies.append((file_nid, closure_body))
         assign = next((c for c in node.children
                        if c.type == "assignment_expression"), None)
         if assign is not None:
@@ -2565,7 +2617,57 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                     ):
                         # Simple exported identifiers are part of the module API
                         # regardless of initializer shape. Keep other scalar noise suppressed.
-                        if name_node:
+                        if name_node is not None and name_node.type == "object_pattern" and is_exported:
+                            # #2604 Class 2: `export const { auth, handlers } =
+                            # NextAuth(config)` (NextAuth v5's own documented
+                            # boilerplate; next-intl's createNavigation() is the
+                            # same shape) used to fall through to the generic
+                            # branch below, which reads the WHOLE pattern as one
+                            # combined node -- id `..._auth_handlers`, label
+                            # "{ auth, handlers }". A single-name import
+                            # (`import { auth } from './auth'`) looks for a node
+                            # named `auth` alone, which never exists, so the
+                            # import edge dangles. Emit one node per exported
+                            # name instead, all sharing this statement's line, so
+                            # each import resolves to its own node the way it
+                            # would if the export had been written as N separate
+                            # `export const auth = ...` statements.
+                            #
+                            # Gated on `is_exported`: an UN-exported destructure
+                            # of the same shape (`const { doWork } = require(...)`)
+                            # is a LOCAL import binding, not a module export. The
+                            # old combined-node label ("{ doWork }") never matched
+                            # the bare-name index cross-file resolution builds, so
+                            # it was silently inert; giving it a bare-name node
+                            # here (id `caller_dowork`, label "doWork") would make
+                            # it collide with the real `doWork` definition it is
+                            # ONLY importing, turning a clean single-candidate
+                            # resolution into a false "ambiguous name" and losing
+                            # the real calls edge (caught by
+                            # test_cross_file_call_promoted_to_extracted_with_import_evidence).
+                            line = child.start_point[0] + 1
+                            for prop in name_node.named_children:
+                                if prop.type == "shorthand_property_identifier_pattern":
+                                    export_name = _read_text(prop, source)
+                                elif prop.type == "pair_pattern":
+                                    # `handlers: h` exports as `handlers` (the
+                                    # key) -- `import { handlers }` binds by the
+                                    # property name, never by the local alias.
+                                    key_node = prop.child_by_field_name("key")
+                                    export_name = _read_text(key_node, source) if key_node else None
+                                else:
+                                    # `...rest` and default-valued patterns
+                                    # (`{ auth = fallback }`) don't correspond to
+                                    # one discrete exported name; skip rather
+                                    # than guess.
+                                    export_name = None
+                                if not export_name or not normalize_id(export_name):
+                                    continue
+                                prop_nid = _make_id(stem, export_name)
+                                add_node_fn(prop_nid, export_name, line)
+                                add_edge_fn(file_nid, prop_nid, "contains", line)
+                            const_found = True
+                        elif name_node:
                             const_name = _read_text(name_node, source)
                             line = child.start_point[0] + 1
                             const_nid = _make_id(stem, const_name)
@@ -3057,13 +3159,198 @@ def _ruby_const_full_name(node, source: bytes) -> str:
         return ""
     return _read_text(node, source).strip()
 
+
+_RUBY_LOOKUP_MUTATORS = frozenset(
+    {
+        "alias_method",
+        "attr",
+        "attr_accessor",
+        "attr_reader",
+        "attr_writer",
+        "define_method",
+        "define_singleton_method",
+        "include",
+        "extend",
+        "module_function",
+        "prepend",
+        "refine",
+        "remove_method",
+        "undef_method",
+        "using",
+    }
+)
+
+_RUBY_EXTERNAL_OWNER_MUTATORS = _RUBY_LOOKUP_MUTATORS | frozenset(
+    {"class_eval", "class_exec", "module_eval", "module_exec"}
+)
+
+
+def _ruby_body_has_lookup_barrier(body_node, source: bytes) -> bool:
+    """Whether a lexical body can alter Ruby method lookup dynamically."""
+    method_scopes = {"method", "singleton_method"}
+
+    def visit(node, *, direct: bool = False) -> bool:
+        for child in node.children:
+            if child.type in {"class", "module"}:
+                continue
+            if child.type == "singleton_class":
+                if not direct:
+                    return True
+                continue
+            if child.type in method_scopes:
+                # A normal direct method declaration is modelled explicitly.
+                # A conditional/nested declaration is not guaranteed to exist.
+                if not direct:
+                    return True
+                continue
+            if child.type in {"alias", "undef"}:
+                return True
+            if child.type == "call":
+                receiver = child.child_by_field_name("receiver")
+                method = child.child_by_field_name("method")
+                if (
+                    (receiver is None or _read_text(receiver, source) == "self")
+                    and method is not None
+                    and _read_text(method, source) in _RUBY_LOOKUP_MUTATORS
+                ):
+                    return True
+            if visit(child):
+                return True
+        return False
+
+    return visit(body_node, direct=True)
+
+
+def _ruby_file_has_refinement_barrier(root_node, source: bytes) -> bool:
+    """Whether any lexical scope in a file activates or defines a refinement.
+
+    ``using`` affects method lookup for definitions in its lexical scope, while
+    ``refine`` can hide method bodies behind a dynamic lookup layer.  The
+    extractor does not model that lexical activation precisely, so inherited
+    implicit-self promotion fails closed for the whole file.
+    """
+
+    def visit(node) -> bool:
+        if node.type == "call":
+            method = node.child_by_field_name("method")
+            if method is not None and _read_text(method, source) in {"refine", "using"}:
+                return True
+        return any(visit(child) for child in node.children)
+
+    return visit(root_node)
+
+
+def _ruby_external_method_owners(root_node, source: bytes) -> list[str]:
+    """Return explicit constant owners modified outside their class body."""
+    owners: set[str] = set()
+
+    def constant_refs(node) -> set[str]:
+        if node.type in {"constant", "scope_resolution"}:
+            raw = _ruby_const_full_name(node, source)
+            return {raw} if raw else set()
+        if node.type not in {
+            "left_assignment_list",
+            "parenthesized_statements",
+            "splat_argument",
+        }:
+            # Attribute/index writes such as `Namespace.config = value`
+            # contain a constant receiver but do not rebind that constant.
+            return set()
+        refs: set[str] = set()
+        for child in node.children:
+            if child.is_named:
+                refs.update(constant_refs(child))
+        return refs
+
+    def alias_rhs_refs(node, *, allow_array: bool = False) -> set[str]:
+        if node.type in {"constant", "scope_resolution"}:
+            raw = _ruby_const_full_name(node, source)
+            return {raw} if raw else set()
+        if node.type in {
+            "parenthesized_statements",
+            "right_assignment_list",
+        } or (allow_array and node.type == "array"):
+            refs: set[str] = set()
+            for child in node.children:
+                if child.is_named:
+                    refs.update(alias_rhs_refs(child, allow_array=allow_array))
+            return refs
+        return set()
+
+    def prefix_marker(raw: str) -> str:
+        return f"{raw}::*"
+
+    def visit(node) -> None:
+        if node.type in {"assignment", "operator_assignment"}:
+            left = node.child_by_field_name("left")
+            lhs_refs = constant_refs(left) if left is not None else set()
+            if lhs_refs:
+                # Any write can change which superclass a constant reference
+                # denotes, including dynamic RHS and multiple assignment.
+                owners.update(prefix_marker(raw) for raw in lhs_refs)
+            right = node.child_by_field_name("right")
+            if node.type == "assignment" and lhs_refs and right is not None:
+                # Treat both ends of a potential constant alias as unsafe.  A
+                # later mutation through the alias affects descendant owners
+                # too.  Only direct/parenthesized constant RHS forms qualify;
+                # ordinary values containing constant references do not.
+                owners.update(
+                    prefix_marker(raw)
+                    for raw in alias_rhs_refs(
+                        right,
+                        allow_array=left is not None
+                        and left.type == "left_assignment_list",
+                    )
+                )
+        if node.type in {"class", "module"}:
+            name = node.child_by_field_name("name")
+            if name is not None and name.type == "scope_resolution":
+                raw = _ruby_const_full_name(name, source)
+                if raw:
+                    # Compact declarations resolve a constant path rather than
+                    # introducing every segment lexically.  Until that lookup
+                    # is modelled, guard every matching real owner.
+                    owners.add(raw)
+        if node.type == "singleton_method":
+            owner = node.child_by_field_name("object")
+            if owner is not None and _read_text(owner, source) != "self":
+                raw = _ruby_const_full_name(owner, source)
+                if raw:
+                    owners.add(raw)
+            return
+        if node.type == "singleton_class":
+            owner = node.child_by_field_name("value")
+            if owner is not None and _read_text(owner, source) != "self":
+                raw = _ruby_const_full_name(owner, source)
+                if raw:
+                    owners.add(raw)
+        if node.type == "call":
+            receiver = node.child_by_field_name("receiver")
+            method = node.child_by_field_name("method")
+            if (
+                receiver is not None
+                and receiver.type in {"constant", "scope_resolution"}
+                and method is not None
+                and _read_text(method, source) in _RUBY_EXTERNAL_OWNER_MUTATORS
+            ):
+                raw = _ruby_const_full_name(receiver, source)
+                if raw:
+                    owners.add(raw)
+        if node.type == "method":
+            return
+        for child in node.children:
+            visit(child)
+
+    visit(root_node)
+    return sorted(owners)
+
 _RUBY_CLASS_FACTORIES = frozenset({("Struct", "new"), ("Class", "new"), ("Data", "define")})
 
 def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                      nodes: list, edges: list, seen_ids: set, function_bodies: list,
                      parent_class_nid: str | None, add_node, add_edge, walk,
                      callable_def_nids: set, callable_class_nids: set,
-                     ruby_namespace: list) -> bool:
+                     ruby_namespace: list, ruby_lexical_scopes: list) -> bool:
     """Ruby: a constant assignment whose RHS is ``Struct.new(...)``,
     ``Class.new(Super)`` or ``Data.define(...)`` defines a class named after the
     constant (#1640). Synthesize the class node, attach block-defined methods via
@@ -3093,7 +3380,14 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
     const_name = "::".join(ruby_namespace + const_segments)
     line = node.start_point[0] + 1
     class_nid = _make_id(stem, const_name)
-    add_node(class_nid, const_name, line)
+    # Class factories can install methods through block/runtime behavior that
+    # the narrow inherited-call proof does not model.
+    add_node(
+        class_nid,
+        const_name,
+        line,
+        metadata={"ruby_lookup_unsafe": True},
+    )
     callable_def_nids.add(class_nid)  # a class is callable (its constructor)
     callable_class_nids.add(class_nid)  # ...but only via its constructor (#2137)
     # Mirror the generic class branch: containment always hangs off the file node.
@@ -3106,6 +3400,7 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
             for arg in args.children:
                 if arg.type in ("constant", "scope_resolution"):
                     base = _ruby_const_last_name(arg, source)
+                    raw_base = _ruby_const_full_name(arg, source)
                     if base:
                         base_nid = _make_id(stem, base)
                         if base_nid not in seen_ids:
@@ -3123,7 +3418,18 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
                                     "source_location": "", "origin_file": str_path,
                                 })
                                 seen_ids.add(base_nid)
-                        add_edge(class_nid, base_nid, "inherits", line)
+                        add_edge(
+                            class_nid,
+                            base_nid,
+                            "inherits",
+                            line,
+                            metadata={
+                                "ruby_superclass_ref": raw_base,
+                                "ruby_lexical_scopes": list(
+                                    reversed(ruby_lexical_scopes)
+                                ),
+                            },
+                        )
                     break
 
     # Recurse the do/brace block so block-defined methods attach to the class.
@@ -3135,10 +3441,12 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
     if block is not None:
         body = next((c for c in block.children if c.type == "body_statement"), block)
         ruby_namespace.extend(const_segments)
+        ruby_lexical_scopes.append(const_name)
         try:
             for child in body.children:
                 walk(child, parent_class_nid=class_nid)
         finally:
+            ruby_lexical_scopes.pop()
             del ruby_namespace[-len(const_segments):]
     return True
 
@@ -3213,6 +3521,14 @@ def _swift_blank_await_bindings(source: bytes) -> bytes:
         return match.group(1) + b" " * len(match.group(2))
 
     return _SWIFT_AWAIT_BINDING.sub(replace, source)
+
+
+def _lua_is_require_call(node, source: bytes) -> bool:
+    """True if a Lua `function_call` node invokes `require`, parenthesized or not."""
+    name_node = node.child_by_field_name("name")
+    if name_node is None or name_node.type != "identifier":
+        return False
+    return _read_text(name_node, source) == "require"
 
 
 def _extract_generic(
@@ -3293,6 +3609,9 @@ def _extract_generic(
     # `include Foo::Bar` resolves for both spellings (#2302). Kept separate from
     # namespace_stack so Ruby method ids/labels are unchanged.
     ruby_namespace: list[str] = []
+    # Exact Ruby Module.nesting frames. Compact `module A::B` contributes one
+    # frame, unlike nested `module A; module B`, which contributes two.
+    ruby_lexical_scopes: list[str] = []
     scope_stack: list[str] = []
     function_bodies: list[tuple[str, object]] = []
     # nids of function / method / class definitions in this file. The indirect-
@@ -3334,6 +3653,12 @@ def _extract_generic(
     # merged into raw_calls after the call-walk populates it (raw_calls does not
     # exist yet while walk() runs). Resolved cross-file by the Ruby resolver.
     _ruby_mixin_calls: list[dict] = []
+    # Ruby method declarations share one graph shape, even though instance and
+    # singleton dispatch are distinct. Persist the parser-known kind so the
+    # corpus resolver can fail closed instead of guessing across that boundary.
+    ruby_singleton_context_depth = 0
+    ruby_method_kinds: dict[str, set[str]] = {}
+    ruby_method_counts: dict[str, int] = {}
     # #1356: per-file map of local name -> declared type (properties + params),
     # threaded out as `swift_type_table` so member calls (`vm.update()`) can be
     # resolved to the receiver's real definition in _resolve_swift_member_calls.
@@ -3435,9 +3760,35 @@ def _extract_generic(
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
+    if config.ts_module == "tree_sitter_ruby":
+        file_node = next(n for n in nodes if n["id"] == file_nid)
+        file_metadata = {"ruby_resolution_schema": 1}
+        if _ruby_body_has_lookup_barrier(
+            root, source
+        ) or _ruby_file_has_refinement_barrier(root, source):
+            file_metadata["ruby_lookup_unsafe"] = True
+        external_owners = _ruby_external_method_owners(root, source)
+        if external_owners:
+            file_metadata["ruby_external_method_owners"] = external_owners
+        file_node["metadata"] = sanitize_metadata(file_metadata)
 
     def walk(node, parent_class_nid: str | None = None) -> None:
+        nonlocal ruby_singleton_context_depth
         t = node.type
+
+        # Lua: `require("mod")` used as a bare statement (no assignment) is
+        # the dominant idiom in Neovim configs, but it doesn't fit any
+        # *_declaration node type — it is just a function_call. Adding
+        # function_call wholesale to import_types would swallow every plain
+        # call (e.g. `vim.keymap.set(.., function() ... end)`), skipping the
+        # walker's recursion into its callback and losing whatever is
+        # declared inside. So this only fires for a call that IS require,
+        # checked ahead of (and independently from) the import_types dispatch
+        # below (#3320).
+        if (config.ts_module == "tree_sitter_lua" and t == "function_call"
+                and config.import_handler and _lua_is_require_call(node, source)):
+            config.import_handler(node, source, file_nid, stem, edges, str_path, scope_stack)
+            return
 
         # Import types
         if t in config.import_types:
@@ -3486,6 +3837,9 @@ def _extract_generic(
             if not name_node:
                 return
             class_name = _read_text(name_node, source)
+            ruby_absolute_declaration = (
+                config.ts_module == "tree_sitter_ruby" and class_name.startswith("::")
+            )
             # Ruby: fully qualify the module/class label with its enclosing
             # scope, splitting compact `Foo::Bar` names into segments so both
             # declaration styles converge on one `Foo::Bar` label (#2302).
@@ -3496,6 +3850,9 @@ def _extract_generic(
             class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
             line = node.start_point[0] + 1
             metadata = None
+            ruby_reopened = (
+                config.ts_module == "tree_sitter_ruby" and class_nid in seen_ids
+            )
             if config.ts_module == "tree_sitter_c_sharp":
                 if parent_class_nid:
                     metadata = {"is_nested_type": True}
@@ -3515,7 +3872,29 @@ def _extract_generic(
                 ):
                     metadata = dict(metadata or {})
                     metadata["is_partial"] = True
+            if config.ts_module == "tree_sitter_ruby":
+                ruby_body = _find_body(node, config)
+                if ruby_absolute_declaration or ruby_reopened or (
+                    ruby_body is not None
+                    and _ruby_body_has_lookup_barrier(ruby_body, source)
+                ):
+                    metadata = dict(metadata or {})
+                    if ruby_absolute_declaration:
+                        metadata["ruby_lookup_unsafe"] = True
+                    if ruby_reopened:
+                        metadata["ruby_reopened"] = True
+                    if ruby_body is not None and _ruby_body_has_lookup_barrier(
+                        ruby_body, source
+                    ):
+                        metadata["ruby_lookup_unsafe"] = True
             add_node(class_nid, class_name, line, metadata=metadata)
+            if config.ts_module == "tree_sitter_ruby" and metadata:
+                # Reopened declarations collapse onto the same file-local id;
+                # merge fail-closed markers that add_node intentionally skips.
+                class_node = next(n for n in nodes if n["id"] == class_nid)
+                class_metadata = dict(class_node.get("metadata") or {})
+                class_metadata.update(metadata)
+                class_node["metadata"] = sanitize_metadata(class_metadata)
             callable_def_nids.add(class_nid)  # a class is callable (constructor)
             callable_class_nids.add(class_nid)  # ...but only via its constructor (#2137)
             # A nested class/object/trait is contained by its ENCLOSING type, not
@@ -3713,18 +4092,32 @@ def _extract_generic(
                 sup = node.child_by_field_name("superclass")
                 if sup is not None:
                     base = ""
+                    raw_base = ""
                     for sub in sup.children:
                         if sub.type == "constant":
                             base = _read_text(sub, source)
+                            raw_base = base
                             break
                         if sub.type == "scope_resolution":
+                            raw_base = _read_text(sub, source).strip()
                             consts = [c for c in sub.children if c.type == "constant"]
                             if consts:
                                 base = _read_text(consts[-1], source)
                             break
                     if base:
                         base_nid = ensure_named_node(base, line)
-                        add_edge(class_nid, base_nid, "inherits", line)
+                        add_edge(
+                            class_nid,
+                            base_nid,
+                            "inherits",
+                            line,
+                            metadata={
+                                "ruby_superclass_ref": raw_base,
+                                "ruby_lexical_scopes": list(
+                                    reversed(ruby_lexical_scopes)
+                                ),
+                            },
+                        )
 
                 # `include`/`extend`/`prepend <Const>` in the class/module body ->
                 # a `mixes_in` edge to the module (#1668). The module usually lives
@@ -4111,10 +4504,18 @@ def _extract_generic(
             body = _find_body(node, config)
             if body:
                 ruby_namespace.extend(ruby_segments)
+                if config.ts_module == "tree_sitter_ruby":
+                    ruby_lexical_scopes.append(class_name)
+                previous_singleton_depth = ruby_singleton_context_depth
+                if config.ts_module == "tree_sitter_ruby":
+                    ruby_singleton_context_depth = 0
                 try:
                     for child in body.children:
                         walk(child, parent_class_nid=class_nid)
                 finally:
+                    ruby_singleton_context_depth = previous_singleton_depth
+                    if config.ts_module == "tree_sitter_ruby":
+                        ruby_lexical_scopes.pop()
                     if ruby_segments:
                         del ruby_namespace[-len(ruby_segments):]
             return
@@ -4557,6 +4958,31 @@ def _extract_generic(
                     add_edge(parent_class_nid, field_nid, "defines", line, context="field")
             return
 
+        # Ruby's `class << self` contains ordinary `method` nodes. Keep them
+        # attached to the lexical class and record singleton dispatch kind.
+        if (
+            config.ts_module == "tree_sitter_ruby"
+            and t == "singleton_class"
+            and parent_class_nid
+        ):
+            value = node.child_by_field_name("value")
+            body = node.child_by_field_name("body")
+            if value is not None and _read_text(value, source) == "self" and body:
+                if _ruby_body_has_lookup_barrier(body, source):
+                    class_node = next(
+                        n for n in nodes if n["id"] == parent_class_nid
+                    )
+                    class_metadata = dict(class_node.get("metadata") or {})
+                    class_metadata["ruby_lookup_unsafe"] = True
+                    class_node["metadata"] = sanitize_metadata(class_metadata)
+                ruby_singleton_context_depth += 1
+                try:
+                    for child in body.children:
+                        walk(child, parent_class_nid=parent_class_nid)
+                finally:
+                    ruby_singleton_context_depth -= 1
+                return
+
         # Function types
         if t in config.function_types:
             # Swift deinit/subscript have no name field — resolve before generic fallback
@@ -4593,13 +5019,56 @@ def _extract_generic(
                 return
 
             line = node.start_point[0] + 1
+            ruby_method_kind = None
+            if config.ts_module == "tree_sitter_ruby" and parent_class_nid:
+                if t == "singleton_method":
+                    singleton_object = node.child_by_field_name("object")
+                    if (
+                        ruby_singleton_context_depth == 0
+                        and singleton_object is not None
+                        and _read_text(singleton_object, source) == "self"
+                    ):
+                        ruby_method_kind = "singleton"
+                    else:
+                        ruby_method_kind = "ambiguous"
+                elif ruby_singleton_context_depth == 1:
+                    ruby_method_kind = "singleton"
+                elif ruby_singleton_context_depth == 0:
+                    ruby_method_kind = "instance"
+                else:
+                    ruby_method_kind = "ambiguous"
             if parent_class_nid:
                 func_nid = _make_id(parent_class_nid, sanitized_name)
                 if config.ts_module == "tree_sitter_python":
                     func_nid = _python_underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
                     )
-                add_node(func_nid, f".{func_name}()", line)
+                ruby_method_metadata = None
+                if ruby_method_kind is not None:
+                    kinds = ruby_method_kinds.setdefault(func_nid, set())
+                    kinds.add(ruby_method_kind)
+                    ruby_method_counts[func_nid] = ruby_method_counts.get(func_nid, 0) + 1
+                    stored_kind = (
+                        next(iter(kinds))
+                        if len(kinds) == 1
+                        and ruby_method_counts[func_nid] == 1
+                        and next(iter(kinds)) in {"instance", "singleton"}
+                        else "ambiguous"
+                    )
+                    ruby_method_metadata = {"ruby_method_kind": stored_kind}
+                    existing_method = next(
+                        (n for n in nodes if n["id"] == func_nid), None
+                    )
+                    if existing_method is not None:
+                        existing_metadata = dict(existing_method.get("metadata") or {})
+                        existing_metadata.update(ruby_method_metadata)
+                        existing_method["metadata"] = sanitize_metadata(existing_metadata)
+                add_node(
+                    func_nid,
+                    f".{func_name}()",
+                    line,
+                    metadata=ruby_method_metadata,
+                )
                 add_edge(parent_class_nid, func_nid, "method", line)
             else:
                 func_nid = _make_id(stem, sanitized_name)
@@ -5113,7 +5582,7 @@ def _extract_generic(
                                 nodes, edges, seen_ids, function_bodies,
                                 parent_class_nid, add_node, add_edge, walk,
                                 callable_def_nids, callable_class_nids,
-                                ruby_namespace):
+                                ruby_namespace, ruby_lexical_scopes):
                 return
 
         # Python's `@property` / `@staticmethod` / `@classmethod` wrap the
@@ -5181,6 +5650,19 @@ def _extract_generic(
                         walk(member, parent_class_nid=parent_class_nid)
                 else:
                     walk(child, parent_class_nid=parent_class_nid)
+            return
+
+        # A Java enum wraps its fields, constructors and methods in an
+        # `enum_body_declarations` node, nested under `enum_body` after the
+        # constant list. The default recurse below drops parent_class_nid (an
+        # unknown wrapper usually IS a scope boundary), which orphaned every
+        # enum method, field and constructor onto the file instead of the enum.
+        # It is not a scope of its own — its members belong to the enum — so
+        # recurse transparently, keeping the enum linkage (mirrors the Kotlin
+        # companion_object handling above).
+        if t == "enum_body_declarations":
+            for child in node.children:
+                walk(child, parent_class_nid=parent_class_nid)
             return
 
         # #2551: tree-sitter ERROR recovery can wrap declarations that plainly
@@ -5499,6 +5981,7 @@ def _extract_generic(
             swift_receiver: str | None = None
             member_receiver: str | None = None
             kotlin_qualified_prefix: str | None = None
+            kotlin_object_receiver: str | None = None
             csharp_qualified_prefix: str | None = None
 
             # Special handling per language
@@ -5548,6 +6031,23 @@ def _extract_generic(
                         segments = _kotlin_nav_identifier_segments(first, source)
                         if segments is not None and len(segments) >= 3:
                             kotlin_qualified_prefix = ".".join(segments[:-1])
+                        # #1698: the plain `Receiver.method()` shape (exactly
+                        # two segments) is neither a fully qualified name nor
+                        # eligible for member_receiver (same reasoning as
+                        # above). A capitalized receiver here is an object
+                        # singleton or a class/companion member reference —
+                        # statically unambiguous, no type inference needed —
+                        # captured separately so a dedicated cross-file pass
+                        # can resolve it by declared-type name when the in
+                        # file bare name lookup below finds nothing (the
+                        # cross-file case this issue is about; the same-file
+                        # case already resolves through that lookup and never
+                        # reaches raw_calls at all).
+                        elif (
+                            segments is not None and len(segments) == 2
+                            and segments[0][:1].isupper()
+                        ):
+                            kotlin_object_receiver = segments[0]
             elif config.ts_module == "tree_sitter_scala":
                 # Scala: first child
                 first = node.children[0] if node.children else None
@@ -5948,7 +6448,14 @@ def _extract_generic(
                         and not nid_to_sf.get(tgt_nid)
                     ):
                         tgt_nid = None
-                if tgt_nid:
+                # A name-only reference can leave a source-less stub behind when
+                # the target is outside the scanned corpus (for example,
+                # ``HTTPException`` imported from FastAPI). It is useful for the
+                # type/reference edge, but it is not a project-defined callable
+                # and must not become a calls hub. Real definitions have a
+                # source_file and continue through the normal call path.
+                external_stub_target = bool(tgt_nid and not nid_to_sf.get(tgt_nid))
+                if tgt_nid and not external_stub_target:
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:
                         seen_call_pairs.add(pair)
@@ -6018,6 +6525,14 @@ def _extract_generic(
                         if kotlin_qualified_prefix:
                             rc_entry["lang"] = "kotlin"
                             rc_entry["qualified_prefix"] = kotlin_qualified_prefix
+                        # Kotlin object/class-qualified member call (#1698): the
+                        # receiver + lang tag let _resolve_kotlin_member_calls
+                        # claim it once the in-file bare-name lookup above (the
+                        # only reason a real definition reaches raw_calls at
+                        # all) has already failed.
+                        if kotlin_object_receiver:
+                            rc_entry["lang"] = "kotlin"
+                            rc_entry["kotlin_object_receiver"] = kotlin_object_receiver
                         raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
@@ -6239,6 +6754,38 @@ def _extract_generic(
                 caught: set[str] = set()
                 _js_collect_pattern_idents(param, source, caught)
                 extra_locals = extra_locals | frozenset(caught)
+
+        # `let`/`const` are block-scoped, unlike `var` (function-scoped,
+        # hoisted) -- _js_local_bound_names only tracks var into the
+        # function-wide set now, so a name declared directly in a
+        # statement_block or a C-style for loop's own initializer must be
+        # folded into extra_locals for exactly that block/loop's subtree, or
+        # a same-named module callable referenced outside it is wrongly
+        # treated as shadowed everywhere in the function (#2822).
+        if (
+            config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+            and node.type in ("statement_block", "for_statement")
+        ):
+            block_locals = _js_direct_lexical_names(node, source)
+            if block_locals:
+                extra_locals = extra_locals | block_locals
+
+        # `for (const entry of xs)` / `for (const {k} of xs)`: the loop
+        # binding is the `left` pattern, not wrapped in a variable_declarator,
+        # and is scoped to the whole loop (condition and body), never the
+        # enclosing function (#2822) -- folding it here regardless of
+        # var/let/const is harmless for the var case, already covered by the
+        # function-wide set.
+        if (
+            config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+            and node.type == "for_in_statement"
+        ):
+            left = node.child_by_field_name("left")
+            if left is not None:
+                loop_locals: set[str] = set()
+                _js_collect_pattern_idents(left, source, loop_locals)
+                if loop_locals:
+                    extra_locals = extra_locals | frozenset(loop_locals)
 
         for child in node.children:
             walk_calls(child, caller_nid, receiver_types, extra_locals)

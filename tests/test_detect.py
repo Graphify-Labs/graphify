@@ -3412,6 +3412,40 @@ def test_sensitive_bare_keyword_prose_still_dropped():
     assert not _is_sensitive(Path("token-lifecycle.md"))  # multi-word slug indexed
 
 
+@pytest.mark.parametrize("path", [
+    "TOKENS.md",
+    "tokens.md",
+    "tokens.rst",
+])
+def test_sensitive_bare_plural_tokens_prose_indexed(path):
+    """Bare plural "tokens" in a prose file is a design-token reference doc,
+    not a credential dump — unlike "token.md" (singular) or "secrets.md"
+    (another keyword's bare plural), which still read as dumps (#3527)."""
+    from graphify.detect import _is_sensitive
+    assert not _is_sensitive(Path(path))
+
+
+def test_sensitive_bare_plural_tokens_still_flagged_outside_prose():
+    """The plural exemption is scoped to prose extensions only — "tokens.txt"
+    is still a plausible secret store and stays excluded (#3527)."""
+    from graphify.detect import _is_sensitive
+    assert _is_sensitive(Path("tokens.txt"))
+    assert _is_sensitive(Path("tokens.json"))
+
+
+@pytest.mark.parametrize("path", [
+    "app/lib/theme/shell_tokens.dart",
+    "src/design/tokens.ts",
+    "src/hard-tokens.ts",
+])
+def test_sensitive_design_token_source_files_indexed(path):
+    """Genuine design-token source files (.dart/.ts) are graphable source and
+    exempt from the generic-keyword drop regardless of the bare/plural rules
+    above — they were the headline repro in #3527."""
+    from graphify.detect import _is_sensitive
+    assert not _is_sensitive(Path(path))
+
+
 # ── #2232 / #2184: committed dotenv templates (.env.example etc.) are graphable ──
 
 @pytest.mark.parametrize("path", [

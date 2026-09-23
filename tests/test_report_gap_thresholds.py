@@ -1,4 +1,4 @@
-"""GRAPH_REPORT's headline numbers must agree with themselves (#3148).
+"""GRAPH_REPORT's headline numbers must agree with themselves (#3148, #3548).
 
 The Summary and Communities headers counted thin communities against the
 caller's --min-community-size, while the Knowledge Gaps section counted
@@ -8,6 +8,14 @@ concept and rationale nodes without saying so, so a plain degree<=1 recount
 from graph.json never matched it. Also the #2129 residual: "shown" was
 total-minus-thin, which counted zero-real-node communities the render loop
 skips.
+
+#3548: fixing the #2129 residual by computing "shown" directly (instead of
+total-minus-thin) then left "thin" itself undercounting - a `0 <` guard
+excluded a zero-real-node community from "thin" too, so a community the
+render loop also skips went uncounted anywhere. `shown + thin` no longer
+summed to the total. Both thresholds below now count the all-file-node
+community ("onlyfile") as thin at every positive min_community_size, since
+0 is always less than it.
 """
 from __future__ import annotations
 
@@ -48,30 +56,50 @@ def _report(min_size):
 
 
 def test_summary_and_gaps_count_thin_with_the_same_threshold():
+    # At min=5: "mid" (4 real) and "onlyfile" (0 real) are both thin; "big"
+    # (6 real) is shown.
     text = _report(5)
-    assert "(1 shown, 1 thin omitted)" in text
+    assert "(1 shown, 2 thin omitted)" in text
     m = re.search(r"\*\*(\d+) thin communit\w+ \(<(\d+) nodes\) omitted", text)
     assert m, text
-    assert m.group(1) == "1" and m.group(2) == "5", m.group(0)
+    assert m.group(1) == "2" and m.group(2) == "5", m.group(0)
 
 
-def test_at_the_default_threshold_nothing_is_thin():
+def test_at_the_default_threshold_only_the_zero_real_community_is_thin():
+    # At min=3: "mid" (4 real) clears the threshold and is shown; "onlyfile"
+    # (0 real) is still thin at any positive threshold (#3548).
     text = _report(3)
-    assert "0 thin omitted" in text
+    assert "1 thin omitted" in text
     if "## Knowledge Gaps" in text:
         gaps = text.split("## Knowledge Gaps")[-1].split("## ")[0]
-        assert "thin communit" not in gaps
+        assert "1 thin communit" in gaps
 
 
 def test_shown_counts_only_what_the_render_loop_renders():
-    """The zero-real-node community is neither shown nor thin (#2129 residual):
-    shown must be 1 (the big community), not total-minus-thin = 2."""
+    """`shown + thin` must sum to the total community count (#3548): the
+    zero-real-node community is never shown (the render loop skips it), so
+    it must be counted as thin rather than going uncounted anywhere."""
     text = _report(5)
     header = re.search(r"## Communities \((\d+) total, (\d+) thin omitted\)", text)
-    assert header and header.group(2) == "1"
-    assert "(1 shown, 1 thin omitted)" in text
+    assert header and header.group(1) == "3" and header.group(2) == "2"
+    assert "(1 shown, 2 thin omitted)" in text
     rendered = len(re.findall(r"### Community ", text))
     assert rendered <= 1 or rendered == int(re.search(r"\((\d+) shown", text).group(1))
+
+
+def test_shown_plus_thin_equals_total_communities_and_matches_render_count():
+    # The two invariants #3548's own report suggested as a regression check,
+    # checked at both thresholds used elsewhere in this file.
+    for min_size in (3, 5):
+        text = _report(min_size)
+        summary = re.search(
+            r"\((\d+) shown, (\d+) thin omitted\)", text
+        )
+        assert summary, text
+        shown, thin = int(summary.group(1)), int(summary.group(2))
+        rendered = len(re.findall(r"### Community \d+ - ", text))
+        assert shown == rendered, (min_size, shown, rendered)
+        assert shown + thin == 3, (min_size, shown, thin)  # 3 communities total
 
 
 def test_isolated_count_is_auditable_against_the_raw_graph():

@@ -3353,7 +3353,38 @@ def _label_batch_with_retry(
 
     try:
         text = _call_llm(prompt, **call_kwargs)
-        return _parse_label_response(text, batch_cids)
+        parsed = _parse_label_response(text, batch_cids)
+        if len(parsed) == len(batch_cids):
+            return parsed
+        # Salvage can produce a valid partial map from a truncated JSON object.
+        # Keep those names, but retry only the missing ids in smaller batches so a
+        # reasoning model's completion cap cannot silently turn 3/16 labels into
+        # an apparent success (#3671).
+        missing = [cid for cid in batch_cids if cid not in parsed]
+        if len(batch_cids) <= 1 or depth >= max_depth:
+            return parsed
+        missing_lines = [
+            line for cid, line in zip(batch_cids, batch_lines) if cid in missing
+        ]
+        if len(missing) == 1:
+            recovered = _label_batch_with_retry(
+                missing, missing_lines,
+                backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+                usage_out=usage_out,
+            )
+            return parsed | recovered
+        mid = len(missing) // 2
+        left = _label_batch_with_retry(
+            missing[:mid], missing_lines[:mid],
+            backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+            usage_out=usage_out,
+        )
+        right = _label_batch_with_retry(
+            missing[mid:], missing_lines[mid:],
+            backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+            usage_out=usage_out,
+        )
+        return parsed | left | right
     except (json.JSONDecodeError, ValueError) as exc:
         # Parse failure. If we can still split, retry each half on a smaller
         # prompt (smaller output → less likely to truncate/mangle). At the base
@@ -3533,6 +3564,14 @@ def generate_community_labels(
             max_concurrency=max_concurrency, batch_size=batch_size,
             usage_out=usage_out,
         )
+        placeholders = _placeholder_community_labels(communities)
+        named = sum(labels.get(cid) != placeholder for cid, placeholder in placeholders.items())
+        if named < len(communities) and not quiet:
+            print(
+                f"[graphify label] warning: labeled {named} of {len(communities)} "
+                f"communities; {len(communities) - named} kept structural fallback names.",
+                file=sys.stderr,
+            )
         return labels, "llm"
     except Exception as exc:
         if not quiet:

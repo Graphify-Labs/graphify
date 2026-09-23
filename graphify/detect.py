@@ -41,7 +41,7 @@ _MANIFEST_PATH = str(out_path("manifest.json"))
 _MTIME_COARSE_S = 2.0
 _MTIME_SUBSECOND_S = 0.05
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -183,6 +183,13 @@ _GENERIC_KEYWORD_PATTERNS = [
 # stays excluded — see _is_prose_note.
 _PROSE_EXTS = frozenset({".md", ".markdown", ".rst", ".org", ".adoc", ".tex"})
 
+# Bare PLURAL "tokens" in a prose file (TOKENS.md) reads as a design-token
+# reference doc, not a credential dump — unlike every other generic keyword's
+# plural (secrets.md, passwords.md, credentials.md still read as dumps) and
+# unlike the singular "token.md", which stays excluded (#3527). Scoped to
+# prose extensions only: "tokens.txt" is still a plausible secret store.
+_BARE_PLURAL_TOKENS = re.compile(r'(?<![a-zA-Z0-9])tokens(?![a-zA-Z])', re.IGNORECASE)
+
 # Data/serialization extensions that commonly ARE secret stores when their name
 # hits a generic keyword (credentials.json, secrets.yaml, token.toml) or they sit
 # in an ambiguous sensitive dir (secrets/db.json). These stay subject to the
@@ -208,10 +215,14 @@ def _is_prose_note(path: Path) -> bool:
     """A prose/note file (.md/.rst/...) whose stem is a multi-word topic slug is
     exempt from the generic-keyword drop (#2106). A stem that IS exactly a bare
     keyword (secrets / token / passwords) is NOT exempt — that still reads as a
-    credential dump."""
+    credential dump. The one exception is bare plural "tokens" (TOKENS.md),
+    which reads as a design-token reference doc rather than a secret store
+    (#3527)."""
     if path.suffix.lower() not in _PROSE_EXTS:
         return False
     stem = Path(path.name).stem.lstrip('.') or Path(path.name).stem
+    if _BARE_PLURAL_TOKENS.fullmatch(stem):
+        return True
     return not any(p.fullmatch(stem) for p in _GENERIC_KEYWORD_PATTERNS)
 
 

@@ -794,7 +794,20 @@ def _resolve_js_import_target(raw: str, str_path: str) -> "tuple[str, Path | Non
     # producing a confident (EXTRACTED) cross-language phantom imports_from edge
     # (#1638). The ref-namespaced target has no node, so build drops it as an
     # external reference — the correct outcome for a third-party import.
-    return _make_id("ref", raw), None
+    #
+    # Namespace on the PACKAGE root, not the raw specifier (#3595): a package
+    # subpath import ("next/image") named the whole specifier, so it minted
+    # "ref:next/image" while package.json's own dependency node for the same
+    # package is "ref:next" (json_config.py keys that node off the bare
+    # dependency name). The two could never match, so every subpath import
+    # dangled even though the bare package import resolved fine. A scoped
+    # package's root is its first two segments ("@scope/pkg"); anything else
+    # is its first segment alone.
+    if raw.startswith("@"):
+        package_root = "/".join(raw.split("/")[:2])
+    else:
+        package_root = raw.split("/")[0]
+    return _make_id("ref", package_root), None
 
 def _resolve_c_include_path(raw: str, str_path: str) -> "Path | None":
     """Resolve a quoted #include path to a real file on disk.

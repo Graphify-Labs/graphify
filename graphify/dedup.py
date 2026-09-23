@@ -12,6 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from graphify._minhash import MinHash, MinHashLSH
+from graphify.ids import normalize_id
 from rapidfuzz.distance import DamerauLevenshtein, Jaro, JaroWinkler
 
 
@@ -265,7 +266,6 @@ def _is_code(node: dict) -> bool:
 
 # ── ID collisions ─────────────────────────────────────────────────────────────
 
-_ID_SEGMENT = re.compile(r"[^a-z0-9]+")
 _EXTENSION = re.compile(r"\.[^./]+$")
 
 
@@ -276,10 +276,17 @@ def _id_prefixes(source_file: str) -> set[str]:
     path, each segment slugified and joined with ``_``. Every trailing slice of the
     path counts as a prefix: the stored path may be absolute or repo-relative, and
     graphs built under the pre-#1504 scheme keyed off the bare filename stem.
+
+    Each segment is slugified with ``normalize_id`` (#3352), the same
+    Unicode-aware casefold-then-NFKC-then-``[^\\w]+`` recipe every real ID is
+    minted with. An ASCII-only slug here silently dropped every non-Latin
+    character (Korean, CJK, Cyrillic, ...) instead of preserving it, so a
+    node's own defining file was never recognized as the file that ID
+    encodes and the definer-wins collision rule (see ``_defines_id``,
+    ``_collision_rank``) fell through to arrival-order for any such path.
     """
     stem = _EXTENSION.sub("", source_file.replace("\\", "/"))
-    segments = [s for s in (_ID_SEGMENT.sub("_", p.casefold()).strip("_")
-                            for p in stem.split("/")) if s]
+    segments = [s for s in (normalize_id(p) for p in stem.split("/")) if s]
     return {"_".join(segments[i:]) for i in range(len(segments))}
 
 
