@@ -18,7 +18,10 @@ $app->post('/api/users', function() {
 
     res = extract_php(php_file)
     if res.get("error"):
-        pytest.skip(res["error"])
+        if "No language parser" in res["error"]:
+            pytest.skip("PHP grammar not installed")
+        else:
+            pytest.fail(res["error"])
 
     labels = {n["label"] for n in res["nodes"]}
 
@@ -37,7 +40,10 @@ $fn2 = function() { return 'hello'; };
 
     res = extract_php(php_file)
     if res.get("error"):
-        pytest.skip(res["error"])
+        if "No language parser" in res["error"]:
+            pytest.skip("PHP grammar not installed")
+        else:
+            pytest.fail(res["error"])
 
     labels = {n["label"] for n in res["nodes"]}
 
@@ -60,7 +66,10 @@ $app->group('/api/v1', function ($group) {
 
     res = extract_php(php_file)
     if res.get("error"):
-        pytest.skip(res["error"])
+        if "No language parser" in res["error"]:
+            pytest.skip("PHP grammar not installed")
+        else:
+            pytest.fail(res["error"])
 
     labels = {n["label"] for n in res["nodes"]}
     assert "GET /api/v1/users/{id}()" in labels, "Expected nested route closure to compose prefix"
@@ -77,7 +86,10 @@ $value = $cache->get('user:42', function () { return 2; });
 
     res = extract_php(php_file)
     if res.get("error"):
-        pytest.skip(res["error"])
+        if "No language parser" in res["error"]:
+            pytest.skip("PHP grammar not installed")
+        else:
+            pytest.fail(res["error"])
 
     labels = {n["label"] for n in res["nodes"]}
     assert "{closure#1}()" in labels, "Expected non-routing get() to fallback to ordinal"

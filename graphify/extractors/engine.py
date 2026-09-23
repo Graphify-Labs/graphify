@@ -3496,9 +3496,9 @@ def _php_get_route_name(closure_node, src: bytes) -> str | None:
                         else:
                             return None # Not a valid route closure
                     else:
-                        # Outer calls (e.g. group(), prefix()) just contribute their prefix if it starts with '/'
-                        if path_text is not None and path_text.startswith("/"):
-                            prefixes.append(path_text)
+                        # Outer calls (e.g. group(), prefix()) contribute their prefix, normalized to start with '/'
+                        if path_text is not None and path_text:
+                            prefixes.append(path_text if path_text.startswith("/") else "/" + path_text)
                             
                     # Process any fluent method chain prefixes on the same statement
                     fluent = call.child_by_field_name("object")
@@ -3510,8 +3510,8 @@ def _php_get_route_name(closure_node, src: bytes) -> str | None:
                                     for cc in c.children:
                                         if cc.type in ("string", "encapsed_string"):
                                             f_path = _read_text(cc, src).strip("'\"")
-                                            if f_path.startswith("/"):
-                                                prefixes.append(f_path)
+                                            if f_path:
+                                                prefixes.append(f_path if f_path.startswith("/") else "/" + f_path)
                                             break
                         fluent = fluent.child_by_field_name("object")
                             
