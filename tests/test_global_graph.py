@@ -674,6 +674,111 @@ def test_global_add_does_not_skip_a_different_file_with_matching_stat(tmp_path):
         assert "repoX::old" not in ids, "the stale file's content must not survive"
 
 
+def test_global_add_stat_fast_path_serves_a_settled_unchanged_file_without_reading(tmp_path, monkeypatch):
+    """Review finding (bot, PR #3578): the mtime/size fast path is meant to
+    serve a genuinely unchanged file with no read at all. This is the
+    positive-case companion to the oversized-file test above -- confirms the
+    fast path still actually fires (zero reads) for the ordinary case.
+
+    The racily-clean granularity guard is disabled here (matching its own
+    documented GRAPHIFY_MTIME_GRANULARITY_MS=0 override) rather than settled
+    by backdating mtime via os.utime(): that call always bumps ctime too
+    (see the new ctime check added in this same round), which would make
+    the file look changed for a reason that has nothing to do with this
+    test."""
+    src_graph = tmp_path / "graph.json"
+    G = _make_graph([{"id": "x", "label": "X", "source_file": "src/x.py"}])
+    _graph_to_json(G, src_graph)
+
+    monkeypatch.setattr("graphify.cache._mtime_granularity_ns", lambda: 0)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add
+        assert global_add(src_graph, "repoA")["skipped"] is False
+
+        reads = []
+        orig_read_bytes = Path.read_bytes
+
+        def counting_read_bytes(self, *a, **kw):
+            if self == src_graph:
+                reads.append("bytes")
+            return orig_read_bytes(self, *a, **kw)
+
+        monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
+
+        result = global_add(src_graph, "repoA")
+
+    assert result["skipped"] is True
+    assert reads == [], (
+        f"a settled, genuinely unchanged file must skip via the stat only "
+        f"fast path, not fall through to a hash based read; got {reads}"
+    )
+
+
+def test_global_add_does_not_skip_content_changed_with_preserved_mtime_and_size(tmp_path, monkeypatch):
+    """Review finding (bot, PR #3578): the mtime/size fast path checked only
+    those two fields, so a file edited in place and then restored to its
+    OLD mtime and size (a real possibility with cp -p/rsync -a against an
+    unrelated same-length source, or a build step that pins timestamps for
+    reproducibility) would silently skip re-import even though its content
+    genuinely changed.
+
+    mtime and size are both directly settable by the caller and so cannot
+    rule this out by themselves; ctime (inode change time on POSIX) cannot
+    be forged the same way -- writing new content, or the utime() call that
+    restores mtime, both bump it to the real current time regardless of
+    what mtime is set to afterward. The racily-clean granularity guard is
+    disabled here so this test isolates the ctime defense specifically --
+    without disabling it, a fast-running test would already force a real
+    read on its own, for an unrelated reason (not enough wall-clock time
+    has passed), masking whether ctime is doing anything at all."""
+    monkeypatch.setattr("graphify.cache._mtime_granularity_ns", lambda: 0)
+
+    src_graph = tmp_path / "graph.json"
+    G_old = _make_graph([{"id": "old", "label": "Old", "source_file": "old.py"}])
+    _graph_to_json(G_old, src_graph)
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add
+        assert global_add(src_graph, "repoA")["skipped"] is False
+
+        # Baseline captured right after the add that recorded it, matching
+        # exactly what landed in the manifest -- settling first (backdating
+        # mtime) would itself change ctime and diverge from that baseline.
+        original_mtime_ns = src_graph.stat().st_mtime_ns
+        original_size = src_graph.stat().st_size
+
+        # Genuinely different content, forced to the exact same byte length,
+        # then mtime restored to its original value -- the shape a same-size
+        # cp -p/rsync -a copy or a timestamp-pinning build step produces.
+        G_new = _make_graph([{"id": "new", "label": "New", "source_file": "new.py"}])
+        _graph_to_json(G_new, src_graph)
+        new_text = src_graph.read_text(encoding="utf-8")
+        pad = original_size - len(new_text.encode("utf-8"))
+        assert pad >= 0, "test fixture: the new payload must not be longer than the old one"
+        src_graph.write_text(new_text + " " * pad, encoding="utf-8")
+        os.utime(src_graph, ns=(original_mtime_ns, original_mtime_ns))
+        assert src_graph.stat().st_mtime_ns == original_mtime_ns
+        assert src_graph.stat().st_size == original_size
+
+        result = global_add(src_graph, "repoA")
+
+    assert result["skipped"] is False, (
+        "a genuine content change must not silently skip just because "
+        "mtime and size were restored to their old values"
+    )
+    graph = json.loads((global_dir / "global-graph.json").read_text())
+    ids = {n["id"] for n in graph["nodes"]}
+    assert "repoA::new" in ids, "the changed file's new content must actually be imported"
+    assert "repoA::old" not in ids, "the stale content must not survive"
+
+
 def test_global_store_lock_serializes_concurrent_critical_sections(tmp_path):
     """Review finding: global_add/global_remove each load-mutate-save the
     shared store with no locking, so two concurrent calls read the same
