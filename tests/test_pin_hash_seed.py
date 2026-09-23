@@ -56,8 +56,21 @@ def test_reexecs_for_hash_sensitive_commands_when_unset():
     for cmd in ("update", "extract", "cluster-only", "label"):
         outcome = _run_probe(["graphify", cmd, "."])
         assert outcome["called"], f"{cmd} must re-exec with PYTHONHASHSEED pinned"
-        assert outcome["argv"] == [sys.executable, "graphify", cmd, "."]
+        assert outcome["argv"] == [sys.executable, "-m", "graphify", cmd, "."]
         assert outcome["env_hashseed"] == "0"
+
+
+def test_reexec_does_not_depend_on_argv0_being_a_runnable_script():
+    """#3779: a uv/pip/pipx console-script launcher on Windows is a native
+    .exe with no .py content, so `python.exe <that .exe path>` fails
+    outright with "can't open file" the moment argv[0] is replayed as a
+    script path. Re-execing via `-m graphify` never touches argv[0] at
+    all, so a launcher stub that isn't even a real file must not matter."""
+    outcome = _run_probe(["/some/launcher/stub/with/no/py/content", "update", "."])
+    assert outcome["called"]
+    assert outcome["argv"] == [sys.executable, "-m", "graphify", "update", "."], (
+        "the launcher stub path must never appear in the re-exec argv"
+    )
 
 
 def test_does_not_reexec_when_already_set():
