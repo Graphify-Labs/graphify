@@ -3504,6 +3504,10 @@ def _php_get_route_name(closure_node, src: bytes) -> str | None:
                     continue
                     
         elif curr.type in ("anonymous_function", "arrow_function"):
+            if verb is None:
+                # We are a non-route closure nested inside another closure.
+                # Don't adopt the outer closure's route.
+                return None
             # Jump across the closure boundary to its containing argument
             curr = curr.parent
             continue
