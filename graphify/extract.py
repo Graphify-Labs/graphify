@@ -278,16 +278,47 @@ def _suppress_ambiguous_python_imports(
     nodes: list[dict],
     raw_calls: list[dict],
     ambiguous_modules: set[str],
+    module_alias_files: dict[str, set[str]],
+    root: Path,
 ) -> None:
     """Keep ambiguous Python imports dangling instead of choosing one file.
 
     The transient module name is also consumed by the symbol-level resolvers;
     removing it here prevents a direct file edge and any later inferred symbol
-    or call edge from binding to an arbitrary same-named package.
+    or call edge from binding to an arbitrary same-named package. A plain
+    ``import helper`` resolved to a scanned loose sibling in the importer's own
+    non-package directory is an exception: that directory-local target is
+    unambiguous even when another loose directory has its own ``helper.py``.
     """
     node_ids = {n.get("id") for n in nodes if isinstance(n, dict)}
     ambiguous_bindings_by_file: dict[str, set[str]] = {}
     ambiguous_all_call_files: set[str] = set()
+
+    def _is_resolved_loose_sibling(edge: dict, module_id: str) -> bool:
+        """Trust only a concrete, scanned same-directory target for a bare import."""
+        target_file = edge.get("target_file")
+        source_file = edge.get("source_file")
+        if not target_file or not source_file:
+            return False
+        candidates = module_alias_files.get(module_id, set())
+        if not candidates:
+            return False
+        try:
+            source_path = Path(source_file)
+            if not source_path.is_absolute():
+                source_path = root / source_path
+            source_path = source_path.resolve()
+            target_path = Path(target_file).resolve()
+            if target_path.parent != source_path.parent:
+                return False
+            if (source_path.parent / "__init__.py").is_file() or (
+                source_path.parent / "__init__.pyi"
+            ).is_file():
+                return False
+            return any(Path(candidate).resolve() == target_path for candidate in candidates)
+        except (OSError, RuntimeError):
+            return False
+
     kept_edges: list[dict] = []
     for edge in edges:
         if not isinstance(edge, dict):
@@ -304,7 +335,15 @@ def _suppress_ambiguous_python_imports(
         if not marker_only and edge.get("relation") not in ("imports", "imports_from"):
             kept_edges.append(edge)
             continue
-        module_is_ambiguous = _make_id(module_name) in ambiguous_modules
+        module_id = _make_id(module_name)
+        module_is_ambiguous = module_id in ambiguous_modules
+        if (
+            module_is_ambiguous
+            and is_module_binding
+            and "." not in module_name
+            and _is_resolved_loose_sibling(edge, module_id)
+        ):
+            module_is_ambiguous = False
         if is_module_binding:
             if module_is_ambiguous:
                 ambiguous_bindings_by_file.setdefault(
@@ -7395,7 +7434,8 @@ def extract(
     callable_nids: set[str] = set()
 
     _suppress_ambiguous_python_imports(
-        all_edges, all_nodes, all_raw_calls, ambiguous_python_modules
+        all_edges, all_nodes, all_raw_calls, ambiguous_python_modules,
+        python_module_alias_files, root,
     )
     _augment_symbol_resolution_edges(
         paths, all_nodes, all_edges, root,
