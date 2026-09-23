@@ -2815,6 +2815,59 @@ def _normalize_cpp_cli(source: bytes) -> bytes | None:
     return _CPP_CLI_ATTR_RE.sub(_blank_keeping_newlines, out)
 
 
+_CPP_EXPORT_MACRO_RE = re.compile(
+    # Match `class` or `struct`
+    rb"(\b(?:class|struct)[ \t\r\n]+)"
+    # Match one or more ALL-CAPS macros (stacked or single)
+    rb"((?:[A-Z][A-Z0-9_]*[ \t\r\n]+)+)"
+    # Negative lookahead: the matched class name cannot be exactly "final"
+    rb"(?!final[ \t\r\n]*[:{])"
+    # Match the actual class name (and optional final), ending with `:` or `{`
+    rb"([A-Za-z_][A-Za-z0-9_]*(?:[ \t]+final)?[ \t\r\n]*)([:{])"
+)
+
+
+def _normalize_cpp_export_macros(source: bytes) -> bytes:
+    """Blank an export macro between ``class``/``struct`` and the type name.
+
+    Single ALL-CAPS identifier macros (and stacked ones) are handled.
+    Note: paren-attribute macros like ``__declspec(dllexport)`` and
+    ``__attribute__((visibility("default")))`` are currently unsupported.
+    """
+
+    def repl(m: re.Match[bytes]) -> bytes:
+        start = m.start()
+        
+        # Check if preceded by `(` (e.g. range-based for loop `for(class MACRO var: items)`)
+        idx = start - 1
+        while idx >= 0 and source[idx] in b" \t\r\n":
+            idx -= 1
+        if idx >= 0 and source[idx] == ord(b"("):
+            return m.group(0)
+
+        # Check for brace initialization like `var{1}`
+        if m.group(4) == b"{":
+            end = m.end()
+            idx_after = end
+            while idx_after < len(source) and source[idx_after] in b" \t\r\n":
+                idx_after += 1
+            if idx_after < len(source):
+                next_char = source[idx_after : idx_after + 1]
+                if next_char in b"0123456789\"'-":
+                    return m.group(0)
+
+        # Blank the macro with spaces to preserve offsets, but KEEP NEWLINES!
+        macro_text = m.group(2)
+        blanked_macro = bytearray(macro_text)
+        for i in range(len(blanked_macro)):
+            if blanked_macro[i] not in b"\r\n":
+                blanked_macro[i] = ord(b" ")
+
+        return m.group(1) + bytes(blanked_macro) + m.group(3) + m.group(4)
+
+    return _CPP_EXPORT_MACRO_RE.sub(repl, source)
+
+
 def extract_cpp(path: Path) -> dict:
     """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file.
 
@@ -2829,8 +2882,10 @@ def extract_cpp(path: Path) -> dict:
     except OSError:
         # Let _extract_generic report the read failure in its usual shape.
         return _augment_cpp_string_tests(path, _extract_generic(path, _CPP_CONFIG))
+    source_override = _normalize_cpp_cli(source) or source
+    source_override = _normalize_cpp_export_macros(source_override)
     result = _extract_generic(
-        path, _CPP_CONFIG, source_override=_normalize_cpp_cli(source) or source
+        path, _CPP_CONFIG, source_override=source_override
     )
     return _augment_cpp_string_tests(path, result)
 
