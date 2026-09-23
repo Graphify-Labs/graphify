@@ -6,7 +6,7 @@ import os
 import unicodedata
 
 from pathlib import Path
-from graphify.detect import CODE_EXTENSIONS
+from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS
 from graphify.extractors.base import _file_stem, _make_id
 from graphify.security import sanitize_metadata
 
@@ -27,7 +27,8 @@ _MD_CODE_SPAN_RE = re.compile(r'(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)')
 # (``src/pkg/mod.py::Widget::render``) names the defining file and a
 # ``::``-separated symbol chain, exactly as pytest node ids and cite-lint
 # citations do. A bare mention (``Widget``, ``render()``, ``pkg.Widget``) names
-# a symbol with no file evidence, so it resolves only on a unique match.
+# a symbol with no file evidence, so it resolves only on a unique match; the
+# dotted form keeps its qualifiers (``pkg``) as evidence the resolver checks.
 _MD_PATH_MENTION_RE = re.compile(
     r'^([A-Za-z0-9_./\-]+\.[A-Za-z0-9]+)::([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)(?:\(\))?$'
 )
@@ -257,10 +258,12 @@ def _code_span_mention(span: str) -> "tuple[str | None, list[str]] | None":
 
     Returns ``(path, names)``: ``path`` is the cited file for the
     ``path::Name`` form and None for a bare or dotted mention; ``names`` is the
-    symbol chain, outermost first. A trailing ``()`` is dropped from the last
-    name so ``render()`` and ``render`` cite the same symbol. Spans that read
-    as a file (``setup.py``), a shell command, an expression or prose are not
-    mentions and yield None.
+    symbol chain, outermost first, so ``pkg.sub.Widget`` yields
+    ``["pkg", "sub", "Widget"]`` and the resolver can hold the match to that
+    evidence. A trailing ``()`` is dropped from the last name so ``render()``
+    and ``render`` cite the same symbol. Spans that read as a file
+    (``setup.py``, ``README.md``), a shell command, an expression or prose are
+    not mentions and yield None.
     """
     text = span.strip()
     if not text or " " in text:
@@ -272,10 +275,14 @@ def _code_span_mention(span: str) -> "tuple[str | None, list[str]] | None":
     if not m:
         return None
     if "." in text:
-        # ``a.b.Name`` is a qualified symbol; ``setup.py`` is a file. A dotted
-        # span whose last segment is a code extension is the latter.
-        if "." + m.group(1) in CODE_EXTENSIONS:
+        # ``a.b.Name`` is a qualified symbol; ``setup.py`` and ``README.md``
+        # are files. A dotted span whose last segment is a code or document
+        # extension is the latter. Other file-like spans (``pyproject.toml``)
+        # classify as a mention and are rejected at resolution, where the
+        # qualifier ``pyproject`` matches no callable's file or owner.
+        if "." + m.group(1) in CODE_EXTENSIONS or "." + m.group(1) in DOC_EXTENSIONS:
             return None
+        return None, text.rstrip("()").split(".")
     return None, [m.group(1)]
 
 
@@ -311,7 +318,9 @@ def extract_markdown(path: Path) -> dict:
     edges: the symbol they cite lives in another file, so the match is made
     once every file is extracted and ids are final, by the
     ``markdown_mentions`` language resolver (see
-    ``graphify.markdown_resolution``). That pass emits
+    ``graphify.markdown_resolution``). The dotted form travels with its
+    qualifiers, which the resolver checks against the match's owners and
+    file path. That pass emits
     heading --references--> code symbol (page --references--> symbol for a
     mention above the first heading): EXTRACTED for the path-qualified form,
     INFERRED for a bare name that matches exactly one code symbol. The shared

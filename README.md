@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graphify-card.png" width="300" height="214" alt="Graphify"/></a>
+  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graphify-logo.png" width="480" height="252" alt="Graphify"/></a>
 </p>
 
 <p align="center">
@@ -158,6 +158,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ## Install
 
 > **Official package:** The PyPI package is `graphifyy` (double-y). Other `graphify*` packages on PyPI are not affiliated. The CLI command is still `graphify`.
+
+The official source repository is [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
 
 **Step 1 — install the package:**
 
@@ -849,7 +851,7 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 
 ## graphify Enterprise
 
-[**graphify Enterprise**](https://graphify.com) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working context: meetings, files, docs, and code, updating continuously in the background.
+[**graphify Enterprise**](https://graphify.com/enterprise) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working context: meetings, files, docs, and code, updating continuously in the background.
 
 Built for people and teams whose work lives across hundreds of conversations and documents they can never fully reconstruct.
 
@@ -865,7 +867,7 @@ Built for people and teams whose work lives across hundreds of conversations and
 The project uses [uv](https://docs.astral.sh/uv/) for dev workflow. Install it once, then:
 
 ```bash
-git clone https://github.com/safishamsi/graphify.git
+git clone https://github.com/Graphify-Labs/graphify.git
 cd graphify
 git checkout v8                        # active development branch
 

@@ -1360,11 +1360,25 @@ def _js_collect_pattern_idents(node, source: bytes, bound: set) -> None:
             _js_collect_pattern_idents(c, source, bound)
 
 def _js_local_bound_names(func_node, source: bytes) -> set[str]:
-    """Names bound locally inside a JS/TS function: parameters plus `const`/`let`/
-    `var` declarator targets. Mirrors `_python_local_bound_names`: an argument that
-    is a parameter or local binding names a local value, not a same-named module
-    function, so it must not manufacture an indirect_call edge. Nested function and
-    class scopes are not descended into."""
+    """Names bound locally inside a JS/TS function, into the FUNCTION-WIDE
+    scope: parameters plus `var` declarator targets. Mirrors
+    `_python_local_bound_names`: an argument that is a parameter or local
+    binding names a local value, not a same-named module function, so it
+    must not manufacture an indirect_call edge. Nested function and class
+    scopes are not descended into.
+
+    `let`/`const` declarator targets and `for`/`for-in`/`for-of` loop
+    bindings are NOT collected here (#2822): unlike `var`, which is
+    function-scoped (hoisted) regardless of how deeply it is nested inside
+    an if/try/bare-`{}` block or a loop, `let`/`const` (and a `for`/`for-in`
+    loop's own binding, whatever keyword it uses) are scoped to exactly the
+    block or loop they are declared in. Collecting them into this
+    function-wide set suppressed a genuine reference to a same-named module
+    callable anywhere else in the function, even far outside the block that
+    actually owns the binding. `walk_calls` in this module folds each of
+    those into `extra_locals` for exactly its own block/loop subtree
+    instead, the same mechanism already used for `catch (e)` bindings.
+    """
     bound: set[str] = set()
     params = func_node.child_by_field_name("parameters")
     if params is not None:
@@ -1381,17 +1395,18 @@ def _js_local_bound_names(func_node, source: bytes) -> set[str]:
         for c in n.children:
             if c.type in _JS_SCOPE_BOUNDARY:
                 continue  # inner scope — its bindings are not this function's locals
-            if c.type == "variable_declarator":
+            if c.type == "variable_declarator" and n.type == "variable_declaration":
+                # n.type distinguishes `var` (variable_declaration) from
+                # `let`/`const` (lexical_declaration) — only var belongs in
+                # the function-wide set, see the docstring above (#2822).
                 name = c.child_by_field_name("name")
                 if name is not None:
                     _js_collect_pattern_idents(name, source, bound)
-            elif c.type == "for_in_statement":
-                # `for (const entry of xs)` / `for (const {k} of xs)`: the loop
+            elif c.type == "for_in_statement" and any(gc.type == "var" for gc in c.children):
+                # `for (var entry of xs)`: var is still function-scoped/hoisted
+                # here too, unlike the let/const form (#2822) -- the loop
                 # binding is the `left` pattern, NOT wrapped in a
-                # variable_declarator, so the branch above misses it and `entry`
-                # read as a by-name reference to any same-named module callable
-                # (#2606). C-style `for (let i = 0; ...)` uses a lexical_declaration
-                # with real declarators, already covered by the recursion below.
+                # variable_declarator, so the branch above misses it.
                 left = c.child_by_field_name("left")
                 if left is not None:
                     _js_collect_pattern_idents(left, source, bound)
@@ -1401,6 +1416,27 @@ def _js_local_bound_names(func_node, source: bytes) -> set[str]:
     if body is not None:
         walk(body)
     return bound
+
+
+def _js_direct_lexical_names(node, source: bytes) -> frozenset[str]:
+    """Names bound by `let`/`const` declarators that are DIRECT children of
+    node (not nested inside a further block, loop, function, or class).
+
+    Used to scope a lexical binding to exactly the block or `for` loop it is
+    declared in (#2822), rather than the whole enclosing function: `node` is
+    a `statement_block` or a C-style `for_statement`, both of which have any
+    `lexical_declaration` they directly own as a plain child.
+    """
+    names: set[str] = set()
+    for child in node.children:
+        if child.type != "lexical_declaration":
+            continue
+        for declarator in child.children:
+            if declarator.type == "variable_declarator":
+                name = declarator.child_by_field_name("name")
+                if name is not None:
+                    _js_collect_pattern_idents(name, source, names)
+    return frozenset(names)
 
 def _js_module_bound_names(root, source: bytes) -> set[str]:
     """Module-scope names rebound to NON-function data (`const X = {...}`, `let y = 5`).
@@ -5530,6 +5566,19 @@ def _extract_generic(
                     walk(child, parent_class_nid=parent_class_nid)
             return
 
+        # A Java enum wraps its fields, constructors and methods in an
+        # `enum_body_declarations` node, nested under `enum_body` after the
+        # constant list. The default recurse below drops parent_class_nid (an
+        # unknown wrapper usually IS a scope boundary), which orphaned every
+        # enum method, field and constructor onto the file instead of the enum.
+        # It is not a scope of its own — its members belong to the enum — so
+        # recurse transparently, keeping the enum linkage (mirrors the Kotlin
+        # companion_object handling above).
+        if t == "enum_body_declarations":
+            for child in node.children:
+                walk(child, parent_class_nid=parent_class_nid)
+            return
+
         # #2551: tree-sitter ERROR recovery can wrap declarations that plainly
         # sit inside a class body (e.g. the Kotlin grammar choking on a one-line
         # sibling member). The default recurse below deliberately drops
@@ -5846,6 +5895,7 @@ def _extract_generic(
             swift_receiver: str | None = None
             member_receiver: str | None = None
             kotlin_qualified_prefix: str | None = None
+            kotlin_object_receiver: str | None = None
             csharp_qualified_prefix: str | None = None
 
             # Special handling per language
@@ -5895,6 +5945,23 @@ def _extract_generic(
                         segments = _kotlin_nav_identifier_segments(first, source)
                         if segments is not None and len(segments) >= 3:
                             kotlin_qualified_prefix = ".".join(segments[:-1])
+                        # #1698: the plain `Receiver.method()` shape (exactly
+                        # two segments) is neither a fully qualified name nor
+                        # eligible for member_receiver (same reasoning as
+                        # above). A capitalized receiver here is an object
+                        # singleton or a class/companion member reference —
+                        # statically unambiguous, no type inference needed —
+                        # captured separately so a dedicated cross-file pass
+                        # can resolve it by declared-type name when the in
+                        # file bare name lookup below finds nothing (the
+                        # cross-file case this issue is about; the same-file
+                        # case already resolves through that lookup and never
+                        # reaches raw_calls at all).
+                        elif (
+                            segments is not None and len(segments) == 2
+                            and segments[0][:1].isupper()
+                        ):
+                            kotlin_object_receiver = segments[0]
             elif config.ts_module == "tree_sitter_scala":
                 # Scala: first child
                 first = node.children[0] if node.children else None
@@ -6372,6 +6439,14 @@ def _extract_generic(
                         if kotlin_qualified_prefix:
                             rc_entry["lang"] = "kotlin"
                             rc_entry["qualified_prefix"] = kotlin_qualified_prefix
+                        # Kotlin object/class-qualified member call (#1698): the
+                        # receiver + lang tag let _resolve_kotlin_member_calls
+                        # claim it once the in-file bare-name lookup above (the
+                        # only reason a real definition reaches raw_calls at
+                        # all) has already failed.
+                        if kotlin_object_receiver:
+                            rc_entry["lang"] = "kotlin"
+                            rc_entry["kotlin_object_receiver"] = kotlin_object_receiver
                         raw_calls.append(rc_entry)
 
             # Indirect dispatch: a function passed BY NAME as a call argument
@@ -6593,6 +6668,38 @@ def _extract_generic(
                 caught: set[str] = set()
                 _js_collect_pattern_idents(param, source, caught)
                 extra_locals = extra_locals | frozenset(caught)
+
+        # `let`/`const` are block-scoped, unlike `var` (function-scoped,
+        # hoisted) -- _js_local_bound_names only tracks var into the
+        # function-wide set now, so a name declared directly in a
+        # statement_block or a C-style for loop's own initializer must be
+        # folded into extra_locals for exactly that block/loop's subtree, or
+        # a same-named module callable referenced outside it is wrongly
+        # treated as shadowed everywhere in the function (#2822).
+        if (
+            config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+            and node.type in ("statement_block", "for_statement")
+        ):
+            block_locals = _js_direct_lexical_names(node, source)
+            if block_locals:
+                extra_locals = extra_locals | block_locals
+
+        # `for (const entry of xs)` / `for (const {k} of xs)`: the loop
+        # binding is the `left` pattern, not wrapped in a variable_declarator,
+        # and is scoped to the whole loop (condition and body), never the
+        # enclosing function (#2822) -- folding it here regardless of
+        # var/let/const is harmless for the var case, already covered by the
+        # function-wide set.
+        if (
+            config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+            and node.type == "for_in_statement"
+        ):
+            left = node.child_by_field_name("left")
+            if left is not None:
+                loop_locals: set[str] = set()
+                _js_collect_pattern_idents(left, source, loop_locals)
+                if loop_locals:
+                    extra_locals = extra_locals | frozenset(loop_locals)
 
         for child in node.children:
             walk_calls(child, caller_nid, receiver_types, extra_locals)

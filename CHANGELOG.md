@@ -1,6 +1,54 @@
 # Changelog
 
-Full release notes with details on each version: [GitHub Releases](https://github.com/safishamsi/graphify/releases)
+Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
+
+## 0.9.66 (2026-09-22)
+
+- Feature: five new language extractors — **COBOL** (`.cbl`/`.cob`/`.cobol`/`.cpy`; programs, paragraphs, `PERFORM`/`CALL`/`COPY`, pure-regex, no new dependency) (#3713, thanks @Abdul535), **VB.NET** (`.vb`; case-insensitive types/methods, `Inherits`/`Implements`/`Handles`) (#3717, thanks @Abdul535), **R** (`.r`/`.R`; assignment-form function defs, `library`/`source`, S4/R6 classes) (#3715, thanks @Abdul535), **Solidity** (`.sol`; contracts/interfaces/libraries, `is` inheritance, imports, modifiers) (#3716, thanks @Abdul535), and **Erlang** (`.erl`/`.hrl`/`.escript`; modules, functions by arity, behaviours, local + remote `foo:bar()` calls) (#3714, thanks @Abdul535). The R and Erlang grammars ship via the `r`/`erlang` extras (they have no standalone PyPI wheel); Solidity and VB.NET have their own extras.
+- Feature: Go interface method requirements now resolve to the interface, and their parameter/return types emit `references` edges (#3672, #3737, thanks @rajatnagda45, @oleksii-tumanov).
+- Feature: a Rust `self.method()` call resolves across files for simple generic impls (`impl<T> Foo<T>`) (#3653, thanks @oleksii-tumanov).
+- Fix: `graph.json` is now deterministic across runs — `update`/`extract`/`cluster-only`/`label` pin `PYTHONHASHSEED` via a one-time re-exec, so hash-seed-sensitive community detection (Leiden/Louvain) produces identical output run-to-run and matches hook-triggered rebuilds (#3743, #3641, thanks @ayushcodes10).
+- Fix: a same-relation edge collision now keeps the higher-confidence edge (EXTRACTED over INFERRED) instead of resolving by arrival order (#3711, thanks @shobhitagnihotri69).
+- Fix: a spec-conformant method-node duplicate (dropped class segment / leading dot) is now deduplicated onto its canonical AST node, gated on a method-shaped label and a single unambiguous candidate (#3719, #3705, thanks @shobhitagnihotri69).
+- Fix: intra-module Go `imports_from` edges now repoint onto the imported package's real file nodes instead of dangling at a `go_pkg_` sink; external/stdlib imports stay external (#3748, thanks @carterko23).
+- Fix: Cargo introspection discovers a `Cargo.toml` in a subdirectory when none sits at the scan root (e.g. Tauri's `src-tauri/`), degrades gracefully instead of aborting the whole extraction when no manifest is found, and resolves `workspace = true` inherited dependency identity from `[workspace.dependencies]` (#3740, #3739, thanks @ayushcodes10; #3734, thanks @oleksii-tumanov).
+- Fix: MCP `get_node`/`get_neighbors` now accept the node identifier under `node_id`/`id`, not only `label`, so agents that spell the argument differently no longer get a missing-argument error (#3725, thanks @ahm3dwasim).
+- Fix: `graphify install` no longer corrupts line endings (writes preserve the file's existing EOLs instead of rewriting to CRLF on Windows) and re-install is properly idempotent (a marker-bounded replace instead of a bare substring check) (#3741, #3668, thanks @ayushcodes10).
+- Fix: community labeling retries a valid-but-truncated LLM response and reports how many communities kept a structural fallback name, instead of silently leaving them unlabeled (#3708, thanks @Ha1baraA11).
+- Fix: a stale `.graphify_root` marker (moved/deleted/symlink-loop target) is now ignored with a fall-back to the graph's directory, and the marker value resolves to an absolute path when `GRAPHIFY_OUT` is a shared absolute directory (#3707, thanks @Ha1baraA11; #3735, #3375, thanks @ayushcodes10).
+
+## 0.9.65 (2026-09-20)
+
+- Security: the `svg`/`all` extras now floor Pillow at `>=12.3.0` for CVE-2026-54058 (Pillow was pulled in transitively via matplotlib). Note: Pillow 12.3.0 dropped its glibc<2.27 cp310 Linux wheel, so a very old-glibc Python 3.10 host with the `svg`/`all` extra builds Pillow from sdist (#3698, thanks @viral-antuit).
+- Feature: a Go interface's method requirements (`type Foo interface { Bar() }`) now attach to the interface node, so calls resolve to them (#3672, thanks @rajatnagda45).
+- Feature: a Swift protocol's method requirements (`protocol P { func f() }`) now attach to the protocol node (#3673, thanks @rajatnagda45).
+- Fix: Java enum body members (methods/constructor/fields after the constants) now attach to the enum, not the file, and intra-enum calls resolve (#3674, thanks @rajatnagda45).
+- Fix: a Verilog module instantiation now links to the module's local definition instead of a phantom duplicate; a genuinely external module stays a sourceless stub (#3675, thanks @rajatnagda45).
+- Fix: JS/TS `let`/`const` bindings are now scoped to their own block rather than the whole function, so a block-local binding no longer suppresses a genuine `indirect_call` edge elsewhere in the function; `var` stays function-scoped (#3688, thanks @ayushcodes10).
+- Fix: the incremental rebuild no longer purges AST nodes it just reported as fail-closed "kept" — the eviction pass re-checks the kept set, so a moved-file/symlink layout can't deadlock the shrink guard into refusing every update (#3697, #3695, thanks @hopstreax).
+- Fix: `graph.html` no longer crashes vis-network with a stack overflow on large graphs — nodes are seeded on a spiral before physics runs so overlap-avoidance can't blow the layout recursion (#3699, thanks @sanjaiyan-dev).
+- Fix: node and edge tooltips now show special characters literally (C++ templates like `vector<int>`, generics, `&`, quotes) instead of raw HTML entities, while the HTML sinks that need escaping keep it (#3686, #3664, thanks @hopstreax).
+- Docs: repository links now point at `Graphify-Labs/graphify` instead of the old account (including in generated wiki output), translated READMEs use the current logo, GitHub issue/PR templates were added, and the Enterprise link was corrected (#3692, #3694, #3693, thanks @Abdul535).
+
+## 0.9.64 (2026-09-18)
+
+- Feature: Terraform block attributes (`ami`, `instance_type`, `cidr_block`, tags, and the like) are now preserved on the resource/data/module node and are queryable and searchable, with typed values (bool/number/list/map) and nested blocks kept separate from direct attributes. Secret-named attribute values (`password`, `*secret*`, `*token*`, `*_key`, connection strings) are redacted before they reach `graph.json` or the model, so a hardcoded credential in a `.tf` file does not leak (#3644, thanks @hopstreax).
+- Feature: JavaScript inside an inline `<script>` block of a PHP file is now indexed as JS (functions and calls) under the PHP file node, mirroring the Vue/Svelte embedded-script handling, with source lines mapped back to the real file positions (#3627, #2320, thanks @ayushcodes10).
+- Feature: a Rust `self.method()` call now resolves across files for simple generic impls (`impl<T> Foo<T>`), extending the split-`impl` resolution to generic types while staying fail-closed on bounded, `where`, trait, and concrete-instantiation shapes (#3653, thanks @oleksii-tumanov).
+- Feature: a Kotlin `Receiver.method()` call now resolves across files when the receiver's `object`/class (or its `companion object`) is declared in another file (#3598, #1698, thanks @ayushcodes10).
+- Feature: a C++ scope-qualified static call `Foo::bar()` now resolves to a definition in another translation unit even when it survived extraction only as a qualified-label node (#3613, #2348, thanks @ayushcodes10).
+- Fix: an npm package subpath import (`import x from "pkg/sub"`) now resolves to the same node as the bare package import, so a dependency no longer fragments into separate external nodes (#3601, thanks @ayushcodes10).
+- Fix: `export` now detects a stale `.graphify_analysis.json` sidecar and reconstructs communities from `graph.json`, comparing partition structure rather than just the node-id set, so a stale sidecar can no longer override fresh `update` data (#3557, #2386, thanks @ayushcodes10).
+- Fix: incremental `update` now reconciles Markdown-family links across `.md`/`.mdx`/`.qmd`/`.skill`, and a document whose parse fails no longer has its authored links pruned (#3655, thanks @oleksii-tumanov).
+- Fix: extraction diagnostics now separate external references (out-of-corpus `$ref`/import targets) from genuinely dangling edges, so an expected external reference is no longer reported as a broken endpoint (#3590, thanks @DevChiniwala).
+
+## 0.9.63 (2026-09-16)
+
+- Feature: Elixir `alias`/`import`/`require`/`use` targets now resolve onto the module's `defmodule` node across files, so the internal module dependency graph is no longer dropped as dangling. Only top-level modules are indexed (a nested `defmodule`, labeled with its bare inner name, cannot capture an unrelated `use <Name>` from another file), and a same-file reference is left unresolved so it cannot clobber the structural `contains` edge (#3603, thanks @ayushcodes10).
+- Feature: a Rust `self.method()` call now resolves to a method defined on the same type in another file (the common split-`impl`-block layout), pooling methods across every `impl` of one type and refusing to link when two unrelated types share a bare name (#3602, thanks @ayushcodes10).
+- Feature: a Ruby member call `obj.foo` on a known-type receiver now resolves to a method `foo` inherited from a superclass, including across files, using the same conservative promotion as the implicit-self resolver — a single owning class, matching method kind, and one unambiguous ancestry chain, or it stays dangling (#3585, thanks @oleksii-tumanov).
+- Fix: every edge endpoint written to `graph.json` is now a declared node. An `imports`/`imports_from`/`re_exports` edge to an external module (stdlib, a third-party dependency) mints a typed external stub node instead of leaving a dangling endpoint that loaders materialise as an attribute-less phantom, and a cross-repo merge unifies the same external module into one global node instead of fragmenting it per repo; sourceless external call targets stay suppressed (#2873, #2878, thanks @AromalBiju1).
+- Fix: a Markdown code-span mention edge now survives an incremental rebuild instead of being pruned as an unauthored link, and a dotted span (`Foo.bar`) resolves using its qualifiers as evidence, rejecting misleading matches such as `time.sleep` or `pyproject.toml` (#3587, thanks @AstroMined).
 
 ## 0.9.62 (2026-09-15)
 

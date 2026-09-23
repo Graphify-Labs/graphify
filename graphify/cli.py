@@ -2983,19 +2983,63 @@ def dispatch_command(cmd: str) -> None:
         # per-node attribute had the right data all along. Reconstruct from
         # the graph itself so downstream subcommands (html, obsidian, wiki,
         # svg, graphml, neo4j) don't silently produce a degraded artifact.
+        #
+        # Computed unconditionally now (#2386), not just when the sidecar is
+        # missing: the sidecar can also be STALE (present but describing an
+        # earlier clustering pass, since update/watch never regenerate it),
+        # which looks identical from the outside but used to take the other
+        # branch below and silently keep the fossil.
+        reconstructed: dict[int, list[str]] = {}
+        for node_id, data in G.nodes(data=True):
+            cid_raw = data.get("community")
+            if cid_raw is None:
+                continue
+            try:
+                cid = int(cid_raw)
+            except (TypeError, ValueError):
+                continue
+            reconstructed.setdefault(cid, []).append(str(node_id))
         if not communities:
-            reconstructed: dict[int, list[str]] = {}
-            for node_id, data in G.nodes(data=True):
-                cid_raw = data.get("community")
-                if cid_raw is None:
-                    continue
-                try:
-                    cid = int(cid_raw)
-                except (TypeError, ValueError):
-                    continue
-                reconstructed.setdefault(cid, []).append(str(node_id))
             if reconstructed:
                 communities = reconstructed
+        elif reconstructed:
+            # #2386: the sidecar EXISTS but can still be stale, since
+            # update/watch advance graph.json's per-node community attribute
+            # without ever regenerating .graphify_analysis.json. Cheap,
+            # unambiguous signal: compare each side's partition (its set of
+            # community blocks), not the community ids themselves (those can
+            # renumber run to run even for the same partition, #1667) and not
+            # just the flat node-id set either (a merge, split, or a node
+            # moving between communities can leave the overall node set
+            # unchanged while still describing a different partition). A
+            # mismatch means the sidecar was written by an earlier
+            # clustering pass, so prefer the fresh reconstruction instead of
+            # silently exporting a degraded artifact against a clustering
+            # that no longer agrees with it.
+            sidecar_partition = {frozenset(str(n) for n in nodes) for nodes in communities.values()}
+            fresh_partition = {frozenset(nodes) for nodes in reconstructed.values()}
+            if sidecar_partition != fresh_partition:
+                sidecar_node_count = len({n for block in sidecar_partition for n in block})
+                fresh_node_count = len({n for block in fresh_partition for n in block})
+                print(
+                    f"warning: {analysis_path} is stale ({sidecar_node_count} node(s) "
+                    f"recorded vs {fresh_node_count} in graph.json) — reconstructing "
+                    "communities from graph.json instead. Run `graphify cluster-only .` "
+                    "to refresh the sidecar and its cohesion/god-node data.",
+                    file=sys.stderr,
+                )
+                communities = reconstructed
+                from graphify.cluster import score_all as _score_all_export
+                from graphify.analyze import god_nodes as _god_nodes_export
+                cohesion = _score_all_export(G, communities)
+                # god_nodes ranks purely by graph degree, independent of the
+                # community partition, so recompute it directly here instead
+                # of clearing it to an empty list and relying on the wiki
+                # subcommand's own "if not gods_data: recompute" fallback
+                # further down — that fallback happens to cover the only
+                # current consumer, but silently drops real data for any
+                # future one that reads gods_data without the same guard.
+                gods_data = _god_nodes_export(G)
 
         labels: dict[int, str] = {}
         if labels_path.exists():
@@ -3818,12 +3862,17 @@ def dispatch_command(cmd: str) -> None:
                             "file_type": _node.get("file_type"),
                             "type": _node.get("type"),
                         }
-                        for _marker in ("_callable", "_callable_class"):
+                        # Keep bounded resolver identity for unchanged nodes;
+                        # these markers cannot be reconstructed from labels.
+                        for _marker in (
+                            "_callable", "_callable_class", "_elixir_module",
+                            "_rust_impl_key", "_rust_declaration_count",
+                        ):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
                         _metadata = _node.get("metadata")
                         if isinstance(_metadata, dict):
-                            _ruby_metadata = {
+                            _fwd_metadata = {
                                 key: _metadata[key]
                                 for key in (
                                     "ruby_resolution_schema",
@@ -3831,11 +3880,20 @@ def dispatch_command(cmd: str) -> None:
                                     "ruby_lookup_unsafe",
                                     "ruby_reopened",
                                     "ruby_external_method_owners",
+                                    # Erlang remote-call resolution keys (#3714):
+                                    # an unchanged callee module must keep its
+                                    # module/name/arity so `foo:bar()` still
+                                    # resolves on an incremental rebuild.
+                                    "language",
+                                    "kind",
+                                    "module",
+                                    "name",
+                                    "arity",
                                 )
                                 if key in _metadata
                             }
-                            if _ruby_metadata:
-                                _ctx_node["metadata"] = _ruby_metadata
+                            if _fwd_metadata:
+                                _ctx_node["metadata"] = _fwd_metadata
                         _ctx_nodes.append(_ctx_node)
                     for _edge in _ctx_graph.get(
                         "links", _ctx_graph.get("edges", [])
@@ -4133,6 +4191,14 @@ def dispatch_command(cmd: str) -> None:
             print("[graphify extract] introspecting Cargo workspace...")
             try:
                 cargo_result = introspect_cargo(target)
+            except FileNotFoundError:
+                # No Cargo.toml at the scan root is an ordinary condition
+                # (e.g. Tauri keeps its manifest under src-tauri/), not a
+                # failure — the AST pass already completed and cargo_result
+                # is already the empty, handled shape the merge below
+                # expects, so degrade instead of discarding that work (#3677).
+                print("[graphify extract] --cargo: no Cargo.toml at scan root, "
+                      "skipping crate edges")
             except (ConnectionError, ImportError, OSError) as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 sys.exit(1)

@@ -8,11 +8,13 @@ resolver matches them against the merged corpus after the id-remap passes.
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
 from graphify.extract import extract
 from graphify.extractors.markdown import _code_span_mention, extract_markdown
+from graphify.markdown_resolution import _match_cited_file
 
 _WIDGET_PY = '''\
 class Widget:
@@ -81,13 +83,40 @@ def _references(r):
 def test_code_span_mentions_are_classified():
     assert _code_span_mention("Widget") == (None, ["Widget"])
     assert _code_span_mention("render()") == (None, ["render"])
-    assert _code_span_mention("pkg.sub.Widget") == (None, ["Widget"])
+    assert _code_span_mention("pkg.sub.Widget") == (None, ["pkg", "sub", "Widget"])
+    assert _code_span_mention("Widget.render()") == (None, ["Widget", "render"])
+    # A file-like span with an unknown extension classifies as a mention and
+    # is rejected at resolution, where `pyproject` matches no callable.
+    assert _code_span_mention("pyproject.toml") == (None, ["pyproject", "toml"])
     pinned = ("src/widget.py", ["Widget", "render"])
     assert _code_span_mention("src/widget.py::Widget::render") == pinned
     assert _code_span_mention("src/widget.py::Widget::render()") == pinned
     # Files, commands, expressions and prose are not symbol mentions.
-    for span in ("setup.py", "git revert", "x = 1", "a-b", "--flag", "", "src/widget.py"):
+    for span in ("setup.py", "README.md", "notes.txt", "git revert", "x = 1", "a-b",
+                 "--flag", "", "src/widget.py"):
         assert _code_span_mention(span) is None, span
+
+
+def test_cited_file_matching():
+    sources = {"src/mod.py", ".github/scripts/check.py", "lib/x.py", "vendor/lib/x.py",
+               "docs/src/mod.py"}
+    # Doc-relative first, then exact, then a unique segment-aligned suffix.
+    assert _match_cited_file("src/mod.py", "docs/guide.md", sources) == "docs/src/mod.py"
+    assert _match_cited_file("src/mod.py", "README.md", sources) == "src/mod.py"
+    assert _match_cited_file("mod.py", "README.md", sources) is None
+    assert _match_cited_file("scripts/check.py", "README.md", sources) == (
+        ".github/scripts/check.py")
+    # `./` and `../` are stripped as segments: a hidden directory keeps its dot.
+    assert _match_cited_file(".github/scripts/check.py", "docs/guide.md", sources) == (
+        ".github/scripts/check.py")
+    assert _match_cited_file("./src/mod.py", "README.md", sources) == "src/mod.py"
+    # The suffix form also names a root-level file.
+    assert _match_cited_file("lib/x.py", "docs/guide.md", {"lib/x.py"}) == "lib/x.py"
+    # An explicit relative cite resolves against the document only: escaping
+    # the corpus never falls through to another copy of the file.
+    assert _match_cited_file("../lib/x.py", "docs/guide.md", sources) == "lib/x.py"
+    assert _match_cited_file("../lib/x.py", "README.md", sources) is None
+    assert _match_cited_file("../../vendor/lib/x.py", "docs/guide.md", sources) is None
 
 
 def test_extract_markdown_reports_mentions_as_markdown_raw_calls(tmp_path):
@@ -152,9 +181,11 @@ def test_mentions_resolve_to_references_edges_end_to_end(tmp_path):
     assert refs[(guide["id"], widget["id"])]["confidence"] == "INFERRED"
     assert refs[(guide["id"], widget["id"])]["confidence_score"] == 0.95
     assert (rendering["id"], widget["id"]) in refs
-    # Dotted `Widget.render()` resolves by its last segment: `render` is
-    # ambiguous (two classes define it), so no edge; same for `helper()`.
-    assert {t for (s, t) in refs if s == rendering["id"]} == {widget["id"]}
+    # `render` is defined twice, but the qualifier in `Widget.render()` names
+    # the owner, so the mention resolves; the bare `helper()` stays ambiguous.
+    assert {t for (s, t) in refs if s == rendering["id"]} == {
+        widget["id"], widget_render["id"]}
+    assert refs[(rendering["id"], widget_render["id"])]["confidence"] == "INFERRED"
     # Path-qualified mentions are EXTRACTED and scoped to the cited file.
     assert refs[(pinned["id"], widget_render["id"])]["confidence"] == "EXTRACTED"
     assert refs[(pinned["id"], widget_render["id"])]["confidence_score"] == 1.0
@@ -181,6 +212,67 @@ def test_ambiguous_bare_name_yields_no_edge(tmp_path):
 
     notes = _node(r, "Notes")
     assert {t for (s, t) in _references(r) if s == notes["id"]} == set()
+
+
+def test_dotted_mentions_need_qualifier_evidence(tmp_path):
+    r = _extract(tmp_path, {
+        "src/widget.py": _WIDGET_PY + "\n\ndef sleep():\n    pass\n",
+        "src/gadget.py": _GADGET_PY + "\n\ndef toml():\n    pass\n",
+        "docs/notes.md": (
+            "# Notes\n\n"
+            "`time.sleep` and `pyproject.toml` are not this repo's sleep or toml.\n"
+            "`widget.Widget`, `src.gadget.Gadget` and `Widget.render` are.\n"
+            "`Gadget.helper` is not: `helper` is not owned by `Gadget`.\n"
+        ),
+    })
+
+    notes = _node(r, "Notes")
+    cited = {t for (s, t) in _references(r) if s == notes["id"]}
+    widget = _node(r, "Widget", "widget.py")
+    gadget = _node(r, "Gadget", "gadget.py")
+    widget_render = next(
+        n for n in r["nodes"] if n["label"] == ".render()" and "widget" in n["id"])
+    assert cited == {widget["id"], gadget["id"], widget_render["id"]}
+
+
+def test_mentions_survive_a_rebuild_over_an_existing_graph(tmp_path):
+    """The watch reconcile owns authored ``[link](file)`` edges, not mentions.
+
+    A rebuild over an existing graph re-parses the Markdown corpus and prunes
+    any ``references`` edge it did not author; a code-span mention targets a
+    code symbol, never a file, so it must survive a no-change rebuild and the
+    incremental rebuilds of either side.
+    """
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "widget.py").write_text(_WIDGET_PY)
+    doc = corpus / "doc.md"
+    doc.write_text("# Doc\n\n## Usage\n\nBuild a `Widget`.\n")
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    def mention_edges():
+        links = json.loads(graph_path.read_text(encoding="utf-8"))["links"]
+        return {(e["source"], e["target"]) for e in links
+                if e.get("relation") == "references" and e.get("confidence_score")}
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    expected = mention_edges()
+    assert len(expected) == 1
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    assert mention_edges() == expected, "no-change rebuild"
+
+    doc.write_text(doc.read_text() + "\nStill a `Widget`.\n")
+    assert _rebuild_code(corpus, changed_paths=[doc], no_cluster=True,
+                         acquire_lock=False) is True
+    assert mention_edges() == expected, "document re-extracted"
+
+    (corpus / "widget.py").write_text(_WIDGET_PY + "\n\ndef extra():\n    pass\n")
+    assert _rebuild_code(corpus, changed_paths=[corpus / "widget.py"], no_cluster=True,
+                         acquire_lock=False) is True
+    assert mention_edges() == expected, "code re-extracted"
 
 
 def test_mentions_survive_the_extraction_cache(tmp_path):
