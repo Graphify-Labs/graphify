@@ -57,6 +57,19 @@ def _string_literals(node: Node, source: bytes) -> list[str]:
     return out
 
 
+def _normalize_package(name: str | None) -> str:
+    """Canonical Perl package name for call resolution.
+
+    Subs outside any ``package`` statement live in ``main``, and ``::foo()``,
+    ``main::foo()``, ``main::Foo::bar()`` and ``Foo::->bar()`` all spell a
+    package without its optional ``main::`` prefix or trailing ``::``.
+    """
+    name = (name or "").strip(":")
+    while name.startswith("main::"):
+        name = name[len("main::"):]
+    return name or "main"
+
+
 def resolve_perl_calls(
     per_file: list[dict], all_nodes: list[dict], all_edges: list[dict]
 ) -> None:
@@ -83,8 +96,9 @@ def resolve_perl_calls(
         if not isinstance(name, str):
             continue
         by_name.setdefault(name, []).append(node["id"])
-        if isinstance(package, str):
-            by_package_name.setdefault((package, name), []).append(node["id"])
+        if package is None or isinstance(package, str):
+            key = (_normalize_package(package), name)
+            by_package_name.setdefault(key, []).append(node["id"])
 
     existing = {
         (edge.get("source"), edge.get("target"))
@@ -98,8 +112,9 @@ def resolve_perl_calls(
             caller = call.get("caller_nid")
             name = str(call.get("callee", ""))
             remote_package = call.get("remote_module")
-            if remote_package:
-                candidates = by_package_name.get((str(remote_package), name), [])
+            if remote_package is not None:
+                key = (_normalize_package(str(remote_package)), name)
+                candidates = by_package_name.get(key, [])
             else:
                 candidates = by_name.get(name, [])
             if len(candidates) != 1 or candidates[0] == caller:
@@ -112,7 +127,7 @@ def resolve_perl_calls(
                 "source": caller,
                 "target": candidates[0],
                 "relation": "calls",
-                "context": "remote_call" if remote_package else "method_call",
+                "context": "remote_call" if remote_package is not None else "method_call",
                 "confidence": "EXTRACTED",
                 "confidence_score": 1.0,
                 "source_file": call.get("source_file", ""),
@@ -366,6 +381,31 @@ def extract_perl(path: Path) -> dict:
             return package_functions.get(current_package_name, {}).get(callee)
         return package_functions.get("", {}).get(callee)
 
+    def add_raw_call(caller_id: str, name: str, module: str | None, node: Node) -> None:
+        raw_calls.append({
+            "caller_nid": caller_id,
+            "callee": name,
+            "remote_module": module,
+            "is_member_call": True,
+            "language": "perl",
+            "source_file": source_file,
+            "source_location": f"L{node.start_point[0] + 1}",
+        })
+
+    def method_call_target(invocant: Node, method_text: str) -> tuple[str | None, str]:
+        """(package, method) for ``invocant->method``; package None if dynamic."""
+        if "::" in method_text:
+            # ``$obj->Pkg::method()`` names the package explicitly.
+            module, _, name = method_text.rpartition("::")
+            return module, name
+        if invocant.type == "bareword":
+            return _read_text(invocant, source), method_text
+        if invocant.type == "string_literal":
+            literals = _string_literals(invocant, source)
+            if literals and literals[0]:
+                return literals[0], method_text
+        return None, method_text
+
     def walk_calls(node: Node, caller_id: str, package_name: str | None) -> None:
         if node.type == "subroutine_declaration_statement":
             return
@@ -375,15 +415,7 @@ def extract_perl(path: Path) -> dict:
                 text = _read_text(function_node, source)
                 if "::" in text:
                     module, _, name = text.rpartition("::")
-                    raw_calls.append({
-                        "caller_nid": caller_id,
-                        "callee": name,
-                        "remote_module": module,
-                        "is_member_call": True,
-                        "language": "perl",
-                        "source_file": source_file,
-                        "source_location": f"L{node.start_point[0] + 1}",
-                    })
+                    add_raw_call(caller_id, name, module, node)
                 else:
                     target = resolve_bareword_call(text, package_name)
                     if target is not None:
@@ -392,28 +424,10 @@ def extract_perl(path: Path) -> dict:
             invocant = node.child_by_field_name("invocant")
             method_node = node.child_by_field_name("method")
             if invocant is not None and method_node is not None:
-                method_text = _read_text(method_node, source)
-                if "::" not in method_text:
-                    if invocant.type == "bareword":
-                        raw_calls.append({
-                            "caller_nid": caller_id,
-                            "callee": method_text,
-                            "remote_module": _read_text(invocant, source),
-                            "is_member_call": True,
-                            "language": "perl",
-                            "source_file": source_file,
-                            "source_location": f"L{node.start_point[0] + 1}",
-                        })
-                    else:
-                        raw_calls.append({
-                            "caller_nid": caller_id,
-                            "callee": method_text,
-                            "remote_module": None,
-                            "is_member_call": True,
-                            "language": "perl",
-                            "source_file": source_file,
-                            "source_location": f"L{node.start_point[0] + 1}",
-                        })
+                module, name = method_call_target(
+                    invocant, _read_text(method_node, source),
+                )
+                add_raw_call(caller_id, name, module, node)
         for child in node.named_children:
             walk_calls(child, caller_id, package_name)
 

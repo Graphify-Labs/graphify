@@ -231,3 +231,57 @@ def test_perl_extractor_module_imports_without_tree_sitter(monkeypatch):
     monkeypatch.delitem(sys.modules, "graphify.extractors.perl", raising=False)
     module = importlib.import_module("graphify.extractors.perl")
     assert callable(module.extract_perl)
+
+
+def test_perl_main_qualified_calls_resolve_to_implicit_main_subs(tmp_path):
+    source = tmp_path / "script.pl"
+    source.write_text(
+        "sub helper { return 1; }\n"
+        "sub other { return 2; }\n"
+        "package Worker;\n"
+        "sub run { main::helper(); ::other(); }\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    calls = _edge_labels(result, "calls")
+    assert ("run()", "helper()") in calls
+    assert ("run()", "other()") in calls
+
+
+def test_perl_qualified_method_invocants_keep_their_package(tmp_path):
+    lib = tmp_path / "Lib.pm"
+    lib.write_text(
+        "package Foo::Bar;\n"
+        "sub create { return 1; }\n"
+        "sub method { return 2; }\n"
+        "sub quoted { return 3; }\n"
+        "package Other;\n"
+        "sub create { return 4; }\n"
+        "sub method { return 5; }\n"
+        "sub quoted { return 6; }\n",
+        encoding="utf-8",
+    )
+    source = tmp_path / "app.pl"
+    source.write_text(
+        "package App;\n"
+        "sub go {\n"
+        "    my $o = Foo::Bar::->create();\n"
+        "    $o->Foo::Bar::method();\n"
+        "    'Foo::Bar'->quoted();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source, lib], cache_root=tmp_path)
+
+    ids = {node["id"]: node for node in result["nodes"]}
+    targets = {
+        (ids[edge["target"]]["label"], ids[edge["target"]]["metadata"]["package"])
+        for edge in result["edges"]
+        if edge["relation"] == "calls" and ids[edge["source"]]["label"] == "go()"
+    }
+    assert targets == {
+        ("create()", "Foo::Bar"), ("method()", "Foo::Bar"), ("quoted()", "Foo::Bar"),
+    }
