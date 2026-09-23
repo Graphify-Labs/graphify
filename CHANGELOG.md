@@ -16,6 +16,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: `graphify install` no longer corrupts line endings (writes preserve the file's existing EOLs instead of rewriting to CRLF on Windows) and re-install is properly idempotent (a marker-bounded replace instead of a bare substring check) (#3741, #3668, thanks @ayushcodes10).
 - Fix: community labeling retries a valid-but-truncated LLM response and reports how many communities kept a structural fallback name, instead of silently leaving them unlabeled (#3708, thanks @Ha1baraA11).
 - Fix: a stale `.graphify_root` marker (moved/deleted/symlink-loop target) is now ignored with a fall-back to the graph's directory, and the marker value resolves to an absolute path when `GRAPHIFY_OUT` is a shared absolute directory (#3707, thanks @Ha1baraA11; #3735, #3375, thanks @ayushcodes10).
+- Fix: entity dedup's survivor selection now prefers a node with a real source location over a source-less stub, even when the stub happens to out-score it on `_content_richness()` alone — `source_file`/`source_location` are deliberately excluded from that score, so a stub carrying a couple of incidental bookkeeping keys (`external`/`type`/`_origin`) could previously out-score and replace a genuine, located declaration. Only affects concept/document/paper/image nodes from the semantic extraction path; code-type nodes never reach this scoring (#3775, thanks @BloodyBeard).
 
 ## 0.9.65 (2026-09-20)
 
