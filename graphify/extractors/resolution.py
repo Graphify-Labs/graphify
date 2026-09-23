@@ -1433,6 +1433,18 @@ def _apply_symbol_resolution_facts(
         )
 
     # #1146: emit file-to-file imports_from edges for package-form submodule imports.
+    # #3777: retract provisional `imports_from` AST edges whose package ID coincided
+    # with a same-named sibling module file (e.g. `from nettacker import logger`
+    # emitting a provisional edge to `nettacker.py`).
+    provisional_by_loc: dict[tuple[Path, str], list[dict]] = {}
+    for edge in edges:
+        if edge.get("relation") == "imports_from" and edge.get("context") == "import":
+            src = _js_source_path(str(edge.get("source_file", "")), root)
+            loc = edge.get("source_location")
+            if src is not None and loc:
+                provisional_by_loc.setdefault((src, loc), []).append(edge)
+
+    retracted_edge_ids: set[int] = set()
     for from_path, to_path, line, local_name in facts.module_imports:
         try:
             from_rel = from_path.relative_to(root)
@@ -1441,10 +1453,56 @@ def _apply_symbol_resolution_facts(
             continue
         source_id = _make_id(_file_stem(from_rel))
         target_id = _make_id(_file_stem(to_rel))
+
+        from_canon = _resolve_cached(from_path)
+        pkg_dir = to_path.parent
+        candidate_targets: set[str] = set()
+        try:
+            pkg_rel = pkg_dir.relative_to(root)
+            candidate_targets.add(_make_id(".".join(pkg_rel.parts)))
+            candidate_targets.add(_make_id(_file_stem(pkg_rel)))
+            candidate_targets.add(_make_id(str(pkg_rel)))
+        except ValueError:
+            pass
+        candidate_targets.add(_make_id(str(pkg_dir)))
+        candidate_targets.add(_make_id(str(pkg_dir / "__init__.py")))
+        candidate_targets.add(_make_id(str(pkg_dir.with_suffix(".py"))))
+        try:
+            from_rel_parent = from_path.parent.relative_to(root)
+            candidate_targets.add(_make_id(str(from_rel_parent / "__init__.py")))
+            candidate_targets.add(_make_id(str(from_rel_parent.with_suffix(".py"))))
+        except ValueError:
+            pass
+
+        loc_str = f"L{line}"
+        loc_candidates = [
+            e for e in provisional_by_loc.get((from_canon, loc_str), [])
+            if id(e) not in retracted_edge_ids
+        ]
+        matched_edge = None
+        for edge in loc_candidates:
+            if edge.get("target") in candidate_targets:
+                matched_edge = edge
+                break
+        if matched_edge is None and len(loc_candidates) == 1:
+            matched_edge = loc_candidates[0]
+
+        if matched_edge is not None:
+            retracted_edge_ids.add(id(matched_edge))
+            existing_edges.discard((
+                str(matched_edge.get("source")),
+                str(matched_edge.get("target")),
+                str(matched_edge.get("relation")),
+                str(matched_edge.get("context") or ""),
+            ))
+
         add_edge(
             source_id, target_id, "imports_from", "submodule_import", line, from_path,
             local_alias=local_name if local_name != to_path.stem else None,
         )
+
+    if retracted_edge_ids:
+        edges[:] = [e for e in edges if id(e) not in retracted_edge_ids]
 
     # #2262 producer guard: never emit a `calls` use-edge from a source id
     # that owns no node. All node appends (ensure_symbol_node, declarations,
