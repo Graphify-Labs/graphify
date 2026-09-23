@@ -516,8 +516,11 @@ def test_a_declared_csharp_file_disambiguates_inherits_by_namespace(tmp_path):
 
 
 def test_a_declared_unsupported_language_still_warns_no_extractor(tmp_path, capsys):
-    (tmp_path / "a.tpl").write_text("helper <- function(x) x + 1\n", encoding="utf-8")
-    (tmp_path / ".graphifyrc").write_text("language.tpl=r\n", encoding="utf-8")
+    # .ets (ArkTS) is a recognized CODE_EXTENSIONS member with no registered
+    # AST extractor (unlike .r, which upstream now implements behind an
+    # optional dependency and would instead warn "dependency is missing").
+    (tmp_path / "a.tpl").write_text("class Foo {}\n", encoding="utf-8")
+    (tmp_path / ".graphifyrc").write_text("language.tpl=.ets\n", encoding="utf-8")
     _quiet_extract([tmp_path / "a.tpl"], cache_root=tmp_path, root=tmp_path)
     assert "no AST extractor" in capsys.readouterr().err
 
