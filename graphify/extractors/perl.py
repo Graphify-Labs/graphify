@@ -283,26 +283,26 @@ def extract_perl(path: Path) -> dict:
             )
             body = node.child_by_field_name("body")
             if name_node is None:
-                return
+                return None
             name = _unquote(_read_text(name_node, source))
             function_id = add_sub(name, node, current_package, current_package_name)
             if body is not None:
                 bodies.append((body, function_id, current_package_name))
-            return
+            return None
 
         if node.type == "use_statement":
             name_node = node.child_by_field_name("package") or next(
                 (c for c in node.named_children if c.type == "package"), None
             )
             if name_node is None:
-                return
+                return None
             args = next(
                 (c for c in node.named_children if c is not name_node), None
             )
             handle_use_or_require(
                 _read_text(name_node, source), args, node, current_package,
             )
-            return
+            return None
 
         if node.type == "expression_statement":
             inner = node.named_children[0] if node.named_children else None

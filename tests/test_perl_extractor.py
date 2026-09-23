@@ -150,6 +150,33 @@ def test_perl_statement_package_is_scoped_to_enclosing_block(tmp_path):
     assert ("Inner", "third()") not in contains
     assert ("Outer", "second()") not in contains
 
+
+def test_perl_use_and_require_are_reached_in_every_scope(tmp_path):
+    helpers = tmp_path / "helpers.pl"
+    helpers.write_text("sub help { return 1; }\n", encoding="utf-8")
+    source = tmp_path / "loader.pl"
+    source.write_text(
+        "package Loader;\n"
+        "use Top::Module;\n"
+        "require Bare::Module;\n"
+        "require 'helpers.pl';\n"
+        "package Block {\n"
+        "    use Block::Module;\n"
+        "    require Block::Required;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source, helpers], cache_root=tmp_path)
+
+    imports = _edge_labels(result, "imports")
+    assert ("Loader", "Top::Module") in imports
+    assert ("Loader", "Bare::Module") in imports
+    assert ("Block", "Block::Module") in imports
+    assert ("Block", "Block::Required") in imports
+    assert ("Loader", "helpers.pl") in _edge_labels(result, "imports_from")
+
+
 def test_perl_malformed_file_does_not_create_phantoms(tmp_path):
     source = tmp_path / "broken.pl"
     source.write_text(
