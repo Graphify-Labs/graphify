@@ -26,6 +26,78 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
 
 
+def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
+    """``os.replace(src, dst)``, falling back to a copy for a known set of
+    Windows quirks (#3508) that raise even when ``src``/``dst`` are the same
+    directory on the same drive: ``PermissionError`` (WinError 5/32 --
+    destination briefly locked by another handle, antivirus, an open reader)
+    and WinError 17 ("cannot move to a different disk drive", observed on some
+    Windows/filesystem combinations despite textbook same-volume semantics).
+    WinError 17 maps to a plain ``OSError`` in Python, not ``PermissionError``,
+    so it's checked via ``winerror`` rather than the exception type. Any other
+    failure is a real one and is re-raised.
+
+    ``os.replace`` atomically swaps whatever sits at ``dst`` -- including a
+    symlink, which it REPLACES in place rather than following (some callers,
+    e.g. install.py's managed skill symlinks, #3286, rely on exactly this).
+    A naive ``shutil.copy2(src, dst)`` does the opposite when ``dst`` is a
+    symlink: opening it for writing follows the link and overwrites its
+    TARGET's content instead. So the fallback copies to a fresh temp file in
+    ``dst``'s directory first, renames whatever is currently at ``dst`` (link
+    or file) aside as a backup rather than deleting it outright, and only
+    then renames the temp copy into ``dst``'s place -- matching replace's
+    "whatever was there is gone, a plain file replaces it" semantics. If that
+    final rename fails, the backup is renamed straight back so a mid-swap
+    failure leaves the original in place rather than leaving ``dst`` missing.
+    """
+    try:
+        os.replace(src, dst)
+        return
+    except OSError as exc:
+        if not isinstance(exc, PermissionError) and getattr(exc, "winerror", None) != 17:
+            raise
+    import shutil
+    dst = os.fspath(dst)
+    if os.path.normcase(os.path.abspath(os.fspath(src))) == os.path.normcase(os.path.abspath(dst)):
+        # Replacing a path with itself needs no swap at all; the rename-aside-
+        # then-back sequence below would rename src out from under itself via
+        # the "back up dst" step and then crash unlinking a path that no
+        # longer exists at the end.
+        return
+    dst_dir = os.path.dirname(dst) or "."
+    fd, tmp_copy = tempfile.mkstemp(dir=dst_dir, prefix=".gfy-replace-", suffix=".tmp")
+    os.close(fd)
+    try:
+        shutil.copy2(src, tmp_copy)
+        backup = None
+        if os.path.lexists(dst):
+            bfd, backup = tempfile.mkstemp(dir=dst_dir, prefix=".gfy-replace-bak-", suffix=".tmp")
+            os.close(bfd)
+            os.unlink(backup)  # reserve the name only; rename needs it free on Windows
+            os.rename(dst, backup)  # a plain rename moves a symlink itself, never its target
+        try:
+            os.rename(tmp_copy, dst)
+        except BaseException:
+            if backup is not None:
+                try:
+                    os.rename(backup, dst)
+                except OSError:
+                    pass  # best-effort restore; the swap failure below still propagates
+            raise
+        if backup is not None:
+            try:
+                os.unlink(backup)
+            except OSError:
+                pass
+    except BaseException:
+        try:
+            os.unlink(tmp_copy)
+        except OSError:
+            pass
+        raise
+    os.unlink(src)
+
+
 def _atomic_replace(path: "str | Path", write_fn) -> None:
     """Atomically replace ``path`` with content written by ``write_fn(f)``.
 
@@ -63,15 +135,7 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
             os.chmod(tmp, mode)
         except OSError:
             pass
-        try:
-            os.replace(tmp, str(real))
-        except PermissionError:
-            # Windows: os.replace fails (WinError 5/32) when the destination is
-            # briefly locked by another handle (antivirus, an open reader). Fall
-            # back to copy-then-delete, matching graphify.cache's atomic writer.
-            import shutil
-            shutil.copy2(tmp, str(real))
-            os.unlink(tmp)
+        os_replace_with_fallback(tmp, str(real))
     except BaseException:
         try:
             os.unlink(tmp)

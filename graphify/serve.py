@@ -5,6 +5,7 @@ import math
 import os
 import re
 import sys
+import warnings
 from array import array
 from collections import OrderedDict
 from pathlib import Path
@@ -12,13 +13,21 @@ import threading
 from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
-from graphify.security import sanitize_label, check_graph_file_size_cap
+from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
 from graphify.build import edge_data, edge_datas
 from graphify.paths import default_graph_json as _default_graph_json
 
 try:
-    import jieba as _jieba  # type: ignore[import-untyped]
-except ImportError:
+    with warnings.catch_warnings():
+        # jieba/jieba-py carry invalid regex escapes that emit a SyntaxWarning on
+        # compile; the message and line moved across Python versions (3.12 also
+        # reworded it), so ignore the category wholesale here rather than pinning
+        # a message/lineno. Under `-W error::SyntaxWarning` this keeps the import
+        # from escalating to a fatal SyntaxError.
+        warnings.simplefilter("ignore", SyntaxWarning)
+        import jieba as _jieba  # type: ignore[import-untyped]
+except (ImportError, SyntaxError):
+    # A stray/broken jieba must never take down the whole server import.
     _jieba = None
 
 
@@ -171,6 +180,18 @@ class _GraphContextCache:
             return entry["G"], entry["communities"]
 
 
+def _node_arg(arguments: dict) -> str:
+    """The node identifier a lookup tool was called with.
+
+    ``get_node``/``get_neighbors`` historically read ``arguments["label"]`` only, so a client that
+    passes the node under ``node_id`` (or ``id``) — several of the agent frameworks graphify targets
+    do — raised ``KeyError('label')`` instead of being served. Accept the common spellings; callers
+    treat an empty string as "no identifier given" and answer with guidance rather than a traceback.
+    """
+    v = arguments.get("label") or arguments.get("node_id") or arguments.get("id") or ""
+    return v if isinstance(v, str) else str(v)
+
+
 def _strip_diacritics(text: str | None) -> str:
     import unicodedata
     if not isinstance(text, str):
@@ -303,6 +324,35 @@ _SOURCE_MATCH_BONUS = 0.5
 # toward term coverage, so a long rationale adds recall without winning back
 # an exact-label tier it did not earn.
 _RATIONALE_MATCH_BONUS = 0.75
+_ATTRIBUTE_MATCH_BONUS = 0.75
+
+
+def _flatten_attr_text(val, parts: list[str]) -> None:
+    if isinstance(val, dict):
+        for k, v in val.items():
+            parts.append(str(k))
+            _flatten_attr_text(v, parts)
+    elif isinstance(val, (list, tuple)):
+        for item in val:
+            _flatten_attr_text(item, parts)
+    elif val is not None:
+        parts.append(str(val))
+
+
+def _node_attributes_text(data: dict) -> tuple[str, str]:
+    """The node's `attributes` key-value pairs normalized and tokenized for search."""
+    attrs = data.get("attributes")
+    if not isinstance(attrs, dict) or not attrs:
+        return "", ""
+    parts: list[str] = []
+    _flatten_attr_text(attrs, parts)
+    if not parts:
+        return "", ""
+    raw_text = " ".join(parts)
+    norm = _strip_diacritics(raw_text).lower()
+    tokens = " ".join(_search_tokens(norm))
+    return norm, tokens
+
 
 
 def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
@@ -392,6 +442,9 @@ def _node_search_text(data: dict, nid: str) -> str:
     rationale = _node_rationale_text(data)
     if rationale:
         fields += (rationale,)
+    attr_norm, attr_tokens = _node_attributes_text(data)
+    if attr_norm:
+        fields += (attr_norm, attr_tokens)
     return "\x00".join(fields)
 
 
@@ -569,6 +622,7 @@ def _score_query(
         label_tokens = " ".join(_search_tokens(data.get("label") or ""))
         source = (data.get("source_file") or "").lower()
         rationale = _node_rationale_text(data)
+        attr_norm, attr_tokens = _node_attributes_text(data)
         # `nid_lower` is needed both by the full-query tier (`if joined`) and by
         # the per-token singleton tier (joined-singlet exact-match check). When
         # neither runs (`joined` empty AND not collecting seeds) skip the call;
@@ -634,6 +688,11 @@ def _score_query(
             if rationale and t in rationale:
                 rationale_value = _RATIONALE_MATCH_BONUS * w
                 score += rationale_value
+            # Attribute tier (#3625): recall for questions naming attributes or literal values.
+            attr_value = 0.0
+            if attr_norm and (t in attr_norm or t in attr_tokens):
+                attr_value = _ATTRIBUTE_MATCH_BONUS * w
+                score += attr_value
             tiered += tier_value
             if collect_per_term_seeds and best_by_term is not None:
                 # Singleton score for [t] on this node, mirroring
@@ -652,7 +711,7 @@ def _score_query(
                     singleton = _PREFIX_MATCH_BONUS * 10 * w
                 else:
                     singleton = 0.0
-                singleton += tier_value + substr_value + source_value + rationale_value
+                singleton += tier_value + substr_value + source_value + rationale_value + attr_value
                 if singleton > 0:
                     # Tie-break key mirrors the legacy sort+max(degree):
                     # (-singleton, -degree, label_len, nid) — the minimum
@@ -1080,12 +1139,38 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             status = sanitize_label(str(entry.get("status", "")))
             if status:
                 learning_suffix = f" learning={status}{':stale' if entry.get('stale') else ''}"
+        attrs = d.get("attributes")
+        attrs_suffix = ""
+        if isinstance(attrs, dict) and attrs:
+            pairs = []
+            for k, v in sorted(attrs.items()):
+                if isinstance(v, (dict, list)):
+                    v_str = json.dumps(v, sort_keys=True)
+                elif isinstance(v, str):
+                    v_str = f'"{v}"'
+                elif isinstance(v, bool):
+                    v_str = "true" if v else "false"
+                elif v is None:
+                    v_str = "null"
+                else:
+                    v_str = str(v)
+                if len(v_str) > 60:
+                    v_str = v_str[:57] + "..."
+                pairs.append(f"{k}={v_str}")
+                if len(pairs) >= 10:
+                    pairs.append("...")
+                    break
+            attrs_summary = ", ".join(pairs)
+            if len(attrs_summary) > 200:
+                attrs_summary = attrs_summary[:197] + "..."
+            attrs_suffix = f" attrs={{{sanitize_label(attrs_summary)}}}"
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
             f"loc={sanitize_label(str(d.get('source_location', '')))} "
             f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
-            f"{learning_suffix}]"
+            f"{learning_suffix}"
+            f"{attrs_suffix}]"
         )
         lines.append(line)
     for u, v in edges:
@@ -1335,6 +1420,84 @@ def _query_graph_text(
     return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
 
 
+def _resolve_path_scoped_symbol(G: nx.Graph, path_part: str, symbol_part: str) -> list[str]:
+    """Nodes whose source_file matches path_part and label/id matches symbol_part.
+
+    Backs the `path::Symbol` query form (#3485): a bare path resolves to the
+    FILE node (`_find_node_tiers`'s own `source_exact` tier, which prefers
+    the file over its members once #2032-disambiguated), and a bare symbol
+    name can be ambiguous across files -- the same-named local declaration
+    guard from #3176 exists for exactly that case, and its own suggested
+    retry ("the repo-relative path") pointed at a form that resolved to the
+    wrong node or nothing at all, since no prior tier combined a path with
+    a label. This combines both constraints in one query, so a specific
+    symbol in a specific file is reachable without needing its opaque id.
+    """
+    path_tokens = " ".join(_search_tokens(path_part))
+    norm_path_query = _strip_diacritics(path_part).lower().strip()
+    symbol_term = " ".join(_search_tokens(symbol_part))
+    norm_symbol_query = _strip_diacritics(symbol_part).lower().strip()
+    if not (path_tokens or norm_path_query) or not (symbol_term or norm_symbol_query):
+        return []
+    candidate_ids = _trigram_candidates(G, [symbol_term, norm_symbol_query])
+    node_iter = (
+        G.nodes(data=True) if candidate_ids is None
+        else ((nid, G.nodes[nid]) for nid in candidate_ids)
+    )
+    matches: list[str] = []
+    for nid, d in node_iter:
+        source_file = d.get("source_file") or ""
+        source_tokens = " ".join(_search_tokens(source_file))
+        norm_source = _strip_diacritics(source_file).lower().strip()
+        if not (
+            source_tokens == path_tokens
+            or norm_source == norm_path_query
+            or (norm_path_query and norm_source.endswith("/" + norm_path_query))
+            or (path_tokens and source_tokens.endswith(" " + path_tokens))
+        ):
+            continue
+        norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
+        bare_label = norm_label.rstrip("()")
+        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
+        nid_lower = nid.lower()
+        if (
+            symbol_term == norm_label or symbol_term == bare_label
+            or symbol_term == label_tokens or symbol_term == nid_lower
+            or norm_symbol_query == norm_label or norm_symbol_query == bare_label
+        ):
+            matches.append(nid)
+    return matches
+
+
+def _label_has_literal_exact_match(G: nx.Graph, term: str, norm_query: str) -> bool:
+    """Does the RAW, unsplit query already exact-match some node's own label/id?
+
+    Mirrors the `exact` tier's own condition below, run early and standalone so
+    `_find_node_tiers` can tell a literal `::`-bearing label (Rust modules, C++
+    namespaces) from a deliberately path-scoped query before choosing between
+    them. A real label essentially never equals a whole `path::symbol` string
+    verbatim, so this is a safe way to prefer the literal interpretation
+    whenever one genuinely exists.
+    """
+    candidate_ids = _trigram_candidates(G, [term, norm_query])
+    node_iter = (
+        G.nodes(data=True) if candidate_ids is None
+        else ((nid, G.nodes[nid]) for nid in candidate_ids)
+    )
+    for nid, d in node_iter:
+        norm_label = d.get("norm_label") or _strip_diacritics(d.get("label") or "").lower()
+        bare_label = norm_label.rstrip("()")
+        label_tokens = " ".join(_search_tokens(d.get("label") or ""))
+        nid_lower = nid.lower()
+        nid_norm = nid_lower if nid.isascii() else _strip_diacritics(nid).lower()
+        if (
+            term == norm_label or term == bare_label or term == label_tokens or term == nid_lower
+            or norm_query == norm_label or norm_query == bare_label or norm_query == nid_norm
+        ):
+            return True
+    return False
+
+
 def _find_node_tiers(
     G: nx.Graph, label: str
 ) -> tuple[list[str], list[str], list[str], list[str]]:
@@ -1346,8 +1509,6 @@ def _find_node_tiers(
     tier holds several nodes from different files. See `find_node_ambiguity`.
     """
     term = " ".join(_search_tokens(label))
-    if not term:
-        return []
     # Punctuation-preserving normalized query. `term` tokenizes on \w+ (so
     # "blockStream.ts" -> "blockstream ts", space where the '.' was), but a node's
     # stored `norm_label` keeps punctuation ("blockstream.ts"). Matching only via
@@ -1357,6 +1518,29 @@ def _find_node_tiers(
     # `nid_norm` below extends that symmetry to node ids, which keep their
     # punctuation too and are compared raw against the tokenized `term` (#2467).
     norm_query = _strip_diacritics(str(label)).lower().strip()
+
+    # `path::Symbol` restricts the label match to nodes defined in that
+    # file (#3485) -- checked before the ordinary tiers below so a
+    # deliberately path-scoped query never falls back to guessing among
+    # same-named symbols in other files. Returned as source_exact (the
+    # tier `find_node_ambiguity` already treats as maximally specific) so
+    # existing callers need no changes; an empty result falls through to
+    # ordinary matching rather than reporting no match outright, in case
+    # "::" is meaningful some other way to a caller this was not designed
+    # for. Skipped when the raw label already literally matches a node (a
+    # native `::`-bearing label, e.g. Rust modules or C++ namespaces) so that
+    # an unrelated file whose path happens to resemble the label's prefix
+    # cannot hijack a query that was never meant to be path-scoped.
+    if "::" in label and not _label_has_literal_exact_match(G, term, norm_query):
+        path_part, _, symbol_part = label.partition("::")
+        path_part, symbol_part = path_part.strip(), symbol_part.strip()
+        if path_part and symbol_part:
+            scoped = _resolve_path_scoped_symbol(G, path_part, symbol_part)
+            if scoped:
+                return scoped, [], [], []
+
+    if not term:
+        return [], [], [], []
     source_exact: list[str] = []
     exact: list[str] = []
     prefix: list[str] = []
@@ -1471,7 +1655,8 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
         return None, (
             f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
             f"{listing}\n"
-            "Retry with the repo-relative path or the full node id."
+            f"Retry with path::symbol using one of the paths above (e.g. "
+            f"<path>::{label}) or the full node id."
         )
     return matches[0], None
 
@@ -1717,8 +1902,10 @@ def _build_server(graph_path: str):
                 description="Get full details for a specific node by label or ID.",
                 inputSchema={
                     "type": "object",
-                    "properties": {"label": {"type": "string", "description": "Node label or ID to look up"}},
-                    "required": ["label"],
+                    "properties": {
+                        "label": {"type": "string", "description": "Node label or ID to look up"},
+                        "node_id": {"type": "string", "description": "Alias for label (node id)"},
+                    },
                 },
             ),
             types.Tool(
@@ -1728,10 +1915,10 @@ def _build_server(graph_path: str):
                     "type": "object",
                     "properties": {
                         "label": {"type": "string"},
+                        "node_id": {"type": "string", "description": "Alias for label (node id)"},
                         "relation_filter": {"type": "string", "description": "Optional: filter by relation type"},
                         "token_budget": {"type": "integer", "default": 2000, "description": "Max output tokens"},
                     },
-                    "required": ["label"],
                 },
             ),
             types.Tool(
@@ -1876,11 +2063,21 @@ def _build_server(graph_path: str):
         return result
 
     def _tool_get_node(arguments: dict) -> str:
-        label = arguments["label"].lower()
+        raw = _node_arg(arguments)
+        if not raw:
+            return "Provide a node label or id (accepted keys: label, node_id, id)."
+        label = raw.lower()
         nid, err = _resolve_single_node(G, label)
         if err:
             return err
         d = G.nodes[nid]
+        attrs = d.get("attributes")
+        attrs_line = []
+        if isinstance(attrs, dict) and attrs:
+            raw_attrs = json.dumps(attrs, sort_keys=True)
+            if len(raw_attrs) > 1000:
+                raw_attrs = raw_attrs[:997] + "..."
+            attrs_line = [f"  Attributes: {_CONTROL_CHAR_RE.sub('', raw_attrs)}"]
         # Sanitise every LLM-derived field before concatenation (F-010).
         return "\n".join([
             f"Node: {sanitize_label(d.get('label', nid))}",
@@ -1895,10 +2092,14 @@ def _build_server(graph_path: str):
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",
+            *attrs_line,
         ])
 
     def _tool_get_neighbors(arguments: dict) -> str:
-        label = arguments["label"].lower()
+        raw = _node_arg(arguments)
+        if not raw:
+            return "Provide a node label or id (accepted keys: label, node_id, id)."
+        label = raw.lower()
         rel_filter = arguments.get("relation_filter", "").lower()
         nid, err = _resolve_single_node(G, label)
         if err:

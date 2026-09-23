@@ -140,6 +140,58 @@ def test_ts_export_star_from_index_resolves_imported_symbol_to_origin(tmp_path: 
     assert _has_symbol_edge(result, "src/routes/page.ts", "src/lib/foo.ts", "Foo")
 
 
+def test_ts_export_star_skips_same_named_interface_method_and_binds_the_function(tmp_path: Path):
+    # #3436: `export *` can only forward top-level bindings. When the first
+    # star target declares an interface with a METHOD of the same bare name as a
+    # function exported by a later star target, the imported name must bind to
+    # the function, and the call must land on it -- not on the method node.
+    types = _write(
+        tmp_path / "packages/domain/src/types.ts",
+        "export interface Rule {\n  code: string\n  evaluate(ctx: number): string | null\n}\n",
+    )
+    engine = _write(
+        tmp_path / "packages/domain/src/engine.ts",
+        "import type { Rule } from './types.js'\n\n"
+        "export function evaluate(rules: readonly Rule[], ctx: number): string[] {\n"
+        "  return rules.map((rule) => rule.evaluate(ctx)).filter((f) => f !== null)\n"
+        "}\n",
+    )
+    barrel = _write(
+        tmp_path / "packages/domain/src/index.ts",
+        "export * from './types.js'\nexport * from './engine.js'\n",
+    )
+    consumer = _write(
+        tmp_path / "packages/api/src/cache.ts",
+        "import { evaluate } from '../../domain/src/index.js'\n"
+        "import type { Rule } from '../../domain/src/index.js'\n\n"
+        "export function warm(rules: readonly Rule[]): string[] {\n"
+        "  return evaluate(rules, 1)\n"
+        "}\n",
+    )
+
+    result = _extract_for([types, engine, barrel, consumer], tmp_path)
+
+    assert _has_symbol_edge(
+        result, "packages/api/src/cache.ts", "packages/domain/src/engine.ts", "evaluate"
+    )
+    assert _has_symbol_to_symbol_edge(
+        result,
+        "packages/api/src/cache.ts",
+        "warm",
+        "packages/domain/src/engine.ts",
+        "evaluate",
+        "calls",
+    )
+    assert _has_no_symbol_to_symbol_edge(
+        result,
+        "packages/api/src/cache.ts",
+        "warm",
+        "packages/domain/src/types.ts",
+        "rule_evaluate",
+        "calls",
+    )
+
+
 @pytest.mark.parametrize("suffix", ["ts", "js"])
 def test_js_namespace_reexport_import_targets_real_binding(
     tmp_path: Path,
@@ -1613,3 +1665,218 @@ def test_ambiguous_barrel_reexport_chain_does_not_guess(tmp_path, monkeypatch):
     }
     assert _make_id(_file_stem(Path("src/lib/a.ts")), "dup") in reexport_targets
     assert _make_id(_file_stem(Path("src/lib/b.ts")), "dup") in reexport_targets
+
+
+# ── #3487: the exports-map condition must follow the importer ────────────────
+
+
+def _write_workspace_package(root: Path, name: str, exports: dict | str) -> None:
+    _write(
+        root / "pnpm-workspace.yaml",
+        "packages:\n  - 'apps/*'\n  - 'packages/*'\n",
+    )
+    _write(
+        root / "packages/pkg-a/package.json",
+        json.dumps({"name": name, "exports": exports}),
+    )
+
+
+def test_export_types_condition_never_beats_a_real_runtime_target(tmp_path: Path):
+    """#3487 detail 1. `types` points into unbuilt `dist/`, so resolving to it
+    produces an edge to a node that does not exist — and because that target is
+    what got returned, the `default` source beside it was never tried."""
+    _write_workspace_package(tmp_path, "@example/pkg-a", {
+        "./browser": {
+            "types": "./dist/browser.d.ts",
+            "default": "./src/browser.ts",
+        },
+    })
+    target = _write(
+        tmp_path / "packages/pkg-a/src/browser.ts",
+        'export const value = "ok"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a/browser'\nexport const v = value\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/browser.ts")
+
+
+def test_export_types_loses_even_when_the_declaration_exists(tmp_path: Path):
+    """The lock on the ordering itself: `types` is a declaration, so it must not
+    win merely because `dist/` happens to be present in the corpus."""
+    _write_workspace_package(tmp_path, "@example/pkg-a", {
+        "./browser": {
+            "types": "./dist/browser.d.ts",
+            "default": "./src/browser.ts",
+        },
+    })
+    declaration = _write(
+        tmp_path / "packages/pkg-a/dist/browser.d.ts",
+        "export declare const value: string\n",
+    )
+    target = _write(
+        tmp_path / "packages/pkg-a/src/browser.ts",
+        'export const value = "ok"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a/browser'\nexport const v = value\n",
+    )
+
+    result = _extract_for([declaration, target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/browser.ts")
+    assert not _has_edge(
+        result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/browser.d.ts"
+    )
+
+
+def test_export_react_native_condition_selected_for_native_importer(tmp_path: Path):
+    """#3487 detail 2. `react-native` is a custom condition, so it applies to the
+    importer that opts into it rather than to the package as a whole."""
+    _write_workspace_package(tmp_path, "@example/pkg-a", {
+        "./Icon": {
+            "types": "./dist/Icon.d.ts",
+            "react-native": "./src/Icon.native.tsx",
+            "default": "./src/Icon.web.tsx",
+        },
+    })
+    native_target = _write(
+        tmp_path / "packages/pkg-a/src/Icon.native.tsx",
+        "export function Icon() { return null }\n",
+    )
+    web_target = _write(
+        tmp_path / "packages/pkg-a/src/Icon.web.tsx",
+        "export function Icon() { return null }\n",
+    )
+    importer = _write(
+        tmp_path / "apps/mobile/src/App.tsx",
+        "import { Icon } from '@example/pkg-a/Icon'\nexport const a = Icon\n",
+    )
+
+    result = _extract_for([native_target, web_target, importer], tmp_path)
+
+    assert _has_edge(
+        result, "apps/mobile/src/App.tsx", "packages/pkg-a/src/Icon.native.tsx"
+    )
+    assert not _has_edge(
+        result, "apps/mobile/src/App.tsx", "packages/pkg-a/src/Icon.web.tsx"
+    )
+
+
+def test_export_react_native_condition_ignored_for_web_importer(tmp_path: Path):
+    """The other half of detail 2: a web importer resolves through `default`, or
+    the native file is attributed to code that never imports it."""
+    _write_workspace_package(tmp_path, "@example/pkg-a", {
+        "./Icon": {
+            "react-native": "./src/Icon.native.tsx",
+            "default": "./src/Icon.web.tsx",
+        },
+    })
+    native_target = _write(
+        tmp_path / "packages/pkg-a/src/Icon.native.tsx",
+        "export function Icon() { return null }\n",
+    )
+    web_target = _write(
+        tmp_path / "packages/pkg-a/src/Icon.web.tsx",
+        "export function Icon() { return null }\n",
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/Page.tsx",
+        "import { Icon } from '@example/pkg-a/Icon'\nexport const a = Icon\n",
+    )
+
+    result = _extract_for([native_target, web_target, importer], tmp_path)
+
+    assert _has_edge(
+        result, "apps/web/src/Page.tsx", "packages/pkg-a/src/Icon.web.tsx"
+    )
+    assert not _has_edge(
+        result, "apps/web/src/Page.tsx", "packages/pkg-a/src/Icon.native.tsx"
+    )
+
+
+def test_export_wildcard_target_absent_falls_through_to_platform_sibling(tmp_path: Path):
+    """#3487 detail 3. `./src/controls/*.tsx` names `BottomNav.tsx`, which does
+    not exist — a bundler reaches `BottomNav.web.tsx` through its platform list,
+    and the import must not be dropped for naming a file that was never there."""
+    _write_workspace_package(tmp_path, "@example/pkg-a", {
+        "./controls/*": {"default": "./src/controls/*.tsx"},
+    })
+    target = _write(
+        tmp_path / "packages/pkg-a/src/controls/BottomNav.web.tsx",
+        "export function BottomNav() { return null }\n",
+    )
+    other = _write(
+        tmp_path / "packages/pkg-a/src/controls/BottomNav.native.tsx",
+        "export function BottomNav() { return null }\n",
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.tsx",
+        "import { BottomNav } from '@example/pkg-a/controls/BottomNav'\n"
+        "export const b = BottomNav\n",
+    )
+
+    result = _extract_for([target, other, importer], tmp_path)
+
+    assert _has_edge(
+        result,
+        "apps/web/src/consumer.tsx",
+        "packages/pkg-a/src/controls/BottomNav.web.tsx",
+    )
+
+
+def test_export_rejected_target_still_falls_back_to_the_bare_path(tmp_path: Path):
+    """A rejected (escaping) target must not consume the import: resolution
+    still reaches the bare-path fallback, which is a real file here."""
+    _write_workspace_package(tmp_path, "@example/pkg-a", {
+        "./widget": "../../../../secret.ts",
+    })
+    outside = _write(tmp_path / "secret.ts", "export const leak = 1\n")
+    target = _write(
+        tmp_path / "packages/pkg-a/widget.ts",
+        'export const value = "ok"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a/widget'\nexport const v = value\n",
+    )
+
+    result = _extract_for([outside, target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/widget.ts")
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "secret.ts")
+
+
+def test_export_bare_root_types_condition_falls_through_to_default(tmp_path: Path):
+    """The bare-root form carries the same defect: `import { x } from
+    '@scope/pkg'` resolved to the `types` target and stopped there."""
+    _write(tmp_path / "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "exports": {
+                ".": {
+                    "types": "./dist/index.d.ts",
+                    "default": "./src/index.ts",
+                },
+            },
+        }),
+    )
+    target = _write(
+        tmp_path / "packages/pkg-a/src/index.ts",
+        'export const value = "ok"\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\nexport const v = value\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/index.ts")

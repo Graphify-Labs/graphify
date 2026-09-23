@@ -27,6 +27,7 @@ import os
 import re
 import sys
 import unicodedata
+from collections.abc import Iterable
 from pathlib import Path
 import networkx as nx
 from .ids import make_id, normalize_id as _normalize_id
@@ -61,6 +62,80 @@ def _is_ast_tier(item: dict) -> bool:
 # cross-axis judgement, whereas "specific beats generic" is the only comparison
 # this collapse actually needs.
 _GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"})
+_CONFIDENCE_RANK: dict[str, int] = {"EXTRACTED": 3, "INFERRED": 2, "AMBIGUOUS": 1}
+
+# Import-family relations whose target may legitimately be a module OUTSIDE the
+# graph (stdlib, a third-party dependency, another repo). Historically the edge
+# to such a target was dropped, which left the in-memory graph clean but let the
+# on-disk graph.json (written by the incremental update path) keep the edge with
+# no matching node — an undeclared endpoint every loader materialises as an
+# attribute-less phantom (#2873). For these relations we instead mint a typed
+# external stub node so every edge endpoint resolves. Deliberately NOT `calls`:
+# a sourceless external call target is suppressed on purpose (#3156) to avoid a
+# phantom god-node, and that policy is unchanged here.
+_EXTERNAL_STUB_RELATIONS: frozenset[str] = frozenset(
+    {"imports", "imports_from", "re_exports"}
+)
+
+
+def _mint_external_stub(G: "nx.Graph", node_set: set, nid: str) -> None:
+    """Add a leaf node for an external import target so the edge is not dangling.
+
+    The node is tagged ``external`` (and ``file_type='concept'`` so the schema
+    validator and community/report code treat it as a non-source concept rather
+    than warning on a missing ``file_type``). ``merge-graphs`` reads the
+    ``external`` flag to keep these ids global instead of namespacing them per
+    repo, so the same stdlib/dependency module unifies across repos (#2873).
+    """
+    if nid in node_set:
+        return
+    G.add_node(
+        nid,
+        label=nid,
+        file_type="concept",
+        type="external",
+        external=True,
+        source_file="",
+    )
+    node_set.add(nid)
+
+
+def mint_external_stubs_in_data(data: dict) -> None:
+    """Mint external stub nodes for import-family links with an undeclared target.
+
+    The ``--no-cluster`` / incremental write path serializes the raw merged
+    extraction directly rather than going through :func:`build_from_json`, so it
+    needs the same stubbing to keep the on-disk graph.json free of undeclared
+    edge endpoints (#2873). Idempotent: a graph already carrying its stubs (from
+    a prior run or the clustered path) is left unchanged.
+    """
+    nodes = data.get("nodes")
+    links = data.get("links")
+    if not isinstance(links, list):
+        links = data.get("edges")
+    if not isinstance(nodes, list) or not isinstance(links, list):
+        return
+    declared = {n.get("id") for n in nodes if isinstance(n, dict)}
+    minted: set[str] = set()
+    for e in links:
+        if not isinstance(e, dict) or e.get("relation") not in _EXTERNAL_STUB_RELATIONS:
+            continue
+        src, tgt = e.get("source"), e.get("target")
+        if (
+            src in declared
+            and isinstance(tgt, str)
+            and tgt not in declared
+            and tgt not in minted
+        ):
+            nodes.append({
+                "id": tgt,
+                "label": tgt,
+                "file_type": "concept",
+                "type": "external",
+                "external": True,
+                "source_file": "",
+            })
+            minted.add(tgt)
 
 # Language interop families, keyed by extension, for the cross-language phantom-edge
 # guard in the edge loop below. Families group by REAL interop (JS/TS share a module
@@ -440,8 +515,9 @@ def _infer_merge_root(graph_path: Path) -> str | None:
         marker = parent / ".graphify_root"
         if marker.exists():
             recorded = marker.read_text(encoding="utf-8-sig").strip()
-            if recorded:
-                return str(Path(recorded).resolve())
+            recorded_path = Path(recorded)
+            if recorded and recorded_path.is_dir():
+                return str(recorded_path.resolve())
     except OSError:
         pass
     from .paths import GRAPHIFY_OUT
@@ -994,6 +1070,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     _loc_collisions: set[tuple[str, str]] = set()  # keys shared by 2+ AST nodes
     _noloc_nodes: dict[tuple[str, str], str] = {}  # (source_file, label) -> ghost node id
     _ast_file_nodes: list[tuple[str, str]] = []  # (node_id, source_file) for AST file-self nodes (#3344)
+    _ast_method_nodes: dict[tuple[str, str], list[str]] = {}  # (source_file, norm_method) -> [ast_nid, ...]
 
     # Pass 1: collect canonical nodes — AST-origin nodes take precedence over LLM nodes.
     # When 2+ AST nodes share a key (same-named symbols in same-named files across
@@ -1050,6 +1127,14 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 # Pass 2b below can catch these by label alone.
                 if _is_file_node_label(label, sf):
                     _ast_file_nodes.append((nid, sf))
+                # Only a method-shaped label (`.name()`) is a method-ghost
+                # candidate — gate on BOTH the leading dot and the `()` suffix so
+                # a dotfile label like `.env` is never mistaken for a method
+                # (#3705 follow-up). Key on the normalized name for parity with
+                # the alias index below and the rest of the dedup passes.
+                if label.startswith(".") and label.endswith("()"):
+                    m_name = make_id(label.removeprefix(".").removesuffix("()"))
+                    _ast_method_nodes.setdefault((sf, m_name), []).append(nid)
             else:
                 # First non-AST node for this (file, label) wins as canonical; a
                 # later same-key node is a genuine same-file duplicate and still
@@ -1057,6 +1142,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 _loc_nodes.setdefault(key, nid)
 
     # Pass 2: find ghosts — non-AST nodes that have an AST canonical twin.
+    _ghost_remap: dict[str, str] = {}  # ghost_id -> canonical_id
     for nid in sorted(node_set):
         attrs = G.nodes[nid]
         if attrs.get("_origin") == "ast":
@@ -1070,8 +1156,16 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             continue  # ambiguous key: no safe canonical winner, leave ghost intact
         if key in _loc_nodes and _loc_nodes[key] != nid:
             _noloc_nodes[key] = nid
+        elif key not in _loc_nodes:
+            # Spec-conformant method ghost omitting class segment / leading dot
+            # (#3705). Normalize the same way the index was built so raw-label
+            # casing/punctuation differences still match; remap only on a single
+            # unambiguous AST-method candidate.
+            m_name = make_id(label.removeprefix(".").removesuffix("()"))
+            m_candidates = _ast_method_nodes.get((sf, m_name), [])
+            if len(m_candidates) == 1:
+                _ghost_remap[nid] = m_candidates[0]
     # For every ghost that has an AST counterpart, record a remap.
-    _ghost_remap: dict[str, str] = {}  # ghost_id -> canonical_id
     for key, sem_id in _noloc_nodes.items():
         ast_id = _loc_nodes.get(key)
         if ast_id is not None:
@@ -1172,6 +1266,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             alias = old_stem + suffix
             _alias_candidates.setdefault(_normalize_id(alias), set()).add(nid)
             _alias_candidates.setdefault(alias, set()).add(nid)
+        if attrs.get("_origin") == "ast" and str(attrs.get("label", "")).startswith("."):
+            m_name = make_id(str(attrs.get("label", "")).strip().removeprefix(".").removesuffix("()"))
+            m_alias = f"{new_stem}_{m_name}"
+            if _normalize_id(nid) != _normalize_id(m_alias):
+                _alias_candidates.setdefault(_normalize_id(m_alias), set()).add(nid)
+                _alias_candidates.setdefault(m_alias, set()).add(nid)
     for alias_key, candidates in _alias_candidates.items():
         if len(candidates) == 1:
             norm_to_id.setdefault(alias_key, next(iter(candidates)))
@@ -1213,7 +1313,23 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if tgt not in node_set:
             tgt = norm_to_id.get(_normalize_id(tgt), tgt)
         if src not in node_set or tgt not in node_set:
-            continue  # skip edges to external/stdlib nodes - expected, not an error
+            # An import/re-export whose target is not a declared node points at
+            # an external module (stdlib / third-party / another repo). Mint a
+            # typed external stub so the on-disk graph.json has no undeclared
+            # endpoint (#2873), rather than dropping the edge and leaving loaders
+            # to materialise an attribute-less phantom. Only the missing *target*
+            # of an import-family edge is stubbed; a dangling source, or a
+            # missing endpoint on any other relation (e.g. a sourceless external
+            # call target, suppressed by #3156), is still dropped.
+            if (
+                edge.get("relation") in _EXTERNAL_STUB_RELATIONS
+                and src in node_set
+                and tgt not in node_set
+                and isinstance(tgt, str)
+            ):
+                _mint_external_stub(G, node_set, tgt)
+            else:
+                continue  # external/stdlib target on a non-import relation - expected
         # `target_file` is a transient import-disambiguation salt hint (#1814)
         # with no downstream reader; it holds an absolute path, so it must never
         # be persisted. Disambiguation already pops it off fresh extractions —
@@ -1323,13 +1439,32 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # fact does. The reverse (specific arriving after generic) still
         # overwrites, so the outcome no longer depends on edge order at all.
         if G.has_edge(src, tgt):
-            existing_rel = edge_data(G, src, tgt).get("relation")
+            existing_attrs = edge_data(G, src, tgt)
+            existing_rel = existing_attrs.get("relation")
             if (
                 attrs.get("relation") in _GENERIC_RELATIONS
                 and existing_rel is not None
                 and existing_rel not in _GENERIC_RELATIONS
             ):
                 continue
+            if existing_rel == attrs.get("relation"):
+                existing_conf = existing_attrs.get("confidence")
+                incoming_conf = attrs.get("confidence")
+                existing_rank = _CONFIDENCE_RANK.get(existing_conf, 0)
+                incoming_rank = _CONFIDENCE_RANK.get(incoming_conf, 0)
+                if existing_rank > incoming_rank:
+                    continue
+                if existing_rank == incoming_rank:
+                    if existing_attrs.get("source_location") and not attrs.get("source_location"):
+                        continue
+                    existing_score = existing_attrs.get("confidence_score")
+                    incoming_score = attrs.get("confidence_score")
+                    if (
+                        existing_score is not None
+                        and incoming_score is not None
+                        and existing_score > incoming_score
+                    ):
+                        continue
         G.add_edge(src, tgt, **attrs)
     hyperedges = extraction.get("hyperedges", [])
     if hyperedges:
@@ -1401,6 +1536,7 @@ def build(
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
     root: str | Path | None = None,
+    protected_ids: "set[str] | None" = None,
 ) -> nx.Graph:
     """Merge multiple extraction results into one graph.
 
@@ -1410,6 +1546,8 @@ def build(
     dedup_llm_backend: if set (e.g. "gemini", "claude", or "kimi"), uses LLM to resolve
         ambiguous pairs in the 75–92 Jaro-Winkler score zone.
     root: if given, absolute source_file paths are made relative to root (#932).
+    protected_ids: optional set of node IDs to protect from being collapsed with
+        other protected nodes during incremental merge (#3477).
 
     With dedup disabled, extractions are merged in order and the last node's
     attributes win (NetworkX add_node overwrites). With dedup enabled, nodes
@@ -1425,6 +1563,7 @@ def build(
         combined["hyperedges"].extend(ext.get("hyperedges", []))
         combined["input_tokens"] += ext.get("input_tokens", 0)
         combined["output_tokens"] += ext.get("output_tokens", 0)
+    _root = str(Path(root).resolve()) if root else None
     if dedup and combined["nodes"]:
         # Numeric ids must be str before dedup, which keys on them and would
         # raise TypeError in _pick_winner's regex search (#2326). build_from_json
@@ -1437,14 +1576,24 @@ def build(
         for n in combined["nodes"]:
             if isinstance(n, dict):
                 _fold_node_aliases(n)
+                # Normalize source_file and definition_file to the build root before
+                # deduplication (#3472), so exact-ID collision checks and same-file
+                # attribute merging operate on canonical repo-relative paths rather
+                # than false-flagging absolute paths from semantic subagents as
+                # different files.
+                if "source_file" in n:
+                    n["source_file"] = _norm_source_file(n["source_file"], _root)
+                if "definition_file" in n:
+                    n["definition_file"] = _norm_source_file(n["definition_file"], _root)
         combined["nodes"], combined["edges"] = deduplicate_entities(
             combined["nodes"], combined["edges"], communities={},
-            dedup_llm_backend=dedup_llm_backend, root=root,
+            dedup_llm_backend=dedup_llm_backend, root=_root,
             # Hyperedge members reference node ids too, so they need the same
             # survivor rewiring the edges get (#2805).
             hyperedges=combined.get("hyperedges"),
+            protected_ids=protected_ids,
         )
-    return build_from_json(combined, directed=directed, root=root)
+    return build_from_json(combined, directed=directed, root=_root)
 
 
 def _norm_label(label: str | None) -> str:
@@ -2011,13 +2160,40 @@ def build_merge(
                 continue  # the new chunks re-emitted it — theirs wins
             carried.append(he)
 
+    # Remove replaced deleted-source records before entity dedup can choose their stale
+    # provenance over a freshly emitted node with the same ID. A Terraform
+    # directory anchor, for example, survives deletion of its first .tf file
+    # with a new source_file; pruning only AFTER build would delete the live
+    # anchor too if dedup selected the old record.
+    if prune_sources:
+        fresh_ids = {n.get("id") for chunk in new_chunks for n in chunk.get("nodes", [])}
+        existing_nodes = [
+            n for n in existing_nodes
+            if not (n.get("id") in fresh_ids and _prune_match(n.get("source_file")))
+        ]
+        # Other deleted records and edges stay until the normal prune below:
+        # it needs their connectivity to identify newly orphaned import stubs.
+
     base = (
         [{"nodes": existing_nodes, "edges": existing_edges, "hyperedges": carried_hyperedges}]
         if had_graph else []
     )
 
+    # Untouched existing nodes must not be collapsed with each other during dedup (#3477).
+    _protected_ids = {
+        n["id"] for n in existing_nodes
+        if isinstance(n, dict) and n.get("id")
+    } if had_graph else None
+
     all_chunks = base + list(new_chunks)
-    G = build(all_chunks, directed=directed, dedup=dedup, dedup_llm_backend=dedup_llm_backend, root=root)
+    G = build(
+        all_chunks,
+        directed=directed,
+        dedup=dedup,
+        dedup_llm_backend=dedup_llm_backend,
+        root=_eff_root,
+        protected_ids=_protected_ids,
+    )
 
     # Prune nodes and edges from deleted source files
     if prune_sources:
@@ -2198,9 +2374,20 @@ def prefix_graph_for_global(
     collide and the aggregated community view fuses unrelated communities
     into one meta-node (#3014). 0 (the default) leaves communities untouched.
     """
-    relabel = {n: f"{repo_tag}::{n}" for n in G.nodes}
+    # External stubs (stdlib / third-party modules, #2873) are GLOBAL
+    # identifiers, not repo-local: leaving their id unprefixed lets the same
+    # module unify into one node across repos instead of fragmenting into
+    # repoA::typing / repoB::typing, which is exactly the "which repos depend on
+    # X" question a cross-repo merge exists to answer.
+    relabel = {
+        n: f"{repo_tag}::{n}"
+        for n, d in G.nodes(data=True)
+        if not d.get("external")
+    }
     H = nx.relabel_nodes(G, relabel, copy=True)
     for node, data in H.nodes(data=True):
+        if data.get("external"):
+            continue  # global id, belongs to no single repo — no repo/local_id tag
         data["repo"] = repo_tag
         data.setdefault("local_id", node.split("::", 1)[1])
         cid = data.get("community")
