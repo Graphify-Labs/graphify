@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-
-from tree_sitter import Node
+from typing import TYPE_CHECKING, Any
 
 from graphify.extractors.base import _make_id, _read_text
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
 
 # Pragmas that take a `use NAME ...;` shape but name no real project/CPAN
@@ -139,6 +140,7 @@ def extract_perl(path: Path) -> dict:
     edges: list[dict[str, Any]] = []
     raw_calls: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    node_by_id: dict[str, dict[str, Any]] = {}
     seen_edges: set[tuple[str, str, str]] = set()
     # (package name) -> {sub name: function nid}, scoped per package for the
     # same-file direct call resolution pass below.
@@ -172,6 +174,7 @@ def extract_perl(path: Path) -> dict:
             if callable_node:
                 item["_callable"] = True
             nodes.append(item)
+            node_by_id[nid] = item
         return nid
 
     def add_edge(
@@ -204,8 +207,16 @@ def extract_perl(path: Path) -> dict:
         )
 
     def add_package(name: str, node: Node) -> str:
-        package_id = add_node(
-            _make_id("perl", "package", name), name, node,
+        package_id = _make_id("perl", "package", name)
+        stub = node_by_id.get(package_id)
+        if stub is not None and "source_file" not in stub:
+            # Referenced (use/parent/@ISA/require) before its definition in
+            # this file: upgrade the external stub to the real definition.
+            stub["source_file"] = source_file
+            stub["source_location"] = f"L{node.start_point[0] + 1}"
+            stub["metadata"]["package"] = name
+        add_node(
+            package_id, name, node,
             kind="package", metadata={"package": name},
         )
         package_functions.setdefault(name, {})

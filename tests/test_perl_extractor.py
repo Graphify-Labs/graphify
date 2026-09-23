@@ -200,3 +200,34 @@ def test_perl_missing_parser_reports_install_hint(tmp_path, monkeypatch, capsys)
 
     assert result["nodes"] == []
     assert 'pip install "graphifyy[perl]"' in capsys.readouterr().err
+
+
+def test_perl_package_defined_after_reference_is_source_backed(tmp_path):
+    source = tmp_path / "zoo.pl"
+    source.write_text(
+        "package Dog;\n"
+        "use parent -norequire, 'Animal';\n"
+        "sub bark { return Animal::speak(); }\n"
+        "package Animal;\n"
+        "sub speak { return 1; }\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    animal = next(node for node in result["nodes"] if node["label"] == "Animal")
+    dog = next(node for node in result["nodes"] if node["label"] == "Dog")
+    assert animal["source_file"] == dog["source_file"]
+    assert animal["source_location"] == "L4"
+    assert animal["metadata"]["package"] == "Animal"
+    assert ("Dog", "Animal") in _edge_labels(result, "inherits")
+    assert ("zoo.pl", "Animal") in _edge_labels(result, "contains")
+
+
+def test_perl_extractor_module_imports_without_tree_sitter(monkeypatch):
+    import importlib
+
+    monkeypatch.setitem(sys.modules, "tree_sitter", None)
+    monkeypatch.delitem(sys.modules, "graphify.extractors.perl", raising=False)
+    module = importlib.import_module("graphify.extractors.perl")
+    assert callable(module.extract_perl)
