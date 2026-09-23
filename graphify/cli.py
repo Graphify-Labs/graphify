@@ -1750,7 +1750,10 @@ def dispatch_command(cmd: str) -> None:
             for rival in rivals:
                 print(f"  {G.nodes[rival].get('source_file') or rival}")
                 print(f"    id: {rival}")
-            print("Retry with the repo-relative path or the full node id.")
+            print(
+                f"Retry with path::symbol using one of the paths above (e.g. "
+                f"<path>::{label}) or the full node id."
+            )
             sys.exit(1)
         nid = matches[0]
         d = G.nodes[nid]
@@ -2980,19 +2983,63 @@ def dispatch_command(cmd: str) -> None:
         # per-node attribute had the right data all along. Reconstruct from
         # the graph itself so downstream subcommands (html, obsidian, wiki,
         # svg, graphml, neo4j) don't silently produce a degraded artifact.
+        #
+        # Computed unconditionally now (#2386), not just when the sidecar is
+        # missing: the sidecar can also be STALE (present but describing an
+        # earlier clustering pass, since update/watch never regenerate it),
+        # which looks identical from the outside but used to take the other
+        # branch below and silently keep the fossil.
+        reconstructed: dict[int, list[str]] = {}
+        for node_id, data in G.nodes(data=True):
+            cid_raw = data.get("community")
+            if cid_raw is None:
+                continue
+            try:
+                cid = int(cid_raw)
+            except (TypeError, ValueError):
+                continue
+            reconstructed.setdefault(cid, []).append(str(node_id))
         if not communities:
-            reconstructed: dict[int, list[str]] = {}
-            for node_id, data in G.nodes(data=True):
-                cid_raw = data.get("community")
-                if cid_raw is None:
-                    continue
-                try:
-                    cid = int(cid_raw)
-                except (TypeError, ValueError):
-                    continue
-                reconstructed.setdefault(cid, []).append(str(node_id))
             if reconstructed:
                 communities = reconstructed
+        elif reconstructed:
+            # #2386: the sidecar EXISTS but can still be stale, since
+            # update/watch advance graph.json's per-node community attribute
+            # without ever regenerating .graphify_analysis.json. Cheap,
+            # unambiguous signal: compare each side's partition (its set of
+            # community blocks), not the community ids themselves (those can
+            # renumber run to run even for the same partition, #1667) and not
+            # just the flat node-id set either (a merge, split, or a node
+            # moving between communities can leave the overall node set
+            # unchanged while still describing a different partition). A
+            # mismatch means the sidecar was written by an earlier
+            # clustering pass, so prefer the fresh reconstruction instead of
+            # silently exporting a degraded artifact against a clustering
+            # that no longer agrees with it.
+            sidecar_partition = {frozenset(str(n) for n in nodes) for nodes in communities.values()}
+            fresh_partition = {frozenset(nodes) for nodes in reconstructed.values()}
+            if sidecar_partition != fresh_partition:
+                sidecar_node_count = len({n for block in sidecar_partition for n in block})
+                fresh_node_count = len({n for block in fresh_partition for n in block})
+                print(
+                    f"warning: {analysis_path} is stale ({sidecar_node_count} node(s) "
+                    f"recorded vs {fresh_node_count} in graph.json) — reconstructing "
+                    "communities from graph.json instead. Run `graphify cluster-only .` "
+                    "to refresh the sidecar and its cohesion/god-node data.",
+                    file=sys.stderr,
+                )
+                communities = reconstructed
+                from graphify.cluster import score_all as _score_all_export
+                from graphify.analyze import god_nodes as _god_nodes_export
+                cohesion = _score_all_export(G, communities)
+                # god_nodes ranks purely by graph degree, independent of the
+                # community partition, so recompute it directly here instead
+                # of clearing it to an empty list and relying on the wiki
+                # subcommand's own "if not gods_data: recompute" fallback
+                # further down — that fallback happens to cover the only
+                # current consumer, but silently drops real data for any
+                # future one that reads gods_data without the same guard.
+                gods_data = _god_nodes_export(G)
 
         labels: dict[int, str] = {}
         if labels_path.exists():
@@ -3126,7 +3173,12 @@ def dispatch_command(cmd: str) -> None:
             if not source:
                 print("Usage: graphify global add <graph.json> [--as <repo-tag>]", file=sys.stderr)
                 sys.exit(1)
-            tag = tag or source.parent.parent.name
+            if not tag:
+                # Inferred through merge-graphs' own helper, which degrades to "repo"
+                # instead of "": an empty tag prunes by "" and registers a manifest
+                # entry no later add can address.
+                from graphify.build import distinct_repo_tags
+                tag = distinct_repo_tags([source.absolute()])[0]
             try:
                 result = _global_add(source, tag)
                 if result["skipped"]:
@@ -3140,9 +3192,11 @@ def dispatch_command(cmd: str) -> None:
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr); sys.exit(1)
         elif subcmd == "remove":
-            tag = sys.argv[3] if len(sys.argv) > 3 else ""
-            if not tag:
+            # An omitted tag is a usage error; an explicitly empty one still has to be
+            # addressable, since earlier versions could register a repo under "".
+            if len(sys.argv) <= 3:
                 print("Usage: graphify global remove <repo-tag>", file=sys.stderr); sys.exit(1)
+            tag = sys.argv[3]
             try:
                 removed = _global_remove(tag)
                 print(f"Removed '{tag}' from global graph ({removed} nodes pruned).")
@@ -3731,6 +3785,13 @@ def dispatch_command(cmd: str) -> None:
         if detection.get("walk_errors"):
             _extraction_incomplete = True
 
+        if incremental_mode:
+            from graphify.extractors.terraform import refresh_terraform_paths
+            code_files = refresh_terraform_paths(
+                code_files, [Path(p) for p in files_by_type.get("code", [])],
+                [Path(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]],
+            )
+
         # AST extraction on code files. Empty code list (docs-only corpus) is
         # the issue #698 case — skip cleanly instead of crashing inside extract().
         ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
@@ -3749,9 +3810,9 @@ def dispatch_command(cmd: str) -> None:
             # cross-file resolvers cannot see a callee living in an unchanged
             # file and every changed->unchanged call edge silently vanished on
             # merge. Hand extract() read-only resolution context from the
-            # persisted graph: its AST-tier nodes (with their `_callable`/
-            # `_callable_class` markers, #2438) plus the contains/method edges
-            # the member-call resolvers walk (#2437), scoped to the UNCHANGED
+            # persisted graph: its AST-tier nodes (including bounded resolver
+            # metadata) plus the structural edges the resolvers walk, scoped to
+            # the UNCHANGED
             # live corpus — never a re-extracted, deleted, or excluded file, so
             # stale symbols cannot resurrect. Fails open (changed-batch-only
             # resolution, the pre-fix behavior) on an unreadable graph.
@@ -3787,6 +3848,7 @@ def dispatch_command(cmd: str) -> None:
                         for f in _flist
                     }
                     _ctx_live.discard(None)
+                    _ctx_live.difference_update(_ctx_identity(p) for p in code_files)
                     for _node in _ctx_graph.get("nodes", []):
                         if not _node.get("id") or not _ctx_is_ast_tier(_node):
                             continue
@@ -3800,26 +3862,80 @@ def dispatch_command(cmd: str) -> None:
                             "file_type": _node.get("file_type"),
                             "type": _node.get("type"),
                         }
-                        for _marker in ("_callable", "_callable_class"):
+                        # Keep bounded resolver identity for unchanged nodes;
+                        # these markers cannot be reconstructed from labels.
+                        for _marker in (
+                            "_callable", "_callable_class", "_elixir_module",
+                            "_rust_impl_key", "_rust_declaration_count",
+                        ):
                             if _node.get(_marker):
                                 _ctx_node[_marker] = _node[_marker]
+                        _metadata = _node.get("metadata")
+                        if isinstance(_metadata, dict):
+                            _fwd_metadata = {
+                                key: _metadata[key]
+                                for key in (
+                                    "ruby_resolution_schema",
+                                    "ruby_method_kind",
+                                    "ruby_lookup_unsafe",
+                                    "ruby_reopened",
+                                    "ruby_external_method_owners",
+                                    # Erlang remote-call resolution keys (#3714):
+                                    # an unchanged callee module must keep its
+                                    # module/name/arity so `foo:bar()` still
+                                    # resolves on an incremental rebuild.
+                                    "language",
+                                    "kind",
+                                    "module",
+                                    "name",
+                                    "arity",
+                                )
+                                if key in _metadata
+                            }
+                            if _fwd_metadata:
+                                _ctx_node["metadata"] = _fwd_metadata
                         _ctx_nodes.append(_ctx_node)
                     for _edge in _ctx_graph.get(
                         "links", _ctx_graph.get("edges", [])
                     ):
-                        if _edge.get("relation") not in ("contains", "method"):
+                        if _edge.get("relation") not in (
+                            "contains", "method", "inherits"
+                        ):
                             continue
                         if not _ctx_is_ast_tier(_edge):
                             continue
                         _sf = _edge.get("source_file")
                         if not _sf or _ctx_identity(_sf) not in _ctx_live:
                             continue
-                        _ctx_edges.append({
+                        _ctx_edge = {
                             "source": _edge.get("source"),
                             "target": _edge.get("target"),
                             "relation": _edge.get("relation"),
                             "source_file": _sf,
-                        })
+                        }
+                        _edge_metadata = _edge.get("metadata")
+                        if (
+                            isinstance(_edge_metadata, dict)
+                            and isinstance(
+                                _edge_metadata.get("ruby_superclass_ref"), str
+                            )
+                        ):
+                            _ctx_edge["metadata"] = {
+                                "ruby_superclass_ref": _edge_metadata[
+                                    "ruby_superclass_ref"
+                                ]
+                            }
+                            _lexical_scopes = _edge_metadata.get(
+                                "ruby_lexical_scopes"
+                            )
+                            if isinstance(_lexical_scopes, list) and all(
+                                isinstance(_scope, str)
+                                for _scope in _lexical_scopes
+                            ):
+                                _ctx_edge["metadata"]["ruby_lexical_scopes"] = list(
+                                    _lexical_scopes
+                                )
+                        _ctx_edges.append(_ctx_edge)
                 except Exception:
                     _ctx_nodes, _ctx_edges = [], []
                 if _ctx_nodes:
@@ -4075,6 +4191,14 @@ def dispatch_command(cmd: str) -> None:
             print("[graphify extract] introspecting Cargo workspace...")
             try:
                 cargo_result = introspect_cargo(target)
+            except FileNotFoundError:
+                # No Cargo.toml at the scan root is an ordinary condition
+                # (e.g. Tauri keeps its manifest under src-tauri/), not a
+                # failure — the AST pass already completed and cargo_result
+                # is already the empty, handled shape the merge below
+                # expects, so degrade instead of discarding that work (#3677).
+                print("[graphify extract] --cargo: no Cargo.toml at scan root, "
+                      "skipping crate edges")
             except (ConnectionError, ImportError, OSError) as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 sys.exit(1)

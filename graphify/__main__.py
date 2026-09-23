@@ -483,11 +483,56 @@ def _silence_broken_pipe() -> None:
     sys.exit(0)
 
 
+_HASHSEED_PINNED_COMMANDS = frozenset({"update", "extract", "cluster-only", "label"})
+
+
+def _pin_hash_seed_if_needed() -> None:
+    """Re-exec with PYTHONHASHSEED=0 for commands whose output must be
+    deterministic run-to-run (#3641).
+
+    PYTHONHASHSEED is read once at interpreter startup; setting it on
+    os.environ from inside an already-running process has no effect on that
+    process's own hash randomization, so pinning it requires restarting the
+    interpreter with it set from the start. The generated git hooks already
+    export it for exactly this reason: networkx's Louvain implementation
+    iterates string-keyed sets whose order is randomized per-process, so
+    community assignments otherwise churn between runs with no code change.
+    A bare `graphify update .` (which the CLAUDE.md template tells agents to
+    run after every code change) skipped this, re-clustering differently
+    every time and producing a large, spurious graphify-out diff.
+
+    Only re-execs for the commands whose output actually depends on
+    clustering, and only when the caller has not already set
+    PYTHONHASHSEED themselves — an explicit choice is left alone. Degrades
+    instead of raising if the re-exec itself fails, since an unusual host
+    that disallows it should still be able to run graphify, just without
+    this determinism guarantee.
+
+    Also does nothing under pytest: dozens of existing tests call main()
+    directly with a monkeypatched sys.argv to simulate a full CLI run in
+    process, an approach that only works because main() was previously
+    side-effect-free at the point it starts. A real os.execvpe there would
+    replace the test process running those tests, not something to launch
+    for real -- PYTEST_CURRENT_TEST is set by pytest for exactly the
+    duration of a running test's setup/call/teardown, so this only ever
+    skips the pin inside an actual test, never a real invocation.
+    """
+    if len(sys.argv) < 2 or sys.argv[1] not in _HASHSEED_PINNED_COMMANDS:
+        return
+    if "PYTHONHASHSEED" in os.environ or "PYTEST_CURRENT_TEST" in os.environ:
+        return
+    try:
+        os.execvpe(sys.executable, [sys.executable, *sys.argv], {**os.environ, "PYTHONHASHSEED": "0"})
+    except OSError:
+        pass
+
+
 def main() -> None:
     """Console entry point. Wraps the CLI so that when a downstream consumer closes
     stdout early, graphify treats it as success instead of crashing with an
     unhandled write-to-closed-pipe error and exit 255 — which made CI wrappers and
     agent harnesses read a successful query as a command failure (#1807)."""
+    _pin_hash_seed_if_needed()
     try:
         _run_cli()
         # Flush explicitly, inside the guard. Piped stdout is block-buffered, so a

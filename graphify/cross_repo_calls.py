@@ -165,6 +165,26 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
         return 0
     members_by_relation = _index_members(merged, type_ids)
 
+    # C# parked calls need the same namespace/using visibility check as C# type
+    # references. Without it, an unresolved third-party receiver such as
+    # `FluentValidation.IValidator` can bind to an unrelated `IValidator` that
+    # happens to be declared in one merged repository (#3360). Build this only
+    # when needed; the other parked languages use their existing suffix guard.
+    csharp_resolver = None
+    if any(
+        str(entry.get("lang") or "") == "csharp"
+        for _, data in parked_nodes
+        for entry in _parked_entries(data)
+    ):
+        from graphify.extractors.csharp import CsharpNameResolver
+
+        resolver_nodes = [dict(data, id=node) for node, data in merged.nodes(data=True)]
+        resolver_edges = [
+            dict(data, source=source, target=target)
+            for source, target, data in merged.edges(data=True)
+        ]
+        csharp_resolver = CsharpNameResolver(resolver_nodes, resolver_edges)
+
     added = 0
     for caller, caller_data in parked_nodes:
         caller_repo = caller_data.get("repo")
@@ -188,6 +208,17 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                 # The same guard the single-repo resolvers apply: two repos
                 # declaring the same name is an ambiguity, not a hit.
                 continue
+            if lang == "csharp":
+                # Reuse the extractor's authoritative C# visibility rules. A
+                # candidate is valid only when the caller's namespace, using,
+                # or alias resolves this exact receiver name to that node.
+                resolved, _decisive = csharp_resolver.resolve_type_name(
+                    receiver_type,
+                    dict(caller_data, id=caller),
+                    str(caller_data.get("source_file") or ""),
+                )
+                if resolved != candidates[0]:
+                    continue
             targets: list[str] = []
             for relation in _member_relations(lang):
                 targets = members_by_relation[relation].get((candidates[0], callee), [])

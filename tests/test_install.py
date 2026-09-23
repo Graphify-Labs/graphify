@@ -40,6 +40,37 @@ def test_install_default_claude(tmp_path):
     assert (tmp_path / ".claude" / "skills" / "graphify" / "SKILL.md").exists()
 
 
+def test_install_survives_a_winerror_17_replace(tmp_path, monkeypatch):
+    """#3508: installing SKILL.md failed on some Windows setups with WinError
+    17 ("cannot move to a different disk drive") from `os.replace`, even with
+    the temp file and destination in the same directory on the same drive.
+    WinError 17 is a plain OSError, not PermissionError, so the install's
+    atomic replace must fall back to copy-then-delete for it too.
+
+    Uses "aider" (a monolith platform, no references/ sidecar) so the only
+    os.replace this install performs is the SKILL.md file replace under test
+    -- a progressive platform's separate directory replace for references/
+    isn't covered by the same fallback and would fail this test for an
+    unrelated reason.
+    """
+    real_replace = os.replace
+
+    def flaky_replace(src, dst):
+        exc = OSError("cannot move to a different disk drive")
+        exc.winerror = 17
+        raise exc
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    try:
+        _install(tmp_path, "aider")
+    finally:
+        monkeypatch.setattr(os, "replace", real_replace)
+
+    skill = tmp_path / ".aider" / "graphify" / "SKILL.md"
+    assert skill.exists()
+    assert not any(p.name.endswith(".tmp") for p in skill.parent.iterdir())
+
+
 def test_install_claude_md_honors_claude_config_dir(tmp_path, monkeypatch):
     """#2694: with CLAUDE_CONFIG_DIR set, the always-on registration lands in
     $CLAUDE_CONFIG_DIR/CLAUDE.md — not the default ~/.claude/CLAUDE.md, which the
@@ -84,6 +115,173 @@ def test_install_claude_md_defaults_to_home_when_config_dir_unset(tmp_path, monk
     md = tmp_path / ".claude" / "CLAUDE.md"
     assert md.exists()
     assert "~/.claude/skills/graphify/SKILL.md" in md.read_text()
+
+
+def _deny_writes_to(target: Path, monkeypatch):
+    """Make write_text raise PermissionError for *target* only (simulates a
+    dotfile symlinked into a read-only store, e.g. /nix/store)."""
+    real_write_text = Path.write_text
+
+    def guarded(self, *args, **kwargs):
+        if self == target:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", guarded)
+
+
+def test_install_survives_unwritable_claude_md(tmp_path, monkeypatch, capsys):
+    """#3474: a read-only ~/.claude/CLAUDE.md must not abort the install.
+
+    install() copies the skill files first and registers the always-on block
+    afterwards, so an unguarded write left a half-completed install plus a
+    traceback on nix/home-manager, chezmoi and stow-with-read-only-sources.
+    """
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    target = home / ".claude" / "CLAUDE.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("# my rules\n")
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        _deny_writes_to(target, monkeypatch)
+        install(platform="claude")  # must not raise
+
+    assert (home / ".claude" / "skills" / "graphify" / "SKILL.md").exists(), (
+        "skill files should still be installed"
+    )
+    assert target.read_text() == "# my rules\n", "unwritable file must be untouched"
+    err = capsys.readouterr().err
+    assert "skipped" in err
+    assert "PermissionError" in err
+
+
+def test_install_survives_unwritable_codebuddy_md(tmp_path, monkeypatch, capsys):
+    """#3474 (same shape): an unwritable CODEBUDDY.md must not abort the install."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    target = home / ".codebuddy" / "CODEBUDDY.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("# my rules\n")
+
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        _deny_writes_to(target, monkeypatch)
+        install(platform="codebuddy")  # must not raise
+
+    assert (home / ".codebuddy" / "skills" / "graphify" / "SKILL.md").exists()
+    assert target.read_text() == "# my rules\n"
+    assert "skipped" in capsys.readouterr().err
+
+
+def test_install_claude_md_success_output_unchanged(tmp_path, monkeypatch, capsys):
+    """Regression guard: the writable path still reports the same messages."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    with patch("graphify.__main__.Path.home", return_value=home):
+        install(platform="claude")
+        first = capsys.readouterr().out
+        install(platform="claude")
+        second = capsys.readouterr().out
+
+    assert "  CLAUDE.md        ->  created at " in first
+    assert "  CLAUDE.md        ->  already registered (no change)" in second
+
+
+def test_install_claude_md_does_not_skip_on_an_unrelated_mention_of_the_word(tmp_path, monkeypatch):
+    """#3668: the idempotency guard used to be a bare `"graphify" in content`
+    substring check, so any pre-existing mention of the word anywhere in the
+    file (a note to self, an unrelated project instruction) was wrongly
+    treated as "already registered" and the real block never got written."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    claude_md = home / ".claude" / "CLAUDE.md"
+    claude_md.parent.mkdir(parents=True)
+    claude_md.write_text("See https://github.com/Graphify-Labs/graphify for details.\n", encoding="utf-8")
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        install(platform="claude")
+
+    content = claude_md.read_text(encoding="utf-8")
+    assert "# graphify\n" in content, (
+        f"an unrelated mention of the word must not suppress the real "
+        f"registration block; got {content!r}"
+    )
+    assert "See https://github.com/Graphify-Labs/graphify for details." in content, (
+        "the user's own pre-existing content must survive"
+    )
+
+
+def test_install_claude_md_refreshes_a_stale_registration_block(tmp_path, monkeypatch):
+    """#3668: a previously-installed block that has since been hand-edited (or
+    predates a skill-path change) must be refreshed on re-install, not
+    silently left stale because the bare word "graphify" is still present."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    claude_md = home / ".claude" / "CLAUDE.md"
+    claude_md.parent.mkdir(parents=True)
+    claude_md.write_text(
+        "# graphify\n- an old, hand-edited line that does not match the "
+        "current registration text\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        install(platform="claude")
+
+    content = claude_md.read_text(encoding="utf-8")
+    assert "hand-edited line" not in content, "the stale block must be replaced, not kept"
+    assert "Trigger: `/graphify`" in content, "the current registration text must be written"
+
+
+def test_register_always_on_block_writes_without_newline_translation(tmp_path, monkeypatch):
+    """#3668: Path.write_text opens in text mode, which on Windows turns a
+    pre-existing bare-LF file's WHOLE content into CRLF just to append a few
+    lines. newline="" must be passed so no translation happens. The bug
+    itself is only observable on Windows, so this checks the call was made
+    correctly rather than depending on the host OS's own newline handling."""
+    from graphify import install as install_mod
+
+    target = tmp_path / "CLAUDE.md"
+    target.write_text("Some existing notes.\n", encoding="utf-8")
+
+    calls: list[dict] = []
+    orig_write_text = Path.write_text
+
+    def _tracking_write_text(self, *args, **kwargs):
+        calls.append(kwargs)
+        return orig_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _tracking_write_text)
+
+    install_mod._register_always_on_block(
+        target, "  CLAUDE.md        ->  ", install_mod._skill_registration()
+    )
+
+    assert calls, "write_text should have been called"
+    assert calls[-1].get("newline") == "", (
+        f"write_text must pass newline='' so the rest of the file's line "
+        f"endings are never translated; got kwargs {calls[-1]!r}"
+    )
 
 
 def test_install_codebuddy(tmp_path):
@@ -1015,6 +1213,36 @@ def test_gemini_install_merges_existing_gemini_md(tmp_path):
     content = (tmp_path / "GEMINI.md").read_text()
     assert "# My project rules" in content
     assert "graphify-out/GRAPH_REPORT.md" in content
+
+
+def test_gemini_install_writes_gemini_md_without_newline_translation(tmp_path, monkeypatch):
+    """#3668: same CRLF issue as _register_always_on_block, here in the
+    GEMINI.md write. Path.write_text opens in text mode, which on Windows
+    would turn a pre-existing bare-LF GEMINI.md's WHOLE content into CRLF
+    just to merge in a few lines. Checks the call was made correctly rather
+    than depending on the host OS's own newline handling."""
+    from graphify.__main__ import gemini_install
+
+    gemini_md = tmp_path / "GEMINI.md"
+    gemini_md.write_text("# My project rules\n", encoding="utf-8")
+
+    calls: list[dict] = []
+    orig_write_text = Path.write_text
+
+    def _tracking_write_text(self, *args, **kwargs):
+        if self == gemini_md:
+            calls.append(kwargs)
+        return orig_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _tracking_write_text)
+
+    gemini_install(tmp_path)
+
+    assert calls, "write_text should have been called for GEMINI.md"
+    assert calls[-1].get("newline") == "", (
+        f"write_text must pass newline='' so the rest of the file's line "
+        f"endings are never translated; got kwargs {calls[-1]!r}"
+    )
 
 
 def test_gemini_uninstall_removes_section(tmp_path):

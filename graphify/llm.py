@@ -3144,6 +3144,31 @@ def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
         )
 
 
+# Everything detect_backend() reads besides the per-backend API keys. Kept next to
+# the function so a new probe below is added here too; tests clear this whole set
+# (tests/conftest.py) so a developer's own keys can never steer them (#3481).
+_BACKEND_DETECTION_EXTRA_ENV = (
+    "AZURE_OPENAI_ENDPOINT",
+    "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
+    "OLLAMA_BASE_URL", "OLLAMA_HOST",
+)
+
+
+def backend_detection_env_vars() -> tuple[str, ...]:
+    """Every environment variable ``detect_backend()`` consults, in probe order.
+
+    Covers the API-key variables of every registered backend (built-in and
+    custom) plus the endpoint/region/host variables checked directly.
+    """
+    seen: dict[str, None] = {}
+    for name in BACKENDS:
+        for env_key in _backend_env_keys(name):
+            seen.setdefault(env_key, None)
+    for env_key in _BACKEND_DETECTION_EXTRA_ENV:
+        seen.setdefault(env_key, None)
+    return tuple(seen)
+
+
 def detect_backend() -> str | None:
     """Return the name of whichever backend has an API key set, or None.
 
@@ -3175,6 +3200,21 @@ def detect_backend() -> str | None:
             if _get_backend_api_key(name):
                 return name
     return None
+
+
+def _claude_cli_available() -> bool:
+    """True if the Claude Code CLI can actually be launched.
+
+    Mirrors the resolution in the claude-cli request path: a bare ``claude`` on
+    POSIX, and ``claude.cmd`` on Windows, where CreateProcess cannot resolve the
+    npm shim from the bare name.
+    """
+    import platform
+    import shutil
+
+    if platform.system() == "Windows":
+        return bool(shutil.which("claude.cmd") or shutil.which("claude"))
+    return shutil.which("claude") is not None
 
 
 # ── Community labeling ────────────────────────────────────────────────────────
@@ -3313,7 +3353,38 @@ def _label_batch_with_retry(
 
     try:
         text = _call_llm(prompt, **call_kwargs)
-        return _parse_label_response(text, batch_cids)
+        parsed = _parse_label_response(text, batch_cids)
+        if len(parsed) == len(batch_cids):
+            return parsed
+        # Salvage can produce a valid partial map from a truncated JSON object.
+        # Keep those names, but retry only the missing ids in smaller batches so a
+        # reasoning model's completion cap cannot silently turn 3/16 labels into
+        # an apparent success (#3671).
+        missing = [cid for cid in batch_cids if cid not in parsed]
+        if len(batch_cids) <= 1 or depth >= max_depth:
+            return parsed
+        missing_lines = [
+            line for cid, line in zip(batch_cids, batch_lines) if cid in missing
+        ]
+        if len(missing) == 1:
+            recovered = _label_batch_with_retry(
+                missing, missing_lines,
+                backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+                usage_out=usage_out,
+            )
+            return parsed | recovered
+        mid = len(missing) // 2
+        left = _label_batch_with_retry(
+            missing[:mid], missing_lines[:mid],
+            backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+            usage_out=usage_out,
+        )
+        right = _label_batch_with_retry(
+            missing[mid:], missing_lines[mid:],
+            backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+            usage_out=usage_out,
+        )
+        return parsed | left | right
     except (json.JSONDecodeError, ValueError) as exc:
         # Parse failure. If we can still split, retry each half on a smaller
         # prompt (smaller output → less likely to truncate/mangle). At the base
@@ -3470,6 +3541,15 @@ def generate_community_labels(
             backend = detect_backend()
         except Exception:
             backend = None
+    if not backend and _claude_cli_available():
+        # `detect_backend` is key-based, and claude-cli is the one backend with no
+        # key to find, so it can never be detected there — and widening detection
+        # itself would change extraction's contract, which deliberately refuses to
+        # run without a configured backend. Here the alternative is not an error but
+        # a SILENT DOWNGRADE: replacing every real community name with
+        # "Community N" and exiting 0, which overwrites a good graph with a worse
+        # one while reporting success. An installed CLI is better than that.
+        backend = "claude-cli"
     if not backend:
         if not quiet:
             print(
@@ -3484,6 +3564,14 @@ def generate_community_labels(
             max_concurrency=max_concurrency, batch_size=batch_size,
             usage_out=usage_out,
         )
+        placeholders = _placeholder_community_labels(communities)
+        named = sum(labels.get(cid) != placeholder for cid, placeholder in placeholders.items())
+        if named < len(communities) and not quiet:
+            print(
+                f"[graphify label] warning: labeled {named} of {len(communities)} "
+                f"communities; {len(communities) - named} kept structural fallback names.",
+                file=sys.stderr,
+            )
         return labels, "llm"
     except Exception as exc:
         if not quiet:
