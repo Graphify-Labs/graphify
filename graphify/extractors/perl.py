@@ -281,7 +281,9 @@ def extract_perl(path: Path) -> dict:
             if switched is not None:
                 current_package, current_package_name = switched
 
-    def handle_package(node: Node) -> tuple[str, str] | None:
+    def handle_package(
+        node: Node, _package_id: str, _package_name: str | None,
+    ) -> tuple[str, str] | None:
         name_node = node.child_by_field_name("name") or next(
             (c for c in node.named_children if c.type == "package"), None
         )
@@ -296,51 +298,67 @@ def extract_perl(path: Path) -> dict:
             return None
         return package_id, name
 
+    def handle_sub(
+        node: Node, current_package: str, current_package_name: str | None,
+    ) -> None:
+        name_node = next(
+            (c for c in node.named_children if c.type == "bareword"), None
+        )
+        if name_node is None:
+            return
+        name = _unquote(_read_text(name_node, source))
+        function_id = add_sub(name, node, current_package, current_package_name)
+        body = node.child_by_field_name("body")
+        if body is not None:
+            bodies.append((body, function_id, current_package_name))
+
+    def handle_use(node: Node, current_package: str, _package_name: str | None) -> None:
+        name_node = node.child_by_field_name("package") or next(
+            (c for c in node.named_children if c.type == "package"), None
+        )
+        if name_node is None:
+            return
+        args = next(
+            (c for c in node.named_children if c is not name_node), None
+        )
+        handle_use_or_require(
+            _read_text(name_node, source), args, node, current_package,
+        )
+
+    def handle_expression(
+        node: Node, current_package: str, _package_name: str | None,
+    ) -> None:
+        inner = node.named_children[0] if node.named_children else None
+        if inner is None:
+            return
+        if inner.type == "require_expression":
+            handle_require(inner, node, current_package)
+        elif inner.type == "assignment_expression":
+            handle_isa_assignment(inner, current_package)
+
+    def handle_assignment(
+        node: Node, current_package: str, _package_name: str | None,
+    ) -> None:
+        handle_isa_assignment(node, current_package)
+
+    # Statement node type -> handler(node, package_id, package_name). A handler
+    # returns the new (package_id, package_name) when it switches scope.
+    statement_handlers = {
+        "package_statement": handle_package,
+        "subroutine_declaration_statement": handle_sub,
+        "use_statement": handle_use,
+        "expression_statement": handle_expression,
+        "assignment_expression": handle_assignment,
+    }
+
     def handle_statement(
         node: Node, current_package: str, current_package_name: str | None,
     ) -> tuple[str, str] | None:
         """Handle one statement; return the new package if it switches scope."""
-        if node.type == "package_statement":
-            return handle_package(node)
-
-        if node.type == "subroutine_declaration_statement":
-            name_node = next(
-                (c for c in node.named_children if c.type == "bareword"), None
-            )
-            body = node.child_by_field_name("body")
-            if name_node is None:
-                return None
-            name = _unquote(_read_text(name_node, source))
-            function_id = add_sub(name, node, current_package, current_package_name)
-            if body is not None:
-                bodies.append((body, function_id, current_package_name))
+        handler = statement_handlers.get(node.type)
+        if handler is None:
             return None
-
-        if node.type == "use_statement":
-            name_node = node.child_by_field_name("package") or next(
-                (c for c in node.named_children if c.type == "package"), None
-            )
-            if name_node is None:
-                return None
-            args = next(
-                (c for c in node.named_children if c is not name_node), None
-            )
-            handle_use_or_require(
-                _read_text(name_node, source), args, node, current_package,
-            )
-            return None
-
-        if node.type == "expression_statement":
-            inner = node.named_children[0] if node.named_children else None
-            if inner is not None and inner.type == "require_expression":
-                handle_require(inner, node, current_package)
-            elif inner is not None and inner.type == "assignment_expression":
-                handle_isa_assignment(inner, current_package)
-            return None
-
-        if node.type == "assignment_expression":
-            handle_isa_assignment(node, current_package)
-        return None
+        return handler(node, current_package, current_package_name)
 
     def handle_require(inner: Node, node: Node, current_package: str) -> None:
         target = next(iter(inner.named_children), None)
@@ -406,28 +424,39 @@ def extract_perl(path: Path) -> dict:
                 return literals[0], method_text
         return None, method_text
 
+    def handle_function_call(node: Node, caller_id: str, package_name: str | None) -> None:
+        function_node = node.child_by_field_name("function")
+        if function_node is None:
+            return
+        text = _read_text(function_node, source)
+        if "::" in text:
+            module, _, name = text.rpartition("::")
+            add_raw_call(caller_id, name, module, node)
+            return
+        target = resolve_bareword_call(text, package_name)
+        if target is not None:
+            add_edge(caller_id, target, "calls", node)
+
+    def handle_method_call(node: Node, caller_id: str, _package_name: str | None) -> None:
+        invocant = node.child_by_field_name("invocant")
+        method_node = node.child_by_field_name("method")
+        if invocant is None or method_node is None:
+            return
+        module, name = method_call_target(invocant, _read_text(method_node, source))
+        add_raw_call(caller_id, name, module, node)
+
+    call_handlers = {
+        "function_call_expression": handle_function_call,
+        "ambiguous_function_call_expression": handle_function_call,
+        "method_call_expression": handle_method_call,
+    }
+
     def walk_calls(node: Node, caller_id: str, package_name: str | None) -> None:
         if node.type == "subroutine_declaration_statement":
             return
-        if node.type in {"function_call_expression", "ambiguous_function_call_expression"}:
-            function_node = node.child_by_field_name("function")
-            if function_node is not None:
-                text = _read_text(function_node, source)
-                if "::" in text:
-                    module, _, name = text.rpartition("::")
-                    add_raw_call(caller_id, name, module, node)
-                else:
-                    target = resolve_bareword_call(text, package_name)
-                    if target is not None:
-                        add_edge(caller_id, target, "calls", node)
-        elif node.type == "method_call_expression":
-            invocant = node.child_by_field_name("invocant")
-            method_node = node.child_by_field_name("method")
-            if invocant is not None and method_node is not None:
-                module, name = method_call_target(
-                    invocant, _read_text(method_node, source),
-                )
-                add_raw_call(caller_id, name, module, node)
+        handler = call_handlers.get(node.type)
+        if handler is not None:
+            handler(node, caller_id, package_name)
         for child in node.named_children:
             walk_calls(child, caller_id, package_name)
 
