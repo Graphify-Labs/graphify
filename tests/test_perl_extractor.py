@@ -177,6 +177,122 @@ def test_perl_use_and_require_are_reached_in_every_scope(tmp_path):
     assert ("Loader", "helpers.pl") in _edge_labels(result, "imports_from")
 
 
+def test_perl_relative_require_path_resolves_to_file_node(tmp_path):
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    helpers = lib / "helpers.pl"
+    helpers.write_text("sub help { return 1; }\n", encoding="utf-8")
+    app = tmp_path / "app"
+    app.mkdir()
+    source = app / "tool.pl"
+    source.write_text("require '../lib/helpers.pl';\n", encoding="utf-8")
+
+    result = extract([source, helpers], cache_root=tmp_path)
+
+    helpers_ids = {
+        node["id"] for node in result["nodes"] if node["label"] == "helpers.pl"
+    }
+    imports_from = {
+        edge["target"] for edge in result["edges"]
+        if edge["relation"] == "imports_from"
+    }
+    assert helpers_ids
+    assert helpers_ids <= imports_from
+
+
+def test_perl_declarations_inside_compound_blocks_are_extracted(tmp_path):
+    source = tmp_path / "blocks.pl"
+    source.write_text(
+        "package App;\n"
+        "if ($ENV{DEBUG}) {\n"
+        "    sub debug { return 1; }\n"
+        "}\n"
+        "BEGIN {\n"
+        "    use Boot::Module;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"App", "debug()"} <= labels
+    assert ("App", "Boot::Module") in _edge_labels(result, "imports")
+
+
+def test_perl_nested_named_subs_are_extracted(tmp_path):
+    source = tmp_path / "nested.pl"
+    source.write_text(
+        "package Nested;\n"
+        "sub outer {\n"
+        "    sub inner { return 2; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"outer()", "inner()"} <= labels
+    assert ("Nested", "inner()") in _edge_labels(result, "contains")
+
+
+def test_perl_postfix_require_creates_import(tmp_path):
+    helpers = tmp_path / "helpers.pl"
+    helpers.write_text("sub help { return 1; }\n", encoding="utf-8")
+    source = tmp_path / "postfix.pl"
+    source.write_text("package P;\nrequire 'helpers.pl' if $0;\n", encoding="utf-8")
+
+    result = extract([source, helpers], cache_root=tmp_path)
+
+    assert ("P", "helpers.pl") in _edge_labels(result, "imports_from")
+
+
+def test_perl_ampersand_call_resolves(tmp_path):
+    source = tmp_path / "legacy.pl"
+    source.write_text(
+        "package Legacy;\n"
+        "sub run { return &helper; }\n"
+        "sub helper { return 1; }\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    assert ("run()", "helper()") in _edge_labels(result, "calls")
+
+
+def test_perl_qualified_isa_reparents_named_package(tmp_path):
+    source = tmp_path / "isa.pl"
+    source.write_text(
+        "package Child;\n"
+        "@Parent::ISA = ('GrandParent');\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"Parent", "GrandParent"} <= labels
+    assert ("Parent", "GrandParent") in _edge_labels(result, "inherits")
+
+
+def test_perl_core_pragmas_create_no_package_nodes(tmp_path):
+    source = tmp_path / "pragmas.pl"
+    source.write_text(
+        "package Pr;\n"
+        "use mro;\n"
+        "use integer;\n"
+        "use subs qw(export);\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    labels = {node["label"] for node in result["nodes"]}
+    assert labels.isdisjoint({"mro", "integer", "subs"})
+
+
 def test_perl_malformed_file_does_not_create_phantoms(tmp_path):
     source = tmp_path / "broken.pl"
     source.write_text(

@@ -1,6 +1,7 @@
 """Structural extraction for Perl source files."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -13,9 +14,14 @@ if TYPE_CHECKING:
 # Pragmas that take a `use NAME ...;` shape but name no real project/CPAN
 # module worth a graph node (they configure the compiler/parser itself).
 # `base`/`parent` are handled separately as inheritance, not a generic import.
+# The list is the standard pragma set from perlmodlib.
 _PERL_PRAGMAS = frozenset({
     "strict", "warnings", "utf8", "feature", "if", "vars", "lib", "constant",
     "overload", "v5", "experimental",
+    "attributes", "bigint", "bignum", "bigrat", "builtin", "bytes",
+    "charnames", "deprecate", "diagnostics", "encoding", "fields",
+    "filetest", "integer", "less", "locale", "mro", "open", "overloading",
+    "re", "sigtrap", "sort", "subs", "vmsish",
 })
 
 _PERL_INHERITANCE_PRAGMAS = frozenset({"base", "parent"})
@@ -267,7 +273,11 @@ def extract_perl(path: Path) -> dict:
         add_edge(owner, target_id, "imports", node)
 
     def handle_require_path(literal: str, node: Node, owner: str) -> None:
-        target = path.parent / literal
+        # normpath, not resolve(): the target id must equal the scanned file's
+        # id without touching the filesystem, and ``require '../lib/x.pl'``
+        # leaves ``..`` segments that pathlib keeps verbatim, so the join would
+        # never match the real file node otherwise.
+        target = Path(os.path.normpath(str(path.parent / literal)))
         target_id = _make_id(str(target))
         add_edge(owner, target_id, "imports_from", node, target_file=str(target))
 
@@ -280,6 +290,14 @@ def extract_perl(path: Path) -> dict:
             switched = handle_statement(child, current_package, current_package_name)
             if switched is not None:
                 current_package, current_package_name = switched
+            elif child.type not in statement_handlers:
+                # Compound statements (if/unless/loops/BEGIN/try) own blocks in
+                # the same package scope: a sub, use or require inside one is
+                # real and must not be silently dropped.
+                for block in collect_blocks(child):
+                    handle_statements(
+                        block.named_children, current_package, current_package_name,
+                    )
 
     def handle_package(
         node: Node, _package_id: str, _package_name: str | None,
@@ -311,15 +329,27 @@ def extract_perl(path: Path) -> dict:
         body = node.child_by_field_name("body")
         if body is not None:
             bodies.append((body, function_id, current_package_name))
+            # A sub body is a block in the same package scope: nested named
+            # subs and compile-time `use`/`require` inside it are real.
+            handle_statements(
+                body.named_children, current_package, current_package_name,
+            )
 
     def handle_use(node: Node, current_package: str, _package_name: str | None) -> None:
-        name_node = node.child_by_field_name("package") or next(
-            (c for c in node.named_children if c.type == "package"), None
+        name_node = (
+            node.child_by_field_name("module")
+            or node.child_by_field_name("package")
+            or next((c for c in node.named_children if c.type == "package"), None)
         )
         if name_node is None:
             return
+        # ``child_by_field_name`` returns a fresh wrapper object, so the module
+        # node can only be excluded from the args search by its byte span.
+        name_span = (name_node.start_byte, name_node.end_byte)
         args = next(
-            (c for c in node.named_children if c is not name_node), None
+            (c for c in node.named_children
+             if (c.start_byte, c.end_byte) != name_span),
+            None,
         )
         handle_use_or_require(
             _read_text(name_node, source), args, node, current_package,
@@ -331,6 +361,12 @@ def extract_perl(path: Path) -> dict:
         inner = node.named_children[0] if node.named_children else None
         if inner is None:
             return
+        if inner.type in {"postfix_conditional_expression", "postfix_loop_expression"}:
+            # Statement modifier (``require "x.pl" if $y;``): unwrap to the
+            # modified expression, which is its first named child.
+            inner = next(iter(inner.named_children), None)
+            if inner is None:
+                return
         if inner.type == "require_expression":
             handle_require(inner, node, current_package)
         elif inner.type == "assignment_expression":
@@ -360,6 +396,19 @@ def extract_perl(path: Path) -> dict:
             return None
         return handler(node, current_package, current_package_name)
 
+    def collect_blocks(node: Node) -> list[Node]:
+        """Blocks owned by a compound statement, without crossing into a
+        statement that has its own handler (those manage their own scope)."""
+        blocks: list[Node] = []
+        for child in node.named_children:
+            if child.type == "block":
+                blocks.append(child)
+            elif child.type in statement_handlers:
+                continue
+            else:
+                blocks.extend(collect_blocks(child))
+        return blocks
+
     def handle_require(inner: Node, node: Node, current_package: str) -> None:
         target = next(iter(inner.named_children), None)
         if target is None:
@@ -386,11 +435,22 @@ def extract_perl(path: Path) -> dict:
         if array is None:
             return
         varname = next((c for c in array.named_children if c.type == "varname"), None)
-        if varname is None or _read_text(varname, source) != "ISA":
+        if varname is None:
+            return
+        owner = current_package
+        varname_text = _read_text(varname, source)
+        if varname_text.endswith("::ISA"):
+            # ``@Other::ISA = (...)`` reparents a different package; its node
+            # upgrades to a real definition when that package is in this file.
+            qualifier = varname_text[: -len("::ISA")]
+            if not qualifier:
+                return
+            owner = external_package(qualifier, node)
+        elif varname_text != "ISA":
             return
         for base in _string_literals(rhs, source):
             if base:
-                add_inherits(current_package, base, node)
+                add_inherits(owner, base, node)
 
     handle_statements(root.named_children, file_id, None)
 
@@ -429,6 +489,9 @@ def extract_perl(path: Path) -> dict:
         if function_node is None:
             return
         text = _read_text(function_node, source)
+        if text.startswith("&"):
+            # Old-style ``&foo;`` call: the ampersand is part of the node.
+            text = text[1:]
         if "::" in text:
             module, _, name = text.rpartition("::")
             add_raw_call(caller_id, name, module, node)
