@@ -3459,7 +3459,8 @@ def _lua_is_require_call(node, source: bytes) -> bool:
 
 
 def _extract_generic(
-    path: Path, config: LanguageConfig, *, source_override: bytes | None = None
+    path: Path, config: LanguageConfig, *, source_override: bytes | None = None,
+    scan_root: Path | None = None,
 ) -> dict:
     """Generic AST extractor driven by LanguageConfig.
 
@@ -3707,7 +3708,14 @@ def _extract_generic(
         # Import types
         if t in config.import_types:
             if config.import_handler:
-                imported_modules = config.import_handler(node, source, file_nid, stem, edges, str_path, scope_stack)
+                if config.ts_module == "tree_sitter_python":
+                    imported_modules = config.import_handler(
+                        node, source, file_nid, stem, edges, str_path, scope_stack, scan_root
+                    )
+                else:
+                    imported_modules = config.import_handler(
+                        node, source, file_nid, stem, edges, str_path, scope_stack
+                    )
                 # Module-level import handlers (Swift) name a module, not a file
                 # path, so there is no pre-existing node to anchor the edge to.
                 # They return (id, label) pairs for which we materialize a

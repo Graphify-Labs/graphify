@@ -122,6 +122,61 @@ def test_absolute_package_import_targets_package_init(tmp_path: Path):
     assert "pkg_sub" not in import_targets
 
 
+def test_plain_absolute_import_targets_package_module(tmp_path: Path):
+    package_init = _write(tmp_path / "pkg/__init__.py", "")
+    subpackage_init = _write(tmp_path / "pkg/sub/__init__.py", "")
+    consumer_path = _write(tmp_path / "app.py", "import pkg.sub\n")
+
+    result = extract(
+        [package_init, subpackage_init, consumer_path],
+        cache_root=tmp_path,
+        root=tmp_path,
+        parallel=False,
+    )
+
+    consumer = _node_id(result, "app.py", "app.py")
+    subpackage = _node_id(result, "__init__.py", "pkg/sub/__init__.py")
+    assert _has_edge(result, consumer, subpackage, "imports")
+
+
+def test_absolute_import_does_not_resolve_above_scan_root(tmp_path: Path):
+    scan_root = tmp_path / "scan"
+    source = _write(scan_root / "app.py", "from outside_pkg import thing\n")
+    _write(tmp_path / "outside_pkg/__init__.py", "")
+    _write(tmp_path / "outside_pkg/thing.py", "def run():\n    return 1\n")
+
+    result = extract(
+        [source], cache_root=tmp_path / "cache", root=scan_root, parallel=False
+    )
+
+    app = _node_id(result, "app.py", "app.py")
+    targets = {
+        edge["target"]
+        for edge in result["edges"]
+        if edge["source"] == app and edge["relation"] == "imports_from"
+    }
+    assert targets == {"outside_pkg"}
+
+
+def test_absolute_from_import_keeps_namespace_package_submodule_edge(tmp_path: Path):
+    namespace_package = tmp_path / "namespace_pkg"
+    namespace_package.mkdir()
+    submodule = _write(
+        namespace_package / "subspace/worker.py", "def run():\n    return 1\n"
+    )
+    consumer_path = _write(
+        tmp_path / "app.py", "from namespace_pkg.subspace import worker\n"
+    )
+
+    result = extract(
+        [consumer_path, submodule], cache_root=tmp_path, root=tmp_path, parallel=False
+    )
+
+    consumer = _node_id(result, "app.py", "app.py")
+    worker = _node_id(result, "worker.py", "namespace_pkg/subspace/worker.py")
+    assert _has_edge(result, consumer, worker, "imports_from")
+
+
 def test_python_package_reexport_resolves_import_and_call_to_origin_symbol(tmp_path: Path):
     origin = _write(tmp_path / "pkg/foo.py", "def Foo():\n    return 1\n")
     barrel = _write(tmp_path / "pkg/__init__.py", "from .foo import Foo as PublicFoo\n")

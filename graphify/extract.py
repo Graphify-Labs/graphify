@@ -136,6 +136,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_lua_import_target,
     _probe_python_module_candidate,
     _resolve_python_module_path,
+    _resolve_python_namespace_dir,
     _resolve_tsconfig_alias,
     _resolve_workspace_import,
     _source_key,
@@ -173,8 +174,12 @@ def _raise_recursion_limit() -> None:
         sys.setrecursionlimit(_RECURSION_LIMIT)
 
 
-def _safe_extract(extractor: Callable, path: Path) -> dict:
+def _safe_extract(
+    extractor: Callable, path: Path, *, scan_root: Path | None = None
+) -> dict:
     try:
+        if extractor is extract_python:
+            return extractor(path, root=scan_root)
         return extractor(path)
     except RecursionError:
         print(f"  warning: skipped {path} (recursion limit exceeded)", file=sys.stderr, flush=True)
@@ -428,15 +433,51 @@ def _resolve_name(node, source: bytes, config: LanguageConfig) -> str | None:
 
 # ── Import handlers ───────────────────────────────────────────────────────────
 
-def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
+def _import_python(
+    node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str,
+    scope_stack: list[str] | None = None, scan_root: Path | None = None,
+) -> None:
     t = node.type
+    current_path = Path(str_path)
+    try:
+        current_path = current_path.resolve()
+    except OSError:
+        pass
+    root = Path(scan_root) if scan_root is not None else current_path.parent
+    try:
+        root = root.resolve()
+    except OSError:
+        pass
     if t == "import_statement":
         for child in node.children:
             if child.type in ("dotted_name", "aliased_import"):
                 raw = _read_text(child, source)
                 raw_module, _, raw_alias = raw.partition(" as ")
                 module_name = raw_module.strip().lstrip(".")
-                tgt_nid = _make_id(module_name)
+                target_path = _resolve_python_module_path(
+                    module_name, current_path, root, level=0
+                )
+                # The importer-relative resolver can find a module under one
+                # nested sys.path root even when the scan contains another file
+                # with the same dotted name under a different root. Keep those
+                # cases for the root-wide alias pass, which refuses ambiguous
+                # aliases; use a direct scan-root hit here.
+                root_target = _resolve_python_module_path(
+                    module_name, root, root, level=0
+                )
+                if root_target is None or target_path != root_target:
+                    target_path = None
+                if target_path is not None:
+                    try:
+                        if target_path.resolve() == current_path:
+                            target_path = None
+                    except OSError:
+                        pass
+                tgt_nid = (
+                    _make_id(str(target_path))
+                    if target_path is not None
+                    else _make_id(module_name)
+                )
                 edge = {
                     "source": file_nid,
                     "target": tgt_nid,
@@ -447,6 +488,8 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                     "source_location": f"L{node.start_point[0] + 1}",
                     "weight": 1.0,
                 }
+                if target_path is not None:
+                    edge["target_file"] = str(target_path)
                 if raw_alias:
                     # `import pkg.mod as alias` binds the local name `alias`, not
                     # `mod`'s own stem, to the module -- stash it so the cross-file
@@ -463,55 +506,35 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                 # Relative import - resolve to full path so IDs match file node IDs
                 dots = len(raw) - len(raw.lstrip("."))
                 module_name = raw.lstrip(".")
-                base = Path(str_path).parent
-                for _ in range(dots - 1):
-                    base = base.parent
-                # A relative import can name a subpackage (a directory with an
-                # __init__.py), not a module file. Probing the candidate on disk
-                # (mirroring the companion `imports` edge's
-                # _resolve_python_module_path) resolves `graphs` -> graphs/__init__.py
-                # instead of a nonexistent graphs.py: without it the target keeps an
-                # absolute-path-derived slug that the target_file stamp below can't
-                # heal, so it dangles per-checkout (#2455).
-                candidate = base / module_name.replace(".", "/") if module_name else base
-                resolved = _probe_python_module_candidate(candidate)
-                if resolved is not None:
-                    target_path = resolved
-                else:
+                target_path = _resolve_python_module_path(
+                    module_name, current_path, root, level=dots
+                )
+                if target_path is None:
+                    base = current_path.parent
+                    for _ in range(dots - 1):
+                        base = base.parent
                     rel = (module_name.replace(".", "/") + ".py") if module_name else "__init__.py"
                     target_path = base / rel
                 tgt_nid = _make_id(str(target_path))
             else:
-                # Absolute imports need the same package/file probing as the
-                # relative arm.  Keeping the dotted-name slug here makes
-                # ``from pkg.sub import thing`` point at ``pkg_sub`` even when
-                # the real node is ``pkg_sub_init``; the symbol-resolution pass
-                # may add a second, correct edge, but it cannot repair this
-                # malformed file-level edge (#3723).  Search upward from the
-                # importer and only probe non-package ancestors, mirroring the
-                # resolver's sys.path-root rule without requiring the scan root
-                # at per-file extraction time.
-                module_rel = raw.replace(".", "/")
-                current_path = Path(str_path)
-                try:
-                    current_path = current_path.resolve()
-                except OSError:
-                    pass
-                for ancestor in (current_path.parent, *current_path.parent.parents):
-                    if (ancestor / "__init__.py").is_file():
-                        continue
-                    resolved = _probe_python_module_candidate(ancestor / module_rel)
-                    if resolved is not None:
-                        try:
-                            if resolved.resolve() == current_path:
-                                # An external import can share the importing
-                                # file's basename; never turn that coincidence
-                                # into a self-loop.
-                                continue
-                        except OSError:
-                            pass
-                        target_path = resolved
-                        break
+                # Use the shared scan-root-aware resolver for absolute imports.
+                # It stops at the corpus boundary and handles package roots the
+                # same way as symbol resolution. A namespace package has no file
+                # node of its own; the corpus pass will emit edges to any
+                # imported submodules that exist on disk.
+                target_path = _resolve_python_module_path(raw, current_path, root, level=0)
+                if target_path is None and _resolve_python_namespace_dir(
+                    raw, current_path, root, level=0
+                ) is not None:
+                    return
+                if target_path is not None:
+                    try:
+                        if target_path.resolve() == current_path:
+                            # Do not turn an import of the current file into a
+                            # self-loop.
+                            target_path = None
+                    except OSError:
+                        pass
                 tgt_nid = _make_id(str(target_path)) if target_path is not None else _make_id(raw)
             edge = {
                 "source": file_nid,
@@ -1718,9 +1741,9 @@ def _normalize_ts_import_types(source: bytes, *, tsx: bool = False) -> bytes | N
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def extract_python(path: Path) -> dict:
+def extract_python(path: Path, *, root: Path | None = None) -> dict:
     """Extract classes, functions, and imports from a .py file via tree-sitter AST."""
-    result = _extract_generic(path, _PYTHON_CONFIG)
+    result = _extract_generic(path, _PYTHON_CONFIG, scan_root=root)
     if "error" not in result:
         _extract_python_rationale(path, result)
     return result
@@ -6580,7 +6603,7 @@ def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
     previous_root = _XAML_ACTIVE_EXTRACT_ROOT
     _XAML_ACTIVE_EXTRACT_ROOT = root.resolve()
     try:
-        return _safe_extract(extractor, path)
+        return _safe_extract(extractor, path, scan_root=root)
     finally:
         _XAML_ACTIVE_EXTRACT_ROOT = previous_root
 
