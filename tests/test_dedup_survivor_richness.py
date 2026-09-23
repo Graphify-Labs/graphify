@@ -87,6 +87,44 @@ def test_richness_counts_content_not_placement():
         _rich(attributes={"protocol": "mqtt"}))
 
 
+def test_provenance_beats_a_richer_sourceless_stub():
+    """#3775: source_file/source_location are in _RICHNESS_IGNORED_KEYS, so
+    a stub with no real location could out-score and replace a genuine,
+    located declaration purely on incidental field count. The issue's own
+    exact repro."""
+    real = {
+        "id": "docs_guide_setup", "label": "Setup", "file_type": "concept",
+        "source_file": "docs/guide.md", "source_location": "L12",
+        "attributes": {"kind": "section"},
+    }
+    stub = {
+        "id": "setup", "label": "Setup", "file_type": "concept",
+        "source_file": "", "type": "external", "external": True,
+        "_origin": "semantic",
+    }
+    from graphify.dedup import _content_richness
+    assert _content_richness(stub) > _content_richness(real), (
+        "test fixture: the stub must out-score the real node on pure "
+        "field count for this to exercise the bug"
+    )
+    assert _pick_winner([real, stub])["id"] == "docs_guide_setup"
+    assert _pick_winner([stub, real])["id"] == "docs_guide_setup"
+
+
+def test_richness_still_decides_when_both_sides_have_provenance():
+    """The provenance tiebreak must only activate when the two sides
+    disagree on having a source_file -- when both (or neither) have one,
+    the existing #3372 richness-then-length ordering is unchanged."""
+    rich = _rich()
+    shallow = _shallow()
+    assert rich["source_file"] and shallow["source_file"], (
+        "test fixture: both candidates must carry a source_file so the "
+        "provenance tiebreak cannot distinguish them"
+    )
+    assert _pick_winner([rich, shallow])["id"] == rich["id"]
+    assert _pick_winner([shallow, rich])["id"] == rich["id"]
+
+
 def test_edges_rewire_to_the_rich_survivor():
     edges = [{"source": "sources_notes_widget_x", "target": "other",
               "relation": "references", "source_file": "sources/notes.md"}]
