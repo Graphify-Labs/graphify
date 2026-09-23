@@ -28,8 +28,22 @@ def _unquote(value: str) -> str:
 
 
 def _string_literals(node: Node, source: bytes) -> list[str]:
-    """Every quoted string literal's content under ``node``, in source order."""
+    """Every quoted string literal's content under ``node``, in source order.
+
+    ``qw(a b c)`` parses as a ``quoted_word_list`` whose single content node
+    holds all words; those split into separate entries so the canonical
+    ``use base qw(...)`` / ``our @ISA = qw(...)`` inheritance forms yield one
+    base per word instead of nothing.
+    """
     out: list[str] = []
+    if node.type == "quoted_word_list":
+        content = next(
+            (child for child in node.named_children if child.type == "string_content"),
+            None,
+        )
+        if content is not None:
+            out.extend(_read_text(content, source).split())
+        return out
     if node.type in {"string_literal", "interpolated_string_literal"}:
         content = next(
             (child for child in node.named_children if child.type == "string_content"),

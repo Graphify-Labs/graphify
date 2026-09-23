@@ -95,6 +95,29 @@ def test_perl_isa_inheritance(tmp_path):
     assert ("Dog", "Animal") in _edge_labels(result, "inherits")
 
 
+def test_perl_qw_list_inheritance(tmp_path):
+    # qw() parses as a quoted_word_list, not a string_literal — the most
+    # common spelling of both `use base`/`use parent` and @ISA.
+    source = tmp_path / "qw_hierarchy.pl"
+    source.write_text(
+        "package Puppy;\n"
+        "use base qw(Base::One Base::Two);\n"
+        "our @ISA = qw(Animal Dog);\n"
+        "sub bark { return 1; }\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"Base::One", "Base::Two", "Animal", "Dog"} <= labels
+    inherits = _edge_labels(result, "inherits")
+    assert ("Puppy", "Base::One") in inherits
+    assert ("Puppy", "Base::Two") in inherits
+    assert ("Puppy", "Animal") in inherits
+    assert ("Puppy", "Dog") in inherits
+
+
 def test_perl_fixture_uses_normal_extract_path(tmp_path):
     result = extract([FIXTURE], cache_root=tmp_path)
 
