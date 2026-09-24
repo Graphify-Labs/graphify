@@ -2629,6 +2629,7 @@ def extract_corpus_parallel(
         "input_tokens": 0, "output_tokens": 0,
         "failed_chunks": 0,  # count of chunks that raised — loud failure on chunk errors
     }
+    failed_files: set[Path] = set()
     total = len(chunks)
 
     def _run_one(idx: int, chunk: list[Path]) -> tuple[int, dict | None, Exception | None]:
@@ -2711,6 +2712,7 @@ def extract_corpus_parallel(
             if exc is not None:
                 print(f"[graphify] chunk {idx + 1}/{total} failed: {exc}", file=sys.stderr)
                 merged["failed_chunks"] += 1
+                failed_files.update(unit_path(item) for item in chunk)
                 continue
             assert result is not None
             _merge_into(merged, result)
@@ -2736,6 +2738,7 @@ def extract_corpus_parallel(
                         file=sys.stderr,
                     )
                     merged["failed_chunks"] += 1
+                    failed_files.update(unit_path(item) for item in chunks[idx])
                     continue
                 assert result is not None
                 results_by_idx[idx] = result
@@ -2838,11 +2841,24 @@ def extract_corpus_parallel(
         if p.resolve() not in {c.resolve() for c in covered}
     )
     merged["uncovered_files"] = [str(p) for p in uncovered]
-    if uncovered:
-        shown = ", ".join(p.name for p in uncovered[:5])
-        more = f" (+{len(uncovered) - 5} more)" if len(uncovered) > 5 else ""
+    failed_resolved = {_resolve_against_root(p) for p in failed_files}
+    failed_uncovered = [p for p in uncovered if _resolve_against_root(p) in failed_resolved]
+    omitted_uncovered = [p for p in uncovered if _resolve_against_root(p) not in failed_resolved]
+    if failed_uncovered:
+        shown = ", ".join(p.name for p in failed_uncovered[:5])
+        more = f" (+{len(failed_uncovered) - 5} more)" if len(failed_uncovered) > 5 else ""
         print(
-            f"[graphify] WARNING: {len(uncovered)}/{len(dispatched)} dispatched file(s) "
+            f"[graphify] WARNING: {len(failed_uncovered)}/{len(dispatched)} dispatched "
+            f"file(s) produced no nodes because their semantic chunk failed before "
+            f"returning a usable result: {shown}{more}. See chunk errors above; a re-run "
+            "will retry them.",
+            file=sys.stderr,
+        )
+    if omitted_uncovered:
+        shown = ", ".join(p.name for p in omitted_uncovered[:5])
+        more = f" (+{len(omitted_uncovered) - 5} more)" if len(omitted_uncovered) > 5 else ""
+        print(
+            f"[graphify] WARNING: {len(omitted_uncovered)}/{len(dispatched)} dispatched file(s) "
             f"produced no nodes and are absent from the graph: {shown}{more}. The model "
             "returned a response but omitted them; a re-run will retry them.",
             file=sys.stderr,
