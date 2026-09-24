@@ -614,7 +614,7 @@ def test_sql_tsql_bracketed_procedure_is_recovered(tmp_path):
     )
     r = extract_sql(p)
     routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
-    assert routine == ["[dbo].[usp_LoadDebtors]()"], routine
+    assert routine == ["dbo.usp_LoadDebtors()"], routine
 
 
 def test_sql_tsql_create_or_alter_procedure_is_recovered(tmp_path):
@@ -628,7 +628,7 @@ def test_sql_tsql_create_or_alter_procedure_is_recovered(tmp_path):
     )
     r = extract_sql(p)
     labels = sorted(n["label"] for n in r["nodes"] if n["label"] != "proc.sql")
-    assert labels == ["[Utils].[ValidateSourceView]()", "usp_Bare()"], labels
+    assert labels == ["Utils.ValidateSourceView()", "usp_Bare()"], labels
 
 
 def test_sql_escaped_closing_bracket_in_routine_name_is_consumed(tmp_path):
@@ -641,7 +641,7 @@ def test_sql_escaped_closing_bracket_in_routine_name_is_consumed(tmp_path):
     p.write_text("CREATE PROCEDURE [dbo].[a]]b]\nAS\nBEGIN\n    SELECT 1;\nEND;\n")
     r = extract_sql(p)
     routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
-    assert routine == ["[dbo].[a]]b]()"], routine
+    assert routine == ["dbo.a]b()"], routine
 
 
 def test_sql_recovery_sites_agree_on_the_captured_name(tmp_path):
@@ -659,7 +659,7 @@ def test_sql_recovery_sites_agree_on_the_captured_name(tmp_path):
     p.write_text("CREATE PROCEDURE dbo.[usp_Mixed] AS\nBEGIN\n SELECT 1;\nEND;\n")
     r = extract_sql(p)
     routine = [n["label"] for n in r["nodes"] if n["label"] != "proc.sql"]
-    assert routine == ["dbo.[usp_Mixed]()"], routine
+    assert routine == ["dbo.usp_Mixed()"], routine
 
 
 def test_sql_tsql_proc_shorthand_is_recovered(tmp_path):
@@ -674,7 +674,7 @@ def test_sql_tsql_proc_shorthand_is_recovered(tmp_path):
     )
     r = extract_sql(p)
     labels = sorted(n["label"] for n in r["nodes"] if n["label"] != "proc.sql")
-    assert labels == ["[dbo].[usp_Short]()", "usp_BareShort()"], labels
+    assert labels == ["dbo.usp_Short()", "usp_BareShort()"], labels
 
 
 def test_sql_commented_ddl_is_not_fabricated_by_error_recovery(tmp_path):
@@ -697,7 +697,7 @@ def test_sql_commented_ddl_is_not_fabricated_by_error_recovery(tmp_path):
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "broken.sql"]
-    assert "[dbo].[usp_Real]()" in labels, labels
+    assert "dbo.usp_Real()" in labels, labels
     assert not any("Comment" in l for l in labels), (
         f"commented-out DDL fabricated a node: {labels}"
     )
@@ -730,8 +730,8 @@ def test_sql_comment_openers_inside_string_literals_do_not_hide_ddl(tmp_path):
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "strings.sql"]
-    assert "[dbo].[usp_AfterLineString]()" in labels, labels
-    assert "[dbo].[usp_AfterBlockString]()" in labels, labels
+    assert "dbo.usp_AfterLineString()" in labels, labels
+    assert "dbo.usp_AfterBlockString()" in labels, labels
 
 
 def test_mask_sql_comments_literal_and_comment_handling():
@@ -1051,7 +1051,7 @@ def test_sql_dynamic_sql_and_unclosed_comment_do_not_fabricate_routines(tmp_path
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "dynamic.sql"]
-    assert "[dbo].[usp_Real]()" in labels, labels
+    assert "dbo.usp_Real()" in labels, labels
     fabricated = [
         label for label in labels
         if any(k in label for k in ("Dynamic", "Nested", "Bracketed", "Unterminated"))
@@ -1078,7 +1078,7 @@ def test_sql_ddl_keywords_inside_delimited_identifiers_do_not_fabricate(tmp_path
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "alias.sql"]
-    assert labels == ["[dbo].[usp_Real]()"], labels
+    assert labels == ["dbo.usp_Real()"], labels
 
 
 def test_sql_create_inside_a_bare_word_does_not_fabricate(tmp_path):
@@ -1097,7 +1097,7 @@ def test_sql_create_inside_a_bare_word_does_not_fabricate(tmp_path):
     )
     r = extract_sql(p)
     labels = [n["label"] for n in r["nodes"] if n["label"] != "bare.sql"]
-    assert labels == ["[dbo].[usp_Real]()"], labels
+    assert labels == ["dbo.usp_Real()"], labels
 
 
 def test_sql_escaped_double_quote_in_routine_name_is_consumed(tmp_path):
@@ -1344,6 +1344,429 @@ def test_sql_schema_qualified_alter_fk():
     for e in fk_edges:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
         assert e["target"] in node_ids, f"dangling target: {e['target']}"
+
+def test_sql_tsql_bracket_identifiers_produce_clean_labels(tmp_path):
+    """#2712: [dbo].[Alpha] must label as dbo.Alpha, not the delimiter-mangled
+    `dbo].[Alpha` tree-sitter-sql's grammar produces for bracket quoting (it has
+    no token for `[...]`, so each bracket lands as its own one-byte ERROR node,
+    one character short of the real pair)."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE [dbo].[Alpha] (\n"
+        "    [Id] INT NOT NULL PRIMARY KEY\n"
+        ");\n"
+        "GO\n"
+        "CREATE TABLE [dbo].[Beta] (\n"
+        "    [Id] INT NOT NULL PRIMARY KEY\n"
+        ");\n"
+        "GO\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.Alpha" in labels, f"got {labels}"
+    assert "dbo.Beta" in labels, f"got {labels}"
+    assert not any("]" in l or "[" in l for l in labels), (
+        f"a bracket fragment leaked into a label: {labels}"
+    )
+
+def test_sql_tsql_bracket_reference_resolves_by_clean_name(tmp_path):
+    """#2712: a bracket-quoted FOREIGN KEY ... REFERENCES [dbo].[Alpha] must
+    resolve onto the real Alpha table node, not dangle or mint a stub keyed by
+    the mangled `Alpha` text."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE [dbo].[Alpha] ([Id] INT NOT NULL PRIMARY KEY);\n"
+        "GO\n"
+        "CREATE TABLE [dbo].[Beta] (\n"
+        "    [Id] INT NOT NULL PRIMARY KEY,\n"
+        "    [AlphaId] INT NOT NULL,\n"
+        "    CONSTRAINT [FK_Beta_Alpha] FOREIGN KEY ([AlphaId])\n"
+        "        REFERENCES [dbo].[Alpha] ([Id])\n"
+        ");\n"
+        "GO\n"
+    )
+    r = extract_sql(p)
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    assert "dbo.Alpha" in nid and "dbo.Beta" in nid
+    refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+    assert (nid["dbo.Beta"], nid["dbo.Alpha"]) in refs, f"got {refs}"
+
+def test_sql_tsql_bracket_debracketing_does_not_corrupt_array_types(tmp_path):
+    """#2712 follow-up: the bracket->backtick rewrite must not misfire on
+    Postgres/MySQL array-type syntax (`text[]`, `numeric(10)[3]`), which uses
+    `[...]` for something other than a T-SQL quoted identifier."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text("CREATE TABLE t (id INT, tags text[], scores numeric(10,2)[3]);\n")
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert any(l == "t" for l in labels), f"table extraction broke on array types: {labels}"
+    for l in labels:
+        assert "`" not in l, f"a synthetic backtick leaked into a label: {labels}"
+
+def test_sql_tsql_bracket_debracketing_does_not_corrupt_array_literal(tmp_path):
+    """#2712 follow-up: an ARRAY[...] literal must not be misread as a
+    bracket-quoted identifier just because its content is not purely numeric."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE t (id INT, tags INT[] DEFAULT ARRAY[1,2,3]);\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert any(l == "t" for l in labels), f"table extraction broke on ARRAY literal: {labels}"
+    for l in labels:
+        assert "`" not in l, f"a synthetic backtick leaked into a label: {labels}"
+
+def test_sql_tsql_bracket_does_not_strip_unrelated_mysql_backticks(tmp_path):
+    """#2721 follow-up: a genuinely backtick-quoted MySQL name elsewhere in the
+    same file must keep its backticks even though the file also needed T-SQL
+    debracketing for an unrelated statement -- the un-rewrite must only touch
+    the specific spans _debracket_tsql actually rewrote, not every
+    backtick-quoted name in a file that happened to need debracketing at all."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "mixed.sql"
+    p.write_text(
+        "CREATE TABLE [dbo].[Orders] (Id INT);\n"
+        "CREATE TABLE `mysql_table` (Id INT);\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.Orders" in labels, f"got {labels}"
+    assert "`mysql_table`" in labels, (
+        f"genuine MySQL backtick name stripped just because the file also had a "
+        f"T-SQL bracket span elsewhere: {labels}"
+    )
+
+def test_sql_tsql_bracket_does_not_strip_unrelated_backtick_part_of_same_name(tmp_path):
+    """#2721 follow-up, finer grained than the sibling test above: a name's
+    own byte range can overlap a debracketed span even when only ONE of
+    its dotted parts was actually touched ([dbo].`Foo`, a T-SQL schema
+    debracketed alongside a genuinely backtick-quoted table name in the
+    same reference). Un-rewriting must check each dotted part's own byte
+    range, not just whether the whole name overlaps a span somewhere --
+    otherwise the untouched part's backticks get stripped too."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "mixed.sql"
+    p.write_text("CREATE TABLE [dbo].`Foo` (Id INT);\n")
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.`Foo`" in labels, (
+        f"genuine backtick part stripped because the OTHER dotted part "
+        f"overlapped a debracketed span: {labels}"
+    )
+
+def test_sql_tsql_bracket_with_dot_is_left_unrewritten(tmp_path):
+    """tree_sitter_sql's grammar splits on a literal `.` even inside a
+    backtick span, so a bracket name like [My.Table] cannot be represented
+    by rewriting it to a backtick pair -- the grammar would still mangle it
+    into `My` + a bare `.` + `Table` + a stray dangling backtick. Debracketing
+    must refuse to rewrite such a span and leave it as plain bracket text
+    instead of producing a corrupted label."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "dotted.sql"
+    p.write_text("CREATE TABLE [My.Table] (Id INT);\n")
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "My.Table" in labels, f"got {labels}"
+    for l in labels:
+        assert "`" not in l, f"a synthetic backtick leaked into a label: {labels}"
+
+def test_sql_tsql_bracket_with_dot_adjacent_to_debracketed_part(tmp_path):
+    """A dot-containing bracket span left un-rewritten by _debracket_tsql is
+    not the only thing that can corrupt a label: tree_sitter_sql's own
+    grammar recovery for such a span sometimes groups the opening '[' into
+    the object_reference node while its matching ']' lands in a separate,
+    later sibling ERROR node -- confirmed even with none of this module's
+    rewriting involved, by feeding a raw bracket reference straight to the
+    parser. This leaks a stray, unmatched bracket into the read name,
+    whichever side of a '.' the dot-containing part sits on."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "dotted.sql"
+    p.write_text(
+        "CREATE TABLE [dbo].[My.Table] (Id INT);\n"
+        "CREATE TABLE [My.Schema].[Orders] (Id INT);\n"
+        "CREATE TABLE [dbo].[Later] (Id INT);\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.My.Table" in labels, f"got {labels}"
+    assert "My.Schema.Orders" in labels, f"got {labels}"
+    assert "dbo.Later" in labels, f"later statement swallowed or mislabeled: {labels}"
+    for l in labels:
+        assert "[" not in l and "]" not in l, f"a stray bracket leaked into a label: {labels}"
+
+def test_sql_tsql_debracket_does_not_corrupt_multiline_string(tmp_path):
+    """_debracket_tsql used to stop scanning a single quoted string at the
+    first newline regardless of whether it was actually closed there, so
+    bracket-like text on a later line of a still-open multi-line string
+    (dynamic SQL split across lines, say) was mistaken for a real bracket
+    identifier and rewritten to backtick form, corrupting the string's
+    content. The scan must follow the string to its real closing quote."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = b"SET @sql = 'first line\n[NotAnIdentifier] second line';\n"
+    new_src, spans = _debracket_tsql(src)
+    assert new_src == src, f"string content was rewritten: {new_src!r}"
+    assert not spans
+
+def test_sql_tsql_debracket_does_not_corrupt_dollar_quoted_body(tmp_path):
+    """A PostgreSQL dollar-quoted PL/pgSQL body ($$ ... $$ or $tag$ ... $tag$)
+    is opaque function body text, not SQL to debracket. _debracket_tsql had
+    no handling for it at all, so bracket-like text anywhere inside a
+    dollar-quoted body was mistaken for a real bracket identifier and
+    rewritten to backtick form, corrupting the body's content."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = (
+        b"CREATE FUNCTION foo() RETURNS void AS $$\n"
+        b"BEGIN\n"
+        b"    SELECT [NotReallyBracketIdent];\n"
+        b"END;\n"
+        b"$$ LANGUAGE plpgsql;\n"
+    )
+    new_src, spans = _debracket_tsql(src)
+    assert new_src == src, f"dollar-quoted body was rewritten: {new_src!r}"
+    assert not spans
+
+    tagged = (
+        b"CREATE FUNCTION foo() RETURNS void AS $body$\n"
+        b"    SELECT [NotAnIdentifier];\n"
+        b"$body$ LANGUAGE plpgsql;\n"
+    )
+    new_tagged, tagged_spans = _debracket_tsql(tagged)
+    assert new_tagged == tagged, f"tagged dollar-quoted body was rewritten: {new_tagged!r}"
+    assert not tagged_spans
+
+def test_sql_tsql_debracket_does_not_corrupt_backtick_identifier(tmp_path):
+    """A genuine MySQL backtick-quoted identifier that happens to contain
+    bracket-like text (`[weird]name`) had no dedicated scan branch, so its
+    content was walked character by character like ordinary source: the
+    embedded [weird] read as a real T-SQL bracket identifier and got
+    rewritten right there inside the existing backtick span, producing
+    doubled and orphaned backticks. A doubled backtick inside the span
+    (an escaped literal backtick) must not be mistaken for the close
+    either."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = b"CREATE TABLE `[weird]name` (Id INT);\n"
+    new_src, spans = _debracket_tsql(src)
+    assert new_src == src, f"backtick identifier was rewritten: {new_src!r}"
+    assert not spans
+
+    escaped = b"CREATE TABLE `a``b` (Id INT);\n"
+    new_escaped, escaped_spans = _debracket_tsql(escaped)
+    assert new_escaped == escaped, f"escaped backtick corrupted: {new_escaped!r}"
+    assert not escaped_spans
+
+def test_sql_tsql_debracket_backtick_scan_is_line_scoped(tmp_path):
+    """Unlike a string or dollar-quoted span, a backtick span must be
+    line-scoped: a name does not span lines in practice, so scanning past
+    a newline for a closing backtick would let one stray, unmatched
+    backtick anywhere in the file (a typo, a mark in a comment) silently
+    swallow everything after it as "still inside a span," disabling
+    debracketing for a real bracket identifier on a later line."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = (
+        b"-- a stray backtick here: `\n"
+        b"CREATE TABLE [dbo].[Orders] (Id INT);\n"
+    )
+    new_src, spans = _debracket_tsql(src)
+    assert spans, "the stray backtick swallowed the rest of the file"
+    assert b"`dbo`.`Orders`" in new_src, new_src
+
+def test_sql_tsql_debracket_leaves_bracket_content_with_backtick_alone(tmp_path):
+    """A T-SQL bracket identifier containing a literal backtick ([Foo`Bar],
+    a legal T-SQL name since only ] needs escaping inside a bracket) cannot
+    be represented by rewriting to backtick form: the grammar treats the
+    first backtick of the doubled escape this function would write
+    (`Foo``Bar`) as the closing delimiter rather than an escape, truncating
+    the identifier to Foo and leaving `Bar` as a stray ERROR node. Must be
+    left as a plain, un-rewritten bracket instead."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = b"CREATE TABLE [Foo`Bar] (Id INT);\n"
+    new_src, spans = _debracket_tsql(src)
+    assert new_src == src, f"bracket with backtick content was rewritten: {new_src!r}"
+    assert not spans
+
+def test_sql_tsql_debracket_does_not_rewrite_array_constructor_with_space(tmp_path):
+    """PostgreSQL allows whitespace between the ARRAY keyword and its
+    bracket constructor (ARRAY [1, 2, 3]). The preceding-character check
+    that tells an array marker apart from a bracket-quoted identifier only
+    looked at the single character right before '[', which is a space in
+    this shape rather than the keyword -- so the array literal was
+    mistaken for an identifier and rewritten to `1, 2, 3`."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = b"SELECT ARRAY [1, 2, 3];\n"
+    new_src, spans = _debracket_tsql(src)
+    assert new_src == src, f"array constructor was rewritten: {new_src!r}"
+    assert not spans
+
+    # A bracket identifier preceded by ordinary whitespace (not ARRAY) must
+    # still be rewritten -- this is the common, unaffected case.
+    ident = b"CREATE TABLE [Foo] (Id INT);\n"
+    new_ident, ident_spans = _debracket_tsql(ident)
+    assert new_ident == b"CREATE TABLE `Foo` (Id INT);\n", new_ident
+    assert ident_spans
+
+def test_sql_tsql_debracket_does_not_rewrite_array_constructor_after_newline(tmp_path):
+    """Same ARRAY-keyword gap as the space case above, but with a newline
+    (or a mix of whitespace kinds) between ARRAY and its bracket -- SQL
+    treats all whitespace between tokens the same way, so ARRAY\\n[1, 2, 3]
+    is just as valid as ARRAY [1, 2, 3], and the lookback must skip a
+    newline too, not just spaces and tabs."""
+    from graphify.extractors.sql import _debracket_tsql
+
+    src = b"SELECT ARRAY\n[1, 2, 3];\n"
+    new_src, spans = _debracket_tsql(src)
+    assert new_src == src, f"array constructor was rewritten: {new_src!r}"
+    assert not spans
+
+    mixed = b"SELECT ARRAY \t\n [1, 2, 3];\n"
+    new_mixed, mixed_spans = _debracket_tsql(mixed)
+    assert new_mixed == mixed, f"array constructor was rewritten: {new_mixed!r}"
+    assert not mixed_spans
+
+def test_sql_regex_recovery_survives_invalid_utf8_bytes_earlier_in_file(tmp_path):
+    """_clean_regex_name reconstructs a byte offset by re-encoding a
+    src_text slice, which only works if the original decode was lossless.
+    src_text used to decode with errors="replace", which collapses every
+    invalid byte to one U+FFFD that re-encodes to 3 bytes -- permanently
+    inflating every offset computed past an invalid byte anywhere earlier
+    in the file. A routine recovered only through the regex fallback (its
+    AS BEGIN...END body has no grammar rule at all, so it can never reach
+    _clean_name's tree-sitter-node path) then had its overlap check miss
+    every real debracket span, so a name debracketing DID touch kept its
+    backticks in the final label instead of having them stripped."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    invalid_run = b"\xff" * 200
+    p.write_bytes(
+        b"-- padding comment with invalid bytes " + invalid_run + b"\n"
+        b"CREATE TABLE [dbo].[Customer] (Id INT NOT NULL PRIMARY KEY);\n"
+        b"GO\n"
+        b"CREATE PROCEDURE [dbo].[GetCustomer] @Id INT\n"
+        b"AS\n"
+        b"BEGIN\n"
+        b"    SELECT Id FROM dbo.Customer WHERE Id = @Id;\n"
+        b"END\n"
+        b"GO\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.GetCustomer()" in labels, f"got {labels}"
+
+def test_sql_regex_recovery_name_uses_replacement_char_not_question_mark(tmp_path):
+    """A regex-recovered name whose OWN content carries one of src_text's
+    surrogate-escaped invalid bytes was sanitized via
+    text.encode(errors="replace").decode(), but that specific error
+    handler turns a lone surrogate into a bare "?", not the U+FFFD every
+    other invalid-byte path in this module produces (bytes.decode
+    (errors="replace") on a malformed sequence, as _read still uses) --
+    an inconsistent placeholder character for the same underlying
+    condition."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_bytes(
+        b"CREATE PROCEDURE [dbo].[Wei\xffrd] @Id INT\n"
+        b"AS\n"
+        b"BEGIN\n"
+        b"    SELECT 1;\n"
+        b"END\n"
+        b"GO\n"
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "dbo.Wei�rd()" in labels, f"got {labels}"
+    assert not any("?" in l for l in labels), f"got {labels}"
+    assert not any("`" in l for l in labels), f"backtick leaked into a label: {labels}"
+
+def test_sql_firebird_reference_recovery_ignores_string_literal_content(tmp_path):
+    """The Firebird CREATE TABLE/REFERENCES fallback used to scan raw
+    src_text directly, unlike its sibling routine/view recovery loops
+    which scan _scan_sql's masked output -- so a CREATE TABLE ...
+    REFERENCES ... shape sitting inside a single-quoted string literal
+    (dynamic SQL text, never executed as DDL) fabricated a real edge
+    between two genuinely unrelated tables that merely share names with
+    the string's content. This ran unconditionally, not just on
+    error-bearing files, so a completely clean file could fabricate an
+    edge too."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "THIS IS NOT VALID SQL AT ALL %%%;\n"
+        "CREATE TABLE Foo (Id INT);\n"
+        "CREATE TABLE Bar (Id INT);\n"
+        "SET @sql = 'CREATE TABLE Foo (Id INT REFERENCES Bar(Id))';\n"
+    )
+    r = extract_sql(p)
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+    assert (nid["Foo"], nid["Bar"]) not in refs, (
+        f"fabricated edge from string literal content: {refs}"
+    )
+
+def test_sql_firebird_reference_recovery_still_works_on_real_ddl(tmp_path):
+    """The masking fix above must not break the genuine recovery case it
+    exists for: a REFERENCES clause pushed out of the tree by an
+    unrelated ERROR node (Firebird COMPUTED BY columns, e.g.) still needs
+    to recover a real cross-table edge."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "THIS IS NOT VALID SQL AT ALL %%%;\n"
+        "CREATE TABLE Parent (Id INT NOT NULL PRIMARY KEY);\n"
+        "CREATE TABLE Child (Id INT, ParentId INT REFERENCES Parent(Id));\n"
+    )
+    r = extract_sql(p)
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+    assert (nid["Child"], nid["Parent"]) in refs, f"got {refs}"
+
+def test_sql_tsql_bracketed_fk_does_not_drop_child_table_or_fabricate_self_loop(tmp_path):
+    """#2713: a bracket-quoted FOREIGN KEY ... REFERENCES clause used to confuse
+    the parser badly enough that the whole child table (Invoice) — FK
+    constraint included — landed as bogus nested content inside the PARENT
+    table's (Customer) own subtree. That dropped Invoice from the graph
+    entirely and fabricated a Customer -> Customer self-referencing edge
+    tagged EXTRACTED (highest confidence) where no such reference exists in
+    the source. Fixed as a side effect of #2712's debracketing: with clean
+    identifier tokens the two CREATE TABLE statements parse as separate
+    top-level statements again."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "s.sql"
+    p.write_text(
+        "CREATE TABLE [dbo].[Customer] (\n"
+        "    [CustomerId] INT NOT NULL PRIMARY KEY,\n"
+        "    [Name]       NVARCHAR(100) NULL\n"
+        ");\n"
+        "GO\n"
+        "\n"
+        "CREATE TABLE [dbo].[Invoice] (\n"
+        "    [InvoiceId]  INT NOT NULL PRIMARY KEY,\n"
+        "    [CustomerId] INT NOT NULL,\n"
+        "    CONSTRAINT [FK_Invoice_Customer] FOREIGN KEY ([CustomerId])\n"
+        "        REFERENCES [dbo].[Customer] ([CustomerId])\n"
+        ");\n"
+        "GO\n"
+    )
+    r = extract_sql(p)
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    assert "dbo.Customer" in nid, "Customer table missing from the graph"
+    assert "dbo.Invoice" in nid, "Invoice table was dropped from the graph (#2713)"
+
+    refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+    assert (nid["dbo.Customer"], nid["dbo.Customer"]) not in refs, (
+        "fabricated Customer -> Customer self-loop present (#2713)"
+    )
+    assert (nid["dbo.Invoice"], nid["dbo.Customer"]) in refs, (
+        f"expected Invoice -> Customer reference edge, got {refs}"
+    )
 
 def test_sql_plpgsql_functions_survive_parse_errors():
     """PL/pgSQL bodies make tree-sitter-sql emit ERROR nodes; the functions
