@@ -345,3 +345,25 @@ def test_call_table_rows_without_whole_graph_params_unchanged(tmp_path):
     # semantics other call sites may rely on).
     export_node = [n for n in nodes if n["id"] == "export"]
     assert "External entry" in generate_call_table_rows(export_node, section_edges, "en")
+
+
+def test_diagram_coverage_states_what_is_drawn():
+    """The section diagram is capped, but the counts were only ever emitted as
+    a Mermaid `%%` comment, which Mermaid does not render."""
+    from graphify.callflow_html import generate_diagram_coverage
+
+    nodes = [{"id": f"n{i}", "label": f"fn{i}()", "source_file": "a.py"} for i in range(40)]
+    edges = [{"source": f"n{i}", "target": f"n{i+1}", "relation": "calls"} for i in range(39)]
+    out = generate_diagram_coverage(nodes, edges, "en", 18, 24)
+    assert "of 40 nodes" in out, out
+    assert 'class="diagram-coverage"' in out
+
+
+def test_diagram_coverage_silent_when_nothing_is_omitted():
+    """A complete diagram needs no disclosure."""
+    from graphify.callflow_html import generate_diagram_coverage
+
+    nodes = [{"id": "a", "label": "a()", "source_file": "a.py"},
+             {"id": "b", "label": "b()", "source_file": "a.py"}]
+    edges = [{"source": "a", "target": "b", "relation": "calls"}]
+    assert generate_diagram_coverage(nodes, edges, "en", 18, 24) == ""
