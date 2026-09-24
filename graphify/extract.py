@@ -22,6 +22,7 @@ from .resolver_registry import (
     register as register_language_resolver,
     run_language_resolvers,
 )
+from .commonlisp_resolution import resolve_commonlisp_calls
 from .ruby_resolution import resolve_ruby_member_calls
 from .csharp_dispatch import resolve_csharp_interface_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
@@ -3207,7 +3208,12 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
     stub_ids = {str(s.get("id")) for s in stubs if s.get("id")}
     stub_families: dict[str, set] = {}
     supertype_stub_ids: set[str] = set()  # stubs used as a base type — never a function
-    _SUPERTYPE_RELATIONS = {"inherits", "implements", "extends"}
+    # `specializes` joins these because a Common Lisp method dispatches on a
+    # TYPE, and functions and types occupy separate namespaces there: `list`,
+    # `stream` and `condition` are all routinely both. Without it a specializer
+    # stub can bind to a same-named function, which asserts a dispatch
+    # relationship that does not exist.
+    _SUPERTYPE_RELATIONS = {"inherits", "implements", "extends", "specializes"}
     for edge in edges:
         rel = edge.get("relation")
         for endpoint in ("source", "target"):
@@ -5475,6 +5481,16 @@ register_language_resolver(
 # graphify.ruby_resolution; registered here as a second consumer of the framework.
 register_language_resolver(
     LanguageResolver("ruby_member_calls", frozenset({".rb", ".rake"}), resolve_ruby_member_calls)
+)
+# Common Lisp bare-name calls across files. Lives in graphify.commonlisp_resolution;
+# a CL system calls functions defined in sibling files by bare name, so the
+# per-file pass cannot see most of its own call graph.
+register_language_resolver(
+    LanguageResolver(
+        "commonlisp_calls",
+        frozenset({".lisp", ".cl", ".lsp", ".asd"}),
+        resolve_commonlisp_calls,
+    )
 )
 register_language_resolver(
     LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx"}), _resolve_typescript_member_calls)
