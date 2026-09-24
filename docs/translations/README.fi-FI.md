@@ -13,7 +13,7 @@
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
 </p>
 
-**Taito tekoälykoodiavustajille.** Kirjoita `/graphify` Claude Codessa, Codexissa, OpenCodessa, Cursorissa, Gemini CLI:ssä, GitHub Copilot CLI:ssä, VS Code Copilot Chatissa, Aiderissa, OpenClawissa, Factory Droidissa, Traessa, Hermeksessä, Kirossa tai Google Antigravityssa — se lukee tiedostosi, rakentaa tietograafin ja palauttaa sinulle rakenteen, jota et tiennyt olevan. Ymmärrä koodikanta nopeammin. Löydä arkkitehtuuripäätösten taustalla oleva "miksi".
+**Taito tekoälykoodiavustajille.** Kirjoita `/graphify` Claude Codessa, Codexissa, OpenCodessa, Cursorissa, GitHub Copilot CLI:ssä, VS Code Copilot Chatissa, Aiderissa, OpenClawissa, Factory Droidissa, Traessa, Hermeksessä, Kirossa tai Google Antigravityssa — se lukee tiedostosi, rakentaa tietograafin ja palauttaa sinulle rakenteen, jota et tiennyt olevan. Ymmärrä koodikanta nopeammin. Löydä arkkitehtuuripäätösten taustalla oleva "miksi".
 
 Täysin multimodaalinen. Lisää koodia, PDF:iä, markdownia, kuvakaappauksia, kaavioita, liitutaulun valokuvia, muilla kielillä olevia kuvia tai video- ja äänitiedostoja — graphify poimii käsitteitä ja suhteita kaikesta ja yhdistää ne yhdeksi graafaksi. Videot litteroidaan paikallisesti Whisperillä. Tukee 25 ohjelmointikieltä tree-sitter AST:n kautta.
 
