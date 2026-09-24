@@ -322,6 +322,69 @@ def test_global_add_collision_warning(tmp_path, capsys):
     assert "warning" in captured.err.lower() or "warning" in captured.out.lower()
 
 
+def test_global_add_updates_manifest_path_after_a_same_content_repoint(tmp_path, capsys):
+    """Review finding: a repo tag re-pointed at a new path with identical
+    content took the hash-match skip return before the manifest entry's
+    source_path (and mtime/size/ctime/indexed_at) were ever refreshed to the
+    new location. Left unfixed, that stale source_path can never match the
+    resolved path again, so the fast stat path is permanently defeated for
+    this tag (every future add re-reads and re-hashes), and the "previously
+    pointed to" warning reprints on every subsequent call forever instead of
+    the single time it is meant to."""
+    g1 = tmp_path / "graph1.json"
+    g2 = tmp_path / "graph2.json"
+    G = _make_graph([{"id": "x", "label": "X", "source_file": "x.py"}])
+    _graph_to_json(G, g1)
+    _graph_to_json(G, g2)  # identical content, different path
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add, _load_manifest
+        global_add(g1, "myrepo")
+        global_add(g2, "myrepo")  # repoint, same content -> hash-match skip
+        capsys.readouterr()  # clear the repoint warning
+
+        manifest = _load_manifest()
+        assert manifest["repos"]["myrepo"]["source_path"] == str(g2.resolve())
+
+        global_add(g2, "myrepo")  # same tag, same path again
+
+    captured = capsys.readouterr()
+    assert "warning" not in captured.err.lower(), (
+        "the repoint warning must not reprint once the manifest reflects "
+        "the current path"
+    )
+
+
+def test_global_add_rejects_a_file_grown_past_the_cap_after_the_stat_check(tmp_path, monkeypatch):
+    """Review finding: the pre-read size cap check is stat-based, so a file
+    replaced with a larger one between that check and the actual read()
+    just below it is never re-confirmed against the cap. A post-read length
+    check closes that window before the much more expensive JSON parse and
+    graph merge run on an oversized payload."""
+    import pytest
+
+    src_graph = tmp_path / "graph.json"
+    G = _make_graph([{"id": "x", "label": "X", "source_file": "src/x.py"}])
+    _graph_to_json(G, src_graph)
+    actual_size = src_graph.stat().st_size
+
+    global_dir = tmp_path / ".graphify"
+    # Simulate the TOCTOU: the pre-read stat check is bypassed entirely (as
+    # if it had passed against a smaller file that was then swapped out),
+    # while the real cap stays below the file's actual size.
+    monkeypatch.setattr("graphify.security.check_graph_file_size_cap", lambda p: None)
+    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", actual_size - 1)
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add
+        with pytest.raises(ValueError, match="exceeds"):
+            global_add(src_graph, "repoA")
+
+
 # ── dedup guard ───────────────────────────────────────────────────────────────
 
 def test_dedup_raises_on_cross_repo_nodes():
