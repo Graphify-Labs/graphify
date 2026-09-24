@@ -567,3 +567,194 @@ def test_csharp_alias_using_scoped_to_its_block(tmp_path: Path):
     inh = {(e["source"], e["target"]) for e in result["edges"] if e.get("relation") == "inherits"}
     assert (good["id"], n_t["id"]) in inh, "Good must bind N.T via the in-block alias"
     assert (bad["id"], n_t["id"]) not in inh, "Bad (sibling block) must NOT see the alias"
+
+
+# ── member nodes must not enter the type-definition index (#3212) ─────────────
+#
+# `_build_csharp_type_def_index` treats every sourced `.cs` code node with a plain
+# identifier label as a type declaration. Property nodes (#3006) and enum member
+# nodes (#3063) are exactly that shape, so they entered the index and competed
+# with real declarations for a `(namespace, name)` key. The index resolves a
+# collision by sorting on (source_file, source_location, id) and taking the
+# first, which means a member in an earlier-sorting file silently captured every
+# reference to the type it shares a name with.
+
+
+def _members(result: dict, label: str) -> list[dict]:
+    return [
+        n for n in result["nodes"]
+        if n.get("label") == label and (n.get("metadata") or {}).get("is_member")
+    ]
+
+
+def test_csharp_type_def_index_skips_member_nodes():
+    # Pin the mechanism directly: given a member and a real declaration under the
+    # same key, the index must hold the declaration whatever the sort would say.
+    from graphify.extractors.csharp import _build_csharp_type_def_index
+
+    member = {
+        "id": "holder_app_holder_widget", "label": "Widget", "file_type": "code",
+        "source_file": "Holder.cs", "source_location": "L2",
+        "metadata": {"namespace": "App", "is_member": True},
+    }
+    declaration = {
+        "id": "widget_app_widget", "label": "Widget", "file_type": "code",
+        "source_file": "Widget.cs", "source_location": "L2",
+        "metadata": {"namespace": "App"},
+    }
+    index = _build_csharp_type_def_index([member, declaration])
+    assert index[("App", "Widget")] == "widget_app_widget"
+
+    # And a member alone is not a fallback: the key must be absent rather than
+    # pointing at something that cannot be a type.
+    assert ("App", "Widget") not in _build_csharp_type_def_index([member])
+
+
+def test_csharp_property_named_after_its_type_does_not_capture_the_type(tmp_path: Path):
+    # `public Widget Widget { get; set; }` is ordinary C#. holder.cs sorts before
+    # widget.cs, so before the fix the property won the key and BOTH classes
+    # bound their reference to it, in two different files.
+    _write(tmp_path / "holder.cs",
+           "namespace App;\npublic class Holder { public Widget Widget { get; set; } }\n")
+    _write(tmp_path / "widget.cs", "namespace App;\npublic class Widget {}\n")
+    _write(tmp_path / "other.cs",
+           "namespace App;\npublic class Other { public Widget Thing { get; set; } }\n")
+    result = extract(
+        [tmp_path / "holder.cs", tmp_path / "widget.cs", tmp_path / "other.cs"],
+        cache_root=tmp_path,
+    )
+
+    resolved = [t for t in _targets(result, "references", "Widget") if t.get("source_file")]
+    assert resolved, "expected the Widget references to resolve"
+    assert all("widget.cs" in t["source_file"] for t in resolved), \
+        f"a reference bound to the property instead of the class: {[t['source_file'] for t in resolved]}"
+
+
+def test_csharp_property_does_not_shadow_a_type_declared_in_the_same_file(tmp_path: Path):
+    # The same-file shape, which is what shows up in DTO code: the property is
+    # declared above the class, so it also wins the source_location tiebreak.
+    _write(
+        tmp_path / "model.cs",
+        "namespace App;\n"
+        "public class Model { public ReviewInfo ReviewInfo { get; set; } }\n"
+        "public class ReviewInfo { public int Count { get; set; } }\n",
+    )
+    result = extract([tmp_path / "model.cs"], cache_root=tmp_path)
+
+    # Both candidates live in one file, so source_file cannot tell them apart and
+    # the member stamp is this fix's own marker, which would make the assertion
+    # vacuous on the unfixed code. Identify the property independently: it is the
+    # node its class points at with `defines`.
+    defined = {e["target"] for e in result["edges"] if e.get("relation") == "defines"}
+    targets = _targets(result, "references", "ReviewInfo")
+    assert targets, "expected a reference to ReviewInfo"
+    for t in targets:
+        assert t["id"] not in defined, \
+            "the property captured the reference to the class of the same name"
+
+
+def test_csharp_unreachable_type_dangles_rather_than_binding_to_a_member(tmp_path: Path):
+    # No `using`, so NsB cannot see NsA.Widget and the reference must dangle.
+    # Before the fix the property in NsB absorbed it, inventing a binding that
+    # the C# scoping rules do not allow.
+    _write(tmp_path / "a_widget.cs", "namespace NsA;\npublic class Widget {}\n")
+    _write(tmp_path / "b_holder.cs",
+           "namespace NsB;\npublic class Holder { public Widget Widget { get; set; } }\n")
+    result = extract(
+        [tmp_path / "a_widget.cs", tmp_path / "b_holder.cs"], cache_root=tmp_path,
+    )
+
+    targets = _targets(result, "references", "Widget")
+    assert targets, "expected a Widget reference"
+    for t in targets:
+        # A sourceless stub is the right answer here. Asserting the absence of
+        # the member stamp would pass on the unfixed code, where no node carries
+        # it; asserting the stub is independent of the fix.
+        assert not t.get("source_file"), \
+            f"an out-of-scope reference bound to {t['source_file']} instead of dangling"
+
+
+def test_csharp_enum_member_does_not_capture_a_type_of_the_same_name(tmp_path: Path):
+    # abc.cs sorts before zeta.cs, so the enum member used to win the key.
+    _write(tmp_path / "abc.cs", "namespace App;\npublic enum ProductType { Standard, Bundle }\n")
+    _write(tmp_path / "zeta.cs", "namespace App;\npublic class Standard {}\n")
+    _write(tmp_path / "user.cs",
+           "namespace App;\npublic class User { public Standard Thing { get; set; } }\n")
+    result = extract(
+        [tmp_path / "abc.cs", tmp_path / "zeta.cs", tmp_path / "user.cs"],
+        cache_root=tmp_path,
+    )
+
+    resolved = [t for t in _targets(result, "references", "Standard") if t.get("source_file")]
+    assert resolved, "expected the Standard reference to resolve"
+    assert all("zeta.cs" in t["source_file"] for t in resolved), \
+        "the enum member captured the reference to the class"
+
+
+def test_csharp_enum_nested_in_a_class_keeps_its_members_out_of_the_index(tmp_path: Path):
+    # A nested enum carries `is_nested_type` and is already skipped, but its
+    # members are not nested types and need the member stamp of their own.
+    _write(tmp_path / "abc.cs",
+           "namespace App;\npublic class Wrapper { public enum Kind { Standard } }\n")
+    _write(tmp_path / "zeta.cs", "namespace App;\npublic class Standard {}\n")
+    _write(tmp_path / "user.cs",
+           "namespace App;\npublic class User { public Standard Thing { get; set; } }\n")
+    result = extract(
+        [tmp_path / "abc.cs", tmp_path / "zeta.cs", tmp_path / "user.cs"],
+        cache_root=tmp_path,
+    )
+
+    resolved = [t for t in _targets(result, "references", "Standard") if t.get("source_file")]
+    assert resolved, "expected the Standard reference to resolve"
+    assert all("zeta.cs" in t["source_file"] for t in resolved), \
+        "a nested enum's member captured the reference"
+
+
+def test_csharp_member_nodes_and_their_edges_are_untouched(tmp_path: Path):
+    # The fix is a resolution guard, not a removal: #3006's property node and
+    # #3063's enum member node, and the edges that hang them off their type,
+    # must all still be there.
+    _write(
+        tmp_path / "model.cs",
+        "namespace App;\n"
+        "public class Holder { public int Count { get; set; } }\n"
+        "public enum Mode { Fast }\n",
+    )
+    result = extract([tmp_path / "model.cs"], cache_root=tmp_path)
+
+    by_label = {n["label"]: n for n in result["nodes"]}
+    assert "Count" in by_label and "Fast" in by_label
+    pairs = {(e["source"], e["target"], e["relation"]) for e in result["edges"]}
+    assert (by_label["Holder"]["id"], by_label["Count"]["id"], "defines") in pairs
+    assert (by_label["Mode"]["id"], by_label["Fast"]["id"], "case_of") in pairs
+
+
+def test_csharp_member_stamp_does_not_displace_the_namespace_metadata(tmp_path: Path):
+    # add_node merges the stamp with what it fills in itself. The namespace is
+    # what every C# resolution pass keys on, so losing it would trade one
+    # resolution bug for another.
+    _write(
+        tmp_path / "model.cs",
+        "namespace Deep.Space;\n"
+        "public class Holder { public int Count { get; set; } }\n"
+        "public enum Mode { Fast }\n",
+    )
+    result = extract([tmp_path / "model.cs"], cache_root=tmp_path)
+
+    for label in ("Count", "Fast"):
+        member = _members(result, label)
+        assert member, f"{label} lost its member stamp"
+        assert member[0]["metadata"].get("namespace") == "Deep.Space"
+
+
+def test_csharp_type_still_resolves_when_no_member_shadows_it(tmp_path: Path):
+    # Control: the guard must not cost a normal resolution.
+    _write(tmp_path / "widget.cs", "namespace App;\npublic class Widget {}\n")
+    _write(tmp_path / "holder.cs",
+           "namespace App;\npublic class Holder { public Widget Main { get; set; } }\n")
+    result = extract(
+        [tmp_path / "widget.cs", tmp_path / "holder.cs"], cache_root=tmp_path,
+    )
+
+    resolved = [t for t in _targets(result, "references", "Widget") if t.get("source_file")]
+    assert resolved and all("widget.cs" in t["source_file"] for t in resolved)
