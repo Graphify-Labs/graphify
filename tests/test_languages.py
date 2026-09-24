@@ -1070,6 +1070,20 @@ def test_kotlin_user_types_still_emit_references():
     assert ("run", "DataProcessor") in _edge_labels(r, "references", "parameter_type")
 
 
+def test_kotlin_primary_constructor_val_emits_references():
+    # `class HttpClient(private val config: Config)` - a constructor-injected
+    # field declared directly in the primary constructor's class_parameters,
+    # as opposed to a body-level `val`/`var` (property_declaration, already
+    # covered by test_kotlin_user_types_still_emit_references above). This is
+    # the idiomatic Kotlin/Hilt DI pattern (`@Inject constructor(private val
+    # x: Foo)`) and was previously dropped entirely: the Kotlin branch only
+    # walked delegation_specifiers (supertypes) and property_declaration
+    # (body vals), never primary_constructor/class_parameters, so every
+    # constructor-injected dependency was invisible to the graph.
+    r = extract_kotlin(FIXTURES / "sample.kt")
+    assert ("HttpClient", "Config") in _edge_labels(r, "references", "field")
+
+
 # ── Scala ─────────────────────────────────────────────────────────────────────
 
 def test_scala_no_error():
