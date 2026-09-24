@@ -380,16 +380,23 @@ def test_rebuild_code_drops_labels_whose_community_changed(tmp_path):
 
     out = corpus / "graphify-out"
     labels_file = out / ".graphify_labels.json"
+    pending_file = out / ".graphify_labels.pending.json"
     sig_file = out / ".graphify_labels.json.sig"
     assert sig_file.exists(), "rebuild must persist membership signatures beside labels"
 
-    # Stand in for an LLM naming pass: give every community a distinctive name,
-    # leaving the signatures untouched so they still describe THIS clustering.
-    labels = json.loads(labels_file.read_text(encoding="utf-8"))
-    assert labels, "expected the first rebuild to write community labels"
+    # A from-empty rebuild's hub-fallback names land in the pending sidecar,
+    # not the tracked file (#3334) -- read the cid list from there.
+    pending = json.loads(pending_file.read_text(encoding="utf-8"))
+    assert pending, "expected the first rebuild to write pending hub-fallback labels"
+
+    # Stand in for an LLM naming pass: give every community a distinctive,
+    # CURATED name (a real naming pass promotes a pending entry into the
+    # tracked file), leaving the signatures untouched so they still describe
+    # THIS clustering.
     labels_file.write_text(
-        json.dumps({cid: f"Named-{cid}" for cid in labels}), encoding="utf-8"
+        json.dumps({cid: f"Named-{cid}" for cid in pending}), encoding="utf-8"
     )
+    pending_file.unlink()
 
     # Grow the corpus so clustering changes, then rebuild incrementally.
     for name in ("b.py", "c.py", "d.py"):
@@ -438,6 +445,128 @@ def test_rebuild_code_drops_labels_whose_community_changed(tmp_path):
                 f"node {node['id']} carries stale community_name "
                 f"{node['community_name']!r}"
             )
+
+
+def test_rebuild_code_keeps_hub_fallback_labels_out_of_the_tracked_file(tmp_path):
+    """#3334: a from-empty rebuild (a fresh clone, a new worktree, any CI job
+    with no prior graphify-out/) names every community by its deterministic
+    hub, but that name is not something anyone reviewed or asked to commit.
+    Writing it into the same tracked file as genuinely curated names meant a
+    routine rebuild kept appending placeholder entries to a file the project
+    is told to commit as its reviewed semantic layer. The tracked file must
+    stay empty on a first, from-empty rebuild; the fallback names must still
+    be findable (in the pending sidecar) and must still reach the report."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (corpus / "b.py").write_text("def beta():\n    return 2\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    out = corpus / "graphify-out"
+    labels_file = out / ".graphify_labels.json"
+    pending_file = out / ".graphify_labels.pending.json"
+
+    tracked = json.loads(labels_file.read_text(encoding="utf-8"))
+    assert tracked == {}, (
+        f"a from-empty rebuild must not write hub-fallback names into the "
+        f"tracked labels file; got {tracked}"
+    )
+    assert pending_file.exists(), "hub-fallback names must land in the pending sidecar"
+    pending = json.loads(pending_file.read_text(encoding="utf-8"))
+    assert pending, "expected at least one hub-fallback label in the sidecar"
+
+    # The fallback names must still reach graph.json, unaffected by the split:
+    # every node's community_name comes from the merged (curated + pending)
+    # labels dict, not from the tracked file alone.
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    names_seen = {
+        str(n.get("community")): n.get("community_name")
+        for n in graph["nodes"] if n.get("community") is not None
+    }
+    for cid, name in pending.items():
+        assert names_seen.get(cid) == name, (
+            f"community {cid}'s hub-fallback name did not reach graph.json "
+            f"(expected {name!r}, saw {names_seen.get(cid)!r})"
+        )
+
+
+def test_rebuild_code_reuses_pending_labels_without_regenerating(tmp_path):
+    """A hub-fallback name, once written to the pending sidecar, must be
+    REUSED on the next rebuild (not silently regenerated every run) as long
+    as the community's membership hasn't changed -- matching the existing
+    reuse guarantee already given to curated labels."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    out = corpus / "graphify-out"
+    pending_file = out / ".graphify_labels.pending.json"
+    first = json.loads(pending_file.read_text(encoding="utf-8"))
+    assert first
+
+    # Hand-edit the pending sidecar to a distinguishable value, then force a
+    # real rebuild (unrelated file added, so the topology fast path is
+    # skipped and the label merge logic actually runs) without touching the
+    # community's own membership.
+    pending_file.write_text(
+        json.dumps({cid: "Reused Fallback Name" for cid in first}), encoding="utf-8"
+    )
+    (corpus / "unrelated.py").write_text("x = 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    second = json.loads(pending_file.read_text(encoding="utf-8"))
+    assert "Reused Fallback Name" in second.values(), (
+        f"pending label was regenerated instead of reused; got {second}"
+    )
+
+
+def test_rebuild_code_promotes_curated_label_and_drops_it_from_pending(tmp_path):
+    """A community that starts as an unreviewed hub fallback and then gets a
+    real (curated) name -- simulating what a `graphify label` pass does --
+    must end up in the tracked file, not still duplicated in the pending
+    sidecar."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+    out = corpus / "graphify-out"
+    labels_file = out / ".graphify_labels.json"
+    pending_file = out / ".graphify_labels.pending.json"
+    pending = json.loads(pending_file.read_text(encoding="utf-8"))
+    assert pending
+
+    # Promote every pending entry into the tracked file, as a real naming
+    # pass would, and remove it from pending.
+    labels_file.write_text(
+        json.dumps({cid: f"Curated {cid}" for cid in pending}), encoding="utf-8"
+    )
+    pending_file.unlink()
+
+    (corpus / "unrelated.py").write_text("x = 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    tracked_after = json.loads(labels_file.read_text(encoding="utf-8"))
+    for cid in pending:
+        assert tracked_after.get(cid, "").startswith("Curated "), (
+            f"promoted label for community {cid} did not survive in the tracked file"
+        )
+    if pending_file.exists():
+        pending_after = json.loads(pending_file.read_text(encoding="utf-8"))
+        assert set(pending_after) & set(pending) == set(), (
+            "a promoted community must not still appear in the pending sidecar"
+        )
 
 
 def test_rebuild_code_keeps_a_visualization_when_over_the_viz_cap(tmp_path, monkeypatch):

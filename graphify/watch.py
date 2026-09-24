@@ -2076,6 +2076,19 @@ def _rebuild_code(
         surprises = surprising_connections(G, communities)
         labels_file = out / ".graphify_labels.json"
         sig_file = out / (".graphify_labels.json" + ".sig")
+        # #3334: a community without a curated name gets a deterministic hub
+        # fallback below so reports and graph.json always show something
+        # readable -- but that fallback used to be written straight into the
+        # same tracked file as genuinely-curated (manual or LLM) names, so a
+        # from-empty rebuild (a fresh clone, a new worktree, any CI run) kept
+        # appending fallback entries to a file users are told is the reviewed,
+        # committable semantic layer. Fallback names now live in a SEPARATE
+        # sidecar (`pending_labels_file`) that never needs reviewing, so the
+        # tracked file only ever contains names someone actually set.
+        # `pending_cids` tracks which entries in `labels` came from there (or
+        # from this run's hub-fill) rather than the tracked file, so the write
+        # step below can route each cid back to the file it belongs in.
+        pending_labels_file = out / ".graphify_labels.pending.json"
         try:
             raw = json.loads(labels_file.read_text(encoding="utf-8")) if labels_file.exists() else {}
             # Skip persisted "Community N" placeholders so the hub-fill below
@@ -2087,6 +2100,19 @@ def _rebuild_code(
         except Exception:
             raw = {}
             labels = {}
+        pending_cids: set[int] = set()
+        try:
+            pending_raw = (
+                json.loads(pending_labels_file.read_text(encoding="utf-8"))
+                if pending_labels_file.exists() else {}
+            )
+            for k, v in pending_raw.items():
+                cid = int(k)
+                if cid in communities and cid not in labels and v != f"Community {cid}":
+                    labels[cid] = v
+                    pending_cids.add(cid)
+        except Exception:
+            pass
         # A saved label belongs to a cid, but re-clustering reassigns cids: after a
         # rebuild that adds nodes, cid 30 can cover a completely different community
         # and its old name is then simply wrong. Validate every reused label against
@@ -2113,16 +2139,21 @@ def _rebuild_code(
         else:
             # No sidecar (labels predate it). A differing community COUNT means the
             # labels describe a different clustering, so no cid's label is trustworthy;
-            # an equal count is the best available "unchanged" signal.
+            # an equal count is the best available "unchanged" signal. Compare
+            # against the tracked file alone (`raw`), not the pending-merged
+            # `labels` -- a from-empty rebuild's fresh pending entries must not
+            # count toward "how many labels were saved".
             stale = set(labels) if len(raw) != len(communities) else set()
         for cid in stale:
             del labels[cid]
+            pending_cids.discard(cid)
         missing = {cid: members for cid, members in communities.items() if cid not in labels}
         if missing:
             # Deterministic hub name (highest-degree member) beats a bare "Community N"
             # placeholder for any community without a saved label.
             from graphify.cluster import label_communities_by_hub
             labels.update(label_communities_by_hub(G, missing))
+            pending_cids.update(missing)
         if stale:
             print(
                 f"[graphify watch] community set changed since labeling "
@@ -2137,7 +2168,14 @@ def _rebuild_code(
                           {"input": 0, "output": 0}, report_root, suggested_questions=questions,
                           built_at_commit=commit, learning=_llfr(out / "graph.json"))
         report_path = out / "GRAPH_REPORT.md"
-        labels_json = json.dumps({str(k): v for k, v in sorted(labels.items())}, ensure_ascii=False, indent=2) + "\n"
+        # Split back into the tracked (curated) file and the pending
+        # (hub-fallback) sidecar (#3334) -- report/graph.json generation above
+        # already used the full, merged `labels` so a fallback-named community
+        # still reads correctly there; only the on-disk split changes.
+        curated_labels = {cid: v for cid, v in labels.items() if cid not in pending_cids}
+        pending_labels = {cid: v for cid, v in labels.items() if cid in pending_cids}
+        labels_json = json.dumps({str(k): v for k, v in sorted(curated_labels.items())}, ensure_ascii=False, indent=2) + "\n"
+        pending_labels_json = json.dumps({str(k): v for k, v in sorted(pending_labels.items())}, ensure_ascii=False, indent=2) + "\n"
         graph_tmp = out / ".graph.tmp.json"
         json_written = to_json(G, communities, str(graph_tmp), force=True, built_at_commit=commit, community_labels=labels)
         if not json_written:
@@ -2199,6 +2237,14 @@ def _rebuild_code(
             os_replace_with_fallback(graph_tmp, existing_graph)
             report_path.write_text(report, encoding="utf-8")
             labels_file.write_text(labels_json, encoding="utf-8")
+            if pending_labels:
+                pending_labels_file.write_text(pending_labels_json, encoding="utf-8")
+            else:
+                # Every community now has a curated name (or there simply are
+                # none pending this run) -- a leftover empty/stale sidecar
+                # would otherwise sit there forever once its last entry is
+                # promoted to a real label.
+                pending_labels_file.unlink(missing_ok=True)
             # Keep the membership signatures in step with the labels we just wrote.
             # Skipping this was the other half of the stale-label bug: labels.json
             # advanced every rebuild while the sidecar kept describing an older
