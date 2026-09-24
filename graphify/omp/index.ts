@@ -86,10 +86,12 @@ function runGuard(command: string, kind: string, payload: string, cwd: string, s
 
 export default function graphify(api: ExtensionAPI): void {
   // Claude PreToolUse additionalContext parity: `tool_call` captures the guard's
-  // guidance for that call, `tool_result` appends it to the persisted tool
-  // result. Every qualifying call carries its own nudge — no dedup — and the
-  // text lands inline with the call it belongs to, surviving compaction like
-  // any other tool output.
+  // guidance for that call, `tool_result` delivers it with that call's result.
+  // Claude Code wraps the text in a system reminder naming the hook instead of
+  // passing it off as tool output, so it leads the result as one labelled
+  // <system-reminder> block -- the shape OMP's own per-tool TTSR reminders use.
+  // Every qualifying call carries its own nudge (no dedup), and it survives
+  // compaction like any other tool output.
   const pending = new Map<string, string>();
   let generation = 0;
   let controller = new AbortController();
@@ -162,6 +164,7 @@ export default function graphify(api: ExtensionAPI): void {
     const nudge = pending.get(event.toolCallId);
     if (nudge === undefined) return;
     pending.delete(event.toolCallId);
-    return { content: [...event.content, { type: "text" as const, text: nudge }] };
+    const reminder = `<system-reminder source="graphify">\n${nudge}\n</system-reminder>`;
+    return { content: [{ type: "text" as const, text: reminder }, ...event.content] };
   });
 }

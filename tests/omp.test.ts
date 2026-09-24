@@ -32,6 +32,17 @@ function harness() {
   };
 }
 
+// Claude Code delivers PreToolUse additionalContext as a system reminder that names the
+// hook, never as tool output. Assert that shape: the guidance leads the result as one
+// labelled reminder block, and the tool's own output follows unchanged.
+function guidanceOf(result: Result, output: { type: string; text: string }[]): string {
+  expect(result?.content).toEqual([expect.objectContaining({ type: "text" }), ...output]);
+  const match = result!.content![0].text.match(/^<system-reminder source="graphify">\n([\s\S]*)\n<\/system-reminder>$/);
+  expect(match).not.toBeNull();
+  return match![1];
+}
+const ok = [{ type: "text", text: "ok" }];
+
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "graphify-omp-"));
   cwd = join(root, "project");
@@ -94,12 +105,11 @@ test("real CLI strict denial blocks selector reads; every later call nudges via 
   expect(existsSync(join(cwd, "graphify-out", "cache", "hook_sessions", "omp-test-session.denied"))).toBe(true);
   // After the one-time deny, every qualifying call still carries its own guidance.
   expect(await api.emit("tool_call", { ...event, toolCallId: "call-2" })).toBeUndefined();
-  const second = await api.emit("tool_result", { toolCallId: "call-2", content: [{ type: "text", text: "ok" }] });
-  expect(second?.content).toHaveLength(2);
-  expect(second?.content?.[1].text).toContain("graphify");
+  const second = await api.emit("tool_result", { toolCallId: "call-2", content: ok });
+  expect(guidanceOf(second, ok)).toContain("graphify");
   expect(await api.emit("tool_call", { ...event, toolCallId: "call-3" })).toBeUndefined();
-  const third = await api.emit("tool_result", { toolCallId: "call-3", content: [{ type: "text", text: "ok" }] });
-  expect(third?.content).toHaveLength(2);
+  const third = await api.emit("tool_result", { toolCallId: "call-3", content: ok });
+  expect(guidanceOf(third, ok)).toContain("graphify");
   // Navigation resets pending guidance: a result arriving after the reset is untouched.
   await api.emit("before_agent_start");
   expect(await api.emit("tool_result", { toolCallId: "call-3", content: [{ type: "text", text: "ok" }] })).toBeUndefined();
@@ -117,9 +127,8 @@ test("native grep, bash search, and glob expose the installed CLI's actual guida
     })).hookSpecificOutput.additionalContext;
     const toolCallId = `${toolName}-1`;
     expect(await api.emit("tool_call", { toolName, input, toolCallId })).toBeUndefined();
-    const result = await api.emit("tool_result", { toolCallId, content: [{ type: "text", text: "ok" }] });
-    expect(result?.content).toHaveLength(2);
-    expect(result?.content?.[1].text).toBe(expected);
+    const result = await api.emit("tool_result", { toolCallId, content: ok });
+    expect(guidanceOf(result, ok)).toBe(expected);
   }
 });
 
@@ -130,10 +139,10 @@ test("multi-target glob calls surface every target's guidance", async () => {
   writeFileSync(control, JSON.stringify({ mode: "varying" }));
   const api = harness();
   expect(await api.emit("tool_call", { toolName: "glob", input: { path: "source.py;stale.py" }, toolCallId: "call-1" })).toBeUndefined();
-  const result = await api.emit("tool_result", { toolCallId: "call-1", content: [{ type: "text", text: "ok" }] });
-  expect(result?.content).toHaveLength(2);
-  expect(result?.content?.[1].text).toContain("guidance 1");
-  expect(result?.content?.[1].text).toContain("guidance 2");
+  const result = await api.emit("tool_result", { toolCallId: "call-1", content: ok });
+  const guidance = guidanceOf(result, ok);
+  expect(guidance).toContain("guidance 1");
+  expect(guidance).toContain("guidance 2");
 });
 
 test("URLs, internal resources, literal selector-like names and false trust do not run project hooks", async () => {
@@ -159,7 +168,7 @@ test("a file:// read target resolves to the real local path and still reaches th
   const api = harness();
   await api.emit("tool_call", { toolName: "read", input: { path: `file://${join(cwd, "source.py")}` }, toolCallId: "call-1" });
   const inProject = await api.emit("tool_result", { toolCallId: "call-1", content: [] });
-  expect(inProject?.content?.[0]?.text).toContain("graphify");
+  expect(guidanceOf(inProject, [])).toContain("graphify");
   // ...while one outside the project still resolves (the CLI subprocess
   // runs), but the guard's own containment check stays silent, same as any
   // other out-of-project absolute path.
@@ -182,7 +191,7 @@ test("a file:// read target with an explicit localhost authority still reaches t
   const api = harness();
   await api.emit("tool_call", { toolName: "read", input: { path: `file://localhost${join(cwd, "source.py")}` }, toolCallId: "call-1" });
   const result = await api.emit("tool_result", { toolCallId: "call-1", content: [] });
-  expect(result?.content?.[0]?.text).toContain("graphify");
+  expect(guidanceOf(result, [])).toContain("graphify");
 });
 
 test("navigation cancels in-flight guidance before the next session's tool results", async () => {
