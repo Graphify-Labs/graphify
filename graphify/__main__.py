@@ -735,7 +735,7 @@ def _run_cli() -> None:
         print("  codex install           write graphify section to AGENTS.md (Codex)")
         print("  codex uninstall         remove graphify section from AGENTS.md")
         print(
-            "  opencode install        write graphify section to AGENTS.md + tool.execute.before plugin (OpenCode)"
+            "  opencode install        write graphify section to AGENTS.md + shell hook plugin (OpenCode)"
         )
         print(
             "  opencode uninstall      remove graphify section from AGENTS.md + plugin"
