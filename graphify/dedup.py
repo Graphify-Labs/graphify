@@ -1082,18 +1082,30 @@ def _pick_winner(nodes: list[dict]) -> dict:
     source-less stub carrying a couple of incidental bookkeeping keys (e.g.
     ``external``/``type``/``_origin``) — the stub could out-score and replace
     the genuine record purely on field count (#3775). Provenance is checked
-    ahead of richness so a node with a real source location always wins over
-    one without; it only changes the outcome when the two sides disagree on
-    provenance, so every case where both (or neither) side has a source file
-    keeps the existing richness-then-length ordering.
+    ahead of richness, in two steps: a node with a ``source_file`` always
+    beats one without, and among nodes that both have one, a node that also
+    has a ``source_location`` beats one that doesn't (the codebase genuinely
+    emits ``source_location: None`` on some records, so this is a real
+    distinction, not a hypothetical one — richness ignores it too, the same
+    gap #3775 closed one level up). Each step only changes the outcome when
+    the two sides disagree; whenever they agree (both or neither have a
+    source file, and both or neither have a location), the existing
+    richness-then-length ordering decides as before.
     """
     if not nodes:
         raise ValueError("Cannot pick winner from empty list")
 
-    def _score(n: dict) -> tuple[int, int, int, int]:
+    def _score(n: dict) -> tuple[int, int, int, int, int]:
         has_suffix = bool(_CHUNK_SUFFIX.search(n["id"]))
         no_source = 0 if n.get("source_file") else 1
-        return (1 if has_suffix else 0, no_source, -_content_richness(n), len(n["id"]))
+        # A source_file with no source_location (the codebase genuinely emits
+        # `source_location: None`, see _merge_missing_attributes above) is a
+        # weaker provenance claim than a fully located record -- richness
+        # ignores source_location too, so without this check a candidate that
+        # merely knows which file it came from could still out-score, and
+        # replace, one that also knows exactly where in it (#3775 review).
+        no_location = 0 if n.get("source_location") else 1
+        return (1 if has_suffix else 0, no_source, no_location, -_content_richness(n), len(n["id"]))
 
     return min(nodes, key=_score)
 
