@@ -497,6 +497,14 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
         "skill_refs": "pi",
     },
+    "omp": {
+        # OMP (Oh My Pi) mirrors pi's agent layout under ~/.omp, which the
+        # legacy ~/.pi path is no longer read from.
+        "skill_file": "skill-pi.md",
+        "skill_dst": Path(".omp") / "agent" / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "pi",
+    },
     "codebuddy": {
         # Reuses claude's split bundle (shares skill.md).
         "skill_file": "skill.md",
@@ -1701,7 +1709,7 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         skill_dst = _copy_skill_file("antigravity", project=True, project_dir=project_dir)
         _antigravity_finalize(skill_dst, project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".agents"])
-    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents", "omp"):
         # Skill-only project install: drop SKILL.md (+ references) at the scope
         # root. `agents` -> ./.agents/skills/graphify/SKILL.md.
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
@@ -1734,7 +1742,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _devin_rules_uninstall(project_dir)
         if not removed:
             print("nothing to remove")
-    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents", "omp"):
         removed = _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         if not removed:
             print("nothing to remove")
@@ -2370,6 +2378,21 @@ def dispatch_install_cli(cmd: str) -> bool:
                 _remove_skill_file("pi")
         else:
             print("Usage: graphify pi [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "omp":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("omp", Path("."))
+            else:
+                install("omp")
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("omp", Path("."))
+            else:
+                _remove_skill_file("omp")
+        else:
+            print("Usage: graphify omp [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "amp":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
