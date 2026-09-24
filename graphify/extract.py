@@ -3207,7 +3207,12 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
     stub_ids = {str(s.get("id")) for s in stubs if s.get("id")}
     stub_families: dict[str, set] = {}
     supertype_stub_ids: set[str] = set()  # stubs used as a base type — never a function
-    _SUPERTYPE_RELATIONS = {"inherits", "implements", "extends"}
+    # `specializes` joins these because a Common Lisp method dispatches on a
+    # TYPE, and functions and types occupy separate namespaces there: `list`,
+    # `stream` and `condition` are all routinely both. Without it a specializer
+    # stub can bind to a same-named function, which asserts a dispatch
+    # relationship that does not exist.
+    _SUPERTYPE_RELATIONS = {"inherits", "implements", "extends", "specializes"}
     for edge in edges:
         rel = edge.get("relation")
         for endpoint in ("source", "target"):
