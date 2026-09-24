@@ -3228,36 +3228,145 @@ def _claude_cli_available() -> bool:
 
 _LABEL_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
 _LABEL_MAX_COMMUNITIES = 200   # legacy soft-cap; kept for callers that pin it.
-_LABEL_TOP_K = 12              # node labels sampled per community for the prompt
+_LABEL_TOP_K = 12              # legacy fixed sample cap; kept for callers that pin it
+_LABEL_MAX_ADAPTIVE_TOP_K = 32 # upper bound for adaptive community sampling (#3586)
 _LABEL_MAXLEN = 60             # truncate individual labels to keep the prompt small
-_LABEL_BATCH_SIZE = 100        # communities per LLM call; sized for ~16k context windows
+_LABEL_BATCH_SIZE = 100        # max communities per LLM call; bounded by _LABEL_MAX_PROMPT_TOKENS
+_LABEL_MAX_PROMPT_TOKENS = 8000 # conservative input ceiling leaving room for completion + margin
+_LABEL_PROMPT_PREAMBLE = (
+    "You are naming clusters in a knowledge graph. For each community below, "
+    "return a concise 2-5 word plain-language name describing what it is about "
+    "(e.g. \"Order Management\", \"Payment Flow\", \"Auth Middleware\"). "
+    "Each input line is '<community id>: <representative member names>'. "
+    "Respond ONLY with a JSON object mapping the community id (as a string) to "
+    "its name - no prose, no markdown fences.\n\n"
+)
 
 
 def _placeholder_community_labels(communities) -> dict[int, str]:
     return {int(cid): f"Community {cid}" for cid in communities}
 
 
-def _community_label_lines(G, communities, gods, max_communities, top_k):
-    """One prompt line per community (largest first), sampling up to ``top_k``
-    representative node labels (god nodes first). Returns (lines, labeled_cids);
-    skips communities with no resolvable nodes."""
+def _adaptive_sample_size(n: int) -> int:
+    """Size-aware representative sample count for community labeling (#3586).
+
+    A bounded heuristic scaling sample size with community membership count:
+    small communities are sampled completely (<=12), while large communities
+    receive up to 32 representative nodes. Kept as a conservative step function
+    rather than a continuous or mathematically optimal curve to ensure
+    deterministic and predictable prompt budgets.
+    """
+    if n <= 12:
+        return n
+    if n <= 50:
+        return 15
+    if n <= 200:
+        return 20
+    if n <= 1000:
+        return 26
+    return 32
+
+
+def _community_label_lines(
+    G,
+    communities,
+    gods=None,
+    max_communities: int | None = None,
+    top_k: int | None = None,
+) -> tuple[list[str], list[int]]:
+    """One prompt line per community (largest first), sampling representative
+    node labels. Returns (lines, labeled_cids); skips communities with no
+    resolvable nodes.
+
+    When ``top_k`` is None, sample size is chosen adaptively via
+    ``_adaptive_sample_size(len(members))`` (#3586). When ``top_k`` is an int,
+    it acts as an explicit fixed cap for backwards compatibility.
+
+    Representatives are ranked deterministically:
+      1. Global god nodes in the community
+      2. Internal degree within the community (edges to other community members)
+      3. Global degree in the graph
+      4. Node ID string (tie-breaker)
+
+    A per-source-file diversity cap prevents any single file from consuming
+    the entire representative budget, followed by a backfill pass to ensure
+    the target quota is met even for single-file communities.
+    """
     # gods may be node-id strings or god_nodes() dicts ({"id": ..., "label": ...}).
     god_set = {g["id"] if isinstance(g, dict) else g for g in (gods or [])}
     ordered = sorted(communities.items(), key=lambda kv: -len(kv[1]))
     lines: list[str] = []
     labeled_cids: list[int] = []
-    for cid, members in ordered[:max_communities]:
-        ranked = [m for m in members if m in god_set] + [m for m in members if m not in god_set]
+
+    for cid, members in (ordered if max_communities is None else ordered[:max_communities]):
+        if not members:
+            continue
+
+        target_k = _adaptive_sample_size(len(members)) if top_k is None else min(len(members), max(0, top_k))
+        if target_k <= 0:
+            continue
+
+        mset = set(members)
+        internal_deg: dict = {}
+        for n in members:
+            if n in G:
+                if hasattr(G, "is_directed") and G.is_directed():
+                    internal_deg[n] = (
+                        sum(1 for nb in G.successors(n) if nb in mset)
+                        + sum(1 for nb in G.predecessors(n) if nb in mset)
+                    )
+                else:
+                    internal_deg[n] = sum(1 for nb in G[n] if nb in mset)
+            else:
+                internal_deg[n] = 0
+
+        ranked = sorted(
+            members,
+            key=lambda n: (
+                0 if n in god_set else 1,
+                -internal_deg[n],
+                -(G.degree(n) if n in G else 0),
+                str(n),
+            ),
+        )
+
+        file_cap = max(2, (target_k + 2) // 3)
+        file_counts: dict[str, int] = {}
+        selected_nodes: set = set()
         names: list[str] = []
         seen: set[str] = set()
+
+        # Pass 1: select candidates respecting per-source-file cap
         for nid in ranked:
+            if nid in selected_nodes:
+                continue
+            sf = (G.nodes[nid].get("source_file") or "") if nid in G.nodes else ""
+            if file_counts.get(sf, 0) >= file_cap:
+                continue
             label = str(G.nodes[nid].get("label", nid)) if nid in G.nodes else str(nid)
             label = label.strip().strip("()")[:_LABEL_MAXLEN]
             if label and label.lower() not in seen:
                 seen.add(label.lower())
                 names.append(label)
-            if len(names) >= top_k:
+                selected_nodes.add(nid)
+                file_counts[sf] = file_counts.get(sf, 0) + 1
+            if len(names) >= target_k:
                 break
+
+        # Pass 2: backfill if diversity cap left vacancies (e.g. single-file community)
+        if len(names) < target_k:
+            for nid in ranked:
+                if nid in selected_nodes:
+                    continue
+                label = str(G.nodes[nid].get("label", nid)) if nid in G.nodes else str(nid)
+                label = label.strip().strip("()")[:_LABEL_MAXLEN]
+                if label and label.lower() not in seen:
+                    seen.add(label.lower())
+                    names.append(label)
+                    selected_nodes.add(nid)
+                if len(names) >= target_k:
+                    break
+
         if names:
             # Bare id key, NOT "Community {cid}: ..." — that string doubles as the
             # placeholder sentinel (_placeholder_community_labels), so a model that
@@ -3330,14 +3439,7 @@ def _label_batch_with_retry(
     missing config, programming bug) propagates unchanged — those are never
     split-retried.
     """
-    prompt = (
-        "You are naming clusters in a knowledge graph. For each community below, "
-        "return a concise 2-5 word plain-language name describing what it is about "
-        "(e.g. \"Order Management\", \"Payment Flow\", \"Auth Middleware\"). "
-        "Each input line is '<community id>: <representative member names>'. "
-        "Respond ONLY with a JSON object mapping the community id (as a string) to "
-        "its name - no prose, no markdown fences.\n\n" + "\n".join(batch_lines)
-    )
+    prompt = _LABEL_PROMPT_PREAMBLE + "\n".join(batch_lines)
     # Budget generously: a 2-5 word name is ~10 tokens, but models (notably
     # gemini) often prepend a short preamble or reasoning that eats the
     # completion and truncates the JSON mid-object, which used to fail the whole
@@ -3411,6 +3513,64 @@ def _label_batch_with_retry(
         return left | right
 
 
+def _estimate_text_tokens(text: str) -> int:
+    """Estimate token count for a text string using tiktoken if available,
+    falling back to standard 4 chars/token heuristic."""
+    if not text:
+        return 0
+    if _TOKENIZER is not None:
+        try:
+            return len(_TOKENIZER.encode(text, disallowed_special=()))
+        except Exception:
+            pass
+    return max(1, len(text) // _CHARS_PER_TOKEN)
+
+
+def _pack_label_batches(
+    labeled_cids: list[int],
+    lines: list[str],
+    batch_size: int,
+    max_prompt_tokens: int | None = None,
+) -> list[tuple[list[int], list[str]]]:
+    """Greedily pack communities into batches bounded by community count
+    (batch_size) and estimated prompt tokens (max_prompt_tokens) (#3586).
+
+    Maintains community ordering (largest first). If a single community line
+    exceeds max_prompt_tokens while the current batch is empty, it is accepted
+    in its own single-item batch rather than dropped or causing an infinite loop.
+    """
+    if not lines or not labeled_cids:
+        return []
+
+    if max_prompt_tokens is None:
+        max_prompt_tokens = _LABEL_MAX_PROMPT_TOKENS
+
+    batch_size = max(1, batch_size)
+    preamble_tokens = _estimate_text_tokens(_LABEL_PROMPT_PREAMBLE)
+    batches: list[tuple[list[int], list[str]]] = []
+    cur_cids: list[int] = []
+    cur_lines: list[str] = []
+    cur_tokens = preamble_tokens
+
+    for cid, line in zip(labeled_cids, lines):
+        line_tokens = _estimate_text_tokens("\n" + line if cur_lines else line)
+        if cur_cids and (len(cur_cids) >= batch_size or cur_tokens + line_tokens > max_prompt_tokens):
+            batches.append((cur_cids, cur_lines))
+            cur_cids = []
+            cur_lines = []
+            cur_tokens = preamble_tokens
+            line_tokens = _estimate_text_tokens(line)
+
+        cur_cids.append(cid)
+        cur_lines.append(line)
+        cur_tokens += line_tokens
+
+    if cur_cids:
+        batches.append((cur_cids, cur_lines))
+
+    return batches
+
+
 def label_communities(
     G,
     communities,
@@ -3419,19 +3579,17 @@ def label_communities(
     model: str | None = None,
     gods=None,
     max_communities: int | None = None,
-    top_k: int = _LABEL_TOP_K,
+    top_k: int | None = None,
     batch_size: int = _LABEL_BATCH_SIZE,
     max_concurrency: int = 4,
     usage_out: dict | None = None,
 ) -> dict[int, str]:
     """Return a complete ``{cid: name}`` map using ``backend`` for naming.
 
-    Communities are labeled in batches of ``batch_size`` so the prompt fits in a
-    16k-token context window (which is enough for one batch of ~100 communities
-    × ``top_k`` node labels). With the previous hard cap of 200 communities in a
-    single call, self-hosted 16k models (Qwen3, Llama 3.1 8B-Instruct, etc.)
-    routinely overflowed context and dropped the entire labeling pass to
-    placeholders.
+    Communities are labeled in batches constrained by ``batch_size`` and
+    ``_LABEL_MAX_PROMPT_TOKENS`` so the prompt fits comfortably in a 16k-token
+    context window. When ``top_k`` is None, sample size is chosen adaptively
+    by community size (#3586).
 
     ``max_communities=None`` (the default) labels every community. Pass an
     integer to cap the total (the legacy 200 default preserved this behavior;
@@ -3444,12 +3602,12 @@ def label_communities(
     :func:`generate_community_labels`.
     """
     labels = _placeholder_community_labels(communities)
-    cap = len(communities) if max_communities is None else max_communities
-    lines, labeled_cids = _community_label_lines(G, communities, gods, cap, top_k)
+    lines, labeled_cids = _community_label_lines(G, communities, gods, max_communities, top_k)
     if not lines:
         return labels
 
-    n_batches = (len(labeled_cids) + batch_size - 1) // batch_size
+    batches = _pack_label_batches(labeled_cids, lines, batch_size, max_prompt_tokens=_LABEL_MAX_PROMPT_TOKENS)
+    n_batches = len(batches)
 
     # Mirror extract_corpus_parallel's backend guards: Ollama serves one request at
     # a time per loaded model (parallel batches cause VRAM pressure and hollow
@@ -3463,8 +3621,7 @@ def label_communities(
     workers = max(1, min(max_concurrency, n_batches))
 
     def _run_batch(batch_idx: int):
-        start = batch_idx * batch_size
-        end = min(start + batch_size, len(labeled_cids))
+        batch_cids, batch_lines = batches[batch_idx]
         # Accumulate token usage into a per-batch dict so concurrent workers
         # never race on the shared accumulator; it is merged on the main thread
         # in _merge (#1694).
@@ -3472,7 +3629,7 @@ def label_communities(
         batch_kwargs = {"usage_out": batch_usage} if usage_out is not None else {}
         try:
             parsed = _label_batch_with_retry(
-                labeled_cids[start:end], lines[start:end], backend=backend, model=model,
+                batch_cids, batch_lines, backend=backend, model=model,
                 **batch_kwargs,
             )
             return batch_idx, parsed, None, batch_usage
@@ -3491,11 +3648,10 @@ def label_communities(
             usage_out["output"] = usage_out.get("output", 0) + batch_usage.get("output", 0)
         if exc is not None:
             errors[batch_idx] = exc
-            start = batch_idx * batch_size
-            end = min(start + batch_size, len(labeled_cids))
+            batch_cids, _ = batches[batch_idx]
             print(
                 f"[graphify label] batch {batch_idx + 1}/{n_batches} "
-                f"({end - start} communities) failed: {exc}",
+                f"({len(batch_cids)} communities) failed: {exc}",
                 file=sys.stderr,
             )
             return
@@ -3530,6 +3686,7 @@ def generate_community_labels(
     quiet: bool = False,
     max_concurrency: int = 4,
     batch_size: int = _LABEL_BATCH_SIZE,
+    top_k: int | None = None,
     usage_out: dict | None = None,
 ) -> tuple[dict[int, str], str]:
     """CLI entry point: resolve a backend, name communities, and degrade to
@@ -3562,7 +3719,7 @@ def generate_community_labels(
         labels = label_communities(
             G, communities, backend=backend, model=model, gods=gods,
             max_concurrency=max_concurrency, batch_size=batch_size,
-            usage_out=usage_out,
+            top_k=top_k, usage_out=usage_out,
         )
         placeholders = _placeholder_community_labels(communities)
         named = sum(labels.get(cid) != placeholder for cid, placeholder in placeholders.items())
