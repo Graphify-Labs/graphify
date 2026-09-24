@@ -12,7 +12,9 @@ graphify hook uninstall  # remove
 graphify hook status     # check
 ```
 
-After every `git commit`, the hook detects which code files changed (via `git diff HEAD~1`), re-runs AST extraction on those files, and rebuilds `graph.json` and `GRAPH_REPORT.md`. Doc/image changes are ignored by the hook - run `/graphify --update` manually for those.
+After every `git commit`, the hook detects which code files changed (via `git diff HEAD~1`), re-runs AST extraction on those files, and rebuilds `graph.json` and `GRAPH_REPORT.md`. Doc/image changes are ignored by the hook - run `/graphify --update` manually for those (which does produce a dated `{corpus-slug}-{date}-report.md`, unlike this hook).
+
+Like `--watch`, this hook runs the installed `graphify` binary directly, so it still uses the fixed `GRAPH_REPORT.md`/`graph.html` names rather than a dated basename - see the Step 2.6 scope note in `skill.md`.
 
 If a post-commit hook already exists, graphify appends to it rather than replacing it.
 

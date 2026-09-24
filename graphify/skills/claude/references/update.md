@@ -6,6 +6,27 @@ Load this only when the user passed `--update` or `--cluster-only`. A first-time
 
 Use when you've added or modified files since the last run. Only re-extracts changed files - saves tokens and time.
 
+This flow reuses Steps 4-8 from the main SKILL.md as-is (see below), which read the output
+basename from `graphify-out/.graphify_output_base` (Step 2.6). `--update` skips Steps 1-3, so
+recompute that basename first - same slug as the original run (derived from the same path),
+but today's date, since this run produces a fresh report:
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import re
+from datetime import date
+from pathlib import Path
+
+target = Path('INPUT_PATH').resolve()
+slug = re.sub(r'[^a-z0-9]+', '-', target.name.lower()).strip('-') or 'graph'
+base = f'{slug}-{date.today().isoformat()}'
+Path('graphify-out/.graphify_output_base').write_text(base, encoding=\"utf-8\")
+print(f'Output basename: {base}')
+"
+```
+
+Replace INPUT_PATH with the same path used in the original run.
+
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
@@ -208,3 +229,5 @@ graphify cluster-only .
 ```
 
 `graphify cluster-only .` is **self-contained**: it re-clusters, names communities, and regenerates `GRAPH_REPORT.md`, `graph.json`, and `graph.html` from the existing graph. **Do not re-run Steps 5–9** — they read intermediate files (`.graphify_extract.json`, `.graphify_detect.json`, `.graphify_analysis.json`) that a prior build's cleanup (Step 9) already deleted, so they raise `FileNotFoundError` (#1392). When it finishes, present the refreshed `GRAPH_REPORT.md` summary as usual.
+
+Note: unlike the main build path (Step 2.6), `graphify cluster-only .` always writes the fixed `GRAPH_REPORT.md`/`graph.html` names, not a dated `{corpus-slug}-{date}` basename - that command is implemented entirely inside `graphify/cli.py` with its own stale-marker/shrink-guard state keyed to those literal filenames, which this change intentionally left untouched.
