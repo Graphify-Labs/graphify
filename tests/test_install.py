@@ -1569,3 +1569,145 @@ def test_project_uninstall_removes_the_bare_hook_command(tmp_path, monkeypatch):
             main()
 
     assert not [c for c in _hook_commands(settings.read_text(encoding="utf-8")) if "graphify" in c]
+
+
+def _install_then_uninstall(tmp_path, monkeypatch, *, config_dir):
+    """Global install, then a bare `graphify uninstall` from an unrelated cwd.
+
+    The cwd matters: a bare uninstall is the user-global one, and it used to
+    look for the registration in whatever directory it was run from. Running it
+    somewhere with no CLAUDE.md is what a user does, and what made the gap
+    invisible.
+    """
+    from graphify.__main__ import install, claude_uninstall
+
+    home = tmp_path / "home"
+    home.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    if config_dir is None:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        registered = home / ".claude" / "CLAUDE.md"
+    else:
+        config_dir.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        registered = config_dir / "CLAUDE.md"
+
+    old = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        with patch("graphify.__main__.Path.home", return_value=home):
+            install(platform="claude")
+            assert registered.exists(), "precondition: install wrote the registration"
+            os.chdir(elsewhere)
+            claude_uninstall()
+    finally:
+        os.chdir(old)
+    return registered
+
+
+def test_uninstall_removes_the_global_registration(tmp_path, monkeypatch):
+    """#3572: a user-global uninstall deleted the skill and left the block that
+    registers it, so Claude Code went on loading a `## graphify` entry pointing
+    at a SKILL.md that was no longer there."""
+    registered = _install_then_uninstall(tmp_path, monkeypatch, config_dir=None)
+
+    assert not registered.exists() or "graphify" not in registered.read_text()
+
+
+def test_uninstall_removes_the_global_registration_under_claude_config_dir(
+    tmp_path, monkeypatch
+):
+    """The relocated-profile case the report is about. Install already honours
+    the variable (#2694); uninstall has to read the same one, or the second
+    account keeps the orphaned block."""
+    registered = _install_then_uninstall(
+        tmp_path, monkeypatch, config_dir=tmp_path / "cfg"
+    )
+
+    assert not registered.exists() or "graphify" not in registered.read_text()
+
+
+def test_uninstall_keeps_the_users_own_notes(tmp_path, monkeypatch):
+    """The accept control, and the reason this is a section strip rather than a
+    delete: a global CLAUDE.md is where a user keeps their own standing
+    instructions, and the block is appended to whatever is already there."""
+    from graphify.__main__ import install, claude_uninstall
+
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    notes = home / ".claude" / "CLAUDE.md"
+    notes.write_text("# My notes\n\nKeep me.\n", encoding="utf-8")
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+    old = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        with patch("graphify.__main__.Path.home", return_value=home):
+            install(platform="claude")
+            assert "graphify" in notes.read_text()
+            claude_uninstall()
+    finally:
+        os.chdir(old)
+
+    survived = notes.read_text()
+    assert "graphify" not in survived
+    assert survived.rstrip() == "# My notes\n\nKeep me."
+
+
+def test_a_project_uninstall_leaves_the_global_registration_alone(
+    tmp_path, monkeypatch
+):
+    """The scope control. `project=True` is documented to leave the global tree
+    untouched (#2215), so widening the search must not widen the delete."""
+    from graphify.__main__ import install, claude_uninstall
+
+    home = tmp_path / "home"
+    home.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+    old = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        with patch("graphify.__main__.Path.home", return_value=home):
+            install(platform="claude")
+            registered = home / ".claude" / "CLAUDE.md"
+            assert "graphify" in registered.read_text()
+            claude_uninstall(project, project=True)
+    finally:
+        os.chdir(old)
+
+    assert "graphify" in registered.read_text()
+
+
+def test_uninstall_keeps_a_section_written_after_the_block(tmp_path, monkeypatch):
+    """The block is appended to the END of the file, so anything the user adds
+    later sits BELOW it. Ending the strip at the next H2 rather than the next
+    heading of any level would take an H1 section with it.
+    """
+    from graphify.__main__ import install, claude_uninstall
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+    old = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        with patch("graphify.__main__.Path.home", return_value=home):
+            install(platform="claude")
+            notes = home / ".claude" / "CLAUDE.md"
+            notes.write_text(
+                notes.read_text() + "\n# My own rules\n\nAlways run the tests.\n",
+                encoding="utf-8",
+            )
+            claude_uninstall()
+    finally:
+        os.chdir(old)
+
+    survived = notes.read_text()
+    assert "graphify" not in survived
+    assert "# My own rules" in survived
+    assert "Always run the tests." in survived
