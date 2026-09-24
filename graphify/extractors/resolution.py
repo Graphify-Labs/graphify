@@ -2500,14 +2500,14 @@ def _resolve_cross_file_imports(
 
     Pass 1 - build a global map: class/function name → node_id, per stem.
     Pass 2 - for each `from .module import Name`, look up Name in the global
-              map and add a direct INFERRED edge from each class in the
+              map and add a direct EXTRACTED edge from each class in the
               importing file to the imported entity.
 
     This turns:
         auth.py --imports_from--> models.py          (obvious, filtered out)
     Into:
-        DigestAuth --uses--> Response  [INFERRED]    (cross-file, interesting!)
-        BasicAuth  --uses--> Request   [INFERRED]
+        DigestAuth --uses--> Response  [EXTRACTED]   (cross-file, interesting!)
+        BasicAuth  --uses--> Request   [EXTRACTED]
     """
     try:
         import tree_sitter_python  # noqa: F401  (availability check only)
@@ -2710,16 +2710,11 @@ def _resolve_cross_file_imports(
                     "source": src_nid,
                     "target": tgt_nid,
                     "relation": "uses",
-                    "confidence": "INFERRED",
-                    # 0.95 = "direct structural evidence (named cross-file
-                    # reference)" from the extraction-spec rubric, which is
-                    # exactly what this edge is: a name this file imports, then
-                    # references. Omitting the score entirely fell through to the
-                    # 0.5 default the same rubric forbids outright (#2813).
-                    "confidence_score": 0.95,
+                    "confidence": "EXTRACTED",
+                    "confidence_score": 1.0,
                     "source_file": str_path,
                     "source_location": f"L{line}",
-                    "weight": 0.8,
+                    "weight": 1.0,
                 })
 
         # Repoint AST type-reference and inheritance edges from sourceless stubs
