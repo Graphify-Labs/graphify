@@ -440,6 +440,34 @@ def test_rebuild_code_drops_labels_whose_community_changed(tmp_path):
             )
 
 
+def test_rebuild_code_does_not_fill_incomplete_signature_from_graph(tmp_path):
+    from graphify.cluster import community_member_sigs_from_node_communities
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    for name in ("a", "b"):
+        (corpus / f"{name}.py").write_text(f"def {name}():\n    return 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    out = corpus / "graphify-out"
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    old_members = {n["id"]: n["community"] for n in graph["nodes"]}
+    sigs = community_member_sigs_from_node_communities(old_members)
+    assert len(sigs) >= 2
+    keep, missing = sorted(sigs)[:2]
+    labels_path = out / ".graphify_labels.json"
+    labels_path.write_text(json.dumps({str(keep): "Keep curated", str(missing): "Missing proof"}))
+    (out / ".graphify_labels.json.sig").write_text(json.dumps({str(keep): sigs[keep]}))
+
+    # Force a rebuild while leaving the old communities' membership intact.
+    (corpus / "c.py").write_text("def c():\n    return 1\n", encoding="utf-8")
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    labels_after = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert labels_after[str(keep)] == "Keep curated"
+    assert "Missing proof" not in labels_after.values()
+
+
 def test_rebuild_code_keeps_a_visualization_when_over_the_viz_cap(tmp_path, monkeypatch):
     """Crossing the viz node limit must not leave the project with no graph.html.
     _rebuild_code used to unlink the existing file and write nothing, so a repo
