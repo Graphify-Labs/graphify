@@ -216,7 +216,7 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         # streaming hash (bounded memory regardless of size) against the
         # stored content hash, before finally raising the cap's own error
         # for a file that is both oversized and genuinely different.
-        from graphify.security import check_graph_file_size_cap
+        from graphify.security import check_graph_file_size_cap, _max_graph_file_bytes
         try:
             check_graph_file_size_cap(source_path)
         except ValueError as cap_error:
@@ -241,6 +241,25 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         raw_bytes = source_path.read_bytes()
         src_hash = hashlib.sha256(raw_bytes).hexdigest()[:16]
 
+        # The stat-based cap check above has a TOCTOU gap: source_path could
+        # be replaced with a larger file between that stat and the read just
+        # above, so the bytes actually in hand here were never confirmed
+        # against the cap. This does not re-buy back the bounded-memory
+        # guarantee for the read that already happened -- an oversized
+        # replacement is already fully in raw_bytes by this point, the same
+        # one-time spike a full streaming rewrite of this function would be
+        # needed to avoid -- but it does stop an oversized payload from
+        # reaching the much more expensive JSON parse and graph merge below,
+        # and it reports the same cap error the pre-read check would have,
+        # instead of silently accepting whatever got swapped in.
+        if len(raw_bytes) > _max_graph_file_bytes():
+            raise ValueError(
+                f"graph file {source_path} is {len(raw_bytes):_d} bytes, exceeds "
+                f"{_max_graph_file_bytes():_d}-byte cap (changed after the initial "
+                f"size check)\n(set GRAPHIFY_MAX_GRAPH_BYTES=<bytes> or "
+                f"GRAPHIFY_MAX_GRAPH_BYTES=<N>GB to raise the limit)"
+            )
+
         existing_path = existing.get("source_path", "")
         if existing_path and existing_path != resolved_source_path:
             print(
@@ -253,6 +272,28 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
             # Content-hash fallback for a manifest entry that predates the
             # mtime/size fields above, or whose mtime changed without the
             # content actually changing.
+            #
+            # The stat baseline is refreshed here even though nothing else
+            # about the entry changes: a repo tag re-pointed at a new path
+            # with identical content (or an entry that predates the
+            # mtime/size/ctime fields) would otherwise never update
+            # source_path/mtime/size/ctime/indexed_at, since this is the
+            # only place that skip is decided. Left unfixed, the mismatched
+            # source_path permanently defeats the stat-only fast path above
+            # for this repo tag (it can never match on source_path again),
+            # so every future add re-reads and re-hashes the file, and the
+            # "previously pointed to" warning above reprints on every call
+            # forever instead of the single time it is meant to.
+            manifest["repos"][repo_tag] = {
+                **existing,
+                "source_path": resolved_source_path,
+                "source_hash": src_hash,
+                "source_mtime_ns": st.st_mtime_ns,
+                "source_size": st.st_size,
+                "source_ctime_ns": st.st_ctime_ns,
+                "source_indexed_at_ns": observed_at_ns,
+            }
+            _save_manifest(manifest)
             return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True,
                     "cross_repo_calls": 0, "shared_type_links": 0}
 
