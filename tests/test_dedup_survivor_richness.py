@@ -125,6 +125,45 @@ def test_richness_still_decides_when_both_sides_have_provenance():
     assert _pick_winner([shallow, rich])["id"] == rich["id"]
 
 
+def test_located_record_beats_a_richer_source_file_only_stub():
+    """Review finding on #3775: source_location is richness-ignored too, so
+    two source-bearing candidates could still be ordered by field count
+    alone, letting a record with a source_file but no source_location (the
+    codebase genuinely emits source_location: None, see
+    _merge_missing_attributes) out-score one that also knows exactly where
+    in the file it lives."""
+    located = {
+        "id": "docs_guide_setup", "label": "Setup", "file_type": "concept",
+        "source_file": "docs/guide.md", "source_location": "L12",
+    }
+    unlocated_but_richer = {
+        "id": "setup", "label": "Setup", "file_type": "concept",
+        "source_file": "docs/guide.md", "source_location": None,
+        "attributes": {"kind": "section"}, "description": "extra content",
+    }
+    from graphify.dedup import _content_richness
+    assert _content_richness(unlocated_but_richer) > _content_richness(located), (
+        "test fixture: the unlocated stub must out-score the located node "
+        "on pure field count for this to exercise the bug"
+    )
+    assert _pick_winner([located, unlocated_but_richer])["id"] == "docs_guide_setup"
+    assert _pick_winner([unlocated_but_richer, located])["id"] == "docs_guide_setup"
+
+
+def test_richness_still_decides_when_both_sides_have_a_location():
+    """The source_location tiebreak must only activate when the two sides
+    disagree on having one -- when both have a real location, richness (then
+    length) still decides, same as before this fix."""
+    rich = _rich()
+    shallow = _shallow()
+    assert rich["source_location"] and shallow["source_location"], (
+        "test fixture: both candidates must carry a source_location so the "
+        "location tiebreak cannot distinguish them"
+    )
+    assert _pick_winner([rich, shallow])["id"] == rich["id"]
+    assert _pick_winner([shallow, rich])["id"] == rich["id"]
+
+
 def test_edges_rewire_to_the_rich_survivor():
     edges = [{"source": "sources_notes_widget_x", "target": "other",
               "relation": "references", "source_file": "sources/notes.md"}]
