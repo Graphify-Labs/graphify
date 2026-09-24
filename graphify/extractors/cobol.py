@@ -40,8 +40,17 @@ def _code_lines(source: str) -> list[tuple[int, str]]:
     forced_free = bool(
         re.search(r">>\s*SOURCE\s+FORMAT\s+(?:IS\s+)?FREE", source, re.IGNORECASE)
     )
+    # A fixed-format line is a 6-column sequence area followed by the indicator
+    # in column 7. The sequence area is blank on some files but carries a
+    # sequence NUMBER on legacy mainframe source (the historical norm), so match
+    # both: six spaces, or six digits, followed by a valid indicator (space =
+    # code, `*`/`/` = comment, `-` = continuation, `D` = debug). Requiring six
+    # blank columns misclassified every sequence-numbered file as free-format,
+    # which then kept the sequence number in the code and dropped every paragraph
+    # (its `^NAME.$` anchor no longer matched) and PERFORM edge.
     fixed_markers = sum(
-        bool(re.match(r"^ {6}[ *\-/ ]", line)) for line in physical if line.strip()
+        bool(re.match(r"^(?: {6}|\d{6})[ *\-/dD]", line))
+        for line in physical if line.strip()
     )
     nonempty = sum(bool(line.strip()) for line in physical)
     free = forced_free or fixed_markers < max(1, nonempty // 2)
