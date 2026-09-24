@@ -346,10 +346,11 @@ merged = {
     'output_tokens': new.get('output_tokens', 0),
 }
 Path('.graphify_semantic.json').write_text(json.dumps(merged, indent=2))
+for _tmp in ['.graphify_cached.json', '.graphify_uncached.txt', '.graphify_semantic_new.json']:
+    Path(_tmp).unlink(missing_ok=True)
 print(f'Extraction complete - {len(deduped)} nodes, {len(all_edges)} edges ({len(cached[\"nodes\"])} from cache, {len(new.get(\"nodes\",[]))} new)')
 "
 ```
-Clean up temp files: `rm -f .graphify_cached.json .graphify_uncached.txt .graphify_semantic_new.json`
 
 #### Part C - Merge AST + semantic into final extraction
 
@@ -718,9 +719,13 @@ cost_path.write_text(json.dumps(cost, indent=2))
 
 print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
 print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
+
+for _tmp in ['.graphify_detect.json', '.graphify_extract.json', '.graphify_ast.json', '.graphify_semantic.json', '.graphify_analysis.json', '.graphify_labels.json']:
+    Path(_tmp).unlink(missing_ok=True)
+for _chunk in Path('.').glob('.graphify_chunk_*.json'):
+    _chunk.unlink(missing_ok=True)
+Path('graphify-out/.needs_update').unlink(missing_ok=True)
 "
-rm -f .graphify_detect.json .graphify_extract.json .graphify_ast.json .graphify_semantic.json .graphify_analysis.json .graphify_labels.json; find . -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
-rm -f graphify-out/.needs_update 2>/dev/null || true
 ```
 
 Tell the user (omit the obsidian line unless --obsidian was given):
@@ -865,11 +870,11 @@ if old_data:
         print('New nodes:', ', '.join(n['label'] for n in diff['new_nodes'][:5]))
     if diff['new_edges']:
         print('New edges:', len(diff['new_edges']))
+Path('.graphify_old.json').unlink(missing_ok=True)
 "
 ```
 
 Before the merge step, save the old graph: `cp graphify-out/graph.json .graphify_old.json`
-Clean up after: `rm -f .graphify_old.json`
 
 ---
 
