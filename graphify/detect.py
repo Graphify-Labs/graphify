@@ -2157,13 +2157,24 @@ def _to_absolute_from_storage(key: str, root: Path) -> str:
     what :func:`detect` returns (which also resolves the scan root).
     NFC both sides so a relative key and an NFD-resolved root still join
     to the same string form the rest of the manifest path uses (#2221).
+
+    The joined result is lexically normalized (``os.path.normpath``, not
+    ``.resolve()``) so a stray ``..``/``.`` segment collapses to the same
+    string an equivalent absolute key would use — otherwise two keys for
+    the same file (one absolute, one relative-with-dot-segments, the kind
+    of mismatch a foreign tool or an older graphify version can leave
+    behind, per this function's own caller) fail to canonicalize to the
+    same value and the duplicate collapse this function exists for misses
+    them (#1964 review). Only the key's own dot segments are normalized,
+    never symlinks — ``normpath`` never touches the filesystem, matching
+    :func:`_to_relative_for_storage`'s own choice not to resolve the key.
     """
     p = Path(key)
     if p.is_absolute():
-        return str(p)
+        return os.path.normpath(str(p))
     # NFC the joined result so an NFD-resolved root + relative key lands on
     # the same form load_manifest / detect_incremental compare against.
-    return _nfc(str(Path(root).resolve() / p))
+    return _nfc(os.path.normpath(str(Path(root).resolve() / p)))
 
 
 def _collapse_manifest_duplicates(items, key_fn) -> dict:
