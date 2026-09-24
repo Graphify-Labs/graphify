@@ -1931,6 +1931,10 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # The generic agents platform's user-scope skill lives at ~/.agents/skills,
     # which neither the AGENTS.md cleanup nor amp's removal reaches.
     _remove_skill_file("agents")
+    # OMP's user-scope skill lives at ~/.omp/agent/skills. The `graphify omp`
+    # subcommand is the plugin installer, so the skill's removal rides
+    # uninstall_all, like amp and agents.
+    _remove_skill_file("omp")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
 
@@ -2378,21 +2382,6 @@ def dispatch_install_cli(cmd: str) -> bool:
                 _remove_skill_file("pi")
         else:
             print("Usage: graphify pi [install|uninstall]", file=sys.stderr)
-            sys.exit(1)
-    elif cmd == "omp":
-        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
-        if subcmd == "install":
-            if "--project" in sys.argv[3:]:
-                _project_install("omp", Path("."))
-            else:
-                install("omp")
-        elif subcmd == "uninstall":
-            if "--project" in sys.argv[3:]:
-                _project_uninstall("omp", Path("."))
-            else:
-                _remove_skill_file("omp")
-        else:
-            print("Usage: graphify omp [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "amp":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
