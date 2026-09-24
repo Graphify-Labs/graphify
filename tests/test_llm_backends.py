@@ -1088,6 +1088,146 @@ def test_openai_compat_env_var_temperature_applied(tmp_path, monkeypatch):
     assert captured.get("temperature") == 0.3
 
 
+# ---------------------------------------------------------------------------
+# Ollama reasoning_effort resolution (#2932): known chain-of-thought models
+# get reasoning_effort="high" so they stop narrating past --api-timeout, and
+# GRAPHIFY_OLLAMA_REASONING_EFFORT overrides.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["nemotron-mini", "deepseek-r1:32b", "qwq:32b", "QwQ", "NEMOTRON", "deepseek-r1"],
+)
+def test_model_is_ollama_reasoning_model_true_for_known_models(model):
+    assert llm._model_is_ollama_reasoning_model(model) is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["qwen2.5-coder:7b", "llama3.1", "gpt-4.1-mini", "", "deepseek-v4-flash"],
+)
+def test_model_is_ollama_reasoning_model_false_for_normal_models(model):
+    assert llm._model_is_ollama_reasoning_model(model) is False
+
+
+def test_resolve_ollama_reasoning_effort_high_for_reasoning_model(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", raising=False)
+    assert llm._resolve_ollama_reasoning_effort("deepseek-r1:32b") == "high"
+
+
+def test_resolve_ollama_reasoning_effort_none_for_normal_model(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", raising=False)
+    assert llm._resolve_ollama_reasoning_effort("qwen2.5-coder:7b") is None
+
+
+def test_resolve_ollama_reasoning_effort_env_var_overrides(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", "medium")
+    # env var wins even for a normal model (explicit user choice)
+    assert llm._resolve_ollama_reasoning_effort("qwen2.5-coder:7b") == "medium"
+    assert llm._resolve_ollama_reasoning_effort("deepseek-r1:32b") == "medium"
+
+
+def test_resolve_ollama_reasoning_effort_env_var_none_omits(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", "none")
+    # env var can force it off even for a known reasoning model
+    assert llm._resolve_ollama_reasoning_effort("deepseek-r1:32b") is None
+
+
+def test_resolve_ollama_reasoning_effort_falls_back_to_static_default(monkeypatch):
+    # A static BACKENDS[...]["reasoning_effort"] (mirroring how gemini's config
+    # works today) must not be silently discarded for a non-reasoning model
+    # with no env override — it's the bottom of the precedence chain, not
+    # dropped. Reachability: BACKENDS["ollama"] itself carries no such key, and
+    # a same-named custom provider can't add one (providers named in BACKENDS
+    # are skipped by _load_custom_providers), so `default` is always None in
+    # today's real usage — this guards the resolver's contract regardless.
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", raising=False)
+    assert llm._resolve_ollama_reasoning_effort("qwen2.5-coder:7b", default="medium") == "medium"
+
+
+def test_resolve_ollama_reasoning_effort_model_match_wins_over_static_default(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", raising=False)
+    # a known reasoning model still gets "high", not the unrelated static default
+    assert llm._resolve_ollama_reasoning_effort("deepseek-r1:32b", default="low") == "high"
+
+
+def test_resolve_ollama_reasoning_effort_env_var_wins_over_static_default(monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", "medium")
+    assert llm._resolve_ollama_reasoning_effort("qwen2.5-coder:7b", default="low") == "medium"
+
+
+def test_openai_compat_sends_reasoning_effort_for_ollama_reasoning_model(tmp_path, monkeypatch):
+    # Regression for #2932: without reasoning_effort, Ollama reasoning models
+    # (nemotron, deepseek-r1, qwq) burn most of --api-timeout on narration.
+    _clear_backend_env(monkeypatch)
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", raising=False)
+    captured = _install_capturing_openai(monkeypatch)
+    (tmp_path / "f.py").write_text("x = 1\n")
+
+    llm.extract_files_direct([tmp_path / "f.py"], backend="ollama",
+                              model="deepseek-r1:32b", root=tmp_path)
+
+    assert captured.get("reasoning_effort") == "high"
+
+
+def test_openai_compat_omits_reasoning_effort_for_ollama_normal_model(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", raising=False)
+    captured = _install_capturing_openai(monkeypatch)
+    (tmp_path / "f.py").write_text("x = 1\n")
+
+    llm.extract_files_direct([tmp_path / "f.py"], backend="ollama",
+                              model="qwen2.5-coder:7b", root=tmp_path)
+
+    assert "reasoning_effort" not in captured, (
+        "non-reasoning ollama models must not get a reasoning_effort key at all"
+    )
+
+
+def test_extract_files_direct_honours_ollama_static_config_default(tmp_path, monkeypatch):
+    """A static BACKENDS["ollama"]["reasoning_effort"] must reach the actual
+    request as the bottom-of-precedence fallback, not be silently discarded
+    just because backend == "ollama" — the resolver must compose with the
+    static config, not replace it outright."""
+    _clear_backend_env(monkeypatch)
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", raising=False)
+    monkeypatch.setitem(llm.BACKENDS["ollama"], "reasoning_effort", "medium")
+    captured = _install_capturing_openai(monkeypatch)
+    (tmp_path / "f.py").write_text("x = 1\n")
+
+    llm.extract_files_direct([tmp_path / "f.py"], backend="ollama",
+                              model="qwen2.5-coder:7b", root=tmp_path)
+
+    assert captured.get("reasoning_effort") == "medium"
+
+
+def test_openai_compat_env_var_reasoning_effort_applied_to_ollama(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", "low")
+    captured = _install_capturing_openai(monkeypatch)
+    (tmp_path / "f.py").write_text("x = 1\n")
+
+    llm.extract_files_direct([tmp_path / "f.py"], backend="ollama",
+                              model="qwen2.5-coder:7b", root=tmp_path)
+
+    assert captured.get("reasoning_effort") == "low"
+
+
+def test_gemini_reasoning_effort_unaffected_by_ollama_env_var(tmp_path, monkeypatch):
+    # The dynamic resolver is gated on backend == "ollama"; gemini keeps using
+    # its static BACKENDS config regardless of the ollama-only env var.
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", "medium")
+    captured = _install_capturing_openai(monkeypatch)
+    (tmp_path / "f.py").write_text("x = 1\n")
+
+    llm.extract_files_direct([tmp_path / "f.py"], backend="gemini", root=tmp_path)
+
+    assert captured.get("reasoning_effort") == "low"
+
+
 def test_native_extraction_prompt_requests_hyperedges():
     """The native-backend prompt must request hyperedges, like the skill's
     extraction-spec does — otherwise `graphify extract --backend X` silently
@@ -1330,6 +1470,59 @@ def test_call_llm_openai_compat_client_built_with_timeout_and_retries(monkeypatc
     llm._call_llm("hi", backend="kimi")
     assert ctor_kwargs.get("timeout") == 1.0, ctor_kwargs
     assert ctor_kwargs.get("max_retries", 0) >= 5, ctor_kwargs
+
+
+def test_call_llm_ollama_reasoning_model_gets_reasoning_effort(monkeypatch):
+    """#2932: _call_llm (the --dedup-llm tiebreaker path) mirrors
+    extract_files_direct's backend dispatch (per its own docstring), so it had
+    the identical static cfg.get("reasoning_effort") gap for ollama."""
+    import sys
+    import types
+
+    call_kwargs = {}
+
+    class _FakeOpenAI:
+        def __init__(self, *_, **__):
+            self.chat = self
+            self.completions = self
+
+        def create(self, **kwargs):
+            call_kwargs.update(kwargs)
+            return _fake_openai_response("ok", finish_reason="stop", completion_tokens=1)
+
+    fake_module = types.ModuleType("openai")
+    fake_module.OpenAI = _FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _b: "ollama")
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", raising=False)
+
+    llm._call_llm("hi", backend="ollama", model="deepseek-r1:32b")
+    assert call_kwargs.get("reasoning_effort") == "high"
+
+
+def test_call_llm_ollama_normal_model_gets_no_reasoning_effort(monkeypatch):
+    import sys
+    import types
+
+    call_kwargs = {}
+
+    class _FakeOpenAI:
+        def __init__(self, *_, **__):
+            self.chat = self
+            self.completions = self
+
+        def create(self, **kwargs):
+            call_kwargs.update(kwargs)
+            return _fake_openai_response("ok", finish_reason="stop", completion_tokens=1)
+
+    fake_module = types.ModuleType("openai")
+    fake_module.OpenAI = _FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _b: "ollama")
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_REASONING_EFFORT", raising=False)
+
+    llm._call_llm("hi", backend="ollama", model="qwen2.5-coder:7b")
+    assert "reasoning_effort" not in call_kwargs
 
 
 def test_adaptive_retry_does_not_bisect_a_hollow_response(tmp_path, monkeypatch):
