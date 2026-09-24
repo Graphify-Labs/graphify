@@ -308,7 +308,7 @@ fun rebuild() {
     assert edge["confidence_score"] == pytest.approx(0.85)
     for entry in entries:
         payload = json.loads(entry.read_text(encoding="utf-8"))
-        assert payload["_kotlin_constructor_local_schema"] == 2
+        assert payload["_kotlin_constructor_local_schema"] == 3
         assert isinstance(payload["kotlin_constructor_locals"], dict)
 
 
@@ -562,19 +562,20 @@ def test_java_classifier_names_are_negative_evidence_only(tmp_path, case, java_s
     assert not _calls_from_at(result, "execute", member_line)
 
 
-def test_stale_schema_one_kotlin_cache_reextracts_under_schema_two(tmp_path):
+@pytest.mark.parametrize("prior_schema", [1, 2])
+def test_stale_kotlin_cache_reextracts_under_current_schema(tmp_path, prior_schema):
     files = {
         **_ordinary_files(_emitter()),
         "Harmless.java": "package matrix;\n\npublic final class Harmless { }\n",
     }
-    root = tmp_path / "schema-two"
+    root = tmp_path / "current-schema"
     _extract(root, files)
     kotlin_entries = []
     for entry in sorted((root / ".cache").glob("**/ast/**/*.json")):
         payload = json.loads(entry.read_text(encoding="utf-8"))
         if "kotlin_constructor_locals" not in payload:
             continue
-        payload["_kotlin_constructor_local_schema"] = 1
+        payload["_kotlin_constructor_local_schema"] = prior_schema
         entry.write_text(json.dumps(payload), encoding="utf-8")
         kotlin_entries.append(entry)
     assert len(kotlin_entries) == 2
@@ -584,7 +585,7 @@ def test_stale_schema_one_kotlin_cache_reextracts_under_schema_two(tmp_path):
     assert _call(result, "execute", "Emitter", "toggle")["confidence_score"] == pytest.approx(0.85)
     for entry in kotlin_entries:
         payload = json.loads(entry.read_text(encoding="utf-8"))
-        assert payload["_kotlin_constructor_local_schema"] == 2
+        assert payload["_kotlin_constructor_local_schema"] == 3
 
 
 @pytest.mark.parametrize("outside_source", ["Outside.kt", "Outside.java"])
@@ -884,3 +885,31 @@ def test_resolver_exception_after_staging_leaves_edges_and_receipt_unchanged():
 
     assert edges == before
     assert RECEIPT not in result
+
+
+@pytest.mark.parametrize(
+    ("binding", "inferred_after"),
+    [
+        ("val Device = Emitter()", True),
+        ('@Suppress("UNUSED_VARIABLE") val Device = Emitter()', False),
+        ("val Device = matrix.Emitter()", False),
+    ],
+)
+def test_local_deferral_preserves_object_calls_before_declaration(tmp_path, binding, inferred_after):
+    files = _ordinary_files(
+        _emitter() + "\nobject Device {\n    fun toggle(flag: Boolean) { }\n}\n",
+        "Device.toggle(true)\n    " + binding + "\n    Device.toggle(false)",
+    )
+    result = _extract(tmp_path, files)
+    assert result["_kotlin_constructor_local_complete"] is True
+    lines = files["Caller.kt"].splitlines()
+    before = _calls_from_at(result, "execute", lines.index("    Device.toggle(true)") + 1)
+    assert len(before) == 1
+    assert before[0]["target"] == _member_id(result, "Device", "toggle")
+    after = _calls_from_at(result, "execute", lines.index("    Device.toggle(false)") + 1)
+    if inferred_after:
+        assert len(after) == 1
+        assert after[0]["target"] == _member_id(result, "Emitter", "toggle")
+        assert after[0]["confidence_score"] == pytest.approx(0.85)
+    else:
+        assert not after

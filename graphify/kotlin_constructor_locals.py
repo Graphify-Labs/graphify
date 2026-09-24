@@ -11,7 +11,7 @@ from collections import Counter
 from pathlib import Path
 import re
 
-SCHEMA = 2
+SCHEMA = 3
 GRAPH_MARKER = "kotlin_constructor_local_schema"
 RESULT_MARKER = "_kotlin_constructor_local_schema"
 COMPLETE = "_kotlin_constructor_local_complete"
@@ -250,6 +250,9 @@ def collect(root, source):
             if receiver not in bindings:
                 continue
             ctor, end, eligible = bindings[receiver]
+            # A later local does not shadow an object at this earlier use site.
+            if call.start_byte <= end:
+                continue
             args = _children(cc[1]) if len(cc) == 2 and cc[1].type == "value_arguments" else []
             literal = len(args) == 1 and _text(args[0], source) in {"true", "false"}
             # A deferred record also suppresses the old bare-name/object path
