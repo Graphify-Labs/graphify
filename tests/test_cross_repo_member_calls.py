@@ -6,10 +6,10 @@ type already in hand and nothing about it reached `graph.json` — the only arti
 `merge-graphs` and `global add` read. The two-repo graph was missing precisely the
 edges that make it a call graph.
 
-The Java, C++, C# and Swift resolvers now park those calls on the caller node and
-this pass finishes them after the merge. The cases below pin what it must NOT do
-as much as what it must: the single-definition guard, the cross-repo-only scope,
-and the language guard are what keep it from fabricating an edge from a name
+The Java, C++, C#, Swift and TS/JS resolvers now park those calls on the caller
+node and this pass finishes them after the merge. The cases below pin what it must
+NOT do as much as what it must: the single-definition guard, the cross-repo-only
+scope, and the language guard are what keep it from fabricating an edge from a name
 collision.
 """
 from __future__ import annotations
@@ -45,6 +45,7 @@ needs_java = _needs("tree_sitter_java")
 needs_cpp = _needs("tree_sitter_cpp")
 needs_csharp = _needs("tree_sitter_c_sharp")
 needs_swift = _needs("tree_sitter_swift")
+needs_typescript = _needs("tree_sitter_typescript")
 
 
 def _caller(repo: str, parked: list[dict], node_id: str = "app_run",
@@ -173,6 +174,33 @@ def test_a_defines_member_does_not_answer_a_java_call():
         caller=_caller("a", PARKED_GREET),
         declarations=[(_declaration("b", "Greeter"), _method("b"))],
         relation="defines",
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
+PARKED_TS = [{"callee": "greet", "receiver_type": "Greeter", "lang": "typescript",
+              "line": "L4"}]
+
+
+@pytest.mark.parametrize("declaring_file", ["src/greeter.ts", "src/greeter.js",
+                                            "src/greeter.mjs", "src/greeter.tsx"])
+def test_a_typescript_call_binds_across_the_whole_js_family(declaring_file: str):
+    # One key for TS and JS: a TS class legitimately answers a JS call site, so
+    # splitting the two would drop every TS<->JS cross-repo call.
+    G = _graph(
+        caller=_caller("a", PARKED_TS, source_file="src/app.ts"),
+        declarations=[(_declaration("b", "Greeter", declaring_file),
+                       _method("b", ".greet()", source_file=declaring_file))],
+    )
+    assert link_cross_repo_member_calls(G) == 1, declaring_file
+    assert _added_calls(G) == {("a::app_run", "b::greeter_greet")}
+
+
+def test_a_typescript_call_does_not_bind_to_a_python_declaration():
+    G = _graph(
+        caller=_caller("a", PARKED_TS, source_file="src/app.ts"),
+        declarations=[(_declaration("b", "Greeter", "greeter.py"),
+                       _method("b", ".greet()", source_file="greeter.py"))],
     )
     assert link_cross_repo_member_calls(G) == 0
 
@@ -363,6 +391,16 @@ def test_a_java_build_parks_the_call_and_the_merge_finishes_it(tmp_path: Path):
                        "}\n"),
         ("src/Greeter.cs", "class Greeter { public void Greet() {} }\n"),
         marks=needs_csharp, id="csharp-field-receiver",
+    ),
+    pytest.param(
+        "typescript", "greet",
+        ("src/app.ts", 'import { Greeter } from "greeter-pkg";\n'
+                       "export class App {\n"
+                       "    constructor(private greeter: Greeter) {}\n"
+                       "    run(): void { this.greeter.greet(); }\n"
+                       "}\n"),
+        ("src/greeter.ts", "export class Greeter {\n    greet(): void {}\n}\n"),
+        marks=needs_typescript, id="typescript-parameter-property",
     ),
     pytest.param(
         "swift", "greet",
