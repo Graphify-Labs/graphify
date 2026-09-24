@@ -182,6 +182,78 @@ def test_read_nudges_source_outside_custom_output_dir(tmp_path, monkeypatch):
     assert "graphify query" in out
 
 
+def test_read_stale_nudge_uses_custom_output_dir_name(tmp_path, monkeypatch):
+    # Same requirement as the wiki nudge: the STALE message must name the
+    # actual configured output dir, not a hardcoded 'graphify-out/'.
+    out_dir = tmp_path / "build-out"
+    out_dir.mkdir()
+    (out_dir / "graph.json").write_text("{}", encoding="utf-8")
+    os.utime(out_dir / "graph.json", (1_000_000, 1_000_000))
+    src = tmp_path / "src"
+    src.mkdir()
+    f = src / "app.py"
+    f.write_text("x = 1\n", encoding="utf-8")
+    os.utime(f, (2_000_000, 2_000_000))
+    out = _invoke("read", {"tool_input": {"file_path": "src/app.py"}},
+                  tmp_path, monkeypatch, graph=False, out_name="build-out")
+    assert "build-out/graph.json" in out, out
+    assert "graphify-out" not in out, out
+
+
+# --------------------------------------------------------------------------- #
+# read: wiki/ has no automatic regeneration (#2006) — nudge only when it
+# predates the current graph.json, stay silent when it's at least as fresh.
+# --------------------------------------------------------------------------- #
+def test_read_wiki_nudges_when_stale(tmp_path, monkeypatch):
+    out_dir = tmp_path / "graphify-out"
+    (out_dir / "wiki").mkdir(parents=True)
+    (out_dir / "wiki" / "index.md").write_text("stale wiki", encoding="utf-8")
+    (out_dir / "graph.json").write_text("{}", encoding="utf-8")
+    os.utime(out_dir / "wiki" / "index.md", (1_000_000, 1_000_000))
+    os.utime(out_dir / "graph.json", (2_000_000, 2_000_000))
+    out = _invoke("read", {"tool_input": {"file_path": "graphify-out/wiki/index.md"}},
+                  tmp_path, monkeypatch, graph=False)
+    assert "predates the current graph.json" in out, out
+    assert json.loads(out)["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+
+
+def test_read_wiki_silent_when_fresh(tmp_path, monkeypatch):
+    out_dir = tmp_path / "graphify-out"
+    (out_dir / "wiki").mkdir(parents=True)
+    (out_dir / "wiki" / "index.md").write_text("fresh wiki", encoding="utf-8")
+    (out_dir / "graph.json").write_text("{}", encoding="utf-8")
+    os.utime(out_dir / "graph.json", (1_000_000, 1_000_000))
+    os.utime(out_dir / "wiki" / "index.md", (2_000_000, 2_000_000))
+    out = _invoke("read", {"tool_input": {"file_path": "graphify-out/wiki/index.md"}},
+                  tmp_path, monkeypatch, graph=False)
+    assert out.strip() == "", out
+
+
+def test_read_wiki_nudge_uses_custom_output_dir_name(tmp_path, monkeypatch):
+    # The nudge text must reflect the actual configured output dir, not a
+    # hardcoded 'graphify-out/' (a custom dir would otherwise get a
+    # misleading message pointing at a path that doesn't exist).
+    out_dir = tmp_path / "build-out"
+    (out_dir / "wiki").mkdir(parents=True)
+    (out_dir / "wiki" / "index.md").write_text("stale wiki", encoding="utf-8")
+    (out_dir / "graph.json").write_text("{}", encoding="utf-8")
+    os.utime(out_dir / "wiki" / "index.md", (1_000_000, 1_000_000))
+    os.utime(out_dir / "graph.json", (2_000_000, 2_000_000))
+    out = _invoke("read", {"tool_input": {"file_path": "build-out/wiki/index.md"}},
+                  tmp_path, monkeypatch, graph=False, out_name="build-out")
+    assert "build-out/wiki/" in out, out
+    assert "graphify-out" not in out, out
+
+
+def test_read_wiki_silent_without_graph_json(tmp_path, monkeypatch):
+    out_dir = tmp_path / "graphify-out"
+    (out_dir / "wiki").mkdir(parents=True)
+    (out_dir / "wiki" / "index.md").write_text("wiki, no graph.json", encoding="utf-8")
+    out = _invoke("read", {"tool_input": {"file_path": "graphify-out/wiki/index.md"}},
+                  tmp_path, monkeypatch, graph=False)
+    assert out.strip() == "", out
+
+
 # --------------------------------------------------------------------------- #
 # fail-open: malformed / empty stdin never crashes or blocks
 # --------------------------------------------------------------------------- #
