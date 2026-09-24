@@ -567,3 +567,30 @@ def test_csharp_alias_using_scoped_to_its_block(tmp_path: Path):
     inh = {(e["source"], e["target"]) for e in result["edges"] if e.get("relation") == "inherits"}
     assert (good["id"], n_t["id"]) in inh, "Good must bind N.T via the in-block alias"
     assert (bad["id"], n_t["id"]) not in inh, "Bad (sibling block) must NOT see the alias"
+
+
+def test_csharp_constructor_node_and_parameter_type_edge(tmp_path: Path):
+    # constructor_declaration is in function_types (like _JAVA_CONFIG): the
+    # constructor becomes a node under its class, and its injected parameter
+    # types emit references[parameter_type] edges — the DI wiring that was
+    # previously invisible (e.g. controller --> IBusinessContext).
+    f = _write(
+        tmp_path / "a.cs",
+        "namespace N { interface IBar {} class Foo { private readonly IBar _bar; "
+        "public Foo(IBar bar) { _bar = bar; } } }\n",
+    )
+    result = extract([f], cache_root=tmp_path)
+    ctor = [n for n in result["nodes"] if str(n.get("label", "")).endswith("Foo()")
+            and n["id"] != next(n2["id"] for n2 in result["nodes"] if n2.get("label") == "Foo")]
+    assert ctor, f"constructor node missing: {[n.get('label') for n in result['nodes']]}"
+    foo = next(n for n in result["nodes"] if n.get("label") == "Foo")
+    method_edges = [e for e in result["edges"]
+                    if e.get("relation") == "method"
+                    and e.get("source") == foo["id"] and e.get("target") == ctor[0]["id"]]
+    assert method_edges, "the class must own its constructor via a method edge"
+    ibar = next(n for n in result["nodes"] if n.get("label") == "IBar")
+    param_refs = [e for e in result["edges"]
+                  if e.get("relation") == "references"
+                  and e.get("context") == "parameter_type"
+                  and e.get("target") == ibar["id"]]
+    assert param_refs, "the constructor's IBar parameter must emit references[parameter_type]"
