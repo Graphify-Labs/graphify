@@ -12,6 +12,11 @@ from bisect import bisect_right
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
+from graphify.kotlin_constructor_locals import (
+    COMPLETE as _KOTLIN_COMPLETE, FACTS as _KOTLIN_FACTS,
+    RECEIPT as _KOTLIN_RECEIPT, cache_current as _kotlin_cache_current,
+    is_kotlin as _is_kotlin, resolve as _resolve_kotlin_constructor_locals,
+)
 from typing import Any, Callable
 
 from .cache import load_cached, save_cached
@@ -5562,6 +5567,12 @@ register_language_resolver(
         "kotlin_member_calls", frozenset({".kt", ".kts"}), _resolve_kotlin_member_calls
     )
 )
+register_language_resolver(
+    LanguageResolver(
+        "kotlin_constructor_locals", frozenset({".kt", ".kts"}),
+        _resolve_kotlin_constructor_locals,
+    )
+)
 # C# qualified construction (#2997): `new A.B.Cache()` arrives as the bare name,
 # so a colliding `Cache` elsewhere makes it ambiguous. Runs in the tail registry
 # beside csharp_member_calls and matches the prefix against declared namespaces.
@@ -6932,7 +6943,7 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     # Check cache first (avoid re-extraction)
     if not bypass_cache:
         cached = load_cached(path, root, cache_root=cache_location)
-        if cached is not None:
+        if _kotlin_cache_current(path, cached):
             return idx, cached
 
     extractor = _get_extractor(path)
@@ -7270,7 +7281,7 @@ def extract(
         bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
         if not bypass_cache:
             cached = load_cached(path, root, cache_root=cache_location)
-            if cached is not None:
+            if _kotlin_cache_current(path, cached):
                 per_file[i] = cached
                 continue
         uncached_work.append((i, path))
@@ -7301,6 +7312,22 @@ def extract(
                 "nodes": [], "edges": [],
                 "error": "internal: no extraction result produced",
             }
+
+    kotlin_results = [per_file[i] for i, p in enumerate(paths) if _is_kotlin(p)]
+    selected_kotlin = {p.resolve() for p in paths if _is_kotlin(p)}
+    outside_kotlin = any(
+        _is_kotlin(n.get("source_file") or "")
+        and (root / n["source_file"]).resolve() not in selected_kotlin
+        for n in resolution_context_nodes or []
+    )
+    kotlin_complete = not outside_kotlin and all(
+        r.get(_KOTLIN_FACTS) is not None and r.get("nodes")
+        and not r.get("error") and not r.get("parse_errors")
+        for r in kotlin_results
+    )
+    for result in kotlin_results:
+        result[_KOTLIN_COMPLETE] = bool(kotlin_complete)
+        result.pop(_KOTLIN_RECEIPT, None)
 
     # #1666: surface any source file an extractor accepted but that produced zero
     # nodes (not even a file node). Such a file is silently absent from the graph,
@@ -8654,6 +8681,9 @@ def extract(
         # manifest does not freeze them as processed (#2543). Callers that
         # only read nodes/edges ignore this key.
         "failed_sources": _failed_sources,
+        _KOTLIN_COMPLETE: bool(kotlin_complete and all(
+            r.get(_KOTLIN_RECEIPT) is True for r in kotlin_results
+        )),
         # Surfaces the actual dispatched source paths so build_merge /
         # merge_raw_extraction know which files were genuinely re-extracted
         # rather than guessing ownership from node["source_file"] (#3411).
