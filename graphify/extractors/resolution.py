@@ -1117,6 +1117,7 @@ def _apply_symbol_resolution_facts(
     edges: list[dict],
     root: Path,
     facts: _SymbolResolutionFacts,
+    resolution_context_nodes: list[dict] | None = None,
 ) -> None:
     """Apply language-provided import/export/use facts to graph edges."""
     if not (
@@ -1140,6 +1141,30 @@ def _apply_symbol_resolution_facts(
     # name to a class/interface member (#3436). Track those keys separately
     # and never let a member shadow a same-named top-level symbol.
     member_symbol_keys: set[tuple[Path, str]] = set()
+
+    if resolution_context_nodes:
+        _fresh_node_ids = {n.get("id") for n in nodes if n.get("id")}
+        _fresh_paths = {_resolve_cached(p) for p in paths}
+        for node in resolution_context_nodes:
+            nid = node.get("id")
+            if not nid or nid in _fresh_node_ids:
+                continue
+            source_path = _js_source_path(str(node.get("source_file", "")), root)
+            if source_path is None or source_path in _fresh_paths:
+                continue
+            raw_label = str(node.get("label", "")).strip()
+            label = raw_label.strip("()").lstrip(".")
+            if not label:
+                continue
+            key = (source_path, label)
+            if raw_label.startswith("."):
+                if key in symbol_nodes:
+                    continue
+                member_symbol_keys.add(key)
+            else:
+                member_symbol_keys.discard(key)
+            symbol_nodes[key] = str(nid)
+
     for node in nodes:
         source_path = _js_source_path(str(node.get("source_file", "")), root)
         if source_path is None:
@@ -2399,11 +2424,18 @@ def _augment_symbol_resolution_edges(
     nodes: list[dict],
     edges: list[dict],
     root: Path,
+    resolution_context_nodes: list[dict] | None = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
     _collect_js_symbol_resolution_facts(paths, facts)
     _collect_python_symbol_resolution_facts(paths, root, facts)
-    _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
+    if resolution_context_nodes:
+        _apply_symbol_resolution_facts(
+            paths, nodes, edges, root, facts,
+            resolution_context_nodes=resolution_context_nodes,
+        )
+    else:
+        _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 
 def _resolve_cross_file_imports(
     per_file: list[dict],

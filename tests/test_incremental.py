@@ -394,3 +394,70 @@ def test_update_prunes_a_removed_imports_edge(tmp_path):
              if e.get("relation") in ("imports", "imports_from")
              and str(e.get("source_file", "")).endswith("a.py")]
     assert not stale, f"removed import's edge survived update (stale): {stale}"
+
+
+def test_update_preserves_cross_file_imports_and_calls_to_unchanged_file(tmp_path):
+    """#3776: incremental update must resolve symbols defined in unchanged files."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "b.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+    a = proj / "a.py"
+    a.write_text(
+        "from b import helper\n\n"
+        "def use():\n"
+        "    return helper()\n",
+        encoding="utf-8",
+    )
+
+    r1 = _run(["extract", str(proj), "--no-cluster"], tmp_path)
+    assert r1.returncode == 0, r1.stderr
+    gj = proj / "graphify-out" / "graph.json"
+    before = _edges(gj)
+
+    # Initial build must contain both the imports edge and the calls edge
+    has_import_before = any(
+        e.get("relation") == "imports"
+        and e.get("source") == "a"
+        and e.get("target") == "b_helper"
+        for e in before
+    )
+    assert has_import_before, f"expected initial imports edge a -> b_helper: {before}"
+
+    has_call_before = any(
+        e.get("relation") == "calls"
+        and e.get("source") == "a_use"
+        and e.get("target") == "b_helper"
+        for e in before
+    )
+    assert has_call_before, f"expected initial calls edge a_use -> b_helper: {before}"
+
+    # Modify only a.py with an unrelated change
+    a.write_text(
+        "from b import helper\n\n"
+        "def use():\n"
+        "    # unrelated change\n"
+        "    return helper()\n",
+        encoding="utf-8",
+    )
+
+    r2 = _run(["extract", str(proj), "--code-only", "--no-cluster"], tmp_path)
+    assert r2.returncode == 0, r2.stderr
+    after = _edges(gj)
+
+    # Incremental update must preserve the imports edge to the unchanged file
+    has_import_after = any(
+        e.get("relation") == "imports"
+        and e.get("source") == "a"
+        and e.get("target") == "b_helper"
+        for e in after
+    )
+    assert has_import_after, f"imports edge a -> b_helper lost after incremental update: {after}"
+
+    # Incremental update must preserve the calls edge to the unchanged file
+    has_call_after = any(
+        e.get("relation") == "calls"
+        and e.get("source") == "a_use"
+        and e.get("target") == "b_helper"
+        for e in after
+    )
+    assert has_call_after, f"calls edge a_use -> b_helper lost after incremental update: {after}"
