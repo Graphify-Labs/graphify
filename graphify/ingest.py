@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import re
+from functools import lru_cache
 import uuid
 import urllib.error
 import urllib.parse
@@ -86,14 +87,49 @@ def _fetch_html(url: str) -> str:
     return safe_fetch_text(url)
 
 
+# Inline tags whose markdownify conversion runs the text through chomp(), which lifts the
+# surrounding whitespace out of the text and then returns an empty string once nothing is
+# left. An element holding only whitespace therefore disappears together with its whitespace
+# and the words on either side run together: a page that styles the space between two words,
+# which is what an editor emitting one element per styled run produces, is ingested with
+# `Hello<b> </b>world` as `Helloworld`.
+_WHITESPACE_ONLY_PRESERVING_TAGS = frozenset(
+    {"a", "b", "code", "del", "em", "i", "kbd", "s", "samp", "strike", "strong", "sub", "sup", "u"}
+)
+
+
+@lru_cache(maxsize=1)
+def _markdown_converter():
+    """markdownify's converter, with a whitespace-only inline element left as its whitespace.
+
+    Raises ImportError when markdownify is absent, which is what the caller falls back on.
+    """
+    from markdownify import MarkdownConverter
+
+    class _KeepWhitespaceOnly(MarkdownConverter):
+        def get_conv_fn(self, tag_name):
+            convert_fn = super().get_conv_fn(tag_name)
+            if convert_fn is None or tag_name.lower() not in _WHITESPACE_ONLY_PRESERVING_TAGS:
+                return convert_fn
+
+            def keep_whitespace_only(el, text, *args, **kwargs):
+                if not text.strip():
+                    return text
+                return convert_fn(el, text, *args, **kwargs)
+
+            return keep_whitespace_only
+
+    return _KeepWhitespaceOnly
+
+
 def _html_to_markdown(html: str, url: str) -> str:
     """Convert HTML to clean markdown. Uses markdownify if available, else basic strip."""
     # Always pre-strip script/style so their text content never leaks into output
     html = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
     html = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL | re.IGNORECASE)
     try:
-        from markdownify import markdownify
-        return markdownify(html, heading_style="ATX", bullets="-", strip=["img"])
+        converter = _markdown_converter()
+        return converter(heading_style="ATX", bullets="-", strip=["img"]).convert(html)
     except ImportError:
         # Fallback: basic tag strip
         text = re.sub(r"<[^>]+>", " ", html)
