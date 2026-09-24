@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.3.x   | Yes       |
-| < 0.3   | No        |
+| Latest release | Yes |
+| Older releases | No  |
 
 ## Reporting a Vulnerability
 
@@ -32,12 +32,12 @@ graphify is a **local development tool**. It runs as a Claude Code skill and opt
 | Oversized downloads | `safe_fetch()` streams responses and aborts at 50 MB. `safe_fetch_text()` aborts at 10 MB. |
 | Non-2xx HTTP responses | `safe_fetch()` raises `HTTPError` on non-2xx status codes - error pages are not silently treated as content. |
 | Path traversal in MCP server | `security.validate_graph_path()` resolves paths and requires them to be inside `graphify-out/`. Also requires the `graphify-out/` directory to exist. |
-| XSS in graph HTML output | `security.sanitize_label()` strips control characters, caps at 256 chars, and HTML-escapes all node labels and edge titles before pyvis embeds them. |
+| XSS in graph HTML output | `security.sanitize_label()` strips control characters and caps labels at 256 chars. HTML escaping happens in `exporters/html.py`: interpolated fields go through `html.escape()`, and the generated page uses a JS `esc()` helper before injecting graph data into the DOM. |
 | Prompt injection via node labels | `sanitize_label()` also applied to MCP text output - node labels from user-controlled source files cannot break the text format returned to agents. |
 | Prompt injection via source file content | During the semantic pass, source files are attacker-controlled text mixed into the LLM context. `_read_files()` in `llm.py` wraps every file in a hash-stamped `<untrusted_source path=... sha256=...>` delimiter block, the extraction system prompt instructs the model to treat that block as inert data and never as instructions, and `_neutralise_injection_sentinels()` defangs known chat-template/jailbreak tokens (`<\|im_start\|>`, `[INST]`, `<<SYS>>`, forged `</untrusted_source>`, etc.) before insertion. This is the table-stakes defense (issue #1210): it does not make injection impossible, but changes it from "works on first try" to "requires evasion." |
 | YAML frontmatter injection | `_yaml_str()` escapes backslashes, double quotes, and newlines before embedding user-controlled strings (webpage titles, query questions) in YAML frontmatter. |
 | Encoding crashes on source files | All tree-sitter byte slices decoded with `errors="replace"` - non-UTF-8 source files degrade gracefully instead of crashing extraction. |
-| Symlink traversal | `os.walk(..., followlinks=False)` is explicit throughout `detect.py`. |
+| Symlink traversal | `detect.py` walks with `followlinks=False` by default; following symlinks is an explicit opt-in (`follow_symlinks` flag). `extract.py` walks with `followlinks=True` but applies cycle detection and rejects files that don't resolve under the scan root (`_resolves_under_root`). |
 | Corrupted graph.json | `_load_graph()` in `serve.py` wraps `json.JSONDecodeError` and prints a clear recovery message instead of crashing. |
 
 ### What graphify does NOT do
