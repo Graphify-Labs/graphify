@@ -13,8 +13,10 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 from graphify.kotlin_constructor_locals import (
-    COMPLETE as _KOTLIN_COMPLETE, FACTS as _KOTLIN_FACTS,
+    COMPLETE as _KOTLIN_COMPLETE,
     RECEIPT as _KOTLIN_RECEIPT, cache_current as _kotlin_cache_current,
+    UNSUPPORTED as _KOTLIN_UNSUPPORTED,
+    is_jvm_source as _is_jvm_source, is_proof_source as _is_kotlin_proof_source,
     is_kotlin as _is_kotlin, resolve as _resolve_kotlin_constructor_locals,
 )
 from typing import Any, Callable
@@ -7314,19 +7316,27 @@ def extract(
             }
 
     kotlin_results = [per_file[i] for i, p in enumerate(paths) if _is_kotlin(p)]
-    selected_kotlin = {p.resolve() for p in paths if _is_kotlin(p)}
-    outside_kotlin = any(
-        _is_kotlin(n.get("source_file") or "")
-        and (root / n["source_file"]).resolve() not in selected_kotlin
-        for n in resolution_context_nodes or []
+    selected_proof = {p.resolve() for p in paths if _is_kotlin_proof_source(p)}
+    context_items = [*(resolution_context_nodes or []), *(resolution_context_edges or [])]
+    outside_proof = any(
+        not item.get("source_file") or (
+            _is_kotlin_proof_source(item["source_file"])
+            and (root / item["source_file"]).resolve() not in selected_proof
+        )
+        for item in context_items
     )
-    kotlin_complete = not outside_kotlin and all(
-        r.get(_KOTLIN_FACTS) is not None and r.get("nodes")
-        and not r.get("error") and not r.get("parse_errors")
-        for r in kotlin_results
+    unsupported_jvm = any(
+        _is_jvm_source(p) and not _is_kotlin_proof_source(p)
+        for p in [*paths, *(item.get("source_file") for item in context_items)]
+    )
+    kotlin_complete = not outside_proof and all(
+        r.get("nodes") and not r.get("error") and not r.get("parse_errors")
+        and (not _is_kotlin(p) or _kotlin_cache_current(p, r))
+        for p, r in zip(paths, per_file) if _is_kotlin_proof_source(p)
     )
     for result in kotlin_results:
         result[_KOTLIN_COMPLETE] = bool(kotlin_complete)
+        result[_KOTLIN_UNSUPPORTED] = unsupported_jvm
         result.pop(_KOTLIN_RECEIPT, None)
 
     # #1666: surface any source file an extractor accepted but that produced zero

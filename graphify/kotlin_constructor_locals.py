@@ -2,7 +2,7 @@
 
 This is a finite syntax proof, not Kotlin overload resolution: a direct immutable
 local, a public final zero-argument class, and an applicable Boolean member.
-Re-evaluate the complete live Kotlin batch on a Kotlin event; AST cache reuse
+Re-evaluate the live JVM source batch on a relevant source event; AST cache reuse
 keeps this simpler than persisting symbol dependencies in the graph.
 """
 from __future__ import annotations
@@ -11,24 +11,36 @@ from collections import Counter
 from pathlib import Path
 import re
 
-SCHEMA = 1
+SCHEMA = 2
 GRAPH_MARKER = "kotlin_constructor_local_schema"
 RESULT_MARKER = "_kotlin_constructor_local_schema"
 COMPLETE = "_kotlin_constructor_local_complete"
 FACTS = "kotlin_constructor_locals"
 RECEIPT = "_kotlin_constructor_local_resolved"
+UNSUPPORTED = "_kotlin_constructor_local_unsupported_jvm"
+JVM_SUFFIXES = {".kt", ".kts", ".java", ".scala", ".groovy", ".gradle"}
 
 
 def is_kotlin(path) -> bool:
     return Path(path or "").suffix.lower() in {".kt", ".kts"}
 
 
+def is_jvm_source(path) -> bool:
+    return Path(path or "").suffix.lower() in JVM_SUFFIXES
+
+
+def is_proof_source(path) -> bool:
+    return is_kotlin(path) or Path(path or "").suffix.lower() == ".java"
+
+
 def select_targets(live_paths, selected_paths, removed_paths, graph_schema, *, force_refresh=False):
-    """Select all live Kotlin callers, including on one-time graph migration."""
+    """Revisit Kotlin callers with all current JVM negative evidence."""
     selected = list(dict.fromkeys(Path(p) for p in selected_paths))
-    live = [Path(p) for p in live_paths if is_kotlin(p)]
-    refresh = force_refresh or any(is_kotlin(p) for p in (*selected, *removed_paths)) or (
-        bool(live) and graph_schema != SCHEMA
+    live = [Path(p) for p in live_paths if is_jvm_source(p)]
+    has_kotlin = any(is_kotlin(p) for p in live)
+    events = [*selected, *removed_paths]
+    refresh = force_refresh or any(is_kotlin(p) for p in events) or (
+        has_kotlin and (graph_schema != SCHEMA or any(is_jvm_source(p) for p in events))
     )
     if refresh:
         selected = list(dict.fromkeys([*selected, *live]))
@@ -184,6 +196,11 @@ def collect(root, source):
         )
         caller_ok = caller_ok and _ordinary_function(function, source) and not imports and bool(package_name)
         scope_names = Counter(_declarations(function, source))
+        direct_names = Counter(
+            _name(c, source)
+            for prop in _children(block) if prop.type == "property_declaration"
+            for c in _children(prop) if c.type == "variable_declaration"
+        )
         owner_names = set()
         if parent.type == "class_body":
             # Include member factories, values and classifiers, but not names
@@ -195,22 +212,30 @@ def collect(root, source):
                 else:
                     owner_names.add(_name(m, source))
         bindings = {}
-        for prop in _walk(block):
+        for prop in _children(block):
             if prop.type != "property_declaration":
                 continue
             pc = _children(prop)
-            if len(pc) != 2 or pc[0].type != "variable_declaration" or pc[1].type != "call_expression":
+            variable = next((c for c in pc if c.type == "variable_declaration"), None)
+            if variable is None:
+                continue
+            name = _name(variable, source)
+            if not name:
+                continue
+            # Recognizing a local value is separate from proving its type.
+            # An annotation/qualified initializer must not restore object or
+            # global-name fallback for a capitalized local receiver.
+            bindings[name] = ("", prop.end_byte, False)
+            if len(pc) != 2 or pc[0] != variable or pc[1].type != "call_expression":
                 continue
             cc = _children(pc[1])
-            if not cc or cc[0].type != "identifier":
+            ctor = _identifier(cc[0], source) if cc else ""
+            if not ctor:
                 continue
-            name, ctor = _name(pc[0], source), _identifier(cc[0], source)
-            if not name or not ctor:
-                continue
-            eligible = (caller_ok and prop.parent == block and prop.children[0].type == "val"
-                        and len(_children(pc[0])) == 1 and len(cc) == 2
+            eligible = (caller_ok and prop.children[0].type == "val"
+                        and len(_children(variable)) == 1 and len(cc) == 2
                         and cc[1].type == "value_arguments" and not _children(cc[1])
-                        and scope_names[name] == 1 and ctor not in scope_names and ctor not in owner_names)
+                        and direct_names[name] == 1 and ctor not in scope_names and ctor not in owner_names)
             bindings[name] = (ctor, prop.end_byte, eligible)
         for call in _walk(block):
             if call.type != "call_expression":
@@ -242,6 +267,14 @@ def resolve(per_file, all_nodes, all_edges):
     results = [r for r in per_file if FACTS in r]
     if not results or any(not r.get(COMPLETE) for r in results):
         return
+    if any(r.get(UNSUPPORTED) for r in results):
+        for result in results:
+            result[RECEIPT] = True
+        return
+    # Java declarations are negative evidence only. A global veto intentionally
+    # sacrifices recall instead of inventing cross-language package resolution.
+    java_names = {n.get("label") for r in per_file for n in r.get("nodes", [])
+                  if Path(n.get("source_file") or "").suffix.lower() == ".java"}
     namespaces = {}
     providers = {}
     for result in results:
@@ -262,7 +295,8 @@ def resolve(per_file, all_nodes, all_edges):
                 continue
             name = proof["class"]
             candidates = providers.get((pkg, name), [])
-            if len(candidates) != 1 or namespaces[pkg][name] != 1 or namespaces[pkg]["Boolean"]:
+            if (len(candidates) != 1 or namespaces[pkg][name] != 1 or namespaces[pkg]["Boolean"]
+                    or name in java_names or "Boolean" in java_names):
                 continue
             provider, cls = candidates[0]
             if not cls["eligible"]:

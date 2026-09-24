@@ -7,6 +7,7 @@ shape, not Kotlin type inference in general.
 """
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from pathlib import Path
@@ -24,6 +25,7 @@ def _extract(
     absolute_inputs: bool = False,
     extra_inputs: tuple[str, ...] = (),
     resolution_context_nodes=None,
+    resolution_context_edges=None,
 ):
     for relative, source in files.items():
         path = tmp_path / relative
@@ -46,6 +48,7 @@ def _extract(
             root=tmp_path,
             parallel=False,
             resolution_context_nodes=resolution_context_nodes,
+            resolution_context_edges=resolution_context_edges,
         )
     finally:
         os.chdir(old_cwd)
@@ -305,7 +308,7 @@ fun rebuild() {
     assert edge["confidence_score"] == pytest.approx(0.85)
     for entry in entries:
         payload = json.loads(entry.read_text(encoding="utf-8"))
-        assert payload["_kotlin_constructor_local_schema"] == 1
+        assert payload["_kotlin_constructor_local_schema"] == 2
         assert isinstance(payload["kotlin_constructor_locals"], dict)
 
 
@@ -327,9 +330,16 @@ def test_incomplete_selected_kotlin_batch_abstains(case, extra_files, extra_inpu
     assert not _calls_from_at(result, "execute", member_line)
 
 
-def test_kotlin_context_outside_selected_batch_marks_proof_incomplete(tmp_path):
+@pytest.mark.parametrize(
+    ("name", "source"),
+    [
+        ("Outside.kt", "package matrix\n\nclass Outside\n"),
+        ("Outside.java", "package matrix;\n\npublic final class Outside { }\n"),
+    ],
+)
+def test_jvm_node_context_outside_selected_batch_marks_proof_incomplete(tmp_path, name, source):
     root = tmp_path / "context"
-    context = _extract(root, {"Outside.kt": "package matrix\n\nclass Outside\n"})
+    context = _extract(root, {name: source})
     files = _ordinary_files(_emitter())
     result = _extract(root, files, resolution_context_nodes=context["nodes"])
 
@@ -528,3 +538,349 @@ def test_constructor_local_semantic_boundaries_abstain(tmp_path, case, files):
         next(line for line in files["Caller.kt"].splitlines() if ".toggle(" in line)
     ) + 1
     assert not _calls_from_at(result, "execute", member_line), case
+
+
+@pytest.mark.parametrize(
+    ("case", "java_source"),
+    [
+        ("class_boolean", "public final class Boolean { }"),
+        ("interface_constructor", "public interface Emitter { }"),
+        ("enum_constructor", "public enum Emitter { VALUE }"),
+        ("record_boolean", "public record Boolean() { }"),
+        ("annotation_constructor", "public @interface Emitter { }"),
+    ],
+)
+def test_java_classifier_names_are_negative_evidence_only(tmp_path, case, java_source):
+    files = {
+        **_ordinary_files(_emitter()),
+        "Poison.java": "package matrix;\n\n" + java_source + "\n",
+    }
+    result = _extract(tmp_path / case, files)
+
+    assert result["_kotlin_constructor_local_complete"] is True
+    member_line = files["Caller.kt"].splitlines().index("    item.toggle(true)") + 1
+    assert not _calls_from_at(result, "execute", member_line)
+
+
+def test_stale_schema_one_kotlin_cache_reextracts_under_schema_two(tmp_path):
+    files = {
+        **_ordinary_files(_emitter()),
+        "Harmless.java": "package matrix;\n\npublic final class Harmless { }\n",
+    }
+    root = tmp_path / "schema-two"
+    _extract(root, files)
+    kotlin_entries = []
+    for entry in sorted((root / ".cache").glob("**/ast/**/*.json")):
+        payload = json.loads(entry.read_text(encoding="utf-8"))
+        if "kotlin_constructor_locals" not in payload:
+            continue
+        payload["_kotlin_constructor_local_schema"] = 1
+        entry.write_text(json.dumps(payload), encoding="utf-8")
+        kotlin_entries.append(entry)
+    assert len(kotlin_entries) == 2
+
+    result = _extract(root, files)
+    assert result["_kotlin_constructor_local_complete"] is True
+    assert _call(result, "execute", "Emitter", "toggle")["confidence_score"] == pytest.approx(0.85)
+    for entry in kotlin_entries:
+        payload = json.loads(entry.read_text(encoding="utf-8"))
+        assert payload["_kotlin_constructor_local_schema"] == 2
+
+
+@pytest.mark.parametrize("outside_source", ["Outside.kt", "Outside.java"])
+def test_edge_only_jvm_context_outside_selected_batch_abstains(tmp_path, outside_source):
+    files = _ordinary_files(_emitter())
+    result = _extract(
+        tmp_path / outside_source.replace(".", "-"),
+        files,
+        resolution_context_edges=[
+            {
+                "source": "omitted_source",
+                "target": "omitted_target",
+                "relation": "calls",
+                "source_file": outside_source,
+            }
+        ],
+    )
+
+    assert result["_kotlin_constructor_local_complete"] is False
+    member_line = files["Caller.kt"].splitlines().index("    item.toggle(true)") + 1
+    assert not _calls_from_at(result, "execute", member_line)
+
+
+@pytest.mark.parametrize(
+    ("kind", "nested_name", "nested_body"),
+    [
+        (
+            "block",
+            "item",
+            """run {
+        val item = Emitter()
+        item.toggle(true)
+    }""",
+        ),
+        (
+            "block",
+            "other",
+            """run {
+        val other = Emitter()
+        other.toggle(true)
+    }""",
+        ),
+        (
+            "lambda",
+            "item",
+            """val action = {
+        val item = Emitter()
+        item.toggle(true)
+    }
+    action()""",
+        ),
+        (
+            "lambda",
+            "other",
+            """val action = {
+        val other = Emitter()
+        other.toggle(true)
+    }
+    action()""",
+        ),
+        (
+            "local_function",
+            "item",
+            """fun nested() {
+        val item = Emitter()
+        item.toggle(true)
+    }
+    nested()""",
+        ),
+        (
+            "local_function",
+            "other",
+            """fun nested() {
+        val other = Emitter()
+        other.toggle(true)
+    }
+    nested()""",
+        ),
+    ],
+    ids=[
+        "block-same-name",
+        "block-different-name",
+        "lambda-same-name",
+        "lambda-different-name",
+        "local-function-same-name",
+        "local-function-different-name",
+    ],
+)
+def test_nested_receiver_bindings_do_not_erase_direct_outer_proof(
+    tmp_path, kind, nested_name, nested_body
+):
+    files = {
+        "Provider.kt": "package matrix\n\n" + _emitter() + "\n",
+        "Caller.kt": """package matrix
+
+fun execute() {
+    val item = Emitter()
+    %s
+    item.toggle(true)
+}
+""" % nested_body,
+    }
+    result = _extract(tmp_path / f"{kind}-{nested_name}", files)
+
+    assert result["_kotlin_constructor_local_complete"] is True
+    edge = _call(result, "execute", "Emitter", "toggle")
+    assert edge["confidence"] == "INFERRED"
+    target = _member_id(result, "Emitter", "toggle")
+    assert {
+        edge["source"]
+        for edge in result["edges"]
+        if edge["relation"] == "calls" and edge["target"] == target
+    } == {_callable_id(result, "execute")}
+
+
+@pytest.mark.parametrize(
+    ("case", "binding"),
+    [
+        ("annotated", '@Suppress("UNUSED_VARIABLE") val Device = Emitter()'),
+        ("qualified", "val Device = matrix.Emitter()"),
+    ],
+)
+def test_ineligible_capitalized_constructor_locals_suppress_object_fallback(tmp_path, case, binding):
+    files = {
+        "Provider.kt": "package matrix\n\n" + _emitter() + "\n",
+        "Caller.kt": """package matrix
+
+object Device {
+    fun toggle(flag: Boolean) { }
+}
+
+fun execute() {
+    %s
+    Device.toggle(true)
+}
+""" % binding,
+    }
+    result = _extract(tmp_path / case, files)
+
+    assert result["_kotlin_constructor_local_complete"] is True
+    member_line = files["Caller.kt"].splitlines().index("    Device.toggle(true)") + 1
+    assert not _calls_from_at(result, "execute", member_line)
+
+
+@pytest.mark.parametrize(
+    ("case", "name", "source"),
+    [
+        ("scala", "Outside.scala", "class Outside {\n}\n"),
+        ("groovy", "Outside.groovy", "class Outside {\n}\n"),
+        ("gradle", "build.gradle", "tasks.register(\"noop\") {\n}\n"),
+    ],
+)
+def test_scanned_unsupported_jvm_source_successfully_abstains(tmp_path, case, name, source):
+    files = {
+        **_ordinary_files(_emitter()),
+        name: source,
+    }
+    result = _extract(tmp_path / case, files)
+
+    assert result["_kotlin_constructor_local_complete"] is True
+    member_line = files["Caller.kt"].splitlines().index("    item.toggle(true)") + 1
+    assert not _calls_from_at(result, "execute", member_line)
+
+
+def test_missing_selected_java_result_makes_live_kotlin_proof_incomplete(tmp_path):
+    files = _ordinary_files(_emitter())
+    result = _extract(
+        tmp_path / "missing-java", files, extra_inputs=("Missing.java",)
+    )
+
+    assert result["_kotlin_constructor_local_complete"] is False
+    member_line = files["Caller.kt"].splitlines().index("    item.toggle(true)") + 1
+    assert not _calls_from_at(result, "execute", member_line)
+
+
+@pytest.mark.parametrize(
+    ("case", "context_nodes", "context_edges"),
+    [
+        ("node", [{"id": "unknown", "label": "Unknown"}], None),
+        (
+            "edge",
+            None,
+            [{"source": "unknown", "target": "other", "relation": "calls"}],
+        ),
+    ],
+)
+def test_identity_less_proof_context_fails_closed(tmp_path, case, context_nodes, context_edges):
+    files = _ordinary_files(_emitter())
+    result = _extract(
+        tmp_path / case,
+        files,
+        resolution_context_nodes=context_nodes,
+        resolution_context_edges=context_edges,
+    )
+
+    assert result["_kotlin_constructor_local_complete"] is False
+    member_line = files["Caller.kt"].splitlines().index("    item.toggle(true)") + 1
+    assert not _calls_from_at(result, "execute", member_line)
+
+
+@pytest.mark.parametrize(
+    ("case", "java_source"),
+    [
+        ("parse_error", "package matrix;\npublic class Broken {\n"),
+        ("zero_nodes", "package matrix;\npublic final class Empty { }\n"),
+    ],
+)
+def test_selected_java_failure_makes_live_kotlin_proof_incomplete(
+    tmp_path, monkeypatch, case, java_source
+):
+    files = {
+        **_ordinary_files(_emitter()),
+        "Required.java": java_source,
+    }
+    if case == "zero_nodes":
+        extract_module = importlib.import_module("graphify.extract")
+        monkeypatch.setitem(
+            extract_module._DISPATCH, ".java", lambda _path: {"nodes": [], "edges": []}
+        )
+    result = _extract(tmp_path / case, files)
+
+    assert result["_kotlin_constructor_local_complete"] is False
+    member_line = files["Caller.kt"].splitlines().index("    item.toggle(true)") + 1
+    assert not _calls_from_at(result, "execute", member_line)
+
+
+def test_unsupported_jvm_context_identity_successfully_abstains(tmp_path):
+    files = _ordinary_files(_emitter())
+    result = _extract(
+        tmp_path / "unsupported-context",
+        files,
+        resolution_context_edges=[
+            {
+                "source": "unsupported",
+                "target": "other",
+                "relation": "calls",
+                "source_file": "Outside.groovy",
+            }
+        ],
+    )
+
+    assert result["_kotlin_constructor_local_complete"] is True
+    member_line = files["Caller.kt"].splitlines().index("    item.toggle(true)") + 1
+    assert not _calls_from_at(result, "execute", member_line)
+
+
+def test_resolver_exception_after_staging_leaves_edges_and_receipt_unchanged():
+    """A resolver exception must not publish its locally staged first edge."""
+    from graphify.kotlin_constructor_locals import COMPLETE, FACTS, RECEIPT, resolve
+
+    class ExplodingRawCalls:
+        def __iter__(self):
+            yield {
+                "caller_nid": "caller",
+                "callee": "toggle",
+                "source_file": "Caller.kt",
+                "source_location": "L5",
+                "kotlin_constructor_local": {"eligible": True, "class": "Emitter"},
+            }
+            raise RuntimeError("injected resolver iteration failure")
+
+    provider = {
+        "id": "emitter",
+        "label": "Emitter",
+        "source_file": "Provider.kt",
+        "source_location": "L1",
+        "_callable_class": True,
+    }
+    target = {
+        "id": "emitter_toggle",
+        "label": ".toggle()",
+        "source_file": "Provider.kt",
+        "source_location": "L2",
+    }
+    result = {
+        FACTS: {
+            "package": "matrix",
+            "names": ["Emitter"],
+            "classes": [
+                {
+                    "name": "Emitter",
+                    "line": 1,
+                    "eligible": True,
+                    "members": [{"name": "toggle", "line": 2}],
+                }
+            ],
+        },
+        COMPLETE: True,
+        "nodes": [provider, target],
+        "raw_calls": ExplodingRawCalls(),
+    }
+    edges = [{"source": "emitter", "target": "emitter_toggle", "relation": "method"}]
+    before = [dict(edge) for edge in edges]
+
+    with pytest.raises(RuntimeError, match="injected resolver iteration failure"):
+        resolve([result], [provider, target], edges)
+
+    assert edges == before
+    assert RECEIPT not in result

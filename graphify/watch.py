@@ -1427,6 +1427,17 @@ def _rebuild_code(
                 )
         return False
 
+    def _manifest_save_failed(exc: Exception, *, graph_published: bool) -> bool:
+        """Report a stale manifest without making a false graph rollback claim."""
+        graph_state = "advanced" if graph_published else "was unchanged"
+        print(
+            "[graphify watch] Graph output "
+            f"{graph_state}, but manifest.json remains stale after save failure: {exc}; "
+            "preserving prior hashes for retry.",
+            file=sys.stderr,
+        )
+        return _preserve_failed_incremental_batch()
+
     if acquire_lock:
         # #1059: incremental (changed_paths is not None) hooks must not drop
         # their change set when another rebuild is already running. Queue
@@ -1549,6 +1560,7 @@ def _rebuild_code(
         from graphify.kotlin_constructor_locals import (
             GRAPH_MARKER as _KOTLIN_CONSTRUCTOR_LOCAL_GRAPH_MARKER,
             SCHEMA as _KOTLIN_CONSTRUCTOR_LOCAL_SCHEMA,
+            is_jvm_source as _is_jvm_constructor_local_source,
             is_kotlin as _is_kotlin_constructor_local_source,
             select_targets as _select_kotlin_constructor_local_targets,
         )
@@ -1646,33 +1658,44 @@ def _rebuild_code(
                 deleted_paths.add(_nsf(str(path), str(root)) or str(path))
 
         # A `.graphifyignore` / persisted-exclude update need not name the
-        # provider it removes. Compare only prior Kotlin source spellings that
-        # were under this watched root with the newly discovered live Kotlin
-        # corpus. This is removal evidence, not a new provider inventory; an
-        # outside-root or unresolvable legacy spelling stays fail-closed.
+        # provider it adds or removes. Compare current and prior JVM source
+        # spellings only when Kotlin currently exists or existed in the graph.
+        # This is removal/restoration evidence, not a provider inventory;
+        # Java-only repositories retain their baseline path and an outside-root
+        # or unresolvable legacy spelling stays fail-closed.
         if existing_graph.exists():
             try:
                 _kcls_live = {
                     Path(os.path.abspath(path)).as_posix()
                     for path in code_files
-                    if _is_kotlin_constructor_local_source(path)
+                    if _is_jvm_constructor_local_source(path)
                 }
-                for _kcls_node in _kcls_prior.get("nodes", []):
-                    if not isinstance(_kcls_node, dict):
-                        continue
-                    _kcls_source = _kcls_node.get("source_file")
-                    if not _is_kotlin_constructor_local_source(_kcls_source):
-                        continue
-                    _kcls_path = Path(str(_kcls_source))
-                    if not _kcls_path.is_absolute():
-                        _kcls_path = project_root / _kcls_path
-                    _kcls_identity = Path(os.path.abspath(_kcls_path)).as_posix()
-                    if (
-                        _is_relative_to(_kcls_path, watch_root)
-                        and _kcls_identity not in _kcls_live
-                    ):
-                        _kotlin_constructor_local_force_refresh = True
-                        break
+                _kcls_prior_kotlin = any(
+                    isinstance(node, dict)
+                    and _is_kotlin_constructor_local_source(node.get("source_file"))
+                    for node in _kcls_prior.get("nodes", [])
+                )
+                _kcls_current_kotlin = any(
+                    _is_kotlin_constructor_local_source(path) for path in code_files
+                )
+                if _kcls_prior_kotlin or _kcls_current_kotlin:
+                    _kcls_prior_jvm: set[str] = set()
+                    for _kcls_node in _kcls_prior.get("nodes", []):
+                        if not isinstance(_kcls_node, dict):
+                            continue
+                        _kcls_source = _kcls_node.get("source_file")
+                        if not _is_jvm_constructor_local_source(_kcls_source):
+                            continue
+                        _kcls_path = Path(str(_kcls_source))
+                        if not _kcls_path.is_absolute():
+                            _kcls_path = project_root / _kcls_path
+                        if _is_relative_to(_kcls_path, watch_root):
+                            _kcls_prior_jvm.add(
+                                Path(os.path.abspath(_kcls_path)).as_posix()
+                            )
+                    _kotlin_constructor_local_force_refresh = (
+                        _kcls_live != _kcls_prior_jvm
+                    )
             except Exception:
                 # Existing reconciliation keeps its own unreadable-graph
                 # failure path; do not guess an out-of-root legacy source.
@@ -2130,8 +2153,8 @@ def _rebuild_code(
                     scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                     clear_ast=_failed_ast_sources or None,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                return _manifest_save_failed(exc, graph_published=not same_graph)
 
             if same_graph:
                 print("[graphify watch] No code-graph changes detected (--no-cluster); outputs left untouched.")
@@ -2183,8 +2206,8 @@ def _rebuild_code(
                         scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                         clear_ast=_failed_ast_sources or None,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    return _manifest_save_failed(exc, graph_published=False)
                 html_action = _reconcile_graph_html(out, existing_graph_data)
                 if html_action == "rendered":
                     print(
@@ -2355,8 +2378,8 @@ def _rebuild_code(
                 scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                 clear_ast=_failed_ast_sources or None,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            return _manifest_save_failed(exc, graph_published=not no_change)
 
         # Reconcile from the persisted graph. The stale marker was written
         # before graph.json advanced, so a failed or interrupted atomic render
