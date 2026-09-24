@@ -441,6 +441,10 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: Ruby mixins declared with compact/nested syntax now resolve, and a qualified external mixin can no longer fabricate a phantom hub (#2302, thanks @FolatheDuckofDuckingburg). `module Foo::Bar` and `module Foo; module Bar` are canonicalized to the same fully-qualified label, and `include`/`extend`/`prepend` keep the full constant path, so `include Foo::Bar` resolves. Mixin resolution is now scoped and lexical: a qualified external name like `extend ActiveSupport::Concern` no longer binds to any local module named `Concern`, while a genuine in-corpus `include Foo::Concern` still resolves. Nested-declared classes keep their last-segment index so typed-receiver calls (`Processor.new`) continue to resolve.
 - Perf: dedup drops an O(nodes x components) scan in remap construction (#2328, thanks @stupidprogrammer4), with identical results.
 
+## Unreleased
+
+- Feature: shared MCP servers can load an optional named project registry with `--projects-index`. Clients call `list_projects`, then pass the returned public ID as `project` to select a graph without receiving its server filesystem path. Existing `project_path` calls remain supported.
+
 ## 0.9.31 (2026-07-30)
 
 - Feature: the MCP server is dual-compatible with SDK 1.x AND 2.x (#2308, thanks @NiSHoW), lifting the `mcp<2` cap 0.9.30 introduced to `mcp>=1,<3`. The 2.0 SDK removed the low-level decorator API (`Server.list_tools`/`call_tool`/...); `_build_server` now binds the same handlers via the 1.x decorators or the 2.x `on_*` constructor callbacks, picked at runtime, and adapts `Tool.inputSchema`, `Resource.uri` (plain `str` in 2.x), and the dropped `AnyUrl` re-export. Verified with full stdio handshakes under both mcp 1.29 and 2.0.

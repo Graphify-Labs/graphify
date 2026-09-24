@@ -183,6 +183,132 @@ def _project_with_graph(tmp_path, node_count: int, name: str = "proj") -> str:
     return str(proj)
 
 
+def _projects_index(tmp_path: Path, project_id: str, project_path: str) -> str:
+    index = tmp_path / "projects.json"
+    index.write_text(
+        json.dumps(
+            {
+                "projects": [
+                    {
+                        "id": project_id,
+                        "path": project_path,
+                        "source_repository": "example/catalog-service",
+                        "node_count": 3,
+                        "edge_count": 2,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return str(index)
+
+
+def test_projects_index_rejects_relative_and_duplicate_project_ids(tmp_path):
+    relative = tmp_path / "relative.json"
+    relative.write_text(
+        json.dumps({"projects": [{"id": "identity", "path": "relative"}]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="absolute"):
+        serve_mod._load_projects_index(str(relative))
+
+    duplicate = tmp_path / "duplicate.json"
+    duplicate.write_text(
+        json.dumps(
+            {
+                "projects": [
+                    {"id": "identity", "path": str(tmp_path / "one")},
+                    {"id": "identity", "path": str(tmp_path / "two")},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        serve_mod._load_projects_index(str(duplicate))
+
+
+def test_project_id_routes_to_its_registered_graph(tmp_path):
+    project = _project_with_graph(tmp_path, node_count=3, name="identity")
+    app = serve_mod._build_http_app(
+        _graph_file(tmp_path),
+        projects_index=_projects_index(tmp_path, "catalog-service", project),
+        json_response=True,
+    )
+    with _client(app) as client:
+        headers = _init_session(client)
+        assert "Nodes: 3" in _call_tool(
+            client, headers, "graph_stats", {"project": "catalog-service"}, rid=2
+        )
+        assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=3)
+
+
+def test_registered_project_load_failure_does_not_expose_server_path(tmp_path):
+    missing_path = str(tmp_path / "private-project-root")
+    app = serve_mod._build_http_app(
+        _graph_file(tmp_path),
+        projects_index=_projects_index(tmp_path, "catalog-service", missing_path),
+        json_response=True,
+    )
+    with _client(app) as client:
+        result = _call_tool(
+            client,
+            _init_session(client),
+            "graph_stats",
+            {"project": "catalog-service"},
+            rid=2,
+        )
+    assert "could not load graph for project 'catalog-service'" in result
+    assert missing_path not in result
+
+
+def test_project_selector_rejects_unknown_and_conflicting_selectors(tmp_path):
+    project = _project_with_graph(tmp_path, node_count=3, name="identity")
+    app = serve_mod._build_http_app(
+        _graph_file(tmp_path),
+        projects_index=_projects_index(tmp_path, "catalog-service", project),
+        json_response=True,
+    )
+    with _client(app) as client:
+        headers = _init_session(client)
+        unknown = _call_tool(
+            client, headers, "graph_stats", {"project": "not-configured"}, rid=2
+        )
+        conflicting = _call_tool(
+            client,
+            headers,
+            "graph_stats",
+            {"project": "catalog-service", "project_path": project},
+            rid=3,
+        )
+    assert "unknown project: not-configured" in unknown
+    assert "project and project_path cannot be used together" in conflicting
+
+
+def test_list_projects_returns_public_metadata_without_server_paths(tmp_path):
+    project = _project_with_graph(tmp_path, node_count=3, name="identity")
+    app = serve_mod._build_http_app(
+        _graph_file(tmp_path),
+        projects_index=_projects_index(tmp_path, "catalog-service", project),
+        json_response=True,
+    )
+    with _client(app) as client:
+        result = _call_tool(client, _init_session(client), "list_projects", {}, rid=2)
+    payload = json.loads(result)
+    assert payload == {
+        "projects": [
+            {
+                "id": "catalog-service",
+                "source_repository": "example/catalog-service",
+                "node_count": 3,
+                "edge_count": 2,
+            }
+        ]
+    }
+    assert project not in result
+
+
 def _init_session(client) -> dict:
     init = client.post("/mcp", headers=_MCP_HEADERS, json=_INIT_BODY)
     assert init.status_code == 200
@@ -201,8 +327,7 @@ def _call_tool(client, headers, name, arguments, rid) -> str:
 
 
 def test_project_path_is_optional_on_every_tool(tmp_path):
-    """Multi-project support is additive: every tool gains an optional
-    project_path, and none of them makes it required."""
+    """Graph query tools accept both selectors; discovery accepts neither."""
     app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
     with _client(app) as client:
         headers = _init_session(client)
@@ -210,8 +335,14 @@ def test_project_path_is_optional_on_every_tool(tmp_path):
                             json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         for tool in resp.json()["result"]["tools"]:
             props = tool["inputSchema"].get("properties", {})
+            if tool["name"] == "list_projects":
+                assert "project" not in props
+                assert "project_path" not in props
+                continue
             assert "project_path" in props, f"{tool['name']} missing project_path"
             assert "project_path" not in tool["inputSchema"].get("required", [])
+            assert "project" in props, f"{tool['name']} missing project"
+            assert "project" not in tool["inputSchema"].get("required", [])
 
 
 def test_project_path_routes_to_that_projects_graph(tmp_path):
@@ -347,12 +478,14 @@ def test_cli_http_passes_flags(monkeypatch):
     serve_mod._main([
         "g.json", "--transport", "http", "--host", "0.0.0.0",
         "--port", "9000", "--api-key", "k", "--stateless",
+        "--projects-index", "projects.json",
     ])
     assert captured["gp"] == "g.json"
     assert captured["host"] == "0.0.0.0"
     assert captured["port"] == 9000
     assert captured["api_key"] == "k"
     assert captured["stateless"] is True
+    assert captured["projects_index"] == "projects.json"
 
 
 def test_cli_api_key_from_env(monkeypatch):
