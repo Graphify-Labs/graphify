@@ -15,7 +15,14 @@ def _rust_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[
         return
     if t == "type_identifier":
         text = _read_text(node, source)
-        if text:
+        # `Self` is the keyword alias for the enclosing impl/trait type, not a
+        # referenceable type of its own. It is not declared in any file, so
+        # ensure_named_node mints a SOURCELESS stub whose id normalises to a
+        # single global `self` node -- and every `fn new() -> Self`,
+        # `fn build(self) -> Self`, `&Self`, etc. across the corpus rewires onto
+        # that one stub, manufacturing a false god node wired to every
+        # constructor. Skip it like the primitive types above.
+        if text and text != "Self":
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "scoped_type_identifier":
