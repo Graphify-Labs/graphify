@@ -21,32 +21,41 @@ def _build_csharp_type_def_index(
     all_edges: list[dict] | None = None,
 ) -> dict[tuple[str, str], str]:
     """Return deterministic ``(namespace, name) -> node_id`` C# type definitions."""
-    contained: set[str] = set()
     non_type_ids: set[str] = set()
+
     if all_edges is not None:
         for edge in all_edges:
             rel = edge.get("relation")
-            tgt = edge.get("target")
-            if isinstance(tgt, str):
-                if rel == "contains":
-                    contained.add(tgt)
-                elif rel in ("case_of", "defines", "method"):
+            if rel in ("case_of", "defines", "method"):
+                tgt = edge.get("_tgt") or edge.get("target")
+                if isinstance(tgt, str):
                     non_type_ids.add(tgt)
 
     candidates: dict[tuple[str, str], list[dict]] = {}
+
     for node in all_nodes:
         if node.get("type") == "namespace":
             continue
+
         metadata = node.get("metadata") or {}
         if not isinstance(metadata, dict):
             metadata = {}
+
         if metadata.get("is_nested_type"):
             continue
+
         nid = node.get("id")
         label = node.get("label")
-        if not (isinstance(nid, str) and nid and isinstance(label, str) and label):
+
+        if not (
+            isinstance(nid, str)
+            and nid
+            and isinstance(label, str)
+            and label
+        ):
             continue
-        if all_edges is not None and (nid not in contained or nid in non_type_ids):
+
+        if all_edges is not None and nid in non_type_ids:
             continue
         source_file = node.get("source_file")
         if (

@@ -704,3 +704,64 @@ def test_csharp_cross_file_collision_resolved_by_kind_not_filename_order(tmp_pat
         "FollowFloat must inherit from class Follow despite A_Enum.cs sorting first"
     assert (followfloat["id"], follow_member["id"]) not in inh, \
         "FollowFloat must NOT inherit from enum member EffectKind.Follow in A_Enum.cs"
+
+
+def test_csharp_name_resolver_resolves_type_in_partial_graph_without_contains():
+    # A partial or cross-repo graph intentionally lacks structural `contains` edges
+    # from file nodes. CsharpNameResolver must still resolve valid types while
+    # excluding member nodes (methods, properties, enum members).
+    from graphify.extractors.csharp import CsharpNameResolver
+
+    nodes = [
+        {
+            "id": "app::file",
+            "label": "OrderService.cs",
+            "source_file": "src/OrderService.cs",
+            "file_type": "code",
+            "repo": "app",
+        },
+        {
+            "id": "app::run",
+            "label": ".Run()",
+            "source_file": "src/OrderService.cs",
+            "file_type": "code",
+            "repo": "app",
+        },
+        {
+            "id": "lib::type",
+            "label": "IValidator",
+            "source_file": "src/IValidator.cs",
+            "file_type": "code",
+            "repo": "lib",
+            "metadata": {"namespace": "Lib.Domain.Interfaces"},
+        },
+        {
+            "id": "lib::method",
+            "label": ".ValidateAsync()",
+            "source_file": "src/IValidator.cs",
+            "file_type": "code",
+            "repo": "lib",
+        },
+    ]
+    edges = [
+        {
+            "source": "app::file",
+            "target": "app::using",
+            "relation": "imports",
+            "metadata": {"using_kind": "namespace", "target_fqn": "Lib.Domain.Interfaces"},
+        },
+        {
+            "source": "lib::type",
+            "target": "lib::method",
+            "relation": "method",
+        },
+    ]
+
+    resolver = CsharpNameResolver(nodes, edges)
+    resolved, decisive = resolver.resolve_type_name(
+        "IValidator",
+        nodes[1],
+        "src/OrderService.cs",
+    )
+    assert resolved == "lib::type", "Valid C# type must resolve even without `contains` edges"
+    assert decisive is True
