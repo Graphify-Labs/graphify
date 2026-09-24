@@ -32,11 +32,36 @@ from graphify.extractors.base import _file_stem, _make_id
 # 'SELECT AUTOCREATE PROCEDURE x FROM t;' in an error-bearing file minted a
 # phantom routine x() (delimited identifiers are span-skipped at the scan
 # site, but a bare word has no span).
+#
+# The name-part alternation is factored out because a second recovery pattern
+# (_POLICY_RECOVERY_RX) has to accept exactly the same identifier forms — a
+# policy on "public"."employees" is as ordinary as a routine named
+# [dbo].[usp_Load], and two hand-copied alternations would drift.
+_NAME_PART = r"(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
+_QUALIFIED_NAME = rf"{_NAME_PART}(?:\s*\.\s*{_NAME_PART})*"
+
 _ROUTINE_RECOVERY_RX = re.compile(
     r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:FUNCTION|PROC(?:EDURE)?)\s+"
     r"(?:IF\s+NOT\s+EXISTS\s+)?"
-    r"((?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
-    r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)",
+    rf"({_QUALIFIED_NAME})",
+    re.IGNORECASE,
+)
+
+# CREATE POLICY has NO rule in tree-sitter-sql — not an unparseable body like
+# PL/pgSQL, no rule at all — so the statement shreds into loose top-level
+# tokens plus an ERROR node and the walk has nothing to dispatch on. Adding an
+# `elif t == "create_policy"` branch would be dead code (#3401). Recovery is
+# regex, like routines, but the two patterns stay separate: a policy is not a
+# routine (bare-name label, no `()`), and it carries an `ON <table>` clause
+# that is the whole point of the node.
+#
+# `CREATE POLICY <name> ON <table>` is far more specific than a bare
+# `CREATE FUNCTION`, so this scan is NOT gated on a failed parse the way the
+# routine scan is: there is no plausible non-DDL text it matches, and gating on
+# has_error would make policy recovery evaporate the day the grammar learns to
+# parse the statement. Policy names are never schema-qualified; the table is.
+_POLICY_RECOVERY_RX = re.compile(
+    rf"\bCREATE\s+POLICY\s+({_NAME_PART})\s+ON\s+({_QUALIFIED_NAME})",
     re.IGNORECASE,
 )
 
@@ -698,7 +723,13 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     # strings in MySQL's default mode, PostgreSQL dollar-quoted bodies). Every
     # observed drop shape leaves an ERROR node in the tree, so has_error loses
     # nothing while protecting clean corpora (#2180 follow-up).
-    if root.has_error:
+    #
+    # Policy recovery (#3401) shares the mask but not the gate — see
+    # _POLICY_RECOVERY_RX. The raw-text pre-check keeps a clean corpus from
+    # paying for _scan_sql: masking only ever blanks characters, so a pattern
+    # that cannot match the raw source cannot match the masked source either.
+    scan_policies = _POLICY_RECOVERY_RX.search(src_text) is not None
+    if root.has_error or scan_policies:
         # The mask blanks comments (nesting-aware) and single-quoted strings
         # (offset-preserving), so commented-out DDL and single-quoted dynamic
         # SQL cannot fabricate a routine when an unrelated error arms this
@@ -710,11 +741,33 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         # name a genuine statement captures is allowed to be a delimited
         # identifier; its CREATE never is.
         masked_src, ident_spans = _scan_sql(src_text)
-        for m in _ROUTINE_RECOVERY_RX.finditer(masked_src):
-            if any(s <= m.start() < e for s, e in ident_spans):
-                continue
-            fn_name = m.group(1)
-            fn_line = src_text[: m.start()].count("\n") + 1
-            _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)
+        if root.has_error:
+            for m in _ROUTINE_RECOVERY_RX.finditer(masked_src):
+                if any(s <= m.start() < e for s, e in ident_spans):
+                    continue
+                fn_name = m.group(1)
+                fn_line = src_text[: m.start()].count("\n") + 1
+                _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)
+        if scan_policies:
+            for m in _POLICY_RECOVERY_RX.finditer(masked_src):
+                if any(s <= m.start() < e for s, e in ident_spans):
+                    continue
+                pol_name, tbl_name = m.group(1), m.group(2)
+                pol_line = src_text[: m.start()].count("\n") + 1
+                # A policy name is unique per TABLE, not per schema or database:
+                # `tenant_isolation` on two tables is ordinary, and two policies
+                # named alike on one table is illegal. So the table belongs in
+                # the id, or the second policy would dedupe onto the first and
+                # the graph would lose it exactly as before.
+                pol_nid = _make_id(stem, tbl_name, pol_name)
+                _add_node(pol_nid, pol_name, pol_line)
+                tbl_nid = table_nids.get(_norm_ident(tbl_name)) or _ref_stub(tbl_name)
+                # `references` rather than a policy-specific relation: it is in
+                # both SEMANTIC_RELATIONS and DEFAULT_AFFECTED_RELATIONS, so
+                # `graphify affected "<table>"` reaches the policies guarding it.
+                # A novel relation would put the node in the graph and still
+                # leave it invisible to the traversal that asks who may read the
+                # row — half a fix.
+                _add_edge(pol_nid, tbl_nid, "references", pol_line)
 
     return {"nodes": nodes, "edges": edges}
