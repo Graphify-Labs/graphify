@@ -2,6 +2,15 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.67 (2026-09-23)
+
+- Fix: the PYTHONHASHSEED determinism pin (0.9.66) now re-execs via `python -m graphify` instead of replaying `argv[0]`, fixing a Windows regression where `update`/`extract`/`cluster-only`/`label` failed to re-launch through the console-script `.exe` launcher (#3780, thanks @ayushcodes10).
+- Feature: PHP closures are now extracted — an anonymous `function(){…}`, an arrow `fn()=>…`, or a closure passed as an argument now produces a node and its inner calls are captured, in all positions including file scope. Route-definition closures get a semantic `VERB /path` name (composing nested `group()` prefixes); other closures get a stable per-scope ordinal (#3461, #3409, thanks @nikhilsaxena04).
+- Fix: absolute Python package imports (`import pkg.sub`, `from pkg.sub import x`) now resolve to the local package/module node within the scan root, reusing the canonical resolver (bounded walk, PEP 420 namespace handling); an ambiguous module name across scanned trees fails closed rather than binding arbitrarily (#3729, thanks @Ha1baraA11).
+- Fix: a package/module name collision (`pkg/` package alongside a `pkg.py` module) no longer produces a phantom import cycle — the spurious provisional edge is retracted while genuine package-init and submodule edges are preserved (#3784, #3777, thanks @hopstreax).
+- Fix: Terraform secret redaction now also covers secrets nested inside list values (`configs = [{ password = "…" }]`), not just maps (#3762, #3644 follow-up, thanks @abhay-codes07).
+- Fix: `export` no longer rewrites unchanged wiki/Obsidian pages on every run — a page whose content is identical is left untouched (stable mtimes, clean git/Obsidian sync), while changed and new pages still write and orphaned pages are still swept (#3760, #3060, thanks @abhay-codes07).
+
 ## 0.9.66 (2026-09-22)
 
 - Feature: five new language extractors — **COBOL** (`.cbl`/`.cob`/`.cobol`/`.cpy`; programs, paragraphs, `PERFORM`/`CALL`/`COPY`, pure-regex, no new dependency) (#3713, thanks @Abdul535), **VB.NET** (`.vb`; case-insensitive types/methods, `Inherits`/`Implements`/`Handles`) (#3717, thanks @Abdul535), **R** (`.r`/`.R`; assignment-form function defs, `library`/`source`, S4/R6 classes) (#3715, thanks @Abdul535), **Solidity** (`.sol`; contracts/interfaces/libraries, `is` inheritance, imports, modifiers) (#3716, thanks @Abdul535), and **Erlang** (`.erl`/`.hrl`/`.escript`; modules, functions by arity, behaviours, local + remote `foo:bar()` calls) (#3714, thanks @Abdul535). The R and Erlang grammars ship via the `r`/`erlang` extras (they have no standalone PyPI wheel); Solidity and VB.NET have their own extras.

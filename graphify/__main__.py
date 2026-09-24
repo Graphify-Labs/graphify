@@ -522,7 +522,17 @@ def _pin_hash_seed_if_needed() -> None:
     if "PYTHONHASHSEED" in os.environ or "PYTEST_CURRENT_TEST" in os.environ:
         return
     try:
-        os.execvpe(sys.executable, [sys.executable, *sys.argv], {**os.environ, "PYTHONHASHSEED": "0"})
+        # Re-exec as a module (-m graphify) rather than replaying sys.argv[0]
+        # as a script path: that works for a POSIX console-script wrapper or
+        # a `python -m graphify` invocation, but a uv/pip/pipx console-script
+        # launcher on Windows is a native .exe with no .py content, so
+        # `python.exe <that .exe path>` fails outright with "can't open
+        # file" -- every command this function touches (#3779).
+        os.execvpe(
+            sys.executable,
+            [sys.executable, "-m", "graphify", *sys.argv[1:]],
+            {**os.environ, "PYTHONHASHSEED": "0"},
+        )
     except OSError:
         pass
 

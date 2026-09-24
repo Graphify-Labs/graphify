@@ -144,6 +144,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_lua_import_target,
     _probe_python_module_candidate,
     _resolve_python_module_path,
+    _resolve_python_namespace_dir,
     _resolve_tsconfig_alias,
     _resolve_workspace_import,
     _source_key,
@@ -181,8 +182,12 @@ def _raise_recursion_limit() -> None:
         sys.setrecursionlimit(_RECURSION_LIMIT)
 
 
-def _safe_extract(extractor: Callable, path: Path) -> dict:
+def _safe_extract(
+    extractor: Callable, path: Path, *, scan_root: Path | None = None
+) -> dict:
     try:
+        if extractor is extract_python:
+            return extractor(path, root=scan_root)
         return extractor(path)
     except RecursionError:
         print(f"  warning: skipped {path} (recursion limit exceeded)", file=sys.stderr, flush=True)
@@ -203,6 +208,208 @@ def _file_node_id(rel_path: Path) -> str:
     ID semantic subagents generate, or AST and semantic extraction split a file
     into two disconnected ghost nodes (#1033)."""
     return _make_id(_file_stem(rel_path))
+
+
+def _python_absolute_import_alias_files(paths, root) -> tuple[dict[str, set[str]], set[str]]:
+    """Map importable absolute module ids to their scanned file paths.
+
+    A file can be importable from more than one sys.path root inside the scan
+    root (for example ``a/src/pkg/mod.py`` as either ``pkg.mod`` or
+    ``src.pkg.mod``). Probe each in-root, non-package ancestor the same way the
+    shared resolver does. Keeping every candidate lets the extraction passes
+    fail closed when the same absolute module name identifies multiple files.
+    """
+    try:
+        root = Path(root).resolve()
+    except OSError:
+        root = Path(root)
+
+    package_dirs: dict[Path, bool] = {}
+
+    def _is_package(path: Path) -> bool:
+        if path not in package_dirs:
+            package_dirs[path] = (path / "__init__.py").is_file()
+        return package_dirs[path]
+
+    aliases: dict[str, set[str]] = {}
+    scan_root_aliases: set[str] = set()
+    for raw_path in paths:
+        p = Path(raw_path)
+        if p.suffix.lower() != ".py":
+            # _resolve_python_module_path probes .py, not a lone .pyi file.
+            continue
+        try:
+            p = p.resolve()
+            rel = p.relative_to(root)
+        except (ValueError, OSError, RuntimeError):
+            continue
+
+        module_path = p.parent if p.name == "__init__.py" else p.with_suffix("")
+        candidate_roots = [root]
+        for ancestor in p.parents:
+            if ancestor == root:
+                break
+            try:
+                ancestor.relative_to(root)
+            except ValueError:
+                break
+            if not _is_package(ancestor):
+                candidate_roots.append(ancestor)
+
+        for candidate_root in candidate_roots:
+            try:
+                module_rel = module_path.relative_to(candidate_root)
+            except ValueError:
+                continue
+            if not module_rel.parts or not all(part.isidentifier() for part in module_rel.parts):
+                continue
+            module_name = ".".join(module_rel.parts)
+            candidate = candidate_root.joinpath(*module_rel.parts)
+            try:
+                hit = _probe_python_module_candidate(candidate)
+                if hit is None or hit.resolve() != p:
+                    continue
+            except (OSError, RuntimeError):
+                continue
+            module_id = _make_id(module_name)
+            aliases.setdefault(module_id, set()).add(str(p))
+            if candidate_root == root:
+                # The shared resolver probes the scan root before importer
+                # ancestors. A unique root hit is therefore authoritative even
+                # if a nested, independently importable tree has the same name.
+                scan_root_aliases.add(module_id)
+    return aliases, scan_root_aliases
+
+
+def _suppress_ambiguous_python_imports(
+    edges: list[dict],
+    nodes: list[dict],
+    raw_calls: list[dict],
+    ambiguous_modules: set[str],
+    module_alias_files: dict[str, set[str]],
+    root: Path,
+) -> None:
+    """Keep ambiguous Python imports dangling instead of choosing one file.
+
+    The transient module name is also consumed by the symbol-level resolvers;
+    removing it here prevents a direct file edge and any later inferred symbol
+    or call edge from binding to an arbitrary same-named package. A plain
+    ``import helper`` resolved to a scanned loose sibling in the importer's own
+    non-package directory is an exception: that directory-local target is
+    unambiguous even when another loose directory has its own ``helper.py``.
+    """
+    node_ids = {n.get("id") for n in nodes if isinstance(n, dict)}
+    ambiguous_bindings_by_file: dict[str, set[str]] = {}
+    ambiguous_all_call_files: set[str] = set()
+
+    def _is_resolved_loose_sibling(edge: dict, module_id: str) -> bool:
+        """Trust only a concrete, scanned same-directory target for a bare import."""
+        target_file = edge.get("target_file")
+        source_file = edge.get("source_file")
+        if not target_file or not source_file:
+            return False
+        candidates = module_alias_files.get(module_id, set())
+        if not candidates:
+            return False
+        try:
+            source_path = Path(source_file)
+            if not source_path.is_absolute():
+                source_path = root / source_path
+            source_path = source_path.resolve()
+            target_path = Path(target_file).resolve()
+            if target_path.parent != source_path.parent:
+                return False
+            if (source_path.parent / "__init__.py").is_file() or (
+                source_path.parent / "__init__.pyi"
+            ).is_file():
+                return False
+            return any(Path(candidate).resolve() == target_path for candidate in candidates)
+        except (OSError, RuntimeError):
+            return False
+
+    kept_edges: list[dict] = []
+    for edge in edges:
+        if not isinstance(edge, dict):
+            kept_edges.append(edge)
+            continue
+        module_name = edge.pop("_python_import_module", None)
+        bindings = edge.pop("_python_import_bindings", [])
+        is_module_binding = edge.pop("_python_import_module_binding", False)
+        marker_only = edge.pop("_python_import_marker_only", False)
+        if not module_name:
+            if not marker_only:
+                kept_edges.append(edge)
+            continue
+        if not marker_only and edge.get("relation") not in ("imports", "imports_from"):
+            kept_edges.append(edge)
+            continue
+        module_id = _make_id(module_name)
+        module_is_ambiguous = module_id in ambiguous_modules
+        if (
+            module_is_ambiguous
+            and is_module_binding
+            and "." not in module_name
+            and _is_resolved_loose_sibling(edge, module_id)
+        ):
+            module_is_ambiguous = False
+        if is_module_binding:
+            if module_is_ambiguous:
+                ambiguous_bindings_by_file.setdefault(
+                    str(edge.get("source_file", "")), set()
+                ).update(local for _, local in bindings)
+        else:
+            for imported, local in bindings:
+                if imported == "*":
+                    module_prefix = _make_id(module_name) + "_"
+                    if (
+                        module_is_ambiguous
+                        or any(name.startswith(module_prefix) for name in ambiguous_modules)
+                    ):
+                        ambiguous_all_call_files.add(
+                            str(edge.get("source_file", ""))
+                        )
+                    continue
+                if (
+                    module_is_ambiguous
+                    or _make_id(f"{module_name}.{imported}") in ambiguous_modules
+                ):
+                    ambiguous_bindings_by_file.setdefault(
+                        str(edge.get("source_file", "")), set()
+                    ).add(local)
+        if marker_only:
+            continue
+        if not module_is_ambiguous:
+            kept_edges.append(edge)
+            continue
+        # A raw dotted alias could itself belong to an unrelated real node. Use
+        # a stable, node-less id so the graph builder drops the unresolved edge
+        # instead of fabricating a link to that node.
+        identity = "\0".join((
+            str(module_name), str(edge.get("source_file", "")),
+            str(edge.get("source_location", "")), str(edge.get("source", "")),
+        ))
+        target = _make_id(f"ambiguous_python_import_{hashlib.sha1(identity.encode()).hexdigest()[:12]}")
+        while target in node_ids:
+            target += "_"
+        edge["target"] = target
+        edge.pop("target_file", None)
+        kept_edges.append(edge)
+
+    edges[:] = kept_edges
+
+    for raw_call in raw_calls:
+        source_file = str(raw_call.get("source_file", ""))
+        if source_file in ambiguous_all_call_files:
+            raw_call["_ambiguous_python_import"] = True
+            continue
+        bindings = ambiguous_bindings_by_file.get(source_file)
+        if not bindings:
+            continue
+        callee = str(raw_call.get("callee", ""))
+        receiver = str(raw_call.get("receiver", ""))
+        receiver_root = receiver.split(".", 1)[0]
+        if callee in bindings or receiver_root in bindings:
+            raw_call["_ambiguous_python_import"] = True
 
 
 def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
@@ -436,15 +643,73 @@ def _resolve_name(node, source: bytes, config: LanguageConfig) -> str | None:
 
 # ── Import handlers ───────────────────────────────────────────────────────────
 
-def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
+def _python_import_bindings(node, source: bytes) -> list[tuple[str, str]]:
+    """Return (imported name, local binding) pairs from a Python import node."""
+    bindings: list[tuple[str, str]] = []
+    past_import = False
+    for child in node.children:
+        if child.type == "import":
+            past_import = True
+            continue
+        if not past_import:
+            continue
+        if child.type == "dotted_name":
+            imported = _read_text(child, source)
+            bindings.append((imported, imported.split(".")[-1]))
+        elif child.type == "aliased_import":
+            name_node = child.child_by_field_name("name")
+            alias_node = child.child_by_field_name("alias")
+            if name_node is None:
+                continue
+            imported = _read_text(name_node, source)
+            local = _read_text(alias_node, source) if alias_node is not None else imported.split(".")[-1]
+            bindings.append((imported, local))
+        elif child.type == "wildcard_import":
+            bindings.append(("*", "*"))
+    return bindings
+
+
+def _import_python(
+    node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str,
+    scope_stack: list[str] | None = None, scan_root: Path | None = None,
+) -> None:
     t = node.type
+    current_path = Path(str_path)
+    try:
+        current_path = current_path.resolve()
+    except OSError:
+        pass
+    root = Path(scan_root) if scan_root is not None else current_path.parent
+    try:
+        root = root.resolve()
+    except OSError:
+        pass
     if t == "import_statement":
         for child in node.children:
             if child.type in ("dotted_name", "aliased_import"):
                 raw = _read_text(child, source)
                 raw_module, _, raw_alias = raw.partition(" as ")
                 module_name = raw_module.strip().lstrip(".")
-                tgt_nid = _make_id(module_name)
+                local_binding = raw_alias.strip() if raw_alias else module_name.split(".")[0]
+                target_path = _resolve_python_module_path(
+                    module_name, current_path, root, level=0
+                )
+                # Keep the target-file stamp even for a nested sys.path root so
+                # incremental extraction can canonicalize imports whose target
+                # is not in this batch. The corpus-wide ambiguity guard runs
+                # before symbol resolution and clears this edge when another
+                # scanned file claims the same absolute module name.
+                if target_path is not None:
+                    try:
+                        if target_path.resolve() == current_path:
+                            target_path = None
+                    except OSError:
+                        pass
+                tgt_nid = (
+                    _make_id(str(target_path))
+                    if target_path is not None
+                    else _make_id(module_name)
+                )
                 edge = {
                     "source": file_nid,
                     "target": tgt_nid,
@@ -454,7 +719,12 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                     "source_file": str_path,
                     "source_location": f"L{node.start_point[0] + 1}",
                     "weight": 1.0,
+                    "_python_import_module": module_name,
+                    "_python_import_bindings": [(module_name, local_binding)],
+                    "_python_import_module_binding": True,
                 }
+                if target_path is not None:
+                    edge["target_file"] = str(target_path)
                 if raw_alias:
                     # `import pkg.mod as alias` binds the local name `alias`, not
                     # `mod`'s own stem, to the module -- stash it so the cross-file
@@ -471,26 +741,50 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                 # Relative import - resolve to full path so IDs match file node IDs
                 dots = len(raw) - len(raw.lstrip("."))
                 module_name = raw.lstrip(".")
-                base = Path(str_path).parent
-                for _ in range(dots - 1):
-                    base = base.parent
-                # A relative import can name a subpackage (a directory with an
-                # __init__.py), not a module file. Probing the candidate on disk
-                # (mirroring the companion `imports` edge's
-                # _resolve_python_module_path) resolves `graphs` -> graphs/__init__.py
-                # instead of a nonexistent graphs.py: without it the target keeps an
-                # absolute-path-derived slug that the target_file stamp below can't
-                # heal, so it dangles per-checkout (#2455).
-                candidate = base / module_name.replace(".", "/") if module_name else base
-                resolved = _probe_python_module_candidate(candidate)
-                if resolved is not None:
-                    target_path = resolved
-                else:
+                target_path = _resolve_python_module_path(
+                    module_name, current_path, root, level=dots
+                )
+                if target_path is None:
+                    base = current_path.parent
+                    for _ in range(dots - 1):
+                        base = base.parent
                     rel = (module_name.replace(".", "/") + ".py") if module_name else "__init__.py"
                     target_path = base / rel
                 tgt_nid = _make_id(str(target_path))
             else:
-                tgt_nid = _make_id(raw)
+                # Use the shared scan-root-aware resolver for absolute imports.
+                # It stops at the corpus boundary and handles package roots the
+                # same way as symbol resolution. A namespace package has no file
+                # node of its own; the corpus pass will emit edges to any
+                # imported submodules that exist on disk.
+                target_path = _resolve_python_module_path(raw, current_path, root, level=0)
+                if target_path is None and _resolve_python_namespace_dir(
+                    raw, current_path, root, level=0
+                ) is not None:
+                    # Namespace packages have no file node for the named
+                    # package, but their imported names can still bind to
+                    # ambiguous submodules. Carry a private marker so the
+                    # corpus-wide guard can suppress false symbol/call edges;
+                    # it is removed before any graph resolver sees the edges.
+                    edges.append({
+                        "source": file_nid,
+                        "target": "",
+                        "relation": "_python_import_marker",
+                        "source_file": str_path,
+                        "_python_import_module": raw,
+                        "_python_import_bindings": _python_import_bindings(node, source),
+                        "_python_import_marker_only": True,
+                    })
+                    return
+                if target_path is not None:
+                    try:
+                        if target_path.resolve() == current_path:
+                            # Do not turn an import of the current file into a
+                            # self-loop.
+                            target_path = None
+                    except OSError:
+                        pass
+                tgt_nid = _make_id(str(target_path)) if target_path is not None else _make_id(raw)
             edge = {
                 "source": file_nid,
                 "target": tgt_nid,
@@ -501,6 +795,9 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                 "source_location": f"L{node.start_point[0] + 1}",
                 "weight": 1.0,
             }
+            if not raw.startswith("."):
+                edge["_python_import_module"] = raw
+                edge["_python_import_bindings"] = _python_import_bindings(node, source)
             # Stamp the resolved target file (mirroring _import_js, #1814) so
             # the #2169 remap pass can canonicalize this edge's target on an
             # incremental run where the target file itself is not in the
@@ -1162,7 +1459,7 @@ _PHP_CONFIG = LanguageConfig(
         "enum_declaration",
         "trait_declaration",
     }),
-    function_types=frozenset({"function_definition", "method_declaration"}),
+    function_types=frozenset({"function_definition", "method_declaration", "anonymous_function", "arrow_function"}),
     import_types=frozenset({"namespace_use_clause"}),
     # object_creation_expression joins the dispatch set so `new Foo(...)` links
     # the constructing method to Foo (engine has a dedicated PHP branch: the
@@ -1180,7 +1477,7 @@ _PHP_CONFIG = LanguageConfig(
     # enums wrap their members in an enum_declaration_list rather than a
     # declaration_list, so the body walk needs it to reach enum methods/cases.
     body_fallback_child_types=("declaration_list", "compound_statement", "enum_declaration_list"),
-    function_boundary_types=frozenset({"function_definition", "method_declaration"}),
+    function_boundary_types=frozenset({"function_definition", "method_declaration", "anonymous_function", "arrow_function"}),
     import_handler=_import_php,
 )
 
@@ -1696,9 +1993,9 @@ def _normalize_ts_import_types(source: bytes, *, tsx: bool = False) -> bytes | N
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def extract_python(path: Path) -> dict:
+def extract_python(path: Path, *, root: Path | None = None) -> dict:
     """Extract classes, functions, and imports from a .py file via tree-sitter AST."""
-    result = _extract_generic(path, _PYTHON_CONFIG)
+    result = _extract_generic(path, _PYTHON_CONFIG, scan_root=root)
     if "error" not in result:
         _extract_python_rationale(path, result)
     return result
@@ -3646,6 +3943,8 @@ def _resolve_python_member_calls(
         })
 
     for rc in all_raw_calls:
+        if rc.get("_ambiguous_python_import"):
+            continue
         if not rc.get("is_member_call"):
             continue
         receiver = rc.get("receiver")
@@ -6599,7 +6898,7 @@ def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
     previous_root = _XAML_ACTIVE_EXTRACT_ROOT
     _XAML_ACTIVE_EXTRACT_ROOT = root.resolve()
     try:
-        return _safe_extract(extractor, path)
+        return _safe_extract(extractor, path, scan_root=root)
     finally:
         _XAML_ACTIVE_EXTRACT_ROOT = previous_root
 
@@ -6932,6 +7231,24 @@ def extract(
     elif cache_root is not None:
         root = cache_root
     root = root.resolve()
+    python_scan_paths = list(paths)
+    for context_node in resolution_context_nodes or []:
+        source_file = context_node.get("source_file")
+        if not source_file or Path(source_file).suffix.lower() != ".py":
+            continue
+        context_path = Path(source_file)
+        if not context_path.is_absolute():
+            context_path = root / context_path
+        if context_path.is_file():
+            python_scan_paths.append(context_path)
+    python_module_alias_files, scan_root_aliases = _python_absolute_import_alias_files(
+        python_scan_paths, root
+    )
+    ambiguous_python_modules = {
+        module_id
+        for module_id, module_paths in python_module_alias_files.items()
+        if len(module_paths) > 1 and module_id not in scan_root_aliases
+    }
 
     # #1774: the cache is an OUTPUT, so when no explicit cache_root is given it is
     # written under the current working directory — never `root` (the inferred
@@ -7168,6 +7485,13 @@ def extract(
     _augment_symbol_resolution_edges(
         paths, all_nodes, all_edges, root,
         resolution_context_nodes=resolution_context_nodes,
+    _suppress_ambiguous_python_imports(
+        all_edges, all_nodes, all_raw_calls, ambiguous_python_modules,
+        python_module_alias_files, root,
+    )
+    _augment_symbol_resolution_edges(
+        paths, all_nodes, all_edges, root,
+        ambiguous_python_modules=ambiguous_python_modules,
     )
 
     # Merge a header-declared class (and its methods) with its sibling-impl
@@ -7644,7 +7968,10 @@ def extract(
     if py_paths:
         py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
         try:
-            cross_file_edges = _resolve_cross_file_imports(py_results, py_paths, all_nodes, all_edges)
+            cross_file_edges = _resolve_cross_file_imports(
+                py_results, py_paths, all_nodes, all_edges,
+                ambiguous_python_modules=ambiguous_python_modules,
+            )
             all_edges.extend(cross_file_edges)
         except Exception as exc:
             import logging
@@ -7858,6 +8185,8 @@ def extract(
     _JS_TS_CALL_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
     _go_module_cache: dict[Path, str | None] = {}
     for rc in all_raw_calls:
+        if rc.get("_ambiguous_python_import"):
+            continue
         callee = rc.get("callee", "")
         if not callee:
             continue

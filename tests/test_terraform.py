@@ -359,3 +359,44 @@ resource "aws_db_instance" "main" {
     assert "hunter2-super-secret" not in _json.dumps(node)
     assert "AKIAWHATEVER" not in _json.dumps(node)
     assert "leaky" not in _json.dumps(node)
+
+
+def test_terraform_redact_value_recurses_into_lists():
+    """A secret nested inside a list — a list of objects, or a nested list — must
+    be redacted, matching the map case. HCL routinely nests objects in tuples
+    (`list(object(...))`, dynamic blocks), and recursing into dicts but not lists
+    left those values leaking (#3644 follow-up)."""
+    from graphify.extractors.terraform import _redact_value
+
+    # list of objects: the secret-named inner key is redacted, ordinary key kept
+    assert _redact_value("connections", [{"host": "db", "password": "x"}]) == [
+        {"host": "db", "password": "[redacted]"}
+    ]
+    # nested list -> list -> object
+    assert _redact_value("stages", [[{"api_key": "sk-1"}]]) == [[{"api_key": "[redacted]"}]]
+    # a sensitive KEY still redacts the whole list value
+    assert _redact_value("passwords", ["a", "b"]) == "[redacted]"
+    # a non-secret list of scalars is left intact
+    assert _redact_value("ports", [80, 443]) == [80, 443]
+
+
+def test_terraform_secret_in_list_of_objects_is_redacted(tmp_path):
+    """End-to-end: a `password` inside a tuple-of-objects attribute must not reach
+    the graph verbatim, exactly as it wouldn't inside a map (#3644 follow-up)."""
+    body = """\
+resource "aws_x" "y" {
+  name = "app"
+  connections = [
+    { host = "db1", password = "leaky-in-list" },
+    { host = "db2", token = "tok-in-list" },
+  ]
+}
+"""
+    r = extract_terraform(_write(tmp_path, "conns.tf", body))
+    node = next(n for n in r["nodes"] if n["label"] == "aws_x.y")
+    conns = node["attributes"]["connections"]
+    assert conns[0]["host"] == "db1" and conns[0]["password"] == "[redacted]"
+    assert conns[1]["host"] == "db2" and conns[1]["token"] == "[redacted]"
+    import json as _json
+    assert "leaky-in-list" not in _json.dumps(node)
+    assert "tok-in-list" not in _json.dumps(node)
