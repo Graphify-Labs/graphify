@@ -1,6 +1,7 @@
 """Dart extractor. Moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
+import os
 import re
 
 from pathlib import Path
@@ -49,8 +50,15 @@ def extract_dart(path: Path) -> dict:
         parent_ref = part_of_match.group(1)
         if parent_ref.endswith(".dart"):
             try:
-                parent_path = (path.parent / parent_ref).resolve()
-                if parent_path.exists():
+                # Existence is still checked on the resolved path, so symlinks and `..`
+                # behave as before. The id and stem are minted from the parent in the SAME
+                # path space the caller passed in: resolving first made a part file's
+                # symbols absolute-derived while the library's own stayed relative, so one
+                # Dart library occupied two id namespaces and its parts were stranded.
+                # It also wrote the machine's directory layout into the persisted graph
+                # (issue #3522).
+                parent_path = Path(os.path.normpath(path.parent / parent_ref))
+                if (path.parent / parent_ref).resolve().exists():
                     stem = _file_stem(parent_path)
                     file_nid = _make_id(str(parent_path))
                     is_part = True
