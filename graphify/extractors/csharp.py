@@ -11,6 +11,7 @@ the core migration happens.
 from __future__ import annotations
 
 import html
+import re
 from pathlib import Path
 
 from graphify.extractors.base import _make_id
@@ -40,22 +41,45 @@ def _build_csharp_type_def_index(all_nodes: list[dict]) -> dict[tuple[str, str],
             continue
         if label.endswith(")") or label.startswith(".") or "." in label:
             continue
+        # A member is not a type. `public DbSet<Widget> Widget { get; set; }` declares a
+        # PROPERTY named Widget alongside the CLASS Widget, and both land in the same
+        # (namespace, name) bucket -- so the index either resolved every `Widget` type
+        # reference to the property, or (when the property sorted second) saw two
+        # candidates and refused. Either way the class kept only its own file's
+        # `contains` edge. `_callable_class` is stamped on every C# type declaration --
+        # class, interface, enum, record, struct, static and abstract classes -- and on
+        # no property or method, so it is the discriminator that belongs in a
+        # TYPE-definition index.
+        if not node.get("_callable_class"):
+            continue
         namespace = metadata.get("namespace", "")
         if not isinstance(namespace, str):
             namespace = ""
         candidates.setdefault((namespace, label), []).append(node)
 
     return {
-        key: sorted(
-            nodes,
-            key=lambda node: (
-                str(node.get("source_file") or ""),
-                str(node.get("source_location") or ""),
-                str(node.get("id") or ""),
-            ),
-        )[0]["id"]
+        key: sorted(nodes, key=_type_def_sort_key)[0]["id"]
         for key, nodes in candidates.items()
     }
+
+
+def _type_def_sort_key(node: dict) -> tuple:
+    """Deterministic "first declaration wins" ordering for same-(namespace, name) types.
+
+    source_location is an `L<line>` string, and sorting it lexically ranks L12 above L5
+    -- so the tie-break did not mean "declared first" for any file where the contenders
+    straddle line 10. Sort on the parsed line number, keeping the raw string and id as
+    stable secondary keys for locations that do not parse.
+    """
+    location = str(node.get("source_location") or "")
+    match = re.match(r"^L(\d+)$", location)
+    line = int(match.group(1)) if match else -1
+    return (
+        str(node.get("source_file") or ""),
+        line,
+        location,
+        str(node.get("id") or ""),
+    )
 
 
 def _strip_trailing_csharp_generic_args(target_fqn: str) -> str:
