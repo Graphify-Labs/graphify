@@ -131,3 +131,28 @@ def test_cobol_malformed_tail_comments_and_strings_do_not_create_phantoms(tmp_pa
     labels = {node["label"].casefold() for node in result["nodes"]}
     assert 'kept' in labels
     assert labels.isdisjoint({'ghost'})
+
+
+def test_cobol_perform_thru_links_both_range_endpoints(tmp_path):
+    """`PERFORM A THRU Z` runs the range A..Z, so both endpoints are performed.
+    Only the entry paragraph was linked before, leaving the range-end with no
+    inbound `calls` edge."""
+    source = tmp_path / "range.cbl"
+    source.write_text(
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. RANGE.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       MAIN-PARA.\n"
+        "           PERFORM A-PARA THRU Z-PARA.\n"
+        "       A-PARA.\n"
+        "           DISPLAY 'A'.\n"
+        "       Z-PARA.\n"
+        "           DISPLAY 'Z'.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    calls = _edge_labels(result, "calls")
+    assert ("MAIN-PARA", "A-PARA") in calls
+    assert ("MAIN-PARA", "Z-PARA") in calls

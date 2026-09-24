@@ -13,7 +13,10 @@ _PROGRAM = re.compile(rf"\bPROGRAM-ID\s*\.\s*({_NAME})", re.IGNORECASE)
 _PARAGRAPH = re.compile(
     rf"^({_NAME})(?:\s+(SECTION))?\s*\.\s*$", re.IGNORECASE
 )
-_PERFORM = re.compile(rf"\bPERFORM\s+({_NAME})\b", re.IGNORECASE)
+_PERFORM = re.compile(
+    rf"\bPERFORM\s+({_NAME})(?:\s+(?:THRU|THROUGH)\s+({_NAME}))?\b",
+    re.IGNORECASE,
+)
 _COPY = re.compile(
     rf"\bCOPY\s+(?:'([^']+)'|\"([^\"]+)\"|({_NAME}(?:\.[A-Z0-9-]+)?))",
     re.IGNORECASE,
@@ -247,9 +250,18 @@ def extract_cobol(path: Path) -> dict:
 
         masked = _mask_strings(upper)
         for match in _PERFORM.finditer(masked):
-            name = match.group(1).upper()
-            if name not in _PERFORM_MODIFIERS:
-                pending_performs.append((current_scope, current_program, name, line))
+            # `PERFORM A THRU Z` runs the range A..Z, so both endpoints are
+            # performed — link both. Only the entry paragraph was captured
+            # before, leaving the range-end with no inbound edge ("what performs
+            # Z?" answered nothing even though this paragraph does). Intermediate
+            # paragraphs in the range are not individually linked (that needs
+            # source ordering); the two endpoints are the reliable, common signal.
+            for group in (match.group(1), match.group(2)):
+                if group is None:
+                    continue
+                name = group.upper()
+                if name not in _PERFORM_MODIFIERS:
+                    pending_performs.append((current_scope, current_program, name, line))
 
         for match in _CALL.finditer(upper):
             if _starts_inside_string(upper, match.start()):
