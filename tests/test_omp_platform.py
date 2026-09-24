@@ -3,7 +3,7 @@
 `graphify install --platform omp` installs the skill into OMP's agent
 directory — ``~/.omp/agent/skills`` globally, ``./.omp/agent/skills`` in
 project scope — reusing pi's skill bundle, because OMP mirrors pi's agent
-layout. The ``graphify omp`` subcommand mirrors the ``graphify pi`` twin.
+layout. The ``graphify omp`` subcommand is the plugin installer (PR #3506), so skill removal rides ``uninstall_all``.
 """
 import os
 import sys
@@ -75,15 +75,12 @@ def test_install_platform_omp_writes_user_skill(tmp_path):
     assert not (cwd / "CLAUDE.md").exists()
 
 
-def test_uninstall_platform_flag_omp_matches_pi_parity(tmp_path):
-    """`graphify uninstall --platform omp` (global) is accepted.
+def test_uninstall_platform_flag_global_removes_skill(tmp_path):
+    """`graphify uninstall --platform omp` (global) clears ~/.omp/agent/skills.
 
-    uninstall_all removes user-scope skills for its listed platforms; pi —
-    omp's bundle twin — is not among them, so omp matches pi exactly: the
-    flag form is accepted and the user-scope skill is removed by the
-    `graphify omp uninstall` subcommand (locked in below), not by
-    uninstall_all. Locking the pi parity stops a future edit from silently
-    special-casing one twin.
+    The global uninstall dispatch always runs uninstall_all, which carries
+    `_remove_skill_file("omp")` (the `graphify omp` subcommand is the plugin
+    installer, so the skill's removal rides uninstall_all, like amp/agents).
     """
     home = tmp_path / "home"
     cwd = tmp_path / "cwd"
@@ -95,10 +92,6 @@ def test_uninstall_platform_flag_omp_matches_pi_parity(tmp_path):
     assert skill.exists()
 
     _run(cwd, ["uninstall", "--platform", "omp"], home)
-    # Same state pi leaves after its global uninstall: skill intact.
-    assert skill.exists()
-
-    _run(cwd, ["omp", "uninstall"], home)
     assert not skill.exists()
 
 
@@ -120,27 +113,6 @@ def test_install_platform_omp_project_writes_omp_agent_skills(tmp_path):
 
     _run(proj, ["uninstall", "--project", "--platform", "omp"], home)
     assert not project_skill.exists()
-
-
-# --- the pi-twin subcommand (graphify omp install) ------------------------------
-
-
-def test_omp_subcommand_installs_same_skill(tmp_path):
-    """`graphify omp install` installs the identical user-global skill as
-    `--platform omp` — same destination, same version stamp."""
-    home = tmp_path / "home"
-    cwd = tmp_path / "cwd"
-    home.mkdir()
-    cwd.mkdir()
-
-    _run(cwd, ["omp", "install"], home)
-
-    skill = home / ".omp" / "agent" / "skills" / "graphify" / "SKILL.md"
-    assert skill.exists()
-    assert (skill.parent / ".graphify_version").read_text() == mainmod.__version__
-
-    _run(cwd, ["omp", "uninstall"], home)
-    assert not skill.exists()
 
 
 def test_unknown_platform_error_lists_omp(capsys, tmp_path):
