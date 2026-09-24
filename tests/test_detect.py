@@ -2537,6 +2537,113 @@ def test_save_manifest_out_of_root_keeps_absolute(tmp_path):
         outside.unlink(missing_ok=True)
 
 
+# --- #3581: a stored key that spells root differently is still in root -------
+# ``os.path.relpath`` compares text. A filesystem compares identity. When a
+# stored absolute key denotes a path under ``root`` that merely spells it
+# differently (a case-variant on Windows/APFS, a symlinked checkout), the
+# lexical answer is ``../...`` and the key would stay absolute for ever, so an
+# upgrade that changes the key convention leaves the stale key sitting beside
+# the new relative one and the manifest describes the same tree twice.
+
+def test_save_manifest_relativizes_key_reached_through_symlinked_root(
+    requires_symlinks, tmp_path
+):
+    """A legacy key naming the corpus through a symlink to ``root`` relativizes
+    to the same key the fresh scan produces, so the row is replaced rather than
+    duplicated. Symlinks make this reproducible on every filesystem; case
+    variants (the reported shape) only do so on a case-insensitive one."""
+    import json
+    from graphify.detect import save_manifest
+
+    root = tmp_path / "repo"
+    (root / "pkg").mkdir(parents=True)
+    mod = root / "pkg" / "mod.py"
+    mod.write_text("def x(): pass\n")
+    link = tmp_path / "checkout"
+    link.symlink_to(root, target_is_directory=True)
+
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps({
+        str(link / "pkg" / "mod.py"): {"mtime": 0.0, "ast_hash": "stale", "semantic_hash": ""},
+    }), encoding="utf-8")
+
+    save_manifest({"code": [str(mod)]}, str(manifest_path), kind="ast", root=root)
+
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert set(raw) == {"pkg/mod.py"}, (
+        f"the symlinked key names a file under root and must collapse onto the "
+        f"relative key, got {sorted(raw)}"
+    )
+
+
+def test_save_manifest_legacy_case_variant_key_does_not_duplicate(tmp_path):
+    """The reported shape: a manifest carried across an upgrade holds absolute
+    keys whose root differs only in case. On the filesystems the reporter runs
+    (Windows, default macOS) those name the very same files, so they must
+    collapse onto the new relative keys. On a case-sensitive filesystem they
+    are genuinely different files and must both survive, absolute. Assert the
+    one that actually applies here rather than skipping half the platforms."""
+    import json
+    from graphify.detect import save_manifest
+
+    root = tmp_path / "Repo"
+    (root / "pkg").mkdir(parents=True)
+    mod = root / "pkg" / "mod.py"
+    mod.write_text("def x(): pass\n")
+    variant_root = tmp_path / "repo"
+    variant_key = str(variant_root / "pkg" / "mod.py")
+    case_insensitive = variant_root.exists()
+    if not case_insensitive:
+        # On a case-sensitive filesystem the variant names a file that is simply
+        # absent, and save_manifest drops rows whose file is gone before it
+        # relativizes anything. Give it a real file, so what the assertion below
+        # measures is the anchoring decision rather than that prune.
+        (variant_root / "pkg").mkdir(parents=True)
+        (variant_root / "pkg" / "mod.py").write_text("def y(): pass\n")
+
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps({
+        variant_key: {"mtime": 0.0, "ast_hash": "stale", "semantic_hash": ""},
+    }), encoding="utf-8")
+
+    save_manifest({"code": [str(mod)]}, str(manifest_path), kind="ast", root=root)
+
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if case_insensitive:
+        assert set(raw) == {"pkg/mod.py"}, (
+            f"the case variant names the same file and must not survive as a "
+            f"second, absolute key, got {sorted(raw)}"
+        )
+    else:
+        assert set(raw) == {"pkg/mod.py", variant_key}, (
+            f"on a case-sensitive filesystem the variant is a different file "
+            f"and must keep its absolute key, got {sorted(raw)}"
+        )
+
+
+def test_anchor_under_root_returns_none_when_no_ancestor_is_root(tmp_path):
+    """The fallback must only fire on a path it can prove lies under ``root``.
+
+    Both out-of-root shapes are unit-tested here because ``save_manifest``
+    cannot reach the second one: it prunes rows whose file no longer exists
+    before relativizing, so a key naming a vanished tree never gets this far.
+    """
+    from graphify.detect import _anchor_under_root
+
+    root = tmp_path / "repo"
+    (root / "pkg").mkdir(parents=True)
+    sibling = tmp_path / "other" / "pkg" / "mod.py"
+    sibling.parent.mkdir(parents=True)
+    sibling.write_text("pass\n")
+
+    assert _anchor_under_root(sibling, root.resolve()) is None
+    assert _anchor_under_root(tmp_path / "gone" / "pkg" / "mod.py", root.resolve()) is None
+    # ...and a path that genuinely is under root still anchors.
+    assert _anchor_under_root(root / "pkg" / "mod.py", root.resolve()) == "pkg/mod.py"
+
+
 def test_detect_incremental_portable_across_paths(tmp_path):
     """End-to-end: a manifest written at one root must be readable from a
     different absolute prefix (the cross-machine case #777 is about).
