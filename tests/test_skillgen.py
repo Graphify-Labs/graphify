@@ -501,6 +501,7 @@ _PROGRESSIVE_HOSTS = (
     "kiro",
     "pi",
     "vscode",
+    "command-code",
 )
 
 
@@ -517,7 +518,7 @@ def test_all_progressive_hosts_check_and_audit_clean():
 def test_no_host_has_trigger_in_frontmatter():
     """No split host emits a trigger: field — not part of Agent Skills spec (#1180)."""
     for key in ("claude", "codex", "opencode", "kilo", "copilot", "claw", "droid",
-                "amp", "trae", "vscode", "kiro", "pi"):
+                "amp", "trae", "vscode", "kiro", "pi", "command-code"):
         core, _ = _platform_artifacts(key)
         head = core.split("---", 2)[1]
         assert "trigger:" not in head, f"[{key}] unexpectedly has a trigger: line"
