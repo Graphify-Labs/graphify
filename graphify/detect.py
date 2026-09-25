@@ -565,18 +565,104 @@ def extract_pdf_text(path: Path) -> str:
         return ""
 
 
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+# Content controls and custom XML wrap paragraphs and tables without changing them.
+_DOCX_WRAPPERS = frozenset({f"{_W}sdt", f"{_W}customXml"})
+# Text under these is not part of the text as the document reads: tracked deletions, text
+# moved away, the ruby guide over its base text, text boxes (read as paragraphs of their
+# own) and the fallback copy Word writes of every text box.
+_DOCX_SKIPPED = frozenset({f"{_W}del", f"{_W}moveFrom", f"{_W}rt", f"{_W}txbxContent", _MC_FALLBACK})
+# The run children python-docx's Run.text reads, each as the text it stands for.
+_DOCX_RUN_TEXT = tuple(f"{_W}{tag}" for tag in ("br", "cr", "noBreakHyphen", "ptab", "t", "tab"))
+
+
+def _docx_inside(element, stop, tags) -> bool:
+    node = element.getparent()
+    while node is not None and node is not stop:
+        if node.tag in tags:
+            return True
+        node = node.getparent()
+    return False
+
+
+def _docx_paragraph_text(p) -> str:
+    """Paragraph.text reads only the runs directly under the paragraph, so it drops tracked
+    insertions, content controls, simple fields and smart tags."""
+    return "".join(
+        str(element)
+        for element in p.iter(*_DOCX_RUN_TEXT)
+        if not _docx_inside(element, p, _DOCX_SKIPPED)
+    )
+
+
+def _docx_blocks(container):
+    """Yield the w:p and w:tbl elements of a container in document order, looking through
+    content controls and custom XML, with each text box's content after its paragraph."""
+    for child in container:
+        if child.tag == f"{_W}p":
+            yield child
+            for box in child.iter(f"{_W}txbxContent"):
+                if not _docx_inside(box, child, _DOCX_SKIPPED):
+                    yield from _docx_blocks(box)
+        elif child.tag == f"{_W}tbl":
+            yield child
+        elif child.tag in _DOCX_WRAPPERS:
+            content = child.find(f"{_W}sdtContent")
+            yield from _docx_blocks(child if content is None else content)
+
+
+def _docx_children(parent, tag: str):
+    for child in parent:
+        if child.tag == f"{_W}{tag}":
+            yield child
+        elif child.tag in _DOCX_WRAPPERS:
+            content = child.find(f"{_W}sdtContent")
+            yield from _docx_children(child if content is None else content, tag)
+
+
+def _docx_cell_markdown(tc) -> str:
+    """A cell's text on one line with pipes escaped, so it cannot break its table row."""
+    parts = []
+    for block in _docx_blocks(tc):
+        if block.tag == f"{_W}p":
+            parts.append(_docx_paragraph_text(block))
+        else:  # a nested table, flattened into the cell
+            parts.extend(
+                _docx_cell_markdown(cell)
+                for row in _docx_children(block, "tr")
+                for cell in _docx_children(row, "tc")
+            )
+    return " ".join(" ".join(part.split()) for part in parts if part.strip()).replace("|", "\\|")
+
+
 def docx_to_markdown(path: Path) -> str:
     """Convert a .docx file to markdown text using python-docx."""
     if not _zip_within_caps(path):
         return ""
     try:
         from docx import Document
-        from docx.oxml.ns import qn
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
         doc = Document(str(path))
         lines = []
-        for para in doc.paragraphs:
+        # Walk the body in document order, so a table stays under the heading it belongs to.
+        for block in _docx_blocks(doc.element.body):
+            if block.tag == f"{_W}tbl":
+                # python-docx's rows repeat a merged cell across the grid columns it spans,
+                # which keeps the header and the rows the same width.
+                rows = [[_docx_cell_markdown(cell._tc) for cell in row.cells] for row in Table(block, doc).rows]
+                if not rows:
+                    continue
+                header = "| " + " | ".join(rows[0]) + " |"
+                sep = "| " + " | ".join("---" for _ in rows[0]) + " |"
+                lines.extend([header, sep])
+                for row in rows[1:]:
+                    lines.append("| " + " | ".join(row) + " |")
+                continue
+            para = Paragraph(block, doc)
             style = para.style.name if para.style else ""
-            text = para.text.strip()
+            text = _docx_paragraph_text(block).strip()
             if not text:
                 lines.append("")
                 continue
@@ -590,16 +676,6 @@ def docx_to_markdown(path: Path) -> str:
                 lines.append(f"- {text}")
             else:
                 lines.append(text)
-        # Tables
-        for table in doc.tables:
-            rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
-            if not rows:
-                continue
-            header = "| " + " | ".join(rows[0]) + " |"
-            sep = "| " + " | ".join("---" for _ in rows[0]) + " |"
-            lines.extend([header, sep])
-            for row in rows[1:]:
-                lines.append("| " + " | ".join(row) + " |")
         return "\n".join(lines)
     except ImportError:
         return ""
