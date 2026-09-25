@@ -335,8 +335,23 @@ def generate(
             suffix = f" (+{len(isolated)-5} more)" if len(isolated) > 5 else ""
             raw_isolated = sum(1 for n in G.nodes() if G.degree(n) <= 1)
             lines.append(f"- **{len(isolated)} isolated node(s):** {', '.join(f'`{l}`' for l in isolated_labels)}{suffix}")
+            # "Undocumented components" only means anything when a semantic
+            # layer exists: document/paper/image nodes an LLM extracted
+            # meaning from, where an isolated node genuinely could be
+            # "mentioned but never explained further." A code-only graph
+            # (--code-only, or any run where semantic extraction never
+            # happened) has no such nodes at all, so offering it as a live
+            # possibility on every report is misleading (#3801).
+            has_semantic_layer = any(
+                G.nodes[n].get("file_type") in ("document", "paper", "image")
+                for n in G.nodes()
+            )
+            reason = (
+                "possible missing edges or undocumented components" if has_semantic_layer
+                else "possible missing edges"
+            )
             lines.append(
-                "  These have ≤1 connection - possible missing edges or undocumented components. "
+                f"  These have ≤1 connection - {reason}. "
                 f"(Counts symbols only; {raw_isolated} node(s) total have ≤1 connection when "
                 "file, concept and rationale nodes are included.)"
             )
