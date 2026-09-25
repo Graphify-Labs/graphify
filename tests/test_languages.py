@@ -2295,6 +2295,64 @@ def test_julia_abstract_type_with_supertype_is_extracted(tmp_path):
     assert ("Dog", "Animal") in _edge_labels(r, "inherits"), "abstract inherits edge dropped"
 
 
+def test_julia_macro_definition_is_extracted(tmp_path):
+    """`macro name(...) ... end` must be a definition, with the calls in its
+    body attributed to it. Macros are first-class Julia definitions and were
+    dropped entirely."""
+    f = tmp_path / "macros.jl"
+    f.write_text(
+        "function helper(x)\n"
+        "    return x + 1\n"
+        "end\n"
+        "macro sayhello(name)\n"
+        "    return :( helper($name) )\n"
+        "end\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = [n["label"] for n in r["nodes"]]
+    assert "@sayhello" in labels, "macro definition dropped"
+    # the macro body's call to a helper is credited to the macro, not a self-loop
+    assert ("@sayhello", "helper") in _edge_labels(r, "calls")
+    assert ("@sayhello", "@sayhello") not in _edge_labels(r, "calls")
+
+
+def test_julia_enum_and_members_are_extracted(tmp_path):
+    """`@enum` defines a type and its members across the inline, begin/end block,
+    explicit-value, and typed forms. The whole macrocall was previously ignored,
+    and valued/typed forms silently dropped their members or mislabeled the type."""
+    f = tmp_path / "enums.jl"
+    f.write_text(
+        "@enum Fruit apple orange banana\n"
+        "@enum Color begin\n"
+        "  red\n"
+        "  green\n"
+        "end\n"
+        "@enum Priority low=1 high=2\n"
+        "@enum Size::UInt8 small medium large\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = {n["label"] for n in r["nodes"]}
+    assert {"Fruit", "apple", "orange", "banana", "Color", "red", "green",
+            "Priority", "low", "high", "Size", "small", "medium", "large"} <= labels
+    # enum members use `case_of` (shared tree-sitter convention), not `contains`
+    case_of = _edge_labels(r, "case_of")
+    assert {("Fruit", "apple"), ("Fruit", "banana"),
+            ("Color", "red"), ("Color", "green"),
+            ("Priority", "low"), ("Priority", "high"),  # explicit values
+            ("Size", "small"), ("Size", "large")} <= case_of  # typed enum
+    # the typed enum's backing type is not mistaken for a member
+    assert ("Size", "UInt8") not in case_of
+    # the members hang off their enum, not the file
+    file_nid = next(n["id"] for n in r["nodes"] if n["label"] == "enums.jl")
+    lab = {n["id"]: n["label"] for n in r["nodes"]}
+    assert not [
+        e for e in r["edges"]
+        if e["source"] == file_nid and lab.get(e["target"]) in {"apple", "red", "low", "small"}
+    ]
+
+
 def test_julia_struct_field_type_context():
     r = extract_julia(FIXTURES / "sample.jl")
     assert ("Point", "Float64") in _edge_labels(r, "references", "field")
