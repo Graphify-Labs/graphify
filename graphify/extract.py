@@ -4328,6 +4328,13 @@ def _resolve_csharp_member_calls(
     ``inherits`` chain; a chain containing an unresolvable (out-of-corpus) base
     poisons the lookup — the method may live there, so no edge is emitted.
 
+    A member ACCESS (``db.Users``, ``this.Count``, ``Config.Instance`` — a raw
+    call stamped ``is_member_access``, #3528) is typed by the same tiers and
+    bound to the receiver type's property node (#3006) instead of a method,
+    as a ``uses`` edge. That is what makes the ORM query sites behind a
+    ``DbSet<T>`` property reachable: the table name never appears in source,
+    only the property does.
+
     Must run after id-disambiguation so node ids and caller_nids are final.
     """
     def _key(label: str) -> str:
@@ -4348,18 +4355,31 @@ def _resolve_csharp_member_calls(
     resolver = CsharpNameResolver(all_nodes, all_edges)
 
     # (type_node_id, method_key) -> method_node_id, and caller -> enclosing type.
-    # C# owns its methods via `method` edges.
+    # C# owns its methods via `method` edges. property_index is the member-
+    # access twin (#3528): (type_node_id, property_key) -> property_node_id. A
+    # C# property is the target of a `defines` edge from its type (#3006); C++
+    # data members ride the same relation, so keep to targets declared in a
+    # .cs file — a receiver typed by bare-name fallback must not reach a
+    # same-named C++ member. One pass over the edges fills both.
     method_index: dict[tuple[str, str], str] = {}
+    property_index: dict[tuple[str, str], str] = {}
     enclosing_type: dict[str, str] = {}
     for e in all_edges:
-        if e.get("relation") != "method":
+        rel = e.get("relation")
+        if rel != "method" and rel != "defines":
             continue
         src, tgt = e.get("source"), e.get("target")
         tnode = node_by_id.get(tgt)
         if tnode is None:
             continue
-        enclosing_type.setdefault(tgt, src)
-        method_index[(src, _key(tnode.get("label", "")))] = tgt
+        if rel == "method":
+            enclosing_type.setdefault(tgt, src)
+            method_index[(src, _key(tnode.get("label", "")))] = tgt
+        elif (
+            isinstance(src, str) and isinstance(tgt, str)
+            and str(tnode.get("source_file", "")).endswith(".cs")
+        ):
+            property_index[(src, _key(tnode.get("label", "")))] = tgt
 
     # Base-class chain from `inherits` edges (C# files only). The type-reference
     # pass has already re-pointed each resolvable base to its real definition and
@@ -4385,13 +4405,16 @@ def _resolve_csharp_member_calls(
             if tgt not in bucket:
                 bucket.append(tgt)
 
-    def _method_on_type_or_bases(type_nid: str, callee_key: str) -> str | None:
-        """The method's definition on the type or its resolvable base chain.
+    def _member_on_type_or_bases(
+        index: dict[tuple[str, str], str], type_nid: str, callee_key: str
+    ) -> str | None:
+        """The member's definition on the type or its resolvable base chain.
 
-        A type that declares the method directly wins (overrides shadow the
-        base). Otherwise walk `inherits` upward; an unresolved base anywhere the
-        walk actually reaches poisons the lookup (no edge), as does anything
-        other than exactly one declaration found.
+        ``index`` is method_index for a call and property_index for a member
+        access. A type that declares the member directly wins (overrides
+        shadow the base). Otherwise walk `inherits` upward; an unresolved base
+        anywhere the walk actually reaches poisons the lookup (no edge), as
+        does anything other than exactly one declaration found.
         """
         hits: set[str] = set()
         seen: set[str] = set()
@@ -4401,14 +4424,21 @@ def _resolve_csharp_member_calls(
             if nid in seen:
                 continue
             seen.add(nid)
-            method_nid = method_index.get((nid, callee_key))
-            if method_nid:
-                hits.add(method_nid)
+            member_nid = index.get((nid, callee_key))
+            if member_nid:
+                hits.add(member_nid)
                 continue  # an override shadows anything above it
             if nid in unresolved_base:
                 return None  # the method may live on the out-of-corpus base
             frontier.extend(bases_of.get(nid, []))
         return next(iter(hits)) if len(hits) == 1 else None
+
+    # (type_name, caller_nid, src_file) -> resolved type nid, or None. A
+    # method reads and calls the same receiver (`db`, `_context`) many times
+    # over, and every member access (#3528) is one more entry that types it,
+    # so resolve each name once per caller rather than re-walking the
+    # namespace/using scope chain for every site.
+    type_nid_memo: dict[tuple[str, str | None, str], str | None] = {}
 
     def _resolve_type_name_nid(type_name: str | None, caller_node: dict | None,
                                src_file: str) -> str | None:
@@ -4422,16 +4452,24 @@ def _resolve_csharp_member_calls(
         """
         if not type_name:
             return None
+        memo_key = (
+            type_name,
+            caller_node.get("id") if caller_node is not None else None,
+            src_file,
+        )
+        if memo_key in type_nid_memo:
+            return type_nid_memo[memo_key]
+        type_nid: str | None = None
+        decisive = False
         if caller_node is not None:
-            resolved, decisive = resolver.resolve_type_name(
+            type_nid, decisive = resolver.resolve_type_name(
                 type_name, caller_node, src_file
             )
-            if resolved:
-                return resolved
-            if decisive:
-                return None
-        type_defs = type_def_nids.get(_key(type_name), [])
-        return type_defs[0] if len(type_defs) == 1 else None
+        if not type_nid and not decisive:
+            type_defs = type_def_nids.get(_key(type_name), [])
+            type_nid = type_defs[0] if len(type_defs) == 1 else None
+        type_nid_memo[memo_key] = type_nid
+        return type_nid
 
     def _park_if_absent(type_name: str | None, caller_node: dict | None, rc: dict) -> None:
         """Park a call whose receiver type is declared nowhere in this corpus (#3152).
@@ -4458,6 +4496,11 @@ def _resolve_csharp_member_calls(
         caller = rc.get("caller_nid")
         if not receiver or not callee or not caller:
             continue
+        # A member access (`db.Users`, #3528) types its receiver exactly like a
+        # call and then binds to a property instead of a method. It is never
+        # parked: the parked entries are cross-repo CALL candidates (#3152),
+        # and a property read on an out-of-corpus type is not one.
+        is_access = bool(rc.get("is_member_access"))
         src_file = rc.get("source_file", "")
         caller_node = node_by_id.get(caller)
         if receiver == "this":
@@ -4483,7 +4526,8 @@ def _resolve_csharp_member_calls(
                 type_name = rc.get("receiver_type")
                 type_nid = _resolve_type_name_nid(type_name, caller_node, src_file)
                 if not type_nid:
-                    _park_if_absent(type_name or receiver, caller_node, rc)
+                    if not is_access:
+                        _park_if_absent(type_name or receiver, caller_node, rc)
                     continue
             type_qualified = True
         else:
@@ -4492,20 +4536,23 @@ def _resolve_csharp_member_calls(
                 continue
             type_nid = _resolve_type_name_nid(type_name, caller_node, src_file)
             if not type_nid:  # ambiguous or absent -> bail (god-node guard)
-                _park_if_absent(type_name, caller_node, rc)
+                if not is_access:
+                    _park_if_absent(type_name, caller_node, rc)
                 continue
             type_qualified = False
-        method_nid = _method_on_type_or_bases(type_nid, _key(callee))
-        if not method_nid:
-            continue  # receiver typed, but the type has no such method — skip
-        if method_nid == caller or (caller, method_nid) in existing_pairs:
+        member_nid = _member_on_type_or_bases(
+            property_index if is_access else method_index, type_nid, _key(callee)
+        )
+        if not member_nid:
+            continue  # receiver typed, but the type has no such member — skip
+        if member_nid == caller or (caller, member_nid) in existing_pairs:
             continue
-        existing_pairs.add((caller, method_nid))
+        existing_pairs.add((caller, member_nid))
         all_edges.append({
             "source": caller,
-            "target": method_nid,
-            "relation": "calls",
-            "context": "call",
+            "target": member_nid,
+            "relation": "uses" if is_access else "calls",
+            "context": "member_access" if is_access else "call",
             "confidence": "EXTRACTED" if type_qualified else "INFERRED",
             "confidence_score": 1.0 if type_qualified else 0.8,
             "source_file": src_file,

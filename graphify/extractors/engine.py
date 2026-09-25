@@ -3064,6 +3064,38 @@ def _csharp_bare_call_name(name_node, source: bytes) -> str:
     return _read_text(name_node, source)
 
 
+def _csharp_member_receiver(recv, source: bytes) -> str | None:
+    """The receiver name of a C# member access, or None when it is not simple.
+
+    ``recv`` is the `expression` field of a member_access_expression. A bare
+    identifier reads as-is; `this` and `base` read as those literals, resolved
+    against the caller's own type (or its single resolvable base) in the
+    cross-file pass; `this.field` reads as the bare field name, so it is typed
+    exactly like `field` via the method's scoped receiver table. Any other
+    chain (`a.b`, a call result, `typeof(T)`) stays untyped — the resolver
+    bails rather than guessing.
+    """
+    if recv is None:
+        return None
+    if recv.type == "identifier":
+        return _read_text(recv, source)
+    if recv.type in ("this", "this_expression"):
+        return "this"
+    if recv.type in ("base", "base_expression"):
+        return "base"
+    if recv.type == "member_access_expression":
+        inner = recv.child_by_field_name("expression")
+        fname = recv.child_by_field_name("name")
+        if (
+            inner is not None
+            and inner.type in ("this", "this_expression")
+            and fname is not None
+            and fname.type == "identifier"
+        ):
+            return _read_text(fname, source)
+    return None
+
+
 def _read_csharp_type_name(node, source: bytes) -> tuple[str, bool, str] | None:
     """Resolve a C# type name, whether it was qualified, and its qualifier prefix."""
     if node is None:
@@ -5738,6 +5770,12 @@ def _extract_generic(
     seen_static_ref_pairs: set[tuple[str, str, str]] = set()
     seen_helper_ref_pairs: set[tuple[str, str, str]] = set()
     seen_bind_pairs: set[tuple[str, str, str]] = set()
+    # C#: node ids of the member_access_expression that is an invocation's
+    # callee (`db.Users.Where` in `db.Users.Where(...)`), recorded when the
+    # invocation is visited so the member-access branch below can tell it
+    # apart from a property read (#3528) without asking tree-sitter for
+    # `node.parent`, which re-descends from the root on every call.
+    csharp_callee_ids: set[int] = set()
     raw_calls: list[dict] = []  # unresolved calls for cross-file resolution in extract()
     # Ruby: per-method `var -> ClassName` table from `var = Const.new` bindings,
     # populated before walk_calls runs. Lets member-call raw_calls carry a
@@ -6139,6 +6177,7 @@ def _extract_generic(
                 # `_server.Save()` to an unrelated `Cache.Save()` (#1609).
                 fn_node = node.child_by_field_name("function")
                 if fn_node is not None and fn_node.type == "member_access_expression":
+                    csharp_callee_ids.add(fn_node.id)
                     mname = fn_node.child_by_field_name("name")
                     recv = fn_node.child_by_field_name("expression")
                     if mname is not None:
@@ -6148,28 +6187,7 @@ def _extract_generic(
                         # (#3406) — read the bare identifier instead.
                         callee_name = _csharp_bare_call_name(mname, source)
                         is_member_call = True
-                        if recv is not None and recv.type == "identifier":
-                            member_receiver = _read_text(recv, source)
-                        elif recv is not None and recv.type in ("this", "this_expression"):
-                            member_receiver = "this"
-                        elif recv is not None and recv.type in ("base", "base_expression"):
-                            # base.M(): resolved against the caller's single
-                            # resolvable base class in the cross-file pass.
-                            member_receiver = "base"
-                        elif recv is not None and recv.type == "member_access_expression":
-                            # this.field.M(): the explicit-`this` field access is
-                            # typed exactly like a bare `field.M()` via the file
-                            # table; any other chained receiver stays untyped
-                            # (the resolver bails rather than guessing).
-                            inner = recv.child_by_field_name("expression")
-                            fname = recv.child_by_field_name("name")
-                            if (
-                                inner is not None
-                                and inner.type in ("this", "this_expression")
-                                and fname is not None
-                                and fname.type == "identifier"
-                            ):
-                                member_receiver = _read_text(fname, source)
+                        member_receiver = _csharp_member_receiver(recv, source)
                 elif fn_node is not None and fn_node.type == "identifier":
                     callee_name = _read_text(fn_node, source)
                 elif fn_node is not None and fn_node.type == "generic_name":
@@ -6685,6 +6703,64 @@ def _extract_generic(
                                 "source_location": f"L{line}",
                                 "weight": 1.0,
                             })
+
+        # C#: a member access that is not itself a call — `db.Users` inside
+        # `db.Users.Where(...)`, `order.Status`, `Config.Instance` (#3528).
+        # The invocation branch keeps only a simple receiver, so the chained
+        # `db.Users` was dropped on the floor and the DbSet property (a node
+        # since #3006) sat in the graph with nothing but its `defines` edge:
+        # "what code reads or writes this table" had no answer. Record the
+        # access as a raw entry typed from the same scoped receiver table the
+        # member calls use, for _resolve_csharp_member_calls to bind to the
+        # receiver type's property node. The callee of an invocation is its
+        # `function` field, and that is the only member_access_expression
+        # ever parented directly by one (arguments sit under argument_list);
+        # the walk is pre-order, so the invocation branch above has already
+        # put that node's id in csharp_callee_ids by the time the walk reaches
+        # it, and the id check is what separates `db.Users` from
+        # `db.Users.Add`. A generic_name member (`db.Set<T>`) is a call, not a
+        # property, and is left to the call-site type-argument pass (#2911).
+        if (
+            config.ts_module == "tree_sitter_c_sharp"
+            and node.type == "member_access_expression"
+            and node.id not in csharp_callee_ids
+        ):
+            member_name = node.child_by_field_name("name")
+            access_receiver = (
+                _csharp_member_receiver(node.child_by_field_name("expression"), source)
+                if member_name is not None and member_name.type == "identifier"
+                else None
+            )
+            if access_receiver:
+                receiver_type = _csharp_scoped_receiver_type(
+                    receiver_types, access_receiver, node.start_byte
+                )
+                # Property reads are far more common than calls, and raw_calls
+                # ride the AST cache, so only record an entry the resolver can
+                # act on: `this`/`base`, a type name, or a typed receiver. An
+                # untyped lowercase receiver (`u.Email` on a lambda parameter)
+                # would be skipped there anyway.
+                if (
+                    receiver_type
+                    or access_receiver in ("this", "base")
+                    or access_receiver[:1].isupper()
+                ):
+                    rc_entry = {
+                        "caller_nid": caller_nid,
+                        "callee": _read_text(member_name, source),
+                        # is_member_call keeps every bare-name resolver off this
+                        # entry, the way it does for a receiver call;
+                        # is_member_access is what the C# resolver branches on.
+                        "is_member_call": True,
+                        "is_member_access": True,
+                        "lang": "csharp",
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                        "receiver": access_receiver,
+                    }
+                    if receiver_type:
+                        rc_entry["receiver_type"] = receiver_type
+                    raw_calls.append(rc_entry)
 
         # Static property access: Foo::$bar → uses_static_prop edge
         if node.type in config.static_prop_types:
