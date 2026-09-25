@@ -5787,25 +5787,76 @@ def _extract_generic(
 
     def _emit_indirect_by_name(ident_name: str, loc_node, scope_nid: str,
                                context: str) -> None:
-        """Resolve a name that is referenced AS A VALUE to a real callable def and emit
-        one INFERRED ``indirect_call`` edge — deferring an unknown / foreign name to the
-        cross-file resolver, which applies the single-definition god-node guard and the
-        GLOBAL callable-target check. The name is already extracted; scope filtering is
-        the CALLER's job: an identifier reference must reject param/local shadows (a bare
-        name IS a binding — see ``_emit_indirect_ref``), whereas a ``getattr(obj, "x")``
-        string names an ATTRIBUTE and is never shadowed by a local, so that path passes
-        the name straight through. ``loc_node`` supplies the source line.
+        """Resolve a name referenced AS A VALUE to a callable and emit one INFERRED
+        ``indirect_call`` edge, or defer an unknown / foreign name to the cross-file
+        resolver (single-definition god-node guard and GLOBAL callable-target check).
+
+        Lexical lookup (#1862) walks the caller's scope chain innermost first, before
+        the flat ``label_to_nid`` map. A nested function binds to the nearest enclosing
+        scope that defines it. ``label_to_nid`` is scope-blind for nested Python
+        functions (#3405); without this walk a nested callback falls through to the
+        corpus-wide resolver and can bind to a same-named function in a sibling scope.
+        A lexically resolved nid is a known local callable and skips that deferral.
+        A method is not a lexical scope: a bare identifier must not bind a ``.name()``
+        method through the flat map. ``context == "getattr"`` is an attribute lookup
+        and may still target that method.
+
+        Param/local shadowing of an identifier is the caller's job (a bare name IS a
+        binding — see ``_emit_indirect_ref``). A ``getattr(obj, "x")`` string names an
+        ATTRIBUTE and is never shadowed by a local, so that path passes the name
+        straight through. ``loc_node`` supplies the source line.
         """
-        ref_nid = label_to_nid.get(ident_name)
+        # LEGB (#1862): check the CALLER's own lexical scope chain — innermost
+        # enclosing scope first — before falling back to the flat per-file/
+        # cross-file label maps below. A name reference binds to the nearest
+        # enclosing scope that defines it (Python Software Foundation, 2026,
+        # "Execution model: Resolution of names").
+        # `label_to_nid` is deliberately scope-blind for nested Python functions
+        # (#3405), so without this check a callback name that is only defined as
+        # a NESTED function falls straight through to the cross-file resolver in
+        # extract.py, which matches by bare label across the WHOLE corpus and
+        # picks an arbitrary same-named nested function from a SIBLING scope
+        # instead of the caller's own lexical definition.
+        lexical_nid = None
+        curr_scope = scope_nid
+        while curr_scope is not None:
+            local_scope = lexical_nids_by_scope.get(curr_scope)
+            if local_scope and ident_name in local_scope:
+                lexical_nid = local_scope[ident_name]
+                break
+            curr_scope = scope_parents.get(curr_scope)
+        ref_nid = lexical_nid if lexical_nid is not None else label_to_nid.get(ident_name)
+        if lexical_nid is None and context != "getattr" and ref_nid is not None:
+            # Methods share a bare label (".helper()" -> helper) but Python does
+            # not resolve a bare name to a sibling method. If the flat map was
+            # overwritten by that method, keep a same-file non-method definition.
+            ref_label = next(
+                (n.get("label") or "" for n in nodes if n["id"] == ref_nid), ""
+            )
+            if str(ref_label).startswith("."):
+                ref_nid = next(
+                    (
+                        n["id"]
+                        for n in nodes
+                        if n["id"] not in scope_parents
+                        and not str(n.get("label") or "").startswith(".")
+                        and str(n.get("label") or "").strip("()").lstrip(".") == ident_name
+                    ),
+                    None,
+                )
+                if ref_nid is None:
+                    return
         # Defer to the cross-file resolver when the name is not defined in this file
         # (`from .h import fn`), or resolves to an import-surfaced FOREIGN symbol whose
         # definition (and callability) lives in another file (JS/TS named imports map
         # the real node into this file's label map). The cross-file pass applies the
         # single-definition god-node guard plus the GLOBAL callable-target check, so a
-        # foreign non-callable (an imported data const) still produces no edge.
-        if ref_nid is None or (
+        # foreign non-callable (an imported data const) still produces no edge. A
+        # lexically-resolved name is already a known local callable and skips this
+        # deferral outright — it must never be re-adjudicated by the corpus-wide pass.
+        if lexical_nid is None and (ref_nid is None or (
             ref_nid not in callable_def_nids and nid_to_sf.get(ref_nid, "") != str_path
-        ):
+        )):
             raw_calls.append({
                 "caller_nid": scope_nid,
                 "callee": ident_name,
@@ -5845,14 +5896,20 @@ def _extract_generic(
         })
 
     def _emit_indirect_ref(ident, scope_nid: str, enclosing_locals, context: str) -> None:
-        """A function referenced BY NAME — passed as a call argument, or listed as a
-        value in a dispatch table — is an indirect dependency of ``scope_nid``. Emit
-        it as a distinct INFERRED ``indirect_call`` (kept out of the precise ``calls``
-        relation) only when the name resolves to a real callable and is NOT shadowed
-        by a parameter / local binding. A callback defined in another file is deferred
-        to the cross-file resolver via an ``indirect`` raw_call carrying its context.
-        Language-agnostic; shared by the call-argument and dispatch-table capture
-        paths for Python and JS/TS (#1565, #1566).
+        """A function referenced BY NAME — a call argument, or a dispatch-table value —
+        is an indirect dependency of ``scope_nid``. Emit one INFERRED ``indirect_call``
+        (kept out of the precise ``calls`` relation) only when the name resolves to a
+        real callable and is NOT shadowed by a parameter or local. A callback defined
+        in another file is deferred via an ``indirect`` raw_call carrying its context.
+
+        Shadowing includes enclosing functions, not only the caller's own scope
+        (#1862). Walk ``scope_parents`` innermost first. Stop on a nested callable so
+        ``_emit_indirect_by_name`` can resolve it; any other enclosing parameter or
+        local binds the name, and no edge is emitted to a same-named module or corpus
+        callable. An intermediate scope that binds neither is skipped.
+
+        Language-agnostic; shared by the call-argument and dispatch-table paths for
+        Python and JS/TS (#1565, #1566).
         """
         if ident is None or ident.type not in ("identifier", "shorthand_property_identifier"):
             return
@@ -5860,6 +5917,17 @@ def _extract_generic(
         # shadowing: a param / local binding names a local value, not the module fn
         if ident_name in enclosing_locals or ident_name in ("self", "cls"):
             return
+        # A nested caller can close over a parameter/local from an enclosing
+        # function.  Stop at the first enclosing scope that binds the name:
+        # a nested callable is resolvable by _emit_indirect_by_name, while any
+        # other binding shadows same-named module/corpus callables.
+        enclosing_scope = scope_parents.get(scope_nid)
+        while enclosing_scope is not None:
+            if ident_name in lexical_nids_by_scope.get(enclosing_scope, {}):
+                break
+            if ident_name in local_bound_names.get(enclosing_scope, frozenset()):
+                return
+            enclosing_scope = scope_parents.get(enclosing_scope)
         # An import from outside the corpus binds the name for the whole module, so
         # it shadows in every scope — no unique same-named definition elsewhere in
         # the corpus is what this identifier refers to.
