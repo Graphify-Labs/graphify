@@ -114,6 +114,8 @@ def validate_edge(edge: dict) -> EdgeValidation:
     relation = normalize_relation(str(edge.get("relation", "")))
     if relation is None:
         return EdgeValidation(False, None, f"unknown relation: {edge.get('relation', '')}")
-    if not edge.get("source") or not edge.get("target"):
+    source = edge.get("source")
+    target = edge.get("target")
+    if source is None or source == "" or target is None or target == "":
         return EdgeValidation(False, relation, "edge requires source and target")
     return EdgeValidation(True, relation)

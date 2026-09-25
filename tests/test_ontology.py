@@ -24,3 +24,9 @@ def test_unknown_relation_is_reported_not_silently_coerced():
     assert finding.valid is False
     assert finding.normalized_relation is None
     assert "unknown relation" in finding.reason
+
+
+def test_edge_validation_accepts_zero_as_a_node_identifier():
+    """NetworkX permits integer node IDs, including zero at either endpoint."""
+    assert validate_edge({"source": 0, "target": 1, "relation": "calls"}).valid
+    assert validate_edge({"source": 1, "target": 0, "relation": "calls"}).valid

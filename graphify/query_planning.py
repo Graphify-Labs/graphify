@@ -157,11 +157,18 @@ def projection_gaps(
 
     if profile.relations is None:
         return []
+    # Projection completeness is endpoint-based, so incoming arcs are just as
+    # relevant as outgoing arcs. A view keeps the original graph immutable.
+    incident_graph = G.to_undirected(as_view=True) if G.is_directed() else G
     unsupported: set[str] = set()
     for node in nodes:
         if node not in G:
             continue
-        incident = G.edges(node, data=True, keys=True) if G.is_multigraph() else G.edges(node, data=True)
+        incident = (
+            incident_graph.edges(node, data=True, keys=True)
+            if incident_graph.is_multigraph()
+            else incident_graph.edges(node, data=True)
+        )
         for edge in incident:
             data = edge[-1]
             relation = _canonical_relation(data)

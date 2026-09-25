@@ -371,6 +371,12 @@ class ClangSemanticEnricher:
         }
         drop_one_after = {"-Xclang", "-load", "-plugin"}
         drop_exact = {"-c", "-S", "-E", "--coverage", "-save-temps"}
+        executable_plugin_prefixes = (
+            "-fplugin",
+            "-fpass-plugin",
+            "--hipspv-pass-plugin",
+            "-load-pass-plugin",
+        )
         safe: list[str] = []
         index = 1 if arguments else 0  # argv[0] is the compiler from the build.
         while index < len(arguments):
@@ -379,7 +385,8 @@ class ClangSemanticEnricher:
                 index += 2
                 continue
             if argument in drop_exact or argument.startswith((
-                "-fplugin", "-fprofile", "-ftime-trace", "-save-temps=", "@",
+                *executable_plugin_prefixes,
+                "-fprofile", "-ftime-trace", "-save-temps=", "@",
             )):
                 index += 1
                 continue

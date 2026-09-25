@@ -44,6 +44,18 @@ def test_tier_zero_negative_lookup_returns_no_candidates_without_an_llm():
     assert packet.llm_invoked is False
 
 
+def test_tier_zero_records_incoming_relations_for_directed_graph_nodes():
+    """A callee must retain the strong relation that connects it to its caller."""
+    graph = nx.DiGraph()
+    graph.add_node("caller", label="Caller")
+    graph.add_node("callee", label="Callee")
+    graph.add_edge("caller", "callee", relation="calls")
+
+    packet = QueryIndex.from_graph(graph).search("callee")
+
+    assert packet.candidates[0].strong_relations == ("calls",)
+
+
 def test_serialized_index_rejects_a_different_graph_fingerprint():
     graph = _graph()
     index = QueryIndex.from_graph(graph)
@@ -102,3 +114,17 @@ def test_query_index_store_rejects_sidecar_for_different_in_memory_graph(tmp_pat
 
     assert cache_hit is False
     assert index.search("load udr cache disk").candidates[0].node_id == "different"
+
+
+def test_query_index_store_rejects_stale_sidecar_after_digest_carrying_graph_changes(tmp_path):
+    """A retained file digest must not hide later in-memory graph mutations."""
+    graph = _graph()
+    graph.graph["_graphify_file_sha256"] = "loaded-file-digest"
+    store = QueryIndexStore(tmp_path / "graph.json")
+    store.load_or_build(graph)
+    graph.add_node("fresh", label="UniqueFreshSymbol")
+
+    index, cache_hit = store.load_or_build(graph)
+
+    assert cache_hit is False
+    assert index.search("UniqueFreshSymbol").candidates[0].node_id == "fresh"

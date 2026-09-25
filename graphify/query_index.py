@@ -79,6 +79,9 @@ class QueryIndex:
 
     @classmethod
     def from_graph(cls, graph: nx.Graph) -> "QueryIndex":
+        # The undirected view preserves edge data while making both incoming and
+        # outgoing relations visible; constructing it once avoids a per-node copy.
+        incident_graph = graph.to_undirected(as_view=True) if graph.is_directed() else graph
         postings: dict[str, set[str]] = {}
         nodes: dict[str, dict] = {}
         for node_id, data in graph.nodes(data=True):
@@ -91,9 +94,9 @@ class QueryIndex:
                 node_tokens.update(_tokens(str(alias)))
             relations: set[str] = set()
             incident = (
-                graph.edges(node_id, keys=True, data=True)
-                if graph.is_multigraph()
-                else graph.edges(node_id, data=True)
+                incident_graph.edges(node_id, keys=True, data=True)
+                if incident_graph.is_multigraph()
+                else incident_graph.edges(node_id, data=True)
             )
             for edge in incident:
                 relation = str(edge[-1].get("relation", "")).lower()
@@ -180,14 +183,10 @@ class QueryIndexStore:
                 payload = json.loads(self.index_path.read_text(encoding="utf-8"))
                 if payload.get("version") == 1 and payload.get("graph_file") == signature:
                     index = QueryIndex.from_dict(payload["index"])
-                    loaded_digest = graph.graph.get("_graphify_file_sha256")
-                    # Graphs loaded from ``graph_path`` carry the verified file
-                    # digest, so the cheap signature comparison is sufficient.
-                    # Direct API callers may pass an unrelated in-memory graph;
-                    # validate its semantic fingerprint before reusing evidence.
-                    if (
-                        isinstance(loaded_digest, str) and loaded_digest
-                    ) or index.matches_graph(graph):
+                    # The file digest proves which bytes produced the sidecar,
+                    # not that the caller left the in-memory graph unchanged.
+                    # Recheck semantic identity before serving cached evidence.
+                    if index.matches_graph(graph):
                         return index, True
             except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
                 pass

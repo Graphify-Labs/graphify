@@ -782,6 +782,16 @@ def test_query_graph_json_does_not_hide_unknown_runtime_relations():
     }
 
 
+def test_projection_gaps_inspects_incoming_edges_on_directed_graphs():
+    """A projected node must report meaningful relations that point into it."""
+    from graphify.query_planning import RUNTIME_FLOW, projection_gaps
+
+    graph = nx.DiGraph()
+    graph.add_edge("upstream", "handler", relation="transfers")
+
+    assert projection_gaps(graph, {"handler"}, RUNTIME_FLOW) == ["transfers"]
+
+
 def test_query_graph_json_honors_node_budget_for_open_ended_queries():
     """Structured evidence is always bounded, including the explore profile."""
     G = nx.Graph()
