@@ -1009,6 +1009,31 @@ def test_opencode_agents_uninstall_removes_plugin(tmp_path):
         assert not any("graphify.js" in p for p in config.get("plugin", []))
 
 
+def test_opencode_plugin_supports_v2_api(tmp_path):
+    """The generated plugin must expose the OpenCode v2 entrypoint (#3554).
+
+    v2 reads the default export's `id` and `setup()` and ignores `server()`.
+    """
+    _agents_install(tmp_path, "opencode")
+    body = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
+    assert 'from "@opencode/plugin"' in body
+    assert 'id: "graphify"' in body
+    assert "async setup(" in body
+    assert 'ctx.tool.hook("execute.before"' in body
+
+
+def test_opencode_plugin_keeps_v1_server_hook(tmp_path):
+    """The generated plugin must keep working on OpenCode v1 (1.18.29+).
+
+    v1 calls `server()` and uses the returned hooks; the dual entrypoint
+    keeps a single file serving both runtimes.
+    """
+    _agents_install(tmp_path, "opencode")
+    body = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
+    assert "async server(" in body
+    assert '"tool.execute.before"' in body
+
+
 def test_kilo_agents_install_writes_agents_md(tmp_path):
     _agents_install(tmp_path, "kilo")
     assert (tmp_path / "AGENTS.md").exists()
