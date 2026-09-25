@@ -147,20 +147,27 @@ def _build_link_index(root: Path) -> "dict[str, list[tuple[int, str, Path]]]":
     """Index every linkable document under *root* by NFC-normalized basename.
 
     Each entry maps basename -> [(depth, root-relative posix path, absolute
-    path)]. Directories in detect._SKIP_DIRS and dot-directories are pruned —
-    the same corpus boundary the scanner draws, and Obsidian itself does not
-    index dot-folders.
+    path)]. Directories in detect._SKIP_DIRS, dot-directories, and paths
+    excluded by .graphifyignore/.gitignore are pruned — the same corpus
+    boundary the scanner draws, and Obsidian itself does not index dot-folders
+    or ignored paths (#3822).
     """
-    from graphify.detect import _SKIP_DIRS
+    from graphify.detect import _SKIP_DIRS, ignored_predicate
+    root = Path(root)
+    ignored = ignored_predicate(root)
     index: dict[str, list[tuple[int, str, Path]]] = {}
     for dirpath, dirnames, filenames in os.walk(root):
+        dp = Path(dirpath)
         dirnames[:] = sorted(
-            d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
+            d for d in dirnames
+            if not d.startswith(".") and d not in _SKIP_DIRS and not ignored(dp / d)
         )
         for fname in filenames:
             if Path(fname).suffix.lower() not in _MD_LINKABLE_EXTS:
                 continue
-            abs_path = Path(dirpath) / fname
+            abs_path = dp / fname
+            if ignored(abs_path):
+                continue
             rel = os.path.relpath(str(abs_path), str(root)).replace("\\", "/")
             index.setdefault(_nfc(fname), []).append(
                 (rel.count("/"), _nfc(rel), abs_path)

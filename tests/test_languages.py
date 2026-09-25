@@ -3119,6 +3119,46 @@ def test_markdown_wikilink_fallback_unicode_normalization(tmp_path):
                for e in refs), f"NFD wikilink missed the NFC file: {refs}"
 
 
+def test_markdown_wikilink_index_prunes_ignored_directories(tmp_path, monkeypatch):
+    """#3822: _build_link_index must prune directories and files matched by
+    .graphifyignore/.gitignore, preventing both 50+ min directory walks on
+    large ignored trees and wikilinks erroneously resolving into ignored files."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / ".graphifyignore").write_text("bigdata/\nsecret.md\n", encoding="utf-8")
+
+    (vault / "notes").mkdir()
+    (vault / "notes" / "hub.md").write_text("# Hub\nSee [[target]] and [[secret]].\n", encoding="utf-8")
+    (vault / "notes" / "target.md").write_text("# Target\n", encoding="utf-8")
+
+    (vault / "bigdata").mkdir()
+    (vault / "bigdata" / "sub").mkdir()
+    (vault / "bigdata" / "sub" / "secret.md").write_text("# Secret in bigdata\n", encoding="utf-8")
+
+    import os
+    visited = []
+    real_walk = os.walk
+
+    def spy_walk(top, *args, **kwargs):
+        for dirpath, dirnames, filenames in real_walk(top, *args, **kwargs):
+            visited.append(os.path.relpath(dirpath, str(vault)))
+            yield dirpath, dirnames, filenames
+
+    monkeypatch.setattr(os, "walk", spy_walk)
+
+    node_ids, refs, page_id = _vault_extract(
+        vault, [vault / "notes" / "hub.md", vault / "notes" / "target.md"]
+    )
+
+    bigdata_walked = [v for v in visited if v.startswith("bigdata")]
+    assert not bigdata_walked, f"ignored directory descended during index walk: {bigdata_walked}"
+
+    hub_id = page_id(vault / "notes" / "hub.md")
+    target_id = page_id(vault / "notes" / "target.md")
+    assert any(e["source"] == hub_id and e["target"] == target_id for e in refs), f"valid target link lost: {refs}"
+    assert not any("bigdata" in e["target"] for e in refs), f"wikilink resolved into ignored path: {refs}"
+
+
 # ── Groovy ───────────────────────────────────────────────────────────────────
 
 
