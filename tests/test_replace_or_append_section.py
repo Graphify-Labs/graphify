@@ -90,9 +90,12 @@ def test_h1_marker_never_destroys_a_trailing_h2_user_section():
     assert "## My own rules" in after
     assert "Never touch the payments module without review." in after
     assert "Always run the full suite before merging." in after
-    # the fresh registration is present too (appended, since the end of
-    # graphify's own old block could not be pinpointed without a sentinel)
-    assert after.count("# graphify") >= 1
+    # An H1 marker's own body never contains a heading-shaped line, so the
+    # H2 heading here is unambiguously the section's real end even without
+    # a sentinel -- the old registration is replaced cleanly in place, not
+    # appended as a duplicate (PR 3803 review).
+    assert after.count("# graphify") == 1
+    assert "old/path/SKILL.md" not in after
 
 
 def test_h1_marker_removal_never_destroys_a_trailing_h2_user_section():
@@ -107,10 +110,17 @@ def test_h1_marker_removal_never_destroys_a_trailing_h2_user_section():
         "- keep this rule\n"
     )
     out = _remove_marker_section(before, h1_marker, boundary_prefix="# ")
-    # Ambiguous (no end marker, no matching boundary heading, but a heading of
-    # some other level exists): the occurrence is left in place rather than
-    # guessed away, so the caller is told nothing changed.
-    assert out is None
+    # No end marker and no exact H1 boundary_prefix match, but an H1 marker's
+    # own body is documented to never contain a heading-shaped line, so the
+    # H2 heading here is unambiguously a separate section, not graphify's
+    # own content -- the removal correctly stops there instead of either
+    # guessing past it (the #3791 bug) or refusing to act at all (PR 3803
+    # review: this used to be treated as merely "ambiguous, leave alone",
+    # which was safe but needlessly conservative for an H1 marker
+    # specifically, where no such ambiguity actually exists).
+    assert out is not None
+    assert "registration line" not in out
+    assert "## My own rules" in out and "- keep this rule" in out
 
 
 def test_no_heading_at_all_after_marker_is_still_safely_replaced_to_eof():
@@ -203,6 +213,42 @@ def test_a_heading_inserted_before_a_misplaced_end_marker_is_never_swallowed():
     assert "NEW content" in after
 
     removed = _remove_marker_section(before, marker)
+    assert removed is not None
+    assert "important user content" in removed
+    assert "more content" in removed
+    assert "registration content" not in removed
+
+
+def test_an_h1_marker_never_swallows_a_lower_level_heading_before_a_misplaced_sentinel():
+    """Review finding on PR 3803: the fix above only stopped the scan at an
+    EXACT boundary_prefix match, so for an H1 marker (boundary_prefix "# ")
+    a user's own H2 heading -- which never starts with "# " -- was skipped
+    right over, letting a later, misplaced sentinel still swallow it. An H1
+    marker's own body is documented to never contain a heading-shaped line
+    at all, so for that marker level specifically, ANY heading (not just an
+    exact boundary_prefix match) must stop the scan."""
+    h1_marker = "# graphify"
+    before = (
+        "# graphify\n"
+        "registration content\n"
+        "\n"
+        "## User Section\n"
+        "important user content\n"
+        "\n"
+        "<!-- graphify-section-end -->\n"
+        "\n"
+        "## Another Section\n"
+        "more content\n"
+    )
+    after = _replace_or_append_section(
+        before, h1_marker, "# graphify\nNEW content\n", boundary_prefix="# "
+    )
+    assert "important user content" in after
+    assert "more content" in after
+    assert "NEW content" in after
+    assert "registration content" not in after
+
+    removed = _remove_marker_section(before, h1_marker, boundary_prefix="# ")
     assert removed is not None
     assert "important user content" in removed
     assert "more content" in removed
