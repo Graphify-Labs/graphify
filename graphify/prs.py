@@ -589,6 +589,8 @@ def _resolve_triage_backend() -> tuple[str, str]:
     import shutil
     if shutil.which("claude"):
         return "claude-cli", "claude-code-plan"
+    if shutil.which("agy"):
+        return "agy-cli", _default_model_for_backend("agy-cli")
 
     return "ollama", _default_model_for_backend("ollama")
 
@@ -659,6 +661,13 @@ def triage_with_opus(prs: list[PRInfo], base: str) -> None:
                     if delta:
                         print(delta.replace("\n", "\n  "), end="", flush=True)
             print("\n")
+
+        elif backend == "agy-cli":
+            from graphify.llm import _call_llm
+            result = _call_llm(prompt, backend=backend, model=model, max_tokens=1024)
+            for line in result.splitlines():
+                print(f"  {line}")
+            print()
 
         elif backend == "claude-cli":
             import platform as _platform, shutil as _shutil, subprocess as _sp

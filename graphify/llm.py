@@ -206,6 +206,16 @@ BACKENDS: dict[str, dict] = {
         "max_tokens": 16384,
         "vision": True,
     },
+    "agy-cli": {
+        # Routes through the locally-installed Antigravity CLI and the user's
+        # subscription instead of a separate GEMINI_API_KEY.
+        "default_model": "gemini-3.8-flash-low",
+        "model_env_key": "GRAPHIFY_AGY_CLI_MODEL",
+        "pricing": {"input": 0.0, "output": 0.0},
+        "temperature": 0,
+        "max_tokens": 16384,
+        "vision": True,
+    },
     "claude-cli": {
         # Routes through the locally-installed `claude` CLI (Claude Code) using
         # `-p --output-format json`. Authenticates via the user's existing
@@ -788,7 +798,7 @@ _MAX_IMAGES_PER_CHUNK = 20
 # Backends that read an image by file path (claude-cli's Read tool)
 # instead of inlining base64. They open the file themselves and downsample as
 # needed, so `_MAX_IMAGE_BYTES` does not apply and the bytes never need loading.
-_PATH_IMAGE_BACKENDS = {"claude-cli"}
+_PATH_IMAGE_BACKENDS = {"claude-cli", "agy-cli"}
 
 
 @dataclass
@@ -1818,6 +1828,188 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     return result
 
 
+# Gemini requires items on every array, including hyperedge member IDs. Keep
+# extra fields allowed, as the extraction parser preserves optional attributes.
+_AGY_EXTRACTION_JSON_SCHEMA = json.dumps(
+    {
+        "type": "object",
+        "properties": {
+            "nodes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "label": {"type": "string"},
+                        "file_type": {"type": "string"},
+                        "source_file": {"type": "string"},
+                        "source_location": {"type": ["string", "null"]},
+                        "source_url": {"type": ["string", "null"]},
+                        "captured_at": {"type": ["string", "null"]},
+                        "author": {"type": ["string", "null"]},
+                        "contributor": {"type": ["string", "null"]},
+                        "rationale": {"type": ["string", "null"]},
+                    },
+                    "required": ["id", "label"],
+                    "additionalProperties": True,
+                },
+            },
+            "edges": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"},
+                        "target": {"type": "string"},
+                        "relation": {"type": "string"},
+                        "confidence": {"type": "string"},
+                        "confidence_score": {"type": "number"},
+                        "source_file": {"type": "string"},
+                        "source_location": {"type": ["string", "null"]},
+                        "weight": {"type": "number"},
+                    },
+                    "required": ["source", "target", "relation"],
+                    "additionalProperties": True,
+                },
+            },
+            "hyperedges": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "label": {"type": "string"},
+                        "nodes": {"type": "array", "items": {"type": "string"}},
+                        "relation": {"type": "string"},
+                        "confidence": {"type": "string"},
+                        "confidence_score": {"type": "number"},
+                        "source_file": {"type": "string"},
+                    },
+                    "required": ["id", "label", "nodes", "relation"],
+                    "additionalProperties": True,
+                },
+            },
+            "input_tokens": {"type": "integer"},
+            "output_tokens": {"type": "integer"},
+        },
+        "required": ["nodes", "edges"],
+        "additionalProperties": True,
+    }
+)
+
+
+def _agy_cli_envelope(stdout: str) -> dict:
+    """Parse the JSON returned by `agy -p=... --output-format json`.
+
+    Antigravity returns one envelope object. A zero exit code can still carry
+    status ERROR, so require SUCCESS before consuming response or usage.
+    """
+    try:
+        envelope = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"agy -p produced unparseable JSON envelope: {exc}; "
+            f"first 500 chars of stdout: {stdout[:500]!r}"
+        ) from exc
+    if not isinstance(envelope, dict):
+        raise RuntimeError("agy -p returned a JSON envelope that is not an object")
+    if envelope.get("status") != "SUCCESS":
+        detail = envelope.get("error") or f"unexpected status {envelope.get('status')!r}"
+        raise RuntimeError(f"agy -p reported an error: {str(detail)[:500]}")
+    return envelope
+
+
+def _run_agy_cli(
+    prompt: str,
+    *,
+    model: str,
+    schema: str | None = None,
+    images: list[_ImageRef] | None = None,
+) -> dict:
+    """Run one headless Antigravity request and return its success envelope."""
+    import shutil
+    import subprocess
+
+    agy_cmd = shutil.which("agy")
+    if agy_cmd is None:
+        raise RuntimeError(
+            "Antigravity CLI not found on $PATH. Install it and run `agy` once to authenticate."
+        )
+    # Attach the full prompt: agy 1.2.9 misparses a detached -p argument.
+    # stdin support is unverified; close it so headless calls cannot await input.
+    cli_args = [
+        agy_cmd, "-p=" + prompt,
+        "--output-format", "json",
+        "--model", model.strip() or BACKENDS["agy-cli"]["default_model"],
+        "--dangerously-skip-permissions",
+    ]
+    if schema is not None:
+        cli_args.extend(["--json-schema", schema])
+    seen_dirs: set[str] = set()
+    for ref in images or []:
+        directory = str(ref.path.parent)
+        if directory not in seen_dirs:
+            seen_dirs.add(directory)
+            cli_args.extend(["--add-dir", directory])
+    proc = subprocess.run(
+        cli_args,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=_resolve_api_timeout(),
+        check=False,
+        **_no_window_kwargs(),
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip()
+        if not detail:
+            try:
+                _agy_cli_envelope(proc.stdout)
+            except RuntimeError as exc:
+                detail = str(exc)
+        raise RuntimeError(f"agy -p exited {proc.returncode}: {detail[:500] or '(no error detail)'}")
+    return _agy_cli_envelope(proc.stdout)
+
+
+def _call_agy_cli(user_message: str, max_tokens: int = 8192, *, model: str | None = None, deep_mode: bool = False, images: list[_ImageRef] | None = None) -> dict:
+    """Call Gemini via the locally-installed Antigravity CLI (`agy -p=...`).
+
+    Routes through the user's Antigravity subscription instead of GEMINI_API_KEY.
+    Images are passed by absolute path and each containing directory is
+    allowlisted with --add-dir. The CLI enforces the extraction JSON schema.
+    max_tokens matches the backend interface; agy has no verified output-cap flag.
+    """
+    mdl = (model or _default_model_for_backend("agy-cli")).strip() or BACKENDS["agy-cli"]["default_model"]
+    if images:
+        user_message = _with_image_notes(user_message, images, with_paths=True)
+    combined_message = (
+        _extraction_system(deep=deep_mode)
+        + "\n\n---\n"
+        + "Now extract the knowledge graph from the following source file(s) "
+        + "and output ONLY the JSON object described above. No prose, no "
+        + "preamble, no markdown fences.\n\n"
+        + user_message
+    )
+    envelope = _run_agy_cli(
+        combined_message, model=mdl, schema=_AGY_EXTRACTION_JSON_SCHEMA, images=images,
+    )
+    structured = envelope.get("structured_output")
+    raw_content = json.dumps(structured) if isinstance(structured, dict) else envelope.get("response", "")
+    result = _parse_llm_json(raw_content or "{}")
+    usage = envelope.get("usage") or {}
+    result["input_tokens"] = (
+        int(usage.get("input_tokens", 0) or 0)
+        + int(usage.get("cache_read_tokens", 0) or 0)
+    )
+    result["output_tokens"] = int(usage.get("output_tokens", 0) or 0)
+    result["model"] = mdl
+    result["finish_reason"] = "stop"
+    _mark_hollow(result, raw_content, "agy-cli")
+    return result
+
+
 def _azure_client(api_key: str, endpoint: str):
     """Construct an AzureOpenAI client with env-driven api_version and timeout."""
     try:
@@ -1975,7 +2167,7 @@ def extract_files_direct(
             file=sys.stderr,
         )
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "agy-cli"):
         raise ValueError(
             f"No API key for backend '{backend}'. "
             f"Set {_format_backend_env_keys(backend)} or pass api_key=."
@@ -1997,6 +2189,8 @@ def extract_files_direct(
 
     if backend == "claude":
         result = _call_claude(key, mdl, user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
+    elif backend == "agy-cli":
+        result = _call_agy_cli(user_msg, model=mdl, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "claude-cli":
         result = _call_claude_cli(user_msg, max_tokens=max_out, deep_mode=deep_mode, images=image_refs)
     elif backend == "bedrock":
@@ -2657,6 +2851,9 @@ def extract_corpus_parallel(
     # over session state. Force serial unless the user explicitly opts in.
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
+    # Antigravity processes are independent; default to serial conservatively.
+    if backend == "agy-cli" and os.environ.get("GRAPHIFY_AGY_CLI_PARALLEL", "").strip() != "1":
+        max_concurrency = 1
     def _checkpoint_chunk(result: dict, chunk: "list[Path | FileSlice]") -> None:
         # Persist each chunk's semantic results to the cache as soon as it
         # completes. Without this, the semantic cache is only written once, at
@@ -2899,7 +3096,7 @@ def _call_llm(
         ollama_url = _resolve_ollama_base_url(cfg.get("base_url", ""))
         _validate_ollama_base_url(ollama_url)
         key = "ollama"
-    if not key and backend not in ("bedrock", "claude-cli"):
+    if not key and backend not in ("bedrock", "claude-cli", "agy-cli"):
         raise ValueError(
             f"No API key for backend '{backend}'. Set {_format_backend_env_keys(backend)}."
         )
@@ -2925,6 +3122,21 @@ def _call_llm(
         if u is not None:
             _rec(getattr(u, "input_tokens", 0), getattr(u, "output_tokens", 0))
         return _anthropic_response_text(resp.content, default="")
+
+    if backend == "agy-cli":
+        # Plain-text callers (labels and dedup) must not receive the extraction
+        # schema or prompt. Labels already request their own JSON mapping.
+        envelope = _run_agy_cli(prompt, model=mdl)
+        cli_usage = envelope.get("usage") or {}
+        _rec(
+            int(cli_usage.get("input_tokens", 0) or 0)
+            + int(cli_usage.get("cache_read_tokens", 0) or 0),
+            cli_usage.get("output_tokens", 0),
+        )
+        structured = envelope.get("structured_output")
+        if isinstance(structured, dict):
+            return json.dumps(structured)
+        return envelope.get("response", "")
 
     if backend == "claude-cli":
         import platform, shutil, subprocess
@@ -3196,7 +3408,7 @@ def detect_backend() -> str | None:
         _validate_ollama_base_url(ollama_url)
         return "ollama"
     for name in BACKENDS:
-        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli"):
+        if name not in ("gemini", "kimi", "claude", "openai", "deepseek", "azure", "bedrock", "ollama", "claude-cli", "agy-cli"):
             if _get_backend_api_key(name):
                 return name
     return None
@@ -3460,6 +3672,9 @@ def label_communities(
         max_concurrency = 1
     if backend == "claude-cli" and os.environ.get("GRAPHIFY_CLAUDE_CLI_PARALLEL", "").strip() != "1":
         max_concurrency = 1
+    # Antigravity processes are independent; default to serial conservatively.
+    if backend == "agy-cli" and os.environ.get("GRAPHIFY_AGY_CLI_PARALLEL", "").strip() != "1":
+        max_concurrency = 1
     workers = max(1, min(max_concurrency, n_batches))
 
     def _run_batch(batch_idx: int):
@@ -3542,14 +3757,18 @@ def generate_community_labels(
         except Exception:
             backend = None
     if not backend and _claude_cli_available():
-        # `detect_backend` is key-based, and claude-cli is the one backend with no
-        # key to find, so it can never be detected there — and widening detection
+        # `detect_backend` is key-based, and subscription CLIs have no
+        # key to find, so they cannot be detected there — and widening detection
         # itself would change extraction's contract, which deliberately refuses to
         # run without a configured backend. Here the alternative is not an error but
         # a SILENT DOWNGRADE: replacing every real community name with
         # "Community N" and exiting 0, which overwrites a good graph with a worse
         # one while reporting success. An installed CLI is better than that.
         backend = "claude-cli"
+    if not backend:
+        import shutil
+        if shutil.which("agy") is not None:
+            backend = "agy-cli"
     if not backend:
         if not quiet:
             print(
