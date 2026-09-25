@@ -400,3 +400,52 @@ resource "aws_x" "y" {
     import json as _json
     assert "leaky-in-list" not in _json.dumps(node)
     assert "tok-in-list" not in _json.dumps(node)
+
+
+def test_terraform_secret_named_variable_default_and_output_value_are_redacted(tmp_path):
+    """A `variable`/`output` block names its secret in the block LABEL, not in an
+    attribute key: `variable "db_password" { default = "..." }` stores the
+    credential under the generic key `default`, and `output "admin_token"` under
+    `value`. Key-name matching alone never sees the secret signal, so the
+    hardcoded default reached graph.json verbatim. Terraform's own
+    `sensitive = true` marker must be honoured the same way."""
+    body = """\
+variable "db_password" {
+  type    = string
+  default = "hunter2-default"
+}
+
+variable "region" {
+  type    = string
+  default = "us-east-1"
+}
+
+variable "signing_material" {
+  type      = string
+  sensitive = true
+  default   = "marked-sensitive"
+}
+
+output "admin_token" {
+  value = "tok-in-output"
+}
+
+output "bucket_name" {
+  value = "my-bucket"
+}
+"""
+    r = extract_terraform(_write(tmp_path, "vars.tf", body))
+    by_label = {n["label"]: n for n in r["nodes"]}
+    # secret-named blocks: the literal is redacted, the type stays visible
+    assert by_label["var.db_password"]["attributes"]["default"] == "[redacted]"
+    assert by_label["var.db_password"]["attributes"]["type"] == "string"
+    assert by_label["output.admin_token"]["attributes"]["value"] == "[redacted]"
+    # Terraform's explicit `sensitive = true` marker is honoured
+    assert by_label["var.signing_material"]["attributes"]["default"] == "[redacted]"
+    # ordinary variables/outputs are untouched
+    assert by_label["var.region"]["attributes"]["default"] == "us-east-1"
+    assert by_label["output.bucket_name"]["attributes"]["value"] == "my-bucket"
+    import json as _json
+    dumped = _json.dumps(r["nodes"])
+    for secret in ("hunter2-default", "tok-in-output", "marked-sensitive"):
+        assert secret not in dumped

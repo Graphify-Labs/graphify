@@ -432,6 +432,17 @@ def extract_terraform(path: Path) -> dict:
             continue
         if blk_body is not None:
             attrs = _collect_direct_attributes(blk_body)
+            # A variable/output names its secret in the block LABEL, so the
+            # literal sits under a generic key (`default` / `value`) that the
+            # key-name check never flags. Redact it when the label names a
+            # secret or the block carries Terraform's own `sensitive = true`.
+            if btype in ("variable", "output") and (
+                _SENSITIVE_KEY_RE.search(labels[0])
+                or attrs.get("sensitive") in (True, "true")
+            ):
+                for secret_key in ("default", "value"):
+                    if secret_key in attrs:
+                        attrs[secret_key] = _REDACTED
             if attrs:
                 nodes_by_id[owner]["attributes"] = attrs
             _collect_refs(blk_body, owner, "references")
