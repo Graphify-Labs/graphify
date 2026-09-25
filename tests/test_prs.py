@@ -21,6 +21,11 @@ from graphify.prs import (
     fetch_worktrees,
     format_prs_text,
     _detect_default_branch,
+    _parse_pr_dict,
+    fetch_pr,
+    fetch_prs,
+    attach_graph_impact,
+    cmd_prs,
 )
 
 
@@ -519,3 +524,231 @@ class TestSubprocessStdinIsolation:
             _detect_default_branch()
         _args, kwargs = mock_run.call_args
         assert kwargs.get("stdin") == subprocess.DEVNULL
+
+
+# ── _parse_pr_dict & fetch_pr (#3824) ──────────────────────────────────────────
+
+class TestParsePrDict:
+    def test_parse_pr_dict_complete(self):
+        raw = {
+            "number": 42,
+            "title": "Add feature",
+            "headRefName": "feat-42",
+            "baseRefName": "v8",
+            "author": {"login": "alice"},
+            "isDraft": False,
+            "reviewDecision": "APPROVED",
+            "statusCheckRollup": [{"conclusion": "SUCCESS", "status": "COMPLETED"}],
+            "updatedAt": "2026-09-20T10:00:00Z",
+        }
+        pr = _parse_pr_dict(raw, expected_base="v8")
+        assert pr.number == 42
+        assert pr.title == "Add feature"
+        assert pr.branch == "feat-42"
+        assert pr.base_branch == "v8"
+        assert pr.author == "alice"
+        assert pr.is_draft is False
+        assert pr.review_decision == "APPROVED"
+        assert pr.ci_status == "SUCCESS"
+        assert pr.status == "APPROVED"
+        assert pr.updated_at.year == 2026
+
+    def test_parse_pr_dict_defaults_on_missing_optional_fields(self):
+        raw = {
+            "number": 7,
+            "title": "Minimal PR",
+            "headRefName": "patch-1",
+            "baseRefName": "main",
+        }
+        pr = _parse_pr_dict(raw, expected_base="main")
+        assert pr.author == "?"
+        assert pr.is_draft is False
+        assert pr.review_decision == ""
+        assert pr.ci_status == "NONE"
+
+
+class TestFetchPr:
+    def test_fetch_pr_success(self):
+        raw = {
+            "number": 105,
+            "title": "Fix something",
+            "state": "OPEN",
+            "headRefName": "fix-105",
+            "baseRefName": "v8",
+            "author": {"login": "bob"},
+            "isDraft": False,
+            "reviewDecision": "",
+            "statusCheckRollup": [],
+            "updatedAt": "2026-09-24T12:00:00Z",
+        }
+        with patch("graphify.prs._gh", return_value=raw) as mock_gh:
+            pr = fetch_pr(105, base="v8")
+        assert pr is not None
+        assert pr.number == 105
+        assert pr.title == "Fix something"
+        args, _ = mock_gh.call_args
+        assert args[0:3] == ("pr", "view", "105")
+
+    def test_fetch_pr_with_repo(self):
+        with patch("graphify.prs._gh", return_value=None) as mock_gh:
+            fetch_pr(105, repo="owner/repo", base="v8")
+        args, _ = mock_gh.call_args
+        assert "--repo" in args
+        assert "owner/repo" in args
+
+    def test_fetch_pr_not_found_returns_none(self):
+        with patch("graphify.prs._gh", return_value=None):
+            pr = fetch_pr(999, base="v8")
+        assert pr is None
+
+    @pytest.mark.parametrize("state", ["CLOSED", "MERGED"])
+    def test_fetch_pr_closed_or_merged_returns_none(self, state: str):
+        raw = {
+            "number": 105,
+            "title": "Old PR",
+            "state": state,
+            "headRefName": "feature",
+            "baseRefName": "v8",
+            "updatedAt": "2026-09-24T12:00:00Z",
+        }
+        with patch("graphify.prs._gh", return_value=raw):
+            pr = fetch_pr(105, base="v8")
+        assert pr is None
+
+
+# ── attach_graph_impact & include_wrong_base (#3824) ──────────────────────────
+
+class TestAttachGraphImpact:
+    def _sample_graph_data(self):
+        return {
+            "nodes": [
+                {"id": "n1", "source_file": "src/auth.py", "community": 0, "label": "auth"},
+                {"id": "n2", "source_file": "src/auth.py", "community": 0, "label": "login"},
+                {"id": "n3", "source_file": "src/api.py", "community": 1, "label": "api"},
+            ]
+        }
+
+    def test_attach_graph_impact_skips_wrong_base_by_default(self, tmp_path):
+        graph_file = tmp_path / "graph.json"
+        graph_file.write_text(json.dumps(self._sample_graph_data()), encoding="utf-8")
+
+        pr_ready = make_pr(number=1, base_branch="v8", expected_base="v8")
+        pr_wrong = make_pr(number=2, base_branch="develop", expected_base="v8")
+
+        with patch("graphify.prs.fetch_pr_files", return_value=["src/auth.py"]) as mock_files:
+            attach_graph_impact([pr_ready, pr_wrong], graph_file, include_wrong_base=False)
+
+        mock_files.assert_called_once_with(1, None)
+        assert pr_ready.nodes_affected == 2
+        assert pr_ready.communities_touched == [0]
+        assert pr_wrong.nodes_affected == 0
+        assert pr_wrong.communities_touched == []
+
+    def test_attach_graph_impact_includes_wrong_base_when_requested(self, tmp_path):
+        graph_file = tmp_path / "graph.json"
+        graph_file.write_text(json.dumps(self._sample_graph_data()), encoding="utf-8")
+
+        pr_wrong = make_pr(number=2, base_branch="develop", expected_base="v8")
+        assert pr_wrong.status == "WRONG-BASE"
+
+        with patch("graphify.prs.fetch_pr_files", return_value=["src/auth.py"]) as mock_files:
+            attach_graph_impact([pr_wrong], graph_file, include_wrong_base=True)
+
+        mock_files.assert_called_once_with(2, None)
+        assert pr_wrong.nodes_affected == 2
+        assert pr_wrong.communities_touched == [0]
+        assert pr_wrong.status == "WRONG-BASE"
+        assert pr_wrong.blast_radius == "2 nodes / 1 community"
+
+
+# ── cmd_prs single-PR detail mode (#3824) ─────────────────────────────────────
+
+class TestCmdPrsDetail:
+    def test_detail_only_fetches_diff_for_requested_pr(self, tmp_path, capsys):
+        graph_file = tmp_path / "graph.json"
+        graph_data = {
+            "nodes": [
+                {"id": "n1", "source_file": "src/app.py", "community": 0, "label": "app"},
+            ]
+        }
+        graph_file.write_text(json.dumps(graph_data), encoding="utf-8")
+
+        pr1 = make_pr(number=10, base_branch="v8", expected_base="v8")
+        pr2 = make_pr(number=20, base_branch="v8", expected_base="v8")
+        pr3 = make_pr(number=30, base_branch="v8", expected_base="v8")
+
+        with patch("graphify.prs.fetch_prs", return_value=[pr1, pr2, pr3]), \
+             patch("graphify.prs.fetch_worktrees", return_value={}), \
+             patch("graphify.prs.fetch_pr_files", return_value=["src/app.py"]) as mock_diff:
+            cmd_prs(["20", f"--graph={graph_file}"])
+
+        # Crucial check for #3824: only PR 20's diff must be fetched, NOT 10 or 30
+        assert mock_diff.call_count == 1
+        assert mock_diff.call_args[0][0] == 20
+        captured = capsys.readouterr()
+        assert "PR #20" in captured.out
+        assert "Graph impact:" in captured.out
+
+    def test_detail_calculates_impact_for_wrong_base_pr(self, tmp_path, capsys):
+        graph_file = tmp_path / "graph.json"
+        graph_data = {
+            "nodes": [
+                {"id": "n1", "source_file": "src/app.py", "community": 0, "label": "app"},
+            ]
+        }
+        graph_file.write_text(json.dumps(graph_data), encoding="utf-8")
+
+        pr_wrong = make_pr(number=42, base_branch="feature-x", expected_base="v8")
+        assert pr_wrong.status == "WRONG-BASE"
+
+        with patch("graphify.prs.fetch_prs", return_value=[pr_wrong]), \
+             patch("graphify.prs.fetch_worktrees", return_value={}), \
+             patch("graphify.prs.fetch_pr_files", return_value=["src/app.py"]) as mock_diff:
+            cmd_prs(["42", f"--graph={graph_file}"])
+
+        assert mock_diff.call_count == 1
+        assert mock_diff.call_args[0][0] == 42
+        captured = capsys.readouterr()
+        assert "PR #42" in captured.out
+        assert "WRONG-BASE" in captured.out
+        assert "Graph impact:" in captured.out
+
+    def test_detail_falls_back_to_fetch_pr_when_outside_first_50(self, tmp_path, capsys):
+        graph_file = tmp_path / "graph.json"
+        graph_data = {
+            "nodes": [
+                {"id": "n1", "source_file": "src/app.py", "community": 0, "label": "app"},
+            ]
+        }
+        graph_file.write_text(json.dumps(graph_data), encoding="utf-8")
+
+        # 50 PRs that do not include PR 99
+        prs_50 = [make_pr(number=i, base_branch="v8") for i in range(1, 51)]
+        pr_99 = make_pr(number=99, branch="feat-99", base_branch="v8", expected_base="v8")
+
+        with patch("graphify.prs.fetch_prs", return_value=prs_50), \
+             patch("graphify.prs._detect_default_branch", return_value="v8"), \
+             patch("graphify.prs.fetch_worktrees", return_value={"feat-99": "/path/to/wt"}), \
+             patch("graphify.prs.fetch_pr", return_value=pr_99) as mock_fetch_single, \
+             patch("graphify.prs.fetch_pr_files", return_value=["src/app.py"]):
+            cmd_prs(["99", f"--graph={graph_file}"])
+
+        mock_fetch_single.assert_called_once_with(99, repo=None, base="v8")
+        assert pr_99.worktree_path == "/path/to/wt"
+        captured = capsys.readouterr()
+        assert "PR #99" in captured.out
+        assert "worktree:" in captured.out
+        assert "/path/to/wt" in captured.out
+
+    def test_detail_exits_when_not_found_in_list_or_view(self, capsys):
+        prs_50 = [make_pr(number=i) for i in range(1, 51)]
+
+        with patch("graphify.prs.fetch_prs", return_value=prs_50), \
+             patch("graphify.prs.fetch_worktrees", return_value={}), \
+             patch("graphify.prs.fetch_pr", return_value=None):
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_prs(["999"])
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "PR #999 not found in open PRs." in captured.err
