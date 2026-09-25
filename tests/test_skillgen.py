@@ -687,6 +687,41 @@ def test_generated_runbooks_pass_root_to_save_manifest():
     assert checked >= 4, f"expected save_manifest calls across the runbooks, found {checked}"
 
 
+def test_runbook_update_flows_pass_kind_ast():
+    """#2459: every `--update` runbook must call detect_incremental with
+    kind="ast", never the semantic default.
+
+    detect_incremental defaults to kind="semantic", in which a file whose
+    stored semantic_hash is "" (AST-extracted only, never semantically
+    chunked) is reported changed on EVERY update. The update flow must pass
+    kind="ast" so unchanged files stay out of the re-extraction set (the
+    full build and update saves stamp ast_hash via kind="both"/"ast", so the
+    ast changed-set matches actual content changes).
+    """
+    targets = [
+        REPO_ROOT / "graphify" / "skill-aider.md",
+        REPO_ROOT / "graphify" / "skill-devin.md",
+    ]
+    targets += sorted((REPO_ROOT / "graphify" / "skills").glob("*/references/update.md"))
+    targets += [
+        REPO_ROOT / "tools" / "skillgen" / "fragments" / "core" / "aider.md",
+        REPO_ROOT / "tools" / "skillgen" / "fragments" / "core" / "devin.md",
+        REPO_ROOT / "tools" / "skillgen" / "fragments" / "references" / "shared" / "update.md",
+    ]
+    checked = 0
+    for path in targets:
+        for ln in path.read_text(encoding="utf-8").splitlines():
+            if "detect_incremental(Path('INPUT_PATH')" in ln:
+                checked += 1
+                assert "kind=\"ast\"" in ln, (
+                    f"{path.relative_to(REPO_ROOT)}: detect_incremental without "
+                    f"kind=\"ast\" over-reports unchanged files on --update (#2459): {ln.strip()!r}"
+                )
+    assert checked >= len(targets), (
+        f"expected detect_incremental update calls across the runbooks, found {checked}"
+    )
+
+
 def test_devin_keeps_its_multi_field_frontmatter():
     """devin renders inline, so its 4+-field frontmatter is preserved verbatim."""
     platforms = gen.load_platforms()
