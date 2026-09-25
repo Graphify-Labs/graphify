@@ -30,6 +30,12 @@ _SLUG_SUFFIX_RESERVE = 5
 _UNSAFE_SLUG_CHARS = re.compile(r'[<>:"/\\|?*#%\x00-\x1f\x7f]')
 
 
+# The navigation footer links the catalog by its fixed filename rather than via
+# the label resolver, so an article whose own label is "index" resolves to its
+# own (deduplicated) file instead of the catalog.
+_INDEX_LINK = "[index](index.md)"
+
+
 def _safe_filename(name: str, limit: int = 200) -> str:
     """Make a label safe for use as a filename across platforms AND as a
     markdown link destination.
@@ -178,7 +184,7 @@ def _community_article(
         lines.append(f"- {conf}: {n} ({pct}%)")
     lines.append("")
 
-    lines += ["---", "", f"*Part of the graphify knowledge wiki. See {_md_link('index', resolver)} to navigate.*"]
+    lines += ["---", "", f"*Part of the graphify knowledge wiki. See {_INDEX_LINK} to navigate.*"]
     return "\n".join(lines)
 
 
@@ -224,7 +230,7 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
             )
         lines.append("")
 
-    lines += ["---", "", f"*Part of the graphify knowledge wiki. See {_md_link('index', resolver)} to navigate.*"]
+    lines += ["---", "", f"*Part of the graphify knowledge wiki. See {_INDEX_LINK} to navigate.*"]
     return "\n".join(lines)
 
 
@@ -338,7 +344,10 @@ def to_wiki(
     node_community: dict[str, int] = {n: cid for cid, nodes in communities.items() for n in nodes}
 
     count = 0
-    used_slugs: set[str] = set()
+    # "index" is reserved for the catalog written below: an article slugged
+    # "index" (a community named after an `index()` hub, an `Index` god node on a
+    # case-insensitive filesystem) would otherwise be overwritten by index.md.
+    used_slugs: set[str] = {"index"}
 
     # Articles are capped against THIS wiki directory, not just NAME_MAX: on
     # Windows a 200-char slug under an ordinary graphify-out/wiki/ overruns
@@ -368,7 +377,7 @@ def to_wiki(
     # _md_link renders them as plain text. Communities are slugged before god nodes
     # (and setdefault keeps the first), preserving the filename-assignment order
     # the case-collision dedup relies on.
-    resolver: dict[str, str] = {"index": "index"}
+    resolver: dict[str, str] = {}
 
     community_slugs: dict[int, str] = {}
     for cid in communities:
