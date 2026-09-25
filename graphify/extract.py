@@ -1,6 +1,7 @@
 """Deterministic structural extraction from source code using tree-sitter. Outputs nodes+edges dicts."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import json
@@ -6950,6 +6951,137 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     return idx, result
 
 
+def _is_main_guard_test(test: ast.expr) -> bool:
+    """Whether an ``if`` statement's test is ``__name__ == "__main__"``, in
+    either operand order, optionally narrowed by an ``and`` (e.g.
+    ``__name__ == "__main__" and verbose``). Parens around the comparison
+    are transparent to the AST, and this never looks inside a string,
+    comment, or docstring — only a real comparison expression in executable
+    code satisfies it.
+
+    Only ``and`` is recursed through: every operand of an ``and`` must be
+    true for the body to run, so recognizing any one of them as the real
+    guard is still correct. An ``or`` is NOT safe to recognize this way —
+    the body can run even when ``__name__`` isn't ``"__main__"`` if the
+    other side is true — so a disjunction is never treated as a guard.
+    """
+    if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+        return any(_is_main_guard_test(value) for value in test.values)
+    if not isinstance(test, ast.Compare):
+        return False
+    if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+        return False
+    left, right = test.left, test.comparators[0]
+
+    def _is_dunder_name(node: ast.expr) -> bool:
+        return isinstance(node, ast.Name) and node.id == "__name__"
+
+    def _is_main_string(node: ast.expr) -> bool:
+        return isinstance(node, ast.Constant) and node.value == "__main__"
+
+    return (_is_dunder_name(left) and _is_main_string(right)) or (
+        _is_main_string(left) and _is_dunder_name(right)
+    )
+
+
+def _caller_main_lacks_guard() -> bool:
+    """#1637: under the spawn start method (the only one on Windows, and the
+    default on macOS since Python 3.8), a caller script with no
+    ``if __name__ == "__main__":`` guard makes every worker re-execute the
+    top-level module on import — including, if it calls ``extract()`` at
+    module scope, spawning its OWN pool. Each of those child pools spawns
+    more children the same way, faster than any per-future exception can
+    surface and stop it: a fork bomb, not a slow failure. Read the caller's
+    own source (best-effort; a read failure means "can't tell", not "missing")
+    so the pool is never opened in the first place, rather than caught after
+    the fact via BrokenProcessPool once the damage is already spawning.
+
+    Parses the source and looks for a real ``if`` statement with this test,
+    rather than a regex over the text — a regex line match still treats a
+    guard-shaped line sitting inside a triple-quoted string or a docstring
+    example as a real guard (it is not executable code), and still rejects
+    a valid but less common form like a parenthesized comparison. The AST
+    does not see string contents as code at all, and is indifferent to
+    formatting, so both gaps close at once.
+
+    Only the module's direct top-level statements are checked, not every
+    node anywhere in the tree: a guard found anywhere in the tree also
+    matches one nested inside an unrelated function, class, or dead branch,
+    which never executes at import time and so provides no actual
+    protection at all. The idiom itself only has its intended effect as a
+    bare top-level statement, so that is the only place a real guard can
+    be.
+
+    A module can have a real top-level guard AND a genuinely unguarded
+    top-level statement that calls ``extract()`` outside it, so finding
+    *some* guard anywhere in the module is not enough either -- the
+    specific top-level statement that led to this call must itself be
+    inside one. That statement is found by walking the call stack for the
+    outermost frame belonging to this module's own top-level code (its
+    ``<module>`` code object): its current line is wherever the chain of
+    calls that reached ``extract()`` started, and is checked against the
+    guards' line ranges directly, without needing to trace the call graph
+    through any intervening function.
+    """
+    main_file = getattr(sys.modules.get("__main__"), "__file__", None)
+    if not main_file:
+        return False
+    try:
+        main_src = Path(main_file).read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    try:
+        tree = ast.parse(main_src)
+    except SyntaxError:
+        # Can't tell whether a guard is present -- treated the same as an
+        # unreadable file above, not escalated into "assume it's missing".
+        return False
+    guard_ranges = [
+        (node.lineno, node.end_lineno)
+        for node in tree.body
+        if isinstance(node, ast.If) and _is_main_guard_test(node.test)
+    ]
+    if not guard_ranges:
+        return True
+    frame = sys._getframe()
+    while frame is not None:
+        code = frame.f_code
+        if code.co_filename == main_file and code.co_name == "<module>":
+            line = frame.f_lineno
+            return not any(start <= line <= end for start, end in guard_ranges)
+        frame = frame.f_back
+    # Could not find the module's own top-level frame in the call stack
+    # (should not normally happen) -- can't tell where the call originated,
+    # treated the same as the unreadable/unparseable cases above.
+    return False
+
+
+def _pool_will_use_spawn() -> bool:
+    """Whether opening a ProcessPoolExecutor here would use the ``spawn``
+    start method (#1637 follow up): the guard-less-caller fork bomb only
+    happens under ``spawn``, which re-imports/re-executes the ``__main__``
+    module in every child. ``fork`` and ``forkserver`` never re-run
+    top-level code, so this check only matters when spawn is actually in
+    play. Checking the literal platform name (``win32`` only) missed macOS,
+    which has defaulted to spawn since Python 3.8 -- the same fork bomb is
+    fully reproducible there, not just on Windows.
+
+    Uses ``allow_none=True`` to read the CURRENT setting without fixing it
+    as a side effect: ``get_start_method()``'s default behavior permanently
+    locks in the platform default the first time it is called, which would
+    wrongly pre-empt a caller that has not yet made its own
+    ``set_start_method()`` call.
+    """
+    import multiprocessing
+
+    method = multiprocessing.get_start_method(allow_none=True)
+    if method is None:
+        # Not yet fixed: peek at the platform default without fixing it.
+        # get_all_start_methods() always lists it first.
+        method = multiprocessing.get_all_start_methods()[0]
+    return method == "spawn"
+
+
 def _extract_parallel(
     uncached_work: list[tuple[int, Path]],
     per_file: list[dict | None],
@@ -6961,11 +7093,36 @@ def _extract_parallel(
     """Extract uncached files in parallel using ProcessPoolExecutor.
 
     Returns True if the pool ran to completion. Returns False if the pool
-    failed in a recoverable way (typically Windows-spawn without an
+    failed in a recoverable way (typically the spawn start method without an
     ``if __name__ == "__main__"`` guard in the calling script, which causes
     BrokenProcessPool); the caller should fall back to sequential extraction.
     """
     import concurrent.futures
+    import multiprocessing
+
+    # #1637: a legitimate call to extract() only ever happens in the main
+    # process. If we are somehow already running inside a spawned worker
+    # (the guard-less-caller re-execution case above), opening ANOTHER pool
+    # here is exactly the recursive step that turns a single missing guard
+    # into an unbounded process explosion. Refuse unconditionally, before
+    # even a spawn-capable platform check, since this is never correct.
+    if multiprocessing.parent_process() is not None:
+        print(
+            "  warning: extract() was called from inside a worker process; "
+            "extracting sequentially instead of opening a nested pool "
+            "(pass parallel=False to extract() to silence this check)",
+            file=sys.stderr, flush=True,
+        )
+        return False
+
+    if _pool_will_use_spawn() and _caller_main_lacks_guard():
+        print(
+            "  warning: calling script lacks an `if __name__ == \"__main__\":` "
+            "guard; extracting sequentially to avoid runaway process spawning "
+            "(pass parallel=False to extract() to silence this check)",
+            file=sys.stderr, flush=True,
+        )
+        return False
 
     if max_workers is None:
         # Honour GRAPHIFY_MAX_WORKERS env override; otherwise scale to the
