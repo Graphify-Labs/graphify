@@ -133,6 +133,19 @@ def test_stale_graph_softens_never_denies(tmp_path, monkeypatch):
     assert "stale" in out.lower() and "MANDATORY" not in out
 
 
+def test_recent_repository_commit_softens_even_when_file_is_fresh(tmp_path, monkeypatch):
+    f = _fixture(tmp_path, fresh=True)
+
+    class _GitResult:
+        stdout = str(time.time() + 60)
+
+    monkeypatch.setattr(cli.subprocess, "run", lambda *args, **kwargs: _GitResult())
+    out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
+
+    assert not _is_deny(out)
+    assert "stale" in out.lower() and "MANDATORY" not in out
+
+
 def test_needs_update_flag_softens(tmp_path, monkeypatch):
     f = _fixture(tmp_path)
     (tmp_path / "graphify-out" / "needs_update").write_text("1", encoding="utf-8")
