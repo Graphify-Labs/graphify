@@ -822,6 +822,11 @@ def _reconcile_existing_graph(
     # staying fail-closed.
     existing = json.loads(existing_graph.read_text(encoding="utf-8"))
     existing_graph_data = existing
+    existing_degraded = existing.get("degraded_passes")
+    if existing_degraded is None and isinstance(existing.get("graph"), dict):
+        existing_degraded = existing["graph"].get("degraded_passes")
+    if not isinstance(existing_degraded, list):
+        existing_degraded = []
 
     # Backfill tier provenance on legacy items (#2334), mirroring
     # build._load_existing_graph (this reconcile path loads the raw dict
@@ -1057,13 +1062,38 @@ def _reconcile_existing_graph(
         for item in preserved_nodes + preserved_edges + preserved_hyperedges:
             source_paths.rebase_preserved(item)
 
-        return {
+        fresh_degraded = list(result.get("degraded_passes", []))
+        if full_rebuild:
+            reconciled_degraded = fresh_degraded
+        else:
+            fresh_passes = {d["pass"] for d in fresh_degraded if isinstance(d, dict) and "pass" in d}
+            reconciled_degraded = []
+            for dp in existing_degraded:
+                if not isinstance(dp, dict) or "pass" not in dp:
+                    continue
+                if dp["pass"] in fresh_passes:
+                    continue
+                dp_suffixes = {s.lower() for s in dp.get("suffixes", [])}
+                # Check if any live code file matching suffix was NOT in extract_targets
+                has_unextracted = any(
+                    p.suffix.lower() in dp_suffixes and p not in extract_targets
+                    for p in code_files
+                )
+                if has_unextracted:
+                    reconciled_degraded.append(dp)
+            reconciled_degraded.extend(fresh_degraded)
+        reconciled_degraded.sort(key=lambda d: d.get("pass", ""))
+
+        out_dict = {
             "nodes": result["nodes"] + preserved_nodes,
             "edges": result["edges"] + preserved_edges,
             "hyperedges": result.get("hyperedges", []) + preserved_hyperedges,
             "input_tokens": 0,
             "output_tokens": 0,
-        }, existing_graph_data
+        }
+        if reconciled_degraded:
+            out_dict["degraded_passes"] = reconciled_degraded
+        return out_dict, existing_graph_data
     except Exception as exc:
         # Post-load reconciliation failure: fall back to the fresh extraction
         # while keeping the loaded baseline, so _check_shrink still guards the
@@ -1169,6 +1199,15 @@ def _canonical_topology_for_compare(graph_data: dict) -> dict:
             key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=False, default=str),
         )
 
+    degraded_passes = canonical.get("degraded_passes")
+    if isinstance(degraded_passes, list):
+        canonical["degraded_passes"] = sorted(
+            degraded_passes,
+            key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=False, default=str),
+        )
+    if isinstance(canonical.get("graph"), dict) and "degraded_passes" in canonical["graph"]:
+        canonical["graph"] = {k: v for k, v in canonical["graph"].items() if k != "degraded_passes"}
+
     return canonical
 
 
@@ -1179,6 +1218,11 @@ def _topology_from_graph(G) -> dict:
     except TypeError:
         data = json_graph.node_link_data(G)
     data["hyperedges"] = getattr(G, "graph", {}).get("hyperedges", [])
+    degraded = getattr(G, "graph", {}).get("degraded_passes")
+    if isinstance(data.get("graph"), dict):
+        data["graph"] = {k: v for k, v in data["graph"].items() if k != "degraded_passes"}
+    if degraded:
+        data["degraded_passes"] = sorted(degraded, key=lambda d: d.get("pass", ""))
     return data
 
 

@@ -895,6 +895,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     ):
         extraction = dict(extraction, hyperedges=extraction["graph"]["hyperedges"])
 
+    degraded = extraction.get("degraded_passes")
+    if degraded is None and isinstance(extraction.get("graph"), dict):
+        degraded = extraction["graph"].get("degraded_passes")
+
     # Numeric ids from a loose backend become str before anything keys on them
     # (#2326) — after the links remap so aliased edges are covered too.
     _coerce_non_string_ids(extraction)
@@ -1521,6 +1525,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 f"will be emptied on the next export.",
                 file=sys.stderr,
             )
+    if degraded:
+        G.graph["degraded_passes"] = list(degraded)
     # Runs LAST, after the alias-competition above (which relies on file-node
     # labels still being bare basenames): give colliding-basename file nodes a
     # directory-qualified display label so lookup/discovery can disambiguate
@@ -1557,12 +1563,23 @@ def build(
     """
     from graphify.dedup import deduplicate_entities
     combined: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+    degraded_passes: list[dict] = []
     for ext in extractions:
         combined["nodes"].extend(ext.get("nodes", []))
         combined["edges"].extend(ext.get("edges", []))
         combined["hyperedges"].extend(ext.get("hyperedges", []))
         combined["input_tokens"] += ext.get("input_tokens", 0)
         combined["output_tokens"] += ext.get("output_tokens", 0)
+        if ext.get("degraded_passes"):
+            degraded_passes.extend(ext["degraded_passes"])
+    if degraded_passes:
+        seen_passes: set[str] = set()
+        deduped: list[dict] = []
+        for dp in degraded_passes:
+            if isinstance(dp, dict) and dp.get("pass") and dp["pass"] not in seen_passes:
+                seen_passes.add(dp["pass"])
+                deduped.append(dp)
+        combined["degraded_passes"] = deduped
     _root = str(Path(root).resolve()) if root else None
     if dedup and combined["nodes"]:
         # Numeric ids must be str before dedup, which keys on them and would
@@ -1658,8 +1675,8 @@ def deduplicate_by_label(nodes: list[dict], edges: list[dict]) -> tuple[list[dic
     return deduped_nodes, deduped_edges
 
 
-def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | None":
-    """Load (nodes, edges, hyperedges, directed) from an existing graph.json for
+def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool, list] | None":
+    """Load (nodes, edges, hyperedges, directed, degraded_passes) from an existing graph.json for
     an incremental merge, accepting both the ``links`` and ``edges`` spellings.
 
     Reads the JSON directly instead of going through node_link_graph().
@@ -1700,11 +1717,16 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     for item in edges:
         if isinstance(item, dict):
             item.setdefault("_origin", "ast" if _is_ast_tier(item) else "semantic")
+    degraded = data.get("degraded_passes")
+    if degraded is None and isinstance(data.get("graph"), dict):
+        degraded = data["graph"].get("degraded_passes")
+    degraded_passes = list(degraded) if isinstance(degraded, list) else []
     return (
         nodes,
         edges,
         list(data.get("hyperedges", [])),
         bool(data.get("directed", False)),
+        degraded_passes,
     )
 
 
@@ -1815,7 +1837,7 @@ def merge_raw_extraction(
     loaded = _load_existing_graph(graph_path)
     if loaded is None:
         return new
-    existing_nodes, existing_edges, existing_hyperedges, _ = loaded
+    existing_nodes, existing_edges, existing_hyperedges, _, existing_degraded = loaded
 
     _eff_root = (
         str(Path(root).resolve()) if root is not None
@@ -1915,6 +1937,33 @@ def merge_raw_extraction(
         new["hyperedges"] = carried_hyper + list(new.get("hyperedges", []))
     if unverified_semantic_shrink:
         new["_unverified_semantic_shrink"] = unverified_semantic_shrink
+
+    surviving_ast_suffixes: set[str] = set()
+    for n in existing_nodes:
+        if isinstance(n, dict) and _is_ast_tier(n) and not _dropped(n):
+            sf = n.get("source_file")
+            if sf:
+                sfx = Path(sf).suffix.lower()
+                if sfx:
+                    surviving_ast_suffixes.add(sfx)
+
+    fresh_degraded = list(new.get("degraded_passes", []))
+    fresh_pass_names = {d["pass"] for d in fresh_degraded if isinstance(d, dict) and "pass" in d}
+    reconciled_degraded = []
+    for dp in existing_degraded:
+        if not isinstance(dp, dict) or "pass" not in dp:
+            continue
+        if dp["pass"] in fresh_pass_names:
+            continue
+        dp_suffixes = {s.lower() for s in dp.get("suffixes", [])}
+        if dp_suffixes & surviving_ast_suffixes:
+            reconciled_degraded.append(dp)
+    reconciled_degraded.extend(fresh_degraded)
+    reconciled_degraded.sort(key=lambda d: d.get("pass", ""))
+    if reconciled_degraded:
+        new["degraded_passes"] = reconciled_degraded
+    else:
+        new.pop("degraded_passes", None)
     return new
 
 
@@ -1958,13 +2007,14 @@ def build_merge(
     graph_path = Path(graph_path if graph_path is not None else _default_graph_json())
     _loaded = _load_existing_graph(graph_path)
     if _loaded is not None:
-        existing_nodes, existing_edges, existing_hyperedges, existing_directed = _loaded
+        existing_nodes, existing_edges, existing_hyperedges, existing_directed, existing_degraded = _loaded
         had_graph = True
     else:
         existing_nodes = []
         existing_edges = []
         existing_hyperedges = []
         existing_directed = False
+        existing_degraded = []
         had_graph = False
     if directed is None:
         directed = existing_directed if had_graph else False
@@ -2351,6 +2401,41 @@ def build_merge(
                 f"{_disk_n} → {G.number_of_nodes()} nodes. "
                 f"Pass prune_sources explicitly if you intend to remove them. (#479)"
             )
+
+    surviving_ast_suffixes: set[str] = set()
+    for n in existing_nodes:
+        if isinstance(n, dict) and _is_ast_tier(n):
+            sf = n.get("source_file")
+            if sf and not _prune_match(sf):
+                sfx = Path(sf).suffix.lower()
+                if sfx:
+                    surviving_ast_suffixes.add(sfx)
+
+    fresh_degraded: list[dict] = []
+    for ch in new_chunks:
+        if isinstance(ch, dict) and "degraded_passes" in ch:
+            fresh_degraded.extend(ch.get("degraded_passes") or [])
+
+    if had_graph:
+        fresh_pass_names = {d["pass"] for d in fresh_degraded if isinstance(d, dict) and "pass" in d}
+        reconciled_degraded = []
+        for dp in existing_degraded:
+            if not isinstance(dp, dict) or "pass" not in dp:
+                continue
+            if dp["pass"] in fresh_pass_names:
+                continue
+            dp_suffixes = {s.lower() for s in dp.get("suffixes", [])}
+            if dp_suffixes & surviving_ast_suffixes:
+                reconciled_degraded.append(dp)
+        reconciled_degraded.extend(fresh_degraded)
+    else:
+        reconciled_degraded = list(fresh_degraded)
+    reconciled_degraded.sort(key=lambda d: d.get("pass", ""))
+
+    if reconciled_degraded:
+        G.graph["degraded_passes"] = reconciled_degraded
+    elif hasattr(G, "graph") and "degraded_passes" in G.graph:
+        del G.graph["degraded_passes"]
 
     if unverified_semantic_shrink:
         G.graph["_unverified_semantic_shrink"] = unverified_semantic_shrink

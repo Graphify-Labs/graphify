@@ -201,3 +201,25 @@ def test_report_hubs_use_wikilinks_when_obsidian():
     labels = {cid: f"Widget {cid}" for cid in communities}
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
     assert "[[_COMMUNITY_" in report
+
+
+def test_report_renders_degraded_resolution_passes_warning():
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    G.graph["degraded_passes"] = [
+        {
+            "pass": "python_imports",
+            "error": "syntax failure in module",
+            "error_type": "SyntaxError",
+            "suffixes": [".py"],
+        }
+    ]
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "## Degraded Resolution Passes" in report
+    assert "> [!WARNING]" in report
+    assert "**python_imports** (SyntaxError: syntax failure in module): suffixes `.py`" in report
+
+
+def test_report_omits_degraded_resolution_passes_when_clean():
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "## Degraded Resolution Passes" not in report

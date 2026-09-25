@@ -5448,6 +5448,20 @@ def _resolve_kotlin_member_calls(
         })
 
 
+def _record_degraded_pass(
+    degraded_passes: list[dict],
+    name: str,
+    suffixes: Any,
+    exc: Exception,
+) -> None:
+    degraded_passes.append({
+        "pass": name,
+        "error": str(exc),
+        "error_type": type(exc).__name__,
+        "suffixes": sorted(suffixes),
+    })
+
+
 # Kotlin import-target resolution runs EARLY (directly in extract(), before the
 # shared call pass builds its import-evidence index) — registering it in the
 # tail registry would rewrite the targets after promotion already read them.
@@ -7258,6 +7272,7 @@ def extract(
     # cache directory's location diverges from it.
     cache_location = (cache_root if cache_root is not None else Path(".")).resolve()
     total = len(paths)
+    degraded_passes: list[dict] = []
 
     # Phase 1: separate cached hits from uncached work
     per_file: list[dict | None] = [None] * total
@@ -7930,6 +7945,7 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("PHP type-reference resolution failed, skipping: %s", exc)
+            _record_degraded_pass(degraded_passes, "php_type_references", _php_exts, exc)
     # Java package/import disambiguation must likewise run BEFORE the rewire
     # (#2504): an EXTERNAL import (`org.springframework.stereotype.Component`)
     # leaves a bare `Component` stub that the rewire would collapse onto the only
@@ -7945,6 +7961,7 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Java type-reference resolution failed, skipping: %s", exc)
+            _record_degraded_pass(degraded_passes, "java_type_references", [".java"], exc)
     # Resolve internal Go pkg.Type references exactly and park external ones
     # before the generic bare-label stub rewire can manufacture a collision.
     _go_sel = [(r, p) for r, p in zip(per_file, paths) if p.suffix == ".go"]
@@ -7960,6 +7977,7 @@ def extract(
             logging.getLogger(__name__).warning(
                 "Go type-reference resolution failed, skipping: %s", exc
             )
+            _record_degraded_pass(degraded_passes, "go_type_references", [".go"], exc)
     # Cross-file Python import resolution and type-reference repointing (#3252)
     py_paths = [p for p in paths if p.suffix == ".py"]
     if py_paths:
@@ -7973,6 +7991,7 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Cross-file import resolution failed, skipping: %s", exc)
+            _record_degraded_pass(degraded_passes, "python_imports", [".py"], exc)
     _rewire_unique_stub_nodes(all_nodes, all_edges)
 
     # Cross-file Java import resolution
@@ -7984,6 +8003,7 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Java cross-file import resolution failed, skipping: %s", exc)
+            _record_degraded_pass(degraded_passes, "java_cross_file_imports", [".java"], exc)
 
     # Cross-file C# type-reference resolution: re-point dangling inherits/implements/
     # references edges left on shadow stubs, disambiguating same-named types by the
@@ -7997,11 +8017,13 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("C# type-reference resolution failed, skipping: %s", exc)
+            _record_degraded_pass(degraded_passes, "csharp_type_references", _DOTNET_TYPE_EXTS, exc)
         try:
             _resolve_cross_file_csharp_imports(cs_results, cs_paths, all_nodes, all_edges)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("C# cross-file import resolution failed, skipping: %s", exc)
+            _record_degraded_pass(degraded_passes, "csharp_cross_file_imports", _DOTNET_TYPE_EXTS, exc)
 
     # Cross-file Bash source-backed call resolution: a call to a function defined
     # in a file this one `source`s is left unresolved by the per-file extractor
@@ -8046,6 +8068,7 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("Bash cross-file call resolution failed, skipping: %s", exc)
+            _record_degraded_pass(degraded_passes, "bash_source_edges", [".bash", ".sh"], exc)
 
     # Cross-file call resolution for all languages
     # Each extractor saved unresolved calls in raw_calls. Now that we have all
@@ -8115,6 +8138,7 @@ def extract(
     run_language_resolvers(
         paths, per_file, all_nodes, all_edges,
         resolvers=[_KOTLIN_IMPORT_TARGET_RESOLVER],
+        degraded_passes=degraded_passes,
     )
 
     # Build evidence index from import edges so cross-file calls backed by an
@@ -8448,11 +8472,17 @@ def extract(
         _rl_nodes = list(resolution_nodes)
         _rl_edges = all_edges + list(resolution_context_edges or [])
         _n0, _e0 = len(_rl_nodes), len(_rl_edges)
-        run_language_resolvers(paths, per_file, _rl_nodes, _rl_edges)
+        run_language_resolvers(
+            paths, per_file, _rl_nodes, _rl_edges,
+            degraded_passes=degraded_passes,
+        )
         all_nodes.extend(_rl_nodes[_n0:])
         all_edges.extend(_rl_edges[_e0:])
     else:
-        run_language_resolvers(paths, per_file, all_nodes, all_edges)
+        run_language_resolvers(
+            paths, per_file, all_nodes, all_edges,
+            degraded_passes=degraded_passes,
+        )
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a
@@ -8658,6 +8688,7 @@ def extract(
         # merge_raw_extraction know which files were genuinely re-extracted
         # rather than guessing ownership from node["source_file"] (#3411).
         "extracted_sources": [str(p) for p in paths],
+        "degraded_passes": degraded_passes,
     }
 
 
