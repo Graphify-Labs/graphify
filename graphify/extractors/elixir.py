@@ -89,6 +89,27 @@ def extract_elixir(path: Path) -> dict:
                 return [_text(child)]
         return []
 
+    def _get_defimpl_target(node) -> str | None:
+        """The `for:` target module of a `defimpl Proto, for: Type` argument
+        list. The grammar holds it in a trailing `keywords` node as a `pair`
+        whose keyword is `for:` and whose value is an `alias`."""
+        for child in node.children:
+            if child.type != "keywords":
+                continue
+            for pair in child.children:
+                if pair.type != "pair":
+                    continue
+                kw = None
+                val = None
+                for sub in pair.children:
+                    if sub.type == "keyword":
+                        kw = source[sub.start_byte:sub.end_byte].decode("utf-8", errors="replace")
+                    elif sub.type == "alias":
+                        val = source[sub.start_byte:sub.end_byte].decode("utf-8", errors="replace")
+                if kw and kw.rstrip(": ").strip() == "for" and val:
+                    return val
+        return None
+
     def walk(node, parent_module_nid: str | None = None) -> None:
         if node.type != "call":
             for child in node.children:
@@ -131,6 +152,44 @@ def extract_elixir(path: Path) -> dict:
             if do_block_node:
                 for child in do_block_node.children:
                     walk(child, parent_module_nid=module_nid)
+            return
+
+        if keyword == "defprotocol":
+            # A protocol is a module-like named container. Without this branch
+            # the `defprotocol` call fell through to the generic recursion with
+            # parent_module_nid=None, so the protocol node was never minted and
+            # its callbacks (`def size(data)`) were attached to the FILE instead
+            # of the protocol.
+            proto_name = _get_alias_text(arguments_node) if arguments_node else None
+            if not proto_name:
+                return
+            proto_nid = _make_id(stem, proto_name)
+            add_node(proto_nid, proto_name, line,
+                     **({"_elixir_module": True} if parent_module_nid is None else {}))
+            add_edge(parent_module_nid or file_nid, proto_nid, "contains", line)
+            if do_block_node:
+                for child in do_block_node.children:
+                    walk(child, parent_module_nid=proto_nid)
+            return
+
+        if keyword == "defimpl":
+            # `defimpl Proto, for: Type do ... end`. Same orphaning bug as
+            # defprotocol: the implementation's functions leaked onto the file.
+            proto_name = _get_alias_text(arguments_node) if arguments_node else None
+            if not proto_name:
+                return
+            target = _get_defimpl_target(arguments_node)
+            impl_nid = _make_id(stem, "defimpl", proto_name, target or "")
+            label = f"{proto_name} (for {target})" if target else proto_name
+            add_node(impl_nid, label, line)
+            add_edge(parent_module_nid or file_nid, impl_nid, "contains", line)
+            # Link the implementation to the protocol it satisfies. A same-file
+            # protocol resolves directly; a cross-file target is filtered out by
+            # the dangling-edge guard below rather than left hanging.
+            add_edge(impl_nid, _make_id(stem, proto_name), "implements", line)
+            if do_block_node:
+                for child in do_block_node.children:
+                    walk(child, parent_module_nid=impl_nid)
             return
 
         if keyword in ("def", "defp"):

@@ -1705,6 +1705,66 @@ def test_elixir_guarded_single_clause_is_extracted(tmp_path):
     )
 
 
+def test_elixir_protocol_and_impl_are_extracted(tmp_path):
+    """`defprotocol`/`defimpl` are module-like containers. Before they were
+    handled, the protocol and implementation nodes were never minted and their
+    functions leaked onto the FILE node instead of their container."""
+    src = tmp_path / "sizeable.ex"
+    src.write_text(
+        "defprotocol Sizeable do\n"
+        "  def size(data)\n"
+        "end\n"
+        "\n"
+        "defimpl Sizeable, for: List do\n"
+        "  def size(data), do: length(data)\n"
+        "end\n"
+    )
+    r = extract_elixir(src)
+    assert "error" not in r
+
+    file_nid = next(n["id"] for n in r["nodes"] if n["label"] == "sizeable.ex")
+    labels = {n["label"] for n in r["nodes"]}
+    assert "Sizeable" in labels
+    assert "Sizeable (for List)" in labels
+
+    lab = {n["id"]: n["label"] for n in r["nodes"]}
+    method_pairs = {
+        (lab.get(e["source"]), lab.get(e["target"]))
+        for e in r["edges"] if e["relation"] == "method"
+    }
+    # the callback and the implementation function belong to their containers
+    assert ("Sizeable", "size()") in method_pairs
+    assert ("Sizeable (for List)", "size()") in method_pairs
+    # ...and NOT to the file (the pre-fix symptom)
+    assert not [
+        e for e in r["edges"]
+        if e["source"] == file_nid and lab.get(e["target"]) == "size()"
+    ]
+    # the implementation is linked to the protocol it satisfies
+    impl_pairs = {
+        (lab.get(e["source"]), lab.get(e["target"]))
+        for e in r["edges"] if e["relation"] == "implements"
+    }
+    assert ("Sizeable (for List)", "Sizeable") in impl_pairs
+
+
+def test_elixir_protocol_impl_produce_no_dangling_edges(tmp_path):
+    """An implementation of a protocol defined in ANOTHER file must not leave a
+    dangling `implements` edge behind."""
+    src = tmp_path / "impl_only.ex"
+    src.write_text(
+        "defimpl Sizeable, for: Map do\n"
+        "  def size(data), do: map_size(data)\n"
+        "end\n"
+    )
+    r = extract_elixir(src)
+    ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        if e["relation"] == "imports":
+            continue
+        assert e["source"] in ids and e["target"] in ids, e
+
+
 # ── Objective-C ──────────────────────────────────────────────────────────────
 from graphify.extract import extract_objc
 
