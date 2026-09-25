@@ -171,3 +171,39 @@ def test_an_orphaned_legacy_generation_never_swallows_user_content_around_it():
     assert "old content v1" not in removed and "old content v2" not in removed
     assert "## User Section A" in removed and "keep me\n" in removed
     assert "## User Section B" in removed and "keep me too" in removed
+
+
+def test_a_heading_inserted_before_a_misplaced_end_marker_is_never_swallowed():
+    """Review finding on PR 3803: the end marker is an HTML comment, which
+    renders invisibly in a markdown preview. A user who adds their own
+    section by editing the file directly can easily insert it ABOVE the
+    (invisible) end marker instead of below it. The search used to look for
+    the sentinel first regardless of position, so it would find that later,
+    misplaced sentinel and treat everything up to it -- including the
+    user's own inserted heading and content -- as part of graphify's
+    section, replacing all of it. The search must stop at whichever of the
+    two (an earlier boundary_prefix heading, or the sentinel) is reached
+    first when scanning forward, not always prefer the sentinel."""
+    marker = "## graphify"
+    before = (
+        "## graphify\n"
+        "registration content\n"
+        "\n"
+        "## User Section\n"
+        "important user content\n"
+        "\n"
+        "<!-- graphify-section-end -->\n"
+        "\n"
+        "## Another Section\n"
+        "more content\n"
+    )
+    after = _replace_or_append_section(before, marker, "## graphify\nNEW content\n")
+    assert "important user content" in after
+    assert "more content" in after
+    assert "NEW content" in after
+
+    removed = _remove_marker_section(before, marker)
+    assert removed is not None
+    assert "important user content" in removed
+    assert "more content" in removed
+    assert "registration content" not in removed
