@@ -251,6 +251,7 @@ def test_cli_type_suffixes_are_still_rewritten(decl, rewritten):
     assert rewritten in out
 
 def test_cpp_export_macros_survive(tmp_path):
+    """Verify that classes with export macros extract correctly, including inherits edges."""
     p = tmp_path / "export.h"
     p.write_text(
         "class MODULE_API Widget : public BaseWidget {\n"
@@ -276,7 +277,7 @@ def test_cpp_export_macros_survive(tmp_path):
     edges = result.get("edges", [])
     nodes = {n["id"]: n["label"] for n in result["nodes"]}
     inherits_edges = [e for e in edges if e["relation"] == "inherits"]
-    
+
     # We should have Widget -> BaseWidget, Widget3 -> BaseWidget
     widget_inherits = [e for e in inherits_edges if nodes.get(e["source"]) == "Widget" and nodes.get(e["target"]) == "BaseWidget"]
     assert widget_inherits, "Widget -> BaseWidget inherits edge should reappear after macro blanking"
@@ -315,7 +316,7 @@ def test_cpp_export_macro_normalization_preserves_byte_offsets(tmp_path):
     assert out is not None
     assert len(out) == len(src)
     assert b"class     \nWidget : public Base" in out
-    
+
     # Check that newlines are preserved exactly
     assert out.count(b"\n") == src.count(b"\n")
 

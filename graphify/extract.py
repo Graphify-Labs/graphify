@@ -2838,7 +2838,7 @@ def _normalize_cpp_export_macros(source: bytes) -> bytes:
 
     def repl(m: re.Match[bytes]) -> bytes:
         start = m.start()
-        
+
         # Check if preceded by `(` (e.g. range-based for loop `for(class MACRO var: items)`)
         idx = start - 1
         while idx >= 0 and source[idx] in b" \t\r\n":
