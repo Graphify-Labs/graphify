@@ -33,6 +33,8 @@ from graphify.extractors.base import (  # noqa: F401
     _file_stem,
     _make_id,
     _read_text,
+    active_scan_root,
+    set_active_scan_root,
 )
 from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
@@ -6197,9 +6199,10 @@ def _xaml_project_root(path: Path) -> Path:
                 break
         except OSError:
             continue
-    if _XAML_ACTIVE_EXTRACT_ROOT is None:
+    active_root = active_scan_root()
+    if active_root is None:
         return root
-    boundary = _XAML_ACTIVE_EXTRACT_ROOT.resolve()
+    boundary = active_root.resolve()
     try:
         root.resolve().relative_to(boundary)
         return root
@@ -6210,7 +6213,7 @@ def _xaml_project_root(path: Path) -> Path:
 def _xaml_csharp_class_nodes(path: Path) -> dict[str, list[dict]]:
     from graphify.detect import _is_ignored, _is_noise_dir, _load_graphifyignore
     root = _xaml_project_root(path)
-    cache_key = str(root.resolve()) if _XAML_ACTIVE_EXTRACT_ROOT is not None else None
+    cache_key = str(root.resolve()) if active_scan_root() is not None else None
     if cache_key and cache_key in _XAML_CSHARP_CLASS_CACHE:
         return _XAML_CSHARP_CLASS_CACHE[cache_key]
     classes: dict[str, list[dict]] = {}
@@ -6268,7 +6271,6 @@ def _xaml_pascal_name(name: str) -> str | None:
 
 _XAML_TOOLKIT_FIELD_RE = re.compile(r"\b(?P<name>_?m?_?[A-Za-z_]\w*)\s*(?:=.*)?;")
 _XAML_TOOLKIT_METHOD_RE = re.compile(r"\b(?P<name>[A-Za-z_]\w*)\s*\(")
-_XAML_ACTIVE_EXTRACT_ROOT: Path | None = None
 _XAML_CSHARP_CLASS_CACHE: dict[str, dict[str, list[dict]]] = {}
 
 
@@ -6894,13 +6896,15 @@ def _get_extractor(path: Path) -> Any | None:
 
 
 def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
-    global _XAML_ACTIVE_EXTRACT_ROOT
-    previous_root = _XAML_ACTIVE_EXTRACT_ROOT
-    _XAML_ACTIVE_EXTRACT_ROOT = root.resolve()
+    # Publish the in-flight scan root on extractors.base (the correct import
+    # direction) so root-dependent extractors — Markdown link resolution, the
+    # XAML C# project clamp — can read it without reaching back into this module
+    # (#3666). Despite the XAML-era name this wraps every extractor.
+    previous_root = set_active_scan_root(root.resolve())
     try:
         return _safe_extract(extractor, path, scan_root=root)
     finally:
-        _XAML_ACTIVE_EXTRACT_ROOT = previous_root
+        set_active_scan_root(previous_root)
 
 
 def _extract_single_file(args: tuple) -> tuple[int, dict]:
