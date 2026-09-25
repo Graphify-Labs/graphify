@@ -442,6 +442,29 @@ dist/
 !src/**
 ```
 
+
+## Project configuration
+
+Create a `.graphifyrc` in the scan root for settings that belong to the project rather than to one run. One `key=value` per line; lines beginning with `#` are comments.
+
+**Ambiguous extensions.** Some extensions mean different languages in different projects: `.inc` is PHP on pfSense, Pascal in a Delphi tree, SQL or assembly elsewhere; `.h` is C or C++; `.m` is Objective-C or MATLAB. graphify has to pick one global default, and when it picks wrong the file does not fail — it parses as the wrong language and yields a handful of incidental nodes, so the graph looks populated while the real symbols are missing. Declare what the extension means in your repo:
+
+```
+# .graphifyrc
+# A language name:
+language.inc=php
+# Or an extension graphify already knows:
+language.tpl=.ts
+# Baked into the git hooks (see Team setup):
+viz_node_limit=0
+```
+
+The declaration controls file classification, extractor selection and language-specific grammar and resolution, and the AST cache: a file re-parsed under a different language never reuses the old entry. Original source paths and physical format conventions, such as Fortran `.F90` preprocessing and C/C++ header/implementation pairing, are preserved. Optional language backends must still be installed. A typo is reported once on stderr and the scan continues with graphify's defaults.
+
+Adding, changing, or removing a language declaration invalidates affected incremental manifest entries even when the source bytes have not changed. `graphify watch` recognizes declared source extensions and root `.graphifyrc` changes, including atomic replacement; configuration changes schedule an AST rebuild and flag semantic work for the next extraction. The same configuration is read by `graphify extract`, `graphify update`, the hooks, the MCP server, and the `/graphify` skill.
+
+Extensionless local JS/TS imports can also resolve declared suffixes. Native suffixes retain precedence within file and directory-index lookup, and file candidates are tried before directory indexes. Python module and package lookups also support declared Python suffixes, while retaining native `.py` precedence.
+
 ---
 
 ## Team setup
