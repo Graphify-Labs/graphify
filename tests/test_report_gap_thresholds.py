@@ -137,3 +137,34 @@ def test_undocumented_components_offered_when_a_semantic_layer_exists():
     )
     gaps = text.split("## Knowledge Gaps")[-1].split("## ")[0]
     assert "possible missing edges or undocumented components" in gaps
+
+
+def test_community_listing_excludes_rationale_and_concept_nodes():
+    """#3794: the per-community "Nodes (N): ..." listing only excluded file
+    nodes, so a rationale (docstring-fragment) node and a concept node
+    leaked into the rendered list as if they were real code declarations,
+    and inflated N by counting them."""
+    G = nx.Graph()
+    code_nodes = [f"code{i}" for i in range(3)]
+    for n in code_nodes:
+        G.add_node(n, label=n, file_type="code", source_file=f"src/{n}.py",
+                   source_location="L1")
+    for a, b in zip(code_nodes, code_nodes[1:]):
+        G.add_edge(a, b, relation="calls", confidence="EXTRACTED")
+    G.add_node("rationale1", label="Names exist largely for unit tests",
+               file_type="rationale", source_file="src/code0.py")
+    G.add_edge("rationale1", "code0", relation="documents", confidence="EXTRACTED")
+    # _is_concept_node keys off source_file shape (empty or extension-less),
+    # not file_type, so the fixture must match that signal to exercise it.
+    G.add_node("concept1", label="Some Concept", file_type="concept", source_file="")
+    G.add_edge("concept1", "code0", relation="references", confidence="EXTRACTED")
+    communities = {0: code_nodes + ["rationale1", "concept1"]}
+
+    text = generate(
+        G, communities, {}, {}, [], [],
+        {"total_files": 3, "total_words": 100}, {},
+        root="proj", min_community_size=3,
+    )
+    assert "Nodes (3):" in text, text
+    assert "Names exist largely" not in text
+    assert "Some Concept" not in text
