@@ -121,6 +121,21 @@ def test_lean_core_runs_default_pipeline_with_zero_references():
         assert needed in core, f"lean core is missing default-pipeline content: {needed!r}"
 
 
+def test_part_a_routes_markdown_documents_into_ast_extraction():
+    """#2383: a markdown-shaped document (.md/.mdx/.qmd/.skill) must reach the
+    same structural extract() call as code, alongside its semantic pass in
+    Part B, not only the 'code' file-detection category -- extract() already
+    parses markdown headings/links deterministically, matching the AST-only
+    `graphify update` CLI path, but nothing routed a document there before."""
+    core, _ = _claude_artifacts()
+    part_a = core[core.index("#### Part A -"):core.index("#### Part B -")]
+    assert "detect.get('files', {}).get('document'" in part_a
+    assert "'.md'" in part_a and "'.mdx'" in part_a and "'.qmd'" in part_a and "'.skill'" in part_a
+    # Still uses the same extract() call code files go through -- one AST
+    # pass, not a second, separate code path to keep in sync.
+    assert part_a.count("result = extract(") == 1
+
+
 def test_extraction_states_no_api_key_required_for_every_host():
     """Regression for #1461: every skill body that describes Step 3 extraction must
     state up front that no API key is required, tell the agent never to prompt for or
