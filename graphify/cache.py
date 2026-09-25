@@ -610,6 +610,37 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
     # definition_file (#2990) is a path into the scanned tree exactly like
     # source_file; a cache entry keeping it absolute replayed the build host's
     # layout on every warm hit (#3223).
+    # Every node in a file's payload — and most of its edges/raw_calls — carries
+    # the SAME one or two source-path strings (the file being extracted, plus a
+    # handful of import target files). Relativizing is a pure function of
+    # (source string, root), yet it was recomputed per item: an os.path.abspath,
+    # an on-disk exists() stat, and an os.path.relpath for every one of a file's
+    # hundreds of nodes. Memoize the mapping per distinct source string for this
+    # call, so the path work (and the stat) runs once per distinct path rather
+    # than once per item. Output is byte-identical — the value depends only on
+    # the string and the fixed root. ``None`` records "leave unchanged".
+    rel_cache: dict[str, "str | None"] = {}
+
+    def _relativized(source: str) -> "str | None":
+        sp = Path(source)
+        if not sp.is_absolute():
+            # os.path.abspath is lexical (no symlink resolution),
+            # matching the symbolic relativization below.
+            cwd_form = Path(os.path.abspath(sp))
+            try:
+                if cwd_form == root_resolved / sp or not cwd_form.exists():
+                    return None  # already root-relative, or a ghost path
+            except OSError:
+                return None
+            sp = cwd_form
+        try:
+            rel = os.path.relpath(sp, root_resolved)
+        except (ValueError, OSError):
+            return None  # out-of-root (e.g. Windows cross-drive)
+        if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
+            return None  # escaped root — keep absolute
+        return rel.replace(os.sep, "/")
+
     for bucket in ("nodes", "edges", "hyperedges", "raw_calls"):
         for item in payload.get(bucket, []):
             if not isinstance(item, dict):
@@ -618,24 +649,11 @@ def _relativize_source_files_in(payload: dict, root: Path) -> None:
                 source = item.get(key)
                 if not source:
                     continue
-                sp = Path(source)
-                if not sp.is_absolute():
-                    # os.path.abspath is lexical (no symlink resolution),
-                    # matching the symbolic relativization below.
-                    cwd_form = Path(os.path.abspath(sp))
-                    try:
-                        if cwd_form == root_resolved / sp or not cwd_form.exists():
-                            continue  # already root-relative, or a ghost path
-                    except OSError:
-                        continue
-                    sp = cwd_form
-                try:
-                    rel = os.path.relpath(sp, root_resolved)
-                except (ValueError, OSError):
-                    continue  # out-of-root (e.g. Windows cross-drive)
-                if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
-                    continue  # escaped root — keep absolute
-                item[key] = rel.replace(os.sep, "/")
+                if source not in rel_cache:
+                    rel_cache[source] = _relativized(source)
+                rel = rel_cache[source]
+                if rel is not None:
+                    item[key] = rel
 
 
 def _normalize_source_file_value(src: "str | Path", root_resolved: Path) -> str:
@@ -912,6 +930,21 @@ def _absolutize_source_files_in(payload: dict, root: Path) -> None:
         root_resolved = Path(root).resolve()
     except OSError:
         return
+    # As in _relativize_source_files_in: a file's whole payload shares one or two
+    # source strings, and the re-anchoring is a pure function of (source, root).
+    # Memoize per distinct string so the Path construction and join run once per
+    # path rather than once per item — this is the warm/`graphify update` path.
+    abs_cache: dict[str, "str | None"] = {}
+
+    def _absolutized(source: str) -> "str | None":
+        sp = Path(source)
+        if sp.is_absolute():
+            return None  # legacy absolute entry — leave unchanged
+        try:
+            return str(root_resolved / sp)
+        except (TypeError, OSError):
+            return None
+
     for bucket in ("nodes", "edges", "hyperedges", "raw_calls"):
         for item in payload.get(bucket, []):
             if not isinstance(item, dict):
@@ -921,13 +954,11 @@ def _absolutize_source_files_in(payload: dict, root: Path) -> None:
                 source = item.get(key)
                 if not source:
                     continue
-                sp = Path(source)
-                if sp.is_absolute():
-                    continue
-                try:
-                    item[key] = str(root_resolved / sp)
-                except (TypeError, OSError):
-                    continue
+                if source not in abs_cache:
+                    abs_cache[source] = _absolutized(source)
+                new = abs_cache[source]
+                if new is not None:
+                    item[key] = new
 
 
 def cache_dir(root: Path = Path("."), kind: str = "ast",
