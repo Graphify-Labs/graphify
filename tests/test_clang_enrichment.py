@@ -171,6 +171,43 @@ def test_clang_prefers_compile_database_but_drops_executable_plugin_flags(tmp_pa
     assert result["semantic_enrichment"]["clang"]["compile_database_translation_units"] == 1
 
 
+def test_clang_compile_database_drops_configuration_file_options(tmp_path: Path):
+    """Repository config files must not restore executable compiler plugins."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    build = tmp_path / "build"
+    build.mkdir()
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(build),
+        "file": str(source),
+        "arguments": [
+            "g++",
+            "--config", "unsafe.cfg",
+            "--config=also-unsafe.cfg",
+            "--config-system-dir", "system-configs",
+            "--config-user-dir=user-configs",
+            "-DMODE=1",
+            "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert cwd == build
+        assert "-DMODE=1" in command
+        assert not any(argument.startswith("--config") for argument in command)
+        assert not {"unsafe.cfg", "system-configs"} & set(command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
 def test_semantic_service_runs_compiler_enrichers_before_artifact_merge(tmp_path: Path):
     """Disconnecting executable enrichers from extraction must lose the call edge."""
     source = tmp_path / "src" / "main.C"

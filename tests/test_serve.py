@@ -792,6 +792,31 @@ def test_projection_gaps_inspects_incoming_edges_on_directed_graphs():
     assert projection_gaps(graph, {"handler"}, RUNTIME_FLOW) == ["transfers"]
 
 
+def test_projection_gaps_preserves_reciprocal_directed_relations():
+    """An incoming unsupported arc must survive an opposite supported arc."""
+    from graphify.query_planning import RUNTIME_FLOW, projection_gaps
+
+    graph = nx.DiGraph()
+    graph.add_edge("handler", "upstream", relation="calls")
+    graph.add_edge("upstream", "handler", relation="transfers")
+
+    assert projection_gaps(graph, {"handler"}, RUNTIME_FLOW) == ["transfers"]
+
+
+def test_explore_projection_cannot_mutate_the_source_graph():
+    """The unrestricted projection is cheap to create but read-only to callers."""
+    from graphify.query_planning import EXPLORE, project_graph
+
+    graph = nx.Graph()
+    graph.add_edge("service", "handler", relation="calls")
+
+    projected = project_graph(graph, EXPLORE)
+
+    with pytest.raises(nx.NetworkXError, match="Frozen graph"):
+        projected.remove_node("handler")
+    assert "handler" in graph
+
+
 def test_query_graph_json_honors_node_budget_for_open_ended_queries():
     """Structured evidence is always bounded, including the explore profile."""
     G = nx.Graph()

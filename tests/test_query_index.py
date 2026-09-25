@@ -56,6 +56,20 @@ def test_tier_zero_records_incoming_relations_for_directed_graph_nodes():
     assert packet.candidates[0].strong_relations == ("calls",)
 
 
+def test_tier_zero_preserves_both_relations_on_reciprocal_directed_edges():
+    """Opposite arcs between two nodes must both contribute incident evidence."""
+    graph = nx.DiGraph()
+    graph.add_node("caller", label="Caller")
+    graph.add_node("callee", label="Callee")
+    graph.add_edge("caller", "callee", relation="calls")
+    graph.add_edge("callee", "caller", relation="reads")
+
+    index = QueryIndex.from_graph(graph)
+
+    assert index.search("caller").candidates[0].strong_relations == ("calls", "reads")
+    assert index.search("callee").candidates[0].strong_relations == ("calls", "reads")
+
+
 def test_serialized_index_rejects_a_different_graph_fingerprint():
     graph = _graph()
     index = QueryIndex.from_graph(graph)
@@ -63,6 +77,26 @@ def test_serialized_index_rejects_a_different_graph_fingerprint():
 
     assert restored.matches_graph(graph)
     graph.add_node("new", label="newNode")
+    assert not restored.matches_graph(graph)
+
+
+def test_serialized_index_rejects_changed_alias_postings():
+    """Aliases contribute query tokens and therefore belong to cache identity."""
+    graph = _graph()
+    restored = QueryIndex.from_dict(QueryIndex.from_graph(graph).to_dict())
+
+    graph.nodes["lookup"]["aliases"] = ["changed cache alias"]
+
+    assert not restored.matches_graph(graph)
+
+
+def test_serialized_index_rejects_changed_source_file_postings():
+    """Source paths contribute query tokens and therefore belong to cache identity."""
+    graph = _graph()
+    restored = QueryIndex.from_dict(QueryIndex.from_graph(graph).to_dict())
+
+    graph.nodes["lookup"]["source_file"] = "different/UniquePath.C"
+
     assert not restored.matches_graph(graph)
 
 

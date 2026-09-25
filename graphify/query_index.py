@@ -1,8 +1,10 @@
 """Compact deterministic Tier-0 candidate index for graph queries."""
 from __future__ import annotations
 
+from collections.abc import Hashable, Iterable, Iterator
 from dataclasses import dataclass
 import hashlib
+from itertools import chain
 import json
 import os
 from pathlib import Path
@@ -25,6 +27,47 @@ def _tokens(value: str) -> frozenset[str]:
     )
 
 
+def _aliases(value: object) -> tuple[str, ...]:
+    """Normalize aliases once so postings and their fingerprint stay aligned."""
+
+    if not value:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Iterable):
+        return tuple(sorted(str(alias) for alias in value))
+    return (str(value),)
+
+
+def _incident_edge_data(
+    graph: nx.Graph | nx.DiGraph | nx.MultiGraph | nx.MultiDiGraph,
+    node_id: Hashable,
+) -> Iterator[dict]:
+    """Yield both directions without collapsing reciprocal directed arcs."""
+
+    if isinstance(graph, nx.MultiDiGraph):
+        for edge in chain(
+            graph.out_edges(node_id, keys=True, data=True),
+            graph.in_edges(node_id, keys=True, data=True),
+        ):
+            yield edge[-1]
+        return
+    if isinstance(graph, nx.DiGraph):
+        for edge in chain(
+            graph.out_edges(node_id, data=True),
+            graph.in_edges(node_id, data=True),
+        ):
+            yield edge[-1]
+        return
+    edges = (
+        graph.edges(node_id, keys=True, data=True)
+        if isinstance(graph, nx.MultiGraph)
+        else graph.edges(node_id, data=True)
+    )
+    for edge in edges:
+        yield edge[-1]
+
+
 def graph_fingerprint(graph: nx.Graph) -> str:
     """Hash graph identity fields so an index is never reused after graph drift."""
 
@@ -33,9 +76,14 @@ def graph_fingerprint(graph: nx.Graph) -> str:
         digest.update(str(node_id).encode())
         digest.update(b"\0")
         digest.update(str(data.get("label", "")).encode())
+        digest.update(b"\0")
+        digest.update(str(data.get("source_file", "")).encode())
+        for alias in _aliases(data.get("aliases")):
+            digest.update(b"\0")
+            digest.update(alias.encode())
         digest.update(b"\n")
     edge_rows = []
-    if graph.is_multigraph():
+    if isinstance(graph, (nx.MultiGraph, nx.MultiDiGraph)):
         edge_rows = [(u, v, d) for u, v, _key, d in graph.edges(keys=True, data=True)]
     else:
         edge_rows = list(graph.edges(data=True))
@@ -79,27 +127,17 @@ class QueryIndex:
 
     @classmethod
     def from_graph(cls, graph: nx.Graph) -> "QueryIndex":
-        # The undirected view preserves edge data while making both incoming and
-        # outgoing relations visible; constructing it once avoids a per-node copy.
-        incident_graph = graph.to_undirected(as_view=True) if graph.is_directed() else graph
         postings: dict[str, set[str]] = {}
         nodes: dict[str, dict] = {}
         for node_id, data in graph.nodes(data=True):
-            aliases = data.get("aliases") or ()
-            if isinstance(aliases, str):
-                aliases = (aliases,)
+            aliases = _aliases(data.get("aliases"))
             node_tokens = set(_tokens(str(data.get("label", node_id))))
             node_tokens.update(_tokens(str(data.get("source_file", ""))))
             for alias in aliases:
                 node_tokens.update(_tokens(str(alias)))
             relations: set[str] = set()
-            incident = (
-                incident_graph.edges(node_id, keys=True, data=True)
-                if incident_graph.is_multigraph()
-                else incident_graph.edges(node_id, data=True)
-            )
-            for edge in incident:
-                relation = str(edge[-1].get("relation", "")).lower()
+            for edge_data in _incident_edge_data(graph, node_id):
+                relation = str(edge_data.get("relation", "")).lower()
                 spec = relation_spec(relation)
                 if spec and spec.category in {"runtime", "data", "reference"}:
                     relations.add(spec.name)

@@ -6,8 +6,10 @@ responsible for symbol scoring, rendering, and any optional LLM synthesis.
 """
 from __future__ import annotations
 
+from collections.abc import Hashable, Iterator
 from dataclasses import dataclass
 import heapq
+from itertools import chain
 import re
 
 import networkx as nx
@@ -142,6 +144,35 @@ _SAFE_STRUCTURAL_OMISSIONS = frozenset({
 })
 
 
+def _incident_edge_data(
+    graph: nx.Graph | nx.DiGraph | nx.MultiGraph | nx.MultiDiGraph,
+    node: Hashable,
+) -> Iterator[dict]:
+    """Yield incident data without merging opposite arcs in a directed graph."""
+
+    if isinstance(graph, nx.MultiDiGraph):
+        for edge in chain(
+            graph.out_edges(node, keys=True, data=True),
+            graph.in_edges(node, keys=True, data=True),
+        ):
+            yield edge[-1]
+        return
+    if isinstance(graph, nx.DiGraph):
+        for edge in chain(
+            graph.out_edges(node, data=True),
+            graph.in_edges(node, data=True),
+        ):
+            yield edge[-1]
+        return
+    edges = (
+        graph.edges(node, keys=True, data=True)
+        if isinstance(graph, nx.MultiGraph)
+        else graph.edges(node, data=True)
+    )
+    for edge in edges:
+        yield edge[-1]
+
+
 def projection_gaps(
     G: nx.Graph,
     nodes: set[str],
@@ -157,20 +188,13 @@ def projection_gaps(
 
     if profile.relations is None:
         return []
-    # Projection completeness is endpoint-based, so incoming arcs are just as
-    # relevant as outgoing arcs. A view keeps the original graph immutable.
-    incident_graph = G.to_undirected(as_view=True) if G.is_directed() else G
     unsupported: set[str] = set()
     for node in nodes:
         if node not in G:
             continue
-        incident = (
-            incident_graph.edges(node, data=True, keys=True)
-            if incident_graph.is_multigraph()
-            else incident_graph.edges(node, data=True)
-        )
-        for edge in incident:
-            data = edge[-1]
+        # Incoming arcs matter for completeness, but an undirected conversion
+        # would merge reciprocal arcs and hide one of their relation kinds.
+        for data in _incident_edge_data(G, node):
             relation = _canonical_relation(data)
             if (
                 relation
@@ -204,14 +228,16 @@ def plan_query(question: str) -> TraversalProfile:
 
 
 def project_graph(G: nx.Graph, profile: TraversalProfile) -> nx.Graph:
-    """Return a relation-filtered copy while retaining every node as a seed candidate."""
+    """Return a read-only unrestricted view or an isolated relation projection."""
 
     if profile.relations is None:
-        return G
+        # Explore queries need the full topology. A frozen O(1) view prevents
+        # accidental structural writes without copying a potentially large graph.
+        return nx.graphviews.generic_graph_view(G)
     projected = G.__class__()
     projected.graph.update(G.graph)
     projected.add_nodes_from(G.nodes(data=True))
-    if G.is_multigraph():
+    if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         for source, target, key, data in G.edges(keys=True, data=True):
             relation = _canonical_relation(data)
             if relation in profile.relations:

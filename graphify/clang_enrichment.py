@@ -369,13 +369,21 @@ class ClangSemanticEnricher:
             "-o", "-MF", "-MT", "-MQ", "-MJ", "--serialize-diagnostics",
             "-dependency-file",
         }
-        drop_one_after = {"-Xclang", "-load", "-plugin"}
+        drop_one_after = {
+            "-Xclang", "-load", "-plugin",
+            # A Clang config can contain any driver option, including native
+            # plugin loads. Config search directories are equivalent indirection.
+            "--config", "--config-system-dir", "--config-user-dir",
+        }
         drop_exact = {"-c", "-S", "-E", "--coverage", "-save-temps"}
-        executable_plugin_prefixes = (
+        unsafe_option_prefixes = (
             "-fplugin",
             "-fpass-plugin",
             "--hipspv-pass-plugin",
             "-load-pass-plugin",
+            "--config=",
+            "--config-system-dir=",
+            "--config-user-dir=",
         )
         safe: list[str] = []
         index = 1 if arguments else 0  # argv[0] is the compiler from the build.
@@ -385,7 +393,7 @@ class ClangSemanticEnricher:
                 index += 2
                 continue
             if argument in drop_exact or argument.startswith((
-                *executable_plugin_prefixes,
+                *unsafe_option_prefixes,
                 "-fprofile", "-ftime-trace", "-save-temps=", "@",
             )):
                 index += 1
