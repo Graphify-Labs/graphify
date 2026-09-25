@@ -200,6 +200,18 @@ def _call_tool(client, headers, name, arguments, rid) -> str:
     return resp.json()["result"]["content"][0]["text"]
 
 
+def _call_tool_result(client, headers, name, arguments, rid) -> dict:
+    """Like _call_tool, but returns the full tools/call result object (so a
+    caller can inspect isError, not just the text) instead of just the text.
+    """
+    resp = client.post("/mcp", headers=headers, json={
+        "jsonrpc": "2.0", "id": rid, "method": "tools/call",
+        "params": {"name": name, "arguments": arguments},
+    })
+    assert resp.status_code == 200
+    return resp.json()["result"]
+
+
 def test_project_path_is_optional_on_every_tool(tmp_path):
     """Multi-project support is additive: every tool gains an optional
     project_path, and none of them makes it required."""
@@ -289,6 +301,21 @@ def test_bad_project_path_errors_without_killing_server(tmp_path):
         assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=3)
 
 
+def test_bad_project_path_sets_is_error(tmp_path):
+    """#2714: a missing project_path graph is a TOOL failure, so the result's
+    isError flag must be set — not just the same text a success reply would
+    also carry. isError is what a programmatic caller (health check, CI gate,
+    rollout script) branches on; an LLM reads the text either way, but a
+    script reading isError=False on a "not found" error can't tell the
+    call failed."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        result = _call_tool_result(client, headers, "graph_stats",
+                                    {"project_path": str(tmp_path / "does-not-exist")}, rid=2)
+        assert result.get("isError") is True, f"expected isError=True, got {result}"
+
+
 def test_corrupt_project_graph_is_a_tool_error_without_killing_server(tmp_path):
     """A CLI-style SystemExit from a client graph cannot stop the MCP server."""
     project = Path(_project_with_graph(tmp_path, node_count=3))
@@ -299,6 +326,37 @@ def test_corrupt_project_graph_is_a_tool_error_without_killing_server(tmp_path):
         bad = _call_tool(client, headers, "graph_stats", {"project_path": str(project)}, rid=2)
         assert "could not load graph.json" in bad
         assert "Nodes: 2" in _call_tool(client, headers, "graph_stats", {}, rid=3)
+
+
+def test_corrupt_project_graph_sets_is_error(tmp_path):
+    """#2714: same tool-failure/isError contract for a corrupt project graph."""
+    project = Path(_project_with_graph(tmp_path, node_count=3))
+    (project / "graphify-out" / "graph.json").write_text("{not json", encoding="utf-8")
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        result = _call_tool_result(client, headers, "graph_stats",
+                                    {"project_path": str(project)}, rid=2)
+        assert result.get("isError") is True, f"expected isError=True, got {result}"
+
+
+def test_successful_tool_call_does_not_set_is_error(tmp_path):
+    """#2714 follow-up: a normal, successful tool call must NOT carry
+    isError=True (either unset or explicitly False is fine)."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        result = _call_tool_result(client, headers, "graph_stats", {}, rid=2)
+        assert not result.get("isError"), f"unexpected isError on success: {result}"
+
+
+def test_unknown_tool_sets_is_error(tmp_path):
+    """#2714: an unknown tool name is also a tool-level failure."""
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        result = _call_tool_result(client, headers, "not_a_real_tool", {}, rid=2)
+        assert result.get("isError") is True, f"expected isError=True, got {result}"
 
 
 def test_stateless_mode_initialize(tmp_path):
