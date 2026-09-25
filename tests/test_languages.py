@@ -4690,3 +4690,78 @@ def test_robot_path_variables_match_case_space_underscore_insensitively():
     assert _resolve_robot_import("..${/}Resource${/}common.robot", rel_src) == P("Tests/Resource/common.robot")
     # any other variable, in any casing, still yields no edge
     assert _resolve_robot_import("${Root_Dir}/x.robot", rel_src) is None
+import tree_sitter_kotlin
+from tree_sitter import Language, Parser
+
+def test_kotlin_class_annotation_emits_attribute_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "ClassAnnotation.kt"
+    source.write_text("@Entity class User")
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("User", "Entity") in refs
+
+def test_kotlin_parameterized_annotation_emits_attribute_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "ParamAnnotation.kt"
+    source.write_text('@Table(name="users") class User')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("User", "Table") in refs
+
+def test_kotlin_use_site_target_annotation_emits_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "UseSite.kt"
+    source.write_text('class User(@field:NotNull val name: String)')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("User", "NotNull") in refs
+
+def test_kotlin_function_annotation_emits_attribute_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "FuncAnnotation.kt"
+    source.write_text('class Controller { @GetMapping fun foo() {} }')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("foo", "GetMapping") in refs
+
+def test_kotlin_primary_constructor_val_emits_field_type_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "ConstructorField.kt"
+    source.write_text('class Order(val user: User)')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "field")
+    assert ("Order", "User") in refs
+
+def test_kotlin_primary_constructor_annotations_emits_attribute_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "ConstructorAnnotations.kt"
+    source.write_text('class User(@Id val id: Long)')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("User", "Id") in refs
+
+def test_kotlin_primary_constructor_generic_field_emits_generic_arg(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "ConstructorGeneric.kt"
+    source.write_text('class User(@OneToMany val orders: List<Order>)')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "generic_arg")
+    assert ("User", "Order") in refs
+
+def test_kotlin_body_property_annotation_emits_attribute_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "BodyProperty.kt"
+    source.write_text('class Foo { @Transient var x: String = "" }')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("Foo", "Transient") in refs
+
+def test_kotlin_bracketed_annotations_emits_multiple_attribute_edges(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "BracketedAnnotations.kt"
+    source.write_text('class Foo { @set:[Inject VisibleForTesting] var x: String = "" }')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("Foo", "Inject") in refs
+    assert ("Foo", "VisibleForTesting") in refs
