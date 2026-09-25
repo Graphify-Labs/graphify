@@ -38,9 +38,12 @@ _LANG_FAMILY: dict[str, str] = {
     **{e: "c" for e in (".c", ".h", ".cpp", ".cc", ".cxx", ".hpp")},
     **{e: "ruby" for e in (".rb", ".rake")},
     **{e: "swift" for e in (".swift",)},
-    **{e: "dotnet" for e in (".cs",)},
+    **{e: "dotnet" for e in (".cs", ".vb")},
     **{e: "php" for e in (".php",)},
     **{e: "r" for e in (".r",)},
+    **{e: "cobol" for e in (".cbl", ".cob", ".cobol", ".cpy")},
+    **{e: "solidity" for e in (".sol",)},
+    **{e: "erlang" for e in (".erl", ".hrl", ".escript")},
 }
 
 
@@ -106,16 +109,31 @@ def _is_json_key_node(G: nx.Graph, node_id: str) -> bool:
     return label in _JSON_NOISE_LABELS
 
 
-def god_nodes(G: nx.Graph, top_n: int = 10) -> list[dict]:
+def god_nodes(G: nx.Graph, top_n: int = 10,
+              exclude_hubs_percentile: float | None = None) -> list[dict]:
     """Return the top_n most-connected real entities - the core abstractions.
 
     File-level hub nodes are excluded: they accumulate import/contains edges
     mechanically and don't represent meaningful architectural abstractions.
+
+    ``exclude_hubs_percentile`` (0-100) suppresses nodes whose degree exceeds
+    that percentile of the graph's degree distribution, using the same
+    threshold computation ``cluster()`` applies (#3205) - so the one setting
+    suppresses utility hubs in the ranking AND in community resolution,
+    instead of only the latter. ``None`` keeps the historical ranking.
     """
     degree = dict(G.degree())
+    hub_threshold: float | None = None
+    if exclude_hubs_percentile is not None:
+        degrees = sorted(degree.values())
+        if degrees:
+            idx = max(0, int(len(degrees) * exclude_hubs_percentile / 100) - 1)
+            hub_threshold = degrees[idx]
     sorted_nodes = sorted(degree.items(), key=lambda x: x[1], reverse=True)
     result = []
     for node_id, deg in sorted_nodes:
+        if hub_threshold is not None and deg > hub_threshold:
+            continue
         if _is_file_node(G, node_id) or _is_concept_node(G, node_id) or _is_json_key_node(G, node_id):
             continue
         if G.nodes[node_id].get("label", "") in _BUILTIN_NOISE_LABELS:

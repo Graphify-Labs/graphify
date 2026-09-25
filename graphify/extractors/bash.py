@@ -473,10 +473,25 @@ def extract_bash(path: Path) -> dict:
                                 if tgt_nid:
                                     add_edge(file_nid, tgt_nid, "imports", line,
                                              context="import")
-                elif cmd and cmd not in defined_functions:
-                    raw = cmd if cmd.endswith(".sh") else None
-                    if cmd in _BASH_SCRIPT_RUNNERS and args:
+                elif cmd not in defined_functions:
+                    raw = cmd if (cmd and cmd.endswith(".sh")) else None
+                    if cmd and cmd in _BASH_SCRIPT_RUNNERS and args:
                         raw = literal(args[0])
+                    if raw is None:
+                        # The command name is itself an expansion, e.g.
+                        # `"$script_dir/x.sh" --flag`. `literal()` rejects any
+                        # candidate containing "$", so `cmd` is None and neither
+                        # of the two branches above can see the path. Read the
+                        # node's raw text the way the `source` branch does and
+                        # strip the leading ${VAR}/ segments -- the same
+                        # script-dir assumption already used for `source
+                        # "$DIR/lib/x.sh"` (#2079). `_bash_source_suffix`
+                        # rejects a remainder that still holds an expansion or
+                        # a `..` segment, and the `resolved.is_file()` gate
+                        # below means a wrong script-dir guess emits nothing.
+                        cand = _read_text(cmd_name_node, source).strip().strip("'\"")
+                        if cand.endswith(".sh") and "$" in cand:
+                            raw = _bash_source_suffix(cand) or None
                     if raw and raw.endswith(".sh"):
                         resolved = (path.parent / raw).resolve()
                         if resolved.is_file():

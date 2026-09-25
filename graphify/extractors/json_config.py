@@ -161,8 +161,14 @@ def extract_json(path: Path) -> dict:
             if val.type == "object":
                 walk_object(val, key_nid, key, depth + 1, pair_count)
 
-            elif val.type == "array":
-                # For "extends" arrays (tsconfig, eslint): each string element.
+            elif val.type == "array" and key == "extends":
+                # Only a genuine `extends` array (tsconfig 5.0+, eslint) is
+                # inheritance. This branch used to fire for *every* array under
+                # a tracked key, so `compilerOptions.lib: ["dom","esnext"]` and
+                # `exclude: ["node_modules",".next"]` each emitted an `extends`
+                # edge — array membership relabelled as inheritance. The string
+                # branch below already gates on `key == "extends"`; this matches
+                # it. Non-`extends` arrays keep their `contains` edge only.
                 # Prefix with "ref_" so external refs don't collide with real
                 # code/file node IDs that share the same collapsed _make_id (J-4).
                 for item in val.children:
@@ -193,10 +199,28 @@ def extract_json(path: Path) -> dict:
                         add_edge(parent_nid, ref_nid, "references", line)
 
                 elif parent_key in _DEP_KEYS and val_text:
-                    dep_nid = _make_id(key)
+                    # Two defects fixed here, both from the #1764 shape:
+                    #
+                    # 1. The edge ran `key_nid -> dep_nid`, and both nodes carry
+                    #    the *same label* (the dependency name), so every
+                    #    dependency produced a visually self-referential
+                    #    `react --imports--> react` (22 of them on a mid-size
+                    #    Next.js repo). The self-loop guard in
+                    #    test_extract_json_import_and_extends_targets_are_real_nodes
+                    #    compares node ids, and these two ids differ, so the
+                    #    duplicate slipped past it. Sourcing the edge at the
+                    #    manifest yields `package.json --imports--> react`.
+                    #
+                    # 2. `_make_id(key)` minted a *bare* id, skipping the "ref"
+                    #    namespacing every other external reference in this file
+                    #    applies (J-4). A dependency named `utils`, `colors` or
+                    #    `types` could then be collapsed onto a same-named local
+                    #    module by build.py's alias index -- the #1638 failure
+                    #    mode reached through a different door.
+                    dep_nid = _make_id("ref", key)
                     if dep_nid:
                         add_node(dep_nid, key, line, file_type="concept")
-                        add_edge(key_nid, dep_nid, "imports", line, context="import")
+                        add_edge(file_nid, dep_nid, "imports", line, context="import")
 
     # Entry: find root document → object
     doc = root

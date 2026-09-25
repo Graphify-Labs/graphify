@@ -486,6 +486,32 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                     tbl_nid = table_nids.get(_norm_ident(tbl_name)) or _ref_stub(tbl_name)
                     _add_edge(trig_nid, tbl_nid, "triggers", line)
 
+        elif t == "create_index":
+            # CREATE [UNIQUE] INDEX [CONCURRENTLY] [IF NOT EXISTS] <name>
+            # ON <table> (...). Unlike CREATE POLICY (#3401) the grammar
+            # parses this statement fine; the walk simply never dispatched on
+            # it, so every index was silently dropped (#3467). The name is the
+            # identifier (or a quoted literal) before ON; the table is the
+            # object_reference after it. An unnamed index (`CREATE INDEX ON
+            # t (c)`) has nothing to name a node after and is skipped.
+            index_name: str | None = None
+            index_table: str | None = None
+            after_on = False
+            for c in node.children:
+                if c.type == "keyword_on":
+                    after_on = True
+                elif not after_on and index_name is None and c.type in ("identifier", "literal"):
+                    index_name = _read(c).strip('"`')
+                elif after_on and index_table is None and c.type == "object_reference":
+                    index_table = _read(c)
+            if index_name:
+                index_nid = _make_id(stem, index_name)
+                _add_node(index_nid, index_name, line)
+                if index_table:
+                    index_tbl_nid = (table_nids.get(_norm_ident(index_table))
+                                     or _ref_stub(index_table))
+                    _add_edge(index_nid, index_tbl_nid, "indexes", line)
+
         # NOTE: there is deliberately NO recovery scan on individual ERROR
         # nodes. Any ERROR node anywhere makes root.has_error true, so the
         # whole-file masked scan below this walk already recovers everything
