@@ -164,6 +164,32 @@ def test_richness_still_decides_when_both_sides_have_a_location():
     assert _pick_winner([shallow, rich])["id"] == rich["id"]
 
 
+def test_a_stray_source_location_without_a_source_file_grants_no_edge():
+    """Review finding on PR 3786: a source_location with no source_file (a
+    location pointing at an unstated file -- possible if a survivor's own
+    source_file is an empty string rather than None when
+    _merge_missing_attributes backfills only source_location) is not a real
+    provenance signal and must not out-rank a fully bare candidate that
+    happens to be richer. Richness decides here, same as if neither side
+    had any provenance field at all."""
+    stray_location = {
+        "id": "b_setup", "label": "Setup", "file_type": "concept",
+        "source_file": "", "source_location": "L9",
+    }
+    richer_bare = {
+        "id": "a_setup", "label": "Setup", "file_type": "concept",
+        "source_file": "", "attributes": {"kind": "section"},
+        "description": "more content",
+    }
+    from graphify.dedup import _content_richness
+    assert _content_richness(richer_bare) > _content_richness(stray_location), (
+        "test fixture: the bare candidate must out-score the stray-location "
+        "one on richness for this to exercise the gate"
+    )
+    assert _pick_winner([stray_location, richer_bare])["id"] == "a_setup"
+    assert _pick_winner([richer_bare, stray_location])["id"] == "a_setup"
+
+
 def test_edges_rewire_to_the_rich_survivor():
     edges = [{"source": "sources_notes_widget_x", "target": "other",
               "relation": "references", "source_file": "sources/notes.md"}]
