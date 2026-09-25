@@ -1030,7 +1030,10 @@ def deduplicate_entities(
         # Remove legacy keys so they don't leak into edge attrs in graph.json.
         e.pop("from", None)
         e.pop("to", None)
-        if e["source"] != e["target"]:
+        # Drop only self-loops created by the merge (an edge whose distinct
+        # endpoints collapsed into one node); preserve pre-existing self-loops
+        # (e.g. recursive calls, self-referencing foreign keys) (#3809).
+        if e["source"] != e["target"] or src == tgt:
             deduped_edges.append(e)
 
     return deduped_nodes, deduped_edges

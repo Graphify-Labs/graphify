@@ -94,6 +94,48 @@ def test_self_loops_dropped_after_merge():
     assert result_edges == []
 
 
+def test_preexisting_self_loops_preserved_after_unrelated_merge():
+    # #3809: Pre-existing self-loops (e.g. recursive calls, self-referencing FKs)
+    # must survive entity deduplication even when an unrelated merge occurs.
+    # Only self-loops created by the merge itself should be dropped.
+    nodes = [
+        {"id": "walk", "label": "walk()", "source_file": "src/tree.py", "file_type": "code"},
+        {"id": "categories", "label": "categories", "source_file": "schema.sql", "file_type": "code"},
+        {"id": "cache", "label": "Cache", "source_file": "docs/guide.md", "file_type": "concept"},
+        {"id": "cache_2", "label": "cache", "source_file": "docs/guide.md", "file_type": "concept"},
+    ]
+    edges = [
+        {"source": "walk", "target": "walk", "relation": "calls"},
+        {"source": "categories", "target": "categories", "relation": "references"},
+        # An edge between the duplicate concepts that collapses upon merge
+        {"source": "cache_2", "target": "cache", "relation": "references"},
+    ]
+    _, result_edges = deduplicate_entities(nodes, edges, communities={})
+
+    loops = [(e["source"], e["target"], e.get("relation")) for e in result_edges if e["source"] == e["target"]]
+    assert ("walk", "walk", "calls") in loops
+    assert ("categories", "categories", "references") in loops
+    # The collapsed edge cache_2 -> cache must NOT produce a self-loop
+    assert len(loops) == 2
+
+
+def test_preexisting_self_loop_on_merged_node_rewires_to_winner():
+    # If a merged node itself had a pre-existing self-loop, the self-loop
+    # is rewired to the winner, not dropped.
+    nodes = [
+        {"id": "cache", "label": "Cache", "source_file": "docs/guide.md", "file_type": "concept"},
+        {"id": "cache_2", "label": "cache", "source_file": "docs/guide.md", "file_type": "concept"},
+    ]
+    edges = [
+        {"source": "cache_2", "target": "cache_2", "relation": "references"},
+    ]
+    _, result_edges = deduplicate_entities(nodes, edges, communities={})
+    assert len(result_edges) == 1
+    assert result_edges[0]["source"] == "cache"
+    assert result_edges[0]["target"] == "cache"
+
+
+
 def test_community_boost_aids_merge():
     # Two nodes in same community with score in 0.75-0.85 zone get boosted
     nodes = _make_nodes("AuthManager", "Auth Manager")
