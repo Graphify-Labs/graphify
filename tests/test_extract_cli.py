@@ -3,9 +3,47 @@ from __future__ import annotations
 
 import os
 
+import json
+
 import pytest
 
 import graphify.__main__ as mainmod
+
+
+def test_extract_merges_local_semantic_adapter_artifacts(monkeypatch, tmp_path):
+    """Removing CLI enrichment wiring must drop the analyzer-produced symbol."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "main.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+    artifact_dir = corpus / ".graphify" / "semantic"
+    artifact_dir.mkdir(parents=True)
+    artifact = {
+        "documents": [{
+            "relative_path": "main.py",
+            "language": "python",
+            "symbols": [{
+                "symbol": "python main semanticOnly().",
+                "kind": "method",
+                "display_name": "semanticOnly",
+                "occurrences": [{"range": [0, 0, 0, 4]}],
+            }],
+        }],
+    }
+    (artifact_dir / "pyright.scip.json").write_text(json.dumps(artifact), encoding="utf-8")
+    output = tmp_path / "output"
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--code-only", "--no-cluster", "--out", str(output)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 0
+    graph = json.loads((output / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
+    assert "semanticOnly" in {node.get("label") for node in graph["nodes"]}
 
 
 def _make_corpus(tmp_path):

@@ -17,6 +17,7 @@ flow) and every reader honours it.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import stat
@@ -510,14 +511,20 @@ def load_node_link_graph(path_or_data):
     """
     from networkx.readwrite import json_graph
     data = path_or_data
+    file_digest: str | None = None
     if not isinstance(data, dict):
         p = Path(data)
         from graphify.security import check_graph_file_size_cap  # lazy: security imports paths
         check_graph_file_size_cap(p)
-        data = json.loads(p.read_text(encoding="utf-8"))
+        raw_bytes = p.read_bytes()
+        file_digest = hashlib.sha256(raw_bytes).hexdigest()
+        data = json.loads(raw_bytes.decode("utf-8"))
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     try:
-        return json_graph.node_link_graph(data, edges="links")
+        graph = json_graph.node_link_graph(data, edges="links")
     except TypeError:  # networkx too old for the edges kwarg; default is "links"
-        return json_graph.node_link_graph(data)
+        graph = json_graph.node_link_graph(data)
+    if file_digest is not None:
+        graph.graph["_graphify_file_sha256"] = file_digest
+    return graph

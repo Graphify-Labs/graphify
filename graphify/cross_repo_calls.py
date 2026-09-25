@@ -39,7 +39,7 @@ UNRESOLVED_CALLS_KEY = "unresolved_calls"
 # just as happily to a Python class of the same name in another repo. Extend this
 # map when another extractor starts parking calls.
 _LANG_SUFFIXES: dict[str, frozenset[str]] = {
-    "cpp": frozenset({".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".cu", ".cuh"}),
+    "cpp": frozenset({".C", ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".cu", ".cuh"}),
     "csharp": frozenset({".cs"}),
     "java": frozenset({".java"}),
     "swift": frozenset({".swift"}),
@@ -63,7 +63,8 @@ def _key(label: object) -> str:
 
 
 def _suffix(source_file: object) -> str:
-    return os.path.splitext(str(source_file or ""))[1].lower()
+    suffix = os.path.splitext(str(source_file or ""))[1]
+    return suffix if suffix == ".C" else suffix.lower()
 
 
 def _parked_entries(data: dict) -> list[dict]:

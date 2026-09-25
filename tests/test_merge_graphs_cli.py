@@ -8,9 +8,12 @@ handler now normalizes every input to a plain undirected Graph before composing.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 PYTHON = sys.executable
 
@@ -304,3 +307,62 @@ def test_merge_graphs_community_offset_is_byte_reproducible(tmp_path):
     assert _run(["merge-graphs", str(a), str(b), "--out", str(out1)], tmp_path).returncode == 0
     assert _run(["merge-graphs", str(a), str(b), "--out", str(out2)], tmp_path).returncode == 0
     assert out1.read_bytes() == out2.read_bytes(), "same-order merge is not byte-reproducible"
+
+
+def test_merge_graphs_source_root_upgrades_cross_partition_cpp_call(tmp_path: Path):
+    """An explicit source root lets Clang confirm a merge-time inferred call."""
+    if shutil.which("clang++") is None and shutil.which("clang") is None:
+        pytest.skip("Clang is not installed")
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "worker.h").write_text(
+        "struct Worker { void run(); };\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.C").write_text(
+        '#include "worker.h"\n\nvoid process(Worker& worker) {\n  worker.run();\n}\n',
+        encoding="utf-8",
+    )
+    app = tmp_path / "app" / "graphify-out" / "graph.json"
+    lib = tmp_path / "lib" / "graphify-out" / "graph.json"
+    app.parent.mkdir(parents=True)
+    lib.parent.mkdir(parents=True)
+    app.write_text(json.dumps({
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [{
+            "id": "process", "label": "process()", "source_file": "src/main.C",
+            "source_location": "L3", "metadata": {"unresolved_calls": [{
+                "callee": "run", "receiver_type": "Worker", "lang": "cpp", "line": "L4",
+            }]},
+        }],
+        "links": [],
+    }), encoding="utf-8")
+    lib.write_text(json.dumps({
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {
+                "id": "worker", "label": "Worker", "source_file": "include/worker.h",
+                "source_location": "L1", "_callable_class": True, "_callable": True,
+            },
+            {
+                "id": "worker_run", "label": ".run()", "source_file": "include/worker.h",
+                "source_location": "L1", "_callable": True,
+            },
+        ],
+        "links": [{"source": "worker", "target": "worker_run", "relation": "method"}],
+    }), encoding="utf-8")
+    out = tmp_path / "merged.json"
+
+    result = _run([
+        "merge-graphs", str(app), str(lib), "--source-root", str(tmp_path),
+        "--out", str(out),
+    ], tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    graph = json.loads(out.read_text(encoding="utf-8"))
+    calls = [edge for edge in graph["links"] if edge.get("relation") == "calls"]
+    assert len(calls) == 1
+    assert calls[0]["confidence"] == "EXTRACTED"
+    assert calls[0]["semantic_provider"] == "clang"
+    assert calls[0]["previous_context"] == "cross_repo"
+    assert graph["semantic_enrichment"]["clang"]["upgraded_calls"] == 1

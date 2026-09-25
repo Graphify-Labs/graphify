@@ -411,6 +411,7 @@ graphify export callflow-html      # Mermaid architecture/call-flow HTML (auto-r
 
 graphify hook install              # auto-rebuild on commit + branch checkout (run `graphify update .` after `git pull` — see "Recommended workflow" below)
 graphify merge-graphs a.json b.json              # combine two graphs
+graphify merge-graphs a.json b.json --source-root .  # confirm merged C/C++ calls
 
 graphify prs                       # PR dashboard: CI state, review status, worktree mapping
 graphify prs 42                    # deep dive on PR #42 with graph impact
@@ -501,7 +502,17 @@ python -m graphify.serve graphify-out/graph.json --transport http --port 8080
 python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0 --api-key "$SECRET"
 ```
 
-The MCP server gives your assistant structured access: `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
+The MCP server gives your assistant structured access: `query_graph`, `get_document_section`, `get_node`, `get_neighbors`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
+
+For low-token agent retrieval, call `query_graph` with `response_format: "evidence_json"` and a `max_nodes` limit. The server selects a deterministic traversal profile, applies query-ranked relation budgets, and returns `plan.llm.mode` as `none`, `synthesize`, or `reason`; clients can avoid additional model-assisted discovery for already grounded results. Evidence uses packet-local node refs (`n0`, `n1`, ...) and a shared `files` table rather than repeating long merged IDs and paths. Seed `selector` values remain source-qualified and resolvable by `get_node`. Always inspect `coverage.truncated` and `coverage.unsupported_relations`: either condition forces `reason` so a bounded packet cannot be mistaken for a complete answer.
+
+Tier-0 alias lookup is deterministic and model-free. Its postings are cached as `graphify-out/query-index.json` and invalidated when `graph.json` changes. The packet's `plan.retrieval` reports whether Tier-0 supplied the fallback seed and whether the index was reused. `usage` reports query/evidence tokens and always keeps model input/output at zero for graph retrieval; without an injected model tokenizer, counts are explicitly labelled `character_estimate`, not billable tokens.
+
+Document heading nodes carry stable hierarchy paths, parent IDs, content hashes, and line ranges rather than embedded prose. Use `get_document_section` to fetch only a selected range and verify that its source has not changed since extraction.
+
+Compiler and language-server enrichment uses two bounded paths. When local Clang is available, `graphify extract` automatically checks only parked C/C++ member-call candidates; it prefers `compile_commands.json`, otherwise uses a side-effect-free syntax-only fallback, and adds or upgrades an edge only when the caller, call site, declaration, and existing graph target all match uniquely. For partitioned builds, pass `--source-root` to `merge-graphs` so calls whose declarations were in another shard can be confirmed after composition. Clang never creates graph nodes, and diagnostics fall back to the tree-sitter graph.
+
+All ecosystems can also publish simplified or protobuf-JSON SCIP artifacts at `.graphify/semantic/<adapter-id>.scip.json`, where the adapter ID is `clang`, `jdt`, `roslyn`, `typescript`, `gopls`, `rust_analyzer`, `pyright`, or `php_static_analysis`. `graphify extract` merges valid artifacts with tree-sitter facts, normalizes relations through the shared ontology, and reports malformed artifacts without discarding AST evidence. This lets Java/Kotlin, C#, TypeScript/JavaScript, Go, Rust, Python, and PHP analyzers enrich the same language-agnostic graph without making any tool a prerequisite.
 
 ### Shared HTTP server
 
@@ -818,6 +829,7 @@ GRAPHIFY_TRIAGE_BACKEND=kimi graphify prs --triage   # use a specific backend fo
 
 graphify clone https://github.com/karpathy/nanoGPT
 graphify merge-graphs a.json b.json --out merged.json
+graphify merge-graphs a.json b.json --source-root . --out merged.json
 graphify --version                                    # print installed version
 graphify watch ./src
 graphify check-update ./src
@@ -835,6 +847,8 @@ graphify cluster-only ./my-project --backend=gemini --model gemini-2.5-pro  # sp
 graphify label ./my-project                                    # (re)name communities with the configured backend
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
 ```
+
+The 500-supported-file and 2,000,000-word thresholds are fresh-extraction partition gates, not graph or query limits. Oversized repositories should be extracted as deterministic component/capacity shards and merged into one root graph. Once the merged `graphify-out/graph.json` exists, queries use it directly without rescanning the source corpus. The word threshold is a source-size measurement and must not be reported as LLM or billable tokens.
 
 > **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
 

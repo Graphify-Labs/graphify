@@ -6616,6 +6616,10 @@ _DISPATCH: dict[str, Any] = {
     ".groovy": extract_groovy,
     ".gradle": extract_groovy,
     ".c": extract_c,
+    # Historical Unix toolchains use uppercase `.C` for C++ source. Keep this
+    # exact-case entry ahead of the generic lowercase fallback in
+    # `_get_extractor`; folding it to `.c` silently loses C++ semantics.
+    ".C": extract_cpp,
     ".h": extract_c,
     ".cpp": extract_cpp,
     ".cc": extract_cpp,

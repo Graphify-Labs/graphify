@@ -30,6 +30,13 @@ Signatures below are the real ones - `tests/test_architecture_doc.py` imports ev
 | `security.py` | `validate_url`, `safe_fetch`, `validate_graph_path`, `sanitize_label` | URL / path / label → validated value, or raises |
 | `validate.py` | `validate_extraction(data)`, `assert_valid(data)` | extraction dict → **list of schema error strings** (`validate_extraction` returns them; `assert_valid` raises) |
 | `serve.py` | `serve(graph_path)`, `serve_http(graph_path, *, host, port, ...)` | graph file path → MCP stdio server / HTTP server |
+| `query_planning.py` | `plan_query(question)`, `project_graph(G, profile)`, `projection_gaps(G, nodes, profile)`, `bounded_best_first(...)`, `recommend_llm(...)` | question + graph → canonical relation projection, bounded best-first evidence, completeness signal, and deterministic LLM admission |
+| `query_index.py` | `QueryIndex.from_graph(G)`, `QueryIndex.search(query)`, `QueryIndexStore(graph_path).load_or_build(G)` | graph → persisted deterministic Tier-0 symbol/alias postings beside `graph.json` |
+| `ontology.py` | `normalize_relation(relation)`, `relation_spec(relation)`, `validate_edge(edge)` | language-specific relation → versioned canonical relation or explicit validation gap |
+| `document_index.py` | `build_document_index(source_file, text)` | Markdown → stable heading hierarchy, section ranges, parent IDs, and content hashes |
+| `token_usage.py` | `measure_text(text, tokenizer=None)`, `QueryUsage.for_retrieval(...)` | query/evidence text → exact tokenizer count when supplied, otherwise clearly labelled estimate with zero model usage |
+| `clang_enrichment.py` | `ClangSemanticEnricher(root).enrich(extraction)` and its `ClangSemanticEnricher.enrich_node_link(graph)` method | unresolved C/C++ calls + compile database or safe Clang fallback → uniquely grounded compiler-confirmed edges only |
+| `semantic_adapters.py` | `SemanticEnrichmentService(root).enrich(extraction)` and its `SemanticEnrichmentService.enrich_node_link(graph)` method; `semantic_adapter_specs()`, `discover_semantic_adapters(root)` | compiler confirmation and optional SCIP JSON artifacts → fail-soft universal graph facts plus readiness diagnostics |
 | `watch.py` | `watch(watch_path, debounce=3.0)`, `check_update(watch_path)` | directory → rebuild on change; `check_update` reports whether a re-extraction is pending |
 | `benchmark.py` | `run_benchmark(graph_path)` | graph file → corpus vs subgraph token comparison |
 

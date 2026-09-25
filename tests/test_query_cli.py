@@ -51,6 +51,41 @@ def test_query_cli_heuristic_context_filter(monkeypatch, tmp_path, capsys):
     assert "build" not in out
 
 
+def test_query_cli_emits_bounded_evidence_json(monkeypatch, tmp_path, capsys):
+    """CLI clients can request the same single-call evidence packet as MCP clients."""
+    G = nx.Graph()
+    G.add_node("service", label="CheckoutService", source_file="checkout/service.py")
+    for index in range(4):
+        node_id = f"handler_{index}"
+        G.add_node(node_id, label=node_id, source_file=f"checkout/{node_id}.py")
+        G.add_edge("service", node_id, relation="calls", confidence="EXTRACTED")
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps(json_graph.node_link_data(G, edges="links")))
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        [
+            "graphify",
+            "query",
+            "How does CheckoutService work end to end?",
+            "--format",
+            "evidence-json",
+            "--max-nodes",
+            "2",
+            "--graph",
+            str(graph_path),
+        ],
+    )
+
+    mainmod.main()
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["plan"]["profile"] == "runtime_flow"
+    assert payload["budget"]["max_nodes"] == 2
+    assert payload["coverage"]["nodes"] == 2
+
+
 def _write_calls_graph(tmp_path):
     """A single directed `calls` edge on an (on-disk) undirected graph.json,
 

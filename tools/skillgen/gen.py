@@ -133,11 +133,9 @@ _EXTRACTION_SOURCE = {
     "verbose": "references/shared/extraction-spec.md",
     "compact": "references/shared/extraction-spec-compact.md",
 }
-# Single unified query reference + stub: superior vocab-expansion (Step 0) plus
-# CLI traversal plus inline NetworkX fallback, shipped to every platform. The
-# capabilities used to be split across cli.md / cli-inline.md so no platform got
-# both — Claude had expansion but no fallback, the rest had the fallback but the
-# weaker matcher (#1325).
+# Single unified query reference + stub: bounded evidence first, with vocabulary
+# expansion and inline NetworkX traversal retained as recovery paths. Shipping the
+# same admission policy to every platform keeps token use and behavior consistent.
 _QUERY_REFERENCE = "references/query/default.md"
 _QUERY_STUB = "query-stub/default.md"
 # The hooks reference is host-flavored. Most hosts read CLAUDE.md and wire
@@ -226,6 +224,10 @@ _HOOKS_TARGET = {
 # heading was consolidated on purpose and its content is covered elsewhere."
 SHARED_INTRO_ALLOWLIST: frozenset[str] = frozenset({
     "## What graphify is for",  # lean intro; v8 hosts had verbose intro prose, no heading.
+    # The old required-expansion flow is preserved as bounded recovery after the
+    # new evidence-packet fast path; these headings were intentionally renamed.
+    "### Step 0 — Constrained query expansion (REQUIRED before traversal)",
+    "### Step 1 — Traversal",
 })
 
 _CONSOLIDATION_ALLOWLIST: dict[str, frozenset[str]] = {
@@ -1142,6 +1144,43 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_large_corpus_policy_line(line: str) -> bool:
+    """Sanction the path-aware query fast path and unified partition policy."""
+
+    return (
+        "Fast path — existing graph:" in line
+        or "corpus_policy.partition_required" in line
+        or "corpus_policy.advisory" in line
+        or (
+            "total_words` > 2,000,000" in line
+            and "total_files` > 200" in line
+        )
+    )
+
+
+def _is_semantic_adapter_artifact_line(line: str) -> bool:
+    """Sanction local compiler-artifact enrichment in legacy monoliths."""
+
+    stripped = line.strip()
+    return (
+        stripped == "from graphify.semantic_adapters import SemanticEnrichmentService"
+        or "SemanticEnrichmentService(Path('INPUT_PATH')).enrich(result)" in stripped
+        or stripped.startswith("result = {'nodes':[],'edges':[]")
+        or ".graphify_ast.json').write_text(json.dumps(result, indent=2))" in stripped
+        or "AST + semantic adapters:" in stripped
+        or "AST: {len(result" in stripped
+        or "No code files - skipping AST extraction" in stripped
+        or ".graphify_ast.json').write_text(json.dumps({'nodes':[],'edges':[]" in stripped
+    )
+
+
+def _is_ai_marker_line(line: str) -> bool:
+    """Markers carry authorship metadata, not executable skill behavior."""
+
+    return line.strip() in {
+    }
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1163,6 +1202,8 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_large_corpus_policy_line,
+    _is_semantic_adapter_artifact_line,
 )
 
 
@@ -1193,12 +1234,16 @@ def monolith_roundtrip(platform: Platform) -> list[str]:
     if platform.roundtrip_ref is None:
         return [f"[{platform.key}] monolith is missing roundtrip_ref"]
 
-    rendered_lines = render(platform)[0].content.splitlines()
+    rendered_lines = [
+        line for line in render(platform)[0].content.splitlines()
+        if not _is_ai_marker_line(line)
+    ]
     # Strip trigger lines from the original — they are non-spec and their removal
     # (#1180) is a permitted diff.
     original_lines = [
         l for l in _normalise(_git_show(platform.roundtrip_ref)).splitlines()
         if not _is_trigger_line(l)
+        and not _is_ai_marker_line(l)
     ]
 
     added = Counter(rendered_lines) - Counter(original_lines)

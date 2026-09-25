@@ -7,6 +7,8 @@ from networkx.readwrite import json_graph
 
 from graphify.benchmark import run_benchmark, print_benchmark, _query_subgraph_tokens, _SAMPLE_QUESTIONS, _safe, _hr
 
+from graphify.benchmark import benchmark_queries
+
 
 def _make_graph() -> nx.Graph:
     G = nx.Graph()
@@ -196,3 +198,27 @@ def test_run_benchmark_rejects_oversized_graph(monkeypatch, tmp_path):
     monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", 8)
     with pytest.raises(ValueError, match="exceeds"):
         run_benchmark(str(graph_file))
+
+
+def test_query_benchmark_reports_measured_tokens_and_expected_evidence_recall(tmp_path):
+    """Removing the correctness harness must hide missing nodes or relations."""
+    graph_file = tmp_path / "graph.json"
+    _write_graph(_make_graph(), graph_file)
+
+    result = benchmark_queries(
+        str(graph_file),
+        [{
+            "question": "How does authentication work end to end?",
+            "expected_nodes": ["authentication", "api_handler"],
+            "expected_relations": ["calls"],
+        }],
+        tokenizer=lambda text: list(text),
+    )
+
+    case = result["cases"][0]
+    assert case["correctness"] == 1.0
+    assert case["missing_nodes"] == []
+    assert case["missing_relations"] == []
+    assert case["usage"]["token_count_exact"] is True
+    assert case["usage"]["model_input_tokens"] == 0
+    assert result["average_correctness"] == 1.0

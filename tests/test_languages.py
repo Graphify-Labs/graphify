@@ -3679,6 +3679,14 @@ def _assert_no_dangling(r):
 
 # --- #1547: C++ paired header/impl --------------------------------------------
 
+def test_uppercase_dot_c_routes_to_cpp_extractor(tmp_path):
+    """Unix `.C` sources use C++ semantics and must not be lowercased to `.c`."""
+    source = tmp_path / "SfappUdrCache.C"
+    source.write_text("class SfappUdrCache { public: void refresh(); };\n")
+
+    assert _get_extractor(source) is extract_cpp
+
+
 def test_cpp_header_routes_to_cpp_extractor():
     """A `.h` with a C++ class must route to extract_cpp, not extract_c (which has
     no class_specifier and would drop the class entirely)."""
@@ -4144,6 +4152,28 @@ def test_markdown_node_kind_separates_pages_from_headings():
     assert kinds.count("heading") == 3, f"expected three heading nodes, got {kinds}"
     # file_type stays 'document' on both — build.py's twin-merge depends on it.
     assert {n["file_type"] for n in r["nodes"]} == {"document"}
+
+
+def test_markdown_headings_carry_lazy_section_ranges_and_content_refs():
+    """Document nodes should route to source ranges without embedding body text in the graph."""
+    r = _md_extract(
+        "# Intro\n"
+        "overview\n"
+        "## Details\n"
+        "implementation notes\n"
+        "# Next\n"
+        "follow-up\n"
+    )
+    headings = {n["label"]: n for n in r["nodes"] if n["node_kind"] == "heading"}
+
+    assert (headings["Intro"].get("content_start_line"),
+            headings["Intro"].get("content_end_line")) == (1, 4)
+    assert (headings["Details"].get("content_start_line"),
+            headings["Details"].get("content_end_line")) == (3, 4)
+    assert (headings["Next"].get("content_start_line"),
+            headings["Next"].get("content_end_line")) == (5, 6)
+    assert headings["Intro"].get("content_ref", "").startswith("sha256:")
+    assert "content" not in headings["Intro"]
 
 
 def test_markdown_frontmatter_lands_on_page_node():
