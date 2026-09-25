@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import re
 from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
 from graphify.ids import normalize_id
 from graphify.extractors.models import LanguageConfig
@@ -3449,6 +3450,78 @@ def _ruby_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: st
             del ruby_namespace[-len(const_segments):]
     return True
 
+# tree-sitter-swift (0.7.3, the only published release) accepts `await` in an
+# `if let` binding ONLY when the operand is a direct call. `if let r = await
+# pending`, `if let r = await box.rings` and `if let r = try await mint()` are
+# all valid Swift 6 and all parse as ERROR, which costs the rest of the file:
+# a 412-line source came out with 59 of its ~87 symbols (#3540). `guard let`
+# with the same operand parses, so the gap is in the if/while binding rule.
+#
+# Blanking `await` with SPACES rather than deleting it is the whole trick: the
+# repaired source is byte-for-byte the same length, so every offset, line and
+# column downstream still points where it did. `await` names no symbol, so a
+# graph built from the repaired bytes is the graph of the original file.
+_SWIFT_AWAIT_BINDING = re.compile(
+    rb"(\b(?:if|while)\s+(?:let|var)\s+[A-Za-z_]\w*\s*=\s*)((?:try\s+)?await\s+)"
+)
+
+
+def _swift_line_comment_start(line: bytes) -> int:
+    """Offset of the `//` that opens a line comment, or `len(line)` if none.
+
+    Quote-aware, because "is there a `//` earlier on the line" is not the same
+    question: `let base = "https://x"; if let y = await f(base)` has one inside
+    a string literal, and reading it as a comment marker skipped the repair on
+    a line that needed it (Graphify review on #3542). A URL in Swift source is
+    ordinary, so this was not a corner.
+
+    What it does NOT model: raw strings (`#"..."#`), multi-line `\"\"\"`
+    literals, and interpolation. Getting one of those wrong costs nothing in
+    either direction. Reading a comment as code rewrites an `await` inside a
+    comment, which is equal-length and only reaches a file that already failed
+    to parse; reading code as a comment is the behaviour this replaces.
+    """
+    inside_string = False
+    index = 0
+    while index < len(line):
+        character = line[index : index + 1]
+        if inside_string:
+            if character == b"\\":
+                index += 2
+                continue
+            if character == b'"':
+                inside_string = False
+        elif character == b'"':
+            inside_string = True
+        elif character == b"/" and line[index + 1 : index + 2] == b"/":
+            return index
+        index += 1
+    return len(line)
+
+
+def _swift_blank_await_bindings(source: bytes) -> bytes:
+    """`if let x = await y` -> `if let x =       y`, same byte length.
+
+    Skips a match that sits behind the `//` that opens a line comment, so a
+    commented-out binding keeps its text: comments are not parsed into symbols,
+    but some of them are read as documentation and rewriting one would be a
+    change nobody asked for. A block comment or a string literal holding this
+    exact shape is still rewritten — harmless at equal length, and this only
+    runs on a file that already failed to parse.
+    """
+
+    def replace(match: "re.Match[bytes]") -> bytes:
+        line_start = source.rfind(b"\n", 0, match.start()) + 1
+        line_end = source.find(b"\n", match.start())
+        if line_end == -1:
+            line_end = len(source)
+        comment_start = _swift_line_comment_start(source[line_start:line_end])
+        if line_start + comment_start < match.start():
+            return match.group(0)
+        return match.group(1) + b" " * len(match.group(2))
+
+    return _SWIFT_AWAIT_BINDING.sub(replace, source)
+
 
 def _lua_is_require_call(node, source: bytes) -> bool:
     """True if a Lua `function_call` node invokes `require`, parenthesized or not."""
@@ -3589,6 +3662,19 @@ def _extract_generic(
             source = source + b"\n"
         tree = parser.parse(source)
         root = tree.root_node
+        # Error-gated, so a file that already parses is never rewritten, and
+        # the repair is kept only when it actually buys something: no error at
+        # all, or a first error that moved further down the file (a source can
+        # carry this grammar gap AND a real mistake).
+        if root.has_error and config.ts_module == "tree_sitter_swift":
+            repaired = _swift_blank_await_bindings(source)
+            if repaired != source:
+                retry_root = parser.parse(repaired).root_node
+                if not retry_root.has_error or (
+                    (_first_parse_error_line(retry_root) or 0)
+                    > (_first_parse_error_line(root) or 0)
+                ):
+                    source, root = repaired, retry_root
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
