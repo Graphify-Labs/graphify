@@ -40,6 +40,28 @@ def test_install_default_claude(tmp_path):
     assert (tmp_path / ".claude" / "skills" / "graphify" / "SKILL.md").exists()
 
 
+def test_install_completion_message_names_the_platform(tmp_path, capsys):
+    """#2263: the completion message must name which platform was installed,
+    and its "wrong assistant" example must never suggest the platform that
+    was just installed - so a Codex user following a platform-neutral quick
+    start (which defaults to claude) sees the mismatch instead of a generic
+    success message."""
+    from graphify.__main__ import install
+
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(tmp_path)
+        with patch("graphify.__main__.Path.home", return_value=tmp_path):
+            install(platform="claude")
+    finally:
+        os.chdir(old_cwd)
+
+    out = capsys.readouterr().out
+    assert "Installed the graphify skill for 'claude'." in out
+    assert "--platform claude" not in out
+    assert "--platform codex" in out
+
+
 def test_install_survives_a_winerror_17_replace(tmp_path, monkeypatch):
     """#3508: installing SKILL.md failed on some Windows setups with WinError
     17 ("cannot move to a different disk drive") from `os.replace`, even with

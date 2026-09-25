@@ -758,8 +758,19 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     if project:
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
 
+    # #2263: bare `graphify install` silently defaults to claude, and the old
+    # completion message named no platform at all - a user following a
+    # platform-neutral quick start for e.g. Codex or OpenCode saw an
+    # apparently platform-neutral success message while the skill for their
+    # actual assistant was still absent. Name the platform explicitly, and
+    # give an example that is never the platform just installed.
     print()
-    print("Done. Open your AI coding assistant and type:")
+    print(f"Done. Installed the graphify skill for '{platform}'.")
+    example_platform = "codex" if platform != "codex" else "claude"
+    print(f"Wrong assistant? Re-run with e.g. `graphify install --platform {example_platform}`")
+    print("(see `graphify install --help` for the full platform list).")
+    print()
+    print("Open your AI coding assistant and type:")
     print()
     print("  /graphify .")
     print()
