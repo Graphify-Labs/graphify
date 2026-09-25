@@ -40,6 +40,35 @@ _MANIFEST_PATH = str(out_path("manifest.json"))
 #: keep the two in sync.
 _MTIME_COARSE_S = 2.0
 _MTIME_SUBSECOND_S = 0.05
+_MTIME_GRANULARITY_NS = 2_000_000_000
+
+
+def _mtime_granularity_ns() -> int:
+    """Return the assumed filesystem mtime granularity in nanoseconds.
+
+    Read fresh on every call so tests can override GRAPHIFY_MTIME_GRANULARITY_MS.
+    """
+    raw = os.environ.get("GRAPHIFY_MTIME_GRANULARITY_MS", "").strip()
+    if raw:
+        try:
+            ms = float(raw)
+        except ValueError:
+            return _MTIME_GRANULARITY_NS
+        if ms >= 0:
+            return int(ms * 1_000_000)
+    return _MTIME_GRANULARITY_NS
+
+
+def _is_racily_clean(st_mtime_ns: int, indexed_at_ns: int) -> bool:
+    """True if indexed_at_ns falls inside the racily-clean window of st_mtime_ns.
+
+    If st_mtime_ns + granularity > indexed_at_ns, the write tick had not yet
+    safely closed when indexed_at_ns was recorded. A subsequent edit inside
+    the same tick could preserve size and mtime_ns, so the stat fastpath cannot
+    prove content currency without hashing.
+    """
+    return st_mtime_ns + _mtime_granularity_ns() > indexed_at_ns
+
 
 CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
@@ -2099,6 +2128,19 @@ def _stat_and_hash(path_str: str) -> tuple[str, float, str] | None:
         return None
 
 
+def _stat_and_hash_for_manifest(path_str: str) -> tuple[str, str, int, int, int] | None:
+    """Stat + MD5 for manifest and incremental state: (path, md5, size, mtime_ns, observed_at_ns)."""
+    try:
+        p = Path(path_str)
+        t_before = time.time_ns()
+        st = os.stat(_os_path(p))
+        h = _md5_file(p)
+        return path_str, h, st.st_size, st.st_mtime_ns, t_before
+    except OSError:
+        return None
+
+
+
 def _nfc(s: str) -> str:
     """NFC-normalize a path string used as a manifest key.
 
@@ -2193,6 +2235,78 @@ def load_manifest(
     return {_nfc(_to_absolute_from_storage(k, root)): v for k, v in raw.items()}
 
 
+def _state_path_for(manifest_path: str | Path = _MANIFEST_PATH) -> Path:
+    """Location of the machine-local incremental filesystem state for a manifest."""
+    return Path(manifest_path).parent / "cache" / "incremental-state.json"
+
+
+def _load_incremental_state(
+    manifest_path: str | Path = _MANIFEST_PATH,
+    *,
+    root: Path | None = None,
+) -> dict[str, dict]:
+    """Load the machine-local incremental state file. Returns {} on any error.
+
+    Keys are normalized to NFC. When ``root`` is provided, stored relative
+    keys are re-anchored against ``root`` to match the absolute keys used
+    internally by detect_incremental.
+    """
+    state_file = _state_path_for(manifest_path)
+    try:
+        raw = json.loads(state_file.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    cleaned: dict[str, dict] = {}
+    for k, v in raw.items():
+        if isinstance(v, dict):
+            size = v.get("size")
+            mtime_ns = v.get("mtime_ns")
+            indexed_at_ns = v.get("indexed_at_ns")
+            if isinstance(size, int) and isinstance(mtime_ns, int) and isinstance(indexed_at_ns, int):
+                target_k = _nfc(_to_absolute_from_storage(k, root)) if root is not None else _nfc(k)
+                cleaned[target_k] = {
+                    "size": size,
+                    "mtime_ns": mtime_ns,
+                    "indexed_at_ns": indexed_at_ns,
+                }
+    return cleaned
+
+
+def _save_incremental_state(
+    state: dict[str, dict],
+    manifest_path: str | Path = _MANIFEST_PATH,
+    *,
+    root: Path | None = None,
+) -> None:
+    """Synchronously and atomically save machine-local incremental state.
+
+    Keys are stored as forward-slash relative paths when ``root`` is provided,
+    matching manifest.json storage. Serialization is deterministic (keys sorted).
+    Skips disk write if the on-disk state is identical.
+    """
+    if root is not None:
+        disk_state = {_nfc(_to_relative_for_storage(k, root)): v for k, v in state.items()}
+    else:
+        disk_state = {_nfc(k): v for k, v in state.items()}
+
+    disk_state = {k: disk_state[k] for k in sorted(disk_state.keys())}
+    state_file = _state_path_for(manifest_path)
+
+    if state_file.is_file():
+        try:
+            current_raw = json.loads(state_file.read_text(encoding="utf-8"))
+            if isinstance(current_raw, dict) and current_raw == disk_state:
+                return
+        except Exception:
+            pass
+
+    from graphify.paths import write_json_atomic
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(str(state_file), disk_state, indent=2)
+
+
 def save_manifest(
     files: dict[str, list[str]],
     manifest_path: str = _MANIFEST_PATH,
@@ -2203,11 +2317,11 @@ def save_manifest(
     clear_semantic: set[str] | list[str] | None = None,
     clear_ast: set[str] | list[str] | None = None,
 ) -> None:
-    """Save current file mtimes + content hashes for change detection.
+    """Save content hashes in manifest.json and local filesystem stats in cache/incremental-state.json.
 
     kind="ast"      — written by `graphify update` (AST-only rebuild). Stamps
                       ast_hash; preserves an existing semantic_hash only when
-                      the file content is unchanged (mtime + hash match).
+                      the file content is unchanged (content hash matches).
     kind="semantic" — written by `graphify extract` after semantic extraction.
                       Stamps semantic_hash; preserves existing ast_hash.
     kind="both"     — full pipeline: stamps both hashes (default).
@@ -2222,28 +2336,14 @@ def save_manifest(
     corpus (absolute paths) so seeded rows for in-root files that are still
     alive on disk but no longer part of the scan (newly excluded via
     .graphifyignore/.gitignore/--exclude) are dropped instead of surviving
-    forever and masquerading as deletions in detect_incremental. It must be
-    the RAW detect output, not a stamp-filtered subset — pruning to a
-    filtered set would erase rows the filter merely omitted (failed chunks,
-    --code-only doc rows). Out-of-root entries are never pruned. Callers
-    saving a SUBSET of files (changed_paths hooks, skill runbooks, #917)
-    must leave this None so their untouched rows are preserved.
+    forever and masquerading as deletions in detect_incremental.
 
-    ``clear_semantic`` (#1948): files that were dispatched this run but
-    produced no stamped output (e.g. the LLM omitted their chunk on a
-    --force re-run) are absent from ``files``, so the seed loop below would
-    otherwise copy their prior semantic_hash verbatim — masking the omission
-    and making detect_incremental(kind="semantic") report them unchanged.
-    Pass the set of such files (any path form ``scan_corpus`` accepts) to
-    force their seeded semantic_hash to "" instead of inheriting it.
+    ``clear_semantic`` (#1948): forces seeded semantic_hash to "" for omitted files.
 
-    ``clear_ast`` (#2543): same idea for AST failures (missing optional extra,
-    zero-node anomalous extract). Blanks BOTH ``ast_hash`` and
-    ``semantic_hash`` on the seeded row so either detect_incremental kind
-    re-queues the file after the failure is fixed, without deleting
-    graphify-out/.
+    ``clear_ast`` (#2543): blanks BOTH ast_hash and semantic_hash on AST failures.
     """
     existing = load_manifest(manifest_path, root=root)
+    existing_state = _load_incremental_state(manifest_path, root=root)
 
     # Index both raw and NFC forms so scan/clear membership survives the
     # same NFC/NFD mismatch that breaks manifest lookups (#2221).
@@ -2314,20 +2414,18 @@ def save_manifest(
 
     def _normalise_entry(entry):
         if isinstance(entry, (int, float)):
-            return {"mtime": entry, "ast_hash": "", "semantic_hash": ""}
-        if isinstance(entry, dict) and "hash" in entry and "ast_hash" not in entry:
-            return {"mtime": entry.get("mtime", 0), "ast_hash": entry["hash"], "semantic_hash": ""}
+            return {"ast_hash": "", "semantic_hash": ""}
         if isinstance(entry, dict):
-            return entry
+            ast_h = entry.get("ast_hash", entry.get("hash", ""))
+            sem_h = entry.get("semantic_hash", "")
+            return {
+                "ast_hash": ast_h if isinstance(ast_h, str) else "",
+                "semantic_hash": sem_h if isinstance(sem_h, str) else "",
+            }
         return None
 
     # Seed from the existing manifest so incremental callers passing a subset
     # of files don't silently erase entries for untouched files (#917).
-    # Prune entries whose file no longer exists on disk — those are genuine
-    # deletions that detect_incremental() should treat as gone. When the
-    # caller supplied the full scan corpus, additionally prune in-root rows
-    # the scan no longer covers: those files were excluded, not deleted, and
-    # keeping the row makes them look deleted on every future run (#1908).
     manifest: dict[str, dict] = {}
     for f, entry in existing.items():
         normalised = _normalise_entry(entry)
@@ -2341,26 +2439,27 @@ def save_manifest(
         if scan_set is not None and not _in_scan(f) and _in_root(f):
             continue  # excluded-but-alive: drop the stale row (#1908)
         if clear_ast_set is not None and _in_clear_ast(f):
-            # AST failure this run (missing extra / zero nodes, #2543): blank
-            # both hashes so either detect_incremental kind re-queues.
-            normalised = {**normalised, "ast_hash": "", "semantic_hash": ""}
+            # AST failure this run (#2543): blank both hashes so detect_incremental re-queues.
+            normalised = {"ast_hash": "", "semantic_hash": ""}
         elif clear_set is not None and _in_clear(f):
-            # Dispatched-but-omitted this run: don't inherit the stale
-            # semantic_hash, or detect_incremental would call it unchanged (#1948).
+            # Dispatched-but-omitted this run (#1948): clear semantic_hash.
             normalised = {**normalised, "semantic_hash": ""}
         manifest[f] = normalised
 
+    # Seed machine-local incremental state from existing state for surviving manifest files
+    state: dict[str, dict] = {f: existing_state[f] for f in manifest if f in existing_state}
+
     all_files = [f for file_list in files.values() for f in file_list]
     with ThreadPoolExecutor() as pool:
-        raw = pool.map(_stat_and_hash, all_files)
-    hashed: dict[str, tuple[float, str]] = {
-        r[0]: (r[1], r[2]) for r in raw if r is not None
+        raw = pool.map(_stat_and_hash_for_manifest, all_files)
+    hashed: dict[str, tuple[str, int, int, int]] = {
+        r[0]: (r[1], r[2], r[3], r[4]) for r in raw if r is not None
     }
 
     for f in all_files:
         if f not in hashed:
             continue  # file deleted between detect() and manifest write
-        mtime, h = hashed[f]
+        h, size, mtime_ns, observed_at_ns = hashed[f]
         key = _nfc(f)
         prev = _normalise_entry(existing.get(key, {})) or {}
         if kind in ("ast", "both"):
@@ -2373,76 +2472,71 @@ def save_manifest(
             # Preserve semantic_hash only when content is unchanged
             sem_h = prev.get("semantic_hash", "") if h == prev.get("ast_hash", "") else ""
 
-        # Preserve previous seen timestamp if the entry's mtime and target hash(es)
-        # are genuinely unchanged and no clear was requested for this file.
-        prev_seen = prev.get("seen")
-        is_unchanged = (
-            isinstance(prev_seen, (int, float))
-            and mtime == prev.get("mtime")
-            and (ast_h == prev.get("ast_hash", "") if kind in ("ast", "both") else True)
-            and (sem_h == prev.get("semantic_hash", "") if kind in ("semantic", "both") else True)
-            and not _in_clear_ast(f)
-            and not _in_clear(f)
-        )
-        entry: dict = {
-            "mtime": mtime,
-            "seen": prev_seen if is_unchanged else time.time(),
+        manifest[key] = {
             "ast_hash": ast_h,
             "semantic_hash": sem_h,
         }
-        manifest[key] = entry
+
+        # Check if local state already has a valid entry for this unchanged file
+        prev_state = existing_state.get(key)
+        if (
+            isinstance(prev_state, dict)
+            and prev_state.get("size") == size
+            and prev_state.get("mtime_ns") == mtime_ns
+            and isinstance(prev_state.get("indexed_at_ns"), int)
+            and prev.get("ast_hash") == ast_h
+            and prev.get("semantic_hash") == sem_h
+            and not _in_clear_ast(f)
+            and not _in_clear(f)
+        ):
+            # File is completely unchanged; preserve prior indexed_at_ns to avoid state churn
+            indexed_at_ns = prev_state["indexed_at_ns"]
+        else:
+            indexed_at_ns = observed_at_ns
+
+        state[key] = {
+            "size": size,
+            "mtime_ns": mtime_ns,
+            "indexed_at_ns": indexed_at_ns,
+        }
+
+    # Prune state entries that are no longer in manifest
+    state = {k: state[k] for k in manifest if k in state}
+
     if root is not None:
-        # Persist in portable form: forward-slash relative paths. Keys outside
-        # ``root`` (out-of-tree symlinked corpora, --include sources) keep
-        # their absolute form so the manifest round-trips on the saving
-        # machine even when not every entry can be portably encoded.
-        # NFC after relativize so on-disk keys match what load_manifest
-        # re-anchors and compares against (#2221).
         manifest = {_nfc(_to_relative_for_storage(k, root)): v for k, v in manifest.items()}
     else:
         manifest = {_nfc(k): v for k, v in manifest.items()}
+    manifest = {k: manifest[k] for k in sorted(manifest.keys())}
 
     # Avoid rewriting manifest.json when the serialized payload is identical (#2838).
     manifest_p = Path(manifest_path)
+    should_write_manifest = True
     if manifest_p.is_file():
         try:
             disk_raw = json.loads(manifest_p.read_text(encoding="utf-8"))
             if isinstance(disk_raw, dict) and disk_raw == manifest:
-                return
+                should_write_manifest = False
         except Exception:
             pass
 
-    from graphify.paths import write_json_atomic
-    # Atomic write: a crash mid-write must not leave a truncated manifest that
-    # detect_incremental then fails to parse.
-    write_json_atomic(manifest_path, manifest, indent=2)
+    if should_write_manifest:
+        from graphify.paths import write_json_atomic
+        manifest_p.parent.mkdir(parents=True, exist_ok=True)
+        write_json_atomic(manifest_path, manifest, indent=2)
+
+    # Synchronously and atomically write cache/incremental-state.json
+    _save_incremental_state(state, manifest_path, root=root)
 
 
 def _mtime_may_hide_a_rewrite(current_mtime: float, stored: dict) -> bool:
-    """Was this manifest row written in the same tick as the file it describes?
-
-    The incremental gate treats "mtime unchanged" as proof the content is
-    unchanged. That is only true while the filesystem can distinguish the two
-    writes: an edit keeping the file the same length and landing in the same
-    timestamp tick moves neither size nor mtime, so the file silently skips
-    re-extraction and the graph keeps serving the old content.
-
-    ``seen`` records when the row was stamped. If the file's mtime falls inside
-    the same tick, this row cannot prove currency and the caller pays for one
-    MD5. Every other row — the whole settled corpus, and any manifest written
-    by an earlier run — keeps the free stat-only fastpath.
-
-    Rows predating ``seen`` are treated as safe: they necessarily come from an
-    earlier process, where a later write would have had to move mtime.
-    """
+    """Legacy helper preserved for backward compatibility."""
     seen = stored.get("seen")
     if not isinstance(seen, (int, float)):
         return False
     delta = float(seen) - float(current_mtime)
     if delta < 0:
-        return False  # file is newer than the row; the mtime check already fired
-    # Derive granularity from the timestamp: a whole-second mtime means the
-    # filesystem cannot separate writes inside that second.
+        return False
     coarse = float(current_mtime).is_integer()
     return delta < (_MTIME_COARSE_S if coarse else _MTIME_SUBSECOND_S)
 
@@ -2461,23 +2555,15 @@ def detect_incremental(
 
     kind="semantic" (default for extract): a file is "changed" when its
         semantic_hash is missing or its content has changed since the last
-        semantic extraction pass. Use this for `graphify extract` so that
-        files touched by `graphify update` (AST-only) are re-extracted
-        semantically.
+        semantic extraction pass.
     kind="ast": a file is "changed" when its ast_hash is missing or its
         content has changed. Use this for `graphify update`.
 
-    Fast path: mtime unchanged + hash matches → unchanged (free, no disk IO
-    beyond stat). Slow path: mtime bumped → compare MD5 against the relevant
-    hash field before re-extracting.
-
-    Backwards compatible with legacy manifests storing plain float mtime values
-    or {mtime, hash} dicts (treated as ast_hash only; semantic_hash = miss).
-
-    The ``follow_symlinks`` flag is forwarded to :func:`detect` so in-root
-    symlinked sub-trees are scanned consistently between full and incremental
-    runs. ``None`` (default) does not follow symlinked directories; callers must
-    opt in explicitly, and resolved targets outside the scan root are skipped.
+    Fast path: local cache/incremental-state.json has matching size + mtime_ns
+    outside the racily-clean window → unchanged (zero MD5 hashing).
+    Slow path: local state missing, stale, or within racily-clean window →
+    compare MD5 against manifest.json content hash. If matching, update local
+    state without mutating manifest.json.
     """
     full = detect(
         root,
@@ -2501,57 +2587,71 @@ def detect_incremental(
         full["excluded_files"] = []
         return full
 
+    state = _load_incremental_state(manifest_path, root=root)
+    state_updated = False
+
     new_files: dict[str, list[str]] = {k: [] for k in full["files"]}
     unchanged_files: dict[str, list[str]] = {k: [] for k in full["files"]}
 
     for ftype, file_list in full["files"].items():
         for f in file_list:
-            # Manifest keys are NFC; scan paths may arrive NFD (#2221).
-            stored = manifest.get(_nfc(f))
-            try:
-                current_mtime = os.stat(_os_path(Path(f))).st_mtime
-            except Exception:
-                current_mtime = 0
-
-            # Legacy manifest: plain float value stores only mtime.
-            # Compare with `!=` so backwards mtime motion (git checkout of an
-            # older commit, tarball restore, rsync --times) still triggers a
-            # re-extract; the previous `>` silently kept the stale cache and
-            # the graph drifted from disk (#1859). No stored hash means we
-            # cannot verify content — any mtime delta forces a re-extract,
-            # and the next save promotes the entry into the dict schema.
-            if isinstance(stored, (int, float)):
+            key = _nfc(f)
+            stored = manifest.get(key)
+            if stored is None:
+                changed = True
+            elif isinstance(stored, (int, float)):
+                # Legacy manifest: plain float value stores only mtime
+                try:
+                    current_mtime = os.stat(_os_path(Path(f))).st_mtime
+                except Exception:
+                    current_mtime = 0
                 changed = current_mtime != stored
             elif isinstance(stored, dict):
-                # Normalise legacy {mtime, hash} to new schema
                 if "hash" in stored and "ast_hash" not in stored:
-                    stored = {"mtime": stored.get("mtime", 0), "ast_hash": stored["hash"], "semantic_hash": ""}
+                    stored = {"ast_hash": stored["hash"], "semantic_hash": ""}
                 hash_key = "semantic_hash" if kind == "semantic" else "ast_hash"
                 stored_hash = stored.get(hash_key, "")
-                # Missing semantic_hash means update ran but extract hasn't — always re-extract
                 if not stored_hash:
+                    # Missing hash means update ran but extract hasn't — always re-extract
                     changed = True
                 else:
-                    stored_mtime = stored.get("mtime")
-                    # Schema-drift guard (#1163): tolerate a nested {mtime: ...}
-                    # dict or any non-numeric value without crashing.
-                    if isinstance(stored_mtime, dict):
-                        stored_mtime = stored_mtime.get("mtime")
-                    if not isinstance(stored_mtime, (int, float)):
-                        stored_mtime = None
-                    if stored_mtime is None or current_mtime != stored_mtime:
-                        # mtime bumped — verify with content hash before re-extracting
-                        changed = _md5_file(Path(f)) != stored_hash
-                    elif _mtime_may_hide_a_rewrite(current_mtime, stored):
-                        # mtime is unchanged, but it was recorded in the same
-                        # filesystem tick the file was written in — a later
-                        # same-length edit lands in that tick without moving
-                        # mtime, and the file silently skips re-extraction
-                        # while the graph keeps serving the old content.
-                        # Only this narrow window pays for a content hash.
-                        changed = _md5_file(Path(f)) != stored_hash
+                    try:
+                        p = Path(f)
+                        st = os.stat(_os_path(p))
+                    except OSError:
+                        st = None
+
+                    if st is None:
+                        changed = True
                     else:
-                        changed = False
+                        state_entry = state.get(key)
+                        is_fastpath = (
+                            isinstance(state_entry, dict)
+                            and state_entry.get("size") == st.st_size
+                            and state_entry.get("mtime_ns") == st.st_mtime_ns
+                            and isinstance(state_entry.get("indexed_at_ns"), int)
+                            and not _is_racily_clean(st.st_mtime_ns, state_entry["indexed_at_ns"])
+                        )
+
+                        if is_fastpath:
+                            changed = False
+                        else:
+                            # Local state missing, stale, or racily-clean:
+                            # fall back to MD5 content hashing against manifest hash.
+                            t_before = time.time_ns()
+                            current_hash = _md5_file(Path(f))
+                            if current_hash and current_hash == stored_hash:
+                                changed = False
+                                # Content confirmed identical! Update local state
+                                # so subsequent calls hit the fastpath.
+                                state[key] = {
+                                    "size": st.st_size,
+                                    "mtime_ns": st.st_mtime_ns,
+                                    "indexed_at_ns": t_before,
+                                }
+                                state_updated = True
+                            else:
+                                changed = True
             else:
                 changed = True  # unknown format, re-extract to be safe
 
@@ -2559,6 +2659,11 @@ def detect_incremental(
                 new_files[ftype].append(f)
             else:
                 unchanged_files[ftype].append(f)
+
+    if state_updated:
+        # Prune state to manifest keys before saving
+        clean_state = {k: v for k, v in state.items() if k in manifest}
+        _save_incremental_state(clean_state, manifest_path, root=root)
 
     # Manifest rows that left the corpus, split by disk existence (#1908):
     # a row whose file is gone from DISK is a genuine deletion (its cached
