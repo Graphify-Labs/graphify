@@ -2235,6 +2235,55 @@ def test_julia_abstract_type_with_supertype_is_extracted(tmp_path):
     assert ("Dog", "Animal") in _edge_labels(r, "inherits"), "abstract inherits edge dropped"
 
 
+def test_julia_macro_definition_is_extracted(tmp_path):
+    """`macro name(...) ... end` must be a definition, with the calls in its
+    body attributed to it. Macros are first-class Julia definitions and were
+    dropped entirely."""
+    f = tmp_path / "macros.jl"
+    f.write_text(
+        "function helper(x)\n"
+        "    return x + 1\n"
+        "end\n"
+        "macro sayhello(name)\n"
+        "    return :( helper($name) )\n"
+        "end\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = [n["label"] for n in r["nodes"]]
+    assert "@sayhello" in labels, "macro definition dropped"
+    # the macro body's call to a helper is credited to the macro, not a self-loop
+    assert ("@sayhello", "helper") in _edge_labels(r, "calls")
+    assert ("@sayhello", "@sayhello") not in _edge_labels(r, "calls")
+
+
+def test_julia_enum_and_members_are_extracted(tmp_path):
+    """`@enum` defines a type and its members, in both the inline and the
+    begin/end block forms. The whole macrocall was previously ignored."""
+    f = tmp_path / "enums.jl"
+    f.write_text(
+        "@enum Fruit apple orange banana\n"
+        "@enum Color begin\n"
+        "  red\n"
+        "  green\n"
+        "end\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = {n["label"] for n in r["nodes"]}
+    assert {"Fruit", "apple", "orange", "banana", "Color", "red", "green"} <= labels
+    contains = _edge_labels(r, "contains")
+    assert {("Fruit", "apple"), ("Fruit", "banana"),
+            ("Color", "red"), ("Color", "green")} <= contains
+    # the members hang off their enum, not the file
+    file_nid = next(n["id"] for n in r["nodes"] if n["label"] == "enums.jl")
+    lab = {n["id"]: n["label"] for n in r["nodes"]}
+    assert not [
+        e for e in r["edges"]
+        if e["source"] == file_nid and lab.get(e["target"]) in {"apple", "red"}
+    ]
+
+
 def test_julia_struct_field_type_context():
     r = extract_julia(FIXTURES / "sample.jl")
     assert ("Point", "Float64") in _edge_labels(r, "references", "field")
