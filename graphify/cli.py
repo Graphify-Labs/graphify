@@ -4748,9 +4748,11 @@ def dispatch_command(cmd: str) -> None:
         for arg in chunk_args:
             expanded = _glob.glob(arg)
             chunk_files.extend(sorted(expanded) if expanded else [arg])
-        merged: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+        merged: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": None, "output_tokens": None}
         seen_ids: set[str] = set()
         valid_chunks = 0
+        seen_tokens: dict[str, bool] = {"input_tokens": False, "output_tokens": False}
+        token_sums: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
         # These chunk files are untrusted subagent output. load_validated_...
         # stats the file size BEFORE reading it (so a multi-GB chunk can't blow up
         # memory), parses the JSON, and validates the security caps + the node/
@@ -4778,12 +4780,14 @@ def dispatch_command(cmd: str) -> None:
                     merged["nodes"].append(n)
             merged["edges"].extend(chunk.get("edges", []))
             merged["hyperedges"].extend(chunk.get("hyperedges", []))
-            # Coerce token counts: a chunk is untrusted, so a non-numeric
-            # input_tokens/output_tokens must not abort the whole merge with a
-            # TypeError after other chunks already merged.
+            # Coerce token counts: a chunk is untrusted, so non-numeric
+            # or boolean token counts must not abort the merge with a TypeError.
+            # Track observability separately so unobserved tokens remain None (#3658).
             for _tok in ("input_tokens", "output_tokens"):
-                _v = chunk.get(_tok, 0)
-                merged[_tok] += _v if isinstance(_v, (int, float)) else 0
+                _v = chunk.get(_tok)
+                if isinstance(_v, (int, float)) and not isinstance(_v, bool):
+                    seen_tokens[_tok] = True
+                    token_sums[_tok] += int(_v)
         if not valid_chunks:
             print(
                 f"[graphify merge-chunks] error: no valid chunks to merge; "
@@ -4791,6 +4795,8 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        for _tok in ("input_tokens", "output_tokens"):
+            merged[_tok] = token_sums[_tok] if seen_tokens[_tok] else None
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
         _wja(out_path, merged, ensure_ascii=False)
@@ -4799,9 +4805,11 @@ def dispatch_command(cmd: str) -> None:
             if valid_chunks == len(chunk_files)
             else f"{valid_chunks} of {len(chunk_files)} chunks"
         )
+        in_desc = f"{merged['input_tokens']:,}" if merged["input_tokens"] is not None else "unknown"
+        out_desc = f"{merged['output_tokens']:,}" if merged["output_tokens"] is not None else "unknown"
         print(
             f"Merged {chunk_summary}: {len(merged['nodes'])} nodes, {len(merged['edges'])} edges, "
-            f"{merged['input_tokens']:,} in / {merged['output_tokens']:,} out tokens"
+            f"{in_desc} in / {out_desc} out tokens"
         )
 
     elif cmd == "merge-semantic":

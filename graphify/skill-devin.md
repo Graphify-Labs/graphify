@@ -320,7 +320,7 @@ Extraction rules:
 - AMBIGUOUS edges: 0.1-0.3
 
 Schema:
-{"nodes":[{"id":"filestem_entityname","label":"Human Readable Name","file_type":"code|document|paper|image|rationale|concept","source_file":"relative/path","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to|rationale_for","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"relative/path","source_location":null,"weight":1.0}],"hyperedges":[{"id":"snake_case_id","label":"Human Readable Label","nodes":["node_id1","node_id2","node_id3"],"relation":"participate_in|implement|form","confidence":"EXTRACTED|INFERRED","confidence_score":0.75,"source_file":"relative/path"}],"input_tokens":0,"output_tokens":0}
+{"nodes":[{"id":"filestem_entityname","label":"Human Readable Name","file_type":"code|document|paper|image|rationale|concept","source_file":"relative/path","source_location":null,"source_url":null,"captured_at":null,"author":null,"contributor":null}],"edges":[{"source":"node_id","target":"node_id","relation":"calls|implements|references|cites|conceptually_related_to|shares_data_with|semantically_similar_to|rationale_for","confidence":"EXTRACTED|INFERRED|AMBIGUOUS","confidence_score":1.0,"source_file":"relative/path","source_location":null,"weight":1.0}],"hyperedges":[{"id":"snake_case_id","label":"Human Readable Label","nodes":["node_id1","node_id2","node_id3"],"relation":"participate_in|implement|form","confidence":"EXTRACTED|INFERRED","confidence_score":0.75,"source_file":"relative/path"}],"input_tokens":null,"output_tokens":null}
 
 Files:
 FILE_LIST
@@ -336,7 +336,14 @@ Wait for all subagents. For each result:
 
 If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
 
-After each subagent call completes, write its result to `graphify-out/.graphify_chunk_N.json`. **After each subagent call completes, read the real token counts from the subagent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then merge:
+After each subagent call completes, write its result to `graphify-out/.graphify_chunk_N.json`. **After each subagent call completes, read real token usage from the tool result and write it back into that chunk's JSON before merging** — the chunk JSON template initializes tokens to `null` (unobserved).
+Normalize tool usage into `input_tokens` and `output_tokens` using this precedence:
+1. Containers: check top-level fields first, then nested `usage` or `modelUsage` (summing model entries if multi-model).
+2. Input tokens: take `input_tokens` (if present) or `prompt_tokens` or `inputTokens`. If Claude-style cache creation/read tokens are reported separately (`cache_creation_input_tokens`, `cache_read_input_tokens`) and not already included in `input_tokens`, add them to total input.
+3. Output tokens: take `output_tokens` (if present) or `completion_tokens` or `outputTokens`.
+4. If either token count cannot be observed from the tool result, leave that field as `null` — NEVER write `0` for unobserved tokens. Write `0` ONLY if explicitly measured as 0.
+
+Then merge:
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -347,6 +354,7 @@ from graphify.semantic_cleanup import load_validated_semantic_fragment, sanitize
 chunks = sorted(glob.glob('graphify-out/.graphify_chunk_*.json'))
 all_nodes, all_edges, all_hyperedges = [], [], []
 total_in, total_out = 0, 0
+seen_in, seen_out = False, False
 for c in chunks:
     d, errors = load_validated_semantic_fragment(Path(c))
     if errors:
@@ -356,13 +364,21 @@ for c in chunks:
     all_nodes += d.get('nodes', [])
     all_edges += d.get('edges', [])
     all_hyperedges += d.get('hyperedges', [])
-    total_in += d.get('input_tokens', 0)
-    total_out += d.get('output_tokens', 0)
+    vi, vo = d.get('input_tokens'), d.get('output_tokens')
+    if isinstance(vi, (int, float)) and not isinstance(vi, bool):
+        seen_in = True
+        total_in += int(vi)
+    if isinstance(vo, (int, float)) and not isinstance(vo, bool):
+        seen_out = True
+        total_out += int(vo)
 Path('graphify-out/.graphify_semantic_new.json').write_text(json.dumps({
     'nodes': all_nodes, 'edges': all_edges, 'hyperedges': all_hyperedges,
-    'input_tokens': total_in, 'output_tokens': total_out,
+    'input_tokens': total_in if seen_in else None,
+    'output_tokens': total_out if seen_out else None,
 }, indent=2))
-print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens')
+in_desc = f'{total_in:,}' if seen_in else 'unknown'
+out_desc = f'{total_out:,}' if seen_out else 'unknown'
+print(f'Merged {len(chunks)} chunks: {in_desc} in / {out_desc} out tokens')
 "
 ```
 
@@ -404,8 +420,8 @@ merged = {
     'nodes': deduped,
     'edges': all_edges,
     'hyperedges': all_hyperedges,
-    'input_tokens': new.get('input_tokens', 0),
-    'output_tokens': new.get('output_tokens', 0),
+    'input_tokens': new.get('input_tokens') if 'input_tokens' in new else None,
+    'output_tokens': new.get('output_tokens') if 'output_tokens' in new else None,
 }
 merged = sanitize_semantic_fragment(merged)
 Path('graphify-out/.graphify_semantic.json').write_text(json.dumps(merged, indent=2))
@@ -439,8 +455,8 @@ merged = {
     'nodes': merged_nodes,
     'edges': merged_edges,
     'hyperedges': merged_hyperedges,
-    'input_tokens': sem.get('input_tokens', 0),
-    'output_tokens': sem.get('output_tokens', 0),
+    'input_tokens': sem.get('input_tokens') if 'input_tokens' in sem else None,
+    'output_tokens': sem.get('output_tokens') if 'output_tokens' in sem else None,
 }
 merged = sanitize_semantic_fragment(merged)
 Path('graphify-out/.graphify_extract.json').write_text(json.dumps(merged, indent=2))
@@ -477,7 +493,7 @@ if G.number_of_nodes() == 0:
     raise SystemExit(1)
 communities = cluster(G)
 cohesion = score_all(G, communities)
-tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
+tokens = {'input': extraction.get('input_tokens'), 'output': extraction.get('output_tokens')}
 gods = god_nodes(G)
 surprises = surprising_connections(G, communities)
 labels = {cid: 'Community ' + str(cid) for cid in communities}
@@ -533,7 +549,7 @@ analysis   = json.loads(Path('graphify-out/.graphify_analysis.json').read_text()
 G = build_from_json(extraction, directed=IS_DIRECTED)
 communities = {int(k): v for k, v in analysis['communities'].items()}
 cohesion = {int(k): v for k, v in analysis['cohesion'].items()}
-tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}
+tokens = {'input': extraction.get('input_tokens'), 'output': extraction.get('output_tokens')}
 
 # LABELS - replace these with the names you chose above
 labels = LABELS_DICT
@@ -815,14 +831,15 @@ _scan = {f for fl in _corpus.values() for f in fl}
 save_manifest(_manifest_files, root='INPUT_PATH', scan_corpus=_scan, clear_semantic=_cleared or None)
 
 # Update cumulative cost tracker
-input_tok = extract.get('input_tokens', 0)
-output_tok = extract.get('output_tokens', 0)
+_raw_in, _raw_out = extract.get('input_tokens'), extract.get('output_tokens')
+input_tok = int(_raw_in) if isinstance(_raw_in, (int, float)) and not isinstance(_raw_in, bool) else None
+output_tok = int(_raw_out) if isinstance(_raw_out, (int, float)) and not isinstance(_raw_out, bool) else None
 
 cost_path = Path('graphify-out/cost.json')
 if cost_path.exists():
     cost = json.loads(cost_path.read_text())
 else:
-    cost = {'runs': [], 'total_input_tokens': 0, 'total_output_tokens': 0}
+    cost = {'runs': [], 'total_input_tokens': 0, 'total_output_tokens': 0, 'has_unrecorded_usage': False}
 
 cost['runs'].append({
     'date': datetime.now(timezone.utc).isoformat(),
@@ -830,12 +847,22 @@ cost['runs'].append({
     'output_tokens': output_tok,
     'files': detect.get('total_files', 0),
 })
-cost['total_input_tokens'] += input_tok
-cost['total_output_tokens'] += output_tok
+if input_tok is not None:
+    cost['total_input_tokens'] += input_tok
+if output_tok is not None:
+    cost['total_output_tokens'] += output_tok
+
+cost['has_unrecorded_usage'] = bool(cost.get('has_unrecorded_usage')) or (input_tok is None) or (output_tok is None) or any(r.get('input_tokens') is None or r.get('output_tokens') is None for r in cost.get('runs', []))
+
 cost_path.write_text(json.dumps(cost, indent=2))
 
-print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
-print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
+in_label = f'{input_tok:,}' if input_tok is not None else 'unknown'
+out_label = f'{output_tok:,}' if output_tok is not None else 'unknown'
+print(f'This run: {in_label} input tokens, {out_label} output tokens')
+tot_in = f'{cost["total_input_tokens"]:,}'
+tot_out = f'{cost["total_output_tokens"]:,}'
+unrec_note = ' (contains unrecorded runs)' if cost.get('has_unrecorded_usage') else ''
+print(f'All time: {tot_in} input, {tot_out} output ({len(cost["runs"])} runs){unrec_note}')
 "
 rm -f graphify-out/.graphify_detect.json graphify-out/.graphify_extract.json graphify-out/.graphify_ast.json graphify-out/.graphify_semantic.json graphify-out/.graphify_analysis.json graphify-out/.graphify_labels.json graphify-out/.graphify_incremental.json graphify-out/.graphify_transcripts.json graphify-out/.graphify_old.json; find graphify-out -maxdepth 1 -name '.graphify_chunk_*.json' -delete 2>/dev/null
 rm -f graphify-out/.needs_update 2>/dev/null || true

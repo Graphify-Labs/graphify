@@ -1142,6 +1142,87 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_token_observability_fix_line(line: str) -> bool:
+    """Whether a line is part of the token observability and cost accounting fix (#3658).
+
+    Distinguishes explicit 0 from unobserved/None token usage across chunk
+    schemas, usage normalization instructions, chunk/cache/Part-C merges,
+    Step 4/5 token dicts, and Step 9 cost persistence with has_unrecorded_usage.
+    Matches both the legacy (removed) and updated (added) lines.
+    """
+    stripped = line.strip()
+    return (
+        # Schema tokens
+        '"input_tokens":null,"output_tokens":null' in stripped
+        or '"input_tokens":0,"output_tokens":0' in stripped
+        # Step B3 normalization prose
+        or "Normalize tool usage into `input_tokens` and `output_tokens`" in stripped
+        or "Containers: check top-level fields first" in stripped
+        or "Input tokens: take `input_tokens`" in stripped
+        or "Output tokens: take `output_tokens`" in stripped
+        or "NEVER write `0` for unobserved tokens" in stripped
+        or "template initializes tokens to `null` (unobserved)" in stripped
+        or "chunk JSON itself always has placeholder zeros" in stripped
+        or ("read real token usage from the tool result" in stripped and "chunk" in stripped)
+        or ("read the real token counts from the subagent tool result" in stripped and "chunk" in stripped)
+        or stripped in ("Then run:", "Then merge:")
+        # B3 merge script
+        or stripped in (
+            "seen_in, seen_out = False, False",
+            "seen_in = True",
+            "seen_out = True",
+            "total_in += int(vi)",
+            "total_out += int(vo)",
+            "total_in += d.get('input_tokens', 0)",
+            "total_out += d.get('output_tokens', 0)",
+        )
+        or stripped.startswith("vi, vo = d.get('input_tokens')")
+        or ("isinstance(vi, (int, float))" in stripped and "bool" in stripped)
+        or ("isinstance(vo, (int, float))" in stripped and "bool" in stripped)
+        or "'input_tokens': total_in if seen_in else None" in stripped
+        or "'output_tokens': total_out if seen_out else None" in stripped
+        or "'input_tokens': total_in," in stripped
+        or "'output_tokens': total_out," in stripped
+        or stripped.startswith("in_desc =")
+        or stripped.startswith("out_desc =")
+        or ("Merged" in stripped and "in /" in stripped and "out tokens" in stripped)
+        # Cache merge / Part C
+        or "'input_tokens': new.get('input_tokens') if 'input_tokens' in new else None" in stripped
+        or "'output_tokens': new.get('output_tokens') if 'output_tokens' in new else None" in stripped
+        or "'input_tokens': sem.get('input_tokens') if 'input_tokens' in sem else None" in stripped
+        or "'output_tokens': sem.get('output_tokens') if 'output_tokens' in sem else None" in stripped
+        or "'input_tokens': new.get('input_tokens', 0)" in stripped
+        or "'output_tokens': new.get('output_tokens', 0)" in stripped
+        or "'input_tokens': sem.get('input_tokens', 0)" in stripped
+        or "'output_tokens': sem.get('output_tokens', 0)" in stripped
+        # Step 4 / Step 5
+        or stripped == "tokens = {'input': extraction.get('input_tokens'), 'output': extraction.get('output_tokens')}"
+        or stripped == "tokens = {'input': extraction.get('input_tokens', 0), 'output': extraction.get('output_tokens', 0)}"
+        # Step 9 cost persistence
+        or stripped.startswith("_raw_in, _raw_out = extract.get('input_tokens')")
+        or (stripped.startswith("input_tok =") and "isinstance(_raw_in" in stripped)
+        or (stripped.startswith("output_tok =") and "isinstance(_raw_out" in stripped)
+        or stripped == "input_tok = extract.get('input_tokens', 0)"
+        or stripped == "output_tok = extract.get('output_tokens', 0)"
+        or "'has_unrecorded_usage': False" in stripped
+        or stripped == "cost = {'runs': [], 'total_input_tokens': 0, 'total_output_tokens': 0}"
+        or stripped in (
+            "if input_tok is not None:",
+            "if output_tok is not None:",
+            "cost['total_input_tokens'] += input_tok",
+            "cost['total_output_tokens'] += output_tok",
+        )
+        or "has_unrecorded_usage" in stripped
+        or stripped.startswith("in_label =")
+        or stripped.startswith("out_label =")
+        or stripped.startswith("tot_in =")
+        or stripped.startswith("tot_out =")
+        or stripped.startswith("unrec_note =")
+        or ("This run:" in stripped and "input tokens," in stripped)
+        or ("All time:" in stripped and "runs)" in stripped)
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1163,6 +1244,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_token_observability_fix_line,
 )
 
 
