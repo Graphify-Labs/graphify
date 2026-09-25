@@ -2361,6 +2361,68 @@ def test_fortran_capital_F_parses_preprocessed():
     assert any("compute_volume" in l for l in labels)
 
 
+def test_fortran_type_bound_procedures_link_to_the_type(tmp_path):
+    """A derived type's `contains` section binds procedures as its methods.
+
+    Both the renaming form (`procedure :: area => circle_area`) and the plain
+    form (`procedure :: scale`) must connect the type to the module procedure
+    that implements it; before this the whole binding was dropped and the type
+    had no link to its own methods.
+    """
+    src = tmp_path / "geom.f90"
+    src.write_text(
+        "module geom\n"
+        "  type :: circle\n"
+        "    real :: radius\n"
+        "  contains\n"
+        "    procedure :: area => circle_area\n"
+        "    procedure :: scale\n"
+        "  end type circle\n"
+        "contains\n"
+        "  real function circle_area(self)\n"
+        "    class(circle), intent(in) :: self\n"
+        "    circle_area = 3.14159 * self%radius**2\n"
+        "  end function circle_area\n"
+        "  subroutine scale(self, f)\n"
+        "    class(circle), intent(inout) :: self\n"
+        "    real, intent(in) :: f\n"
+        "    self%radius = self%radius * f\n"
+        "  end subroutine scale\n"
+        "end module geom\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    assert "error" not in r
+    methods = _edge_labels(r, "method", "type_bound_procedure")
+    assert ("circle", "circle_area") in methods
+    assert ("circle", "scale") in methods
+
+
+def test_fortran_type_bound_procedure_from_other_module_is_sourceless(tmp_path):
+    """A binding to a procedure implemented in another module resolves to a
+    sourceless stub the corpus rewire can collapse, never a dangling edge."""
+    src = tmp_path / "shape.f90"
+    src.write_text(
+        "module shape\n"
+        "  use draw_mod\n"
+        "  type :: widget\n"
+        "  contains\n"
+        "    procedure :: render => external_render\n"
+        "  end type widget\n"
+        "end module shape\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    node_ids = {n["id"] for n in r["nodes"]}
+    # the binding still produced an edge...
+    assert ("widget", "external_render") in _edge_labels(r, "method", "type_bound_procedure")
+    # ...with a resolvable target node and no dangling endpoints
+    for e in r["edges"]:
+        assert e["source"] in node_ids and e["target"] in node_ids, e
+    stub = next(n for n in r["nodes"] if n["label"] == "external_render")
+    assert stub["source_file"] == ""
+
+
 # ── PowerShell ───────────────────────────────────────────────────────────────
 
 def test_powershell_no_error():
