@@ -1351,6 +1351,50 @@ def test_poisoned_manifest_is_healed(monkeypatch, tmp_path, capsys):
     )
 
 
+def test_zero_node_heal_excludes_declined_data_json(tmp_path):
+    """#2543 heal must not re-queue deliberately declined data JSON (#1224/#2879)."""
+    import json
+    from pathlib import Path
+    pytest.importorskip("tree_sitter_json")
+    from graphify.cli import _zero_node_stamped_code_sources
+
+    graph = tmp_path / "graphify-out" / "graph.json"
+    graph.parent.mkdir(parents=True, exist_ok=True)
+
+    data_array = tmp_path / "records.json"
+    data_array.write_text(json.dumps([{"id": 1}, {"id": 2}]))
+    data_obj = tmp_path / "evals.json"
+    data_obj.write_text(json.dumps({"pages": ["a"], "title": "Docs"}))
+    baseline = tmp_path / "src" / "lib" / "citation-integrity-baseline.json"
+    baseline.parent.mkdir(parents=True, exist_ok=True)
+    baseline.write_text(json.dumps([{"a": 1}]))
+    graph.write_text(json.dumps({"nodes": [], "edges": []}), encoding="utf-8")
+
+    res = _zero_node_stamped_code_sources(
+        graph, tmp_path, [str(data_array), str(data_obj), str(baseline)]
+    )
+    assert res == [], f"declined data JSON must not be healed, got {res}"
+
+
+def test_zero_node_heal_still_heals_config_json(tmp_path):
+    """#2543 heal must still re-queue config JSON with zero nodes (genuine gap)."""
+    import json
+    from pathlib import Path
+    pytest.importorskip("tree_sitter_json")
+    from graphify.cli import _zero_node_stamped_code_sources
+
+    graph = tmp_path / "graphify-out" / "graph.json"
+    graph.parent.mkdir(parents=True, exist_ok=True)
+    cfg = tmp_path / "package.json"
+    cfg.write_text(json.dumps({"dependencies": {"left-pad": "^1.0.0"}}))
+    tsc = tmp_path / "tsconfig.json"
+    tsc.write_text(json.dumps({"compilerOptions": {"strict": True}}))
+    graph.write_text(json.dumps({"nodes": [], "edges": []}), encoding="utf-8")
+
+    res = _zero_node_stamped_code_sources(graph, tmp_path, [str(cfg), str(tsc)])
+    assert set(map(Path, res)) == {cfg, tsc}, f"config JSON with 0 nodes must be healed, got {res}"
+
+
 def test_cache_check_prompt_file_scopes_hits_to_that_prompt(monkeypatch, tmp_path, capsys):
     """#1939: cache-check --prompt-file only counts entries produced by that same
     extraction prompt, so an upgraded prompt reports a miss (re-extract) rather
