@@ -5422,6 +5422,14 @@ def _resolve_kotlin_member_calls(
         callee = rc["callee"]
         caller = rc["caller_nid"]
         type_nids = types_by_name.get(receiver, [])
+        if not type_nids:
+            # Object/class declared nowhere here — usually in a repo this build does
+            # not contain, so park it for the merge (#3152/#3388). A builtin receiver
+            # (String.format, ...) never crosses a repo boundary.
+            if receiver not in _LANGUAGE_BUILTIN_GLOBALS:
+                _park_unresolved_member_call(
+                    node_by_id.get(caller), callee, receiver, "kotlin", rc)
+            continue
         if len(type_nids) != 1:
             continue
         wanted = f".{callee}"
