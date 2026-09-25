@@ -2147,12 +2147,36 @@ def _to_relative_for_storage(key: str, root: Path) -> str:
     return rel.replace(os.sep, "/")
 
 
+_DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _looks_absolute(key: str) -> bool:
+    """True if ``key`` is absolute under ANY platform's path syntax, not
+    just the current one.
+
+    ``Path.is_absolute()`` only recognizes the CURRENT platform's own
+    syntax: a POSIX-style ``/abs/path`` key loaded on Windows (or a
+    ``C:\\...``/UNC key loaded on POSIX) is wrongly judged relative, and
+    :func:`_to_absolute_from_storage` then joins it onto ``root`` instead of
+    leaving it alone — silently producing a nonsense path rather than the
+    unreachable-but-at-least-recognizable foreign one (#1964 review: a
+    manifest genuinely can move between platforms, per this module's own
+    "mix of call sites/versions" scope).
+    """
+    return (
+        Path(key).is_absolute()
+        or key.startswith(("/", "\\"))
+        or bool(_DRIVE_LETTER_RE.match(key))
+    )
+
+
 def _to_absolute_from_storage(key: str, root: Path) -> str:
     """Inverse of :func:`_to_relative_for_storage`.
 
     Re-anchor a stored key against ``root``. Already-absolute keys
-    (legacy manifests, out-of-root entries) pass through unchanged so
-    that newly-loaded manifests from before this change remain readable.
+    (legacy manifests, out-of-root entries, or a foreign-platform key —
+    see :func:`_looks_absolute`) pass through unchanged so that newly-loaded
+    manifests from before this change remain readable.
     Uses ``Path(root).resolve()`` so the produced absolute path matches
     what :func:`detect` returns (which also resolves the scan root).
     NFC both sides so a relative key and an NFD-resolved root still join
@@ -2169,12 +2193,11 @@ def _to_absolute_from_storage(key: str, root: Path) -> str:
     never symlinks — ``normpath`` never touches the filesystem, matching
     :func:`_to_relative_for_storage`'s own choice not to resolve the key.
     """
-    p = Path(key)
-    if p.is_absolute():
-        return os.path.normpath(str(p))
+    if _looks_absolute(key):
+        return os.path.normpath(key)
     # NFC the joined result so an NFD-resolved root + relative key lands on
     # the same form load_manifest / detect_incremental compare against.
-    return _nfc(os.path.normpath(str(Path(root).resolve() / p)))
+    return _nfc(os.path.normpath(str(Path(root).resolve() / Path(key))))
 
 
 def _collapse_manifest_duplicates(items, key_fn) -> dict:
