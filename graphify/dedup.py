@@ -1087,24 +1087,34 @@ def _pick_winner(nodes: list[dict]) -> dict:
     has a ``source_location`` beats one that doesn't (the codebase genuinely
     emits ``source_location: None`` on some records, so this is a real
     distinction, not a hypothetical one — richness ignores it too, the same
-    gap #3775 closed one level up). Each step only changes the outcome when
-    the two sides disagree; whenever they agree (both or neither have a
-    source file, and both or neither have a location), the existing
-    richness-then-length ordering decides as before.
+    gap #3775 closed one level up). The location step only counts a
+    ``source_location`` when ``source_file`` is also present — a location
+    with no file isn't a real provenance signal and must not out-rank a
+    fully bare candidate on its own. Each step only changes the outcome
+    when the two sides disagree; whenever they agree (both or neither have
+    a source file, and both or neither have a counted location), the
+    existing richness-then-length ordering decides as before.
     """
     if not nodes:
         raise ValueError("Cannot pick winner from empty list")
 
     def _score(n: dict) -> tuple[int, int, int, int, int]:
         has_suffix = bool(_CHUNK_SUFFIX.search(n["id"]))
-        no_source = 0 if n.get("source_file") else 1
+        has_source = bool(n.get("source_file"))
+        no_source = 0 if has_source else 1
         # A source_file with no source_location (the codebase genuinely emits
         # `source_location: None`, see _merge_missing_attributes above) is a
         # weaker provenance claim than a fully located record -- richness
         # ignores source_location too, so without this check a candidate that
         # merely knows which file it came from could still out-score, and
         # replace, one that also knows exactly where in it (#3775 review).
-        no_location = 0 if n.get("source_location") else 1
+        # Gated on has_source too: a source_location with no source_file (a
+        # location pointing at an unstated file, which _merge_missing_attributes
+        # can produce by backfilling one field but not the other when a survivor's
+        # own source_file is an empty string rather than None) isn't a real
+        # provenance signal on its own, and must not out-rank a fully bare
+        # candidate by richness's own rules (PR 3786 review).
+        no_location = 0 if (has_source and n.get("source_location")) else 1
         return (1 if has_suffix else 0, no_source, no_location, -_content_richness(n), len(n["id"]))
 
     return min(nodes, key=_score)
