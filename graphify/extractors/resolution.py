@@ -860,7 +860,7 @@ def _resolve_lua_import_target(raw_module: str, str_path: str) -> str:
     return _make_id(raw_module)
 
 _VUE_SCRIPT_RE = re.compile(
-    r"""(<script\b(?:"[^"]*"|'[^']*'|[^>"'])*>)([\s\S]*?)(</script\s*>)""",
+    r"""(<script\b(?:"[^"]*"|'[^']*'|[^>"'])*>)([\s\S]*?)(</script\b[^>]*>)""",
     re.IGNORECASE,
 )
 

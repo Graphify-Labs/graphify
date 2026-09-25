@@ -64,16 +64,18 @@ def _safe_filename(url: str, suffix: str) -> str:
 
 def _detect_url_type(url: str) -> str:
     """Classify the URL for targeted extraction."""
-    lower = url.lower()
-    if "twitter.com" in lower or "x.com" in lower:
-        return "tweet"
-    if "arxiv.org" in lower:
-        return "arxiv"
-    if "github.com" in lower:
-        return "github"
-    if "youtube.com" in lower or "youtu.be" in lower:
-        return "youtube"
     parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+
+    if host in {"twitter.com", "x.com"} or host.endswith(".twitter.com") or host.endswith(".x.com"):
+        return "tweet"
+    if host == "arxiv.org" or host.endswith(".arxiv.org"):
+        return "arxiv"
+    if host == "github.com" or host.endswith(".github.com"):
+        return "github"
+    if host == "youtube.com" or host.endswith(".youtube.com") or host == "youtu.be" or host.endswith(".youtu.be"):
+        return "youtube"
+
     path = parsed.path.lower()
     if path.endswith(".pdf"):
         return "pdf"
