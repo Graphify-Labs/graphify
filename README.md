@@ -272,6 +272,10 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `ocaml` | OCaml `.ml`/`.mli` AST extraction | `uv tool install "graphifyy[ocaml]"` |
 | `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST extraction | `uv tool install "graphifyy[commonlisp]"` |
 | `robot` | Robot Framework `.robot`/`.resource` extraction (suites, test cases, keywords, keyword-call and resource/library import edges) | `uv tool install "graphifyy[robot]"` |
+| `r` | R `.r`/`.R` AST extraction | `uv tool install "graphifyy[r]"` |
+| `solidity` | Solidity `.sol` AST extraction | `uv tool install "graphifyy[solidity]"` |
+| `erlang` | Erlang `.erl`/`.hrl`/`.escript` AST extraction | `uv tool install "graphifyy[erlang]"` |
+| `vbnet` | VB.NET `.vb` AST extraction | `uv tool install "graphifyy[vbnet]"` |
 | `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
 | `all` | Everything above | `uv tool install "graphifyy[all]"` |
 
@@ -341,7 +345,8 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 
 | Type | Extensions |
 |------|-----------|
-| Code (37 tree-sitter grammars) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .ml .mli .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`, `.ml`/`.mli` requires `uv tool install graphifyy[ocaml]`; `.mts`/`.cts` reuse the TypeScript grammar, `.cc`/`.cxx` and CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
+| Code (41 tree-sitter grammars) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .r .R .sol .erl .hrl .escript .vb .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .ml .mli .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (R, Solidity, Erlang, and VB.NET require their matching optional extras; `.dm`/`.dme` requires `uv tool install graphifyy[dm]`, `.ml`/`.mli` requires `uv tool install graphifyy[ocaml]`; `.mts`/`.cts` reuse the TypeScript grammar, `.cc`/`.cxx` and CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
+| COBOL | `.cbl .cob .cobol .cpy` (dependency-free deterministic extraction for programs, sections, paragraphs, copybooks, static calls, and `PERFORM` relationships) |
 | Salesforce Apex | `.cls .trigger` (regex-based; classes, interfaces, enums, methods, triggers, SOQL/DML edges) |
 | Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install graphifyy[terraform]`) |
 | OCaml | `.ml .mli` (requires `uv tool install graphifyy[ocaml]`) |
