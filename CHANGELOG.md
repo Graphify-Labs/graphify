@@ -10,6 +10,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: a package/module name collision (`pkg/` package alongside a `pkg.py` module) no longer produces a phantom import cycle — the spurious provisional edge is retracted while genuine package-init and submodule edges are preserved (#3784, #3777, thanks @hopstreax).
 - Fix: Terraform secret redaction now also covers secrets nested inside list values (`configs = [{ password = "…" }]`), not just maps (#3762, #3644 follow-up, thanks @abhay-codes07).
 - Fix: `export` no longer rewrites unchanged wiki/Obsidian pages on every run — a page whose content is identical is left untouched (stable mtimes, clean git/Obsidian sync), while changed and new pages still write and orphaned pages are still swept (#3760, #3060, thanks @abhay-codes07).
+- Fix: `hook-guard search` now fires its `graphify query` nudge at most once per session (the strict read arm already did this), instead of on every matching Bash/Grep call — measured at 12,000+ repeated nudges across 250 sessions, ~600k wasted tokens. A subagent still gets its own first nudge even though it shares its parent's session id (#3756, thanks @HectorBernstorff).
 
 ## 0.9.66 (2026-09-22)
 
