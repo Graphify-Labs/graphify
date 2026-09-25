@@ -10,6 +10,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: a package/module name collision (`pkg/` package alongside a `pkg.py` module) no longer produces a phantom import cycle — the spurious provisional edge is retracted while genuine package-init and submodule edges are preserved (#3784, #3777, thanks @hopstreax).
 - Fix: Terraform secret redaction now also covers secrets nested inside list values (`configs = [{ password = "…" }]`), not just maps (#3762, #3644 follow-up, thanks @abhay-codes07).
 - Fix: `export` no longer rewrites unchanged wiki/Obsidian pages on every run — a page whose content is identical is left untouched (stable mtimes, clean git/Obsidian sync), while changed and new pages still write and orphaned pages are still swept (#3760, #3060, thanks @abhay-codes07).
+- Fix: `GRAPH_REPORT.md`'s Knowledge Gaps section no longer offers "undocumented components" as a possible reason for an isolated node when the graph has no document/paper/image nodes at all — that explanation only means anything when a semantic layer exists to be undocumented, and a code-only graph (`--code-only`, or any run where semantic extraction never happened) structurally can never have one (#3801, thanks @BloodyBeard).
 
 ## 0.9.66 (2026-09-22)
 
