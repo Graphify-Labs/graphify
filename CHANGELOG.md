@@ -222,6 +222,10 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: `graphify watch` no longer re-triggers on its own reads — read-only inotify events (`opened`, `closed_no_write`, emitted by the watcher's own AST rebuild) are dropped, while close-after-write and create/modify/move/delete still trigger; a no-op on the macOS/Windows backends that never emit them (thanks @Azeem1985).
 - Fix: `pip install graphifyy[postgres]` now carries the `tree-sitter-sql` grammar the introspection path needs, and a missing or ABI-incompatible grammar raises an actionable error instead of silently returning zero nodes (thanks @Azeem1985).
 
+## Unreleased
+
+- Feature: the `kimi` backend now sends an explicit `reasoning_effort` (default `max`, overridable via `GRAPHIFY_KIMI_EFFORT`) for Kimi models that support it — K3 advertises `valid_efforts ["low","high","max"]` on `/models`, and sending nothing let the server default (`"high"` for K3) apply silently while the gemini backend already carried an effort setting. Forwarded by the existing request plumbing; no behaviour change for models that ignore the field.
+
 ## 0.9.49 (2026-08-24)
 
 - Feature: `graphify merge-graphs` now links a type declaration that two repos share — same fully-qualified namespace and name, from different repos — with a `same_type_as` edge, so a shared contract type is navigable across the repo boundary; two unrelated types that merely share a short name are not linked (#3007, thanks @durmazoguzhan).

@@ -123,6 +123,12 @@ BACKENDS: dict[str, dict] = {
         "pricing": {"input": 0.74, "output": 4.66},  # USD per 1M tokens
         "temperature": None,  # kimi-k2.6 enforces its own fixed temperature; sending any value raises 400
         "max_tokens": 16384,
+        # Reasoning effort for Kimi models that support it (K3 advertises
+        # valid_efforts ["low","high","max"] on /models). Sending nothing lets the
+        # server default ("high" for K3) apply silently, while the gemini block
+        # above carries an effort setting. Forwarded as `reasoning_effort` by the
+        # existing request plumbing; models that ignore the field are unaffected.
+        "reasoning_effort": os.environ.get("GRAPHIFY_KIMI_EFFORT", "max"),
     },
     "ollama": {
         "base_url": _resolve_ollama_base_url("http://localhost:11434/v1"),
