@@ -1417,35 +1417,309 @@ def _uninstall_kilo_plugin(project_dir: Path) -> None:
         print(
             f"  {write_config_file.relative_to(project_dir)}  ->  plugin deregistered"
         )
-# OpenCode tool.execute.before plugin — fires before every tool call.
-# Injects a graph reminder into bash command output when graph.json exists.
+# OpenCode plugin — a JS port of the Claude Code PreToolUse guard pair
+# (`graphify hook-guard <search|read>`, see cli.py) onto opencode's
+# `tool.execute.before` / `tool.execute.after` plugin surface.
+#
+# opencode has no PreToolUse "additionalContext" channel, so the same guard
+# decisions ride two transports:
+#   - bash: echo '<nudge>' ; prepended to the command (before)
+#   - read / grep / glob: nudge appended to the tool result (after)
+# The decision logic mirrors the Python guards: executed-token bash analysis
+# (heredoc bodies and quoted spans dropped, wrappers skipped, #3121),
+# source-extension + in-project + staleness gating for reads (#1840), and the
+# opt-in once-per-session strict reminder (GRAPHIFY_HOOK_STRICT) that shares
+# the same hook_sessions markers and last_query_stamp as the Claude hook.
+# Fails open everywhere: any error means no nudge, never a blocked call.
 _OPENCODE_PLUGIN_JS = """\
-// graphify OpenCode plugin
-// Injects a knowledge graph reminder before bash tool calls when the graph exists.
+// graphify OpenCode plugin — port of graphify's Claude Code PreToolUse hooks
+// (graphify hook-guard search + read) to opencode's plugin surface.
 //
-// IMPORTANT: keep the reminder string free of backticks and $(...) constructs.
-// The hook prepends `echo "<reminder>" && <cmd>` to the user's bash command;
-// backticks inside the double-quoted echo trigger bash command substitution,
-// which both corrupts tool output and silently executes the very graphify
-// command we are only suggesting. Plain words render fine in opencode's TUI.
-import { existsSync } from "fs";
-import { join } from "path";
+// opencode has no PreToolUse "additionalContext" channel, so nudges ride two
+// ways:
+//   - bash: echo '<nudge>' ; prepended to the command (tool.execute.before)
+//   - read / grep / glob: nudge appended to the tool result (tool.execute.after)
+//
+// IMPORTANT: keep every prepended echo string free of backticks, $ and single
+// quotes. It is wrapped in `echo '...'` and glued onto the user's command;
+// backticks or $() inside would execute the graphify command we only suggest,
+// and a single quote would terminate the echo. Appended (after) texts are not
+// shell-interpreted, so they may use backticks freely.
+//
+// Guard semantics mirror the Claude hooks:
+//   - search guard: fires on the command's EXECUTED tokens (heredoc bodies and
+//     quoted spans dropped, wrappers skipped) so prose like
+//     `git commit -m "add flag support"` never triggers (#3121).
+//   - read guard: only in-project source files; output-dir reads are
+//     exempt; a file newer than graph.json (or a .needs_update marker) softens
+//     to the stale nudge instead of the mandatory one (#1840).
+//   - strict mode (GRAPHIFY_HOOK_STRICT=1): the first read per session of a
+//     file the graph indexes gets the once-only strict reminder; suppressed
+//     while <out>/cache/last_query_stamp is fresh (TTL
+//     GRAPHIFY_HOOK_STRICT_TTL, default 1800s). opencode cannot deny a tool
+//     from tool.execute.before, so the Claude "deny" degrades to a forceful
+//     once-per-session nudge. Session markers live in
+//     <out>/cache/hook_sessions/<sid>.denied — the same files the
+//     Claude Code hook writes, so the once-per-session budget is shared
+//     across harnesses.
+// Fails open everywhere: any error means no nudge, never a blocked call.
+// The output directory name honors GRAPHIFY_OUT (default graphify-out).
+import { existsSync, statSync, mkdirSync, openSync, closeSync, readFileSync, unlinkSync, readdirSync } from "fs";
+import { join, relative, resolve, basename, isAbsolute } from "path";
+
+const OUT = process.env.GRAPHIFY_OUT || "graphify-out";
+
+const ORIENT_ECHO =
+  "[" + OUT + "] knowledge graph at " + OUT + "/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context.";
+
+const SEARCH_ECHO =
+  "[" + OUT + "] MANDATORY: " + OUT + "/graph.json exists. Run graphify query with your question before grepping raw files. Only grep after graphify has oriented you, or to modify/debug specific lines.";
+
+const SEARCH_NUDGE =
+  'MANDATORY: ' + OUT + '/graph.json exists. You MUST run `graphify query "<question>"` before grepping raw files. Only grep after graphify has oriented you, or to modify/debug specific lines.';
+
+const READ_NUDGE =
+  'MANDATORY: ' + OUT + '/graph.json exists. You MUST run graphify before reading source files. Use: `graphify query "<question>"` (scoped subgraph), `graphify explain "<concept>"`, or `graphify path "<A>" "<B>"`. Only read raw files after graphify has oriented you, or to modify/debug specific lines. This rule applies to subagents too — include it in every subagent prompt involving code exploration.';
+
+const STALE_NUDGE =
+  OUT + '/graph.json exists but may be STALE for this file (the file changed after the last build). Prefer `graphify query "<question>"` for orientation, and run `graphify update` to refresh the graph. Reading the file directly is fine.';
+
+const STRICT_NUDGE =
+  'graphify strict mode: this project has a fresh knowledge graph that covers this file. Run `graphify query "<your question>"` (or `graphify explain` / `graphify path`) FIRST to orient yourself, then re-issue this Read — it will proceed normally. This reminder fires at most once per session; reading raw files to modify or debug specific lines is fine after one query. Apply the same rule in any subagent prompt that explores code.';
+
+const SOURCE_EXTS = new Set([
+  ".py", ".js", ".cjs", ".ts", ".tsx", ".jsx", ".astro", ".vue", ".svelte", ".go",
+  ".rs", ".java", ".rb", ".c", ".h", ".cpp", ".hpp", ".cc", ".cs", ".kt",
+  ".swift", ".php", ".scala", ".lua", ".sh", ".md", ".rst", ".txt", ".mdx",
+]);
+
+const SEARCH_COMMANDS = new Set([
+  "grep", "egrep", "fgrep", "zgrep", "rg", "ripgrep", "find", "fd", "ack", "ag",
+]);
+
+const COMMAND_WRAPPERS = new Set([
+  "sudo", "command", "exec", "nohup", "time", "nice", "ionice", "env",
+  "xargs", "timeout", "stdbuf", "doas",
+]);
+
+const HEREDOC_OPEN = /<<-?\\s*(['"]?)(\\w+)\\1/g;
+
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
+}
+
+function stripHeredocs(text) {
+  // Mirror cli.py: keep scanning AFTER each opener line, so the same opener
+  // never re-matches once its body is stripped (a reset to 0 would re-find
+  // the opener and drop the lines that follow the terminator).
+  let pos = 0;
+  for (;;) {
+    HEREDOC_OPEN.lastIndex = pos;
+    const m = HEREDOC_OPEN.exec(text);
+    if (!m) break;
+    const nl = text.indexOf("\\n", m.index + m[0].length);
+    if (nl === -1) break;
+    const termRe = new RegExp("^[ \\\\t]*" + escapeRe(m[2]) + "[ \\\\t]*$", "m");
+    const rest = text.slice(nl + 1);
+    const t = termRe.exec(rest);
+    if (!t) {
+      // Unterminated heredoc: everything after the opener line is body.
+      text = text.slice(0, nl + 1);
+      break;
+    }
+    text = text.slice(0, nl + 1) + rest.slice(t.index + t[0].length);
+    pos = nl + 1;
+  }
+  return text;
+}
+
+function bashInvokesSearch(cmdStr) {
+  let text = stripHeredocs(cmdStr);
+  // Anything quoted is an argument, never the executable.
+  text = text.replace(/'[^']*'/g, " ").replace(/"[^"]*"/g, " ");
+  for (const segment of text.split(/[|;&\\n]|\\$\\(|`|\\(|\\)|\\{|\\}/)) {
+    const tokens = segment.trim().split(/\\s+/).filter(Boolean);
+    let i = 0;
+    while (i < tokens.length) {
+      const tok = tokens[i];
+      if (tok.split("/").pop().includes("=") && !tok.startsWith("-") && !tok.startsWith("/")) {
+        i++; // VAR=value prefix
+        continue;
+      }
+      let name = tok.replaceAll("\\\\", "/").split("/").pop().toLowerCase();
+      if (name.endsWith(".exe")) name = name.slice(0, -4);
+      if (COMMAND_WRAPPERS.has(name)) {
+        i++;
+        while (i < tokens.length && tokens[i].startsWith("-")) i++;
+        // skip positional wrapper arguments (`timeout 10`, `timeout -k 5 10`,
+        // `nice -n 5`): non-flag tokens until the wrapped command (a search
+        // tool, git, a path or VAR=value)
+        while (i < tokens.length && !tokens[i].startsWith("-") && !SEARCH_COMMANDS.has(tokens[i].toLowerCase()) && tokens[i].toLowerCase() !== "git" && !/[/=]/.test(tokens[i])) i++;
+        continue;
+      }
+      if (SEARCH_COMMANDS.has(name)) return true;
+      if (name === "git" && tokens.slice(i + 1, i + 4).some((t) => t === "grep" && !t.startsWith("-"))) return true;
+      break; // first real token decides this segment
+    }
+  }
+  return false;
+}
+
+function strictEnabled() {
+  const v = (process.env.GRAPHIFY_HOOK_STRICT || "").trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(v)) return true;
+  if (["0", "false", "no", "off"].includes(v)) return false;
+  return false;
+}
+
+function queryStampFresh(directory) {
+  try {
+    const ttl = parseFloat(process.env.GRAPHIFY_HOOK_STRICT_TTL || "1800") * 1000;
+    const stamp = join(directory, OUT, "cache", "last_query_stamp");
+    return Date.now() - statSync(stamp).mtimeMs < ttl;
+  } catch {
+    return false;
+  }
+}
+
+function markSessionDenied(directory, sessionID) {
+  const sid = String(sessionID || "").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
+  if (!sid) return false;
+  try {
+    const d = join(directory, OUT, "cache", "hook_sessions");
+    mkdirSync(d, { recursive: true });
+    const fd = openSync(join(d, sid + ".denied"), "wx");
+    closeSync(fd);
+    try {
+      const cutoff = Date.now() - 86400000;
+      for (const e of readdirSync(d)) {
+        const p = join(d, e);
+        try {
+          if (statSync(p).mtimeMs < cutoff) unlinkSync(p);
+        } catch {}
+      }
+    } catch {}
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function targetIsIndexed(directory, filePath) {
+  if (!filePath) return true;
+  try {
+    const mp = join(directory, OUT, "manifest.json");
+    if (statSync(mp).size > 2000000) return true;
+    const manifest = JSON.parse(readFileSync(mp, "utf8"));
+    if (!manifest || typeof manifest !== "object" || !Object.keys(manifest).length) return true;
+    const keys = new Set(Object.keys(manifest).map((k) => String(k).replaceAll("\\\\", "/")));
+    const abskey = String(filePath).replaceAll("\\\\", "/");
+    if (keys.has(abskey)) return true;
+    const rels = new Set();
+    try {
+      const r = relative(directory, resolve(filePath)).replaceAll("\\\\", "/");
+      if (r) rels.add(r);
+    } catch {}
+    rels.add(basename(filePath));
+    for (const r of rels) {
+      if (keys.has(r)) return true;
+      for (const k of keys) if (k.endsWith("/" + r) || k === r) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function fileTails(vals) {
+  const tails = [];
+  for (const v of vals) {
+    const seg = v.toLowerCase().replaceAll("\\\\", "/").split("/").pop();
+    if (seg.includes(".")) tails.push("." + seg.split(".").pop());
+  }
+  return tails;
+}
 
 export const GraphifyPlugin = async ({ directory }) => {
-  let reminded = false;
+  const graphPath = join(directory, OUT, "graph.json");
+  const oriented = new Set();
+  // Cap the per-session set so a long-lived server process can't grow it
+  // without bound (one sessionID per opencode session, but the plugin module
+  // outlives any single session).
+  const ORIENTED_CAP = 256;
+
+  function inProject(v) {
+    if (!isAbsolute(v)) return true; // relative paths anchor at the project cwd
+    try {
+      const r = relative(directory, resolve(v));
+      return r === "" || (!r.startsWith("..") && !isAbsolute(r));
+    } catch {
+      return false;
+    }
+  }
+
+  function readGuard(tool, args, sessionID) {
+    const filePath = String(args.file_path ?? args.filePath ?? "");
+    const pathArg = String(args.path ?? "");
+    const pattern = String(args.pattern ?? "");
+    const vals = [filePath, pathArg, pattern].filter(Boolean);
+    if (!vals.length) return null;
+    const joined = vals.join(" ").toLowerCase().replaceAll("\\\\", "/");
+    if (joined.includes(OUT + "/")) return null;
+    if (!fileTails(vals).some((t) => SOURCE_EXTS.has(t))) return null;
+    const explicit = [filePath, pathArg].filter(Boolean);
+    if (explicit.length && !explicit.some((v) => inProject(v))) return null;
+    let stale = false;
+    try {
+      if (filePath && statSync(filePath).mtimeMs > statSync(graphPath).mtimeMs) stale = true;
+    } catch {
+      stale = false;
+    }
+    if (!stale && existsSync(join(directory, OUT, ".needs_update"))) stale = true;
+    if (stale) return STALE_NUDGE;
+    if (
+      strictEnabled() &&
+      tool === "read" &&
+      !queryStampFresh(directory) &&
+      targetIsIndexed(directory, filePath) &&
+      markSessionDenied(directory, sessionID)
+    ) {
+      return STRICT_NUDGE;
+    }
+    return READ_NUDGE;
+  }
 
   return {
     "tool.execute.before": async (input, output) => {
-      if (reminded) return;
-      if (!existsSync(join(directory, "graphify-out", "graph.json"))) return;
-
-      if (input.tool === "bash") {
-        // ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a statement
-        // separator, breaking the first bash command of the session (#1646).
-        output.args.command =
-          'echo "[graphify] knowledge graph at graphify-out/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." ; ' +
-          output.args.command;
-        reminded = true;
+      if (!existsSync(graphPath)) return;
+      const tool = String(input.tool || "").toLowerCase();
+      if (tool === "bash") {
+        const cmd = String(output.args?.command ?? "");
+        const nudges = [];
+        if (!oriented.has(input.sessionID)) {
+          oriented.add(input.sessionID);
+          if (oriented.size > ORIENTED_CAP) oriented.delete(oriented.values().next().value);
+          nudges.push(ORIENT_ECHO);
+        }
+        if (cmd && bashInvokesSearch(cmd)) nudges.push(SEARCH_ECHO);
+        if (nudges.length) {
+          // ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a statement
+          // separator (#1646).
+          output.args.command = "echo '" + nudges.join(" ") + "' ; " + cmd;
+        }
+      }
+    },
+    "tool.execute.after": async (input, output) => {
+      if (!existsSync(graphPath)) return;
+      const tool = String(input.tool || "").toLowerCase();
+      let nudge = null;
+      if (tool === "grep") {
+        nudge = SEARCH_NUDGE;
+      } else if (tool === "read" || tool === "glob") {
+        nudge = readGuard(tool, output.args || {}, input.sessionID);
+      }
+      if (nudge) {
+        output.output = (output.output ? output.output + "\\n\\n" : "") + nudge;
       }
     },
   };

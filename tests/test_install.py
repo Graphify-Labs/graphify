@@ -938,25 +938,31 @@ def test_opencode_agents_install_writes_plugin(tmp_path):
 
 
 def test_opencode_plugin_reminder_has_no_backticks(tmp_path):
-    """The bash reminder string must not contain backticks or $(...) (regression test for #1413).
+    """The bash reminder string must be shell-inert (regression test for #1413).
 
-    The plugin prepends `echo "<reminder>" && <cmd>` to the user's bash command.
+    The plugin prepends `echo '<nudges>' ; <cmd>` to the user's bash command.
     Backticks or $() inside the reminder trigger bash command substitution
     when the echo runs, which both corrupts tool output and silently executes
-    the very graphify command we are only suggesting.
+    the very graphify command we are only suggesting. A single quote would
+    terminate the echo early, so the echoed text must also avoid it.
     """
     _agents_install(tmp_path, "opencode")
     plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
     body = plugin.read_text()
-    # Extract the echoed reminder string literal between the double-quotes
-    # of the `output.args.command = 'echo "..." && ' +` line.
+    # Only the ECHOED literals are shell-interpreted (ORIENT_ECHO / SEARCH_ECHO,
+    # both named _ECHO). The `tool.execute.after` nudges ride the tool result
+    # and are never shell-interpreted, so they may contain backticks.
     import re
 
-    m = re.search(r'echo "([^"]*)"', body)
-    assert m, "echo reminder not found in plugin body"
-    reminder = m.group(1)
-    assert "`" not in reminder, f"backtick in reminder would trigger command substitution: {reminder!r}"
-    assert "$(" not in reminder, f"$() in reminder would trigger command substitution: {reminder!r}"
+    echo_block = re.search(r"const ORIENT_ECHO[\s\S]*?const SEARCH_ECHO =[^;]*;", body)
+    assert echo_block, "echo reminder constants not found in plugin body"
+    literals = re.findall(r'"([^"\n]*)"', echo_block.group(0))
+    reminders = [s for s in literals if "graph" in s and "query" in s]
+    assert reminders, "echo reminder literals not found in plugin body"
+    for reminder in reminders:
+        assert "`" not in reminder, f"backtick in echoed text would trigger command substitution: {reminder!r}"
+        assert "$" not in reminder, f"$ in echoed text would trigger command substitution: {reminder!r}"
+        assert "'" not in reminder, f"single quote in echoed text would terminate the echo: {reminder!r}"
 
 
 def test_opencode_plugin_uses_semicolon_not_ampersand(tmp_path):
@@ -966,8 +972,10 @@ def test_opencode_plugin_uses_semicolon_not_ampersand(tmp_path):
     in PowerShell 5.1, Bash, and POSIX shells."""
     _agents_install(tmp_path, "opencode")
     body = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
-    # The prepend line ends with the separator before `' +`.
-    assert '" ; \' +' in body or '." ; \' +' in body, "reminder should join with ';'"
+    # The prepend line joins with a single-quoted echo and ';'.
+    assert "\"echo '\" + nudges.join(\" \") + \"' ; \" + cmd" in body, (
+        "reminder should join with ';'"
+    )
     assert '" && \' +' not in body, "'&&' breaks PowerShell 5.1 (#1646)"
 
 
