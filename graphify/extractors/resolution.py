@@ -1183,7 +1183,7 @@ def _apply_symbol_resolution_facts(
         for edge in edges
     }
 
-    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None, type_only: bool = False) -> None:
+    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None, type_only: bool = False, imported_symbol: str | None = None) -> None:
         key = (source, target, relation, context or "")
         if key in existing_edges:
             return
@@ -1211,6 +1211,8 @@ def _apply_symbol_resolution_facts(
         # Erased at compile time (#3123): Import Cycles skips these edges.
         if type_only:
             edge["type_only"] = True
+        if imported_symbol is not None:
+            edge["imported_symbol"] = imported_symbol
         edges.append(edge)
 
     for declaration in facts.declarations:
@@ -1398,9 +1400,13 @@ def _apply_symbol_resolution_facts(
         target_path = Path(target_file)
         site = (source_path, str(edge.get("source_location", "")), _resolve_cached(target_path))
         for export_fact in export_sites.get(site, []):
-            expected = _make_id(_file_stem(target_path), export_fact.target_name)
-            if edge.get("target") != expected:
-                continue
+            if edge.get("imported_symbol") is not None:
+                if edge.get("imported_symbol") != export_fact.target_name:
+                    continue
+            else:
+                expected = _make_id(_file_stem(target_path), export_fact.target_name)
+                if edge.get("target") != expected:
+                    continue
             candidates, _ = exported_candidates(
                 (_resolve_cached(export_fact.target_path), export_fact.target_name), frozenset()
             )
@@ -1412,25 +1418,88 @@ def _apply_symbol_resolution_facts(
                     edge["target_file"] = str(path_by_resolved.get(origin[0], origin[0]))
             break
 
+    import_edges_by_site: dict[tuple[Path, str, str], list[dict]] = {}
+    import_edges_by_target: dict[tuple[Path, str, str], list[dict]] = {}
+    for edge in edges:
+        if edge.get("relation") == "imports" and edge.get("context") == "import":
+            source_path = _js_source_path(str(edge.get("source_file", "")), root)
+            if source_path is None:
+                continue
+            loc = str(edge.get("source_location", ""))
+            sym = edge.get("imported_symbol")
+            if sym is not None:
+                import_edges_by_site.setdefault((source_path, loc, sym), []).append(edge)
+            else:
+                tgt = str(edge.get("target", ""))
+                import_edges_by_target.setdefault((source_path, loc, tgt), []).append(edge)
+
     for import_fact in facts.imports:
-        source_id = source_file_id.get(_resolve_cached(import_fact.file_path))
+        resolved_file = _resolve_cached(import_fact.file_path)
+        source_id = source_file_id.get(resolved_file)
         if source_id is None:
             continue
-        origin_path, origin_symbol = resolve_exported_origin(
-            import_fact.target_path,
-            import_fact.imported_name,
-        )
+        resolved_target = _resolve_cached(import_fact.target_path)
+        candidates, _ = exported_candidates((resolved_target, import_fact.imported_name), frozenset())
+        if len(candidates) == 1:
+            origin_path, origin_symbol = next(iter(candidates))
+        elif len(candidates) > 1:
+            continue
+        else:
+            origin_path, origin_symbol = resolve_exported_origin(
+                import_fact.target_path,
+                import_fact.imported_name,
+            )
         target_id = symbol_nodes.get((origin_path, origin_symbol))
         if target_id is None:
             continue
-        add_edge(
-            source_id,
-            target_id,
-            "imports",
-            "import",
-            import_fact.line,
-            import_fact.file_path,
-        )
+
+        loc = f"L{import_fact.line}"
+        key_sym = (resolved_file, loc, import_fact.imported_name)
+        matched_edge = None
+        if key_sym in import_edges_by_site and import_edges_by_site[key_sym]:
+            matched_edge = import_edges_by_site[key_sym].pop(0)
+        else:
+            expected_unsalted = _make_id(_file_stem(import_fact.target_path), import_fact.imported_name)
+            key_tgt = (resolved_file, loc, expected_unsalted)
+            if key_tgt in import_edges_by_target and import_edges_by_target[key_tgt]:
+                matched_edge = import_edges_by_target[key_tgt].pop(0)
+
+        target_file_str = str(path_by_resolved.get(origin_path, origin_path))
+        local_alias = import_fact.local_name if import_fact.local_name != import_fact.imported_name else None
+
+        if matched_edge is not None:
+            old_key = (
+                str(matched_edge.get("source")),
+                str(matched_edge.get("target")),
+                str(matched_edge.get("relation")),
+                str(matched_edge.get("context") or ""),
+            )
+            existing_edges.discard(old_key)
+            matched_edge["target"] = target_id
+            matched_edge["target_file"] = target_file_str
+            if local_alias is not None:
+                matched_edge["local_alias"] = local_alias
+            if matched_edge.get("imported_symbol") is None:
+                matched_edge["imported_symbol"] = import_fact.imported_name
+            new_key = (
+                str(matched_edge.get("source")),
+                str(target_id),
+                str(matched_edge.get("relation")),
+                str(matched_edge.get("context") or ""),
+            )
+            existing_edges.add(new_key)
+        else:
+            add_edge(
+                source_id,
+                target_id,
+                "imports",
+                "import",
+                import_fact.line,
+                import_fact.file_path,
+                target_file=target_file_str,
+                local_alias=local_alias,
+                imported_symbol=import_fact.imported_name,
+            )
 
     # #1146: emit file-to-file imports_from edges for package-form submodule imports.
     # #3777: retract provisional `imports_from` AST edges whose package ID coincided

@@ -924,6 +924,7 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                                     # a barrel defines no symbols (#1983). Transient,
                                     # stripped at build like the #1814 stamp.
                                     "target_file": str(resolved_path),
+                                    "imported_symbol": sym,
                                 })
         else:
             # Handle: import { Foo, type Bar } from './bar'
@@ -947,6 +948,7 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
                                             "weight": 1.0,
                                             # See the re_exports stamp above (#1983).
                                             "target_file": str(resolved_path),
+                                            "imported_symbol": sym,
                                         })
 
 

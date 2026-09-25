@@ -892,6 +892,100 @@ def _python_underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, s
     return _make_id(plain_nid, salt)
 
 
+def _ts_pre_scan_case_collisions(root_node, source: bytes, stem: str) -> dict[str, str]:
+    """Pre-scan a TypeScript/JavaScript module for case-only symbol collisions (#3726).
+
+    Node IDs are casefolded globally by `ids.py:make_id`, so distinct declarations
+    differing only in casing (e.g. `interface FallListe` vs `function fallListe`)
+    produce the identical plain node ID. `add_node` would then silently drop
+    whichever declaration is encountered second.
+
+    This pre-scan collects top-level declaration names, groups them by their
+    un-salted plain node ID (`_make_id(stem, name)`), and identifies collision
+    groups containing 2 or more distinct authored names.
+
+    For every member of a genuine case-only collision group, a deterministic salt
+    is appended:
+        salt = hashlib.sha1(raw_name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+        salted_nid = f"{plain_nid}_{salt}"
+
+    Legitimate declaration merging and overloads (identical authored names, such
+    as multiple `interface Window` declarations or function overloads) produce a
+    set of size 1 and are not salted, preserving their existing behavior.
+
+    Returns:
+        dict[str, str]: Mapping from raw_name -> salted_nid for colliding symbols.
+    """
+    groups: dict[str, set[str]] = {}
+
+    def _record(name: str) -> None:
+        if not name or not normalize_id(name):
+            return
+        plain_nid = _make_id(stem, name)
+        groups.setdefault(plain_nid, set()).add(name)
+
+    def _extract_from_declaration(decl) -> None:
+        dtype = decl.type
+        if dtype in (
+            "class_declaration",
+            "abstract_class_declaration",
+            "interface_declaration",
+            "enum_declaration",
+            "type_alias_declaration",
+            "function_declaration",
+            "generator_function_declaration",
+            "function_signature",
+            "internal_module",
+            "module",
+        ):
+            name_node = decl.child_by_field_name("name")
+            if name_node is not None:
+                name = _read_text(name_node, source)
+                if name_node.type == "string":
+                    name = name.strip("'\"`")
+                if name:
+                    _record(name)
+        elif dtype in ("lexical_declaration", "variable_declaration"):
+            for child in decl.children:
+                if child.type == "variable_declarator":
+                    name_node = child.child_by_field_name("name")
+                    if name_node is None:
+                        continue
+                    if name_node.type == "identifier":
+                        name = _read_text(name_node, source)
+                        if name:
+                            _record(name)
+                    elif name_node.type == "object_pattern":
+                        for prop in name_node.named_children:
+                            if prop.type == "shorthand_property_identifier_pattern":
+                                pname = _read_text(prop, source)
+                                if pname:
+                                    _record(pname)
+                            elif prop.type == "pair_pattern":
+                                kn = prop.child_by_field_name("key")
+                                if kn:
+                                    pname = _read_text(kn, source)
+                                    if pname:
+                                        _record(pname)
+
+    for child in root_node.children:
+        if child.type in ("export_statement", "ambient_declaration"):
+            for sub in child.children:
+                if sub.is_named and sub.type not in ("export", "default", "declare"):
+                    _extract_from_declaration(sub)
+        else:
+            _extract_from_declaration(child)
+
+    overrides: dict[str, str] = {}
+    for plain_nid, names in groups.items():
+        if len(names) >= 2:
+            for name in names:
+                salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+                overrides[name] = f"{plain_nid}_{salt}"
+
+    return overrides
+
+
 def _swift_pre_scan(root_node, source: bytes) -> tuple[set[str], set[str]]:
     """Pre-scan a Swift compilation unit and return (protocol_names, class_like_names)."""
     protocols: set[str] = set()
@@ -2403,7 +2497,8 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    callable_def_nids: set | None = None,
                    local_bound_names: dict | None = None,
                    closure_locals_by_body: dict | None = None,
-                   config=None) -> bool:
+                   config=None,
+                   ts_case_overrides: dict[str, str] | None = None) -> bool:
     """Handle lexical_declaration (arrow functions, CJS requires, module-level const literals) for JS/TS. Returns True if handled."""
     # CommonJS / prototype member assignments whose value is a function:
     #   exports.X = () => {}     → file-contained function  X()
@@ -2574,7 +2669,11 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                             # leak the scan path (#1899); skip it (no graph signal).
                             if not normalize_id(func_name):
                                 continue
-                            func_nid = _make_id(stem, func_name)
+                            func_nid = (
+                                ts_case_overrides[func_name]
+                                if ts_case_overrides and func_name in ts_case_overrides
+                                else _make_id(stem, func_name)
+                            )
                             add_node_fn(func_nid, f"{func_name}()", line)
                             add_edge_fn(file_nid, func_nid, "contains", line)
                             if callable_def_nids is not None:
@@ -2662,14 +2761,22 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                                     export_name = None
                                 if not export_name or not normalize_id(export_name):
                                     continue
-                                prop_nid = _make_id(stem, export_name)
+                                prop_nid = (
+                                    ts_case_overrides[export_name]
+                                    if ts_case_overrides and export_name in ts_case_overrides
+                                    else _make_id(stem, export_name)
+                                )
                                 add_node_fn(prop_nid, export_name, line)
                                 add_edge_fn(file_nid, prop_nid, "contains", line)
                             const_found = True
                         elif name_node:
                             const_name = _read_text(name_node, source)
                             line = child.start_point[0] + 1
-                            const_nid = _make_id(stem, const_name)
+                            const_nid = (
+                                ts_case_overrides[const_name]
+                                if ts_case_overrides and const_name in ts_case_overrides
+                                else _make_id(stem, const_name)
+                            )
                             add_node_fn(const_nid, const_name, line)
                             add_edge_fn(file_nid, const_nid, "contains", line)
                             const_found = True
@@ -2717,7 +2824,8 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
 def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
                    parent_class_nid: str | None, add_node_fn, add_edge_fn,
-                   walk_fn) -> bool:
+                   walk_fn,
+                   ts_case_overrides: dict[str, str] | None = None) -> bool:
     """Emit enum member nodes, and a container node for a TS `namespace`/`module`.
 
     `namespace Foo {}` parses as `internal_module` (with `name`/`body` fields);
@@ -2795,7 +2903,11 @@ def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
             if name_node.type == "string":
                 ns_name = ns_name.strip("'\"`")
             if ns_name:
-                ns_nid = _make_id(stem, ns_name)
+                ns_nid = (
+                    ts_case_overrides[ns_name]
+                    if ts_case_overrides and ns_name in ts_case_overrides
+                    else _make_id(stem, ns_name)
+                )
                 line = node.start_point[0] + 1
                 add_node_fn(ns_nid, ns_name, line)
                 add_edge_fn(file_nid, ns_nid, "contains", line)
@@ -3698,6 +3810,10 @@ def _extract_generic(
     if config.ts_module == "tree_sitter_python":
         python_underscore_groups = _python_pre_scan_underscore_collisions(root, source, stem)
 
+    ts_case_overrides: dict[str, str] = {}
+    if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
+        ts_case_overrides = _ts_pre_scan_case_collisions(root, source, stem)
+
     def add_node(nid: str, label: str, line: int, *, node_type: str | None = None,
                  metadata: dict | None = None) -> None:
         if nid in seen_ids:
@@ -3741,9 +3857,17 @@ def _extract_generic(
         edges.append(edge)
 
     def ensure_named_node(name: str, line: int) -> str:
-        nid = _make_id(stem, ".".join(namespace_stack), name)
-        if nid in seen_ids:
-            return nid
+        if (
+            config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+            and name in ts_case_overrides
+        ):
+            nid = ts_case_overrides[name]
+            if nid in seen_ids:
+                return nid
+        else:
+            nid = _make_id(stem, ".".join(namespace_stack), name)
+            if nid in seen_ids:
+                return nid
         nid = _make_id(name)
         if nid not in seen_ids:
             # The name isn't defined in this file, so this is a cross-file reference
@@ -3860,7 +3984,15 @@ def _extract_generic(
             if config.ts_module == "tree_sitter_ruby":
                 ruby_segments = class_name.split("::")
                 class_name = "::".join(ruby_namespace + ruby_segments)
-            class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
+            if (
+                parent_class_nid is None
+                and not namespace_stack
+                and config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+                and class_name in ts_case_overrides
+            ):
+                class_nid = ts_case_overrides[class_name]
+            else:
+                class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
             line = node.start_point[0] + 1
             metadata = None
             ruby_reopened = (
@@ -5094,7 +5226,13 @@ def _extract_generic(
                 )
                 add_edge(parent_class_nid, func_nid, "method", line)
             else:
-                func_nid = _make_id(stem, sanitized_name)
+                if (
+                    config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
+                    and sanitized_name in ts_case_overrides
+                ):
+                    func_nid = ts_case_overrides[sanitized_name]
+                else:
+                    func_nid = _make_id(stem, sanitized_name)
                 if config.ts_module == "tree_sitter_python":
                     func_nid = _python_underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups
@@ -5568,14 +5706,16 @@ def _extract_generic(
                               nodes, edges, seen_ids, function_bodies,
                               parent_class_nid, add_node, add_edge,
                               callable_def_nids, local_bound_names,
-                              closure_locals_by_body, config=config):
+                              closure_locals_by_body, config=config,
+                              ts_case_overrides=ts_case_overrides):
                 return
 
         # TS enum members, and namespace / module containers
         if config.ts_module == "tree_sitter_typescript":
             if _ts_extra_walk(node, source, file_nid, stem, str_path,
                               nodes, edges, seen_ids, function_bodies,
-                              parent_class_nid, add_node, add_edge, walk):
+                              parent_class_nid, add_node, add_edge, walk,
+                              ts_case_overrides=ts_case_overrides):
                 return
 
         if config.ts_module == "tree_sitter_c_sharp":
