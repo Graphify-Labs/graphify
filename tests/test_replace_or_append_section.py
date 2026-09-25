@@ -134,3 +134,40 @@ def test_fresh_write_and_reinstall_produce_byte_identical_output():
     first = _replace_or_append_section("", MARKER, NEW)
     second = _replace_or_append_section(first, MARKER, NEW)
     assert first == second
+
+
+def test_an_orphaned_legacy_generation_never_swallows_user_content_around_it():
+    """Review finding on PR 3803: with two marker occurrences (an orphaned
+    generation from a prior tier-4 append, and the current sentinel-bounded
+    one), plus a user section BEFORE the orphan and another AFTER the
+    current section, every piece of unrelated content must survive both a
+    re-install and an uninstall -- the sentinel search anchors only on the
+    LAST occurrence and must never reach backward past it."""
+    h1_marker = "# graphify"
+    before = (
+        "# graphify\n"
+        "old content v1\n"
+        "<!-- graphify-section-end -->\n"
+        "\n"
+        "## User Section A\n"
+        "keep me\n"
+        "\n"
+        "# graphify\n"
+        "old content v2\n"
+        "<!-- graphify-section-end -->\n"
+        "\n"
+        "## User Section B\n"
+        "keep me too\n"
+    )
+    registration = "# graphify\nnew content v3\n"
+    after = _replace_or_append_section(before, h1_marker, registration, boundary_prefix="# ")
+    assert "old content v1" in after  # orphaned generation untouched
+    assert "## User Section A" in after and "keep me\n" in after
+    assert "new content v3" in after  # the active generation was updated
+    assert "## User Section B" in after and "keep me too" in after
+
+    removed = _remove_marker_section(before, h1_marker, boundary_prefix="# ")
+    assert removed is not None
+    assert "old content v1" not in removed and "old content v2" not in removed
+    assert "## User Section A" in removed and "keep me\n" in removed
+    assert "## User Section B" in removed and "keep me too" in removed
