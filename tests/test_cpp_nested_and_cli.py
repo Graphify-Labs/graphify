@@ -281,6 +281,9 @@ def test_cpp_export_macros_survive(tmp_path):
     widget_inherits = [e for e in inherits_edges if nodes.get(e["source"]) == "Widget" and nodes.get(e["target"]) == "BaseWidget"]
     assert widget_inherits, "Widget -> BaseWidget inherits edge should reappear after macro blanking"
 
+    widget3_inherits = [e for e in inherits_edges if nodes.get(e["source"]) == "Widget3" and nodes.get(e["target"]) == "BaseWidget"]
+    assert widget3_inherits, "Widget3 -> BaseWidget inherits edge should reappear after macro blanking"
+
 
 def test_cpp_export_macro_does_not_break_variables(tmp_path):
     """Ensure elaborated type variable declarations don't trigger macro stripping."""

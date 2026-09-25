@@ -2823,7 +2823,7 @@ _CPP_EXPORT_MACRO_RE = re.compile(
     # Negative lookahead: the matched class name cannot be exactly "final"
     rb"(?!final[ \t\r\n]*[:{])"
     # Match the actual class name (and optional final), ending with `:` or `{`
-    rb"([A-Za-z_][A-Za-z0-9_]*(?:[ \t]+final)?[ \t\r\n]*)([:{])"
+    rb"([A-Za-z_][A-Za-z0-9_]*(?:[ \t\r\n]+final)?[ \t\r\n]*)([:{])"
 )
 
 
@@ -2832,7 +2832,8 @@ def _normalize_cpp_export_macros(source: bytes) -> bytes:
 
     Single ALL-CAPS identifier macros (and stacked ones) are handled.
     Note: paren-attribute macros like ``__declspec(dllexport)`` and
-    ``__attribute__((visibility("default")))`` are currently unsupported.
+    ``__attribute__((visibility("default")))`` are currently unsupported,
+    as well as template specializations (e.g. ``template<> class MODULE_API Widget<int>``).
     """
 
     def repl(m: re.Match[bytes]) -> bytes:
