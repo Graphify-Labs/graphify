@@ -609,18 +609,29 @@ def _replace_or_append_section(
     content), followed by ``_SECTION_END_MARKER`` on its own line.
 
     If a real ``marker`` heading exists, replace the existing section in
-    place. The section's end is found, in order of preference:
+    place. The section's end is found by scanning forward from the marker
+    for whichever of these is reached FIRST -- not by preferring one kind
+    of match over the other regardless of position:
 
-    1. An exact ``_SECTION_END_MARKER`` line after the marker -- written by
-       this function itself on a prior call, so it names the section's real
-       end exactly, regardless of the section's own internal structure (a
-       multi-paragraph template has its own internal blank lines, which is
-       why a blank line can't be used as a general-purpose boundary either).
-    2. The next line starting with ``boundary_prefix`` (default the next H2).
-       This lets an older install (predating the end marker) still receive
-       an updated copy without the user uninstalling and reinstalling first
-       (issue #580).
-    3. Neither exists, but no line anywhere after the marker looks like an
+    1. An exact ``_SECTION_END_MARKER`` line -- written by this function
+       itself on a prior call, so it names the section's real end exactly,
+       regardless of the section's own internal structure (a multi-paragraph
+       template has its own internal blank lines, which is why a blank line
+       can't be used as a general-purpose boundary either). Scanning must
+       stop at the FIRST such line reached, not just the first one found
+       overall: a user who inserts their own heading between the marker's
+       content and its (easy to miss, since an HTML comment renders
+       invisibly) end marker -- editing the file directly rather than
+       through the installer -- has that heading precede the marker's own
+       sentinel in the file, and it must end the section there instead of
+       being swallowed as if it were more of graphify's own content (PR
+       3803 review).
+    2. A line starting with ``boundary_prefix`` (default the next H2). This
+       lets an older install (predating the end marker) still receive an
+       updated copy without the user uninstalling and reinstalling first
+       (issue #580) -- and, per the point above, also catches a user's own
+       inserted heading before an eventual stray/misplaced end marker.
+    3. Neither is reached before EOF, but no line anywhere after the marker looks like an
        ATX heading of *any* level either: nothing suggests a separate section
        begins somewhere in the trailing content, so it's judged to be more of
        graphify's own old, unmarked prose and EOF is used as the end.
@@ -664,11 +675,9 @@ def _replace_or_append_section(
         if lines[j].strip() == _SECTION_END_MARKER:
             end = j + 1  # consume the sentinel itself, so it never duplicates
             break
-    if end is None:
-        for j in range(start + 1, len(lines)):
-            if lines[j].startswith(boundary_prefix):
-                end = j
-                break
+        if lines[j].startswith(boundary_prefix):
+            end = j
+            break
     if end is None and not _has_heading_before_eof(lines, start):
         # No end marker, no boundary_prefix heading, and nothing that even
         # looks like a heading anywhere in the trailing content -- safe to
@@ -703,11 +712,15 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
     regex ``## graphify`` was unanchored, so it matched inside a user's
     ``### graphify`` heading and deleted hand-written content (#2062) — the same
     class of bug the install side hardened against in #1688. Each section's end
-    is found the same way ``_replace_or_append_section`` finds it: an exact
-    ``_SECTION_END_MARKER`` line first (written by an install from this fix
-    onward), falling back to the next ``boundary_prefix`` heading (default the
-    next H2) for a section that predates the end marker. All exact-heading
-    sections are removed (pre-#1688 installs could leave duplicates).
+    is found the same way ``_replace_or_append_section`` finds it: scanning
+    forward from the marker for whichever is reached FIRST, an exact
+    ``_SECTION_END_MARKER`` line (written by an install from this fix onward)
+    or a ``boundary_prefix`` heading (default the next H2) for a section that
+    predates the end marker -- not by preferring the sentinel regardless of
+    position, which would let a user's own heading inserted before an
+    eventual stray/misplaced end marker be swallowed along with it (PR 3803
+    review). All exact-heading sections are removed (pre-#1688 installs
+    could leave duplicates).
 
     When NEITHER an end marker NOR a later ``boundary_prefix`` heading exists
     after an occurrence, EOF is used as the end ONLY when nothing that looks
@@ -739,11 +752,9 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
             if lines[j].strip() == _SECTION_END_MARKER:
                 end = j + 1  # consume the sentinel itself
                 break
-        if end is None:
-            for j in range(start + 1, len(lines)):
-                if lines[j].startswith(boundary_prefix):
-                    end = j
-                    break
+            if lines[j].startswith(boundary_prefix):
+                end = j
+                break
         if end is None and not _has_heading_before_eof(lines, start):
             end = len(lines)
         if end is None:
