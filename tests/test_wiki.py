@@ -309,6 +309,33 @@ def test_to_wiki_god_node_label_case_collides_with_community(tmp_path):
     assert len(set(lowered)) == len(lowered), [p.name for p in articles]
 
 
+def test_to_wiki_article_labelled_index_does_not_overwrite_index_md(tmp_path):
+    """index.md is the wiki's reserved entry point. A community whose label slugs
+    to "index" (the default hub labeler names a community after its hub node, so a
+    hub `index()` view or an `Index` class does this) or a god node labelled
+    `index()` must get its own file, not be written to index.md and then
+    overwritten by the catalog - which also made its catalog link point back at
+    the index itself."""
+    G = nx.Graph()
+    G.add_node("n1", label="index()", file_type="code", source_file="views.py")
+    G.add_node("n2", label="render", file_type="code", source_file="views.py")
+    G.add_node("n3", label="Index", file_type="code", source_file="search.py")
+    G.add_node("n4", label="query", file_type="code", source_file="search.py")
+    G.add_edge("n1", "n2", relation="calls", confidence="EXTRACTED", weight=1.0)
+    G.add_edge("n3", "n4", relation="calls", confidence="EXTRACTED", weight=1.0)
+    communities = {0: ["n1", "n2"], 1: ["n3", "n4"]}
+    labels = {0: "index", 1: "Search"}
+    god_nodes = [{"id": "n3", "label": "Index", "degree": 1}]
+    n = to_wiki(G, communities, tmp_path, community_labels=labels, god_nodes_data=god_nodes)
+    articles = [p for p in tmp_path.glob("*.md") if p.stem.lower() != "index"]
+    # every article survives as its own file next to the catalog
+    assert len(articles) == n == 3, sorted(p.name for p in tmp_path.glob("*.md"))
+    index_text = (tmp_path / "index.md").read_text(encoding="utf-8")
+    assert index_text.startswith("# Knowledge Graph Index")
+    # no catalog entry links back to the catalog itself
+    assert "(index.md)" not in index_text, index_text
+
+
 # Regression tests for portable wiki links - Obsidian [[wikilinks]] break in
 # every non-Obsidian renderer (VS Code preview, GitHub, GitLab, plain browsers).
 
