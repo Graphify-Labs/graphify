@@ -365,6 +365,14 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
 def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") -> str:
     # Heading is "# graphify" (H1) to match _SKILL_REGISTRATION_MARKER, which
     # _register_always_on_block anchors its idempotent replace-or-append on.
+    # This body must never contain a line that looks like an ATX heading
+    # (any run of 1-6 "#" then a space) -- _has_heading_before_eof in
+    # _replace_or_append_section treats any such line as a sign that real
+    # user content follows and refuses to guess where a legacy (sentinel-
+    # less) copy of this section ends, appending a fresh one instead of
+    # replacing in place. That's the correct, safe call for genuine user
+    # content; it would be an unnecessary, if harmless, duplicate append if
+    # the heading-shaped line were graphify's own.
     return (
         "# graphify\n"
         f"- **graphify** (`{skill_path}`) "
