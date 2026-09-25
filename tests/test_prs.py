@@ -727,6 +727,7 @@ class TestCmdPrsDetail:
         pr_99 = make_pr(number=99, branch="feat-99", base_branch="v8", expected_base="v8")
 
         with patch("graphify.prs.fetch_prs", return_value=prs_50), \
+             patch("graphify.prs._detect_default_branch", return_value="v8"), \
              patch("graphify.prs.fetch_worktrees", return_value={"feat-99": "/path/to/wt"}), \
              patch("graphify.prs.fetch_pr", return_value=pr_99) as mock_fetch_single, \
              patch("graphify.prs.fetch_pr_files", return_value=["src/app.py"]):
