@@ -9,6 +9,14 @@ body:
       value: |
         Please search existing issues first. Include the smallest reproducible example you can.
 
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I have checked the Troubleshooting section in the README
+          required: true
+
   - type: textarea
     id: description
     attributes:
@@ -39,14 +47,49 @@ body:
     id: version
     attributes:
       label: Graphify version
-      placeholder: "0.9.64"
+      placeholder: "e.g. 0.9.68"
 
-  - type: input
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - WSL
+    validations:
+      required: true
+
+  - type: dropdown
+    id: python
+    attributes:
+      label: Python Version
+      options:
+        - 3.10
+        - 3.11
+        - 3.12
+        - 3.13
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Installation Method
+      options:
+        - uv tool install (recommended)
+        - pipx
+        - pip
+        - built from source (git clone)
+    validations:
+      required: true
+
+  - type: textarea
     id: environment
     attributes:
-      label: Environment
-      description: Include operating system, Python version, and installation method.
-      placeholder: "macOS 15, Python 3.12, uv tool install"
+      label: Additional Environment Details
+      description: List any provider environment variables set (e.g., OPENAI_API_KEY) and whether a clean checkout reproduced the issue.
 
   - type: textarea
     id: additional

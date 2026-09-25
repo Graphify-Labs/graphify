@@ -7,5 +7,5 @@ contact_links:
     url: https://github.com/Graphify-Labs/graphify/blob/v8/README.md
     about: Check the README and docs before opening an issue.
   - name: 🤝 Contributing guide
-    url: https://github.com/Graphify-Labs/graphify/blob/v8/README.md#development-setup
+    url: https://github.com/Graphify-Labs/graphify/blob/v8/CONTRIBUTING.md
     about: Read the development and contribution guidelines before opening a pull request.
