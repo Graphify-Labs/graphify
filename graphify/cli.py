@@ -3226,7 +3226,7 @@ def dispatch_command(cmd: str) -> None:
             print(
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
-                "[--no-gitignore] [--code-only] [--no-dedup] "
+                "[--dedup-llm] [--dedup-jev] [--no-gitignore] [--code-only] [--no-dedup] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
@@ -3252,6 +3252,7 @@ def dispatch_command(cmd: str) -> None:
         cli_allow_partial: bool = False
         no_cluster = False
         dedup_llm = False
+        dedup_jev = False
         # --no-dedup: skip entity deduplication entirely. On an incremental
         # merge the fuzzy pass runs over the COMBINED node set (existing graph +
         # new chunk), so a small diff merged into a large graph can collapse
@@ -3327,6 +3328,8 @@ def dispatch_command(cmd: str) -> None:
                 no_cluster = True; i += 1
             elif a == "--dedup-llm":
                 dedup_llm = True; i += 1
+            elif a == "--dedup-jev":
+                dedup_jev = True; i += 1
             elif a == "--no-dedup":
                 no_dedup = True; i += 1
             elif a == "--code-only":
@@ -3393,6 +3396,15 @@ def dispatch_command(cmd: str) -> None:
             print(
                 "error: --no-dedup and --dedup-llm are mutually exclusive "
                 "(--dedup-llm is a tiebreaker inside the dedup pass)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        if no_dedup and dedup_jev:
+            # --dedup-jev is pass 3 of the dedup pipeline, too — same guard as
+            # --dedup-llm: it must never be a silent no-op.
+            print(
+                "error: --no-dedup and --dedup-jev are mutually exclusive "
+                "(--dedup-jev is a tiebreaker inside the dedup pass)",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -4469,6 +4481,9 @@ def dispatch_command(cmd: str) -> None:
         from graphify.export import to_json as _to_json
         from graphify.analyze import god_nodes as _god_nodes, surprising_connections as _surprising
         dedup_backend = backend if dedup_llm else None
+        # --dedup-jev is independent of the LLM backend: JEV uses its own
+        # TYPESAFE_API_KEY via graphify.jev_decide and fails open when absent.
+        dedup_use_jev = dedup_jev
         if merge_existing_graph:
             # Prune everything the current scan no longer covers: genuinely
             # deleted manifest rows, excluded-but-alive manifest rows (#1908),
@@ -4485,6 +4500,7 @@ def dispatch_command(cmd: str) -> None:
                     prune_sources=_prune_sources or None,
                     dedup=not no_dedup,
                     dedup_llm_backend=dedup_backend,
+                    dedup_jev=dedup_use_jev,
                     root=target,
                 )
                 _shrink = _handle_unverified_semantic_shrink(
@@ -4512,7 +4528,7 @@ def dispatch_command(cmd: str) -> None:
                 print(f"[graphify extract] {exc}", file=sys.stderr)
                 sys.exit(1)
         else:
-            G = _build([merged], dedup=not no_dedup, dedup_llm_backend=dedup_backend, root=target)
+            G = _build([merged], dedup=not no_dedup, dedup_llm_backend=dedup_backend, dedup_jev=dedup_use_jev, root=target)
         stages.mark("build")
         if G.number_of_nodes() == 0:
             print(

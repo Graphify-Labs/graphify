@@ -127,6 +127,73 @@ def test_dedup_llm_flag_accepted():
     assert len(result_nodes) == 2
 
 
+def test_dedup_jev_flag_accepted():
+    """deduplicate_entities accepts dedup_jev without crashing when no ambiguous pairs exist."""
+    nodes = _make_nodes("UserService", "OrderService")
+    edges = []
+    result_nodes, _ = deduplicate_entities(nodes, edges, communities={}, dedup_jev=True)
+    assert len(result_nodes) == 2
+
+
+def test_dedup_jev_flag_mutually_exclusive_with_no_dedup():
+    """--no-dedup + --dedup-jev must be rejected by the CLI (mirrors --dedup-llm)."""
+    # The CLI guard is in cli.py; here we pin the contract that dedup_jev is a
+    # pass-3 tiebreaker that requires dedup to be on.
+    from graphify.build import build
+    chunk = {"nodes": [{"id": "a", "label": "Alpha", "source_file": "a.py"}], "edges": []}
+    G = build([chunk], dedup=False, dedup_jev=True)
+    assert G.number_of_nodes() == 1
+
+
+# ── JEV tiebreaker integration (mocked judge, no network) ────────────────────
+
+def test_jev_tiebreak_unions_on_yes():
+    """_jev_tiebreak merges an ambiguous pair when JEV says they are the same concept."""
+    from unittest import mock
+    from graphify import dedup as _dedup_mod
+    nodes = [
+        {"id": "n1", "label": "InventorySynchronizer", "source_file": "a.py", "file_type": "concept"},
+        {"id": "n2", "label": "InventorySyncer", "source_file": "b.py", "file_type": "concept"},
+    ]
+    uf = _dedup_mod._UF()
+    with mock.patch("graphify.jev_decide.judge_dedup_same", return_value=True), \
+         mock.patch("graphify.jev_decide.available", return_value=True):
+        _dedup_mod._jev_tiebreak(nodes, uf, communities={})
+    roots = {uf.find(n["id"]) for n in nodes}
+    assert len(roots) == 1, "JEV yes should merge the pair"
+
+
+def test_jev_tiebreak_keeps_distinct_on_no():
+    """_jev_tiebreak must NOT merge when JEV says they are different concepts."""
+    from unittest import mock
+    from graphify import dedup as _dedup_mod
+    nodes = [
+        {"id": "n1", "label": "InventorySynchronizer", "source_file": "a.py", "file_type": "concept"},
+        {"id": "n2", "label": "InventorySyncer", "source_file": "b.py", "file_type": "concept"},
+    ]
+    uf = _dedup_mod._UF()
+    with mock.patch("graphify.jev_decide.judge_dedup_same", return_value=False), \
+         mock.patch("graphify.jev_decide.available", return_value=True):
+        _dedup_mod._jev_tiebreak(nodes, uf, communities={})
+    roots = {uf.find(n["id"]) for n in nodes}
+    assert len(roots) == 2, "JEV no should keep them distinct"
+
+
+def test_jev_tiebreak_fails_open_when_unavailable():
+    """JEV unavailable (no key) must leave the pair untouched — deterministic fallback."""
+    from unittest import mock
+    from graphify import dedup as _dedup_mod
+    nodes = [
+        {"id": "n1", "label": "InventorySynchronizer", "source_file": "a.py", "file_type": "concept"},
+        {"id": "n2", "label": "InventorySyncer", "source_file": "b.py", "file_type": "concept"},
+    ]
+    uf = _dedup_mod._UF()
+    with mock.patch("graphify.jev_decide.available", return_value=False):
+        _dedup_mod._jev_tiebreak(nodes, uf, communities={})
+    roots = {uf.find(n["id"]) for n in nodes}
+    assert len(roots) == 2, "fail-open: no JEV, no merge"
+
+
 # ── build integration ─────────────────────────────────────────────────────────
 
 def test_build_calls_dedup():

@@ -7,6 +7,7 @@ from graphify.build import build_from_json
 from graphify.cluster import cluster
 from graphify.analyze import god_nodes, surprising_connections, _is_concept_node, graph_diff, _surprise_score, _file_category, _is_json_key_node, find_import_cycles, suggest_questions
 from graphify.extract import _make_id
+import graphify.analyze as analyze_mod
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -614,6 +615,76 @@ def test_suggest_questions_excludes_rationale_nodes_from_isolated_count():
     assert isolated["why"].startswith("1 weakly-connected node")
     assert "`Service`" in isolated["question"]
     assert "Explains service" not in isolated["question"]
+
+
+# ── JEV decision layer (mocked, no network) ──────────────────────────────────
+
+
+def _make_jev_graph() -> nx.Graph:
+    """Two-file graph with an AMBIGUOUS cross-file edge (surprise + question signal)."""
+    G = nx.Graph()
+    G.add_node("auth", label="auth_service", source_file="services/auth.py", file_type="code")
+    G.add_node("billing", label="billing_service", source_file="services/billing.py", file_type="code")
+    G.add_edge("auth", "billing", relation="calls", confidence="AMBIGUOUS", source_file="services/auth.py")
+    return G
+
+
+def test_surprising_connections_jev_keep_all_preserves_heuristic():
+    """When JEV is on and says keep everything, the heuristic list is unchanged."""
+    from unittest import mock
+    G = _make_jev_graph()
+    communities = {}
+    with mock.patch.object(analyze_mod, "_jev_available", return_value=True), \
+         mock.patch("graphify.jev_decide.judge_surprise_keep", return_value=True):
+        result = surprising_connections(G, communities, top_n=5)
+    assert len(result) >= 1
+
+
+def test_surprising_connections_jev_drops_all():
+    """When JEV rejects every candidate, the surprise list is empty (filtered)."""
+    from unittest import mock
+    G = _make_jev_graph()
+    with mock.patch.object(analyze_mod, "_jev_available", return_value=True), \
+         mock.patch("graphify.jev_decide.judge_surprise_keep", return_value=False):
+        result = surprising_connections(G, communities={}, top_n=5)
+    assert result == []
+
+
+def test_surprising_connections_jev_fails_open():
+    """JEV unavailable or erroring must keep the heuristic order unchanged."""
+    from unittest import mock
+    G = _make_jev_graph()
+    baseline = surprising_connections(G, communities={}, top_n=5)
+    with mock.patch.object(analyze_mod, "_jev_available", return_value=False):
+        no_jev = surprising_connections(G, communities={}, top_n=5)
+    assert no_jev == baseline
+    with mock.patch.object(analyze_mod, "_jev_available", return_value=True), \
+         mock.patch("graphify.jev_decide.judge_surprise_keep",
+                    side_effect=RuntimeError("jev down")):
+        exc_jev = surprising_connections(G, communities={}, top_n=5)
+    assert exc_jev == baseline
+
+
+def test_suggest_questions_jev_filter():
+    """JEV question-value filter drops low-value template questions."""
+    from unittest import mock
+    G = _make_jev_graph()
+    with mock.patch.object(analyze_mod, "_jev_available", return_value=True), \
+         mock.patch("graphify.jev_decide.judge_question_value", return_value=False):
+        questions = suggest_questions(G, communities={}, community_labels={}, top_n=7)
+    assert questions == [] or all(
+        q["type"] == "no_signal" for q in questions
+    ), "JEV reject-all must drop every template question"
+
+
+def test_suggest_questions_jev_fails_open():
+    """JEV unavailable keeps the template questions (fail-open)."""
+    from unittest import mock
+    G = _make_jev_graph()
+    baseline = suggest_questions(G, communities={}, community_labels={}, top_n=7)
+    with mock.patch.object(analyze_mod, "_jev_available", return_value=False):
+        no_jev = suggest_questions(G, communities={}, community_labels={}, top_n=7)
+    assert no_jev == baseline
 
 
 # ── find_import_cycles tests ──────────────────────────────────────────────────
