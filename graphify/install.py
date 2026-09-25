@@ -670,12 +670,26 @@ def _replace_or_append_section(
         return new_section.strip() + "\n" + _SECTION_END_MARKER + "\n"
 
     start = starts[-1]
+    # An H1 (top-level) marker's own body is documented to never contain a
+    # heading-shaped line (see _skill_registration's own invariant note), so
+    # for that specific marker level ANY heading, not just an exact
+    # boundary_prefix match, is unambiguously a separate section -- there is
+    # nothing shallower it could be nested under. A deeper marker (H2+) keeps
+    # the narrower same-level-only check, since ITS body legitimately can
+    # contain a deeper heading as its own internal structure (e.g. an H3
+    # inside an H2-marked section is nested content, not a sibling). Without
+    # this, a user's own H2 heading under an H1 marker was skipped by the
+    # scan below (it never matches an H1 boundary_prefix), letting a later,
+    # unrelated end marker swallow it (PR 3803 review).
+    _marker_is_top_level = boundary_prefix.rstrip() == "#"
     end = None
     for j in range(start + 1, len(lines)):
         if lines[j].strip() == _SECTION_END_MARKER:
             end = j + 1  # consume the sentinel itself, so it never duplicates
             break
-        if lines[j].startswith(boundary_prefix):
+        if lines[j].startswith(boundary_prefix) or (
+            _marker_is_top_level and _ATX_HEADING_RE.match(lines[j].strip())
+        ):
             end = j
             break
     if end is None and not _has_heading_before_eof(lines, start):
@@ -742,6 +756,11 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
     """
     lines = content.split("\n")
     removed = False
+    # See _replace_or_append_section's matching note: an H1 (top-level)
+    # marker's own body never contains a heading-shaped line, so for that
+    # marker level any heading -- not just an exact boundary_prefix match --
+    # is unambiguously a separate section (PR 3803 review).
+    _marker_is_top_level = boundary_prefix.rstrip() == "#"
     while True:
         starts = [i for i, line in enumerate(lines) if line.strip() == marker]
         if not starts:
@@ -752,7 +771,9 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
             if lines[j].strip() == _SECTION_END_MARKER:
                 end = j + 1  # consume the sentinel itself
                 break
-            if lines[j].startswith(boundary_prefix):
+            if lines[j].startswith(boundary_prefix) or (
+                _marker_is_top_level and _ATX_HEADING_RE.match(lines[j].strip())
+            ):
                 end = j
                 break
         if end is None and not _has_heading_before_eof(lines, start):
