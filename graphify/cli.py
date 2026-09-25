@@ -81,8 +81,43 @@ _GEMINI_NUDGE_TEXT = (
 )
 
 
+def _worktree_graph_fallback() -> Path | None:
+    """Locate the main checkout's graph.json from inside a git worktree (#2008).
+
+    A worktree has its own working tree but no graphify-out/ of its own — the
+    graph lives in whichever checkout built it, almost always the main one.
+    ``git rev-parse --git-common-dir`` resolves to the shared ``.git`` both the
+    main checkout and every worktree point at; its parent is the main
+    checkout's root in both cases, so this is a no-op (returns the same path)
+    when run from the main checkout itself. Read-only: never writes here, and
+    silently returns None on any failure (not a git repo, git not on PATH, a
+    bare repo with no working tree) so a plain "graph file not found" error
+    still surfaces from the normal path.
+    """
+    import subprocess as _sp
+
+    try:
+        result = _sp.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, _sp.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    common_dir = result.stdout.strip()
+    if not common_dir:
+        return None
+    candidate = Path(common_dir).parent / _GRAPHIFY_OUT / "graph.json"
+    return candidate if candidate.is_file() else None
+
+
 def _default_graph_path() -> str:
-    return str(Path(_GRAPHIFY_OUT) / "graph.json")
+    candidate = Path(_GRAPHIFY_OUT) / "graph.json"
+    if candidate.exists():
+        return str(candidate)
+    fallback = _worktree_graph_fallback()
+    return str(fallback) if fallback is not None else str(candidate)
 
 
 def _stamped_manifest_files(
