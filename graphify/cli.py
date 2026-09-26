@@ -85,6 +85,172 @@ def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
 
 
+_EXTRACT_STATUS_NAME = "last_run.json"
+_ACTIVE_EXTRACT_STATUS: "_ExtractRunStatus | None" = None
+
+
+def _utc_timestamp() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _package_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("graphifyy")
+    except Exception:
+        return "unknown"
+
+
+def _extract_status_path_from_argv() -> Path:
+    """Find the output location for an ``extract`` run without parsing its options.
+
+    The extraction command has its own parser below. This small pre-parser only
+    needs to locate ``target`` and ``--out`` so the status finalizer can also run
+    when the real parser exits early.
+    """
+    args = sys.argv[2:]
+    target = Path(".")
+    if args and not args[0].startswith("-"):
+        target = Path(args[0]).expanduser()
+    out_dir: Path | None = None
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("--out", "--output") and i + 1 < len(args):
+            out_dir = Path(args[i + 1]).expanduser()
+            i += 2
+        elif arg.startswith(("--out=", "--output=")):
+            out_dir = Path(arg.split("=", 1)[1]).expanduser()
+            i += 1
+        else:
+            i += 1
+    out_root = (out_dir if out_dir is not None else target).resolve()
+    return out_root / _GRAPHIFY_OUT / _EXTRACT_STATUS_NAME
+
+
+class _ExtractRunStatus:
+    """Persist a compact, machine-readable summary of one CLI extraction.
+
+    This deliberately lives at the CLI boundary: the extraction library remains
+    a pure ``dict``-returning API, while the CLI can combine AST, semantic, and
+    write-path diagnostics into one artifact. The file is written in ``finally``
+    so ``SystemExit`` paths, including a refused partial write, are recorded too.
+    """
+
+    _LIST_FIELDS = frozenset({
+        "chunk_errors",
+        "files_with_no_nodes",
+        "files_partial",
+        "failed_ast_files",
+        "dropped",
+        "walk_errors",
+    })
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.started = False
+        self._existing_count_captured = False
+        self.data: dict = {
+            "schema_version": 1,
+            "graphify_version": _package_version(),
+            "started": None,
+            "finished": None,
+            "ok": False,
+            "wrote_graph": False,
+            "refused_reason": None,
+            "exit_code": None,
+            "error": None,
+            "incomplete": False,
+            "chunks_total": 0,
+            "chunks_failed": 0,
+            "chunk_errors": [],
+            "files_scanned": 0,
+            "files_dispatched": 0,
+            "files_with_no_nodes": [],
+            "files_partial": [],
+            "failed_ast_files": [],
+            "dropped": [],
+            "dropped_items": 0,
+            "nodes_produced": 0,
+            "nodes_written": None,
+            "nodes_existing": None,
+        }
+
+    def start(self, output_dir: Path) -> None:
+        self.path = output_dir / _EXTRACT_STATUS_NAME
+        self.started = True
+        self.data["started"] = _utc_timestamp()
+        self.data["nodes_existing"] = self._existing_node_count(
+            output_dir / "graph.json"
+        )
+        self._existing_count_captured = True
+
+    def update(self, **fields) -> None:
+        for key, value in fields.items():
+            if value is None:
+                continue
+            if key in self._LIST_FIELDS:
+                incoming = value if isinstance(value, (list, tuple, set)) else [value]
+                current = self.data.setdefault(key, [])
+                rendered = {str(item) for item in [*current, *incoming] if item}
+                if key == "chunk_errors":
+                    rendered = {item[:2000] for item in rendered}
+                self.data[key] = sorted(rendered)
+            elif key == "incomplete":
+                self.data[key] = bool(self.data.get(key)) or bool(value)
+            elif key == "error":
+                if not self.data.get(key):
+                    self.data[key] = str(value)[:2000]
+            else:
+                self.data[key] = value
+
+    @staticmethod
+    def _existing_node_count(path: Path) -> int | None:
+        try:
+            from graphify.export import MALFORMED_GRAPH, existing_graph_node_count
+
+            count = existing_graph_node_count(path)
+            return count if isinstance(count, int) and count is not MALFORMED_GRAPH else None
+        except Exception:
+            return None
+
+    def finish(self, exit_code: int | None) -> None:
+        if not self.started:
+            return
+        self.data["finished"] = _utc_timestamp()
+        self.data["exit_code"] = 0 if exit_code is None else exit_code
+        if not self._existing_count_captured:
+            self.data["nodes_existing"] = self._existing_node_count(self.path.parent / "graph.json")
+        self.data["ok"] = bool(
+            self.data["exit_code"] == 0
+            and not self.data.get("error")
+            and not self.data.get("incomplete")
+            and not self.data.get("refused_reason")
+        )
+        try:
+            from graphify.paths import write_json_atomic
+
+            write_json_atomic(self.path, self.data, indent=2, ensure_ascii=False)
+        except Exception as exc:
+            print(
+                f"[graphify extract] warning: could not write run status: {exc}",
+                file=sys.stderr,
+            )
+
+
+def _start_extract_status(output_dir: Path) -> None:
+    if _ACTIVE_EXTRACT_STATUS is not None:
+        _ACTIVE_EXTRACT_STATUS.start(output_dir)
+
+
+def _record_extract_status(**fields) -> None:
+    if _ACTIVE_EXTRACT_STATUS is not None:
+        _ACTIVE_EXTRACT_STATUS.update(**fields)
+
+
 def _stamped_manifest_files(
     files_by_type: dict[str, list[str]],
     sem_result: dict,
@@ -1062,6 +1228,33 @@ def _reenter_main() -> None:
 
 
 def dispatch_command(cmd: str) -> None:
+    """Dispatch a command, finalizing extraction status on every exit path."""
+    if cmd != "extract":
+        return _dispatch_command(cmd)
+
+    status = _ExtractRunStatus(_extract_status_path_from_argv())
+    global _ACTIVE_EXTRACT_STATUS
+    previous_status = _ACTIVE_EXTRACT_STATUS
+    _ACTIVE_EXTRACT_STATUS = status
+    exit_code: int | None = None
+    try:
+        return _dispatch_command(cmd)
+    except SystemExit as exc:
+        raw_code = exc.code
+        exit_code = raw_code if isinstance(raw_code, int) else (0 if raw_code is None else 1)
+        raise
+    except BaseException as exc:
+        exit_code = 1
+        status.update(error=str(exc))
+        raise
+    finally:
+        try:
+            status.finish(exit_code)
+        finally:
+            _ACTIVE_EXTRACT_STATUS = previous_status
+
+
+def _dispatch_command(cmd: str) -> None:
     if cmd == "provider":
         from graphify.llm import _custom_providers_path, BACKENDS
         import json as _json
@@ -3422,6 +3615,7 @@ def dispatch_command(cmd: str) -> None:
         out_root = (out_dir.resolve() if out_dir else target)
         graphify_out = out_root / _GRAPHIFY_OUT
         graphify_out.mkdir(parents=True, exist_ok=True)
+        _start_extract_status(graphify_out)
         # Persist corpus-shaping options so later update/watch/hook rebuilds
         # use the same file set as the initial extraction (#1886).
         from graphify.watch import (
@@ -3656,6 +3850,12 @@ def dispatch_command(cmd: str) -> None:
                 f"{len(doc_files)} docs, {len(paper_files)} papers, "
                 f"{len(image_files)} images"
             )
+        _record_extract_status(
+            files_scanned=sum(len(v) for v in files_by_type.values()),
+            files_dispatched=len(code_files),
+            walk_errors=detection.get("walk_errors", []) if isinstance(detection, dict) else [],
+            incomplete=bool(detection.get("walk_errors")) if isinstance(detection, dict) else False,
+        )
         # Surface files that were seen but not classified (extensionless non-shebang
         # project files like Dockerfile/Makefile, or unsupported extensions), so they
         # are no longer invisible in graphify's own output (#1692).
@@ -3947,6 +4147,10 @@ def dispatch_command(cmd: str) -> None:
                 ast_result = _ast_extract(code_files, **ast_kwargs)
             except Exception as exc:
                 print(f"[graphify extract] AST extraction failed: {exc}", file=sys.stderr)
+                _record_extract_status(
+                    incomplete=True,
+                    error=f"AST extraction failed: {exc}",
+                )
                 # #2445: losing the whole AST pass is fatal by default. The
                 # empty stand-in only reaches the shrink guard when an existing
                 # graph is larger — on a fresh build it used to be written as a
@@ -3956,6 +4160,10 @@ def dispatch_command(cmd: str) -> None:
                     sys.exit(1)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
                 _extraction_incomplete = True  # the whole AST pass was lost
+        _record_extract_status(
+            failed_ast_files=ast_result.get("failed_sources", []),
+            incomplete=bool(ast_result.get("failed_sources")),
+        )
         stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.
@@ -3998,11 +4206,14 @@ def dispatch_command(cmd: str) -> None:
                     _check_semantic_cache(sem_paths_str, root=target, cache_root=out_root,
                                           mode=sem_cache_mode, prompt=sem_prompt)
                 )
-            sem_cache_hits = len(semantic_files) - len(uncached_paths)
-            sem_cache_misses = len(uncached_paths)
-            sem_result["nodes"].extend(cached_nodes)
+                sem_cache_hits = len(semantic_files) - len(uncached_paths)
+                sem_cache_misses = len(uncached_paths)
+                sem_result["nodes"].extend(cached_nodes)
             sem_result["edges"].extend(cached_edges)
             sem_result["hyperedges"].extend(cached_hyperedges)
+            _record_extract_status(
+                files_dispatched=len(code_files) + len(uncached_paths),
+            )
             if sem_cache_hits:
                 print(f"[graphify extract] semantic cache: {sem_cache_hits} hit / {sem_cache_misses} miss")
 
@@ -4042,6 +4253,10 @@ def dispatch_command(cmd: str) -> None:
                     )
                 except ImportError as exc:
                     print(f"error: {exc}", file=sys.stderr)
+                    _record_extract_status(
+                        incomplete=True,
+                        error=f"semantic extraction failed: {exc}",
+                    )
                     sys.exit(1)
                 except Exception as exc:
                     print(
@@ -4050,11 +4265,41 @@ def dispatch_command(cmd: str) -> None:
                     )
                     fresh = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
                     _extraction_incomplete = True  # the semantic pass crashed
+                    _record_extract_status(
+                        incomplete=True,
+                        error=f"semantic extraction failed: {exc}",
+                    )
+
+                _status_chunks_total = (
+                    fresh.get("chunks_total")
+                    or _chunk_stats["total"]
+                    or len(uncached_paths)
+                )
+                _status_chunks_failed = fresh.get("failed_chunks")
+                if _status_chunks_failed is None:
+                    _status_chunks_failed = max(
+                        0, _status_chunks_total - _chunk_stats["succeeded"]
+                    )
+                _record_extract_status(
+                    chunks_total=_status_chunks_total,
+                    chunks_failed=_status_chunks_failed,
+                    chunk_errors=fresh.get("chunk_errors", []),
+                    incomplete=bool(_status_chunks_failed) or bool(
+                        _status_chunks_total
+                        and _chunk_stats["succeeded"] < _status_chunks_total
+                    ),
+                )
 
                 # on_chunk_done only fires after a chunk succeeds. If fresh
                 # semantic extraction was requested and no chunks completed,
                 # fail instead of writing an AST-only graph with exit 0.
                 if uncached_paths and _chunk_stats["succeeded"] == 0:
+                    _record_extract_status(
+                        incomplete=True,
+                        error=(
+                            f"all semantic chunks failed for backend '{backend}'"
+                        ),
+                    )
                     print(
                         f"[graphify extract] error: all semantic chunks failed "
                         f"for backend '{backend}' ({len(uncached_paths)} uncached files) - "
@@ -4079,6 +4324,11 @@ def dispatch_command(cmd: str) -> None:
                 # loss is permanent until a full rebuild.
                 _dropped_files, _dropped_items = _scope_semantic_result(
                     fresh, target, uncached_paths,
+                )
+                _record_extract_status(
+                    dropped=sorted(_dropped_files),
+                    dropped_items=_dropped_items,
+                    incomplete=bool(_dropped_items),
                 )
                 if _dropped_files:
                     print(
@@ -4106,6 +4356,11 @@ def dispatch_command(cmd: str) -> None:
                 # fraction of the graph, so it must arm the guard exactly like a
                 # crashed chunk does. --allow-partial still overrides.
                 _omitted_files = list(fresh.get("uncovered_files") or [])
+                _record_extract_status(
+                    files_with_no_nodes=_omitted_files,
+                    files_partial=sorted(_partial_semantic_files),
+                    incomplete=bool(_omitted_files or _partial_semantic_files),
+                )
                 if _omitted_files or _partial_semantic_files:
                     _extraction_incomplete = True
                     print(
@@ -4220,6 +4475,9 @@ def dispatch_command(cmd: str) -> None:
 
         graph_json_path = graphify_out / "graph.json"
         analysis_path = graphify_out / ".graphify_analysis.json"
+        _record_extract_status(
+            nodes_produced=len(merged["nodes"]),
+        )
 
         # Build a manifest-safe files dict: only stamp semantic_hash for files
         # that actually produced output (cache hit or fresh extraction). Files
@@ -4321,6 +4579,10 @@ def dispatch_command(cmd: str) -> None:
                     _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
+                _record_extract_status(
+                    wrote_graph=False,
+                    nodes_existing=_ExtractRunStatus._existing_node_count(graph_json_path),
+                )
                 stages.total()
                 sys.exit(0)
 
@@ -4408,11 +4670,22 @@ def dispatch_command(cmd: str) -> None:
                         "fixing the failures, or pass --allow-partial to overwrite anyway.",
                         file=sys.stderr,
                     )
+                    _record_extract_status(
+                        incomplete=True,
+                        wrote_graph=False,
+                        nodes_written=len(merged["nodes"]),
+                        nodes_existing=(None if _malformed else _existing_n),
+                        refused_reason="shrink_guard",
+                    )
                     sys.exit(1)
             _backup(graphify_out)
             _invalidate_file_manifest_for_db_graph()
             from graphify.paths import write_json_atomic as _write_json_atomic
             _write_json_atomic(graph_json_path, merged, indent=2)
+            _record_extract_status(
+                wrote_graph=True,
+                nodes_written=len(merged["nodes"]),
+            )
             try:
                 # Record the scan root so a later build_merge / update runbook can
                 # relativize deleted-file paths correctly even for a custom --out
@@ -4521,6 +4794,9 @@ def dispatch_command(cmd: str) -> None:
                 "returned no edges.",
                 file=sys.stderr,
             )
+            _record_extract_status(
+                error="graph is empty — extraction produced no nodes",
+            )
             sys.exit(1)
 
         communities = _cluster(G, resolution=cli_resolution, exclude_hubs_percentile=cli_exclude_hubs)
@@ -4585,7 +4861,17 @@ def dispatch_command(cmd: str) -> None:
                 "to overwrite anyway.",
                 file=sys.stderr,
             )
+            _record_extract_status(
+                incomplete=True,
+                wrote_graph=False,
+                nodes_written=G.number_of_nodes(),
+                refused_reason="shrink_guard",
+            )
             sys.exit(1)
+        _record_extract_status(
+            wrote_graph=True,
+            nodes_written=G.number_of_nodes(),
+        )
         try:
             # See the --no-cluster path above: persist the scan root so build_merge
             # can relativize deleted-file paths under a custom --out (#2012/#1571).
