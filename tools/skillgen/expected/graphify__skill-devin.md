@@ -1361,13 +1361,26 @@ EOF
 Fetch a URL and add it to the corpus, then update the graph.
 
 ```bash
+cat > graphify-out/.ingest_url.tmp <<'EOF'
+URL
+EOF
+cat > graphify-out/.ingest_author.tmp <<'EOF'
+AUTHOR
+EOF
+cat > graphify-out/.ingest_contributor.tmp <<'EOF'
+CONTRIBUTOR
+EOF
 "$(cat graphify-out/.graphify_python)" -c "
 import sys
 from graphify.ingest import ingest
 from pathlib import Path
 
+_url = Path('graphify-out/.ingest_url.tmp').read_text(encoding='utf-8').strip()
+_author = Path('graphify-out/.ingest_author.tmp').read_text(encoding='utf-8').strip()
+_contributor = Path('graphify-out/.ingest_contributor.tmp').read_text(encoding='utf-8').strip()
+
 try:
-    out = ingest('URL', Path('./raw'), author='AUTHOR', contributor='CONTRIBUTOR')
+    out = ingest(_url, Path('./raw'), author=_author, contributor=_contributor)
     print(f'Saved to {out}')
 except ValueError as e:
     print(f'error: {e}', file=sys.stderr)
