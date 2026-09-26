@@ -54,6 +54,7 @@ from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
 from graphify.extractors.markdown import extract_markdown, _MD_LINK_INDEX_CACHE  # noqa: F401
 from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
+from graphify.extractors.perl import extract_perl, resolve_perl_calls  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.r import extract_r, resolve_r_sourced_calls  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
@@ -3074,6 +3075,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".r": "r",
     ".sol": "solidity",
     ".erl": "erlang", ".hrl": "erlang", ".escript": "erlang",
+    ".pl": "perl", ".pm": "perl", ".t": "perl", ".psgi": "perl",
     ".rb": "ruby", ".rake": "ruby",
     ".php": "php", ".phtml": "php", ".php3": "php", ".php4": "php",
     ".php5": "php", ".php7": "php", ".phps": "php",
@@ -5527,6 +5529,13 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver(
+        "perl_calls",
+        frozenset({".pl", ".pm", ".t", ".psgi"}),
+        resolve_perl_calls,
+    )
+)
+register_language_resolver(
+    LanguageResolver(
         "elixir_import_targets",
         frozenset({".ex", ".exs"}),
         _resolve_elixir_import_targets,
@@ -6648,6 +6657,10 @@ _DISPATCH: dict[str, Any] = {
     ".erl": extract_erlang,
     ".hrl": extract_erlang,
     ".escript": extract_erlang,
+    ".pl": extract_perl,
+    ".pm": extract_perl,
+    ".t": extract_perl,
+    ".psgi": extract_perl,
     ".m": extract_objc,
     ".mm": extract_objc,
     ".jl": extract_julia,
@@ -6725,6 +6738,10 @@ _EXTRA_FOR_EXTENSION = {
     ".erl": "erlang",
     ".hrl": "erlang",
     ".escript": "erlang",
+    ".pl": "perl",
+    ".pm": "perl",
+    ".t": "perl",
+    ".psgi": "perl",
     ".sql": "sql",
     ".tf": "terraform",
     ".tfvars": "terraform",
@@ -6754,7 +6771,7 @@ _DEP_LOAD_FAILED_MARKER = "failed to load"
 # routes them to the CODE path via _shebang_interpreter; _get_extractor must
 # honor the same signal or these files are classified as code and then silently
 # dropped by extraction. Only interpreters with a real extractor are mapped —
-# detect's wider set (perl, fish, tcsh, Rscript) stays unmapped and skipped.
+# detect's wider set (fish, tcsh) stays unmapped and skipped.
 _SHEBANG_DISPATCH: dict[str, Any] = {
     "python": extract_python,
     "python2": extract_python,
@@ -6770,6 +6787,7 @@ _SHEBANG_DISPATCH: dict[str, Any] = {
     "lua": extract_lua,
     "php": extract_php,
     "julia": extract_julia,
+    "perl": extract_perl,
     "Rscript": extract_r,
 }
 

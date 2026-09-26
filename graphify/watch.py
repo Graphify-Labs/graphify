@@ -1750,9 +1750,12 @@ def _rebuild_code(
                                 # unchanged callee module must keep its
                                 # module/name/arity so `foo:bar()` still resolves
                                 # on an incremental rebuild, not just a full build.
+                                # `package` is Perl's analogous key for
+                                # `Pkg::func()`/`Pkg->method()` resolution.
                                 "language",
                                 "kind",
                                 "module",
+                                "package",
                                 "name",
                                 "arity",
                             )
