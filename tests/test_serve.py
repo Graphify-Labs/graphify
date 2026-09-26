@@ -38,6 +38,24 @@ from graphify.serve import (
     _search_tokens,
     _shortest_path_text,
 )
+from graphify.query_planning import bounded_best_first
+
+
+def test_evidence_json_no_match_still_returns_machine_readable_recovery_packet():
+    """A missing symbol must not turn structured output into plain text."""
+    graph = nx.Graph()
+    graph.add_node("known", label="KnownService", source_file="known.py")
+
+    payload = json.loads(_query_graph_text(
+        graph,
+        "unrelated quantum ledger",
+        response_format="evidence_json",
+    ))
+
+    assert payload["nodes"] == []
+    assert payload["edges"] == []
+    assert payload["plan"]["llm"]["mode"] == "reason"
+    assert payload["usage"]["model_input_tokens"] == 0
 
 
 def _make_graph() -> nx.Graph:
@@ -675,6 +693,661 @@ def test_query_graph_text_heuristic_context_filter_changes_traversal():
     assert "build" not in text
 
 
+def test_query_graph_text_runtime_flow_excludes_structural_noise():
+    """End-to-end runtime questions must not spend evidence budget on imports/containment."""
+    G = nx.DiGraph()
+    G.add_node("service", label="CheckoutService", source_file="checkout/service.py")
+    G.add_node("handler", label="charge_customer", source_file="checkout/charge.py")
+    G.add_node("module", label="checkout.py", source_file="checkout.py")
+    G.add_node("dependency", label="payments.py", source_file="payments.py")
+    G.add_edge("service", "handler", relation="calls", context="call", confidence="EXTRACTED")
+    G.add_edge("service", "module", relation="contains", confidence="EXTRACTED")
+    G.add_edge("module", "dependency", relation="imports", context="import", confidence="EXTRACTED")
+
+    text = _query_graph_text(G, "How does CheckoutService work end to end?", depth=2)
+
+    assert "Profile: runtime_flow" in text
+    assert "charge_customer" in text
+    assert "checkout.py" not in text
+    assert "payments.py" not in text
+
+
+def test_query_graph_text_runtime_flow_honors_node_budget():
+    """Semantic traversal must stop before a high-fan-out runtime graph floods context."""
+    G = nx.DiGraph()
+    G.add_node("service", label="CheckoutService", source_file="checkout/service.py")
+    for index in range(8):
+        node_id = f"handler_{index}"
+        G.add_node(node_id, label=node_id, source_file=f"checkout/{node_id}.py")
+        G.add_edge("service", node_id, relation="calls", confidence="EXTRACTED")
+
+    try:
+        text = _query_graph_text(
+            G,
+            "How does CheckoutService work end to end?",
+            depth=2,
+            max_nodes=3,
+        )
+    except TypeError as exc:
+        pytest.fail(f"query API does not expose a node budget: {exc}")
+
+    assert "3 nodes found" in text
+    assert "handler_0" in text
+    assert "handler_1" in text
+    assert "handler_2" not in text
+
+
+def test_query_graph_json_marks_runtime_node_cap_as_incomplete():
+    """A capped runtime packet must request recovery instead of claiming sufficiency."""
+    G = nx.DiGraph()
+    G.add_node("service", label="CheckoutService", source_file="checkout/service.py")
+    for index in range(8):
+        node_id = f"handler_{index}"
+        G.add_node(node_id, label=node_id, source_file=f"checkout/{node_id}.py")
+        G.add_edge("service", node_id, relation="calls", confidence="EXTRACTED")
+
+    payload = json.loads(_query_graph_text(
+        G,
+        "How does CheckoutService work end to end?",
+        response_format="evidence_json",
+        max_nodes=3,
+    ))
+
+    assert payload["coverage"]["truncated"] is True
+    assert payload["plan"]["llm"] == {
+        "mode": "reason",
+        "reason": "evidence budget reached; run a focused follow-up query",
+    }
+
+
+def test_query_graph_json_does_not_hide_unknown_runtime_relations():
+    """Ontology projection must recover when a language emits a new relation kind."""
+    G = nx.DiGraph()
+    G.add_node("service", label="CheckoutService", source_file="checkout/service.py")
+    G.add_node("handler", label="charge_customer", source_file="checkout/charge.py")
+    G.add_node("ledger", label="Ledger", source_file="ledger.py")
+    G.add_edge("service", "handler", relation="calls", confidence="EXTRACTED")
+    G.add_edge("handler", "ledger", relation="transfers", confidence="EXTRACTED")
+
+    payload = json.loads(_query_graph_text(
+        G,
+        "How does CheckoutService work end to end?",
+        response_format="evidence_json",
+    ))
+
+    assert payload["coverage"]["unsupported_relations"] == ["transfers"]
+    assert payload["plan"]["llm"] == {
+        "mode": "reason",
+        "reason": "ontology projection omitted an unsupported relation; run a focused follow-up query",
+    }
+
+
+def test_projection_gaps_inspects_incoming_edges_on_directed_graphs():
+    """A projected node must report meaningful relations that point into it."""
+    from graphify.query_planning import RUNTIME_FLOW, projection_gaps
+
+    graph = nx.DiGraph()
+    graph.add_edge("upstream", "handler", relation="transfers")
+
+    assert projection_gaps(graph, {"handler"}, RUNTIME_FLOW) == ["transfers"]
+
+
+def test_projection_gaps_preserves_reciprocal_directed_relations():
+    """An incoming unsupported arc must survive an opposite supported arc."""
+    from graphify.query_planning import RUNTIME_FLOW, projection_gaps
+
+    graph = nx.DiGraph()
+    graph.add_edge("handler", "upstream", relation="calls")
+    graph.add_edge("upstream", "handler", relation="transfers")
+
+    assert projection_gaps(graph, {"handler"}, RUNTIME_FLOW) == ["transfers"]
+
+
+@pytest.mark.parametrize(
+    ("alias", "canonical"),
+    [
+        ("invoked_by", "calls"),
+        ("implemented_by", "implements"),
+        ("described_in", "documents"),
+    ],
+)
+def test_projection_reverses_inverse_relation_aliases(alias, canonical):
+    """Canonical inverse aliases must preserve the relationship's meaning."""
+    from graphify.query_planning import TraversalProfile, project_graph
+
+    graph = nx.DiGraph()
+    graph.add_edge("subject", "provider", relation=alias)
+    profile = TraversalProfile("test", frozenset({canonical}), "none")
+
+    projected = project_graph(graph, profile)
+
+    assert list(projected.edges(data="relation")) == [
+        ("provider", "subject", canonical),
+    ]
+
+
+def test_projection_preserves_multigraph_edges_when_inverse_alias_keys_collide():
+    """Canonicalizing one edge must not overwrite a distinct parallel fact."""
+    from graphify.query_planning import TraversalProfile, project_graph
+
+    graph = nx.MultiDiGraph()
+    graph.add_edge("caller", "callee", key="fact", relation="calls", marker="direct")
+    graph.add_edge("callee", "caller", key="fact", relation="invoked_by", marker="inverse")
+    profile = TraversalProfile("test", frozenset({"calls"}), "none")
+
+    projected = project_graph(graph, profile)
+
+    assert projected.number_of_edges("caller", "callee") == 2
+    assert {
+        data["marker"]
+        for _, _, data in projected.edges(data=True)
+    } == {"direct", "inverse"}
+
+
+def test_explore_projection_cannot_mutate_the_source_graph():
+    """The unrestricted projection is cheap to create but read-only to callers."""
+    from graphify.query_planning import EXPLORE, project_graph
+
+    graph = nx.Graph()
+    graph.add_edge("service", "handler", relation="calls")
+
+    projected = project_graph(graph, EXPLORE)
+
+    with pytest.raises(nx.NetworkXError, match="Frozen graph"):
+        projected.remove_node("handler")
+    assert "handler" in graph
+
+
+def test_explore_projection_cannot_mutate_source_attributes():
+    """A query projection must not corrupt attributes used by later queries."""
+    from graphify.query_planning import EXPLORE, project_graph
+
+    graph = nx.Graph()
+    graph.add_node("service", label="CheckoutService")
+    graph.add_node("handler", label="charge_customer")
+    graph.add_edge("service", "handler", relation="calls")
+
+    projected = project_graph(graph, EXPLORE)
+    projected.nodes["service"]["label"] = "Corrupted"
+    projected.edges["service", "handler"]["relation"] = "corrupted"
+
+    assert graph.nodes["service"]["label"] == "CheckoutService"
+    assert graph.edges["service", "handler"]["relation"] == "calls"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "How does the document parser work end to end?",
+        "Trace the manual renderer runtime flow",
+        "Show the docs generator execution flow",
+        "Explain the page indexer call flow",
+    ],
+)
+def test_explicit_runtime_phrase_overrides_document_domain_nouns(question):
+    """Explicit traversal intent must outrank nouns naming the implementation domain."""
+    from graphify.query_planning import plan_query
+
+    profile = plan_query(question)
+
+    assert profile.name == "runtime_flow"
+
+
+def test_query_graph_json_honors_node_budget_for_open_ended_queries():
+    """Structured evidence is always bounded, including the explore profile."""
+    G = nx.Graph()
+    G.add_node("root", label="Cache", source_file="cache.py")
+    for index in range(10):
+        node_id = f"neighbor_{index}"
+        G.add_node(node_id, label=node_id, source_file=f"{node_id}.py")
+        G.add_edge("root", node_id, relation="related", confidence="EXTRACTED")
+
+    payload = json.loads(_query_graph_text(
+        G,
+        "Describe Cache",
+        response_format="evidence_json",
+        max_nodes=3,
+    ))
+
+    assert payload["plan"]["profile"] == "explore"
+    assert payload["coverage"]["nodes"] == 3
+    assert len(payload["nodes"]) == 3
+
+
+def test_query_graph_json_honors_serialized_token_budget():
+    """Evidence JSON stays valid while shedding low-priority evidence to fit."""
+    G = nx.Graph()
+    G.add_node("root", label="Cache", source_file="cache.py")
+    for index in range(20):
+        node_id = f"neighbor_{index}"
+        G.add_node(
+            node_id,
+            label=f"neighbor_{index}_" + "x" * 80,
+            source_file=f"src/{'deep/' * 8}{node_id}.py",
+        )
+        G.add_edge(
+            "root",
+            node_id,
+            relation="references",
+            confidence="EXTRACTED",
+            source_file="cache.py",
+            source_location="L" + "9" * 80,
+        )
+
+    raw = _query_graph_text(
+        G,
+        "Describe Cache",
+        response_format="evidence_json",
+        max_nodes=20,
+        token_budget=300,
+    )
+    payload = json.loads(raw)
+
+    assert len(raw) <= 300 * 4
+    assert payload["nodes"][0]["ref"] == "n0"
+    assert payload["coverage"]["truncated"] is True
+
+
+def test_query_graph_json_returns_compact_evidence_and_llm_admission():
+    """One query call should return answer-ready evidence and synthesis guidance."""
+    G = nx.DiGraph()
+    G.add_node("service", label="CheckoutService", source_file="checkout/service.py")
+    G.add_node("handler", label="charge_customer", source_file="checkout/charge.py")
+    G.add_node("module", label="checkout.py", source_file="checkout.py")
+    G.add_edge(
+        "service",
+        "handler",
+        relation="calls",
+        context="call",
+        confidence="EXTRACTED",
+        source_file="checkout/service.py",
+        source_location="L42",
+    )
+    G.add_edge("service", "module", relation="contains", confidence="EXTRACTED")
+
+    try:
+        raw = _query_graph_text(
+            G,
+            "How does CheckoutService work end to end?",
+            response_format="evidence_json",
+        )
+    except TypeError as exc:
+        pytest.fail(f"query API does not expose structured evidence: {exc}")
+    payload = json.loads(raw)
+
+    assert payload["plan"]["profile"] == "runtime_flow"
+    assert payload["plan"]["llm"]["mode"] == "synthesize"
+    assert payload["seeds"] == [{
+        "ref": "n0",
+        "label": "CheckoutService",
+        "selector": "checkout/service.py::CheckoutService",
+    }]
+    assert [node["ref"] for node in payload["nodes"]] == ["n0", "n1"]
+    assert payload["files"] == {
+        "f0": "checkout/service.py",
+        "f1": "checkout/charge.py",
+    }
+    assert payload["edges"] == [{
+        "source_ref": "n0",
+        "target_ref": "n1",
+        "relation": "calls",
+        "confidence": "EXTRACTED",
+        "context": "call",
+        "file_ref": "f0",
+        "source_location": "L42",
+    }]
+
+
+def test_query_graph_json_uses_local_refs_and_resolvable_selectors():
+    """Merged graph IDs must not crowd source-backed evidence out of the packet."""
+    long_service_id = "merge::" + "component::" * 20 + "service"
+    long_handler_id = "merge::" + "component::" * 20 + "handler"
+    G = nx.DiGraph()
+    G.add_node(long_service_id, label="CheckoutService", source_file="checkout/service.py")
+    G.add_node(long_handler_id, label="charge_customer", source_file="checkout/charge.py")
+    G.add_edge(long_service_id, long_handler_id, relation="calls", confidence="EXTRACTED")
+
+    raw = _query_graph_text(
+        G,
+        "How does CheckoutService work end to end?",
+        response_format="evidence_json",
+    )
+    payload = json.loads(raw)
+
+    assert long_service_id not in raw
+    assert long_handler_id not in raw
+    assert payload["seeds"] == [{
+        "ref": "n0",
+        "label": "CheckoutService",
+        "selector": "checkout/service.py::CheckoutService",
+    }]
+    assert payload["edges"][0]["source_ref"] == "n0"
+    assert payload["edges"][0]["target_ref"] == "n1"
+    assert "source_label" not in payload["edges"][0]
+    assert "target_label" not in payload["edges"][0]
+    assert "selector" not in payload["nodes"][0]
+    assert "source_file" not in payload["nodes"][0]
+    assert "source_file" not in payload["edges"][0]
+    assert payload["files"] == {
+        "f0": "checkout/service.py",
+        "f1": "checkout/charge.py",
+    }
+    assert payload["nodes"][0]["file_ref"] == "f0"
+
+
+def test_evidence_budget_preserves_first_hop_from_each_seed():
+    """Serialization trimming must not erase an entire equally relevant seed branch."""
+    G = nx.DiGraph()
+    for service in ("AlphaService", "BetaService"):
+        root = service.lower()
+        G.add_node(root, label=service, source_file=f"{root}.h")
+        for index in range(8):
+            member = f"{root}_member_{index}"
+            G.add_node(member, label=f"{service}Method{index}", source_file=f"{root}.h")
+            G.add_edge(root, member, relation="method", confidence="EXTRACTED")
+
+    payload = json.loads(_query_graph_text(
+        G,
+        "AlphaService BetaService runtime flow",
+        response_format="evidence_json",
+        token_budget=300,
+    ))
+
+    labels = {node["label"] for node in payload["nodes"]}
+    assert any(label.startswith("AlphaServiceMethod") for label in labels)
+    assert any(label.startswith("BetaServiceMethod") for label in labels)
+
+
+def test_query_graph_json_skips_llm_for_fully_grounded_direct_lookup():
+    """A direct relation lookup with extracted evidence is answerable without an LLM."""
+    G = nx.DiGraph()
+    G.add_node("caller", label="BillingJob", source_file="billing/job.py")
+    G.add_node("service", label="ChargeService", source_file="billing/service.py")
+    G.add_edge(
+        "caller",
+        "service",
+        relation="calls",
+        context="call",
+        confidence="EXTRACTED",
+        source_file="billing/job.py",
+        source_location="L19",
+    )
+
+    payload = json.loads(_query_graph_text(
+        G,
+        "Who calls ChargeService?",
+        response_format="evidence_json",
+    ))
+
+    assert payload["plan"]["llm"] == {
+        "mode": "none",
+        "reason": "deterministic lookup is fully source-backed",
+    }
+
+
+def test_query_graph_json_routes_documents_by_section_pointer():
+    """Document retrieval should return a lazy source range, never embedded section prose."""
+    G = nx.DiGraph()
+    G.add_node(
+        "guide",
+        label="Operations Guide",
+        file_type="document",
+        node_kind="page",
+        source_file="docs/operations.md",
+    )
+    G.add_node(
+        "retry",
+        label="Retry Policy",
+        file_type="document",
+        node_kind="heading",
+        source_file="docs/operations.md",
+        source_location="L40",
+        content_start_line=40,
+        content_end_line=55,
+        content_ref="sha256:abc123",
+    )
+    G.add_edge("guide", "retry", relation="contains", confidence="EXTRACTED")
+
+    payload = json.loads(_query_graph_text(
+        G,
+        "Which document section describes the Retry Policy?",
+        response_format="evidence_json",
+    ))
+    retry = next(node for node in payload["nodes"] if node["label"] == "Retry Policy")
+
+    assert payload["plan"]["profile"] == "document"
+    assert retry["content"] == {
+        "ref": "sha256:abc123",
+        "start_line": 40,
+        "end_line": 55,
+    }
+    assert "text" not in retry
+
+
+def test_runtime_flow_uses_references_as_lower_priority_fallback():
+    """Unresolved dynamic calls may survive as references; imports remain traversal noise."""
+    G = nx.DiGraph()
+    G.add_node("service", label="CheckoutService", source_file="checkout/service.py")
+    G.add_node("call", label="charge_customer", source_file="checkout/charge.py")
+    G.add_node("callback", label="on_payment_response", source_file="checkout/callback.py")
+    G.add_node("module", label="payments.py", source_file="payments.py")
+    G.add_edge("service", "call", relation="calls", confidence="EXTRACTED")
+    G.add_edge("service", "callback", relation="references", confidence="EXTRACTED")
+    G.add_edge("service", "module", relation="imports", confidence="EXTRACTED")
+
+    text = _query_graph_text(
+        G,
+        "How does CheckoutService work end to end?",
+        max_nodes=3,
+    )
+
+    assert "charge_customer" in text
+    assert "on_payment_response" in text
+    assert "payments.py" not in text
+
+
+def test_runtime_flow_prioritizes_query_matching_structural_bridges():
+    """High-fan-out types must retain the member that advances the requested flow."""
+    G = nx.DiGraph()
+    G.add_node("service", label="SfappService", source_file="sfapp.h")
+    for index in range(20):
+        node_id = f"decoy_{index:02d}"
+        G.add_node(node_id, label=f"unrelatedMethod{index}", source_file="sfapp.C")
+        G.add_edge("service", node_id, relation="method", confidence="EXTRACTED")
+    G.add_node("processor", label="processUdrCache", source_file="sfapp.C")
+    G.add_node("database", label="UdrCacheDatabase", source_file="udr.C")
+    G.add_edge("service", "processor", relation="method", confidence="EXTRACTED")
+    G.add_edge("processor", "database", relation="calls", confidence="EXTRACTED")
+
+    nodes, _edges = bounded_best_first(
+        G,
+        ["service"],
+        depth=3,
+        max_nodes=6,
+        relevance_terms={"process", "udr", "cache"},
+    )
+
+    assert "processor" in nodes
+    assert "database" in nodes
+
+
+def test_runtime_flow_prioritizes_executable_members_over_unmatched_fields():
+    """Generic fields must not crowd executable class members out of a flow budget."""
+    G = nx.DiGraph()
+    G.add_node("service", label="CacheService")
+    for index in range(10):
+        field = f"field_{index:02d}"
+        G.add_node(field, label=f"member{index}")
+        G.add_edge("service", field, relation="defines", context="field")
+    G.add_node("handler", label="handleRequest")
+    G.add_node("store", label="persistResult")
+    G.add_edge("service", "handler", relation="method")
+    G.add_edge("handler", "store", relation="calls", context="call")
+
+    nodes, _edges = bounded_best_first(
+        G,
+        ["service"],
+        depth=3,
+        max_nodes=5,
+    )
+
+    assert "handler" in nodes
+    assert "store" in nodes
+
+
+def test_bounded_traversal_limits_structural_fanout_before_global_cap():
+    """A single type must not consume the entire packet with structural peers."""
+    G = nx.DiGraph()
+    G.add_node("service", label="Service")
+    for index in range(40):
+        member = f"member_{index:02d}"
+        G.add_node(member, label=f"member{index}")
+        G.add_edge("service", member, relation="method")
+
+    nodes, _edges = bounded_best_first(
+        G,
+        ["service"],
+        depth=1,
+        max_nodes=80,
+    )
+
+    assert len(nodes) == 11  # seed + dynamic structural beam (80 // 8)
+
+
+def test_bounded_traversal_honors_zero_edge_budget_for_connected_seeds():
+    """Directly connected seeds must not bypass an explicit zero-edge budget."""
+    G = nx.Graph()
+    G.add_edge("caller", "callee", relation="calls")
+
+    nodes, edges = bounded_best_first(
+        G,
+        ["caller", "callee"],
+        depth=1,
+        max_nodes=2,
+        max_edges=0,
+    )
+
+    assert nodes == {"caller", "callee"}
+    assert edges == []
+
+
+def test_query_terms_treat_flow_verbs_as_fillers_when_content_exists():
+    """The shared tokenizer must preserve identifiers outside runtime planning."""
+    assert _query_terms("How does SFAPP process UDR cache end to end?") == [
+        "sfapp", "process", "udr", "cache", "end", "end",
+    ]
+    assert _query_terms("process") == ["process"]
+
+
+def test_runtime_query_does_not_seed_generic_flow_verb_symbols():
+    """Runtime intent words must not anchor traversal in unrelated subsystems."""
+    G = nx.DiGraph()
+    G.add_node("cache", label="SfappUdrCache", source_file="sfapp/cache.C")
+    G.add_node("lookup", label="lookupSubscriber", source_file="sfapp/cache.C")
+    G.add_edge("cache", "lookup", relation="method", confidence="EXTRACTED")
+    G.add_node("noise", label="process()", source_file="third_party/server.C")
+    G.add_node("noise_child", label="readPacket", source_file="third_party/server.C")
+    G.add_edge("noise", "noise_child", relation="calls", confidence="EXTRACTED")
+    G.add_node("flow_noise", label="FlowControlLayer", source_file="core/flow.h")
+
+    payload = json.loads(_query_graph_text(
+        G,
+        "How does SFAPP process UDR cache call flow end to end?",
+        response_format="evidence_json",
+    ))
+
+    labels = {seed["label"] for seed in payload["seeds"]}
+    assert "process()" not in labels
+    assert "FlowControlLayer" not in labels
+
+
+def test_document_section_fetches_only_verified_source_range(tmp_path):
+    """Lazy document retrieval returns the selected section and verifies its content hash."""
+    import hashlib
+    import graphify.serve as serve_mod
+
+    helper = getattr(serve_mod, "_document_section_json", None)
+    assert callable(helper), "serve must expose verified lazy section retrieval"
+
+    project = tmp_path / "project"
+    docs = project / "docs"
+    graph_dir = project / "graphify-out"
+    docs.mkdir(parents=True)
+    graph_dir.mkdir()
+    content = "# Operations\nintro\n## Retry\nUse backoff.\n# Alerts\nnotify\n"
+    (docs / "operations.md").write_text(content, encoding="utf-8")
+    section = "## Retry\nUse backoff."
+
+    G = nx.DiGraph()
+    G.add_node(
+        "retry",
+        label="Retry",
+        file_type="document",
+        node_kind="heading",
+        source_file="docs/operations.md",
+        content_start_line=3,
+        content_end_line=4,
+        content_ref="sha256:" + hashlib.sha256(section.encode("utf-8")).hexdigest(),
+    )
+
+    payload = json.loads(helper(
+        G,
+        {"label": "Retry", "token_budget": 200},
+        graph_path=str(graph_dir / "graph.json"),
+    ))
+
+    assert payload["status"] == "verified"
+    assert payload["content"] == section
+    assert payload["citation"] == "docs/operations.md:L3-L4"
+
+
+def test_document_section_rejects_stale_content_and_path_escape(tmp_path):
+    """Lazy reads fail closed when coordinates are stale or outside the project."""
+    import graphify.serve as serve_mod
+
+    project = tmp_path / "project"
+    graph_dir = project / "graphify-out"
+    docs = project / "docs"
+    graph_dir.mkdir(parents=True)
+    docs.mkdir()
+    (docs / "guide.md").write_text("# Changed\n", encoding="utf-8")
+
+    stale_graph = nx.DiGraph()
+    stale_graph.add_node(
+        "heading",
+        label="Changed",
+        source_file="docs/guide.md",
+        content_start_line=1,
+        content_end_line=1,
+        content_ref="sha256:not-the-current-hash",
+    )
+    stale = json.loads(serve_mod._document_section_json(
+        stale_graph,
+        {"node_id": "heading"},
+        graph_path=str(graph_dir / "graph.json"),
+    ))
+    assert stale["status"] == "stale"
+    assert "run graphify update" in stale["error"]
+
+    outside = tmp_path / "outside.md"
+    outside.write_text("# Secret\n", encoding="utf-8")
+    escaping_graph = nx.DiGraph()
+    escaping_graph.add_node(
+        "outside",
+        label="Outside",
+        source_file=str(outside),
+        content_start_line=1,
+        content_end_line=1,
+        content_ref="sha256:irrelevant",
+    )
+    escaped = json.loads(serve_mod._document_section_json(
+        escaping_graph,
+        {"node_id": "outside"},
+        graph_path=str(graph_dir / "graph.json"),
+    ))
+    assert escaped == {"status": "error", "error": "document source escapes project root"}
+
+
 # --- _load_graph ---
 
 def test_load_graph_roundtrip(tmp_path):
@@ -890,6 +1563,25 @@ def test_pick_seeds_respects_max_k():
     scored = [(10.0, f"n{i}") for i in range(10)]
     seeds = _pick_seeds(scored, max_k=3)
     assert len(seeds) == 3
+
+
+def test_pick_seeds_diversity_never_bypasses_max_k():
+    """Per-term diversity may fill free seats but must not exceed the query budget.
+
+    A natural-language question can have many independently matching terms. The
+    diversity pass used to append every term winner after the capped ranking
+    pass, turning ``max_k=3`` into an unbounded seed list and flooding traversal.
+    The strongest combined-ranking candidates must win the remaining seats.
+    """
+    G = nx.DiGraph()
+    for nid in ("a", "b", "c", "d", "e"):
+        G.add_node(nid, label=nid.upper(), source_file=f"{nid}.py")
+    scored = [(100.0, "a"), (4.0, "b"), (3.0, "c"), (2.0, "d"), (1.0, "e")]
+    per_term = {"alpha": "a", "zulu": "b", "charlie": "c", "bravo": "d", "echo": "e"}
+
+    seeds = _pick_seeds(scored, max_k=3, G=G, best_seed_by_term=per_term)
+
+    assert seeds == ["a", "b", "c"]
 
 
 def test_pick_seeds_without_diversity_args_is_unchanged():
@@ -1323,37 +2015,15 @@ def test_score_query_best_seed_by_term_matches_legacy_singleton_scoring(terms):
 
 
 @pytest.mark.parametrize("terms", SYLLABLE_QUERIES)
-def test_pick_seeds_with_optimized_best_seed_matches_legacy_semantics(terms):
-    """The seeds produced by `_pick_seeds(qs.ranked, G=G, best_seed_by_term=
-    qs.best_seed_by_term)` exactly match what the legacy `_pick_seeds(terms=...)`
-    loop would have produced (recreated via the reference oracle)."""
+def test_pick_seeds_with_optimized_best_seed_respects_global_budget(terms):
+    """Equivalent per-term winner metadata produces the same capped seed list."""
     G = _make_random_scoring_graph(80, seed=7)
     qs = _score_query(G, terms, collect_per_term_seeds=True)
     ref_best = _reference_best_seed_by_term(G, terms)
-    # Legacy `_pick_seeds(terms=...)` ran `_score_nodes(G, [term])` per token
-    # to build ref_best, then deduped by label key. The new `_pick_seeds(
-    # best_seed_by_term=...)` only swaps the source of the per-token winners,
-    # so it must produce the same seeds given equivalent inputs.
     opt_seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
     ref_seeds = _pick_seeds(qs.ranked, G=G, best_seed_by_term=ref_best)
     assert opt_seeds == ref_seeds, f"terms={terms}: ref={ref_seeds} opt={opt_seeds}"
-    # Per-term guarantee: every legacy winner with a non-empty seed slot is
-    # accounted for — either it appears in the seed list or another node with
-    # the same normalized label already claimed the slot (#1766 label dedup).
-    ref_seed_set = set(ref_seeds)
-    for term, nid in ref_best.items():
-        if nid in ref_seed_set:
-            continue
-        nid_label = (G.nodes[nid].get("norm_label")
-                     or G.nodes[nid].get("label")
-                     or nid)
-        seeded_with_same_label = any(
-            (G.nodes[s].get("norm_label") or G.nodes[s].get("label") or s) == nid_label
-            for s in ref_seeds
-        )
-        assert seeded_with_same_label, (
-            f"term {term!r} winner {nid!r} dropped without label-dedup reason"
-        )
+    assert len(ref_seeds) <= 3
 
 
 def test_score_query_matches_legacy_across_random_deterministic_graphs():
@@ -1842,3 +2512,152 @@ def test_node_arg_accepts_label_node_id_and_id_aliases():
     # nothing usable -> empty string, so the caller can answer with guidance
     assert _node_arg({}) == ""
     assert _node_arg({"relation_filter": "calls"}) == ""
+
+
+def test_query_graph_uses_tier_zero_aliases_when_legacy_scoring_has_no_match():
+    """Removing Tier-0 integration must make alias-only symbols unreachable."""
+    graph = nx.DiGraph()
+    graph.add_node(
+        "lookup",
+        label="performSfappDbLookUp",
+        source_file="stack/SFAPP/SfappUdrLookup.C",
+        aliases=["customer record resolver"],
+    )
+    graph.add_node(
+        "update",
+        label="createAndLaunchUdrUpdateQuery",
+        source_file="stack/SFAPP/SfappUdrLookup.C",
+    )
+    graph.add_edge("lookup", "update", relation="calls", confidence="EXTRACTED")
+
+    payload = json.loads(_query_graph_text(
+        graph,
+        "How is the customer record resolver processed end to end?",
+        response_format="evidence_json",
+    ))
+
+    assert payload["seeds"][0]["label"] == "performSfappDbLookUp"
+    assert payload["plan"]["retrieval"]["tier_zero"] is True
+
+
+def test_query_graph_normalizes_relation_aliases_before_runtime_projection():
+    """A language-specific `invokes` edge must remain visible as canonical `calls`."""
+    graph = nx.DiGraph()
+    graph.add_node("service", label="CacheService", source_file="service.php")
+    graph.add_node("handler", label="refreshCache", source_file="cache.php")
+    graph.add_edge("service", "handler", relation="invokes", confidence="EXTRACTED")
+
+    payload = json.loads(_query_graph_text(
+        graph,
+        "How does CacheService work end to end?",
+        response_format="evidence_json",
+    ))
+
+    assert payload["coverage"]["unsupported_relations"] == []
+    assert payload["edges"][0]["relation"] == "calls"
+
+
+def test_query_graph_json_keeps_every_parallel_relation_fact():
+    """Evidence must not choose an arbitrary fact from a multigraph adjacency."""
+    graph = nx.MultiDiGraph()
+    graph.add_node("caller", label="Caller", source_file="caller.py")
+    graph.add_node("callee", label="Callee", source_file="callee.py")
+    graph.add_edge(
+        "caller", "callee", key="reference", relation="references",
+        context="call", confidence="INFERRED",
+    )
+    graph.add_edge(
+        "caller", "callee", key="call", relation="calls",
+        context="call", confidence="EXTRACTED",
+    )
+
+    payload = json.loads(_query_graph_text(
+        graph,
+        "How does Caller work end to end?",
+        response_format="evidence_json",
+    ))
+
+    assert {edge["relation"] for edge in payload["edges"]} == {"calls", "references"}
+    assert payload["coverage"]["available_edges"] == 2
+
+
+def test_query_graph_json_preserves_inverse_alias_direction_after_traversal_conversion():
+    """Traversal metadata must reflect canonical endpoints, not the raw alias arc."""
+    graph = nx.DiGraph()
+    graph.add_node("caller", label="Caller", source_file="caller.py")
+    graph.add_node("callee", label="Callee", source_file="callee.py")
+    graph.add_edge(
+        "callee", "caller", relation="invoked_by",
+        context="call", confidence="EXTRACTED",
+    )
+
+    payload = json.loads(_query_graph_text(
+        graph,
+        "How does Caller work end to end?",
+        response_format="evidence_json",
+    ))
+    ref_by_label = {node["label"]: node["ref"] for node in payload["nodes"]}
+
+    assert payload["edges"] == [{
+        "source_ref": ref_by_label["Caller"],
+        "target_ref": ref_by_label["Callee"],
+        "relation": "calls",
+        "confidence": "EXTRACTED",
+        "context": "call",
+    }]
+
+
+def test_query_graph_json_ignores_malformed_direction_markers():
+    """Unhashable graph metadata must not crash canonical edge projection."""
+    graph = nx.DiGraph()
+    graph.add_node("caller", label="Caller", source_file="caller.py")
+    graph.add_node("callee", label="Callee", source_file="callee.py")
+    graph.add_edge(
+        "caller", "callee", relation="calls", context="call", confidence="EXTRACTED",
+        _src=["not-a-node-id"], _tgt="callee",
+    )
+
+    payload = json.loads(_query_graph_text(
+        graph,
+        "How does Caller work end to end?",
+        response_format="evidence_json",
+    ))
+
+    assert len(payload["edges"]) == 1
+    assert payload["edges"][0]["relation"] == "calls"
+
+
+def test_query_graph_reports_retrieval_tokens_without_claiming_model_billing():
+    """Removing telemetry wiring must drop the honest zero-model usage contract."""
+    graph = nx.DiGraph()
+    graph.add_node("service", label="CacheService", source_file="service.py")
+    graph.add_node("handler", label="refreshCache", source_file="cache.py")
+    graph.add_edge("service", "handler", relation="calls", confidence="EXTRACTED")
+
+    payload = json.loads(_query_graph_text(
+        graph,
+        "How does CacheService work end to end?",
+        response_format="evidence_json",
+    ))
+
+    assert payload["usage"]["llm_invoked"] is False
+    assert payload["usage"]["model_input_tokens"] == 0
+    assert payload["usage"]["model_output_tokens"] == 0
+    assert payload["usage"]["token_count_exact"] is False
+    assert payload["usage"]["measurement_method"] == "character_estimate"
+
+
+def test_query_graph_text_explore_honors_node_budget_and_discloses_truncation():
+    """Text queries must not silently ignore an explicit retrieval cap."""
+    graph = nx.Graph()
+    graph.add_node("index", label="QueryIndex", source_file="query_index.py")
+    for index in range(8):
+        neighbor = f"neighbor_{index}"
+        graph.add_node(neighbor, label=neighbor, source_file="query_index.py")
+        graph.add_edge("index", neighbor, relation="uses", confidence="EXTRACTED")
+
+    text = _query_graph_text(graph, "QueryIndex", depth=2, max_nodes=3)
+
+    assert "3 nodes found" in text
+    assert "Coverage: partial (max_nodes=3 reached)" in text
+    assert len([line for line in text.splitlines() if line.startswith("NODE ")]) == 3

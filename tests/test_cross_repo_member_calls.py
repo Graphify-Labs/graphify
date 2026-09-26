@@ -153,6 +153,53 @@ def test_a_cpp_call_does_not_bind_to_a_csharp_declaration():
     assert link_cross_repo_member_calls(G) == 0
 
 
+def test_uppercase_dot_c_is_treated_as_cpp_during_cross_repo_resolution():
+    """Unix ``.C`` translation units are C++, not lowercase-C source files."""
+    G = _graph(
+        caller=_caller("a", PARKED_CPP, source_file="src/app.C"),
+        declarations=[(
+            _declaration("b", "Greeter", source_file="src/greeter.C"),
+            _method("b", source_file="src/greeter.C"),
+        )],
+    )
+
+    assert link_cross_repo_member_calls(G) == 1
+    assert _added_calls(G) == {("a::app_run", "b::greeter_greet")}
+
+
+@pytest.mark.parametrize(
+    ("operator_name", "graph_label"),
+    [
+        ("operator()", ".operator()()"),
+        ("operator[]", ".operator[]()"),
+        ("operator+", ".operator+()"),
+        ("operator bool", ".operator bool()"),
+        ("operator void (*)()", ".operator void (*)()()"),
+    ],
+)
+def test_cpp_operator_names_survive_cross_repo_resolution(
+    operator_name: str,
+    graph_label: str,
+):
+    """Parked raw symbols and decorated graph labels must share one contract."""
+    parked = [{
+        "callee": operator_name,
+        "receiver_type": "Greeter",
+        "lang": "cpp",
+        "line": "L1",
+    }]
+    graph = _graph(
+        caller=_caller("a", parked, source_file="src/app.cpp"),
+        declarations=[(
+            _declaration("b", "Greeter", source_file="src/greeter.cpp"),
+            _method("b", graph_label, source_file="src/greeter.cpp"),
+        )],
+    )
+
+    assert link_cross_repo_member_calls(graph) == 1
+    assert _added_calls(graph) == {("a::app_run", "b::greeter_greet")}
+
+
 def test_a_cpp_header_declaration_answers_through_defines():
     # A C++ class that only declares `void greet();` owns it through `defines`,
     # the relation the extractor also uses for fields, so a header-only library
@@ -398,4 +445,3 @@ def test_each_language_parks_the_call_and_the_merge_finishes_it(
     assert any(e.startswith("app::") and "run" in e.lower() for e in endpoints), endpoints
     assert any(e.startswith("lib::") and callee.lower() in e.lower()
                for e in endpoints), endpoints
-

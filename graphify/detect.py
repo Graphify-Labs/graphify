@@ -20,6 +20,7 @@ from graphify.google_workspace import (
     google_workspace_enabled,
 )
 from graphify.paths import GRAPHIFY_OUT, out_path
+from graphify.corpus_policy import assess_corpus
 
 
 class FileType(str, Enum):
@@ -48,9 +49,12 @@ IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
 OFFICE_EXTENSIONS = {'.docx', '.xlsx'}
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.wav', '.m4a', '.ogg'}
 
-CORPUS_WARN_THRESHOLD = 50_000    # words - below this, warn "you may not need a graph"
-CORPUS_UPPER_THRESHOLD = 500_000  # words - above this, warn about token cost
-FILE_COUNT_UPPER = 500             # files - above this, warn about token cost
+# Compatibility exports for callers that imported the historical thresholds.
+# ``assess_corpus`` now owns policy and deliberately describes source words,
+# never model or billable token counts.
+CORPUS_WARN_THRESHOLD = 50_000
+CORPUS_UPPER_THRESHOLD = 500_000
+FILE_COUNT_UPPER = 500
 
 # Resource caps for parsing untrusted office/PDF files (F2). A corpus is
 # attacker-controllable (graphify runs on cloned/shared folders), and .docx/.xlsx
@@ -2019,19 +2023,12 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     total_files = sum(len(v) for v in files.values())
     needs_graph = total_words >= CORPUS_WARN_THRESHOLD
 
-    # Determine warning - lower bound, upper bound, or sensitive files skipped
-    warning: str | None = None
-    if not needs_graph:
-        warning = (
-            f"Corpus is ~{total_words:,} words - fits in a single context window. "
-            f"You may not need a graph."
-        )
-    elif total_words >= CORPUS_UPPER_THRESHOLD or total_files >= FILE_COUNT_UPPER:
-        warning = (
-            f"Large corpus: {total_files} files · ~{total_words:,} words. "
-            f"Semantic extraction will be expensive (many Claude tokens). "
-            f"Consider running on a subfolder."
-        )
+    # Detection reports one shared policy instead of letting the Python API and
+    # generated agent skills disagree about whether a number is an advisory or
+    # a partition gate. The legacy constants remain public compatibility names;
+    # assess_corpus owns fresh-extraction routing from this point forward.
+    corpus_policy = assess_corpus(total_files=total_files, total_words=total_words)
+    warning = corpus_policy.message if corpus_policy.advisory else None
 
     return {
         "files": {k.value: v for k, v in files.items()},
@@ -2039,6 +2036,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         "total_words": total_words,
         "needs_graph": needs_graph,
         "warning": warning,
+        "corpus_policy": corpus_policy.to_dict(),
         "skipped_sensitive": skipped_sensitive,
         "unclassified": sorted(unclassified),
         "walk_errors": walk_errors,

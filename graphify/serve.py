@@ -1,5 +1,6 @@
 # MCP stdio server - exposes graph query tools to Claude and other agents
 from __future__ import annotations
+import hashlib
 import json
 import math
 import os
@@ -16,6 +17,44 @@ from networkx.readwrite import json_graph
 from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
 from graphify.build import edge_data, edge_datas
 from graphify.paths import default_graph_json as _default_graph_json
+from graphify.query_planning import (
+    TraversalProfile,
+    bounded_best_first,
+    plan_query,
+    projection_gaps,
+    project_graph,
+    recommend_llm,
+)
+from graphify.query_index import QueryIndex, QueryIndexStore
+from graphify.token_usage import QueryUsage, Tokenizer
+
+_QUERY_INDEX_CACHE: dict[int, tuple[nx.Graph, QueryIndex]] = {}
+_QUERY_INDEX_LOCK = threading.Lock()
+
+
+def _query_index_for_graph(
+    graph: nx.Graph,
+    graph_path: str | None,
+) -> tuple[QueryIndex, bool]:
+    """Reuse a persisted or in-process Tier-0 index for a loaded graph."""
+
+    cache_key = id(graph)
+    with _QUERY_INDEX_LOCK:
+        cached = _QUERY_INDEX_CACHE.get(cache_key)
+        if cached is not None and cached[0] is graph:
+            return cached[1], True
+        if graph_path:
+            index, cache_hit = QueryIndexStore(graph_path).load_or_build(graph)
+        else:
+            index, cache_hit = QueryIndex.from_graph(graph), False
+        _QUERY_INDEX_CACHE[cache_key] = (graph, index)
+        # Servers normally host only a few graphs. Bound the process cache for
+        # test suites and long-lived multi-project servers without mutating G.
+        if len(_QUERY_INDEX_CACHE) > 32:
+            oldest = next(iter(_QUERY_INDEX_CACHE))
+            if oldest != cache_key:
+                _QUERY_INDEX_CACHE.pop(oldest, None)
+        return index, cache_hit
 
 try:
     with warnings.catch_warnings():
@@ -267,6 +306,8 @@ _QUERY_STOPWORDS = frozenset({
     "without", "into", "onto", "off", "that", "this", "these", "those", "there",
     "here", "its", "their", "them", "they", "about", "any", "all", "some",
     "work", "works", "working",
+    # Runtime-only intent words are deliberately handled by the query planner,
+    # not this shared tokenizer, so an explicit `query process` remains stable.
     # German (articles/conjunctions/question words/auxiliaries/prepositions)
     "der", "die", "das", "den", "dem", "ein", "eine", "und", "oder", "nicht",
     "wie", "wer", "wann", "wo", "warum", "wieso",
@@ -828,19 +869,20 @@ def _pick_seeds(
         seeds.append(nid)
 
     if G is not None and best_seed_by_term:
-        # Guarantee one seed per distinct query term that has any match at all,
-        # so an incidental exact match on one term cannot starve matches on
-        # other terms (#1445). Iterate tokens in a deterministic sorted order
-        # so seeds added by this loop have a stable order independent of dict
-        # iteration — preserving the legacy `_pick_seeds(terms=...)` behavior
-        # which iterated `sorted({tok ...})`. Per-token winners arrive
-        # precomputed in `best_seed_by_term` from `_score_query`'s single
-        # traversal, so `_pick_seeds` no longer rescoring the graph per term.
-        # The per-label dedup cap also gates these additions, so the guarantee
-        # cannot reintroduce a second copy of an already-seeded generic label
-        # (#1766).
-        for term in sorted(best_seed_by_term):
-            best_nid = best_seed_by_term[term]
+        # Diversity fills only the remaining global seed budget. The previous
+        # per-term loop appended every winner after the capped ranking pass, so
+        # a long natural-language query could turn max_k=3 into dozens of BFS
+        # roots. Rank candidates by the combined scorer rather than term name:
+        # the most query-relevant winners keep their seats when not every term
+        # can be represented.
+        rank = {nid: index for index, (_score, nid) in enumerate(scored)}
+        diversity_candidates = sorted(
+            set(best_seed_by_term.values()),
+            key=lambda nid: (rank.get(nid, len(scored)), nid),
+        )
+        for best_nid in diversity_candidates:
+            if len(seeds) >= max_k:
+                break
             # Honor the same per-label cap so the per-term guarantee can't
             # reintroduce a second copy of an already-seeded generic label.
             key = _seed_label_key(best_nid)
@@ -870,6 +912,12 @@ _RELATIONAL_INTENT_TERMS: frozenset[str] = frozenset({
     "implement", "implements", "implemented",
     "depend", "depends",
     "reference", "references", "referenced",
+})
+
+_RUNTIME_FLOW_INTENT_TERMS: frozenset[str] = frozenset({
+    "process", "processes", "processed", "processing",
+    "generate", "generates", "generated", "generating",
+    "end", "flow", "runtime", "execution",
 })
 
 
@@ -1026,7 +1074,14 @@ def _complete_induced_edges(G: nx.Graph, visited: set[str], edges_seen: list[tup
         edges_seen.append((u, v))
 
 
-def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
+def _bfs(
+    G: nx.Graph,
+    start_nodes: list[str],
+    depth: int,
+    *,
+    max_nodes: int | None = None,
+) -> tuple[set[str], list[tuple]]:
+    """Breadth-first traversal with an optional deterministic hard node cap."""
     # Compute hub threshold: nodes above this degree are not expanded as transit.
     # p99 of degree distribution, floored at 50 to avoid over-blocking small graphs.
     degrees = [G.degree(n) for n in G.nodes()]
@@ -1042,13 +1097,22 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     edges_seen: list[tuple] = []
     for _ in range(depth):
         next_frontier: set[str] = set()
-        for n in frontier:
+        frontier_nodes = sorted(frontier) if max_nodes is not None else frontier
+        for n in frontier_nodes:
             # Don't expand through high-degree hubs (except seeds - a hub that
             # is the starting node should still be explored).
             if n not in seed_set and G.degree(n) >= hub_threshold:
                 continue
-            for neighbor in G.neighbors(n):
+            neighbors = G.neighbors(n)
+            if max_nodes is not None:
+                neighbors = iter(sorted(neighbors))
+            for neighbor in neighbors:
                 if neighbor not in visited:
+                    if (
+                        max_nodes is not None
+                        and len(visited) + len(next_frontier) >= max_nodes
+                    ):
+                        continue
                     next_frontier.add(neighbor)
                     edges_seen.append((n, neighbor))
         visited.update(next_frontier)
@@ -1057,7 +1121,14 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
+def _dfs(
+    G: nx.Graph,
+    start_nodes: list[str],
+    depth: int,
+    *,
+    max_nodes: int | None = None,
+) -> tuple[set[str], list[tuple]]:
+    """Depth-first traversal with an optional deterministic hard node cap."""
     degrees = [G.degree(n) for n in G.nodes()]
     if degrees:
         degrees_sorted = sorted(degrees)
@@ -1069,17 +1140,28 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     visited: set[str] = set()
     edges_seen: list[tuple] = []
     stack = [(n, 0) for n in reversed(start_nodes)]
-    while stack:
+    while stack and (max_nodes is None or len(visited) < max_nodes):
         node, d = stack.pop()
         if node in visited or d > depth:
             continue
         visited.add(node)
         if node not in seed_set and G.degree(node) >= hub_threshold:
             continue
-        for neighbor in G.neighbors(node):
+        neighbors = G.neighbors(node)
+        if max_nodes is not None:
+            # The stack is LIFO, so reverse insertion visits the lowest stable
+            # identifier first and makes capped results repeatable.
+            neighbors = iter(reversed(sorted(neighbors)))
+        for neighbor in neighbors:
             if neighbor not in visited:
                 stack.append((neighbor, d + 1))
                 edges_seen.append((node, neighbor))
+    if max_nodes is not None:
+        edges_seen = [
+            (source, target)
+            for source, target in edges_seen
+            if source in visited and target in visited
+        ]
     _complete_induced_edges(G, visited, edges_seen)
     return visited, edges_seen
 
@@ -1358,6 +1440,303 @@ def _traversal_view(G: nx.Graph) -> nx.Graph:
         H.add_edge(u, v, **{**d, "_src": d.get("_src", u), "_tgt": d.get("_tgt", v)})
     return H
 
+
+def _query_evidence_json(
+    G: nx.Graph,
+    question: str,
+    *,
+    profile: TraversalProfile,
+    start_nodes: list[str],
+    nodes: set[str],
+    edges: list[tuple],
+    token_budget: int,
+    max_nodes: int,
+    resolved_filters: list[str],
+    traversal_truncated: bool,
+    unsupported_relations: list[str],
+    tier_zero_used: bool,
+    tier_zero_cache_hit: bool,
+    tokenizer: Tokenizer | None,
+) -> str:
+    """Serialize one bounded, answer-ready evidence packet for agent clients."""
+
+    # Preserve best-first discovery while interleaving direct evidence from
+    # every seed. Without this small fairness pass, equal-cost members from the
+    # first stable node ID can fill the serialized budget and erase another
+    # equally relevant component entirely.
+    seed_edge_buckets: dict[str, list[tuple[str, str]]] = {
+        seed: [] for seed in start_nodes
+    }
+    remaining_edges: list[tuple[str, str]] = []
+    for edge in edges:
+        owner = next((seed for seed in start_nodes if seed in edge), None)
+        if owner is None:
+            remaining_edges.append(edge)
+        else:
+            seed_edge_buckets[owner].append(edge)
+    ordered_edges: list[tuple[str, str]] = []
+    bucket_depth = max((len(bucket) for bucket in seed_edge_buckets.values()), default=0)
+    for index in range(bucket_depth):
+        for seed in start_nodes:
+            bucket = seed_edge_buckets[seed]
+            if index < len(bucket):
+                ordered_edges.append(bucket[index])
+    ordered_edges.extend(remaining_edges)
+    edge_order = [endpoint for edge in ordered_edges for endpoint in edge]
+    ordered_nodes = list(dict.fromkeys(
+        [node for node in start_nodes if node in nodes]
+        + [node for node in edge_order if node in nodes]
+        + sorted(nodes - set(start_nodes) - set(edge_order), key=str)
+    ))
+    # Opaque merged IDs and repeated file paths can consume more context than
+    # the evidence itself. Packet-local refs preserve topology and citations;
+    # source-qualified selectors on seeds stay resolvable by get_node.
+    ref_by_id = {node_id: f"n{index}" for index, node_id in enumerate(ordered_nodes)}
+    id_by_ref = {ref: node_id for node_id, ref in ref_by_id.items()}
+    file_ref_by_path: dict[str, str] = {}
+
+    def _file_ref(source_file: str) -> str:
+        if source_file not in file_ref_by_path:
+            file_ref_by_path[source_file] = f"f{len(file_ref_by_path)}"
+        return file_ref_by_path[source_file]
+
+    node_payload = []
+    for node_id in ordered_nodes:
+        data = G.nodes[node_id]
+        label = sanitize_label(str(data.get("label", node_id)))
+        source_file = sanitize_label(str(data.get("source_file", "")))
+        entry = {"ref": ref_by_id[node_id], "label": label}
+        if source_file:
+            entry["file_ref"] = _file_ref(source_file)
+        source_location = sanitize_label(str(data.get("source_location", "")))
+        if source_location:
+            entry["source_location"] = source_location
+        node_payload.append(entry)
+        if data.get("content_ref"):
+            node_payload[-1]["content"] = {
+                "ref": sanitize_label(str(data["content_ref"])),
+                "start_line": int(data.get("content_start_line", 1)),
+                "end_line": int(data.get("content_end_line", data.get("content_start_line", 1))),
+            }
+
+    edge_payload = []
+    for source, target in ordered_edges:
+        raw = G[source][target]
+        edge_facts = raw.values() if G.is_multigraph() else (raw,)
+        # A multigraph adjacency can carry several independently grounded
+        # relations. Serializing only the first one makes correctness depend on
+        # insertion order and can hide the strongest available evidence.
+        for data in edge_facts:
+            true_source = data.get("_src", source)
+            true_target = data.get("_tgt", target)
+            endpoints_match = (
+                (true_source == source and true_target == target)
+                or (true_source == target and true_target == source)
+            )
+            if not endpoints_match:
+                true_source, true_target = source, target
+            confidence = str(data.get("confidence", ""))
+            entry = {
+                "source_ref": ref_by_id[true_source],
+                "target_ref": ref_by_id[true_target],
+                "relation": sanitize_label(str(data.get("relation", "related"))),
+                "confidence": sanitize_label(confidence),
+            }
+            context = sanitize_label(str(data.get("context", "")))
+            if context:
+                entry["context"] = context
+            source_file = sanitize_label(str(data.get("source_file", "")))
+            if source_file:
+                entry["file_ref"] = _file_ref(source_file)
+            source_location = sanitize_label(str(data.get("source_location", "")))
+            if source_location:
+                entry["source_location"] = source_location
+            edge_payload.append(entry)
+
+    direct_lookup = bool(resolved_filters) and profile.name == "explore"
+    available_nodes = len(node_payload)
+    available_edges = len(edge_payload)
+    seed_refs = {ref_by_id[node] for node in start_nodes if node in nodes}
+    # Token telemetry is useful only if it does not erase an entire equally
+    # relevant branch. Protect one direct neighbor per seed while lower-value
+    # evidence is trimmed; edges may still be removed to satisfy the hard cap.
+    protected_refs = set(seed_refs)
+    for seed in start_nodes:
+        direct_edge = next((edge for edge in ordered_edges if seed in edge), None)
+        if direct_edge is None:
+            continue
+        neighbor = direct_edge[1] if direct_edge[0] == seed else direct_edge[0]
+        if neighbor in ref_by_id:
+            protected_refs.add(ref_by_id[neighbor])
+
+    def _render_packet(truncated: bool) -> str:
+        current_refs = {node["ref"] for node in node_payload}
+        current_ids = {id_by_ref[ref] for ref in current_refs}
+        current_unresolved = sum(
+            str(G.nodes[node_id].get("reference_status")
+                or G.nodes[node_id].get("node_kind") or "").lower()
+            in {"ambiguous", "ambiguous_reference", "unresolved", "unresolved_reference"}
+            for node_id in current_ids
+        )
+        current_uncertain = sum(edge["confidence"] != "EXTRACTED" for edge in edge_payload)
+        admission = recommend_llm(
+            profile,
+            edge_count=len(edge_payload),
+            uncertain_edges=current_uncertain,
+            unresolved_nodes=current_unresolved,
+            direct_lookup=direct_lookup,
+            truncated=truncated,
+            unsupported_relations=len(unsupported_relations),
+        )
+        def _selector(node_id: str) -> str:
+            data = G.nodes[node_id]
+            label = sanitize_label(str(data.get("label", node_id)))
+            source_file = sanitize_label(str(data.get("source_file", "")))
+            return f"{source_file}::{label}" if source_file else label
+        current_file_refs = {
+            item["file_ref"]
+            for item in [*node_payload, *edge_payload]
+            if item.get("file_ref")
+        }
+        files = {
+            ref: path
+            for path, ref in file_ref_by_path.items()
+            if ref in current_file_refs
+        }
+        payload = {
+            "query": question,
+            "plan": {
+                "profile": profile.name,
+                "llm": {"mode": admission.mode, "reason": admission.reason},
+                "retrieval": {
+                    "tier_zero": tier_zero_used,
+                    "index_cache_hit": tier_zero_cache_hit,
+                },
+            },
+            "budget": {"max_nodes": max_nodes, "token_budget": token_budget},
+            "files": files,
+            "seeds": [
+                {
+                    "ref": ref_by_id[node],
+                    "label": sanitize_label(str(G.nodes[node].get("label", node))),
+                    "selector": _selector(node),
+                }
+                for node in start_nodes if ref_by_id[node] in current_refs
+            ],
+            "coverage": {
+                "nodes": len(node_payload),
+                "edges": len(edge_payload),
+                "available_nodes": available_nodes,
+                "available_edges": available_edges,
+                "uncertain_edges": current_uncertain,
+                "unresolved_nodes": current_unresolved,
+                "truncated": truncated,
+                "unsupported_relations": unsupported_relations,
+            },
+            "nodes": node_payload,
+            "edges": edge_payload,
+        }
+        # Retrieval is deterministic and invokes no model. Count its query and
+        # evidence separately, and never present the fallback estimate as
+        # billable usage. A caller may inject its model tokenizer for exactness.
+        evidence_without_usage = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        payload["usage"] = QueryUsage.for_retrieval(
+            query=question,
+            evidence=evidence_without_usage,
+            tokenizer=tokenizer,
+        ).to_dict()
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+    # Four characters per token is the same conservative estimate used by the
+    # CLI text surface. Keep a small metadata floor so even tiny user budgets
+    # still return valid JSON with the admission decision and at least a seed.
+    char_budget = max(1024, max(1, token_budget) * 4)
+    rendered = _render_packet(traversal_truncated)
+    truncated = traversal_truncated
+    while len(rendered) > char_budget:
+        removable_index = next(
+            (index for index in range(len(node_payload) - 1, -1, -1)
+             if node_payload[index]["ref"] not in protected_refs),
+            None,
+        )
+        if removable_index is not None:
+            removed_ref = node_payload.pop(removable_index)["ref"]
+            edge_payload[:] = [
+                edge for edge in edge_payload
+                if edge["source_ref"] != removed_ref and edge["target_ref"] != removed_ref
+            ]
+        elif edge_payload:
+            edge_payload.pop()
+        else:
+            break
+        truncated = True
+        rendered = _render_packet(truncated)
+    return rendered
+
+
+def _document_section_json(
+    G: nx.Graph,
+    arguments: dict,
+    *,
+    graph_path: str,
+) -> str:
+    """Read one graph-selected document range and fail closed when it is stale."""
+
+    raw_label = arguments.get("label") or arguments.get("node_id") or arguments.get("id")
+    if not raw_label:
+        return json.dumps({"status": "error", "error": "provide a heading label or node id"})
+    node_id, error = _resolve_single_node(G, str(raw_label).lower())
+    if error:
+        return json.dumps({"status": "error", "error": error})
+    node = G.nodes[node_id]
+    required = ("source_file", "content_start_line", "content_end_line", "content_ref")
+    if any(node.get(field) in (None, "") for field in required):
+        return json.dumps({
+            "status": "error",
+            "error": "selected node has no lazy document-section pointer; rebuild the graph",
+        })
+
+    project_root = Path(graph_path).resolve().parent.parent
+    source = Path(str(node["source_file"]))
+    resolved_source = source.resolve() if source.is_absolute() else (project_root / source).resolve()
+    try:
+        relative_source = resolved_source.relative_to(project_root)
+    except ValueError:
+        return json.dumps({"status": "error", "error": "document source escapes project root"})
+    if not resolved_source.is_file():
+        return json.dumps({"status": "error", "error": "document source is missing"})
+
+    lines = resolved_source.read_text(encoding="utf-8", errors="replace").splitlines()
+    start_line = int(node["content_start_line"])
+    end_line = int(node["content_end_line"])
+    if start_line < 1 or end_line < start_line or end_line > len(lines):
+        return json.dumps({"status": "error", "error": "document section range is invalid"})
+    content = "\n".join(lines[start_line - 1:end_line])
+    actual_ref = "sha256:" + hashlib.sha256(content.encode("utf-8")).hexdigest()
+    if actual_ref != node["content_ref"]:
+        return json.dumps({
+            "status": "stale",
+            "error": "document content changed after graph extraction; run graphify update",
+            "expected_ref": node["content_ref"],
+            "actual_ref": actual_ref,
+        })
+
+    token_budget = max(1, min(int(arguments.get("token_budget", 1200)), 20_000))
+    char_budget = token_budget * 3
+    truncated = len(content) > char_budget
+    rendered = content[:char_budget] if truncated else content
+    payload = {
+        "status": "verified",
+        "node_id": node_id,
+        "label": sanitize_label(str(node.get("label", node_id))),
+        "citation": f"{relative_source.as_posix()}:L{start_line}-L{end_line}",
+        "content_ref": actual_ref,
+        "truncated": truncated,
+        "content": rendered,
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
 def _query_graph_text(
     G: nx.Graph,
     question: str,
@@ -1367,15 +1746,30 @@ def _query_graph_text(
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
     graph_path: str | None = None,
+    max_nodes: int = 80,
+    response_format: str = "text",
+    tokenizer: Tokenizer | None = None,
 ) -> str:
     terms = _query_terms(question)
+    resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
+    # An explicit context filter is the caller's stronger instruction and keeps
+    # the compatibility projection. Otherwise plan before scoring so generic
+    # flow verbs do not become exact-match seeds in unrelated subsystems.
+    profile = plan_query(question) if not context_filters else plan_query("")
+    scoring_terms = terms
+    if profile.name == "runtime_flow":
+        content_terms = [term for term in terms if term not in _RUNTIME_FLOW_INTENT_TERMS]
+        scoring_terms = content_terms or terms
     # One graph scoring pass produces both the combined ranking (used to drive
     # the gap-based seed selection below) and the per-token singleton winners
     # (used by _pick_seeds' per-term guarantee). Previously this was T+1 passes
     # — one combined + one per query token — re-walking the whole graph each
     # time; on a 100k-node, three-term benchmark ~71% of scoring time was
     # spent in those redundant per-term passes.
-    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    query_index, tier_zero_cache_hit = _query_index_for_graph(G, graph_path)
+    tier_zero = query_index.search(question, limit=3)
+    tier_zero_ids = [candidate.node_id for candidate in tier_zero.candidates]
+    qs = _score_query(G, scoring_terms, collect_per_term_seeds=True)
     # Relational-intent verbs ("calls", "uses", ...) describe the relation the
     # question asks about, not a symbol to seed from; drop them from the
     # per-term seed GUARANTEE so an incidental verb match cannot seat a decoy
@@ -1385,18 +1779,86 @@ def _query_graph_text(
     # the guarantee is left intact so such an identifier stays reachable.
     best_seed_by_term = qs.best_seed_by_term
     intent = {t for t in best_seed_by_term if t in _RELATIONAL_INTENT_TERMS}
-    if intent and any(t not in _RELATIONAL_INTENT_TERMS for t in terms):
+    if intent and any(t not in _RELATIONAL_INTENT_TERMS for t in scoring_terms):
         best_seed_by_term = {
             t: nid for t, nid in best_seed_by_term.items() if t not in intent
         }
     start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
+    # Alias-only and compiler-provided names may be absent from legacy label
+    # scoring. Use Tier-0 as a recall fallback, not an additional seed source:
+    # generic query words must not widen an already-confident legacy result.
+    tier_zero_used = not start_nodes and bool(tier_zero_ids)
+    if tier_zero_used:
+        start_nodes.extend(tier_zero_ids[:3])
     if not start_nodes:
+        if response_format == "evidence_json":
+            return _query_evidence_json(
+                G,
+                question,
+                profile=profile,
+                start_nodes=[],
+                nodes=set(),
+                edges=[],
+                token_budget=token_budget,
+                max_nodes=max(1, min(int(max_nodes), 200)),
+                resolved_filters=resolved_filters,
+                traversal_truncated=False,
+                unsupported_relations=[],
+                tier_zero_used=False,
+                tier_zero_cache_hit=tier_zero_cache_hit,
+                tokenizer=tokenizer,
+            )
         return "No matching nodes found."
-    resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
-    traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
-    nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
+    base_traversal_graph = _traversal_view(G)
+    traversal_graph = project_graph(base_traversal_graph, profile)
+    traversal_graph = _filter_graph_by_context(traversal_graph, resolved_filters)
+    node_budget = max(1, min(int(max_nodes), 200))
+    all_start_nodes = list(start_nodes)
+    start_nodes = start_nodes[:node_budget]
+    if profile.name == "explore" and response_format != "evidence_json":
+        # Preserve the legacy BFS/DFS choice while applying the same hard bound
+        # promised by the CLI option. Capped traversal is stable across runs.
+        nodes, edges = (
+            _dfs(traversal_graph, start_nodes, depth, max_nodes=node_budget)
+            if mode == "dfs"
+            else _bfs(traversal_graph, start_nodes, depth, max_nodes=node_budget)
+        )
+    else:
+        nodes, edges = bounded_best_first(
+            traversal_graph,
+            start_nodes,
+            depth=depth,
+            max_nodes=node_budget,
+            relevance_terms=set(scoring_terms),
+        )
+    seed_truncated = len(all_start_nodes) > len(start_nodes)
+    frontier_truncated = any(
+        neighbor not in nodes
+        for node in nodes
+        for neighbor in traversal_graph.neighbors(node)
+    )
+    traversal_truncated = seed_truncated or frontier_truncated
+    unsupported_relations = projection_gaps(base_traversal_graph, nodes, profile)
+    if response_format == "evidence_json":
+        return _query_evidence_json(
+            traversal_graph,
+            question,
+            profile=profile,
+            start_nodes=start_nodes,
+            nodes=nodes,
+            edges=edges,
+            token_budget=token_budget,
+            max_nodes=node_budget,
+            resolved_filters=resolved_filters,
+            traversal_truncated=traversal_truncated,
+            unsupported_relations=unsupported_relations,
+            tier_zero_used=tier_zero_used,
+            tier_zero_cache_hit=tier_zero_cache_hit,
+            tokenizer=tokenizer,
+        )
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
+        f"Profile: {profile.name}",
         f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
     ]
     # Name the graph this answer came from. `graphify-out/` resolves against the
@@ -1412,6 +1874,8 @@ def _query_graph_text(
                                f"({G.number_of_nodes()} nodes)")
     if resolved_filters:
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
+    if traversal_truncated:
+        header_parts.append(f"Coverage: partial (max_nodes={node_budget} reached)")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
     # Pass the seeds so the queried symbol renders first and survives truncation
@@ -1879,7 +2343,10 @@ def _build_server(graph_path: str):
         _tools = [
             types.Tool(
                 name="query_graph",
-                description="Search the knowledge graph using BFS or DFS. Returns relevant nodes and edges as text context.",
+                description=(
+                    "Search the knowledge graph with bounded, intent-aware traversal. "
+                    "Returns text or compact evidence JSON with deterministic LLM admission."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -1888,6 +2355,19 @@ def _build_server(graph_path: str):
                                  "description": "bfs=broad context, dfs=trace a specific path"},
                         "depth": {"type": "integer", "default": 3, "description": "Traversal depth (1-6)"},
                         "token_budget": {"type": "integer", "default": 2000, "description": "Max output tokens"},
+                        "max_nodes": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 200,
+                            "default": 80,
+                            "description": "Maximum nodes admitted to semantic traversal",
+                        },
+                        "response_format": {
+                            "type": "string",
+                            "enum": ["text", "evidence_json"],
+                            "default": "text",
+                            "description": "Text context or one compact structured evidence packet",
+                        },
                         "context_filter": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -1905,6 +2385,25 @@ def _build_server(graph_path: str):
                     "properties": {
                         "label": {"type": "string", "description": "Node label or ID to look up"},
                         "node_id": {"type": "string", "description": "Alias for label (node id)"},
+                    },
+                },
+            ),
+            types.Tool(
+                name="get_document_section",
+                description=(
+                    "Fetch only one graph-selected document section by label or node id. "
+                    "Verifies the stored content hash and refuses stale or escaping paths."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string", "description": "Heading label or node id"},
+                        "node_id": {"type": "string", "description": "Alias for label"},
+                        "token_budget": {
+                            "type": "integer",
+                            "default": 1200,
+                            "description": "Maximum section-content tokens",
+                        },
                     },
                 },
             ),
@@ -2039,6 +2538,8 @@ def _build_server(graph_path: str):
         mode = arguments.get("mode", "bfs")
         depth = min(int(arguments.get("depth", 3)), 6)
         budget = int(arguments.get("token_budget", 2000))
+        max_nodes = max(1, min(int(arguments.get("max_nodes", 80)), 200))
+        response_format = arguments.get("response_format", "text")
         context_filter = arguments.get("context_filter")
         _t0 = _time.perf_counter()
         result = _query_graph_text(
@@ -2049,6 +2550,8 @@ def _build_server(graph_path: str):
             token_budget=budget,
             context_filters=context_filter,
             graph_path=str(active_graph_path),
+            max_nodes=max_nodes,
+            response_format=response_format,
         )
         querylog.log_query(
             kind="mcp_query",
@@ -2166,6 +2669,9 @@ def _build_server(graph_path: str):
         lines += [f"  {i}. {n['label']} - {n['degree']} edges" for i, n in enumerate(nodes, 1)]
         return "\n".join(lines)
 
+    def _tool_get_document_section(arguments: dict) -> str:
+        return _document_section_json(G, arguments, graph_path=str(active_graph_path))
+
     def _tool_graph_stats(_: dict) -> str:
         confs = [d.get("confidence", "EXTRACTED") for _, _, d in G.edges(data=True)]
         total = len(confs) or 1
@@ -2269,6 +2775,7 @@ def _build_server(graph_path: str):
     _handlers = {
         "query_graph": _tool_query_graph,
         "get_node": _tool_get_node,
+        "get_document_section": _tool_get_document_section,
         "get_neighbors": _tool_get_neighbors,
         "get_community": _tool_get_community,
         "god_nodes": _tool_god_nodes,

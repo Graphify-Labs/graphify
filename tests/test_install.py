@@ -462,16 +462,13 @@ def test_codex_skill_contains_spawn_agent():
 
 
 def test_codex_skill_uses_graphify_with_existing_graph():
-    """Codex skill must keep graph-first orientation in the lean-core split.
-
-    The progressive-disclosure split drops codex's old monolith-only "dirty
-    graph output" blurb; the graph-first intent now lives in the shared core's
-    fast-path block, which jumps straight to the query flow when a graph exists.
-    """
+    """Codex skill must keep graph-first orientation in the lean-core split."""
     import graphify
+
     skill = (Path(graphify.__file__).parent / "skill-codex.md").read_text()
     assert "Fast path — existing graph" in skill
-    assert "skip Steps 1–5 entirely and jump straight to `## For /graphify query`" in skill
+    assert "skip detection and extraction entirely" in skill
+    assert "A supplied repository path identifies which existing graph to query" in skill
     assert "graphify query" in skill
     assert "graphify explain" in skill
     assert "graphify path" in skill

@@ -50,7 +50,7 @@ Drop any folder of code, docs, papers, images, or video into graphify and get a 
 
 If the user invoked `/graphify --help` or `/graphify -h` (with no other arguments), print the contents of the `## Usage` section above verbatim and stop. Do not run any commands, do not detect files, do not default the path to `.`. Just print the Usage block and return.
 
-**Fast path — existing graph:** Before doing anything else, check whether `graphify-out/graph.json` exists. The expected location is `graphify-out/graph.json` relative to the **current working directory** (i.e. the project root where you are running commands). If it exists AND the user's request is a natural-language question about the codebase (e.g. "How does X work?", "What calls Y?", "Trace the data flow through Z") and NOT an explicit rebuild command (`--update`, `--cluster-only`, or a bare path/URL that implies fresh extraction): **skip Steps 1–5 entirely and jump straight to `## For /graphify query`.** Run `graphify query "<question>"` immediately. Do not run detect. Do not check corpus size. Do not ask the user to narrow. The graph is already built — use it.
+**Fast path — existing graph:** Before doing anything else, resolve the requested local project path (or `.` when none was supplied) and check `<resolved-project>/graphify-out/graph.json`; also check `graphify-out/graph.json` in the current project for backward compatibility. If either graph exists and the user's intent is a natural-language question—not an explicit build, rebuild, update, or cluster request—skip detection and extraction entirely. Query the resolved graph with `graphify query "<question>" --graph "<resolved-project>/graphify-out/graph.json"`. A supplied repository path identifies which existing graph to query; it does not by itself authorize a rebuild. Existing merged graphs have no 500-file or word-count query limit.
 
 If no path was given, use `.` (current directory). Do not ask the user for a path.
 
@@ -141,13 +141,14 @@ Omit any category with 0 files from the summary.
 Then act on it:
 - If `total_files` is 0: stop with "No supported files found in [path]."
 - If `skipped_sensitive` is non-empty: report the count and list the skipped file names, so a wrongly-flagged source or doc is visible and can be renamed or moved (#2106).
-- If `total_words` > 2,000,000 OR `total_files` > 500: show the warning. Then compute the top 5 first-level subdirectories by file count:
+- If `corpus_policy.partition_required` is true: explain that this is a fresh-extraction routing gate, not a final graph-size limit. Build deterministic component/capacity-shard graphs and merge them into one root graph. Then compute the top 5 first-level subdirectories by file count:
   - Read `scan_root` from the detect JSON (always an absolute path to the resolved INPUT_PATH).
   - Concatenate all file lists across all types (`code`, `document`, `paper`, `image`, `video`).
   - Filter out any path that starts with `scan_root + "/graphify-out/"` to exclude converted sidecars.
   - For each file, strip the `scan_root` prefix and take the first path component. Files directly in `scan_root` with no subdirectory count as `(root)`.
-  - If all files are in `(root)` with no subdirectories, do not ask to narrow — no subfolders exist. Instead suggest `--no-cluster` to skip the expensive clustering step and proceed.
-  - Otherwise rank by count, show the top 5 with file counts, then ask which subfolder to run on. Wait for the user's answer before proceeding.
+  - If all files are in `(root)` with no subdirectories, create deterministic direct-root capacity shards; do not bypass the gate or omit those files.
+  - Otherwise rank by count, recursively extract compliant leaves, capacity-shard oversized direct-root files, and merge the validated results. Do not ask the user to choose one subfolder unless they explicitly requested narrower scope.
+- If `corpus_policy.advisory` is true but `partition_required` is false: show the advisory and continue with one graph. Counts are words, not model tokens.
 - Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 3 if not.
 
 ### Step 2.5 - Video and audio (only if video files detected)
@@ -181,6 +182,7 @@ For any code files detected, run AST extraction in parallel with Part B subagent
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
 from graphify.extract import collect_files, extract
+from graphify.semantic_adapters import SemanticEnrichmentService
 from pathlib import Path
 import json
 
@@ -191,13 +193,15 @@ for f in detect.get('files', {}).get('code', []):
 
 if code_files:
     result = extract(code_files, cache_root=Path('INPUT_PATH'))
-    Path('graphify-out/.graphify_ast.json').write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-    print(f'AST: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
 else:
-    Path('graphify-out/.graphify_ast.json').write_text(json.dumps({'nodes':[],'edges':[],'input_tokens':0,'output_tokens':0}, ensure_ascii=False), encoding=\"utf-8\")
-    print('No code files - skipping AST extraction')
+    result = {'nodes':[],'edges':[],'input_tokens':0,'output_tokens':0}
+result = SemanticEnrichmentService(Path('INPUT_PATH')).enrich(result)
+Path('graphify-out/.graphify_ast.json').write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding=\"utf-8\")
+print(f'AST + semantic adapters: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
 "
 ```
+
+When Clang is installed, this service automatically verifies only unresolved C/C++ member-call candidates. It prefers `compile_commands.json` and otherwise uses a syntax-only fallback; it never creates nodes. After merging partition graphs, run `graphify merge-graphs ... --source-root INPUT_PATH` so declarations restored by composition can upgrade a unique inferred call to compiler-confirmed evidence. Other languages remain portable through `.graphify/semantic/<adapter-id>.scip.json` artifacts.
 
 #### Part B - Semantic extraction (parallel subagents)
 
@@ -688,10 +692,10 @@ Both are non-default subcommands. `--update` re-extracts only new or changed fil
 When `graphify-out/graph.json` already exists and the user asks a question about the corpus, answer from the graph rather than rebuilding it:
 
 ```bash
-graphify query "<question>"
+graphify query "<question>" --format evidence-json --max-nodes 80 --budget 1000
 ```
 
-Before traversal, expand the question against the graph's own vocabulary so a wording mismatch does not collapse the answer to noise. If the `graphify query` CLI is unavailable, fall back to an inline NetworkX traversal of `graphify-out/graph.json`. Answer using only what the graph output contains, and quote `source_location` when citing a specific fact. For that vocab-expansion step, the BFS/DFS traversal modes, the `--budget` cap, the NetworkX fallback, `save-result` feedback, and the `/graphify path` and `/graphify explain` flows, see `references/query.md`.
+Read the packet's `llm.mode`: `none` means answer directly without another graph call, `synthesize` means produce one grounded answer from this packet, and `reason` permits focused recovery. Only on `reason` should you expand against the graph vocabulary or run another traversal. If the CLI is unavailable, fall back to an inline NetworkX traversal of `graphify-out/graph.json`. Answer using only graph evidence and cite `source_location`. For lazy document sections, recovery, path/explain, and feedback details, see `references/query.md`.
 
 ---
 

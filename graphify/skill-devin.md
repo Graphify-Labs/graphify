@@ -63,6 +63,8 @@ Use it for:
 
 If the user invoked `/graphify --help` or `/graphify -h` (with no other arguments), print the contents of the `## Usage` section above verbatim and stop. Do not run any commands, do not detect files, do not default the path to `.`. Just print the Usage block and return.
 
+**Fast path — existing graph:** Resolve the supplied local project path (or `.`) and check `<resolved-project>/graphify-out/graph.json` before detection. For a natural-language codebase question, query that graph directly with `graphify query "<question>" --graph "<resolved-project>/graphify-out/graph.json"`. A supplied path selects the graph; it does not request rebuilding it. The 500-file and 2,000,000-word gates apply only to fresh extraction, never to querying a merged graph.
+
 If no path was given, use `.` (current directory). Do not ask the user for a path.
 
 Follow these steps in order. Do not skip steps.
@@ -137,7 +139,8 @@ Omit any category with 0 files from the summary.
 Then act on it:
 - If `total_files` is 0: stop with "No supported files found in [path]."
 - If `skipped_sensitive` is non-empty: report the count and list the skipped file names, so a wrongly-flagged source or doc is visible and can be renamed or moved (#2106).
-- If `total_words` > 2,000,000 OR `total_files` > 200: show the warning and the top 5 subdirectories by file count, then ask which subfolder to run on. Wait for the user's answer before proceeding.
+- If `corpus_policy.partition_required` is true: explain that this is a fresh-extraction routing gate, deterministically partition compliant leaves and direct-root capacity shards, then merge them into one root graph. Do not ask the user to select a subfolder unless narrower scope was explicitly requested.
+- If `corpus_policy.advisory` is true but `partition_required` is false: show the advisory and continue with one graph. The threshold counts words, not model tokens.
 - Otherwise: proceed directly to Step 2.5 if video files were detected, or Step 3 if not.
 
 ### Step 2.5 - Transcribe video / audio files (only if video files detected)
@@ -204,6 +207,7 @@ For any code files detected, run AST extraction in parallel with Part B subagent
 $(cat graphify-out/.graphify_python) -c "
 import sys, json
 from graphify.extract import collect_files, extract
+from graphify.semantic_adapters import SemanticEnrichmentService
 from pathlib import Path
 import json
 
@@ -214,11 +218,11 @@ for f in detect.get('files', {}).get('code', []):
 
 if code_files:
     result = extract(code_files)
-    Path('graphify-out/.graphify_ast.json').write_text(json.dumps(result, indent=2))
-    print(f'AST: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
 else:
-    Path('graphify-out/.graphify_ast.json').write_text(json.dumps({'nodes':[],'edges':[],'input_tokens':0,'output_tokens':0}))
-    print('No code files - skipping AST extraction')
+    result = {'nodes':[],'edges':[],'input_tokens':0,'output_tokens':0}
+result = SemanticEnrichmentService(Path('INPUT_PATH')).enrich(result)
+Path('graphify-out/.graphify_ast.json').write_text(json.dumps(result, indent=2))
+print(f'AST + semantic adapters: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
 "
 ```
 
