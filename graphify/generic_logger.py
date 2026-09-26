@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import sys
 import threading
 import yaml
 from tree_sitter import Parser, Query, QueryCursor
@@ -19,8 +20,11 @@ class GenericLogExtractor:
             ".c": "c",
             ".cpp": "cpp",
             ".cc": "cpp",
+            ".cxx": "cpp",
             ".hpp": "cpp",
-            ".h": "c"
+            ".hxx": "cpp",
+            ".hh": "cpp",
+            ".h": "c",
         }
 
     def _ensure_loaded(self):
@@ -34,25 +38,39 @@ class GenericLogExtractor:
         with self._lock:
             if self._loaded and getattr(self, "_current_config_path", None) == cpath:
                 return
-            
-            self._current_config_path = cpath
+
             if not os.path.exists(cpath):
                 print(f"[LogExtractor Warning] Configuration file {cpath} not found. Logging extraction disabled.", flush=True)
+                self.config = {}
                 self.enabled = False
+                self._current_config_path = cpath
                 self._loaded = True
                 return
-                
+
+            new_config = {}
+            new_enabled = False
             try:
-                with open(cpath, "r") as f:
+                with open(cpath, "r", encoding="utf-8") as f:
                     loaded_data = yaml.safe_load(f)
-                    if loaded_data is None:
-                        loaded_data = {}
-                    self.config = loaded_data.get("logging_rules", {})
-                self.enabled = True
+                if loaded_data is None:
+                    loaded_data = {}
+                if not isinstance(loaded_data, dict):
+                    print(f"[LogExtractor Warning] Configuration in {cpath} must be a YAML mapping/dictionary. Logging extraction disabled.", flush=True)
+                else:
+                    rules = loaded_data.get("logging_rules", {})
+                    if isinstance(rules, dict):
+                        new_config = rules
+                        new_enabled = True
+                    else:
+                        print(f"[LogExtractor Warning] 'logging_rules' in {cpath} must be a dictionary. Logging extraction disabled.", flush=True)
             except Exception as e:
                 print(f"[LogExtractor Warning] Failed to load configuration from {cpath}: {e}", flush=True)
-                self.enabled = False
-                
+                new_config = {}
+                new_enabled = False
+
+            self.config = new_config
+            self.enabled = new_enabled
+            self._current_config_path = cpath
             self._loaded = True
 
     def is_enabled(self):
@@ -120,20 +138,24 @@ class GenericLogExtractor:
 
         return None
 
-    def inject_logs_to_graph(self, file_path, file_content, graph_builder):
+    def inject_logs_to_graph(self, file_path, file_content, graph_builder) -> bool:
         self._ensure_loaded()
         if not self.enabled:
-            return
+            return True
             
         _, ext = os.path.splitext(file_path)
-        lang_key = self.ext_map.get(ext)
+        lang_key = self.ext_map.get(ext.lower())
         if not lang_key or lang_key not in self.config:
-            return  
+            return True
             
         rule = self.config[lang_key]
-        formatted_query = rule["query"].format(pattern=rule["pattern"])
-        
+        if not isinstance(rule, dict) or "query" not in rule:
+            return True
+
         try:
+            pattern = rule.get("pattern", "")
+            formatted_query = rule["query"].replace("{pattern}", pattern)
+
             ts_language = graph_builder.get_tree_sitter_language(lang_key)
             query = Query(ts_language, formatted_query)
             
@@ -223,7 +245,10 @@ class GenericLogExtractor:
                                 break
                     if not source_id:
                         # Fallback 2: File node for this file
-                        file_nodes = [n for n in graph_builder.result.get("nodes", []) if n.get("source_file") == file_path and n.get("type") == "file"]
+                        file_nodes = [
+                            n for n in graph_builder.result.get("nodes", [])
+                            if n.get("source_file") == file_path and (n.get("label") == os.path.basename(file_path) or n.get("type") == "file")
+                        ]
                         if file_nodes:
                             source_id = file_nodes[0]["id"]
                         else:
@@ -249,5 +274,7 @@ class GenericLogExtractor:
                     relationship="PRINTS_LOG",
                     metadata={"file": file_path, "type": "EXTRACTED", "lang": lang_key}
                 )
+            return True
         except Exception as e:
-            print(f"[LogExtractor Hook Warning] Skipping AST pass on {file_path}: {e}")
+            print(f"[LogExtractor Hook Warning] Skipping AST pass on {file_path}: {e}", file=sys.stderr, flush=True)
+            return False
