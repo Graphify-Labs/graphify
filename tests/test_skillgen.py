@@ -749,6 +749,25 @@ def test_input_path_forward_slash_guidance_is_present():
     )
 
 
+def test_input_path_quote_escaping_guidance_is_present():
+    """Review finding on PR 3621: INPUT_PATH is substituted into a Python
+    string literal (e.g. Path('INPUT_PATH')) with no guidance about a
+    literal single quote in the path itself. A path like
+    /Users/o'brien/project closes the string literal early, corrupting or
+    hijacking the code that follows -- the same class of gap the existing
+    backslash guidance already covers for a different character."""
+    claude_core, _ = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        assert "escape it as" in body and "\\'" in body, (
+            f"[{key}] missing the single quote escaping guidance for INPUT_PATH"
+        )
+
+
 def test_step1_gates_on_a_still_failed_install():
     """#1619 B4: a failed install must stop with an actionable error instead of
     silently writing a broken interpreter path that fails every later step
