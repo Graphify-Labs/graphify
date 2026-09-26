@@ -460,6 +460,8 @@ git add -f graphify-out/GRAPH_REPORT.md
 
 > `manifest.json` is now portable — keys are stored as relative paths and re-anchored on load, so committing it is safe and avoids a full rebuild on first checkout.
 
+The remaining `graphify-out/` files stay machine-local and should **not** be force-added: `.graphify_root` and `.graphify_python` (absolute paths to this machine's scan root and interpreter), `.graphify_analysis.json`, the AST cache under `graphify-out/cache/`, and the `needs_update` flag. A teammate who pulls the shared `graph.json` can query it immediately; running `graphify update` re-anchors the committed `manifest.json` and rebuilds only what changed on their machine.
+
 ### Recommended workflow
 
 Set this up once per clone. From then on, three of your normal git commands keep the graph current by themselves, and one keeps it in sync with your team:

@@ -148,4 +148,4 @@ Focus on the problem first, proposed behavior, alternatives, and compatibility c
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [SECURITY.md](SECURITY.md)
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-- [The Memory Layer](https://safishamsi.gumroad.com/l/qetvlo)
+- [RELEASING.md](RELEASING.md) (maintainers)
