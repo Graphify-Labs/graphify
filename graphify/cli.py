@@ -3447,6 +3447,13 @@ def dispatch_command(cmd: str) -> None:
 
         stages = _StageTimer(cli_timing)
 
+        from graphify.kotlin_constructor_locals import (
+            GRAPH_MARKER as _KOTLIN_CONSTRUCTOR_LOCAL_GRAPH_MARKER,
+            SCHEMA as _KOTLIN_CONSTRUCTOR_LOCAL_SCHEMA,
+            is_kotlin as _is_kotlin_constructor_local_source,
+            select_targets as _select_kotlin_constructor_local_targets,
+        )
+
         from graphify.detect import (
             detect as _detect,
             detect_incremental as _detect_incremental,
@@ -3793,6 +3800,55 @@ def dispatch_command(cmd: str) -> None:
                 [Path(p) for p in [*deleted_files, *excluded_files, *graph_stale_sources]],
             )
 
+        # Constructor-local Kotlin calls are owned by the caller file. When a
+        # provider changes, re-extract the complete live Kotlin corpus so merge
+        # replaces every caller-owned edge instead of retaining an obsolete one.
+        # A graph written before this feature has no marker, so it receives the
+        # same one-time refresh even when detect_incremental found no file edit.
+        _kotlin_constructor_local_graph_schema = None
+        if existing_graph_path.exists():
+            try:
+                from graphify.security import check_graph_file_size_cap as _kcls_size_cap
+
+                _kcls_size_cap(existing_graph_path)
+                _kcls_prior = json.loads(existing_graph_path.read_text(encoding="utf-8"))
+                _kcls_graph = _kcls_prior.get("graph")
+                if isinstance(_kcls_graph, dict):
+                    _kotlin_constructor_local_graph_schema = _kcls_graph.get(
+                        _KOTLIN_CONSTRUCTOR_LOCAL_GRAPH_MARKER
+                    )
+            except Exception:
+                # The normal merge/reconciliation path below remains the
+                # fail-closed authority for an unreadable graph. Treating this
+                # marker as absent only ensures it cannot bypass migration.
+                _kotlin_constructor_local_graph_schema = None
+        _kotlin_removed_paths = [
+            Path(p)
+            for p in [*deleted_files, *excluded_files, *graph_stale_sources]
+        ]
+        code_files, _kotlin_constructor_local_refresh = (
+            _select_kotlin_constructor_local_targets(
+                [Path(p) for p in files_by_type.get("code", [])],
+                code_files,
+                _kotlin_removed_paths,
+                _kotlin_constructor_local_graph_schema,
+            )
+        )
+        _kotlin_constructor_local_selected = [
+            path for path in code_files if _is_kotlin_constructor_local_source(path)
+        ]
+        _kotlin_constructor_local_persist_marker = (
+            _kotlin_constructor_local_refresh
+            or _kotlin_constructor_local_graph_schema
+            == _KOTLIN_CONSTRUCTOR_LOCAL_SCHEMA
+        )
+        if _kotlin_constructor_local_refresh:
+            print(
+                "[graphify extract] refreshing "
+                f"{len(_kotlin_constructor_local_selected)} live Kotlin source file(s) "
+                "for constructor-local call resolution"
+            )
+
         # AST extraction on code files. Empty code list (docs-only corpus) is
         # the issue #698 case — skip cleanly instead of crashing inside extract().
         ast_result: dict = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
@@ -3957,6 +4013,17 @@ def dispatch_command(cmd: str) -> None:
                     sys.exit(1)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
                 _extraction_incomplete = True  # the whole AST pass was lost
+        if (
+            _kotlin_constructor_local_refresh
+            and _kotlin_constructor_local_selected
+            and ast_result.get("_kotlin_constructor_local_complete") is not True
+        ):
+            print(
+                "[graphify extract] error: Kotlin constructor-local refresh was "
+                "incomplete; preserving the previous graph for retry.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.
@@ -4371,6 +4438,10 @@ def dispatch_command(cmd: str) -> None:
                     _cleared_semantic = _shrink[2]
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
             merged["edges"] = _dedupe_edges(merged["edges"])
+            if _kotlin_constructor_local_persist_marker:
+                merged.setdefault("graph", {})[
+                    _KOTLIN_CONSTRUCTOR_LOCAL_GRAPH_MARKER
+                ] = _KOTLIN_CONSTRUCTOR_LOCAL_SCHEMA
             # Disambiguate colliding-basename file-node labels (#2032). This raw
             # --no-cluster path bypasses build_from_json (where the clustered path
             # gets this), so apply it directly on the merged node list.
@@ -4514,6 +4585,10 @@ def dispatch_command(cmd: str) -> None:
                 sys.exit(1)
         else:
             G = _build([merged], dedup=not no_dedup, dedup_llm_backend=dedup_backend, root=target)
+        if _kotlin_constructor_local_persist_marker:
+            G.graph[_KOTLIN_CONSTRUCTOR_LOCAL_GRAPH_MARKER] = (
+                _KOTLIN_CONSTRUCTOR_LOCAL_SCHEMA
+            )
         stages.mark("build")
         if G.number_of_nodes() == 0:
             print(

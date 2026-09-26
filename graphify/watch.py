@@ -1413,6 +1413,31 @@ def _rebuild_code(
         return False
 
     out = watch_path / _GRAPHIFY_OUT
+
+    def _preserve_failed_incremental_batch() -> bool:
+        """Keep an uncommitted incremental batch available for the next watch run."""
+        if changed_paths is not None:
+            try:
+                _queue_pending(out, list(changed_paths))
+            except OSError as exc:
+                print(
+                    "[graphify watch] Could not preserve incomplete Kotlin "
+                    f"refresh for retry: {exc}",
+                    file=sys.stderr,
+                )
+        return False
+
+    def _manifest_save_failed(exc: Exception, *, graph_published: bool) -> bool:
+        """Report a stale manifest without making a false graph rollback claim."""
+        graph_state = "advanced" if graph_published else "was unchanged"
+        print(
+            "[graphify watch] Graph output "
+            f"{graph_state}, but manifest.json remains stale after save failure: {exc}; "
+            "preserving prior hashes for retry.",
+            file=sys.stderr,
+        )
+        return _preserve_failed_incremental_batch()
+
     if acquire_lock:
         # #1059: incremental (changed_paths is not None) hooks must not drop
         # their change set when another rebuild is already running. Queue
@@ -1532,6 +1557,28 @@ def _rebuild_code(
                 ast_doc_files.append(p)
 
         existing_graph = out / "graph.json"
+        from graphify.kotlin_constructor_locals import (
+            GRAPH_MARKER as _KOTLIN_CONSTRUCTOR_LOCAL_GRAPH_MARKER,
+            SCHEMA as _KOTLIN_CONSTRUCTOR_LOCAL_SCHEMA,
+            is_jvm_source as _is_jvm_constructor_local_source,
+            is_kotlin as _is_kotlin_constructor_local_source,
+            select_targets as _select_kotlin_constructor_local_targets,
+        )
+        _kotlin_constructor_local_graph_schema = None
+        _kotlin_constructor_local_force_refresh = False
+        if existing_graph.exists():
+            try:
+                check_graph_file_size_cap(existing_graph)
+                _kcls_prior = json.loads(existing_graph.read_text(encoding="utf-8"))
+                _kcls_graph = _kcls_prior.get("graph")
+                if isinstance(_kcls_graph, dict):
+                    _kotlin_constructor_local_graph_schema = _kcls_graph.get(
+                        _KOTLIN_CONSTRUCTOR_LOCAL_GRAPH_MARKER
+                    )
+            except Exception:
+                # Reconciliation remains the fail-closed authority for an
+                # unreadable graph. An unreadable marker never skips migration.
+                _kotlin_constructor_local_graph_schema = None
         if not code_files and not existing_graph.exists():
             print("[graphify watch] No code files found - nothing to rebuild.")
             return False
@@ -1610,6 +1657,50 @@ def _rebuild_code(
             for root in (project_root, watch_root):
                 deleted_paths.add(_nsf(str(path), str(root)) or str(path))
 
+        # A `.graphifyignore` / persisted-exclude update need not name the
+        # provider it adds or removes. Compare current and prior JVM source
+        # spellings only when Kotlin currently exists or existed in the graph.
+        # This is removal/restoration evidence, not a provider inventory;
+        # Java-only repositories retain their baseline path and an outside-root
+        # or unresolvable legacy spelling stays fail-closed.
+        if existing_graph.exists():
+            try:
+                _kcls_live = {
+                    Path(os.path.abspath(path)).as_posix()
+                    for path in code_files
+                    if _is_jvm_constructor_local_source(path)
+                }
+                _kcls_prior_kotlin = any(
+                    isinstance(node, dict)
+                    and _is_kotlin_constructor_local_source(node.get("source_file"))
+                    for node in _kcls_prior.get("nodes", [])
+                )
+                _kcls_current_kotlin = any(
+                    _is_kotlin_constructor_local_source(path) for path in code_files
+                )
+                if _kcls_prior_kotlin or _kcls_current_kotlin:
+                    _kcls_prior_jvm: set[str] = set()
+                    for _kcls_node in _kcls_prior.get("nodes", []):
+                        if not isinstance(_kcls_node, dict):
+                            continue
+                        _kcls_source = _kcls_node.get("source_file")
+                        if not _is_jvm_constructor_local_source(_kcls_source):
+                            continue
+                        _kcls_path = Path(str(_kcls_source))
+                        if not _kcls_path.is_absolute():
+                            _kcls_path = project_root / _kcls_path
+                        if _is_relative_to(_kcls_path, watch_root):
+                            _kcls_prior_jvm.add(
+                                Path(os.path.abspath(_kcls_path)).as_posix()
+                            )
+                    _kotlin_constructor_local_force_refresh = (
+                        _kcls_live != _kcls_prior_jvm
+                    )
+            except Exception:
+                # Existing reconciliation keeps its own unreadable-graph
+                # failure path; do not guess an out-of-root legacy source.
+                pass
+
         if changed_paths is not None:
             code_set = {Path(os.path.abspath(p)) for p in code_files}
             # #1915: semantic-backed docs are never AST-quick-scanned; their
@@ -1663,10 +1754,27 @@ def _rebuild_code(
                     _add_deleted_source(deleted_in_root)
             from graphify.extractors.terraform import refresh_terraform_paths
             wanted = refresh_terraform_paths(wanted, code_files, changed_paths)
-            if not wanted and not deleted_paths:
+            extract_targets, _kotlin_constructor_local_refresh = (
+                _select_kotlin_constructor_local_targets(
+                    code_files,
+                    wanted,
+                    [Path(path) for path in deleted_source_identities],
+                    _kotlin_constructor_local_graph_schema,
+                    force_refresh=_kotlin_constructor_local_force_refresh,
+                )
+            )
+            _kotlin_constructor_local_selected = [
+                path
+                for path in extract_targets
+                if _is_kotlin_constructor_local_source(path)
+            ]
+            if (
+                not extract_targets
+                and not deleted_paths
+                and not _kotlin_constructor_local_refresh
+            ):
                 print("[graphify watch] No tracked code files in change set - skipping rebuild.")
                 return True
-            extract_targets = wanted
         else:
             # Full rebuild: skip the AST quick-scan for semantic-backed docs
             # (#1915). They remain in code_files for corpus membership and
@@ -1674,7 +1782,32 @@ def _rebuild_code(
             # full-rebuild AST ownership rule (scoped to
             # rebuilt_source_identities, #2333 COEXIST) leaves their existing
             # AST heading layer intact alongside the semantic layer.
-            extract_targets = [p for p in code_files if p not in semantic_doc_files]
+            extract_targets, _kotlin_constructor_local_refresh = (
+                _select_kotlin_constructor_local_targets(
+                    code_files,
+                    [p for p in code_files if p not in semantic_doc_files],
+                    [],
+                    _kotlin_constructor_local_graph_schema,
+                    force_refresh=_kotlin_constructor_local_force_refresh,
+                )
+            )
+            _kotlin_constructor_local_selected = [
+                path
+                for path in extract_targets
+                if _is_kotlin_constructor_local_source(path)
+            ]
+
+        _kotlin_constructor_local_persist_marker = (
+            _kotlin_constructor_local_refresh
+            or _kotlin_constructor_local_graph_schema
+            == _KOTLIN_CONSTRUCTOR_LOCAL_SCHEMA
+        )
+        if _kotlin_constructor_local_refresh:
+            print(
+                "[graphify watch] refreshing "
+                f"{len(_kotlin_constructor_local_selected)} live Kotlin source file(s) "
+                "for constructor-local call resolution"
+            )
 
         # #2406: an incremental rebuild parses only the changed files, so the
         # cross-file resolvers could not see a callee living in an unchanged
@@ -1819,6 +1952,17 @@ def _rebuild_code(
             "nodes": [], "edges": [], "hyperedges": [],
             "input_tokens": 0, "output_tokens": 0,
         }
+        if (
+            _kotlin_constructor_local_refresh
+            and _kotlin_constructor_local_selected
+            and result.get("_kotlin_constructor_local_complete") is not True
+        ):
+            print(
+                "[graphify watch] Kotlin constructor-local refresh was incomplete; "
+                "preserving the previous graph for retry.",
+                file=sys.stderr,
+            )
+            return _preserve_failed_incremental_batch()
         _rebase_relative_source_files(result, watch_root, project_root)
 
         # #2543: AST sources that failed this run (error result, or extractor
@@ -1931,6 +2075,10 @@ def _rebuild_code(
                 # `result` (the raw merged extraction) never carries one.
                 "directed": bool((existing_graph_data or {}).get("directed", False)),
             }
+            if _kotlin_constructor_local_persist_marker:
+                candidate_graph_data.setdefault("graph", {})[
+                    _KOTLIN_CONSTRUCTOR_LOCAL_GRAPH_MARKER
+                ] = _KOTLIN_CONSTRUCTOR_LOCAL_SCHEMA
             # This path writes the raw merged extraction, not a build_from_json
             # graph, so mint the same external stubs the builder does — otherwise
             # an import to stdlib / a third-party module leaves an undeclared
@@ -2005,8 +2153,8 @@ def _rebuild_code(
                     scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                     clear_ast=_failed_ast_sources or None,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                return _manifest_save_failed(exc, graph_published=not same_graph)
 
             if same_graph:
                 print("[graphify watch] No code-graph changes detected (--no-cluster); outputs left untouched.")
@@ -2030,6 +2178,10 @@ def _rebuild_code(
         # update` can't silently downgrade a directed graph to undirected -
         # build_from_json defaults to directed=False otherwise.
         G = build_from_json(result, directed=bool((existing_graph_data or {}).get("directed", False)))
+        if _kotlin_constructor_local_persist_marker:
+            G.graph[_KOTLIN_CONSTRUCTOR_LOCAL_GRAPH_MARKER] = (
+                _KOTLIN_CONSTRUCTOR_LOCAL_SCHEMA
+            )
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:
@@ -2039,7 +2191,11 @@ def _rebuild_code(
                 )
             except Exception:
                 same_topology = False
-            if same_topology:
+            if same_topology and not (
+                _kotlin_constructor_local_persist_marker
+                and _kotlin_constructor_local_graph_schema
+                != _KOTLIN_CONSTRUCTOR_LOCAL_SCHEMA
+            ):
                 try:
                     from graphify.detect import save_manifest
                     # Full-scan save: prune excluded-but-alive rows (#1908);
@@ -2050,8 +2206,8 @@ def _rebuild_code(
                         scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                         clear_ast=_failed_ast_sources or None,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    return _manifest_save_failed(exc, graph_published=False)
                 html_action = _reconcile_graph_html(out, existing_graph_data)
                 if html_action == "rendered":
                     print(
@@ -2222,8 +2378,8 @@ def _rebuild_code(
                 scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                 clear_ast=_failed_ast_sources or None,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            return _manifest_save_failed(exc, graph_published=not no_change)
 
         # Reconcile from the persisted graph. The stale marker was written
         # before graph.json advanced, so a failed or interrupted atomic render
