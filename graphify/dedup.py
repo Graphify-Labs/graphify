@@ -560,6 +560,7 @@ def deduplicate_entities(
     *,
     communities: dict[str, int],
     dedup_llm_backend: str | None = None,
+    dedup_jev: bool = False,
     root: str | Path | None = None,
     hyperedges: "list[dict] | None" = None,
     protected_ids: "set[str] | None" = None,
@@ -571,6 +572,8 @@ def deduplicate_entities(
         edges: list of edge dicts with {"source": str, "target": str, ...}
         communities: mapping of node_id -> community_id (from cluster())
         dedup_llm_backend: if set, use LLM to resolve ambiguous pairs
+        dedup_jev: if True, resolve ambiguous pairs with the JEV noul judge
+            (calibrated probability, p>0.75 action line, fail-open)
         root: scan root; ID-collision ranking judges source paths relative to
             it so path form and checkout location cannot flip the survivor (#2532)
         hyperedges: when given, member ids are rewired to survivors IN PLACE,
@@ -926,12 +929,20 @@ def deduplicate_entities(
                         uf.union(winner["id"], neighbor_id)
                     fuzzy_merges += 1
 
-    # ── pass 3: LLM tiebreaker for ambiguous pairs (opt-in) ──────────────────
+    # ── pass 3: LLM/JEV tiebreaker for ambiguous pairs (opt-in) ──────────────
     if dedup_llm_backend is not None:
         _llm_tiebreak(
             candidates, uf, communities, backend=dedup_llm_backend,
             protected_set=protected_set, get_prot=_get_prot, union_with_prot=_union_with_prot,
         )
+    if dedup_jev:
+        try:
+            _jev_tiebreak(
+                candidates, uf, communities,
+                protected_set=protected_set, get_prot=_get_prot, union_with_prot=_union_with_prot,
+            )
+        except Exception as exc:  # fail-open: JEV 故障绝不阻塞 dedup
+            print(f"[graphify] --dedup-jev tiebreak failed: {exc}", flush=True)
 
     # ── build remap table from union-find components ──────────────────────────
     components = uf.components()
@@ -1118,6 +1129,108 @@ def _pick_winner(nodes: list[dict]) -> dict:
         return (1 if has_suffix else 0, no_source, no_location, -_content_richness(n), len(n["id"]))
 
     return min(nodes, key=_score)
+
+
+def _jev_tiebreak(
+    candidates: list[dict],
+    uf: _UF,
+    communities: dict[str, int],
+    *,
+    low: float = 75.0,
+    high: float = 92.0,
+    protected_set: set[str] | None = None,
+    get_prot=None,
+    union_with_prot=None,
+) -> None:
+    """Resolve ambiguous pairs (score in [low, high)) via JEV noul.
+
+    JEV（TypeSafe System One）对每对模糊候选给 '是否同一真实世界概念' 的
+    校准概率，按 p>0.75 行动线决定 union —— 比通用 LLM 的裸 yes/no 多一个
+    可解释置信度。Fail-open：JEV 不可用 / 超时 / 限流时静默跳过（回退原逻辑），
+    绝不阻塞 dedup 主流程。出站仅 label + source_file（元数据）。
+    """
+    try:
+        from graphify.jev_decide import judge_dedup_same, available
+        if not available():
+            print("[graphify] --dedup-jev: TYPESAFE_API_KEY not set, skipping JEV tiebreaker.", flush=True)
+            return
+    except ImportError:
+        return
+
+    ambiguous: list[tuple[dict, dict, float]] = []
+    for i, node in enumerate(candidates):
+        norm_i = _norm(node.get("label", node.get("id", "")))
+        for j in range(i + 1, len(candidates)):
+            neighbor = candidates[j]
+            if uf.find(node["id"]) == uf.find(neighbor["id"]):
+                continue
+            norm_j = _norm(neighbor.get("label", neighbor.get("id", "")))
+            # Mirror pass 2: plain Jaro for cross-file long labels (#1243).
+            _xfile = (node.get("source_file") or "") != (neighbor.get("source_file") or "")
+            if _xfile and max(len(norm_i), len(norm_j)) >= 12:
+                score = Jaro.normalized_similarity(norm_i, norm_j) * 100
+            else:
+                score = JaroWinkler.normalized_similarity(norm_i, norm_j) * 100
+            if _is_variant_pair(norm_i, norm_j):
+                continue
+            if _short_label_blocked(norm_i, norm_j, score):
+                continue
+            _lo, _hi = sorted((norm_i, norm_j), key=len)
+            if _hi.startswith(_lo) and _hi != _lo:
+                continue
+            # Mirror pass 2: decisively-distinct pairs never reach the judge
+            # (#1284, #2576).
+            if _numeric_tokens_differ(norm_i, norm_j):
+                continue
+            if _content_token_swap(norm_i, norm_j):
+                continue
+            if _crossfile_fileanchored_blocked(node, neighbor):
+                continue
+            c1 = communities.get(node["id"])
+            c2 = communities.get(neighbor["id"])
+            if (c1 is not None and c2 is not None and c1 == c2
+                    and min(len(norm_i), len(norm_j)) >= 12):
+                score += _COMMUNITY_BOOST
+            if low <= score < high:
+                if protected_set and get_prot is not None:
+                    px = get_prot(node["id"])
+                    py = get_prot(neighbor["id"])
+                    if px is not None and py is not None and px != py:
+                        continue
+                ambiguous.append((node, neighbor, score))
+
+    if not ambiguous:
+        return
+
+    for a, b, _score in ambiguous:
+        if uf.find(a["id"]) == uf.find(b["id"]):
+            continue
+        keep = judge_dedup_same(
+            a.get("label", a.get("id", "")),
+            b.get("label", b.get("id", "")),
+            a.get("source_file", ""),
+            b.get("source_file", ""),
+        )
+        if keep is not True:
+            # JEV 不可用 / 低置信 / 判定为不同实体 → 不合并（回退原逻辑）
+            continue
+        if protected_set and get_prot is not None and union_with_prot is not None:
+            px = get_prot(a["id"])
+            py = get_prot(b["id"])
+            if px is not None and py is not None and px != py:
+                continue
+            if a["id"] in protected_set:
+                winner = a
+            elif b["id"] in protected_set:
+                winner = b
+            else:
+                winner = _pick_winner([a, b])
+            union_with_prot(winner["id"], a["id"])
+            union_with_prot(winner["id"], b["id"])
+        else:
+            winner = _pick_winner([a, b])
+            uf.union(winner["id"], a["id"])
+            uf.union(winner["id"], b["id"])
 
 
 def _llm_tiebreak(

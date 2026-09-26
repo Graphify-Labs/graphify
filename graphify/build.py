@@ -1535,6 +1535,7 @@ def build(
     directed: bool = False,
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
+    dedup_jev: bool = False,
     root: str | Path | None = None,
     protected_ids: "set[str] | None" = None,
 ) -> nx.Graph:
@@ -1545,6 +1546,8 @@ def build(
     dedup=True (default) runs entity deduplication before building the graph.
     dedup_llm_backend: if set (e.g. "gemini", "claude", or "kimi"), uses LLM to resolve
         ambiguous pairs in the 75–92 Jaro-Winkler score zone.
+    dedup_jev: if True, resolve the same ambiguous pairs with the JEV noul judge
+        (calibrated probability, p>0.75 action line, fail-open).
     root: if given, absolute source_file paths are made relative to root (#932).
     protected_ids: optional set of node IDs to protect from being collapsed with
         other protected nodes during incremental merge (#3477).
@@ -1587,7 +1590,7 @@ def build(
                     n["definition_file"] = _norm_source_file(n["definition_file"], _root)
         combined["nodes"], combined["edges"] = deduplicate_entities(
             combined["nodes"], combined["edges"], communities={},
-            dedup_llm_backend=dedup_llm_backend, root=_root,
+            dedup_llm_backend=dedup_llm_backend, dedup_jev=dedup_jev, root=_root,
             # Hyperedge members reference node ids too, so they need the same
             # survivor rewiring the edges get (#2805).
             hyperedges=combined.get("hyperedges"),
@@ -1926,6 +1929,7 @@ def build_merge(
     directed: bool | None = None,
     dedup: bool = True,
     dedup_llm_backend: str | None = None,
+    dedup_jev: bool = False,
     root: str | Path | None = None,
     ast_sources: "Iterable[str | Path] | None" = None,
 ) -> nx.Graph:
@@ -2191,6 +2195,7 @@ def build_merge(
         directed=directed,
         dedup=dedup,
         dedup_llm_backend=dedup_llm_backend,
+        dedup_jev=dedup_jev,
         root=_eff_root,
         protected_ids=_protected_ids,
     )

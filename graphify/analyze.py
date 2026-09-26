@@ -1,9 +1,23 @@
 """Graph analysis: god nodes (most connected), surprising connections (cross-community), suggested questions."""
 from __future__ import annotations
+import sys
 from pathlib import Path
 import networkx as nx
 
 from graphify.build import edge_data
+
+
+def _jev_available() -> bool:
+    """Whether the JEV decision layer (graphify.jev_decide) may run.
+
+    Fail-open probe: absent key or import error → False, so callers keep the
+    deterministic heuristic behaviour.
+    """
+    try:
+        from graphify.jev_decide import available
+        return available()
+    except ImportError:
+        return False
 
 # Builtin/mock names that can appear as annotation-derived nodes in pre-existing
 # graphs. Excluded from god-node ranking so they don't displace real abstractions
@@ -152,6 +166,9 @@ def surprising_connections(
     G: nx.Graph,
     communities: dict[int, list[str]] | None = None,
     top_n: int = 5,
+    semantic: bool | None = None,
+    backend: str | None = None,
+    model: str | None = None,
 ) -> list[dict]:
     """
     Find connections that are genuinely surprising - not obvious from file structure.
@@ -165,6 +182,17 @@ def surprising_connections(
 
     Concept nodes (empty source_file, or injected semantic annotations) are excluded
     from surprising connections because they are intentional, not discovered.
+
+    ``semantic`` (None | bool) enables the LLM semantic re-ranking layer
+    (:mod:`graphify.semantic_judge`): the heuristic ranking is computed first,
+    then a configured LLM backend verifies the top candidates ("is this really
+    surprising?") and re-orders them. None = auto-detect a backend; False = pure
+    heuristic (or set ``GRAPHIFY_SEMANTIC_REJECT=1``); True = force the layer
+    (fails open to the heuristic order when no backend is configured).
+
+    ``GRAPHIFY_SEMANTIC_REJECT`` disables only the **LLM semantic layer**; it
+    does NOT affect the JEV decision layer (controlled separately via
+    ``--dedup-jev`` / ``jev_*``). Set it only to skip LLM calls, not to kill JEV.
     """
     # Identify unique source files (ignore empty/null source_file)
     source_files = {
@@ -174,10 +202,63 @@ def surprising_connections(
     }
     is_multi_source = len(source_files) > 1
 
+    semantic_on = _semantic_layer_enabled(semantic)
     if is_multi_source:
-        return _cross_file_surprises(G, communities or {}, top_n)
+        # When the semantic layer will run, ask the heuristic pass for a larger
+        # candidate pool (3x top_n) so the LLM can genuinely re-rank rather than
+        # only re-order a pre-truncated slice (research.md D3).
+        pool_n = top_n
+        if semantic_on:
+            from graphify.semantic_judge import DEFAULT_SURPRISE_CANDIDATES
+            pool_n = max(top_n, min(DEFAULT_SURPRISE_CANDIDATES, top_n * 3))
+        result = _cross_file_surprises(G, communities or {}, pool_n)
     else:
-        return _cross_community_surprises(G, communities or {}, top_n)
+        result = _cross_community_surprises(G, communities or {}, top_n)
+
+    if semantic_on:
+        try:
+            from graphify.semantic_judge import reorder_surprises
+            result = reorder_surprises(
+                result, top_n=top_n, backend=backend, model=model
+            )
+            # The layer returns the full re-ranked pool; the caller still
+            # truncates to the public top_n contract.
+            result = result[:top_n]
+        except Exception as exc:  # noqa: BLE001 - fail-open discipline
+            print(
+                f"[graphify] semantic surprise re-ranking unavailable ({exc}); "
+                "keeping heuristic order.",
+                file=sys.stderr,
+            )
+            result = result[:top_n]
+    elif _jev_available():
+        # JEV control-plane layer: judge each heuristic-surprising candidate
+        # ('genuinely surprising & valuable?') and drop the ones JEV says no
+        # to. Runs only when the LLM semantic layer is off, so the two
+        # judgement layers never stack. Fail-open: JEV unavailable/errors keep
+        # the full heuristic result (research.md D3).
+        try:
+            from graphify.jev_decide import judge_surprise_keep
+            kept = []
+            for item in result:
+                keep = judge_surprise_keep(
+                    str(item.get("source", "")),
+                    str(item.get("target", "")),
+                    str(item.get("relation", "")),
+                    str(item.get("why", "") or item.get("note", "")),
+                    item.get("source_files"),
+                )
+                if keep is not False:
+                    kept.append(item)
+            result = kept[:top_n]
+        except Exception as exc:  # noqa: BLE001 - fail-open discipline
+            print(
+                f"[graphify] JEV surprise judgement unavailable ({exc}); "
+                "keeping heuristic order.",
+                file=sys.stderr,
+            )
+            result = result[:top_n]
+    return result
 
 
 def _is_concept_node(G: nx.Graph, node_id: str) -> bool:
@@ -448,11 +529,24 @@ def suggest_questions(
     communities: dict[int, list[str]],
     community_labels: dict[int, str],
     top_n: int = 7,
+    semantic: bool | None = None,
+    backend: str | None = None,
+    model: str | None = None,
 ) -> list[dict]:
     """
     Generate questions the graph is uniquely positioned to answer.
     Based on: AMBIGUOUS edges, bridge nodes, underexplored god nodes, isolated nodes.
     Each question has a 'type', 'question', and 'why' field.
+
+    ``semantic`` (None | bool) enables the LLM refinement layer
+    (:mod:`graphify.semantic_judge`): template questions are kept/filtered by a
+    configured LLM backend ("is this worth asking?") and re-worded when the
+    model provides a better phrasing. None = auto-detect; False = templates only
+    (or set ``GRAPHIFY_SEMANTIC_REJECT=1``); True = force the layer (fails open
+    to the template questions when no backend is configured).
+
+    ``GRAPHIFY_SEMANTIC_REJECT`` disables only the LLM refinement layer; the
+    JEV decision layer is unaffected (see ``--dedup-jev``).
     """
     if community_labels:
         community_labels = {int(k) if isinstance(k, str) else k: v for k, v in community_labels.items()}
@@ -568,7 +662,65 @@ def suggest_questions(
             ),
         }]
 
+    if _semantic_layer_enabled(semantic):
+        try:
+            from graphify.semantic_judge import refine_questions
+            # Refine from the full heuristic candidate list (internally capped),
+            # so the model can pick the best top_n rather than only re-ranking a
+            # pre-truncated slice.
+            return refine_questions(
+                questions, top_n=top_n, backend=backend, model=model
+            )
+        except Exception as exc:  # noqa: BLE001 - fail-open discipline
+            print(
+                f"[graphify] semantic question refinement unavailable ({exc}); "
+                "keeping template questions.",
+                file=sys.stderr,
+            )
+    elif _jev_available():
+        # JEV control-plane layer: filter template questions by 'is this worth
+        # asking?' (research.md D6). Only when the LLM semantic layer is off.
+        # Fail-open: JEV unavailable keeps the full template list.
+        try:
+            from graphify.jev_decide import judge_question_value
+            kept = []
+            for q in questions:
+                value = judge_question_value(
+                    str(q.get("type", "")),
+                    str(q.get("question", "") or ""),
+                    str(q.get("why", "")),
+                )
+                if value is not False:
+                    kept.append(q)
+            questions = kept
+        except Exception as exc:  # noqa: BLE001 - fail-open discipline
+            print(
+                f"[graphify] JEV question filter unavailable ({exc}); "
+                "keeping template questions.",
+                file=sys.stderr,
+            )
     return questions[:top_n]
+
+
+def _semantic_layer_enabled(semantic: bool | None) -> bool:
+    """Resolve the semantic-layer switch for analyze entry points.
+
+    None → auto (enabled when a backend is configured and not disabled by env);
+    True → force (still fails open when no backend exists); False → off. The
+    env switch ``GRAPHIFY_SEMANTIC_REJECT=1`` always wins **for the LLM semantic
+    layer only** — it does not disable the JEV decision layer (that is gated by
+    ``--dedup-jev`` and the ``jev_*`` flags).
+    """
+    import os
+    if os.environ.get("GRAPHIFY_SEMANTIC_REJECT", "").strip().lower() in ("1", "true", "yes"):
+        return False
+    if semantic is not None:
+        return bool(semantic)
+    try:
+        from graphify.semantic_judge import semantic_rejects_enabled
+        return semantic_rejects_enabled()
+    except Exception:
+        return False
 
 
 def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
