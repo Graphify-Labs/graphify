@@ -16,6 +16,9 @@ def _csharp_namespace_id(dotted_name: str) -> str:
     digest = hashlib.sha1(dotted_name.encode("utf-8")).hexdigest()[:16]
     return f"csharp_namespace:{digest}"
 
+# JSX tags that render a component (the closing tag repeats the name; not counted).
+_JSX_ELEMENT_TYPES = frozenset({"jsx_opening_element", "jsx_self_closing_element"})
+
 REFERENCE_CONTEXTS = frozenset({
     "field", "parameter_type", "return_type", "generic_arg", "attribute", "value", "type",
 })
@@ -6441,6 +6444,23 @@ def _extract_generic(
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
                 if func_node is None and node.type == "new_expression":
                     func_node = node.child_by_field_name("constructor")
+                if node.type in _JSX_ELEMENT_TYPES:
+                    # `<Comp />` / `<Comp>` renders Comp; the tag is the `name` field.
+                    # Same rule as the JSX transform: a tag starting with a lowercase
+                    # letter (`<div>`) is an intrinsic element, not a symbol in scope,
+                    # so it must not bind by name to a same-named function. For a
+                    # member tag the last segment decides (`<motion.div>` is not a
+                    # local `div`). Fragments and namespaced tags (`<svg:rect>`) are
+                    # skipped.
+                    func_node = node.child_by_field_name("name")
+                    tag = func_node
+                    if tag is not None and tag.type == "member_expression":
+                        tag = tag.child_by_field_name("property")
+                    if (func_node is None
+                            or func_node.type not in ("identifier", "member_expression")
+                            or tag is None
+                            or _read_text(tag, source)[:1].islower()):
+                        func_node = None
                 if func_node:
                     if func_node.type == "identifier":
                         callee_name = _read_text(func_node, source)
