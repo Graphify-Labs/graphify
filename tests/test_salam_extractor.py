@@ -305,3 +305,114 @@ def test_unresolved_references_leave_no_schema_errors(tmp_path):
 def test_unreadable_file_reports_error(tmp_path):
     result = extract_salam(tmp_path / "missing.salam")
     assert result["nodes"] == [] and "error" in result
+
+
+def test_switch_statement_english(tmp_path):
+    source = _write(
+        tmp_path,
+        "switch_en.salam",
+        "enum Color: red, green, blue end\n"
+        "\n"
+        "func log(n: int): str: ret \"warm\" end\n"
+        "\n"
+        "func classify(c: Color): str:\n"
+        "    switch c:\n"
+        "        red:\n"
+        "            ret log(1)\n"
+        "        end\n"
+        "        green, blue:\n"
+        "            break\n"
+        "        end\n"
+        "        else:\n"
+        "            ret log(2)\n"
+        "        end\n"
+        "    end\n"
+        "end\n"
+        "\n"
+        "func range_check(n: int): str:\n"
+        "    switch n:\n"
+        "        1 to 4: ret \"low\" end\n"
+        "        > 10: ret \"big\" end\n"
+        "        != 3: ret \"odd\" end\n"
+        "        else: ret \"other\" end\n"
+        "    end\n"
+        "end\n"
+        "\n"
+        "func after: end\n",
+    )
+    result = extract_salam(source)
+    kinds = _kinds(result)
+    assert kinds["classify()"] == "function"
+    assert kinds["range_check()"] == "function"
+    contained = _edges(result, "contains")
+    for name in ("classify()", "range_check()", "after()"):
+        assert ("switch_en.salam", name) in contained, name
+    assert ("classify()", "log()") in _edges(result, "calls")
+
+
+def test_switch_statement_persian(tmp_path):
+    source = _write(
+        tmp_path,
+        "switch_fa.salam",
+        "جداشمار رنگ: قرمز، سبز، آبی پایان\n"
+        "\n"
+        "روال دسته(ر: رنگ): رشته:\n"
+        "    ترابرد ر:\n"
+        "        قرمز:\n"
+        "            برگشت جمع(1, 2)\n"
+        "        پایان\n"
+        "        سبز، آبی:\n"
+        "            بشکن\n"
+        "        پایان\n"
+        "        وگرنه:\n"
+        "            برگشت \"دیگر\"\n"
+        "        پایان\n"
+        "    پایان\n"
+        "پایان\n"
+        "\n"
+        "روال جمع(الف: صحیح, ب: صحیح): صحیح:\n"
+        "    برگشت الف + ب\n"
+        "پایان\n",
+    )
+    result = extract_salam(source)
+    kinds = _kinds(result)
+    assert kinds["دسته()"] == "function"
+    assert ("switch_fa.salam", "دسته()") in _edges(result, "contains")
+    assert ("دسته()", "جمع()") in _edges(result, "calls")
+
+
+def test_keyword_used_as_field_name_and_literal_key(tmp_path):
+    source = _write(
+        tmp_path,
+        "kw_fields.salam",
+        "struct Resp:\n"
+        "    pub type: str = \"\"\n"
+        "    pub mut: int = 0\n"
+        "    pub if: bool = false\n"
+        "end\n"
+        "\n"
+        "func main:\n"
+        "    mut r := Resp { type = \"json\", mut = 5, if = true }\n"
+        "    println r.type, r.mut, r.if\n"
+        "end\n"
+        "\n"
+        "func after: end\n",
+    )
+    result = extract_salam(source)
+    kinds = _kinds(result)
+    assert kinds["Resp"] == "struct"
+    assert kinds["main()"] == "function"
+    assert ("kw_fields.salam", "after()") in _edges(result, "contains")
+
+
+def test_guillemet_strings_do_not_break_blocks(tmp_path):
+    source = _write(
+        tmp_path,
+        "guillemet.salam",
+        'func greet: println «Hello, "world"» end\n'
+        "func after: end\n",
+    )
+    result = extract_salam(source)
+    contained = _edges(result, "contains")
+    assert ("guillemet.salam", "greet()") in contained
+    assert ("guillemet.salam", "after()") in contained

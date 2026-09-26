@@ -53,6 +53,7 @@ _KEYWORD_SPELLINGS: dict[str, tuple[str, ...]] = {
     "else": ("else", "وگرنه"),
     "loop": ("until", "repeat", "each", "تکرار", "هر"),
     "match": ("match", "همخوان"),
+    "switch": ("switch", "ترابرد"),
     "on": ("on", "بر"),
     "mut": ("mut", "ناپایا"),
     "pub": ("pub", "همگانی"),
@@ -106,6 +107,7 @@ _IDENT = re.compile(r"[^\W\d][\w‌‍ً-ٰٟۖ-ۭـ]*")
 _TRIPLE = re.compile(r'"""(?:\\.|[^\\])*?"""', re.S)
 _STRING = re.compile(r'u?"(?:\\.|[^"\\\n])*"')
 _CHAR = re.compile(r"u?'(?:\\[^\n']*|[^'\\\n])'")
+_GUILLEMET = re.compile(r"\u00ab(?:\\.|[^\u00bb\\\n])*\u00bb")
 _OPERATOR = re.compile(
     r"\.\.\.|:=|=>|&:|==|!=|<=|>=|&&|\|\||\^\^=?|\+\+|--"
     r"|[+\-*/%&|^]=|[-+*/%<>=!&|^~?:,.;()\[\]{}]"
@@ -154,6 +156,13 @@ def _tokenize(text: str) -> list[Token]:
             pos = p
             continue
         col = pos - line_start
+        if ch == "\u00ab":
+            match = _GUILLEMET.match(text, pos)
+            if match is not None:
+                segment = match.group()
+                toks.append((_STR, segment[1:-1], line, col))
+                pos = match.end()
+                continue
         if ch == "`":
             end = text.find("`", pos + 1)
             end = n if end < 0 else end + 1
@@ -1234,7 +1243,7 @@ class _SalamExtractor:
 
     def step_code(self, i: int, frame: _Frame) -> int:
         kind, text, line, col = self.toks[i]
-        if frame.kind == "match" and self.is_arm_block(i):
+        if frame.kind in ("match", "switch") and self.is_arm_block(i):
             self.frames.append(_Frame("block", frame.nid, "arm"))
             return self.arm_colon(i) + 1
         if (
@@ -1360,13 +1369,18 @@ class _SalamExtractor:
         if kw == "end":
             self.pop_frame()
             return i + 1
-        if kw in ("if", "loop", "match"):
+        if kw in ("if", "loop", "match", "switch"):
+            if self.is_op(i + 1, "="):
+                # `Type { if = true }` / `f(if = 1)`: a keyword reused as a field
+                # or parameter name in a literal/call, never the real statement -
+                # a genuine `if`/`match`/`switch`/loop is never followed by '='.
+                return i + 1
             if kw == "loop" and self.is_repeat_step(i):
                 return i + 1
             if not (kw == "if" and self.kw_at(i - 1) == "else"):
                 opened = self.block_frame(frame)
-                if kw == "match":
-                    opened = _Frame("match", frame.nid, "match")
+                if kw in ("match", "switch"):
+                    opened = _Frame(kw, frame.nid, kw)
                 self.frames.append(opened)
             return i + 1
         if kw == "until_or_to":
