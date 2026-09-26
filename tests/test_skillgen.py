@@ -301,6 +301,10 @@ def test_windows_frontmatter_name_and_shell_and_extra():
 
 
 def test_codex_dispatch_writes_chunk_files():
+    import json
+
+    from graphify.extractors.base import _file_stem, _make_id
+
     core, refs = _platform_artifacts("codex")
     claude, claude_refs = _platform_artifacts("claude")
     b2 = core[core.index("**Step B2"):core.index("**Step B3")]
@@ -309,6 +313,8 @@ def test_codex_dispatch_writes_chunk_files():
     for value in ("collects in memory", "return the JSON inline", ".graphify_semantic_new.json", "agent_type=", "wait_agent(handle)"):
         assert value not in b2
     assert refs["extraction-spec.md"] == claude_refs["extraction-spec.md"]
+    schema = json.loads(next(line for line in refs["extraction-spec.md"].splitlines() if line.startswith('{"nodes":')))
+    assert schema["nodes"][0]["id"] == _make_id(_file_stem(Path("src/auth/session.py")), "ValidateToken")
     b3 = core[core.index("**Step B3"):core.index("### Step 4")]
     assert b3 == claude[claude.index("**Step B3"):claude.index("### Step 4")]
     assert "glob.glob" in b3
