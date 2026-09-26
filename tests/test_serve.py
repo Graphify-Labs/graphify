@@ -803,6 +803,29 @@ def test_projection_gaps_preserves_reciprocal_directed_relations():
     assert projection_gaps(graph, {"handler"}, RUNTIME_FLOW) == ["transfers"]
 
 
+@pytest.mark.parametrize(
+    ("alias", "canonical"),
+    [
+        ("invoked_by", "calls"),
+        ("implemented_by", "implements"),
+        ("described_in", "documents"),
+    ],
+)
+def test_projection_reverses_inverse_relation_aliases(alias, canonical):
+    """Canonical inverse aliases must preserve the relationship's meaning."""
+    from graphify.query_planning import TraversalProfile, project_graph
+
+    graph = nx.DiGraph()
+    graph.add_edge("subject", "provider", relation=alias)
+    profile = TraversalProfile("test", frozenset({canonical}), "none")
+
+    projected = project_graph(graph, profile)
+
+    assert list(projected.edges(data="relation")) == [
+        ("provider", "subject", canonical),
+    ]
+
+
 def test_explore_projection_cannot_mutate_the_source_graph():
     """The unrestricted projection is cheap to create but read-only to callers."""
     from graphify.query_planning import EXPLORE, project_graph

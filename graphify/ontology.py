@@ -25,6 +25,14 @@ class EdgeValidation:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class RelationNormalization:
+    """Canonical relation plus the endpoint transform required by an alias."""
+
+    name: str
+    reverse_endpoints: bool = False
+
+
 _RELATIONS = {
     spec.name: spec
     for spec in (
@@ -89,13 +97,24 @@ _ALIASES = {
     "scip_ref": "references",
 }
 
+_INVERSE_ALIASES = frozenset({"invoked_by", "implemented_by", "described_in"})
+
+
+def normalize_relation_with_direction(relation: str) -> RelationNormalization | None:
+    """Return canonical identity and whether an inverse alias swaps endpoints."""
+
+    normalized = str(relation or "").strip().lower().replace("-", "_").replace(" ", "_")
+    canonical = _ALIASES.get(normalized, normalized)
+    if canonical not in _RELATIONS:
+        return None
+    return RelationNormalization(canonical, normalized in _INVERSE_ALIASES)
+
 
 def normalize_relation(relation: str) -> str | None:
     """Return a canonical relation, preserving unknowns as explicit gaps."""
 
-    normalized = str(relation or "").strip().lower().replace("-", "_").replace(" ", "_")
-    normalized = _ALIASES.get(normalized, normalized)
-    return normalized if normalized in _RELATIONS else None
+    normalized = normalize_relation_with_direction(relation)
+    return normalized.name if normalized is not None else None
 
 
 def relation_spec(relation: str) -> RelationSpec | None:

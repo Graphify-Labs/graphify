@@ -371,11 +371,16 @@ class ClangSemanticEnricher:
         }
         drop_one_after = {
             "-Xclang", "-load", "-plugin",
+            "-fcas-plugin-path", "-fcas-plugin-option",
             # A Clang config can contain any driver option, including native
             # plugin loads. Config search directories are equivalent indirection.
             "--config", "--config-system-dir", "--config-user-dir",
         }
-        drop_exact = {"-c", "-S", "-E", "--coverage", "-save-temps"}
+        # Compilation databases describe driver invocations. Never let one
+        # switch Graphify into a lower-level frontend with a wider option set.
+        drop_exact = {
+            "-c", "-S", "-E", "--coverage", "-save-temps", "-cc1", "-cc1as",
+        }
         unsafe_option_prefixes = (
             "-fplugin",
             "-fpass-plugin",
@@ -384,6 +389,10 @@ class ClangSemanticEnricher:
             # Joined frontend arguments are equivalent to `-Xclang value`; if
             # forwarded, `-Xclang=-load` can execute a repository-supplied DSO.
             "-Xclang=",
+            "-fcas-plugin-path=",
+            "-fcas-plugin-option=",
+            "-load=",
+            "-plugin=",
             "--config=",
             "--config-system-dir=",
             "--config-user-dir=",

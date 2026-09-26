@@ -147,6 +147,8 @@ def test_clang_prefers_compile_database_but_drops_executable_plugin_flags(tmp_pa
             "g++", "-I../include", "-DMODE=1", "-fplugin=evil.so",
             "-fpass-plugin=evil-pass.so",
             "-Xclang=-load", "-Xclang=evil-frontend-plugin.so",
+            "-cc1", "-fcas-plugin-path", "evil-cas-plugin.so",
+            "-fcas-plugin-path=other-cas-plugin.so",
             "-c", str(source), "-o", "main.o",
         ],
     }]), encoding="utf-8")
@@ -156,9 +158,12 @@ def test_clang_prefers_compile_database_but_drops_executable_plugin_flags(tmp_pa
         assert "-DMODE=1" in command
         assert "-I../include" in command
         assert not any(
-            arg.startswith(("-fplugin", "-fpass-plugin", "-Xclang="))
+            arg.startswith((
+                "-fplugin", "-fpass-plugin", "-Xclang=", "-fcas-plugin-path",
+            ))
             for arg in command
         )
+        assert "-cc1" not in command and "evil-cas-plugin.so" not in command
         assert "-c" not in command and "-o" not in command and "main.o" not in command
         return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
 

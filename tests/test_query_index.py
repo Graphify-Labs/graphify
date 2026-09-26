@@ -131,6 +131,29 @@ def test_query_index_store_reuses_sidecar_until_graph_file_changes(tmp_path):
     assert third_hit is False
 
 
+def test_query_index_store_does_not_follow_a_predictable_temporary_symlink(tmp_path):
+    """A repository-controlled sidecar temp path must not overwrite its target."""
+    graph = _graph()
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(
+        json.dumps(json_graph.node_link_data(graph, edges="links")),
+        encoding="utf-8",
+    )
+    store = QueryIndexStore(graph_path)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("preserve me", encoding="utf-8")
+    predictable = store.index_path.with_name(
+        f".{store.index_path.name}.{os.getpid()}.tmp"
+    )
+    predictable.symlink_to(victim)
+
+    store.load_or_build(graph)
+
+    assert victim.read_text(encoding="utf-8") == "preserve me"
+    assert store.index_path.is_file()
+    assert not store.index_path.is_symlink()
+
+
 def test_query_index_store_rejects_sidecar_for_different_in_memory_graph(tmp_path):
     """Direct API callers must not receive evidence indexed from another graph."""
     graph = _graph()

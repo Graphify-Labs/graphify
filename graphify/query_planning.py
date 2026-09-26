@@ -14,7 +14,7 @@ import re
 
 import networkx as nx
 
-from graphify.ontology import normalize_relation
+from graphify.ontology import normalize_relation, normalize_relation_with_direction
 
 
 def _canonical_relation(data: dict) -> str:
@@ -22,6 +22,18 @@ def _canonical_relation(data: dict) -> str:
 
     raw = str(data.get("relation", "")).strip().lower()
     return normalize_relation(raw) or raw
+
+
+def _canonical_edge(source: str, target: str, data: dict) -> tuple[str, str, str]:
+    """Normalize an edge without losing the direction encoded by inverse aliases."""
+
+    raw = str(data.get("relation", "")).strip().lower()
+    normalized = normalize_relation_with_direction(raw)
+    if normalized is None:
+        return source, target, raw
+    if normalized.reverse_endpoints:
+        source, target = target, source
+    return source, target, normalized.name
 
 
 @dataclass(frozen=True)
@@ -239,12 +251,12 @@ def project_graph(G: nx.Graph, profile: TraversalProfile) -> nx.Graph:
     projected.add_nodes_from(G.nodes(data=True))
     if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         for source, target, key, data in G.edges(keys=True, data=True):
-            relation = _canonical_relation(data)
+            source, target, relation = _canonical_edge(source, target, data)
             if relation in profile.relations:
                 projected.add_edge(source, target, key=key, **{**data, "relation": relation})
     else:
         for source, target, data in G.edges(data=True):
-            relation = _canonical_relation(data)
+            source, target, relation = _canonical_edge(source, target, data)
             if relation in profile.relations:
                 projected.add_edge(source, target, **{**data, "relation": relation})
     return projected

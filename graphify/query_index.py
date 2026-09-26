@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import tempfile
 
 import networkx as nx
 
@@ -249,18 +250,34 @@ class QueryIndexStore:
         return {"sha256": digest}
 
     def _write(self, payload: dict) -> None:
-        temporary = self.index_path.with_name(
-            f".{self.index_path.name}.{os.getpid()}.tmp"
-        )
+        temporary: Path | None = None
+        descriptor: int | None = None
         try:
-            temporary.write_text(
-                json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                encoding="utf-8",
+            # The graph directory can belong to an untrusted repository. An
+            # exclusive same-directory inode prevents pre-planted symlinks and
+            # still keeps the final replace atomic on a single filesystem.
+            descriptor, temporary_name = tempfile.mkstemp(
+                dir=self.index_path.parent,
+                prefix=f".{self.index_path.name}.",
+                suffix=".tmp",
             )
+            temporary = Path(temporary_name)
+            stream = os.fdopen(descriptor, "w", encoding="utf-8")
+            descriptor = None
+            with stream:
+                json.dump(payload, stream, ensure_ascii=False, sort_keys=True)
             os.replace(temporary, self.index_path)
         except OSError:
             # Read-only repositories still get an in-memory index for this run.
-            try:
-                temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
+            pass
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass

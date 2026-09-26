@@ -15,7 +15,7 @@ from pathlib import Path
 import shutil
 from typing import Callable, Protocol, Sequence
 
-from graphify.ontology import normalize_relation
+from graphify.ontology import normalize_relation_with_direction
 
 
 class AdapterState(str, Enum):
@@ -289,9 +289,13 @@ class SemanticEnrichmentService:
                 if not isinstance(edge, dict):
                     continue
                 edge = dict(edge)
-                canonical_relation = normalize_relation(str(edge.get("relation", "")))
-                if canonical_relation is not None:
-                    edge["relation"] = canonical_relation
+                normalization = normalize_relation_with_direction(
+                    str(edge.get("relation", "")),
+                )
+                if normalization is not None:
+                    edge["relation"] = normalization.name
+                    if normalization.reverse_endpoints:
+                        edge["source"], edge["target"] = edge.get("target"), edge.get("source")
                 key = self._edge_key(edge)
                 if key in edge_keys:
                     continue
