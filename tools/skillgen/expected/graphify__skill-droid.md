@@ -56,7 +56,7 @@ If the user invoked `/graphify --help` or `/graphify -h` (with no other argument
 
 If no path was given, use `.` (current directory). Do not ask the user for a path.
 
-Every occurrence of `INPUT_PATH` below is a placeholder substituted with this resolved path, inside a Python string literal. On Windows, substitute it with forward slashes (`C:/Users/me/project`, not `C:\Users\me\project`) — a literal backslash in a Windows path splices a stray escape into the Python source (`\t` becomes a tab, `\U` raises a `SyntaxError`), silently or loudly corrupting every block that uses it.
+Every occurrence of `INPUT_PATH` below is a placeholder substituted with this resolved path, inside a Python string literal. On Windows, substitute it with forward slashes (`C:/Users/me/project`, not `C:\Users\me\project`) — a literal backslash in a Windows path splices a stray escape into the Python source (`\t` becomes a tab, `\U` raises a `SyntaxError`), silently or loudly corrupting every block that uses it. If the path itself contains a literal single quote character (e.g. `/Users/o'brien/project`), escape it as `\'` before substituting too — an unescaped quote closes the string literal early, corrupting or hijacking the code that follows.
 
 If the path argument starts with `https://github.com/` or `http://github.com/`, treat it as a GitHub URL - run Step 0 before anything else, then continue with the resolved local path.
 
