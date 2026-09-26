@@ -73,6 +73,7 @@ _OWNER_KINDS = frozenset({
 _TU_SUFFIXES = frozenset({".c", ".C", ".cc", ".cpp", ".cxx"})
 _HEADER_SUFFIXES = frozenset({".h", ".hh", ".hpp", ".hxx"})
 _INCLUDE_RE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"]+)[>"]', re.MULTILINE)
+_COMPILER_LAUNCHERS = frozenset({"ccache", "sccache", "distcc", "icecc"})
 
 
 def _bare_symbol(value: object) -> str:
@@ -181,6 +182,14 @@ class ClangSemanticEnricher:
                 continue
             if completed.stderr:
                 report["diagnostics"].append(f"{source_file}: {completed.stderr.strip()[:500]}")
+            # Clang can emit a partial JSON AST while returning an error. Such
+            # output is diagnostic evidence, not confirmation strong enough to
+            # upgrade a graph edge to EXTRACTED confidence.
+            if completed.returncode != 0:
+                report["diagnostics"].append(
+                    f"{source_file}: clang exited with status {completed.returncode}",
+                )
+                continue
             if not isinstance(completed.stdout, dict):
                 report["diagnostics"].append(f"{source_file}: clang returned no JSON AST")
                 continue
@@ -371,7 +380,8 @@ class ClangSemanticEnricher:
         }
         drop_one_after = {
             "-Xclang", "-load", "-plugin",
-            "-fcas-plugin-path", "-fcas-plugin-option",
+            "-fcas-plugin-path", "-fcas-plugin-option", "-mllvm",
+            "-B", "--offload-arch-tool",
             # A Clang config can contain any driver option, including native
             # plugin loads. Config search directories are equivalent indirection.
             "--config", "--config-system-dir", "--config-user-dir",
@@ -380,6 +390,7 @@ class ClangSemanticEnricher:
         # switch Graphify into a lower-level frontend with a wider option set.
         drop_exact = {
             "-c", "-S", "-E", "--coverage", "-save-temps", "-cc1", "-cc1as",
+            "-M", "-MM", "-MD", "-MMD",
         }
         unsafe_option_prefixes = (
             "-fplugin",
@@ -393,14 +404,31 @@ class ClangSemanticEnricher:
             "-fcas-plugin-option=",
             "-load=",
             "-plugin=",
+            # LLVM backend options can reach its native plugin loader without
+            # passing through Clang's frontend plugin switches.
+            "-mllvm=",
+            "-B",
+            "--offload-arch-tool=",
             "--config=",
             "--config-system-dir=",
             "--config-user-dir=",
         )
         safe: list[str] = []
         index = 1 if arguments else 0  # argv[0] is the compiler from the build.
+        if arguments and Path(arguments[0]).name.lower() in _COMPILER_LAUNCHERS:
+            # Compilation databases retain launcher argv. Graphify supplies its
+            # own trusted Clang executable, so both the launcher and the wrapped
+            # compiler must be removed before forwarding parse flags.
+            index = min(2, len(arguments))
         while index < len(arguments):
             argument = arguments[index]
+            # Every `-X...` spelling forwards the next value into another
+            # compiler component. Treat the family as one trust boundary
+            # instead of maintaining an incomplete list of plugin-capable
+            # frontend, preprocessor, analyzer, and offload variants.
+            if argument.startswith("-X"):
+                index += 1 if "=" in argument else 2
+                continue
             if argument in output_with_value or argument in drop_one_after:
                 index += 2
                 continue

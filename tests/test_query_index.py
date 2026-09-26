@@ -173,6 +173,26 @@ def test_query_index_store_rejects_sidecar_for_different_in_memory_graph(tmp_pat
     assert index.search("load udr cache disk").candidates[0].node_id == "different"
 
 
+def test_query_index_store_rebuilds_a_structurally_invalid_sidecar(tmp_path):
+    """Repository-controlled cache JSON must fail soft instead of crashing queries."""
+    graph = _graph()
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(
+        json.dumps(json_graph.node_link_data(graph, edges="links")),
+        encoding="utf-8",
+    )
+    store = QueryIndexStore(graph_path)
+    store.load_or_build(graph)
+    payload = json.loads(store.index_path.read_text(encoding="utf-8"))
+    payload["index"]["nodes"] = []
+    store.index_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    index, cache_hit = store.load_or_build(graph)
+
+    assert cache_hit is False
+    assert index.search("subscriber cache lookup").candidates[0].node_id == "lookup"
+
+
 def test_query_index_store_rejects_stale_sidecar_after_digest_carrying_graph_changes(tmp_path):
     """A retained file digest must not hide later in-memory graph mutations."""
     graph = _graph()

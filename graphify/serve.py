@@ -1522,28 +1522,36 @@ def _query_evidence_json(
     edge_payload = []
     for source, target in ordered_edges:
         raw = G[source][target]
-        data = next(iter(raw.values()), {}) if G.is_multigraph() else raw
-        true_source = data.get("_src", source)
-        true_target = data.get("_tgt", target)
-        if {true_source, true_target} != {source, target}:
-            true_source, true_target = source, target
-        confidence = str(data.get("confidence", ""))
-        entry = {
-            "source_ref": ref_by_id[true_source],
-            "target_ref": ref_by_id[true_target],
-            "relation": sanitize_label(str(data.get("relation", "related"))),
-            "confidence": sanitize_label(confidence),
-        }
-        context = sanitize_label(str(data.get("context", "")))
-        if context:
-            entry["context"] = context
-        source_file = sanitize_label(str(data.get("source_file", "")))
-        if source_file:
-            entry["file_ref"] = _file_ref(source_file)
-        source_location = sanitize_label(str(data.get("source_location", "")))
-        if source_location:
-            entry["source_location"] = source_location
-        edge_payload.append(entry)
+        edge_facts = raw.values() if G.is_multigraph() else (raw,)
+        # A multigraph adjacency can carry several independently grounded
+        # relations. Serializing only the first one makes correctness depend on
+        # insertion order and can hide the strongest available evidence.
+        for data in edge_facts:
+            true_source = data.get("_src", source)
+            true_target = data.get("_tgt", target)
+            endpoints_match = (
+                (true_source == source and true_target == target)
+                or (true_source == target and true_target == source)
+            )
+            if not endpoints_match:
+                true_source, true_target = source, target
+            confidence = str(data.get("confidence", ""))
+            entry = {
+                "source_ref": ref_by_id[true_source],
+                "target_ref": ref_by_id[true_target],
+                "relation": sanitize_label(str(data.get("relation", "related"))),
+                "confidence": sanitize_label(confidence),
+            }
+            context = sanitize_label(str(data.get("context", "")))
+            if context:
+                entry["context"] = context
+            source_file = sanitize_label(str(data.get("source_file", "")))
+            if source_file:
+                entry["file_ref"] = _file_ref(source_file)
+            source_location = sanitize_label(str(data.get("source_location", "")))
+            if source_location:
+                entry["source_location"] = source_location
+            edge_payload.append(entry)
 
     direct_lookup = bool(resolved_filters) and profile.name == "explore"
     available_nodes = len(node_payload)

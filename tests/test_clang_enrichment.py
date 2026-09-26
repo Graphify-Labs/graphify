@@ -177,6 +177,108 @@ def test_clang_prefers_compile_database_but_drops_executable_plugin_flags(tmp_pa
     assert result["semantic_enrichment"]["clang"]["compile_database_translation_units"] == 1
 
 
+def test_clang_compile_database_drops_llvm_backend_escape_hatches(tmp_path: Path):
+    """Repository flags must not reach LLVM's native plugin option parser."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "g++", "-mllvm=-load=evil.so", "-mllvm", "-load=other.so",
+            "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert not any(argument.startswith("-mllvm") for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_compile_database_drops_forwarded_and_secondary_tool_options(tmp_path: Path):
+    """Syntax confirmation must not execute repository-selected compiler helpers."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "g++", "-B", "evil-tools", "-Xpreprocessor", "-load=evil.so",
+            "--offload-arch-tool=evil-detector", "-MMD", "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "evil-tools" not in command
+        assert "-Xpreprocessor" not in command
+        assert not any(argument.startswith("--offload-arch-tool") for argument in command)
+        assert "-MMD" not in command
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_compile_database_skips_a_compiler_cache_launcher(tmp_path: Path):
+    """A launcher and its compiler argv must not become extra Clang inputs."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": ["ccache", "/usr/bin/g++", "-DMODE=1", "-c", str(source)],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "/usr/bin/g++" not in command
+        assert "-DMODE=1" in command
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_failure_cannot_confirm_edges_from_a_partial_ast(tmp_path: Path):
+    """A diagnostic AST is not compiler confirmation when Clang exits non-zero."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// failing translation unit\n", encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        return ProcessResult(returncode=1, stdout=_clang_ast(), stderr="compile failed")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["parsed_translation_units"] == 0
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 0
+    assert not any(edge.get("semantic_provider") == "clang" for edge in result["edges"])
+
+
 def test_clang_rejects_explicit_external_declaration_provenance(tmp_path: Path):
     """An external AST declaration must not confirm an in-repository target."""
     source = tmp_path / "src" / "main.C"

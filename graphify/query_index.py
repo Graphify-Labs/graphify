@@ -191,15 +191,44 @@ class QueryIndex:
 
     @classmethod
     def from_dict(cls, payload: dict) -> "QueryIndex":
-        if payload.get("version") != 1:
+        if not isinstance(payload, dict) or payload.get("version") != 1:
             raise ValueError("unsupported query index version")
+        raw_nodes = payload.get("nodes")
+        raw_postings = payload.get("postings")
+        if not isinstance(raw_nodes, dict) or not isinstance(raw_postings, dict):
+            raise ValueError("invalid query index containers")
+
+        nodes: dict[str, dict] = {}
+        for key, value in raw_nodes.items():
+            if not isinstance(value, dict):
+                raise ValueError("invalid query index node")
+            tokens = value.get("tokens")
+            relations = value.get("relations")
+            degree = value.get("degree")
+            if (
+                not isinstance(value.get("label"), str)
+                or not isinstance(tokens, list)
+                or not all(isinstance(token, str) for token in tokens)
+                or not isinstance(relations, list)
+                or not all(isinstance(relation, str) for relation in relations)
+                or isinstance(degree, bool)
+                or not isinstance(degree, int)
+            ):
+                raise ValueError("invalid query index node metadata")
+            nodes[str(key)] = dict(value)
+
+        postings: dict[str, tuple[str, ...]] = {}
+        for token, ids in raw_postings.items():
+            if not isinstance(ids, list) or not all(isinstance(node, str) for node in ids):
+                raise ValueError("invalid query index posting")
+            if any(node not in nodes for node in ids):
+                raise ValueError("query index posting references an unknown node")
+            postings[str(token)] = tuple(ids)
+
         return cls(
             fingerprint=str(payload.get("graph_fingerprint", "")),
-            nodes={str(key): dict(value) for key, value in payload.get("nodes", {}).items()},
-            postings={
-                str(token): tuple(str(node) for node in ids)
-                for token, ids in payload.get("postings", {}).items()
-            },
+            nodes=nodes,
+            postings=postings,
         )
 
 
@@ -220,6 +249,8 @@ class QueryIndexStore:
         if signature is not None:
             try:
                 payload = json.loads(self.index_path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("invalid query index payload")
                 if payload.get("version") == 1 and payload.get("graph_file") == signature:
                     index = QueryIndex.from_dict(payload["index"])
                     # The file digest proves which bytes produced the sidecar,

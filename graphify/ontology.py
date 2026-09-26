@@ -23,6 +23,7 @@ class EdgeValidation:
     valid: bool
     normalized_relation: str | None
     reason: str = ""
+    reverse_endpoints: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,7 +86,7 @@ _ALIASES = {
     "reads_from": "reads",
     "write": "writes",
     "writes_to": "writes",
-    "inherits": "implements",
+    "inherits": "extends",
     "implemented_by": "implements",
     "described_in": "documents",
     "related_to": "references",
@@ -130,11 +131,20 @@ def relations_for_category(*categories: str) -> frozenset[str]:
 def validate_edge(edge: dict) -> EdgeValidation:
     """Validate ontology identity and endpoints without mutating source facts."""
 
-    relation = normalize_relation(str(edge.get("relation", "")))
-    if relation is None:
+    normalization = normalize_relation_with_direction(str(edge.get("relation", "")))
+    if normalization is None:
         return EdgeValidation(False, None, f"unknown relation: {edge.get('relation', '')}")
     source = edge.get("source")
     target = edge.get("target")
     if source is None or source == "" or target is None or target == "":
-        return EdgeValidation(False, relation, "edge requires source and target")
-    return EdgeValidation(True, relation)
+        return EdgeValidation(
+            False,
+            normalization.name,
+            "edge requires source and target",
+            normalization.reverse_endpoints,
+        )
+    return EdgeValidation(
+        True,
+        normalization.name,
+        reverse_endpoints=normalization.reverse_endpoints,
+    )

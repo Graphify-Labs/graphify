@@ -24,16 +24,24 @@ def _canonical_relation(data: dict) -> str:
     return normalize_relation(raw) or raw
 
 
-def _canonical_edge(source: str, target: str, data: dict) -> tuple[str, str, str]:
+def _canonical_edge(source: str, target: str, data: dict) -> tuple[str, str, str, bool]:
     """Normalize an edge without losing the direction encoded by inverse aliases."""
 
     raw = str(data.get("relation", "")).strip().lower()
     normalized = normalize_relation_with_direction(raw)
     if normalized is None:
-        return source, target, raw
+        return source, target, raw, False
+    true_source = data.get("_src", source)
+    true_target = data.get("_tgt", target)
+    endpoints_match = (
+        (true_source == source and true_target == target)
+        or (true_source == target and true_target == source)
+    )
+    if not endpoints_match:
+        true_source, true_target = source, target
     if normalized.reverse_endpoints:
-        source, target = target, source
-    return source, target, normalized.name
+        true_source, true_target = true_target, true_source
+    return true_source, true_target, normalized.name, normalized.reverse_endpoints
 
 
 @dataclass(frozen=True)
@@ -251,14 +259,27 @@ def project_graph(G: nx.Graph, profile: TraversalProfile) -> nx.Graph:
     projected.add_nodes_from(G.nodes(data=True))
     if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
         for source, target, key, data in G.edges(keys=True, data=True):
-            source, target, relation = _canonical_edge(source, target, data)
+            source, target, relation, reversed_endpoints = _canonical_edge(source, target, data)
             if relation in profile.relations:
-                projected.add_edge(source, target, key=key, **{**data, "relation": relation})
+                attributes = {**data, "relation": relation}
+                if reversed_endpoints or "_src" in data or "_tgt" in data:
+                    attributes.update({"_src": source, "_tgt": target})
+                existing = projected.get_edge_data(source, target, default={})
+                if key in existing:
+                    # Reversing an inverse alias can move two distinct source
+                    # facts onto the same endpoint/key tuple. Let NetworkX
+                    # allocate a fresh key instead of overwriting either fact.
+                    projected.add_edge(source, target, **attributes)
+                else:
+                    projected.add_edge(source, target, key=key, **attributes)
     else:
         for source, target, data in G.edges(data=True):
-            source, target, relation = _canonical_edge(source, target, data)
+            source, target, relation, reversed_endpoints = _canonical_edge(source, target, data)
             if relation in profile.relations:
-                projected.add_edge(source, target, **{**data, "relation": relation})
+                attributes = {**data, "relation": relation}
+                if reversed_endpoints or "_src" in data or "_tgt" in data:
+                    attributes.update({"_src": source, "_tgt": target})
+                projected.add_edge(source, target, **attributes)
     return projected
 
 

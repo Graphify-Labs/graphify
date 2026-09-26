@@ -826,6 +826,24 @@ def test_projection_reverses_inverse_relation_aliases(alias, canonical):
     ]
 
 
+def test_projection_preserves_multigraph_edges_when_inverse_alias_keys_collide():
+    """Canonicalizing one edge must not overwrite a distinct parallel fact."""
+    from graphify.query_planning import TraversalProfile, project_graph
+
+    graph = nx.MultiDiGraph()
+    graph.add_edge("caller", "callee", key="fact", relation="calls", marker="direct")
+    graph.add_edge("callee", "caller", key="fact", relation="invoked_by", marker="inverse")
+    profile = TraversalProfile("test", frozenset({"calls"}), "none")
+
+    projected = project_graph(graph, profile)
+
+    assert projected.number_of_edges("caller", "callee") == 2
+    assert {
+        data["marker"]
+        for _, _, data in projected.edges(data=True)
+    } == {"direct", "inverse"}
+
+
 def test_explore_projection_cannot_mutate_the_source_graph():
     """The unrestricted projection is cheap to create but read-only to callers."""
     from graphify.query_planning import EXPLORE, project_graph
@@ -2501,6 +2519,76 @@ def test_query_graph_normalizes_relation_aliases_before_runtime_projection():
     ))
 
     assert payload["coverage"]["unsupported_relations"] == []
+    assert payload["edges"][0]["relation"] == "calls"
+
+
+def test_query_graph_json_keeps_every_parallel_relation_fact():
+    """Evidence must not choose an arbitrary fact from a multigraph adjacency."""
+    graph = nx.MultiDiGraph()
+    graph.add_node("caller", label="Caller", source_file="caller.py")
+    graph.add_node("callee", label="Callee", source_file="callee.py")
+    graph.add_edge(
+        "caller", "callee", key="reference", relation="references",
+        context="call", confidence="INFERRED",
+    )
+    graph.add_edge(
+        "caller", "callee", key="call", relation="calls",
+        context="call", confidence="EXTRACTED",
+    )
+
+    payload = json.loads(_query_graph_text(
+        graph,
+        "How does Caller work end to end?",
+        response_format="evidence_json",
+    ))
+
+    assert {edge["relation"] for edge in payload["edges"]} == {"calls", "references"}
+    assert payload["coverage"]["available_edges"] == 2
+
+
+def test_query_graph_json_preserves_inverse_alias_direction_after_traversal_conversion():
+    """Traversal metadata must reflect canonical endpoints, not the raw alias arc."""
+    graph = nx.DiGraph()
+    graph.add_node("caller", label="Caller", source_file="caller.py")
+    graph.add_node("callee", label="Callee", source_file="callee.py")
+    graph.add_edge(
+        "callee", "caller", relation="invoked_by",
+        context="call", confidence="EXTRACTED",
+    )
+
+    payload = json.loads(_query_graph_text(
+        graph,
+        "How does Caller work end to end?",
+        response_format="evidence_json",
+    ))
+    ref_by_label = {node["label"]: node["ref"] for node in payload["nodes"]}
+
+    assert payload["edges"] == [{
+        "source_ref": ref_by_label["Caller"],
+        "target_ref": ref_by_label["Callee"],
+        "relation": "calls",
+        "confidence": "EXTRACTED",
+        "context": "call",
+    }]
+
+
+def test_query_graph_json_ignores_malformed_direction_markers():
+    """Unhashable graph metadata must not crash canonical edge projection."""
+    graph = nx.DiGraph()
+    graph.add_node("caller", label="Caller", source_file="caller.py")
+    graph.add_node("callee", label="Callee", source_file="callee.py")
+    graph.add_edge(
+        "caller", "callee", relation="calls", context="call", confidence="EXTRACTED",
+        _src=["not-a-node-id"], _tgt="callee",
+    )
+
+    payload = json.loads(_query_graph_text(
+        graph,
+        "How does Caller work end to end?",
+        response_format="evidence_json",
+    ))
+
+    assert len(payload["edges"]) == 1
     assert payload["edges"][0]["relation"] == "calls"
 
 
