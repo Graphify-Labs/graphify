@@ -3,7 +3,7 @@ import re
 import pytest
 from pathlib import Path
 import networkx as nx
-from graphify.wiki import to_wiki, _index_md, _community_article, _god_node_article
+from graphify.wiki import to_wiki, _index_md, _community_article, _god_node_article, _escape_md_brackets
 
 _MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
@@ -390,6 +390,55 @@ def test_wiki_link_with_bracketed_label_resolves(tmp_path):
     article = (tmp_path / "Other.md").read_text()
     assert r"[Array\[T\] Models](Array[T]_Models.md)" in article
     assert (tmp_path / "Array[T]_Models.md").exists()
+
+
+def test_community_article_title_escapes_a_bare_bracket_label(tmp_path):
+    """A community label that is JUST a bracket character (`_community_article`'s
+    own `# {label}` title heading, not a link target) must render escaped too,
+    or the lone `[` opens a markdown link/image syntax the rest of the line
+    never closes."""
+    G = nx.Graph()
+    G.add_node(1, label="a", file_type="code", source_file="a.py", community=0)
+    G.add_node(2, label="b", file_type="code", source_file="b.py", community=0)
+    G.add_node(3, label="c", file_type="code", source_file="c.py", community=0)
+    G.add_edge(1, 2, relation="references", confidence="INFERRED", weight=1.0)
+    G.add_edge(1, 3, relation="references", confidence="INFERRED", weight=1.0)
+    G.add_edge(2, 3, relation="references", confidence="INFERRED", weight=1.0)
+    article = _community_article(G, 0, [1, 2, 3], "[", {0: "["}, 1.0)
+    assert article.startswith("# \\[\n")
+
+
+def test_escape_md_brackets_leaves_an_unrelated_escape_alone():
+    """A backslash that precedes something other than a bracket (`\\*`,
+    escaping a literal asterisk so it doesn't open emphasis) must survive
+    unchanged. Doubling every backslash unconditionally -- rather than only
+    ones that precede a bracket -- would itself un-escape that unrelated
+    escape: `\\*` doubled becomes `\\\\*`, and CommonMark reads `\\\\` as one
+    literal backslash followed by a bare, newly-live `*`."""
+    assert _escape_md_brackets(r"\*bold*\ ") == r"\*bold*\ "
+
+
+def test_escape_md_brackets_still_escapes_a_backslash_before_a_bracket():
+    """The one case the backslash handling exists for is unaffected: a
+    backslash already sitting right before a bracket in source (a regex
+    character class, `\\]+`) still round-trips as a literal backslash
+    followed by a literal bracket once escaped."""
+    assert _escape_md_brackets(r"\]+") == r"\\\]+"
+
+
+def test_escape_md_brackets_handles_a_run_of_backslashes_before_a_bracket():
+    """A RUN of two or more backslashes right before a bracket in source (an
+    escaped backslash inside a regex character class, `[\\]`, for example)
+    must still leave the bracket escaped. Doubling only the single backslash
+    immediately adjacent to the bracket (rather than the whole run) left the
+    earlier backslashes in the run unpaired: two source backslashes produced
+    four escaped ones with nothing left to escape the bracket itself, so
+    CommonMark read it as two literal backslashes followed by a BARE,
+    newly-live bracket -- un-escaping it right back into link syntax."""
+    # Two backslashes + a close bracket: CommonMark must read this back as
+    # two literal backslashes followed by one literal (escaped) bracket, five
+    # backslashes then the bracket (2 pairs + 1 leftover that pairs with it).
+    assert _escape_md_brackets("\\" * 2 + "]") == "\\" * 5 + "]"
 
 
 def test_wiki_links_to_nodes_without_articles_are_plain_text(tmp_path):

@@ -56,6 +56,48 @@ def _safe_filename(name: str, limit: int = 200) -> str:
     return s[:limit] if s else 'unnamed'
 
 
+def _escape_md_brackets(text: object) -> str:
+    r"""Escape `[`/`]` so raw text embedded in a generated article can never be
+    misread as markdown/Obsidian link syntax (#3547).
+
+    A node's own label is source content (an extracted heading, identifier, or
+    doc excerpt) and occasionally contains a literal ``[[...]]`` substring —
+    e.g. a doc that itself explains or demonstrates wikilink syntax. Printed
+    unescaped, that string renders as a real (and always dead — the wiki
+    export never writes bracket-style links, see ``_md_link``) wikilink
+    instead of the plain text it actually is.
+
+    Callers fall back to a node's own id when it has no ``label`` attribute,
+    and a networkx node id is not always a string (an int or a tuple id is
+    legal). ``str()`` first so that fallback stringifies exactly like the
+    plain f-interpolation this call replaced, instead of raising.
+
+    A RUN of one or more backslashes immediately before a bracket in the
+    SOURCE text is doubled first, before the bracket is escaped. Source
+    content occasionally already contains one or more literal backslashes
+    right before a bracket (a doc excerpt showing a regex character class,
+    ``\]+``, or an escaped backslash inside one, ``[\\]``, for example).
+    Doubling only the LAST backslash of a run, rather than every backslash
+    in the run, still leaves the earlier ones unpaired: two source
+    backslashes before a bracket produced four backslashes then a bare
+    bracket, and CommonMark reads two backslash pairs as two literal
+    backslashes with nothing left to escape the bracket, un-escaping it
+    right back into live link syntax. The whole run must double, then get
+    one more backslash for the bracket's own escape, in a single pass —
+    two separate ``.replace()`` calls for the brackets can't do this, since
+    the second call has no way to know which backslashes a previous
+    replacement result already produced versus which were in the run.
+    Matching (and touching) only a run that actually precedes a bracket
+    keeps an unrelated pre-existing escape elsewhere in the source intact
+    (``\*`` meaning a literal asterisk, doubled unconditionally, would
+    itself un-escape into a bare, newly-live ``*``).
+    """
+    def _double_and_escape(m: "re.Match[str]") -> str:
+        return m.group(1) * 2 + "\\" + m.group(2)
+
+    return re.sub(r"(\\*)([\[\]])", _double_and_escape, str(text))
+
+
 def _md_link(label: str, resolver: dict[str, str]) -> str:
     """Render a link to another wiki article as a portable relative markdown link.
 
@@ -83,7 +125,7 @@ def _md_link(label: str, resolver: dict[str, str]) -> str:
     god nodes get article files — render as plain text instead of a dead link
     that points nowhere even inside Obsidian.
     """
-    text = label.replace("[", r"\[").replace("]", r"\]")
+    text = _escape_md_brackets(label)
     slug = resolver.get(label)
     if slug is None:
         return text
@@ -137,7 +179,7 @@ def _community_article(
     sources = sorted({G.nodes[n].get("source_file") or "" for n in nodes} - {""})
 
     lines: list[str] = []
-    lines += [f"# {label}", ""]
+    lines += [f"# {_escape_md_brackets(label)}", ""]
 
     meta_parts = [f"{len(nodes)} nodes"]
     if cohesion is not None:
@@ -147,7 +189,7 @@ def _community_article(
     lines += ["## Key Concepts", ""]
     for nid in top_nodes:
         d = G.nodes[nid]
-        node_label = d.get("label", nid)
+        node_label = _escape_md_brackets(d.get("label", nid))
         src = d.get("source_file", "")
         degree = G.degree(nid)
         src_str = f" — `{src}`" if src else ""
@@ -185,7 +227,7 @@ def _community_article(
 def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_community: dict[str, int] | None = None, resolver: dict[str, str] | None = None) -> str:
     resolver = resolver or {}
     d = G.nodes[nid]
-    node_label = d.get("label", nid)
+    node_label = _escape_md_brackets(d.get("label", nid))
     src = d.get("source_file", "")
     cid = (node_community or {}).get(nid)
     community_name = labels.get(cid, f"Community {cid}") if cid is not None else None
