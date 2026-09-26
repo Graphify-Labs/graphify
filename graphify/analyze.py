@@ -189,6 +189,10 @@ def surprising_connections(
     surprising?") and re-orders them. None = auto-detect a backend; False = pure
     heuristic (or set ``GRAPHIFY_SEMANTIC_REJECT=1``); True = force the layer
     (fails open to the heuristic order when no backend is configured).
+
+    ``GRAPHIFY_SEMANTIC_REJECT`` disables only the **LLM semantic layer**; it
+    does NOT affect the JEV decision layer (controlled separately via
+    ``--dedup-jev`` / ``jev_*``). Set it only to skip LLM calls, not to kill JEV.
     """
     # Identify unique source files (ignore empty/null source_file)
     source_files = {
@@ -540,6 +544,9 @@ def suggest_questions(
     model provides a better phrasing. None = auto-detect; False = templates only
     (or set ``GRAPHIFY_SEMANTIC_REJECT=1``); True = force the layer (fails open
     to the template questions when no backend is configured).
+
+    ``GRAPHIFY_SEMANTIC_REJECT`` disables only the LLM refinement layer; the
+    JEV decision layer is unaffected (see ``--dedup-jev``).
     """
     if community_labels:
         community_labels = {int(k) if isinstance(k, str) else k: v for k, v in community_labels.items()}
@@ -700,7 +707,9 @@ def _semantic_layer_enabled(semantic: bool | None) -> bool:
 
     None → auto (enabled when a backend is configured and not disabled by env);
     True → force (still fails open when no backend exists); False → off. The
-    env kill-switch ``GRAPHIFY_SEMANTIC_REJECT=1`` always wins.
+    env switch ``GRAPHIFY_SEMANTIC_REJECT=1`` always wins **for the LLM semantic
+    layer only** — it does not disable the JEV decision layer (that is gated by
+    ``--dedup-jev`` and the ``jev_*`` flags).
     """
     import os
     if os.environ.get("GRAPHIFY_SEMANTIC_REJECT", "").strip().lower() in ("1", "true", "yes"):
