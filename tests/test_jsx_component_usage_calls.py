@@ -107,3 +107,16 @@ def test_underscore_component_is_not_treated_as_intrinsic(tmp_path: Path):
         )
     })
     assert ("Table()", "_Row()") in calls
+
+
+def test_member_tag_does_not_bind_to_local_function_by_last_segment(tmp_path: Path):
+    # `<Theme.Provider>` is a member of Theme, not the unrelated local Provider().
+    calls, _ = _calls(tmp_path, {
+        "theme.tsx": "export const Theme = { x: 1 };\n",
+        "app.tsx": (
+            "import { Theme } from './theme';\n"
+            "function Provider() { return null; }\n"
+            "export function App() { return <Theme.Provider />; }\n"
+        ),
+    })
+    assert ("App()", "Provider()") not in calls
