@@ -1,0 +1,72 @@
+package shapes
+
+import math
+import util "helpers.salam"
+
+link dynamic "m"
+
+type Id = int
+
+const MAX_SIDES := 8
+
+enum Kind: Round, Square = 5, Triangle end
+
+interface Shape:
+    func area(): f64
+    func name(): str
+end
+
+@en "Circle"
+@fa "دایره"
+pub struct Circle:
+    pub r: f64 = 0.0
+    pub kind: Kind = Kind.Round
+
+    pub func area(): f64:
+        ret math.PI * this.r * this.r
+    end
+
+    pub func name(): str:
+        ret "circle"
+    end
+
+    pub func describe(): str:
+        ret this.name() + "!"
+    end
+end
+
+impl Shape on int:
+    func area(): f64: ret 0.0 end
+    func name(): str: ret "int" end
+end
+
+extern:
+    func sqrt(x: f64): f64
+    func printf(format: str, ...): int
+end
+
+func scale(c: Circle, k: f64): Circle:
+    ret Circle { r = c.r * k }
+end
+
+func classify(n: int): str:
+    if n < 0:
+        ret "neg"
+    else if n == 0:
+        ret "zero"
+    else:
+        ret "pos"
+    end
+end
+
+func main:
+    mut c := Circle { r = 1.5 }
+    println c.describe(), scale(c, 2.0).area()
+    each n in [1, 2, 3]:
+        if n > 1: println classify(n) end
+    end
+    label := match c.r:
+        1.0 => "one"
+        else => "other"
+    end
+end
