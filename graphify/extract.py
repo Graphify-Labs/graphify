@@ -168,6 +168,65 @@ from graphify.extractors.objc import _objc_local_var_types, extract_objc  # noqa
 
 from graphify.extractors.julia import extract_julia  # noqa: E402,F401
 
+from graphify.generic_logger import GenericLogExtractor
+
+log_extractor = GenericLogExtractor()
+
+class GraphifyBuilderWrapper:
+    def __init__(self, result_dict, file_path_str):
+        self.result = result_dict
+        self.file_path = file_path_str
+
+    def get_tree_sitter_language(self, lang_key):
+        configs = {
+            "java": _JAVA_CONFIG,
+            "kotlin": _KOTLIN_CONFIG,
+            "c": _C_CONFIG,
+            "cpp": _CPP_CONFIG,
+        }
+        config = configs.get(lang_key)
+        if not config:
+            raise ValueError(f"Unsupported language: {lang_key}")
+        import importlib
+        mod = importlib.import_module(config.ts_module)
+        from tree_sitter import Language
+        lang_fn = getattr(mod, config.ts_language_fn, None)
+        if lang_fn is None:
+            lang_fn = getattr(mod, "language", None)
+        return Language(lang_fn())
+
+    def add_edge(self, source, target, relationship, metadata=None):
+        if not any(n.get("id") == source for n in self.result.get("nodes", [])):
+            self.result.setdefault("nodes", []).append({
+                "id": source,
+                "label": os.path.basename(str(source)) if ("/" in str(source) or "\\" in str(source)) else str(source),
+                "file_type": "code",
+                "type": "file",
+                "source_file": self.file_path,
+                "source_location": "L1",
+            })
+        if not any(n.get("id") == target for n in self.result.get("nodes", [])):
+            self.result.setdefault("nodes", []).append({
+                "id": target,
+                "label": target,
+                "file_type": "code",
+                "type": "log",
+                "source_file": self.file_path,
+                "source_location": "L1",
+            })
+        edge = {
+            "source": source,
+            "target": target,
+            "relation": relationship,
+            "confidence": "EXTRACTED",
+            "source_file": self.file_path,
+            "source_location": "L1",
+            "weight": 1.0,
+        }
+        if metadata:
+            edge["metadata"] = metadata
+        self.result.setdefault("edges", []).append(edge)
+
 _RECURSION_LIMIT = 10_000
 
 # Language built-in globals that AST may classify as call targets when used as
@@ -6928,10 +6987,11 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     cache_location = Path(cache_location_str)
     _raise_recursion_limit()
     bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
+    cache_kind = log_extractor.get_cache_kind()
 
     # Check cache first (avoid re-extraction)
     if not bypass_cache:
-        cached = load_cached(path, root, cache_root=cache_location)
+        cached = load_cached(path, root, kind=cache_kind, cache_root=cache_location)
         if cached is not None:
             return idx, cached
 
@@ -6940,13 +7000,24 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
         return idx, {"nodes": [], "edges": []}
 
     result = _safe_extract_with_xaml_root(extractor, path, root)
+    log_injection_failed = False
+    if log_extractor.is_enabled():
+        try:
+            content = path.read_text(encoding="utf-8", errors="ignore")
+            builder = GraphifyBuilderWrapper(result, str(path))
+            success = log_extractor.inject_logs_to_graph(str(path), content, builder)
+            if success is False:
+                log_injection_failed = True
+        except Exception as e:
+            log_injection_failed = True
+            print(f"[LogExtractor Hook Error] {e}", file=sys.stderr, flush=True)
     # Never cache a zero-node result for an extractable file. Every supported
     # source produces at least a file node, so an empty node list is anomalous
     # (e.g. a transient batch/parallel hiccup). Caching it makes the empty
     # byte-stable across runs and silently blinds affected/explain to and
     # through the file (#1666); skipping the write lets a rerun self-heal.
-    if not bypass_cache and "error" not in result and result.get("nodes"):
-        save_cached(path, result, root, cache_root=cache_location)
+    if not bypass_cache and not log_injection_failed and "error" not in result and result.get("nodes"):
+        save_cached(path, result, root, kind=cache_kind, cache_root=cache_location)
     return idx, result
 
 
@@ -7099,9 +7170,11 @@ def _extract_sequential(
     root: Path,
     total_files: int,
     cache_location: Path | None = None,
+    kind: str | None = None,
 ) -> None:
     """Extract uncached files sequentially (fallback for small batches)."""
     _PROGRESS_INTERVAL = 100
+    cache_kind = kind if kind is not None else log_extractor.get_cache_kind()
     for work_idx, (idx, path) in enumerate(uncached_work):
         if (
             total_files >= _PROGRESS_INTERVAL
@@ -7119,9 +7192,20 @@ def _extract_sequential(
         bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
         # XAML boundary anchors on `root` (the corpus), not the cache location.
         result = _safe_extract_with_xaml_root(extractor, path, root)
+        log_injection_failed = False
+        if log_extractor.is_enabled():
+            try:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+                builder = GraphifyBuilderWrapper(result, str(path))
+                success = log_extractor.inject_logs_to_graph(str(path), content, builder)
+                if success is False:
+                    log_injection_failed = True
+            except Exception as e:
+                log_injection_failed = True
+                print(f"[LogExtractor Hook Error] {e}", file=sys.stderr, flush=True)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666).
-        if not bypass_cache and "error" not in result and result.get("nodes"):
-            save_cached(path, result, root, cache_root=cache_location)
+        if not bypass_cache and not log_injection_failed and "error" not in result and result.get("nodes"):
+            save_cached(path, result, root, kind=cache_kind, cache_root=cache_location)
         per_file[idx] = result
     if total_files >= _PROGRESS_INTERVAL:
         # Consistent denominator with the intermediate lines (#1693).
@@ -7258,6 +7342,7 @@ def extract(
     # cache directory's location diverges from it.
     cache_location = (cache_root if cache_root is not None else Path(".")).resolve()
     total = len(paths)
+    cache_kind = log_extractor.get_cache_kind()
 
     # Phase 1: separate cached hits from uncached work
     per_file: list[dict | None] = [None] * total
@@ -7269,7 +7354,7 @@ def extract(
             continue
         bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
         if not bypass_cache:
-            cached = load_cached(path, root, cache_root=cache_location)
+            cached = load_cached(path, root, kind=cache_kind, cache_root=cache_location)
             if cached is not None:
                 per_file[i] = cached
                 continue
@@ -7288,7 +7373,7 @@ def extract(
             # the whole batch would throw that work away.
             _extract_sequential(
                 [(i, p) for (i, p) in uncached_work if per_file[i] is None],
-                per_file, root, total, cache_location,
+                per_file, root, total, cache_location, kind=cache_kind,
             )
 
     # Fill any remaining None slots. With the #2444/#2445 handling above this
