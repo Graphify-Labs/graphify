@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 
-from graphify.extract import extract
+from graphify.extract import extract, extract_r
 
 
 
@@ -109,6 +109,30 @@ def test_r_malformed_tail_comments_and_strings_do_not_create_phantoms(tmp_path):
     labels = {node["label"].casefold() for node in result["nodes"]}
     assert 'valid()' in labels
     assert labels.isdisjoint({'ghost()', 'hidden()'})
+
+
+def test_r6_self_and_private_method_calls_resolve(tmp_path):
+    """R6 methods reach their siblings through `self$` / `private$`, never as a
+    bare name. Those intra-class calls were dropped because walk_calls only
+    handled a bare identifier callee."""
+    source = tmp_path / "counter.R"
+    source.write_text(
+        'Counter <- R6Class("Counter",\n'
+        "  public = list(\n"
+        "    increment = function() self$report(),\n"
+        "    report = function() print(1)\n"
+        "  ),\n"
+        "  private = list(\n"
+        "    log = function() private$fmt(),\n"
+        "    fmt = function() 2\n"
+        "  )\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    result = extract_r(source)
+    calls = _edge_labels(result, "calls")
+    assert ("increment()", "report()") in calls, "self$ call dropped"
+    assert ("log()", "fmt()") in calls, "private$ call dropped"
 
 
 def test_r_missing_parser_reports_install_hint(tmp_path, monkeypatch, capsys):
