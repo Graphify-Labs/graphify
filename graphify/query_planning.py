@@ -365,7 +365,9 @@ def bounded_best_first(
     """
 
     node_limit = max(1, max_nodes)
-    edge_limit = max_edges if max_edges is not None else node_limit * 2
+    # Zero is a valid explicit evidence budget, and negative caller input must
+    # not accidentally admit the first direct-seed edge either.
+    edge_limit = max(0, max_edges) if max_edges is not None else node_limit * 2
     normalized_terms = frozenset(term.lower() for term in (relevance_terms or ()))
     # Structural fan-out grows with the caller's evidence budget, but one class
     # cannot consume it all. This is intentionally dynamic rather than a fixed
@@ -391,6 +393,8 @@ def bounded_best_first(
     seed_set = set(seeds)
     edges: list[tuple[str, str]] = []
     for source in sorted(seeds, key=str):
+        if len(edges) >= edge_limit:
+            break
         for target in sorted(G.neighbors(source), key=str):
             edge = (source, target)
             reverse = (target, source)

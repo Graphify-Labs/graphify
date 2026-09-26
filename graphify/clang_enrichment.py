@@ -381,6 +381,9 @@ class ClangSemanticEnricher:
             "-fpass-plugin",
             "--hipspv-pass-plugin",
             "-load-pass-plugin",
+            # Joined frontend arguments are equivalent to `-Xclang value`; if
+            # forwarded, `-Xclang=-load` can execute a repository-supplied DSO.
+            "-Xclang=",
             "--config=",
             "--config-system-dir=",
             "--config-user-dir=",
@@ -509,8 +512,13 @@ class ClangSemanticEnricher:
             if isinstance(location.get(nested), dict):
                 location = location[nested]
                 break
-        raw_file = str(location.get("file") or inherited_file)
-        source_file = self._relative_file(raw_file) or inherited_file
+        explicit_file = location.get("file")
+        if explicit_file:
+            # An explicit path carries provenance. If it escapes the project,
+            # keep it unmatched instead of relabeling it as the parent file.
+            source_file = self._relative_file(str(explicit_file)) or ""
+        else:
+            source_file = inherited_file
         # Clang's JSON AST elides a child's file/line when it is unchanged from
         # the enclosing declaration. Retaining both values is required for an
         # exact provenance match; treating an omitted line as zero loses valid

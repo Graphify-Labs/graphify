@@ -146,6 +146,7 @@ def test_clang_prefers_compile_database_but_drops_executable_plugin_flags(tmp_pa
         "arguments": [
             "g++", "-I../include", "-DMODE=1", "-fplugin=evil.so",
             "-fpass-plugin=evil-pass.so",
+            "-Xclang=-load", "-Xclang=evil-frontend-plugin.so",
             "-c", str(source), "-o", "main.o",
         ],
     }]), encoding="utf-8")
@@ -155,7 +156,7 @@ def test_clang_prefers_compile_database_but_drops_executable_plugin_flags(tmp_pa
         assert "-DMODE=1" in command
         assert "-I../include" in command
         assert not any(
-            arg.startswith(("-fplugin", "-fpass-plugin"))
+            arg.startswith(("-fplugin", "-fpass-plugin", "-Xclang="))
             for arg in command
         )
         assert "-c" not in command and "-o" not in command and "main.o" not in command
@@ -169,6 +170,30 @@ def test_clang_prefers_compile_database_but_drops_executable_plugin_flags(tmp_pa
 
     assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
     assert result["semantic_enrichment"]["clang"]["compile_database_translation_units"] == 1
+
+
+def test_clang_rejects_explicit_external_declaration_provenance(tmp_path: Path):
+    """An external AST declaration must not confirm an in-repository target."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// external declaration fixture\n", encoding="utf-8")
+    ast = _clang_ast()
+    ast["inner"][0]["inner"][0]["loc"]["file"] = "/opt/external/worker.h"
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        return ProcessResult(returncode=0, stdout=ast, stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 0
+    assert not any(
+        edge.get("semantic_provider") == "clang"
+        for edge in result["edges"]
+    )
 
 
 def test_clang_compile_database_drops_configuration_file_options(tmp_path: Path):

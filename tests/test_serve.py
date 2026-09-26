@@ -1138,6 +1138,23 @@ def test_bounded_traversal_limits_structural_fanout_before_global_cap():
     assert len(nodes) == 11  # seed + dynamic structural beam (80 // 8)
 
 
+def test_bounded_traversal_honors_zero_edge_budget_for_connected_seeds():
+    """Directly connected seeds must not bypass an explicit zero-edge budget."""
+    G = nx.Graph()
+    G.add_edge("caller", "callee", relation="calls")
+
+    nodes, edges = bounded_best_first(
+        G,
+        ["caller", "callee"],
+        depth=1,
+        max_nodes=2,
+        max_edges=0,
+    )
+
+    assert nodes == {"caller", "callee"}
+    assert edges == []
+
+
 def test_query_terms_treat_flow_verbs_as_fillers_when_content_exists():
     """The shared tokenizer must preserve identifiers outside runtime planning."""
     assert _query_terms("How does SFAPP process UDR cache end to end?") == [
