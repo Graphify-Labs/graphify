@@ -129,6 +129,17 @@ def test_prune_without_root_uses_graphify_root_marker(tmp_path):
     assert "handoff" not in {d["label"] for _, d in G.nodes(data=True)}
 
 
+def test_stale_graphify_root_marker_falls_back_to_graphify_out_parent(tmp_path):
+    root = tmp_path / "repo"
+    out = root / "graphify-out"
+    out.mkdir(parents=True)
+    graph_path = out / "graph.json"
+    _write_graph(graph_path, [], [], [])
+    (out / ".graphify_root").write_text(str(tmp_path / "moved" / "repo"), encoding="utf-8")
+
+    assert _infer_merge_root(graph_path) == str(root.resolve())
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics")
 def test_prune_matches_across_symlinked_root(tmp_path):
     """A symlinked scan root (macOS /var -> /private/var, symlinked home/worktree)
@@ -267,7 +278,7 @@ def test_prune_reextracted_absolute_node_not_deleted(tmp_path):
 
 
 def test_graphify_root_marker_with_a_utf8_bom_still_resolves(tmp_path):
-    """A marker written by Windows PowerShell 5.1 carries a UTF-8 BOM (#3028).
+    r"""A marker written by Windows PowerShell 5.1 carries a UTF-8 BOM (#3028).
 
     `Out-File -Encoding utf8` on 5.1 always prepends EF BB BF — there is no
     BOM-less utf8 there — and `str.strip()` does not remove U+FEFF, so the BOM

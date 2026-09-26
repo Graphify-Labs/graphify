@@ -101,6 +101,11 @@ def extract_fortran(path: Path) -> dict:
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
+    # (type_nid, implementing_procedure_name, line) for every type-bound
+    # procedure. Resolved after the whole tree is walked, once the module's
+    # internal procedures have their nodes.
+    type_bound_procs: list[tuple[str, str, int]] = []
+
     def _fortran_name(stmt_node) -> str | None:
         """Extract name from a *_statement node. Fortran is case-insensitive; lowercase."""
         for child in stmt_node.children:
@@ -179,6 +184,23 @@ def extract_fortran(path: Path) -> dict:
                     if tgt != fn_nid:
                         add_edge(fn_nid, tgt, "references", var_line, context="return_type")
 
+    def _type_bound_impl_name(proc_stmt) -> str | None:
+        """The module procedure implementing a type-bound `procedure` statement.
+
+        `procedure :: area => circle_area` binds the method name `area` to the
+        implementation `circle_area` (a `binding` node with a `method_name`
+        child); `procedure :: scale` binds `scale` to a same-named procedure
+        (a bare `method_name` child)."""
+        binding = next((c for c in proc_stmt.children if c.type == "binding"), None)
+        if binding is not None:
+            mn = next((c for c in binding.children if c.type == "method_name"), None)
+            if mn is not None:
+                return _read_text(mn, source).lower()
+        mn = next((c for c in proc_stmt.children if c.type == "method_name"), None)
+        if mn is not None:
+            return _read_text(mn, source).lower()
+        return None
+
     def walk_calls(node, scope_nid: str) -> None:
         if node is None:
             return
@@ -253,6 +275,20 @@ def extract_fortran(path: Path) -> dict:
                     line = node.start_point[0] + 1
                     add_node(type_nid, type_name, line)
                     add_edge(scope_nid, type_nid, "defines", line)
+                    # Type-bound procedures in the `contains` section bind the
+                    # derived type to the module procedures that implement its
+                    # methods. Without this the binding was dropped and the type
+                    # sat in the graph with no link to its own methods.
+                    procs = next((c for c in node.children
+                                  if c.type == "derived_type_procedures"), None)
+                    if procs is not None:
+                        for stmt in procs.children:
+                            if stmt.type != "procedure_statement":
+                                continue
+                            impl = _type_bound_impl_name(stmt)
+                            if impl:
+                                type_bound_procs.append(
+                                    (type_nid, impl, stmt.start_point[0] + 1))
             return
 
         if t == "subroutine":
@@ -298,6 +334,15 @@ def extract_fortran(path: Path) -> dict:
             walk(child, scope_nid)
 
     walk(root, file_nid)
+
+    # Link each derived type to the procedures bound as its methods, now that
+    # the module's internal procedures have been given nodes. A binding to a
+    # procedure imported from another module resolves to a sourceless stub the
+    # corpus rewire can collapse (same treatment as parameter/return types).
+    for type_nid, impl_name, line in type_bound_procs:
+        tgt = ensure_named_node(impl_name, line)
+        if tgt != type_nid:
+            add_edge(type_nid, tgt, "method", line, context="type_bound_procedure")
 
     _stmt_headers = {
         "subroutine_statement", "function_statement",

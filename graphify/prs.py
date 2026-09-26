@@ -142,6 +142,7 @@ def _gh(*args: str) -> list | dict | None:
     try:
         result = subprocess.run(
             ["gh", *args],
+            stdin=subprocess.DEVNULL,
             # Decode gh's output as UTF-8, not the Windows cp1252 locale codec: gh
             # emits UTF-8 JSON with non-Latin1 titles/logins (emoji, فارسی), and the
             # default text=True decode crashes on those (#1505 fixed the same in llm).
@@ -157,24 +158,27 @@ def _gh(*args: str) -> list | dict | None:
 def _detect_default_branch(repo: str | None = None) -> str:
     """Auto-detect the repo's default branch via gh, then git, then fall back to 'main'."""
     # Try gh first — works for any repo, not just the current directory
-    args = ["repo", "view", "--json", "defaultBranchRef"]
+    args = ["repo", "view"]
     if repo:
-        args += ["--repo", repo]
+        args.append(repo)
+    args += ["--json", "defaultBranchRef"]
     data = _gh(*args)
     if data and data.get("defaultBranchRef", {}).get("name"):
         return data["defaultBranchRef"]["name"]
-    # Fall back to git symbolic-ref for the current repo
-    try:
-        result = subprocess.run(
-            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
-        )
-        if result.returncode == 0:
-            # refs/remotes/origin/main → main
-            ref = result.stdout.strip()
-            return ref.split("/")[-1] if ref else "main"
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+    # Fall back to git symbolic-ref for the current repo (only when repo is not specified)
+    if not repo:
+        try:
+            result = subprocess.run(
+                ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
+            )
+            if result.returncode == 0:
+                # refs/remotes/origin/main → main
+                ref = result.stdout.strip()
+                return ref.split("/")[-1] if ref else "main"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
     return "main"
 
 
@@ -232,7 +236,11 @@ def fetch_pr_files(number: int, repo: str | None = None) -> list[str]:
     if repo:
         args += ["--repo", repo]
     try:
-        result = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+        result = subprocess.run(
+            ["gh", *args],
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
+        )
         if result.returncode != 0:
             return []
         return [l.strip() for l in result.stdout.splitlines() if l.strip()]
@@ -303,6 +311,7 @@ def fetch_worktrees() -> dict[str, str]:
     try:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10
         )
         if result.returncode != 0:
