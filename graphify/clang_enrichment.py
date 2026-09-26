@@ -76,6 +76,12 @@ _TU_SUFFIXES = frozenset({".c", ".C", ".cc", ".cpp", ".cxx"})
 _HEADER_SUFFIXES = frozenset({".h", ".hh", ".hpp", ".hxx"})
 _INCLUDE_RE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"]+)[>"]', re.MULTILINE)
 _COMPILER_LAUNCHERS = frozenset({"ccache", "sccache", "distcc", "icecc"})
+_COMPILER_EXECUTABLE_RE = re.compile(
+    r"^(?:[a-z0-9_.+-]+-)?"
+    r"(?:clang(?:\+\+|-cl)?|gcc|g\+\+|cc|c\+\+|cl|icx|icpx)"
+    r"(?:-\d+(?:\.\d+)*)?(?:\.exe)?$",
+    re.IGNORECASE,
+)
 
 
 def _line(value: object) -> int | None:
@@ -426,10 +432,16 @@ class ClangSemanticEnricher:
         safe: list[str] = []
         index = 1 if arguments else 0  # argv[0] is the compiler from the build.
         if arguments and Path(arguments[0]).name.lower() in _COMPILER_LAUNCHERS:
-            # Compilation databases retain launcher argv. Graphify supplies its
-            # own trusted Clang executable, so both the launcher and the wrapped
-            # compiler must be removed before forwarding parse flags.
-            index = min(2, len(arguments))
+            # Launchers may place their own options before the wrapped compiler.
+            # Find that executable explicitly; if it is not recognizable, drop
+            # all launcher-controlled argv and rely on the syntax-only fallback
+            # flags appended by _invocation instead of guessing at boundaries.
+            index = len(arguments)
+            for candidate_index, candidate in enumerate(arguments[1:], 1):
+                executable_name = candidate.replace("\\", "/").rsplit("/", 1)[-1]
+                if _COMPILER_EXECUTABLE_RE.fullmatch(executable_name):
+                    index = candidate_index + 1
+                    break
         while index < len(arguments):
             argument, original_argument = logical_arguments[index]
             # Every `-X...` spelling forwards the next value into another
@@ -586,7 +598,12 @@ class ClangSemanticEnricher:
 
     @staticmethod
     def _referenced_member(node: dict) -> tuple[str, str] | None:
-        stack: list[object] = list(node.get("inner", []) or [])
+        children = node.get("inner", []) or []
+        if not isinstance(children, list) or not children:
+            return None
+        # In Clang's call-expression AST, inner[0] is the callee expression;
+        # later children are arguments and may contain unrelated member calls.
+        stack: list[object] = [children[0]]
         while stack:
             item = stack.pop()
             if not isinstance(item, dict):

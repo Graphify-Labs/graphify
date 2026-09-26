@@ -133,6 +133,35 @@ def test_clang_adds_only_compiler_confirmed_edge_between_grounded_nodes(tmp_path
     assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
 
 
+def test_clang_member_call_uses_callee_instead_of_nested_argument_member(tmp_path: Path):
+    """An argument member access must not replace the outer call target."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// nested member-call fixture\n", encoding="utf-8")
+    ast = _clang_ast()
+    call = ast["inner"][1]["inner"][0]["inner"][0]
+    call["inner"].append({
+        "kind": "CallExpr",
+        "inner": [{
+            "kind": "MemberExpr",
+            "name": "inspect",
+            "referencedMemberDecl": "inspect_decl",
+        }],
+    })
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        return ProcessResult(returncode=0, stdout=ast, stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+    assert result["edges"][-1]["target"] == "worker_run"
+
+
 @pytest.mark.parametrize(
     ("operator_name", "graph_label"),
     [
@@ -352,6 +381,36 @@ def test_clang_compile_database_skips_a_compiler_cache_launcher(tmp_path: Path):
     }]), encoding="utf-8")
 
     def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "/usr/bin/g++" not in command
+        assert "-DMODE=1" in command
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_compile_database_skips_launcher_options_before_compiler(tmp_path: Path):
+    """Launcher configuration and the wrapped compiler are not Clang inputs."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "ccache", "--config-path", "/tmp/ccache.conf",
+            "/usr/bin/g++", "-DMODE=1", "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "--config-path" not in command
+        assert "/tmp/ccache.conf" not in command
         assert "/usr/bin/g++" not in command
         assert "-DMODE=1" in command
         return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
