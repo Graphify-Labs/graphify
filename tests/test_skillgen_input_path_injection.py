@@ -56,11 +56,16 @@ def step1_script() -> str:
 
 
 def _run_step1(script: str, input_path_value: str, cwd: Path) -> subprocess.CompletedProcess:
-    if sys.platform == "win32" and len(input_path_value) > 2 and input_path_value[1] == ":":
-        # Convert Windows absolute path (C:\...) to WSL mount path (/mnt/c/...)
-        drive = input_path_value[0].lower()
-        rest = input_path_value[2:].replace("\\", "/")
-        input_path_value = f"/mnt/{drive}{rest}"
+    if sys.platform == "win32":
+        if len(input_path_value) > 2 and input_path_value[1] == ":":
+            drive = input_path_value[0].lower()
+            rest = input_path_value[2:].replace("\\", "/")
+            input_path_value = f"/mnt/{drive}{rest}"
+        else:
+            def _conv(m: re.Match) -> str:
+                clean_path = m.group(2).replace("\\", "/")
+                return f"/mnt/{m.group(1).lower()}/{clean_path}"
+            input_path_value = re.sub(r"([A-Za-z]):[\\/]([^\s\"'`;#|)\n]+)", _conv, input_path_value)
     substituted = script.replace("INPUT_PATH", input_path_value).replace("\r\n", "\n")
     if sys.platform == "win32":
         # On Windows, writing to a temp script file avoids CreateProcess quote-escaping
@@ -187,11 +192,14 @@ def test_step1_still_resolves_a_legitimate_path(tmp_path: Path, skill_file: str)
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     marker_content = marker.read_text(encoding="utf-8").strip()
-    drive_letter = project.drive[0].lower()
-    if sys.platform == "win32" and marker_content.startswith(f"/mnt/{drive_letter}/"):
-        resolved_marker = Path(f"{drive_letter.upper()}:{marker_content[6:]}").resolve()
-    elif sys.platform == "win32" and marker_content.startswith(f"/{drive_letter}/"):
-        resolved_marker = Path(f"{drive_letter.upper()}:{marker_content[2:]}").resolve()
+    if sys.platform == "win32" and project.drive:
+        drive_letter = project.drive[0].lower()
+        if marker_content.startswith(f"/mnt/{drive_letter}/"):
+            resolved_marker = Path(f"{drive_letter.upper()}:{marker_content[6:]}").resolve()
+        elif marker_content.startswith(f"/{drive_letter}/"):
+            resolved_marker = Path(f"{drive_letter.upper()}:{marker_content[2:]}").resolve()
+        else:
+            resolved_marker = Path(marker_content).resolve()
     else:
         resolved_marker = Path(marker_content).resolve()
     assert resolved_marker == project.resolve()
