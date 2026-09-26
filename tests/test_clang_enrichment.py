@@ -133,6 +133,45 @@ def test_clang_adds_only_compiler_confirmed_edge_between_grounded_nodes(tmp_path
     assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
 
 
+@pytest.mark.parametrize(
+    ("operator_name", "graph_label"),
+    [
+        ("operator()", ".operator()()"),
+        ("operator[]", ".operator[]()"),
+        ("operator+", ".operator+()"),
+        ("operator bool", ".operator bool()"),
+        ("operator void (*)()", ".operator void (*)()()"),
+    ],
+)
+def test_clang_confirms_cpp_operators_without_stripping_symbol_syntax(
+    tmp_path: Path,
+    operator_name: str,
+    graph_label: str,
+):
+    """Graph label decoration must remain distinct from C++ operator syntax."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// call-operator fixture\n", encoding="utf-8")
+    extraction = _graph_with_pending_cpp_call()
+    extraction["nodes"][1]["metadata"]["unresolved_calls"][0]["callee"] = operator_name
+    extraction["nodes"][3]["label"] = graph_label
+    ast = _clang_ast()
+    ast["inner"][0]["inner"][0]["name"] = operator_name
+    ast["inner"][1]["inner"][0]["inner"][0]["inner"][0]["name"] = operator_name
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        return ProcessResult(returncode=0, stdout=ast, stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(extraction)
+
+    assert result["edges"][-1]["target"] == "worker_run"
+    assert result["edges"][-1]["semantic_provider"] == "clang"
+
+
 def test_clang_prefers_compile_database_but_drops_executable_plugin_flags(tmp_path: Path):
     """Ignoring the compile DB or forwarding plugin flags must break this boundary."""
     source = tmp_path / "src" / "main.C"

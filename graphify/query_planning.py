@@ -234,26 +234,32 @@ def plan_query(question: str) -> TraversalProfile:
     """
 
     normalized = " ".join(re.findall(r"[a-z0-9]+", question.lower()))
-    if any(term in normalized.split() for term in ("document", "docs", "manual", "page", "section")):
-        return DOCUMENT
+    terms = normalized.split()
     runtime_phrase = any(
         phrase in normalized
         for phrase in ("end to end", "runtime flow", "execution flow", "call flow")
     )
+    # Explicit traversal wording outranks nouns that merely name the component's
+    # implementation domain; otherwise domain terms can select the wrong edge set.
+    if runtime_phrase:
+        return RUNTIME_FLOW
+    if any(term in terms for term in ("document", "docs", "manual", "page", "section")):
+        return DOCUMENT
     how_it_works = normalized.startswith("how ") and any(
-        word in normalized.split()
+        word in terms
         for word in ("work", "works", "working", "process", "processing", "generated")
     )
-    return RUNTIME_FLOW if runtime_phrase or how_it_works else EXPLORE
+    return RUNTIME_FLOW if how_it_works else EXPLORE
 
 
 def project_graph(G: nx.Graph, profile: TraversalProfile) -> nx.Graph:
     """Return a read-only unrestricted view or an isolated relation projection."""
 
     if profile.relations is None:
-        # Explore queries need the full topology. A frozen O(1) view prevents
-        # accidental structural writes without copying a potentially large graph.
-        return nx.graphviews.generic_graph_view(G)
+        # A generic view freezes topology but aliases node and edge attribute
+        # dictionaries. Use an independent shallow copy so one query cannot
+        # corrupt the source graph observed by later requests.
+        return nx.freeze(G.copy(as_view=False))
     projected = G.__class__()
     projected.graph.update(G.graph)
     projected.add_nodes_from(G.nodes(data=True))

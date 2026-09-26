@@ -858,6 +858,41 @@ def test_explore_projection_cannot_mutate_the_source_graph():
     assert "handler" in graph
 
 
+def test_explore_projection_cannot_mutate_source_attributes():
+    """A query projection must not corrupt attributes used by later queries."""
+    from graphify.query_planning import EXPLORE, project_graph
+
+    graph = nx.Graph()
+    graph.add_node("service", label="CheckoutService")
+    graph.add_node("handler", label="charge_customer")
+    graph.add_edge("service", "handler", relation="calls")
+
+    projected = project_graph(graph, EXPLORE)
+    projected.nodes["service"]["label"] = "Corrupted"
+    projected.edges["service", "handler"]["relation"] = "corrupted"
+
+    assert graph.nodes["service"]["label"] == "CheckoutService"
+    assert graph.edges["service", "handler"]["relation"] == "calls"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "How does the document parser work end to end?",
+        "Trace the manual renderer runtime flow",
+        "Show the docs generator execution flow",
+        "Explain the page indexer call flow",
+    ],
+)
+def test_explicit_runtime_phrase_overrides_document_domain_nouns(question):
+    """Explicit traversal intent must outrank nouns naming the implementation domain."""
+    from graphify.query_planning import plan_query
+
+    profile = plan_query(question)
+
+    assert profile.name == "runtime_flow"
+
+
 def test_query_graph_json_honors_node_budget_for_open_ended_queries():
     """Structured evidence is always bounded, including the explore profile."""
     G = nx.Graph()

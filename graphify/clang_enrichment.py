@@ -19,6 +19,8 @@ import subprocess
 import tempfile
 from typing import Callable
 
+from graphify.symbol_names import normalize_symbol_name
+
 
 @dataclass(frozen=True)
 class ProcessResult:
@@ -74,13 +76,6 @@ _TU_SUFFIXES = frozenset({".c", ".C", ".cc", ".cpp", ".cxx"})
 _HEADER_SUFFIXES = frozenset({".h", ".hh", ".hpp", ".hxx"})
 _INCLUDE_RE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"]+)[>"]', re.MULTILINE)
 _COMPILER_LAUNCHERS = frozenset({"ccache", "sccache", "distcc", "icecc"})
-
-
-def _bare_symbol(value: object) -> str:
-    """Remove Graphify display decoration without folding C++ case."""
-
-    text = str(value or "").strip().removeprefix(".")
-    return re.sub(r"\(.*\)$", "", text).strip()
 
 
 def _line(value: object) -> int | None:
@@ -470,10 +465,10 @@ class ClangSemanticEnricher:
                 if not isinstance(entry, dict) or entry.get("lang") not in {"c", "cpp"}:
                     continue
                 line = _line(entry.get("line"))
-                callee = _bare_symbol(entry.get("callee"))
+                callee = normalize_symbol_name(entry.get("callee"))
                 receiver = str(entry.get("receiver_type") or "").strip()
                 caller_id = str(node.get("id") or "")
-                caller_name = _bare_symbol(node.get("label"))
+                caller_name = normalize_symbol_name(node.get("label"), graph_label=True)
                 if source_file and line and callee and receiver and caller_id and caller_name:
                     candidates.append(_Candidate(
                         caller_id, caller_name, callee, receiver, source_file, line,
@@ -496,7 +491,10 @@ class ClangSemanticEnricher:
             member_line = _line(member.get("source_location"))
             if member_line is None:
                 continue
-            key = (_bare_symbol(owner.get("label")), _bare_symbol(member.get("label")))
+            key = (
+                normalize_symbol_name(owner.get("label"), graph_label=True),
+                normalize_symbol_name(member.get("label"), graph_label=True),
+            )
             index[key].append((str(member["id"]), str(member["source_file"]), member_line))
         return index
 
@@ -586,10 +584,10 @@ class ClangSemanticEnricher:
                 continue
             decl_id = item.get("referencedMemberDecl")
             if decl_id and item.get("name"):
-                return str(decl_id), _bare_symbol(item.get("name"))
+                return str(decl_id), normalize_symbol_name(item.get("name"))
             referenced = item.get("referencedDecl")
             if isinstance(referenced, dict) and referenced.get("id") and referenced.get("name"):
-                return str(referenced["id"]), _bare_symbol(referenced["name"])
+                return str(referenced["id"]), normalize_symbol_name(referenced["name"])
             stack.extend(item.get("inner", []) or [])
         return None
 

@@ -28,6 +28,8 @@ import os
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from graphify.symbol_names import normalize_symbol_name
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import networkx as nx
 
@@ -49,17 +51,6 @@ _LANG_SUFFIXES: dict[str, frozenset[str]] = {
 # in-class declaration (`void bar();` in a header) is modelled as a field and
 # carries `defines` instead. `method` wins when both name the same member.
 _MEMBER_RELATIONS = ("defines", "method")
-
-
-def _key(label: object) -> str:
-    """Normalize a node label or a parked name to its bare identifier.
-
-    Type labels are plain (``Greeter``) while method labels carry the extractor's
-    decoration (``.greet()``). Case is preserved: every language that parks calls
-    here is case-sensitive, and folding case would let `greeter` answer for
-    `Greeter`.
-    """
-    return str(label or "").strip().removeprefix(".").removesuffix("()")
 
 
 def _suffix(source_file: object) -> str:
@@ -98,7 +89,7 @@ def _index_declarations(merged: "nx.Graph") -> tuple[dict[str, list[str]], set[s
             continue
         if not data.get("repo"):
             continue
-        name = _key(data.get("label"))
+        name = normalize_symbol_name(data.get("label"), graph_label=True)
         if not name:
             continue
         by_name[name].append(node)
@@ -133,7 +124,7 @@ def _index_members(
             owner, member = v, u
         else:
             continue
-        name = _key(merged.nodes[member].get("label"))
+        name = normalize_symbol_name(merged.nodes[member].get("label"), graph_label=True)
         if name:
             by_relation[relation][(owner, name)].append(member)
     return by_relation
@@ -196,8 +187,8 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
         for entry in _parked_entries(caller_data):
             lang = str(entry.get("lang") or "")
             suffixes = _LANG_SUFFIXES.get(lang)
-            receiver_type = _key(entry.get("receiver_type"))
-            callee = _key(entry.get("callee"))
+            receiver_type = normalize_symbol_name(entry.get("receiver_type"))
+            callee = normalize_symbol_name(entry.get("callee"))
             if not suffixes or not receiver_type or not callee:
                 continue
             candidates = [
