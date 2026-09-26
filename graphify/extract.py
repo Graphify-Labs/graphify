@@ -1318,7 +1318,10 @@ _JAVA_CONFIG = LanguageConfig(
 
 _GROOVY_CONFIG = LanguageConfig(
     ts_module="tree_sitter_groovy",
-    class_types=frozenset({"class_declaration", "interface_declaration"}),
+    # enum_declaration shares the name/body contract, so a Groovy enum becomes a
+    # first-class type node with its constants (via _java_extra_walk) instead of
+    # being dropped along with everything it declares (#Java enum parity).
+    class_types=frozenset({"class_declaration", "interface_declaration", "enum_declaration"}),
     function_types=frozenset({"method_declaration", "constructor_declaration"}),
     import_types=frozenset({"import_declaration"}),
     call_types=frozenset({"method_invocation"}),

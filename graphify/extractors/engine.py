@@ -5681,7 +5681,10 @@ def _extract_generic(
                                   ensure_named_node):
                 return
 
-        if config.ts_module == "tree_sitter_java":
+        # Groovy shares Java's `enum_constant` node shape (name field + optional
+        # class_body), so it reuses the Java enum-constant handler to emit a node
+        # per member with a `case_of` edge instead of leaving the enum a leaf.
+        if config.ts_module in ("tree_sitter_java", "tree_sitter_groovy"):
             if _java_extra_walk(node, source, file_nid, stem, str_path,
                                 nodes, edges, seen_ids, function_bodies,
                                 parent_class_nid, add_node, add_edge, walk):
