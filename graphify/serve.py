@@ -1026,7 +1026,7 @@ def _complete_induced_edges(G: nx.Graph, visited: set[str], edges_seen: list[tup
         edges_seen.append((u, v))
 
 
-def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
+def _bfs(G: nx.Graph, start_nodes: list[str], depth: int, *, question: str | None = None) -> tuple[set[str], list[tuple]]:
     # Compute hub threshold: nodes above this degree are not expanded as transit.
     # p99 of degree distribution, floored at 50 to avoid over-blocking small graphs.
     degrees = [G.degree(n) for n in G.nodes()]
@@ -1040,6 +1040,17 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     visited: set[str] = set(start_nodes)
     frontier = set(start_nodes)
     edges_seen: list[tuple] = []
+
+    # Optional JEV smart subgraph neighbor pruning (fail-open)
+    prune_fn = None
+    try:
+        from graphify.jev_pruner import prune_bfs_neighbors_with_jev
+        from graphify.jev_bridge import is_available as _jev_available
+        if question and _jev_available():
+            prune_fn = prune_bfs_neighbors_with_jev
+    except Exception:
+        prune_fn = None
+
     for _ in range(depth):
         next_frontier: set[str] = set()
         for n in frontier:
@@ -1047,7 +1058,14 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
             # is the starting node should still be explored).
             if n not in seed_set and G.degree(n) >= hub_threshold:
                 continue
-            for neighbor in G.neighbors(n):
+            
+            raw_neighbors = list(G.neighbors(n))
+            if prune_fn and len(raw_neighbors) > 4:
+                chosen_neighbors = prune_fn(G, n, raw_neighbors, question)
+            else:
+                chosen_neighbors = raw_neighbors
+
+            for neighbor in chosen_neighbors:
                 if neighbor not in visited:
                     next_frontier.add(neighbor)
                     edges_seen.append((n, neighbor))
@@ -1389,12 +1407,22 @@ def _query_graph_text(
         best_seed_by_term = {
             t: nid for t, nid in best_seed_by_term.items() if t not in intent
         }
-    start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
+    
+    # Optional JEV two-stage semantic seed navigation (fail-open)
+    jev_seeds = None
+    try:
+        from graphify.jev_bridge import pick_seeds_with_jev, is_available as _jev_available
+        if _jev_available():
+            jev_seeds = pick_seeds_with_jev(G, question)
+    except Exception:
+        jev_seeds = None
+
+    start_nodes = jev_seeds if jev_seeds else _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
     traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
-    nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
+    nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth, question=question)
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
         f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
@@ -2011,6 +2039,21 @@ def _build_server(graph_path: str):
                     },
                 },
             ),
+            types.Tool(
+                name="analyze_blast_radius",
+                description=(
+                    "Analyze code change impact (Blast Radius). Traverses reverse dependency call chains "
+                    "in the knowledge graph to report all upstream callers and components that will be affected if you modify this symbol."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string", "description": "Function, class, or module name you plan to modify"},
+                        "max_depth": {"type": "integer", "default": 2, "description": "Reverse traversal hop depth (1-4)"},
+                    },
+                    "required": ["symbol"],
+                },
+            ),
         ]
         # Multi-project support: every tool accepts an optional project_path.
         # Injected here (rather than repeated in 11 literal schemas) so the set
@@ -2266,6 +2309,25 @@ def _build_server(graph_path: str):
             )
         return "\n\n".join(lines)
 
+    def _tool_analyze_blast_radius(arguments: dict) -> str:
+        from graphify.jev_audit import analyze_blast_radius
+        symbol = arguments["symbol"]
+        max_depth = min(int(arguments.get("max_depth", 2)), 4)
+        report = analyze_blast_radius(G, symbol, max_depth=max_depth)
+        if "error" in report:
+            return report["error"]
+        lines = [
+            f"🎯 变更影响面分析报告 (Blast Radius Analysis): 【{report['target_symbol']}】",
+            f"物理源码文件: {report['target_file']}",
+            f"风险评级: [{report['severity']}]  连锁波及上游节点总数: {report['blast_radius_score']}",
+            ""
+        ]
+        for c in report["chains"]:
+            lines.append(f"  {c['layer_name']}:")
+            for item in c["affected"]:
+                lines.append(f"    • {item}")
+        return "\n".join(lines)
+
     _handlers = {
         "query_graph": _tool_query_graph,
         "get_node": _tool_get_node,
@@ -2277,6 +2339,7 @@ def _build_server(graph_path: str):
         "list_prs": _tool_list_prs,
         "get_pr_impact": _tool_get_pr_impact,
         "triage_prs": _tool_triage_prs,
+        "analyze_blast_radius": _tool_analyze_blast_radius,
     }
 
     def _load_community_labels() -> dict[int, str]:
