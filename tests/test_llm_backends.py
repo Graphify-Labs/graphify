@@ -624,15 +624,17 @@ def test_call_openai_compat_preserves_real_finish_reason(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _install_capturing_openai(monkeypatch):
-    """Like _install_fake_openai but records kwargs passed to create()."""
+def _install_capturing_openai(monkeypatch, ctor_captured=None):
+    """Like _install_fake_openai but records kwargs passed to create() and optionally ctor."""
     import sys
     import types
 
     captured = {}
 
     class _FakeOpenAI:
-        def __init__(self, *_, **__):
+        def __init__(self, *_, **kwargs):
+            if ctor_captured is not None:
+                ctor_captured.update(kwargs)
             self.chat = self
             self.completions = self
 
@@ -827,6 +829,175 @@ def test_call_openai_compat_explicit_extra_body_skips_ollama_auto_derive(monkeyp
     assert captured["extra_body"] == {"options": {"num_ctx": 4096}}, (
         "explicit extra_body must replace the ollama auto-derived num_ctx"
     )
+
+
+# ---------------------------------------------------------------------------
+# Custom-provider extra_headers (#3680): passes custom headers as default_headers
+# to the OpenAI client while stripping any case-insensitive authorization header.
+# ---------------------------------------------------------------------------
+
+
+def test_call_openai_compat_passes_extra_headers_as_default_headers(monkeypatch):
+    ctor = {}
+    _install_capturing_openai(monkeypatch, ctor_captured=ctor)
+
+    llm._call_openai_compat(
+        "https://opencode.ai/zen/go/v1", "tk", "deepseek-v4-flash",
+        "u", temperature=0, max_completion_tokens=8192, backend="opencode-go",
+        extra_headers={
+            "x-opencode-session": "test-session-uuid",
+            "User-Agent": "graphify/0.9.63",
+        },
+    )
+
+    assert "default_headers" in ctor
+    assert ctor["default_headers"] == {
+        "x-opencode-session": "test-session-uuid",
+        "User-Agent": "graphify/0.9.63",
+    }
+
+
+def test_call_llm_passes_extra_headers_as_default_headers(monkeypatch):
+    ctor = {}
+    _install_capturing_openai(monkeypatch, ctor_captured=ctor)
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _b: "fake-key")
+    monkeypatch.setattr(
+        llm,
+        "BACKENDS",
+        {
+            **llm.BACKENDS,
+            "opencode-go": {
+                "base_url": "https://opencode.ai/zen/go/v1",
+                "default_model": "deepseek-v4-flash",
+                "env_key": "OPENCODE_API_KEY",
+                "extra_headers": {
+                    "x-opencode-session": "test-session-uuid",
+                    "User-Agent": "graphify/0.9.63",
+                },
+            },
+        },
+    )
+
+    resp = llm._call_llm("hi", backend="opencode-go")
+    assert resp
+    assert "default_headers" in ctor
+    assert ctor["default_headers"] == {
+        "x-opencode-session": "test-session-uuid",
+        "User-Agent": "graphify/0.9.63",
+    }
+
+
+@pytest.mark.parametrize(
+    "auth_key",
+    ["authorization", "Authorization", "AUTHORIZATION", "AuThOrIzAtIoN"],
+)
+def test_call_openai_compat_drops_authorization_case_insensitively(monkeypatch, auth_key):
+    ctor = {}
+    _install_capturing_openai(monkeypatch, ctor_captured=ctor)
+
+    llm._call_openai_compat(
+        "https://opencode.ai/zen/go/v1", "tk", "deepseek-v4-flash",
+        "u", temperature=0, max_completion_tokens=8192, backend="opencode-go",
+        extra_headers={
+            auth_key: "Bearer secret-token",
+            "x-opencode-session": "test-session-uuid",
+            "User-Agent": "graphify/0.9.63",
+        },
+    )
+
+    assert "default_headers" in ctor
+    assert ctor["default_headers"] == {
+        "x-opencode-session": "test-session-uuid",
+        "User-Agent": "graphify/0.9.63",
+    }
+
+
+def test_call_llm_drops_authorization_case_insensitively(monkeypatch):
+    ctor = {}
+    _install_capturing_openai(monkeypatch, ctor_captured=ctor)
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _b: "fake-key")
+    monkeypatch.setattr(
+        llm,
+        "BACKENDS",
+        {
+            **llm.BACKENDS,
+            "opencode-go": {
+                "base_url": "https://opencode.ai/zen/go/v1",
+                "default_model": "deepseek-v4-flash",
+                "env_key": "OPENCODE_API_KEY",
+                "extra_headers": {
+                    "Authorization": "Bearer secret-token",
+                    "x-opencode-session": "test-session-uuid",
+                },
+            },
+        },
+    )
+
+    llm._call_llm("hi", backend="opencode-go")
+    assert "default_headers" in ctor
+    assert ctor["default_headers"] == {
+        "x-opencode-session": "test-session-uuid",
+    }
+
+
+def test_call_openai_compat_no_default_headers_when_extra_headers_absent(monkeypatch):
+    ctor = {}
+    _install_capturing_openai(monkeypatch, ctor_captured=ctor)
+
+    llm._call_openai_compat(
+        "https://api.openai.com/v1", "sk-test", "gpt-4.1-mini",
+        "u", temperature=0, max_completion_tokens=8192, backend="openai",
+    )
+
+    assert "default_headers" not in ctor
+
+
+def test_call_openai_compat_no_default_headers_when_only_authorization(monkeypatch):
+    ctor = {}
+    _install_capturing_openai(monkeypatch, ctor_captured=ctor)
+
+    llm._call_openai_compat(
+        "https://api.openai.com/v1", "sk-test", "gpt-4.1-mini",
+        "u", temperature=0, max_completion_tokens=8192, backend="openai",
+        extra_headers={"Authorization": "Bearer sneaky"},
+    )
+
+    assert "default_headers" not in ctor
+
+
+def test_call_llm_no_default_headers_when_extra_headers_absent(monkeypatch):
+    ctor = {}
+    _install_capturing_openai(monkeypatch, ctor_captured=ctor)
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _b: "fake-key")
+
+    llm._call_llm("hi", backend="kimi")
+    assert "default_headers" not in ctor
+
+
+def test_extract_files_direct_forwards_extra_headers(tmp_path, monkeypatch):
+    _clear_backend_env(monkeypatch)
+    monkeypatch.setenv("CUSTOM_KEY", "custom-api-key")
+    monkeypatch.setattr(
+        llm,
+        "BACKENDS",
+        {
+            **llm.BACKENDS,
+            "custom-provider": {
+                "base_url": "https://custom.example.com/v1",
+                "default_model": "custom-model",
+                "env_key": "CUSTOM_KEY",
+                "extra_headers": {"X-Custom-Header": "custom-value"},
+            },
+        },
+    )
+    source = tmp_path / "note.md"
+    source.write_text("# Doc\n")
+    result = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}
+
+    with patch("graphify.llm._call_openai_compat", return_value=result) as call:
+        llm.extract_files_direct([source], backend="custom-provider", root=tmp_path)
+
+    assert call.call_args.kwargs["extra_headers"] == {"X-Custom-Header": "custom-value"}
 
 
 def test_extract_corpus_parallel_ollama_runs_serially(tmp_path, monkeypatch):
