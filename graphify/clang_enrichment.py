@@ -414,6 +414,15 @@ class ClangSemanticEnricher:
             "-fmodule-file=",
             "-fprebuilt-module-path=",
         )
+        # clang-cl's /clang:<arg> escape hatch forwards its payload to the
+        # Clang driver. Inspect that payload with the same policy as ordinary
+        # driver arguments while retaining the wrapper for safe parse flags.
+        logical_arguments = [
+            (argument[7:], argument)
+            if argument.lower().startswith("/clang:")
+            else (argument, argument)
+            for argument in arguments
+        ]
         safe: list[str] = []
         index = 1 if arguments else 0  # argv[0] is the compiler from the build.
         if arguments and Path(arguments[0]).name.lower() in _COMPILER_LAUNCHERS:
@@ -422,7 +431,7 @@ class ClangSemanticEnricher:
             # compiler must be removed before forwarding parse flags.
             index = min(2, len(arguments))
         while index < len(arguments):
-            argument = arguments[index]
+            argument, original_argument = logical_arguments[index]
             # Every `-X...` spelling forwards the next value into another
             # compiler component. Treat the family as one trust boundary
             # instead of maintaining an incomplete list of plugin-capable
@@ -448,7 +457,7 @@ class ClangSemanticEnricher:
                         continue
                 except OSError:
                     pass
-            safe.append(argument)
+            safe.append(original_argument)
             index += 1
         return tuple(safe)
 

@@ -273,6 +273,42 @@ def test_clang_compile_database_drops_forwarded_and_secondary_tool_options(tmp_p
     assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
 
 
+def test_clang_cl_passthrough_cannot_forward_executable_plugin_options(tmp_path: Path):
+    """The clang-cl passthrough must enforce the same plugin boundary."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "clang-cl",
+            "/clang:-fno-delayed-template-parsing",
+            "/clang:-fplugin=evil.so",
+            "/clang:-Xclang",
+            "/clang:-load",
+            "/clang:-Xclang",
+            "/clang:evil-frontend-plugin.so",
+            "/c",
+            str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "/clang:-fno-delayed-template-parsing" in command
+        assert not any("plugin" in argument or argument.endswith("evil.so") for argument in command)
+        assert not any(argument.startswith("/clang:-Xclang") for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang-cl",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
 def test_clang_compile_database_drops_serialized_ast_inputs(tmp_path: Path):
     """Semantic confirmation must parse source instead of repository-supplied AST files."""
     source = tmp_path / "src" / "main.C"

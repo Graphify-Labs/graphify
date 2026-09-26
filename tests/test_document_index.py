@@ -37,6 +37,27 @@ def test_document_index_hash_changes_only_for_changed_section_content():
     assert before.sections[1].content_ref != after.sections[1].content_ref
 
 
+def test_document_index_ignores_headings_inside_markdown_fences():
+    text = """# Overview
+```markdown
+## Backtick Example
+````
+## Runtime
+~~~text
+# Tilde Example
+~~~
+### Cache
+"""
+
+    index = build_document_index("guide.md", text)
+
+    assert [section.path for section in index.sections] == [
+        "Overview",
+        "Overview / Runtime",
+        "Overview / Runtime / Cache",
+    ]
+
+
 def test_markdown_extraction_publishes_hierarchy_for_lazy_section_navigation(tmp_path):
     """Removing document-index integration must erase parent/path metadata."""
     source = tmp_path / "guide.md"
