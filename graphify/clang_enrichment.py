@@ -383,6 +383,9 @@ class ClangSemanticEnricher:
             "-Xclang", "-load", "-plugin",
             "-fcas-plugin-path", "-fcas-plugin-option", "-mllvm",
             "-B", "--offload-arch-tool",
+            # VFS overlays can remap arbitrary compiler reads outside the
+            # repository, so they are unsafe even in syntax-only mode.
+            "-ivfsoverlay", "-vfsoverlay",
             # Serialized ASTs are compiler state, not source-level build
             # context, and must not influence compiler-confirmed edges.
             "-include-pch",
@@ -419,6 +422,18 @@ class ClangSemanticEnricher:
             "-include-pch=",
             "-fmodule-file=",
             "-fprebuilt-module-path=",
+            # Joined spellings carry the same side effects as their separated
+            # forms above. Include the complete option name where possible;
+            # lowercase `-o...` is Clang's attached output-path form.
+            "-o",
+            "-MF",
+            "-MT",
+            "-MQ",
+            "-MJ",
+            "--serialize-diagnostics=",
+            "-dependency-file=",
+            "-ivfsoverlay",
+            "-vfsoverlay",
         )
         # clang-cl's /clang:<arg> escape hatch forwards its payload to the
         # Clang driver. Inspect that payload with the same policy as ordinary

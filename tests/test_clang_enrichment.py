@@ -245,6 +245,74 @@ def test_clang_prefers_compile_database_but_drops_executable_plugin_flags(tmp_pa
     assert result["semantic_enrichment"]["clang"]["compile_database_translation_units"] == 1
 
 
+def test_clang_compile_database_drops_virtual_filesystem_overlays(tmp_path: Path):
+    """Repository compile flags must not redirect Clang's filesystem reads."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "clang-cl",
+            "/clang:-DMODE=1",
+            "/clang:-ivfsoverlay",
+            "/clang:/tmp/wrapped-overlay.yaml",
+            "-vfsoverlay=/tmp/joined-overlay.yaml",
+            "-ivfsoverlay",
+            "/tmp/overlay.yaml",
+            "/c",
+            str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "/clang:-DMODE=1" in command
+        assert not any("overlay" in argument for argument in command)
+        assert not any("vfsoverlay" in argument for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang-cl",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_compile_database_drops_joined_output_options(tmp_path: Path):
+    """Attached output paths must not create files during semantic parsing."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "g++", "-DMODE=1", "-omain.o", "-MFdeps.d", "-MTtarget",
+            "-MQquoted", "-MJcompile.json", "--serialize-diagnostics=diag.dia",
+            "-dependency-file=deps2.d", "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "-DMODE=1" in command
+        assert not any(argument.startswith((
+            "-o", "-MF", "-MT", "-MQ", "-MJ",
+            "--serialize-diagnostics=", "-dependency-file=",
+        )) for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
 def test_clang_compile_database_drops_llvm_backend_escape_hatches(tmp_path: Path):
     """Repository flags must not reach LLVM's native plugin option parser."""
     source = tmp_path / "src" / "main.C"
