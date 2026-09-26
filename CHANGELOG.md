@@ -14,6 +14,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 - Fix: fixed-format COBOL that carries a sequence NUMBER in columns 1-6 (not blanks) is now detected as fixed-format — previously it was misread as free-format, the sequence digits stayed in the code, and every paragraph and `PERFORM` edge was silently dropped, leaving only the file and program nodes (#3813, thanks @abhay-codes07).
 - Fix: `PERFORM A THRU/THROUGH Z` now links both endpoints of the range, not just the entry paragraph, so the range-end no longer lacks an inbound `calls` edge; a dangling THRU target is skipped rather than fabricated (#3814, thanks @abhay-codes07).
 - Fix: `GRAPH_REPORT.md`'s Knowledge Gaps section only offers "undocumented components" as an explanation for an isolated node when the graph actually has a semantic layer (a document/paper/image node an LLM extracted meaning from) — a code-only graph no longer lists a possibility it can never have (#3828, #3801, thanks @ayushcodes10).
+- Fix: `extract --out <dir>` no longer leaks a stray `graphify-out/cache/` word-count cache file into the scan root on the second (incremental) run against a destination that already has a manifest — the fresh-scan branch already anchored this cache at the requested `--out` directory, but `detect_incremental()` had no parameter to receive it at all, so the very next run against the same destination fell back to the scan root (#3847, thanks @jonasplima).
 
 ## 0.9.67 (2026-09-23)
 
