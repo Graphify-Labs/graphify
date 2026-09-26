@@ -253,3 +253,56 @@ def test_an_h1_marker_never_swallows_a_lower_level_heading_before_a_misplaced_se
     assert "important user content" in removed
     assert "more content" in removed
     assert "registration content" not in removed
+
+
+def test_a_comment_line_inside_a_fenced_code_block_is_never_a_heading_boundary():
+    """Review finding on PR 3803: a "#"-led shell/Python comment inside a
+    fenced code block matches the same ATX-heading pattern used for the H1
+    "any heading ends it" rule, but is not a heading at all. Without fence
+    tracking, a top-level marker's own example code block got split in two
+    on its own inner comment line, and the closing fence ended up orphaned
+    in the "kept" tail with no matching opener."""
+    h1_marker = "# graphify"
+    before = (
+        "# graphify\n"
+        "registration content\n"
+        "```python\n"
+        "# a comment that looks like a heading\n"
+        "x = 1\n"
+        "```\n"
+        "\n"
+        "## User Section\n"
+        "important user content\n"
+    )
+    after = _replace_or_append_section(
+        before, h1_marker, "# graphify\nNEW content\n", boundary_prefix="# "
+    )
+    assert after.count("```") % 2 == 0, "the fence must not be split in two"
+    assert "important user content" in after
+    assert "NEW content" in after
+    assert "registration content" not in after
+
+
+def test_a_fenced_comment_in_trailing_content_does_not_block_a_clean_remove():
+    """The flip side of the fence finding: a legacy (sentinel-less) H1
+    section followed by real user content whose own example fence contains
+    a "#" comment must still be recognized correctly -- the user's real
+    "## My own rules" heading is the boundary, not the fenced comment line,
+    so the removal is clean rather than being left ambiguously untouched."""
+    h1_marker = "# graphify"
+    before = (
+        "# graphify\n"
+        "registration content\n"
+        "\n"
+        "## My own rules\n"
+        "Example:\n"
+        "```bash\n"
+        "# run this command\n"
+        "echo hi\n"
+        "```\n"
+    )
+    removed = _remove_marker_section(before, h1_marker, boundary_prefix="# ")
+    assert removed is not None
+    assert "## My own rules" in removed
+    assert "echo hi" in removed
+    assert "registration content" not in removed
