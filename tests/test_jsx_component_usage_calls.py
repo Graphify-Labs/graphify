@@ -5,8 +5,9 @@ A JSX element renders its component, but tree-sitter models it as
 field, not as a `call_expression`. Those node types were never in `call_types`,
 so a component that is only ever rendered (the normal case in React) had no
 incoming edge and looked unused. A lowercase bare tag (`<div>`) is an intrinsic
-DOM element and must not bind to a same-named function; for a member tag the last
-segment decides (`<motion.div>`).
+DOM element and must not bind to a same-named function. Member tags
+(`<icons.Close>`, `<motion.div>`) are not handled: resolving them by the property
+name binds to unrelated local functions.
 """
 from __future__ import annotations
 
@@ -120,3 +121,21 @@ def test_member_tag_does_not_bind_to_local_function_by_last_segment(tmp_path: Pa
         ),
     })
     assert ("App()", "Provider()") not in calls
+
+
+
+def test_member_tag_with_lowercase_receiver_does_not_bind_to_local_function(tmp_path: Path):
+    # `<icons.Close>` / `<props.Comp>` are members, not the local Close() / Comp().
+    calls, _ = _calls(tmp_path, {
+        "icons.tsx": "export function X() { return null; }\n",
+        "app.tsx": (
+            "import * as icons from './icons';\n"
+            "function Close() { return null; }\n"
+            "function Comp() { return null; }\n"
+            "export function App(props: any) {\n"
+            "  return <div><icons.Close /><props.Comp /></div>;\n"
+            "}\n"
+        ),
+    })
+    assert ("App()", "Close()") not in calls
+    assert ("App()", "Comp()") not in calls

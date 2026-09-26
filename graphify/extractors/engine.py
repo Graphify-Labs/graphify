@@ -6448,18 +6448,16 @@ def _extract_generic(
                     # `<Comp />` / `<Comp>` renders Comp; the tag is the `name` field.
                     # Same rule as the JSX transform: a tag starting with a lowercase
                     # letter (`<div>`) is an intrinsic element, not a symbol in scope,
-                    # so it must not bind by name to a same-named function. For a
-                    # member tag the last segment decides (`<motion.div>` is not a
-                    # local `div`). Fragments and namespaced tags (`<svg:rect>`) are
-                    # skipped.
+                    # so it must not bind by name to a same-named function.
+                    # Only bare identifiers are handled. Member tags (`<icons.Close>`,
+                    # `<props.Comp>`, `<Ctx.Provider>`) are skipped: with a lowercase
+                    # receiver the member path falls back to the bare property name and
+                    # binds to an unrelated local function. Fragments and namespaced
+                    # tags (`<svg:rect>`) have no identifier name either.
                     func_node = node.child_by_field_name("name")
-                    tag = func_node
-                    if tag is not None and tag.type == "member_expression":
-                        tag = tag.child_by_field_name("property")
                     if (func_node is None
-                            or func_node.type not in ("identifier", "member_expression")
-                            or tag is None
-                            or _read_text(tag, source)[:1].islower()):
+                            or func_node.type != "identifier"
+                            or _read_text(func_node, source)[:1].islower()):
                         func_node = None
                 if func_node:
                     if func_node.type == "identifier":
