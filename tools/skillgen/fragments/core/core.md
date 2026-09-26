@@ -143,7 +143,11 @@ for f in detect.get('files', {}).get('code', []):
     code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
 
 if code_files:
-    result = extract(code_files, cache_root=Path('INPUT_PATH'))
+    result = extract(
+        code_files,
+        root=Path('INPUT_PATH'),
+        cache_root=Path('INPUT_PATH'),
+    )
     Path('graphify-out/.graphify_ast.json').write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding=\"utf-8\")
     print(f'AST: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
 else:
@@ -151,6 +155,11 @@ else:
     print('No code files - skipping AST extraction')
 "
 ```
+
+`root` anchors source paths and node IDs to the scanned corpus; `cache_root` only
+controls where Graphify stores its cache. Pass both explicitly whenever the cache
+location differs from the corpus root so moving `graphify-out/` cannot rename the
+code nodes.
 
 #### Part B - Semantic extraction (parallel subagents)
 
