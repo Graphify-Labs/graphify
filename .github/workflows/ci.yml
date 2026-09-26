@@ -78,6 +78,71 @@ jobs:
           uv run --frozen graphify --help
           uv run --frozen graphify install
 
+  omp-bridge:
+    # tests/omp.test.ts drives the real OMP extension: bun resolves the
+    # path-utils helpers it imports from the pinned @oh-my-pi/pi-coding-agent
+    # devDependency in graphify/omp/ (the only package the host provides;
+    # graphify/omp/index.ts vendors isReadableUrlPath locally instead of
+    # importing it from @oh-my-pi/pi-tui, which the host never resolves), and
+    # the policy assertions run against the real installed Python CLI, so
+    # this job needs both toolchains.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Install OMP extension dependencies
+        run: bun install --frozen-lockfile
+        working-directory: graphify/omp
+
+      - name: Run OMP bridge tests
+        run: GRAPHIFY_TEST_CLI=$PWD/.venv/bin/graphify bun test tests/omp.test.ts
+
+      - name: Check for upstream symbol moves (advisory, no execution)
+        # The frozen run above only proves the bridge works against the
+        # exact pinned version. Upstream OMP has moved exported symbols
+        # between minor releases before (isReadableUrlPath moved from
+        # pi-coding-agent to pi-tui) without the frozen lockfile ever seeing
+        # it; index.ts now vendors that predicate locally instead of
+        # tracking whichever package currently exports it. This step used
+        # to install @latest AND execute the whole suite against it --
+        # unpinned, mutable third-party code running on every CI invocation.
+        # It now only downloads the published package (--ignore-scripts:
+        # no install hooks run) and statically compares index.ts's imported
+        # path-utils symbols against that file's declared exports as plain
+        # text -- the downloaded code is never imported or executed, but a
+        # future symbol move still surfaces here.
+        # continue-on-error: an unrelated upstream release must not block a
+        # merge; the frozen run above stays the blocking gate.
+        continue-on-error: true
+        run: |
+          bun add --cwd graphify/omp -d @oh-my-pi/pi-coding-agent@latest --ignore-scripts
+          bun -e '
+          const fs = require("node:fs");
+          const index = fs.readFileSync("graphify/omp/index.ts", "utf8");
+          const block = index.match(/import\s*{([^}]+)}\s*from\s*"@oh-my-pi\/pi-coding-agent\/tools\/path-utils"/);
+          if (!block) throw new Error("no path-utils import block found in index.ts");
+          const imported = block[1].split(",").map((s) => s.trim()).filter(Boolean);
+          const source = fs.readFileSync("graphify/omp/node_modules/@oh-my-pi/pi-coding-agent/src/tools/path-utils.ts", "utf8");
+          const exported = new Set([...source.matchAll(/^export\s+(?:async\s+function|function)\s+(\w+)/gm)].map((m) => m[1]));
+          const missing = imported.filter((name) => !exported.has(name));
+          if (missing.length) {
+            console.error(`@oh-my-pi/pi-coding-agent@latest no longer exports: ${missing.join(", ")}`);
+            process.exit(1);
+          }
+          console.log(`ok: every imported symbol is exported by @latest (${imported.join(", ")})`);
+          '
+
   security-scan:
     # The dev deps include bandit and pip-audit. Run them in CI so a new
     # HIGH-severity finding or vulnerable dependency is caught on the PR that

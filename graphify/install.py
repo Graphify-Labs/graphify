@@ -497,6 +497,14 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
         "skill_refs": "pi",
     },
+    "omp": {
+        # OMP (Oh My Pi) mirrors pi's agent layout under ~/.omp, which the
+        # legacy ~/.pi path is no longer read from.
+        "skill_file": "skill-pi.md",
+        "skill_dst": Path(".omp") / "agent" / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "pi",
+    },
     "codebuddy": {
         # Reuses claude's split bundle (shares skill.md).
         "skill_file": "skill.md",
@@ -1701,7 +1709,7 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         skill_dst = _copy_skill_file("antigravity", project=True, project_dir=project_dir)
         _antigravity_finalize(skill_dst, project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".agents"])
-    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents", "omp"):
         # Skill-only project install: drop SKILL.md (+ references) at the scope
         # root. `agents` -> ./.agents/skills/graphify/SKILL.md.
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
@@ -1734,7 +1742,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _devin_rules_uninstall(project_dir)
         if not removed:
             print("nothing to remove")
-    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents", "omp"):
         removed = _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         if not removed:
             print("nothing to remove")
@@ -1923,6 +1931,10 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # The generic agents platform's user-scope skill lives at ~/.agents/skills,
     # which neither the AGENTS.md cleanup nor amp's removal reaches.
     _remove_skill_file("agents")
+    # OMP's user-scope skill lives at ~/.omp/agent/skills. The `graphify omp`
+    # subcommand is the plugin installer, so the skill's removal rides
+    # uninstall_all, like amp and agents.
+    _remove_skill_file("omp")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
 
@@ -2129,6 +2141,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "kilo",
     "kiro",
     "opencode",
+    "omp",
     "pi",
     "skills",
     "trae",
@@ -2146,6 +2159,25 @@ def dispatch_install_cli(cmd: str) -> bool:
     """
     if cmd not in _CLI_INSTALL_COMMANDS:
         return False
+    if cmd == "omp":
+        # OMP owns package registration; do not duplicate its config/paths here.
+        args = sys.argv[2:]
+        if args not in (["path"], ["install"]):
+            print("Usage: graphify omp [path|install]", file=sys.stderr)
+            sys.exit(1)
+        package_path = Path(__file__).resolve().parent / "omp"
+        if args == ["path"]:
+            print(package_path)
+            return True
+        omp = shutil.which("omp")
+        if not omp:
+            print("error: install Oh My Pi (omp) and add it to PATH first", file=sys.stderr)
+            sys.exit(1)
+        import subprocess
+        result = subprocess.run([omp, "plugin", "install", str(package_path)], check=False)
+        if result.returncode:
+            sys.exit(result.returncode)
+        return True
     if cmd == "install":
         # Default to windows platform on Windows, claude elsewhere
         default_platform = "windows" if platform.system() == "Windows" else "claude"
