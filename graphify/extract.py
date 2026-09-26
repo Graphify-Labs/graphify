@@ -43,6 +43,7 @@ from graphify.extractors.csharp import (
     _resolve_cross_file_csharp_imports,
     _resolve_csharp_type_references,
 )
+from graphify.extractors.clojure import extract_clojure, resolve_clojure_namespaces  # noqa: F401
 from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
@@ -3074,6 +3075,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".r": "r",
     ".sol": "solidity",
     ".erl": "erlang", ".hrl": "erlang", ".escript": "erlang",
+    ".clj": "clojure", ".cljs": "clojure", ".cljc": "clojure", ".edn": "clojure",
     ".rb": "ruby", ".rake": "ruby",
     ".php": "php", ".phtml": "php", ".php3": "php", ".php4": "php",
     ".php5": "php", ".php7": "php", ".phps": "php",
@@ -5527,6 +5529,13 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver(
+        "clojure_namespaces",
+        frozenset({".clj", ".cljs", ".cljc"}),
+        resolve_clojure_namespaces,
+    )
+)
+register_language_resolver(
+    LanguageResolver(
         "elixir_import_targets",
         frozenset({".ex", ".exs"}),
         _resolve_elixir_import_targets,
@@ -6648,6 +6657,10 @@ _DISPATCH: dict[str, Any] = {
     ".erl": extract_erlang,
     ".hrl": extract_erlang,
     ".escript": extract_erlang,
+    ".clj": extract_clojure,
+    ".cljs": extract_clojure,
+    ".cljc": extract_clojure,
+    ".edn": extract_clojure,
     ".m": extract_objc,
     ".mm": extract_objc,
     ".jl": extract_julia,
@@ -6725,6 +6738,10 @@ _EXTRA_FOR_EXTENSION = {
     ".erl": "erlang",
     ".hrl": "erlang",
     ".escript": "erlang",
+    ".clj": "clojure",
+    ".cljs": "clojure",
+    ".cljc": "clojure",
+    ".edn": "clojure",
     ".sql": "sql",
     ".tf": "terraform",
     ".tfvars": "terraform",
