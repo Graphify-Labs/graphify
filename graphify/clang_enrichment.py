@@ -382,6 +382,9 @@ class ClangSemanticEnricher:
             "-Xclang", "-load", "-plugin",
             "-fcas-plugin-path", "-fcas-plugin-option", "-mllvm",
             "-B", "--offload-arch-tool",
+            # Serialized ASTs are compiler state, not source-level build
+            # context, and must not influence compiler-confirmed edges.
+            "-include-pch",
             # A Clang config can contain any driver option, including native
             # plugin loads. Config search directories are equivalent indirection.
             "--config", "--config-system-dir", "--config-user-dir",
@@ -412,6 +415,9 @@ class ClangSemanticEnricher:
             "--config=",
             "--config-system-dir=",
             "--config-user-dir=",
+            "-include-pch=",
+            "-fmodule-file=",
+            "-fprebuilt-module-path=",
         )
         safe: list[str] = []
         index = 1 if arguments else 0  # argv[0] is the compiler from the build.

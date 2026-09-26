@@ -234,6 +234,37 @@ def test_clang_compile_database_drops_forwarded_and_secondary_tool_options(tmp_p
     assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
 
 
+def test_clang_compile_database_drops_serialized_ast_inputs(tmp_path: Path):
+    """Semantic confirmation must parse source instead of repository-supplied AST files."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "g++", "-include-pch", "evil.pch", "-include-pch=other.pch",
+            "-fmodule-file=evil.pcm", "-fprebuilt-module-path=evil-modules",
+            "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "evil.pch" not in command
+        assert not any(argument.startswith("-include-pch") for argument in command)
+        assert not any(argument.startswith("-fmodule-file") for argument in command)
+        assert not any(argument.startswith("-fprebuilt-module-path") for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
 def test_clang_compile_database_skips_a_compiler_cache_launcher(tmp_path: Path):
     """A launcher and its compiler argv must not become extra Clang inputs."""
     source = tmp_path / "src" / "main.C"
