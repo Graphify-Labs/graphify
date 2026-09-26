@@ -1274,6 +1274,34 @@ def _is_save_result_answer_file_fix_line(line: str) -> bool:
     )
 
 
+def _is_ingest_add_file_fix_line(line: str) -> bool:
+    """Whether a line is part of the issue 3640 graphify add file capture fix.
+
+    URL/AUTHOR/CONTRIBUTOR were spliced directly into single quoted Python
+    string literals inside ingest('URL', ..., author='AUTHOR',
+    contributor='CONTRIBUTOR'). A value containing an embedded quote breaks
+    out of the literal, and since AUTHOR/CONTRIBUTOR can be free text lifted
+    from a fetched page, this is not just a corruption risk. Each value is
+    now captured through its own single quoted heredoc into a temp file
+    first, then read back as a plain string, never re-parsed as Python
+    source. The three heredoc openers, their placeholder bodies, the three
+    read_text lines, and both the old and new ingest(...) call lines are new
+    or changed with no counterpart in pristine v8.
+    """
+    stripped = line.strip()
+    if stripped in (
+        "cat > graphify-out/.ingest_url.tmp <<'EOF'",
+        "cat > graphify-out/.ingest_author.tmp <<'EOF'",
+        "cat > graphify-out/.ingest_contributor.tmp <<'EOF'",
+        "URL",
+        "AUTHOR",
+        "CONTRIBUTOR",
+        "EOF",
+    ):
+        return True
+    return "graphify-out/.ingest_" in line or "ingest(_url, Path" in line or "ingest('URL', Path" in line
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1301,6 +1329,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_update_backup_reorder_fix_line,
     _is_quoted_interpreter_cat_fix_line,
     _is_save_result_answer_file_fix_line,
+    _is_ingest_add_file_fix_line,
 )
 
 
