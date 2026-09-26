@@ -416,3 +416,131 @@ def test_guillemet_strings_do_not_break_blocks(tmp_path):
     contained = _edges(result, "contains")
     assert ("guillemet.salam", "greet()") in contained
     assert ("guillemet.salam", "after()") in contained
+
+
+def _write_shape(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "shape.salam",
+        "struct Circle:\n"
+        "    pub r: f64 = 0.0\n"
+        "    pub func area(): f64: ret 1.0 end\n"
+        "end\n"
+        "\n"
+        "func make circle(r: f64): Circle:\n"
+        "    ret Circle { r = r }\n"
+        "end\n",
+    )
+
+
+def test_struct_literal_chained_call_resolves_directly(tmp_path):
+    _write_shape(tmp_path)
+    _write(
+        tmp_path,
+        "use_literal.salam",
+        "func literal_area: ret Circle { r = 5.0 }.area() end\n",
+    )
+    result = extract(sorted(tmp_path.glob("*.salam")), cache_root=tmp_path)
+    assert ("literal_area()", ".area()") in _edges(result, "calls", "method_call")
+
+
+def test_call_return_chained_directly(tmp_path):
+    _write_shape(tmp_path)
+    _write(
+        tmp_path,
+        "use_chain.salam",
+        "func chain_area: ret make circle(2.0).area() end\n",
+    )
+    result = extract(sorted(tmp_path.glob("*.salam")), cache_root=tmp_path)
+    assert ("chain_area()", ".area()") in _edges(result, "calls", "chained_call")
+
+
+def test_local_bound_from_call_resolves_on_later_use(tmp_path):
+    _write_shape(tmp_path)
+    _write(
+        tmp_path,
+        "use_local.salam",
+        "func local_area:\n"
+        "    c := make circle(3.0)\n"
+        "    ret c.area()\n"
+        "end\n",
+    )
+    result = extract(sorted(tmp_path.glob("*.salam")), cache_root=tmp_path)
+    assert ("local_area()", ".area()") in _edges(result, "calls", "chained_call")
+
+
+def test_as_cast_types_a_local_directly(tmp_path):
+    _write_shape(tmp_path)
+    _write(
+        tmp_path,
+        "use_cast.salam",
+        "func cast_area:\n"
+        "    mut d := make circle(4.0) as Circle\n"
+        "    ret d.area()\n"
+        "end\n",
+    )
+    result = extract(sorted(tmp_path.glob("*.salam")), cache_root=tmp_path)
+    assert ("cast_area()", ".area()") in _edges(result, "calls", "method_call")
+
+
+def test_as_cast_to_builtin_does_not_fake_a_type(tmp_path):
+    source = _write(
+        tmp_path,
+        "cast_builtin.salam",
+        "func f: end\n"
+        "func g:\n"
+        "    mut v := 21 as Variant<i32, f64, str>\n"
+        "    b := 250 as int as u8\n"
+        "    println v, b\n"
+        "end\n",
+    )
+    result = extract_salam(source)
+    assert result["nodes"], "should still extract cleanly"
+
+
+def test_package_qualified_chained_call_resolves_across_files(tmp_path):
+    _write(
+        tmp_path,
+        "geo/shape.salam",
+        "package geo\n"
+        "\n"
+        "pub struct Circle:\n"
+        "    pub r: f64 = 0.0\n"
+        "    pub func area(): f64: ret 1.0 end\n"
+        "end\n"
+        "\n"
+        "pub func MakeCircle(r: f64): Circle:\n"
+        "    ret Circle { r = r }\n"
+        "end\n",
+    )
+    _write(
+        tmp_path,
+        "main.salam",
+        "import geo\n"
+        "\n"
+        "func use_geo: ret geo.MakeCircle(1.0).area() end\n",
+    )
+    result = extract(sorted(tmp_path.rglob("*.salam")), cache_root=tmp_path)
+    calls = _edges(result, "calls")
+    assert ("use_geo()", "MakeCircle()") in calls
+    assert ("use_geo()", ".area()") in calls
+
+
+def test_deeper_chain_stays_unresolved_rather_than_guess(tmp_path):
+    """`f().g().h()` is two hops deep - documented as unresolved, not wrong."""
+    _write_shape(tmp_path)
+    _write(
+        tmp_path,
+        "use_deep.salam",
+        "struct Wrapper:\n"
+        "    pub func unwrap(): Circle: ret Circle { r = 1.0 } end\n"
+        "end\n"
+        "\n"
+        "func make wrapper(): Wrapper: ret Wrapper {} end\n"
+        "\n"
+        "func deep_area: ret make wrapper().unwrap().area() end\n",
+    )
+    result = extract(sorted(tmp_path.glob("*.salam")), cache_root=tmp_path)
+    calls = _edges(result, "calls")
+    assert ("deep_area()", "make wrapper()") in calls
+    assert ("deep_area()", ".area()") not in calls

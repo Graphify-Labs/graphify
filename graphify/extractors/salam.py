@@ -86,6 +86,7 @@ _REPEAT_WORDS = frozenset({"repeat", "تکرار"})
 _OPERATOR_WORDS = frozenset({"operator", "کارور"})
 _VARIADIC_ARITY = 1000
 _RETURN_WORDS = frozenset({"ret", "برگشت"})
+_AS_WORDS = frozenset({"as", "برگردان"})
 _BUILTIN_CALLS = frozenset({"len", "cap", "spawn", "join"})
 
 _BUILTIN_TYPES = frozenset(_norm(name) for name in (
@@ -233,7 +234,7 @@ def _tokenize(text: str) -> list[Token]:
 class _Frame:
     __slots__ = (
         "kind", "nid", "name", "brace_mode", "braces", "decl_ok", "layout_mode",
-        "fields", "locals", "typarams", "owner",
+        "fields", "locals", "locals_via_call", "typarams", "owner",
     )
 
     def __init__(
@@ -257,6 +258,7 @@ class _Frame:
         self.layout_mode = layout_mode
         self.fields: dict[str, str] = {}
         self.locals: dict[str, str] = {}
+        self.locals_via_call: dict[str, int] = {}
         self.typarams = typarams
         self.owner = owner
 
@@ -284,6 +286,7 @@ class _SalamExtractor:
         self.type_nodes: dict[str, str] = {}
         self.components: dict[str, str] = {}
         self.calls: list[dict[str, Any]] = []
+        self._call_by_close: dict[int, dict[str, Any]] = {}
         self.type_refs: list[dict[str, Any]] = []
         self.paren_stack: list[int] = []
         self.ternary = 0
@@ -788,9 +791,14 @@ class _SalamExtractor:
         min_arity = sum(1 for p in params if not p[2])
         max_arity = _VARIADIC_ARITY if variadic else len(params)
         in_type = frame.kind in ("struct", "interface", "impl")
+        # Bare name only, package ignored - `methods` is keyed the same way
+        # every other receiver-typing path here already is (this/declared/field).
+        return_type = ret_refs[0][1] if len(ret_refs) == 1 else ""
         metadata: dict[str, Any] = {
             "name": name, "pub": is_pub, "arity": len(params), "aliases": aliases,
         }
+        if return_type and return_type not in _BUILTIN_TYPES:
+            metadata["return_type"] = return_type
         if in_type:
             owner = frame.owner or frame.name
             metadata["owner"] = owner
@@ -1083,6 +1091,40 @@ class _SalamExtractor:
             j += 1
         return commas + 1 if seen else 0
 
+    def matching_close(self, open_index: int) -> int:
+        """Index of the ``)`` matching the ``(`` at *open_index*."""
+        depth, j = 0, open_index
+        while j < self.n:
+            if self.is_op(j, "("):
+                depth += 1
+            elif self.is_op(j, ")"):
+                depth -= 1
+                if depth == 0:
+                    return j
+            j += 1
+        return self.n - 1
+
+    def call_open_after(self, j: int) -> int:
+        """``(`` of the call whose result a ``name :=`` binds, or -1.
+
+        Matches ``name(...)`` and ``qualifier.name(...)``; bails on a deeper
+        chain (``f().g()``) rather than guess which call's return type wins.
+        """
+        parts, k = self.name_run(j)
+        if not parts:
+            return -1
+        while self.is_op(k, "."):
+            more, k2 = self.name_run(k + 1)
+            if not more:
+                return -1
+            k = k2
+        if not self.is_op(k, "("):
+            return -1
+        close = self.matching_close(k)
+        if self.is_op(close + 1, "."):
+            return -1
+        return k
+
     def receiver_chain(self, dot_index: int) -> list[str]:
         """Segments of ``a.b.c`` ending at the dot before the callee, left to right."""
         segments: list[str] = []
@@ -1112,6 +1154,59 @@ class _SalamExtractor:
             if frame.kind == "func" or frame.kind == "component":
                 break
         return ""
+
+    def lookup_local_via_call(self, name: str) -> int | None:
+        """Close-paren index of the call a local's value came from (``x := f()``)."""
+        for frame in reversed(self.frames):
+            if name in frame.locals_via_call:
+                return frame.locals_via_call[name]
+            if frame.kind == "func" or frame.kind == "component":
+                break
+        return None
+
+    def construction_type_before(self, close_brace: int) -> str:
+        """Type name of the ``Type { ... }`` / ``Type<Args> { ... }`` ending here."""
+        if not self.is_op(close_brace, "}"):
+            return ""
+        depth, k = 1, close_brace - 1
+        while k >= 0 and depth:
+            if self.is_op(k, "}"):
+                depth += 1
+            elif self.is_op(k, "{"):
+                depth -= 1
+                if depth == 0:
+                    break
+            k -= 1
+        if depth != 0:
+            return ""
+        j = k - 1
+        if self.is_op(j, ">"):
+            angle_depth, m = 1, j - 1
+            while m >= 0 and angle_depth:
+                if self.is_op(m, ">"):
+                    angle_depth += 1
+                elif self.is_op(m, "<"):
+                    angle_depth -= 1
+                m -= 1
+            if angle_depth != 0:
+                return ""
+            j = m
+        t = self.tok(j)
+        if t is None or t[0] != _ID or self.kw_at(j) is not None:
+            return ""
+        return _norm(t[1])
+
+    def _via_call_of(self, close_index: int) -> dict[str, Any] | None:
+        inner = self._call_by_close.get(close_index)
+        if inner is None:
+            return None
+        via: dict[str, Any] = {"callee": inner["callee"], "argc": inner["argc"]}
+        if inner["member"]:
+            via["is_member_call"] = True
+        for key in ("receiver_type", "qualifier", "typed_by"):
+            if inner.get(key):
+                via[key] = inner[key]
+        return via
 
     def note_call(self, i: int, open_index: int) -> None:
         t = self.toks[i]
@@ -1157,9 +1252,30 @@ class _SalamExtractor:
                         call["receiver_type"] = declared
                         call["typed_by"] = "declared"
                     else:
-                        call["qualifier"] = root
+                        via_close = self.lookup_local_via_call(root)
+                        via = self._via_call_of(via_close) if via_close is not None else None
+                        if via is not None:
+                            call["via_call"] = via
+                        else:
+                            call["qualifier"] = root
                 else:
                     call["qualifier"] = ".".join(chain)
+            elif self.is_op(run_end - 2, "}"):
+                # `Type { ... }.method()` / `Type<Args> { ... }.method()`: the type
+                # is spelled right here, no cross-file inference needed.
+                type_name = self.construction_type_before(run_end - 2)
+                if type_name and type_name not in _BUILTIN_TYPES:
+                    call["receiver_type"] = type_name
+                    call["typed_by"] = "literal"
+            elif self.is_op(run_end - 2, ")"):
+                # `f(x).method()` / `pkg.Make(x).method()`: the receiver is
+                # whatever that call returns - resolved cross-file, if at all,
+                # from the callee's own declared return type.
+                via = self._via_call_of(run_end - 2)
+                if via is not None:
+                    call["via_call"] = via
+        close_index = self.matching_close(open_index)
+        self._call_by_close[close_index] = call
         self.calls.append(call)
 
     def note_construction(self, i: int) -> None:
@@ -1172,8 +1288,43 @@ class _SalamExtractor:
             "context": "construct", "line": t[2],
         })
 
+    def rhs_cast_type_after(self, start: int) -> str:
+        """Type of the rightmost top-level ``... as Type`` before end of statement.
+
+        Skips a cast to a builtin (``as int``, ``as Variant<...>``) and keeps
+        scanning a chain (``x as int as u8``), so only a genuine user-type cast
+        wins. Used to type a `:=` binding directly from its cast instead of
+        guessing at the uncast expression's shape.
+        """
+        depth, j, result = 0, start, ""
+        while j < self.n:
+            t = self.toks[j]
+            if t[0] == _NL:
+                break
+            if t[0] == _OP:
+                if t[1] in ("(", "[", "{"):
+                    depth += 1
+                elif t[1] in (")", "]", "}"):
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif depth == 0 and t[1] in (",", ";"):
+                    break
+            if depth == 0 and t[0] == _ID and _kw_key(t[1]) in _AS_WORDS:
+                refs: list[tuple[str, str]] = []
+                end = self.parse_type(j + 1, refs, self.typarams_in_scope())
+                if end < 0:
+                    break
+                if len(refs) == 1 and not refs[0][0]:
+                    result = refs[0][1]
+                j = end
+                continue
+            j += 1
+        return result
+
     def note_local_binding(self, i: int) -> int:
-        """Track ``name := Type {`` and ``name: Type`` so member calls can be typed."""
+        """Track ``name := Type {``, ``name := f()`` and ``name: Type`` so member
+        calls on the bound name can be typed."""
         fn = self.fn_frame()
         if fn is None:
             return i + 1
@@ -1182,11 +1333,19 @@ class _SalamExtractor:
             return i + 1
         name = _norm(" ".join(parts))
         if self.is_op(j, ":="):
+            cast_type = self.rhs_cast_type_after(j + 1)
+            if cast_type and cast_type not in _BUILTIN_TYPES:
+                fn.locals[name] = cast_type
+                return j
             t = self.tok(j + 1)
             if t is not None and t[0] == _ID and self.kw_at(j + 1) is None and self.is_op(j + 2, "{"):
                 tname = _norm(t[1])
                 if tname not in _BUILTIN_TYPES:
                     fn.locals[name] = tname
+            else:
+                open_idx = self.call_open_after(j + 1)
+                if open_idx >= 0:
+                    fn.locals_via_call[name] = self.matching_close(open_idx)
         elif self.is_op(j, ":") and not self.is_op(j, ":="):
             refs: list[tuple[str, str]] = []
             end = self.parse_type(j + 1, refs, self.typarams_in_scope())
@@ -1497,7 +1656,7 @@ class _SalamExtractor:
             "source_file": self.source_file, "source_location": f"L{line}",
             "is_member_call": True, "receiver": call.get("receiver", ""), "argc": argc,
         }
-        for key in ("receiver_type", "typed_by", "qualifier"):
+        for key in ("receiver_type", "typed_by", "qualifier", "via_call"):
             if call.get(key):
                 raw[key] = call[key]
         self.raw_calls.append(raw)
@@ -1640,6 +1799,34 @@ def resolve_salam_references(
         matching = [n for n in nodes if meta(n).get("arity", argc) >= argc]
         return matching or nodes
 
+    def targets_for(call_like: dict, source_file: str, caller: str | None) -> tuple[list[dict], str, str]:
+        """Candidate target nodes for a call (or a chained call's own inner call),
+        as (candidates, context, confidence); ``context`` is "" when the call's
+        shape (a bare member call with no known receiver) can't be looked up at
+        all - the signal the caller uses to try a ``via_call`` chain instead."""
+        callee = _norm(str(call_like.get("callee", "")))
+        qualifier = call_like.get("qualifier")
+        receiver_type = call_like.get("receiver_type")
+        if qualifier and "." not in str(qualifier):
+            alias = str(qualifier)
+            target_file = file_import_targets.get(source_file, {}).get(alias)
+            if target_file:
+                return functions_by_file.get((target_file, callee), []), "package_call", "EXTRACTED"
+            package = file_imports.get(source_file, {}).get(alias)
+            if package is not None:
+                candidates = [
+                    n for n in functions.get((package, callee), []) if meta(n).get("pub", True)
+                ]
+                return candidates, "package_call", "EXTRACTED"
+            return [], "package_call", "EXTRACTED"
+        if receiver_type:
+            confidence = "EXTRACTED" if call_like.get("typed_by") == "this" else "INFERRED"
+            return methods.get((str(receiver_type), callee), []), "method_call", confidence
+        if not call_like.get("is_member_call"):
+            package = _package_of(by_id.get(caller))
+            return functions.get((package, callee), []), "call", "INFERRED"
+        return [], "", ""
+
     for result in per_file:
         for call in result.get("raw_calls", []) or []:
             if call.get("language") != "salam":
@@ -1647,31 +1834,22 @@ def resolve_salam_references(
             caller, callee = call.get("caller_nid"), _norm(str(call.get("callee", "")))
             source_file = str(call.get("source_file", ""))
             argc = int(call.get("argc", 0) or 0)
-            candidates: list[dict] = []
-            confidence, context = "EXTRACTED", "package_call"
-            qualifier = call.get("qualifier")
-            receiver_type = call.get("receiver_type")
-            if qualifier and "." not in str(qualifier):
-                alias = str(qualifier)
-                target_file = file_import_targets.get(source_file, {}).get(alias)
-                if target_file:
-                    candidates = functions_by_file.get((target_file, callee), [])
-                else:
-                    package = file_imports.get(source_file, {}).get(alias)
-                    if package is not None:
-                        candidates = [
-                            n for n in functions.get((package, callee), [])
-                            if meta(n).get("pub", True)
-                        ]
-            elif receiver_type:
-                candidates = methods.get((str(receiver_type), callee), [])
-                context = "method_call"
-                if call.get("typed_by") != "this":
-                    confidence = "INFERRED"
-            elif not call.get("is_member_call"):
-                package = _package_of(by_id.get(caller))
-                candidates = functions.get((package, callee), [])
-                context, confidence = "call", "INFERRED"
+            candidates, context, confidence = targets_for(call, source_file, caller)
+            if not context:
+                # A plain member call with no locally-typed receiver: try the type
+                # the receiver's OWN call (`f(x)` in `f(x).method()`, or the call
+                # a local variable was bound from) declares as its return type.
+                via = call.get("via_call")
+                if isinstance(via, dict):
+                    via_argc = int(via.get("argc", 0) or 0)
+                    via_candidates, via_context, _via_confidence = targets_for(via, source_file, caller)
+                    if via_context:
+                        via_candidates = fits(via_candidates, via_argc)
+                        if len(via_candidates) == 1:
+                            return_type = meta(via_candidates[0]).get("return_type")
+                            if return_type:
+                                candidates = methods.get((str(return_type), callee), [])
+                                context, confidence = "chained_call", "INFERRED"
             candidates = fits(candidates, argc)
             if len(candidates) != 1:
                 continue

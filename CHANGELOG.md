@@ -4,6 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## Unreleased
 
+- Feature: the Salam extractor now resolves a member call chained off another call's return value (`makeCircle(r).area()`), off a local variable bound from one (`c := makeCircle(r) ... c.area()`), off a struct literal (`Circle{r=1}.area()`), and off an `as Type` cast (`f() as Circle`) - reading the callee's declared return type across files where needed. A 2+-hop chain (`f().g().h()`) is left unresolved rather than guessed.
 - Fix: the Salam extractor now tracks the current compiler keyword table (`switch`/`case`, the Persian guillemet `«»` string form, and the `repeat ... each N in i` step/binding spelling) and no longer misreads a keyword reused as a struct-literal field name (`Type { if = true }`) as the start of a control block.
 - Feature: Salam (`.salam`) language extractor — current English and Persian keyword set (including the Persian comma `،`), packages and imports (including Persian package names via `@fa`), functions, structs with methods, enums, interfaces, `impl` blocks, type aliases, constants, `extern:` C functions, `link` libraries, layout blocks and components, plus `calls` and `references` edges; pure token scanner, no new dependency. A cross-file resolver binds `pkg.Func()`, string-import aliases, receiver-typed method calls, and type references.
 
