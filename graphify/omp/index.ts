@@ -6,6 +6,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 // older host-provided pi-coding-agent copies -- a blocked statSync beats an unloadable extension.
 import {
   expandDelimitedPathEntries,
+  isInternalUrlPath,
   normalizePathLikeInput,
   resolveReadPath,
   splitPathAndSelPreferringLiteral,
@@ -19,15 +20,6 @@ import {
 // diff them.
 function isReadableUrlPath(value: string): boolean {
   return /^https?:\/\/?/i.test(value) || /^www\./i.test(value);
-}
-
-// OMP 18.3.1 made path-utils' isInternalUrlPath private (it now asks the internal
-// URL router), so importing it fails to load the extension. Any scheme followed by
-// a slash counts: `skill://x` and the single-slash alias `local:/x` alike. The
-// scheme needs two or more characters so a Windows drive (`C:/x`) stays a path.
-// Unknown schemes also count, which only skips guidance for them.
-function isInternalUrlPath(value: string): boolean {
-  return /^[a-z][a-z0-9+.-]+:\//i.test(value);
 }
 
 const INPUT_LIMIT = 256 * 1024;
