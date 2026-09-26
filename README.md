@@ -447,15 +447,21 @@ dist/
 
 ## Team setup
 
-`graphify-out/` is meant to be committed to git so everyone on the team starts with a map.
+For users building a team graph, the `graphify-out/` directory is gitignored by default. If your team wants to share a graph, you should **explicitly force-add only the queryable products** so your teammates can consume them:
 
-**Recommended `.gitignore` additions:**
-```
-graphify-out/cost.json        # local only
-# graphify-out/cache/         # optional: commit for speed, skip to keep repo small
+*(Note: If you are contributing to the Graphify repository itself, do not commit your local `graphify-out/` at all unless it's a specific test fixture).*
+
+**Recommended git commands to share a graph (you only need to force-add once; git will track future changes normally):**
+```bash
+git add -f graphify-out/graph.json
+git add -f graphify-out/GRAPH_REPORT.md
+# git add -f graphify-out/wiki/         # optional: if using the wiki export
+# git add -f graphify-out/obsidian/     # optional: if using the Obsidian export
 ```
 
 > `manifest.json` is now portable — keys are stored as relative paths and re-anchored on load, so committing it is safe and avoids a full rebuild on first checkout.
+
+The remaining `graphify-out/` files stay machine-local and should **not** be force-added: `.graphify_root` and `.graphify_python` (absolute paths to this machine's scan root and interpreter), `.graphify_analysis.json`, the AST cache under `graphify-out/cache/`, and the `needs_update` flag. A teammate who pulls the shared `graph.json` can query it immediately; running `graphify update` re-anchors the committed `manifest.json` and rebuilds only what changed on their machine.
 
 ### Recommended workflow
 
