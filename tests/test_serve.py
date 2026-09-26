@@ -1905,3 +1905,172 @@ def test_dotted_python_symbol_same_file_tie_is_refused_by_path_endpoint():
     G.add_node("m", label=".run()", source_file="pkg/mod.py", source_location="L9")
     nid, _, err = _resolve_path_endpoint(G, "pkg.mod.run")
     assert nid is None and err.startswith("Ambiguous")
+
+
+# --- MCP Retrieval Quality (#3810) ---
+
+def test_score_query_phrase_bonus_prevents_single_token_hijack():
+    G = nx.Graph()
+    G.add_node("n1", label="Incidence", community=0, source_file="physics.py")
+    G.add_node("n2", label="Incidence Algebra", community=1, source_file="math.py")
+    G.add_node("n3", label="Algebraic Geometry", community=2, source_file="math.py")
+
+    scored = _score_query(G, ["incidence", "algebra", "derivations", "poset"], collect_per_term_seeds=False).ranked
+    scores = {nid: s for s, nid in scored}
+
+    # n2 ("Incidence Algebra") should score higher than n1 ("Incidence") because it matches a 2-gram phrase
+    assert scores["n2"] > scores["n1"]
+
+
+def test_score_query_phrase_bonus_off_for_short_queries():
+    G = nx.Graph()
+    G.add_node("n1", label="extract", community=0)
+    G.add_node("n2", label="extract_all", community=0)
+
+    # Single term query should be unaffected (no phrase logic fires)
+    scored1 = _score_query(G, ["extract"], collect_per_term_seeds=False).ranked
+
+    # Check that scores still rank n1 correctly
+    scores = {nid: s for s, nid in scored1}
+    assert scores["n1"] > scores.get("n2", 0)
+
+
+def test_pick_seeds_community_coherence_favors_majority():
+    G = nx.Graph()
+    # 4 seeds: 3 in comm 1, 1 in comm 2
+    G.add_node("n1", community=1)
+    G.add_node("n2", community=1)
+    G.add_node("n3", community=1)
+    G.add_node("n4", community=2)
+
+    # Mock scored output where n4 has highest score initially
+    scored = [(10.0, "n4"), (9.0, "n1"), (8.0, "n2"), (7.0, "n3")]
+
+    # We pass max_k=2 to _pick_seeds. Seed #1 (n4) must be retained, and the
+    # second slot is filled by the dominant community (community 1).
+    seeds = _pick_seeds(scored, gap_ratio=0.5, max_k=2, G=G, best_seed_by_term=None)
+
+    assert len(seeds) == 2
+    assert seeds[0] == "n4"  # top-scored seed is always retained
+    assert seeds[1] == "n1"  # majority community candidate takes next slot
+
+
+def test_pick_seeds_no_change_when_under_max_k():
+    G = nx.Graph()
+    G.add_node("n1", community=1)
+    G.add_node("n2", community=2)
+
+    scored = [(10.0, "n1"), (9.0, "n2")]
+
+    # Under max_k (3), community logic doesn't fire.
+    seeds = _pick_seeds(scored, gap_ratio=0.5, max_k=3, G=G, best_seed_by_term={})
+    assert seeds == ["n1", "n2"]
+
+
+def test_subgraph_to_text_evidence_nodes_survive_truncation():
+    G = nx.Graph()
+    # 2 seeds connected by a 3-hop path
+    seeds = ["seed1", "seed2"]
+    G.add_node("seed1")
+    G.add_node("path1")
+    G.add_node("path2")
+    G.add_node("seed2")
+    G.add_edge("seed1", "path1")
+    G.add_edge("path1", "path2")
+    G.add_edge("path2", "seed2")
+
+    # A random high degree node not on path
+    G.add_node("hub")
+    for i in range(10):
+        n = f"leaf{i}"
+        G.add_node(n)
+        G.add_edge("hub", n)
+    G.add_edge("seed1", "hub")  # connects to graph
+
+    nodes = set(G.nodes)
+    edges = list(G.edges)
+
+    text = _subgraph_to_text(G, nodes, edges, token_budget=100, seeds=seeds)
+    # token_budget=100 -> char_budget=300. This is small enough to truncate leaves.
+    # path1 and path2 should appear because they are evidence (shortest path).
+    assert "seed1" in text
+    assert "seed2" in text
+    assert "path1" in text
+    assert "path2" in text
+
+
+def test_subgraph_to_text_evidence_works_on_directed_graph():
+    """Shortest path evidence should successfully find connecting paths on directed graphs."""
+    G = nx.DiGraph()
+    seeds = ["seed1", "seed2"]
+    G.add_node("seed1")
+    G.add_node("path1")
+    G.add_node("seed2")
+    # Edges oriented away from path1: seed1 <- path1 -> seed2
+    G.add_edge("path1", "seed1")
+    G.add_edge("path1", "seed2")
+
+    G.add_node("hub")
+    for i in range(10):
+        n = f"leaf{i}"
+        G.add_node(n)
+        G.add_edge("hub", n)
+    G.add_edge("seed1", "hub")
+
+    nodes = set(G.nodes)
+    edges = list(G.edges)
+
+    text = _subgraph_to_text(G, nodes, edges, token_budget=80, seeds=seeds)
+    assert "seed1" in text
+    assert "seed2" in text
+    assert "path1" in text
+
+
+def test_query_graph_text_multi_term_resolves_to_target_community():
+    G = nx.Graph()
+    G.add_node("n1", label="Incidence", community=0, source_file="physics.py", source_location="L1")
+    G.add_node("n2", label="Incidence Algebra", community=1, source_file="math.py", source_location="L1")
+    G.add_node("n3", label="Derivations", community=1, source_file="math.py", source_location="L1")
+    G.add_edge("n2", "n3")
+
+    text = _query_graph_text(
+        G=G,
+        question="incidence algebra derivations",
+    )
+
+    # n2 should be the primary seed, pulling in n3. n1 (physics.py) must be absent.
+    assert "Incidence Algebra" in text
+    assert "Derivations" in text
+    assert "physics.py" not in text
+    assert "NODE Incidence [" not in text
+
+
+def test_query_graph_text_excludes_cross_domain_seed_with_real_clustering():
+    """End-to-end test using real community detection (cluster()) ensuring
+    cross-domain guaranteed seeds from unrelated modules are excluded (#3810)."""
+    from graphify.cluster import cluster
+    G = nx.Graph()
+    # Math cluster: densely connected
+    G.add_node("alg", label="Incidence Algebra", source_file="math/algebra.py", source_location="L1")
+    G.add_node("der", label="Derivations", source_file="math/derivations.py", source_location="L1")
+    G.add_node("pos", label="Poset", source_file="math/poset.py", source_location="L1")
+    G.add_edge("alg", "der")
+    G.add_edge("der", "pos")
+    G.add_edge("alg", "pos")
+
+    # Physics cluster: separate component
+    G.add_node("inc", label="Incidence", source_file="physics/optics.py", source_location="L1")
+    G.add_node("opt", label="Optics", source_file="physics/optics.py", source_location="L10")
+    G.add_edge("inc", "opt")
+
+    # Run real community detection
+    communities = cluster(G)
+    for cid, members in communities.items():
+        for m in members:
+            G.nodes[m]["community"] = cid
+
+    text = _query_graph_text(G, "incidence algebra derivations poset")
+    assert "Incidence Algebra" in text
+    assert "Derivations" in text
+    assert "physics" not in text
+    assert "Optics" not in text

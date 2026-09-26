@@ -658,6 +658,25 @@ def _score_query(
                 or label_tokens.startswith(joined)
             ):
                 score += _PREFIX_MATCH_BONUS * 10 * joined_w
+
+        # Sub-phrase tier: for queries with 3+ terms, check contiguous 2-gram and 3-gram
+        # sub-phrases against the label. A node matching "incidence algebra" (a 2-gram
+        # from the query) ranks above a node matching just "incidence" alone.
+        # At most one phrase bonus per node — longest match wins.
+        if n_terms >= 3:
+            phrase_hit = False
+            for width in (3, 2):  # prefer longer phrases
+                if phrase_hit:
+                    break
+                for start in range(n_terms - width + 1):
+                    phrase = " ".join(norm_terms[start:start + width])
+                    # Check label_tokens to ensure word boundaries and avoid partial matches
+                    # (e.g. "get set" in "target settings" should not match).
+                    if f" {phrase} " in f" {label_tokens} ":
+                        phrase_w = max(idf.get(t, 1.0) for t in norm_terms[start:start + width])
+                        score += _PREFIX_MATCH_BONUS * width * phrase_w
+                        phrase_hit = True
+                        break  # breaks inner loop; phrase_hit breaks outer
         # Term coverage (#1602): scale the per-term exact/prefix tiers by the
         # squared fraction of query terms the node's LABEL matches, so a lone
         # generic word that happens to equal a short label (query term "home"
@@ -834,18 +853,50 @@ def _pick_seeds(
                 or _strip_diacritics(data.get("label") or "").lower()) or nid
 
     top_score = scored[0][0]
+    top_nid = scored[0][1]
     seeds: list[str] = []
     seen_labels: set[str] = set()
+
+    # First, collect gap-based seeds. We gather all that pass the gap threshold
+    # so we can apply the community coherence filter if they exceed max_k.
+    gap_candidates: list[str] = []
     for score, nid in scored:
-        if len(seeds) >= max_k:
-            break
-        if seeds and score < top_score * gap_ratio:
+        if gap_candidates and score < top_score * gap_ratio:
             break
         key = _seed_label_key(nid)
         if key in seen_labels:
             continue
         seen_labels.add(key)
+        gap_candidates.append(nid)
+
+    # Community coherence filter: identify the dominant community among gap candidates.
+    # A community is dominant if it has >= 2 candidates and strictly more than the runner-up.
+    majority_cid = None
+    if G is not None:
+        community_counts: dict[int, int] = {}
+        for nid in gap_candidates:
+            cid = G.nodes[nid].get("community")
+            if cid is not None:
+                community_counts[cid] = community_counts.get(cid, 0) + 1
+        if community_counts:
+            sorted_comms = sorted(community_counts.items(), key=lambda kv: kv[1], reverse=True)
+            if sorted_comms[0][1] >= 2 and (len(sorted_comms) == 1 or sorted_comms[0][1] > sorted_comms[1][1]):
+                majority_cid = sorted_comms[0][0]
+
+    # If a majority community exists, filter out minority candidates (except seed #1 / top_nid)
+    # and cap to max_k.
+    if majority_cid is not None:
+        gap_candidates = [
+            nid for nid in gap_candidates
+            if nid == top_nid or G.nodes[nid].get("community") is None or G.nodes[nid].get("community") == majority_cid
+        ]
+
+    # Apply max_k limit to the gap candidates and seed them
+    for nid in gap_candidates[:max_k]:
         seeds.append(nid)
+
+    # Rebuild seen_labels to accurately reflect the truncated seeds
+    seen_labels = {_seed_label_key(s) for s in seeds}
 
     if G is not None and best_seed_by_term:
         # Guarantee one seed per distinct query term that has any match at all,
@@ -866,12 +917,20 @@ def _pick_seeds(
         ordered_terms += sorted(t for t in best_seed_by_term if t not in set(ordered_terms))
         for term in ordered_terms:
             best_nid = best_seed_by_term[term]
+            # Cross-domain guard (#3810): if a dominant community was established among
+            # the query's best candidates, do not re-add an incidental single-token match
+            # from an unrelated community.
+            if majority_cid is not None:
+                best_cid = G.nodes[best_nid].get("community")
+                if best_cid is not None and best_cid != majority_cid:
+                    continue
             # Honor the same per-label cap so the per-term guarantee can't
             # reintroduce a second copy of an already-seeded generic label.
             key = _seed_label_key(best_nid)
             if best_nid not in seeds and key not in seen_labels:
                 seen_labels.add(key)
                 seeds.append(best_nid)
+
     return seeds
 
 
@@ -1145,9 +1204,30 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                     dist[nb] = hop
                     nxt.append(nb)
         frontier = nxt
+    # Compute nodes on inter-seed shortest paths (evidence nodes).
+    # Use an undirected view over the induced subgraph of `nodes` to:
+    # 1) match the BFS hop distance above which traverses both edge directions,
+    # 2) avoid NetworkXNoPath when paths are bidirectional in a DiGraph,
+    # 3) bound the path search to the extracted subgraph instead of the full graph.
+    evidence: set[str] = set()
+    if len(seed_hits) >= 2:
+        sub_undirected = G.subgraph(nodes).to_undirected(as_view=True)
+        for i in range(len(seed_hits)):
+            for j in range(i + 1, min(i + 3, len(seed_hits))):  # cap pairs to avoid O(n²) blowup
+                try:
+                    path_nodes = nx.shortest_path(sub_undirected, seed_hits[i], seed_hits[j])
+                    evidence.update(path_nodes)
+                except (nx.NetworkXNoPath, nx.NodeNotFound):
+                    pass
+
     ordered = seed_hits + sorted(
         nodes - seed_set,
-        key=lambda n: (dist.get(n, 1 << 30), -G.degree(n), str(n)),
+        key=lambda n: (
+            0 if n in evidence else 1,  # evidence nodes first
+            dist.get(n, 1 << 30),
+            -G.degree(n),
+            str(n),
+        ),
     )
     for nid in ordered:
         d = G.nodes[nid]
