@@ -714,8 +714,14 @@ def test_no_cluster_step_4_write_carries_the_full_corpus_label():
 def test_input_path_forward_slash_guidance_is_present():
     """#1619 B1: a Windows INPUT_PATH substitution with backslashes corrupts
     the Python string literal it's spliced into. Every host must tell the
-    agent to substitute forward slashes instead, and the PowerShell
-    Resolve-Path call must be quoted so a path with a space in it survives."""
+    agent to substitute forward slashes instead, and the PowerShell scan
+    root save must not splice INPUT_PATH directly into a Resolve-Path call
+    at all -- issue #3642 replaced that (a bareword substitution there, even
+    single-quoted, still lets a stray `;`/`|`/`$(...)` in the path execute
+    as script code) with a single-quoted here-string capture, which also
+    subsumes #1619 B1's own space-safety concern: a PowerShell variable
+    reference is passed as one argument regardless of internal spaces,
+    unlike a bareword substitution."""
     claude_core, _ = _platform_artifacts("claude")
     windows_core, _ = _platform_artifacts("windows")
     platforms = gen.load_platforms()
@@ -728,8 +734,15 @@ def test_input_path_forward_slash_guidance_is_present():
             f"[{key}] missing the forward-slash INPUT_PATH guidance"
         )
 
-    assert "(Resolve-Path 'INPUT_PATH')" in bodies["windows"], (
-        "skill-windows.md's Resolve-Path call must be quoted (#1619 B1)"
+    assert "$InputPathRaw = @'" in bodies["windows"], (
+        "skill-windows.md's scan root save must capture INPUT_PATH through "
+        "a literal here-string, not a direct substitution (#3642)"
+    )
+    assert "(Resolve-Path $InputPathRaw.Trim())" in bodies["windows"], (
+        "the captured here-string must be what Resolve-Path resolves"
+    )
+    assert "(Resolve-Path 'INPUT_PATH')" not in bodies["windows"], (
+        "the old quoted-but-still-direct Resolve-Path substitution must not survive"
     )
     assert "(Resolve-Path INPUT_PATH)" not in bodies["windows"], (
         "the unquoted Resolve-Path call must not survive"
