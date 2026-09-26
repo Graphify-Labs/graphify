@@ -1205,7 +1205,10 @@ Replace `QUESTION` with the user's actual question, `MODE` with `bfs` or `dfs`, 
 After writing the answer, save it back into the graph so it improves future queries:
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2
+cat > graphify-out/.save_result_answer.tmp <<'EOF'
+ANSWER
+EOF
+"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "QUESTION" --answer-file graphify-out/.save_result_answer.tmp --type query --nodes NODE1 NODE2
 ```
 
 ---
@@ -1277,7 +1280,10 @@ Replace `NODE_A` and `NODE_B` with the actual concept names. Then explain the pa
 After writing the explanation, save it back:
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B
+cat > graphify-out/.save_result_answer.tmp <<'EOF'
+ANSWER
+EOF
+"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "Path from NODE_A to NODE_B" --answer-file graphify-out/.save_result_answer.tmp --type path_query --nodes NODE_A NODE_B
 ```
 
 ---
@@ -1342,7 +1348,10 @@ Replace `NODE_NAME` with the concept. Then write a 3-5 sentence explanation usin
 After writing the explanation, save it back:
 
 ```bash
-"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME
+cat > graphify-out/.save_result_answer.tmp <<'EOF'
+ANSWER
+EOF
+"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "Explain NODE_NAME" --answer-file graphify-out/.save_result_answer.tmp --type explain --nodes NODE_NAME
 ```
 
 ---

@@ -1253,6 +1253,27 @@ def _is_input_path_slash_guidance_line(line: str) -> bool:
     return "substitute it with forward slashes" in line.lower()
 
 
+def _is_save_result_answer_file_fix_line(line: str) -> bool:
+    """Whether a line is part of the #3621 review save-result answer file fix.
+
+    ANSWER, the agent's own free text explanation, was spliced directly into
+    a double quoted --answer "ANSWER" shell argument, so an ordinary quote,
+    backtick, or dollar sign anywhere in a normal explanation broke or
+    hijacked the command. ANSWER is now captured through a single quoted
+    heredoc into a temp file first, then passed via --answer-file instead,
+    never re-parsed as shell syntax. The heredoc's own opener, its ANSWER
+    placeholder body, and its closing EOF marker are new lines with no
+    counterpart in pristine v8; the changed save-result command line itself
+    already matches _is_quoted_interpreter_cat_fix_line.
+    """
+    stripped = line.strip()
+    return (
+        stripped == "cat > graphify-out/.save_result_answer.tmp <<'EOF'"
+        or stripped == "ANSWER"
+        or stripped == "EOF"
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1279,6 +1300,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_install_failure_gate_fix_line,
     _is_update_backup_reorder_fix_line,
     _is_quoted_interpreter_cat_fix_line,
+    _is_save_result_answer_file_fix_line,
 )
 
 
