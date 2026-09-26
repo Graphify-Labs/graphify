@@ -4983,3 +4983,102 @@ def test_requires_symlinks_rebuild_symlink_worker(requires_symlinks, tmp_path, c
     data = json.loads(graph_path.read_text(encoding="utf-8"))
     labels = {n.get("label") for n in data["nodes"]}
     assert "run_worker()" in labels
+
+
+def test_rebuild_code_sidecar_writes_are_atomic_and_labels_first(tmp_path, monkeypatch):
+    """A rebuild interrupted between the labels and signature writes must not
+    leave stale labels that look verified.
+
+    The staleness guard compares the SAVED signatures against ones recomputed
+    from the current clustering — not against the labels. So publishing the
+    signatures first and crashing leaves a sidecar already describing the new
+    clustering beside the old labels: the guard recomputes the same signatures,
+    finds them equal, and silently keeps names for a clustering that no longer
+    exists. Labels must land first, so the sidecar trails and the guard sees a
+    mismatch it can re-label. Each write is also atomic, so a kill mid-write
+    can never publish a half-written sidecar.
+    """
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text(
+        "def alpha():\n    return beta()\n\ndef beta():\n    return 1\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    out = corpus / "graphify-out"
+    labels_file = out / ".graphify_labels.json"
+    sig_file = out / ".graphify_labels.json.sig"
+
+    # Record the order in which the sidecars are published, and prove each one
+    # is published atomically (rename into place) rather than truncate-in-place.
+    order: "list[str]" = []
+    import os
+    from pathlib import Path
+
+    def _label(name: str) -> "str | None":
+        if name.endswith(".graphify_labels.json.sig"):
+            return "sig"
+        if name.endswith(".graphify_labels.json"):
+            return "labels"
+        return None
+
+    real_replace = os.replace
+    real_write_text = Path.write_text
+    real_open = __builtins__["open"] if isinstance(__builtins__, dict) else __builtins__.open
+
+    def _tracking_replace(src, dst, *a, **kw):
+        tag = _label(str(dst))
+        if tag:
+            order.append(tag)
+        return real_replace(src, dst, *a, **kw)
+
+    def _tracking_write_text(self, *a, **kw):
+        tag = _label(str(self))
+        if tag:
+            # Recorded as non-atomic: the sidecar is truncated in place.
+            order.append(tag + ":non-atomic")
+        return real_write_text(self, *a, **kw)
+
+    def _tracking_open(file, mode="r", *a, **kw):
+        # A writing open() straight onto a sidecar path is non-atomic; the
+        # atomic helper opens a temp file and renames it, so it never trips this.
+        # `backup_if_protected` copies the sidecars into a dated backup folder
+        # before the rebuild advances them — that is a copy of the OLD file, not
+        # a publish of the new one, so only the live out/ paths are tracked.
+        if any(m in str(mode) for m in ("w", "a", "+")):
+            path = Path(file)
+            if path.parent == out and _label(path.name):
+                order.append(_label(path.name) + ":non-atomic")
+        return real_open(file, mode, *a, **kw)
+
+    monkeypatch.setattr(os, "replace", _tracking_replace)
+    monkeypatch.setattr(Path, "write_text", _tracking_write_text)
+    monkeypatch.setattr("builtins.open", _tracking_open)
+
+    # Grow the corpus so clustering changes and the sidecars are rewritten.
+    for name in ("b.py", "c.py", "d.py"):
+        (corpus / name).write_text(
+            f"def {name[0]}_one():\n    return {name[0]}_two()\n\n"
+            f"def {name[0]}_two():\n    return 2\n",
+            encoding="utf-8",
+        )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    assert not [o for o in order if o.endswith(":non-atomic")], (
+        f"sidecars must be published atomically (temp + rename), saw {order}"
+    )
+    assert "sig" in order and "labels" in order, (
+        f"expected both sidecars to be rewritten, saw {order}"
+    )
+    assert order.index("labels") < order.index("sig"), (
+        "labels must be written BEFORE the signature sidecar: signatures first "
+        "would let a crash leave a matching sidecar beside stale labels, which "
+        f"the staleness guard cannot detect; saw {order}"
+    )
+
+    # Both sidecars must be parseable — a torn write would fail here.
+    assert json.loads(sig_file.read_text(encoding="utf-8")) is not None
+    assert json.loads(labels_file.read_text(encoding="utf-8")) is not None

@@ -16,6 +16,7 @@ from graphify.paths import (
     GRAPHIFY_OUT as _GRAPHIFY_OUT,
     is_absolute_any_platform,
     os_replace_with_fallback,
+    write_text_atomic,
 )
 
 logger = logging.getLogger(__name__)
@@ -2197,14 +2198,29 @@ def _rebuild_code(
             # destination read earlier in the same process raises
             # PermissionError even on the same drive.
             os_replace_with_fallback(graph_tmp, existing_graph)
-            report_path.write_text(report, encoding="utf-8")
-            labels_file.write_text(labels_json, encoding="utf-8")
+            write_text_atomic(report_path, report)
             # Keep the membership signatures in step with the labels we just wrote.
             # Skipping this was the other half of the stale-label bug: labels.json
             # advanced every rebuild while the sidecar kept describing an older
             # clustering, so the guard above had nothing accurate to check against.
-            sig_file.write_text(
-                json.dumps({str(k): v for k, v in cur_sigs.items()}), encoding="utf-8")
+            #
+            # Each write is atomic, so a kill mid-write can never publish a
+            # half-written sidecar (a torn one would be unparseable, which the
+            # guard reads as "no saved signatures" and falls back to the
+            # count heuristic).
+            #
+            # Labels go down BEFORE the signatures, and that order matters. The
+            # guard above compares the SAVED signatures against ones recomputed
+            # from the current clustering — not against the labels. So publishing
+            # signatures first and crashing would leave a sidecar that already
+            # describes the new clustering sitting beside the OLD labels: the
+            # guard recomputes the same signatures, finds them equal, reports
+            # nothing stale, and silently keeps names that describe a clustering
+            # that no longer exists. Writing labels first keeps the sidecar
+            # trailing, which the guard sees as a mismatch and re-labels.
+            write_text_atomic(labels_file, labels_json)
+            write_text_atomic(
+                sig_file, json.dumps({str(k): v for k, v in cur_sigs.items()}))
 
         # See _graphify_root_marker_value for why this isn't always the raw
         # caller-supplied value (#3375).
