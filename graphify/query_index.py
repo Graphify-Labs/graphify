@@ -179,7 +179,14 @@ class QueryIndex:
         return TierZeroPacket(tuple(ranked[:max(0, int(limit))]), terms)
 
     def matches_graph(self, graph: nx.Graph) -> bool:
-        return self.fingerprint == graph_fingerprint(graph)
+        # The sidecar lives in a repository-controlled directory. Its stored
+        # fingerprint alone is not proof that its candidate set came from the
+        # graph, so reject injected or omitted node identifiers before reuse.
+        graph_node_ids = {str(node_id) for node_id in graph.nodes}
+        return (
+            self.fingerprint == graph_fingerprint(graph)
+            and set(self._nodes) == graph_node_ids
+        )
 
     def to_dict(self) -> dict:
         return {

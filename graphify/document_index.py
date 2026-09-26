@@ -1,6 +1,7 @@
 """PageIndex-style hierarchical section map for text documents."""
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 import hashlib
 import re
@@ -34,11 +35,9 @@ def _section_id(source_file: str, path: str, start_line: int) -> str:
     return f"docsec:{digest}"
 
 
-def build_document_index(source_file: str, text: str) -> DocumentIndex:
-    """Build a stable hierarchy whose section hashes support lazy validation."""
+def iter_markdown_content_lines(lines: Iterable[str]) -> Iterator[tuple[int, str]]:
+    """Yield source lines outside CommonMark-style fenced code blocks."""
 
-    lines = text.splitlines()
-    headings: list[tuple[int, int, str]] = []
     fence_marker: str | None = None
     fence_length = 0
     for line_number, line in enumerate(lines, 1):
@@ -46,6 +45,8 @@ def build_document_index(source_file: str, text: str) -> DocumentIndex:
             candidate = line.lstrip(" ")
             indent = len(line) - len(candidate)
             marker_length = len(candidate) - len(candidate.lstrip(fence_marker))
+            # A closing fence must use the opener's marker, be at least as
+            # long, and contain no trailing content beyond optional spaces.
             if (
                 indent <= 3
                 and marker_length >= fence_length
@@ -61,6 +62,15 @@ def build_document_index(source_file: str, text: str) -> DocumentIndex:
             fence_length = len(fence.group(1))
             continue
 
+        yield line_number, line
+
+
+def build_document_index(source_file: str, text: str) -> DocumentIndex:
+    """Build a stable hierarchy whose section hashes support lazy validation."""
+
+    lines = text.splitlines()
+    headings: list[tuple[int, int, str]] = []
+    for line_number, line in iter_markdown_content_lines(lines):
         match = _HEADING.match(line)
         if match:
             headings.append((len(match.group(1)), line_number, match.group(2).strip()))

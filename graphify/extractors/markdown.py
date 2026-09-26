@@ -1,7 +1,7 @@
 """Markdown extractor. Moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
-from graphify.document_index import build_document_index
+from graphify.document_index import build_document_index, iter_markdown_content_lines
 import re
 import os
 import unicodedata
@@ -445,20 +445,10 @@ def extract_markdown(path: Path) -> dict:
     # Retain document-order heading boundaries so the graph can route to a
     # section and fetch its source lazily without embedding prose in every node.
     heading_records: list[tuple[int, int, str]] = []
-    in_code_block = False
-
-    for line_num_0, line_text in enumerate(lines):
-        line_num = line_num_0 + 1
-
-        # Skip over fenced code blocks so their contents are not parsed as
-        # headings, but do not emit nodes/edges for them (#1077).
-        stripped = line_text.strip()
-        if stripped.startswith("```"):
-            in_code_block = not in_code_block
-            continue
-
-        if in_code_block:
-            continue
+    # Share one fence parser with lazy document indexing so the graph cannot
+    # publish a heading that has no corresponding retrievable section.
+    for line_num, line_text in iter_markdown_content_lines(lines):
+        line_num_0 = line_num - 1
 
         # Markdown links -> document references (#1376). Scanned on every
         # non-fenced line (including heading lines, which the heading branch

@@ -343,7 +343,15 @@ class ClangSemanticEnricher:
             for entry in payload:
                 if not isinstance(entry, dict):
                     continue
-                directory = Path(str(entry.get("directory") or self.project_root)).resolve()
+                raw_directory = Path(str(entry.get("directory") or self.project_root))
+                # Relative database entries are portable build metadata. They
+                # are relative to the database file, never Graphify's process
+                # working directory, which may belong to another repository.
+                directory = (
+                    raw_directory
+                    if raw_directory.is_absolute()
+                    else database.parent / raw_directory
+                ).resolve()
                 try:
                     directory.relative_to(self.project_root)
                 except ValueError:

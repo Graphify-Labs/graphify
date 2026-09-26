@@ -58,6 +58,26 @@ def test_document_index_ignores_headings_inside_markdown_fences():
     ]
 
 
+def test_markdown_extractor_and_document_index_share_fence_boundaries(tmp_path):
+    """Every heading consumer must exclude the same fenced Markdown content."""
+    source = tmp_path / "guide.md"
+    text = """# Overview
+~~~markdown
+## Tilde Example
+~~~
+## Runtime
+"""
+    source.write_text(text, encoding="utf-8")
+
+    extraction = extract_markdown(source)
+    extracted_titles = {
+        node["label"] for node in extraction["nodes"] if node["label"] != source.name
+    }
+    indexed_titles = {section.title for section in build_document_index("guide.md", text).sections}
+
+    assert extracted_titles == indexed_titles == {"Overview", "Runtime"}
+
+
 def test_markdown_extraction_publishes_hierarchy_for_lazy_section_navigation(tmp_path):
     """Removing document-index integration must erase parent/path metadata."""
     source = tmp_path / "guide.md"

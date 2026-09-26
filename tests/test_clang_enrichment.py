@@ -245,6 +245,34 @@ def test_clang_prefers_compile_database_but_drops_executable_plugin_flags(tmp_pa
     assert result["semantic_enrichment"]["clang"]["compile_database_translation_units"] == 1
 
 
+def test_clang_resolves_relative_directory_from_compile_database_location(tmp_path: Path):
+    """Relative working directories are anchored beside the database file."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "compile_commands.json").write_text(json.dumps([{
+        "directory": ".",
+        "file": "../src/main.C",
+        "arguments": ["g++", "-I../include", "-c", "../src/main.C"],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert cwd == build
+        assert "-I../include" in command
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+    assert result["semantic_enrichment"]["clang"]["compile_database_translation_units"] == 1
+
+
 def test_clang_compile_database_drops_virtual_filesystem_overlays(tmp_path: Path):
     """Repository compile flags must not redirect Clang's filesystem reads."""
     source = tmp_path / "src" / "main.C"
