@@ -249,3 +249,87 @@ def test_cli_type_suffixes_are_still_rewritten(decl, rewritten):
     assert out is not None
     assert len(out) == len(src)
     assert rewritten in out
+
+def test_cpp_export_macros_survive(tmp_path):
+    """Verify that classes with export macros extract correctly, including inherits edges."""
+    p = tmp_path / "export.h"
+    p.write_text(
+        "class MODULE_API Widget : public BaseWidget {\n"
+        "public:\n"
+        "    void DoThing() {}\n"
+        "};\n"
+        "class SOME_OTHER_MACRO Widget2 {};\n"
+        "class MODULE_API Widget3 final : public BaseWidget {};\n"
+        "class API FINAL Foo {};\n"
+        "struct EXPORT S {};\n"
+    )
+    from graphify.extract import extract_cpp
+    result = extract_cpp(p)
+    labels = [n["label"] for n in result["nodes"]]
+    assert "Widget" in labels
+    assert ".DoThing()" in labels
+    assert "Widget2" in labels
+    assert "Widget3" in labels
+    assert "Foo" in labels
+    assert "S" in labels
+
+    # assertion that the inherits edge actually reappears
+    edges = result.get("edges", [])
+    nodes = {n["id"]: n["label"] for n in result["nodes"]}
+    inherits_edges = [e for e in edges if e["relation"] == "inherits"]
+
+    # We should have Widget -> BaseWidget, Widget3 -> BaseWidget
+    widget_inherits = [e for e in inherits_edges if nodes.get(e["source"]) == "Widget" and nodes.get(e["target"]) == "BaseWidget"]
+    assert widget_inherits, "Widget -> BaseWidget inherits edge should reappear after macro blanking"
+
+    widget3_inherits = [e for e in inherits_edges if nodes.get(e["source"]) == "Widget3" and nodes.get(e["target"]) == "BaseWidget"]
+    assert widget3_inherits, "Widget3 -> BaseWidget inherits edge should reappear after macro blanking"
+
+
+def test_cpp_export_macro_does_not_break_variables(tmp_path):
+    """Ensure elaborated type variable declarations don't trigger macro stripping."""
+    p = tmp_path / "vars.h"
+    p.write_text(
+        "void F() {\n"
+        "    for (class MODULE_API var: container) {}\n"
+        "    class MODULE_API var2{1};\n"
+        "    class MODULE_API v {1};\n"
+        "}\n"
+    )
+    from graphify.extract import extract_cpp
+    result = extract_cpp(p)
+    # The extraction should just parse normally. We don't extract local vars, but
+    # we ensure there are no parse_errors.
+    assert result.get("parse_errors") is None
+
+
+def test_cpp_export_macro_normalization_preserves_byte_offsets(tmp_path):
+    src = (
+        '#define API\n'
+        "class API \n"
+        "Widget : public Base {\n"
+        "  int x;\n"
+        "};\n"
+    ).encode()
+    from graphify.extract import _normalize_cpp_export_macros
+    out = _normalize_cpp_export_macros(src)
+    assert out is not None
+    assert len(out) == len(src)
+    assert b"class     \nWidget : public Base" in out
+
+    # Check that newlines are preserved exactly
+    assert out.count(b"\n") == src.count(b"\n")
+
+
+def test_cpp_export_macro_all_caps_class_final(tmp_path):
+    """Ensure an ALL-CAPS class name marked as final is not mistaken for a macro."""
+    p = tmp_path / "final.h"
+    p.write_text(
+        "class MY_WIDGET final : public Base {};\n"
+        "class MACRO Foo final : public Base {};\n"
+    )
+    from graphify.extract import extract_cpp
+    result = extract_cpp(p)
+    labels = [n["label"] for n in result["nodes"]]
+    assert "MY_WIDGET" in labels, "MY_WIDGET was stripped as a macro!"
+    assert "Foo" in labels
