@@ -583,10 +583,12 @@ def _canonical_platform(platform_name: str) -> str:
 _SECTION_END_MARKER = "<!-- graphify-section-end -->"
 
 _ATX_HEADING_RE = re.compile(r"^#{1,6}\s")
+_FENCE_RE = re.compile(r"^(```|~~~)")
 
 
 def _has_heading_before_eof(lines: "list[str]", start: int) -> bool:
-    """True if any ATX heading (of any level) appears after index ``start``.
+    """True if any ATX heading (of any level) appears after index ``start``,
+    outside of a fenced code block.
 
     Used as the last check before falling through to EOF is judged safe: a
     section that predates the end marker and has no later ``boundary_prefix``
@@ -595,8 +597,21 @@ def _has_heading_before_eof(lines: "list[str]", start: int) -> bool:
     some other level is exactly the signature of the #3791 bug -- a user's own
     ``## My own rules`` following graphify's H1 marker -- so its presence means
     "stop here, don't guess", even though it doesn't match ``boundary_prefix``.
+
+    A ``#``-prefixed line inside a fenced code block (a shell/Python comment
+    in an example) is not a heading and must not count -- otherwise a code
+    sample with an ordinary comment line makes this return True for content
+    that is not ambiguous at all (PR 3803 review).
     """
-    return any(_ATX_HEADING_RE.match(line.strip()) for line in lines[start + 1:])
+    in_fence = False
+    for line in lines[start + 1:]:
+        stripped = line.strip()
+        if _FENCE_RE.match(stripped):
+            in_fence = not in_fence
+            continue
+        if not in_fence and _ATX_HEADING_RE.match(stripped):
+            return True
+    return False
 
 
 def _replace_or_append_section(
@@ -683,12 +698,23 @@ def _replace_or_append_section(
     # unrelated end marker swallow it (PR 3803 review).
     _marker_is_top_level = boundary_prefix.rstrip() == "#"
     end = None
+    in_fence = False
     for j in range(start + 1, len(lines)):
-        if lines[j].strip() == _SECTION_END_MARKER:
+        stripped = lines[j].strip()
+        if stripped == _SECTION_END_MARKER:
             end = j + 1  # consume the sentinel itself, so it never duplicates
             break
-        if lines[j].startswith(boundary_prefix) or (
-            _marker_is_top_level and _ATX_HEADING_RE.match(lines[j].strip())
+        if _FENCE_RE.match(stripped):
+            # A fenced code block's own content (e.g. a "#"-led shell/Python
+            # comment in an example) must never be mistaken for a heading
+            # boundary, or a top-level marker's replace/remove would split the
+            # fence in two (PR 3803 review).
+            in_fence = not in_fence
+            continue
+        if not in_fence and (
+            lines[j].startswith(boundary_prefix) or (
+                _marker_is_top_level and _ATX_HEADING_RE.match(stripped)
+            )
         ):
             end = j
             break
@@ -767,12 +793,22 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
             break
         start = starts[-1]
         end = None
+        in_fence = False
         for j in range(start + 1, len(lines)):
-            if lines[j].strip() == _SECTION_END_MARKER:
+            stripped = lines[j].strip()
+            if stripped == _SECTION_END_MARKER:
                 end = j + 1  # consume the sentinel itself
                 break
-            if lines[j].startswith(boundary_prefix) or (
-                _marker_is_top_level and _ATX_HEADING_RE.match(lines[j].strip())
+            if _FENCE_RE.match(stripped):
+                # See _replace_or_append_section's matching note: a fenced
+                # code block's own content must never be mistaken for a
+                # heading boundary (PR 3803 review).
+                in_fence = not in_fence
+                continue
+            if not in_fence and (
+                lines[j].startswith(boundary_prefix) or (
+                    _marker_is_top_level and _ATX_HEADING_RE.match(stripped)
+                )
             ):
                 end = j
                 break
