@@ -416,7 +416,7 @@ def test_windows_and_posix_cores_have_step_and_2490_parity():
     for heading in _STEP_HEADINGS:
         assert heading in claude_core, f"skill.md lost step heading: {heading!r}"
         assert heading in windows_core, f"skill-windows.md lost step heading: {heading!r}"
-    line_2490 = "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels)"
+    line_2490 = "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels, force=IS_FORCE)"
     assert line_2490 in claude_core, "skill.md lost the #2490 Step-5 re-export"
     assert line_2490 in windows_core, "skill-windows.md lost the #2490 Step-5 re-export"
 
@@ -649,6 +649,273 @@ def test_monoliths_carry_the_1392_runbook_fixes():
         # guard fires right after the build, before the graph/report are written.
         assert build_i < guard_i < wrote_i < report_i, f"[{key}] Step 4 ordering not fixed"
         assert "if not wrote:" in body
+
+
+def test_no_cluster_and_force_flags_are_wired_through():
+    """#1619 C1/C2: --no-cluster and --force were documented/suggested but never
+    implemented -- cluster() ran unconditionally and to_json() never received
+    force=. Both are now wired through Step 4/5, for the core render and both
+    hand-maintained monoliths.
+    """
+    claude_core, _ = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        assert "--no-cluster" in body.split("## Usage")[1].split("```")[1], (
+            f"[{key}] --no-cluster missing from Usage"
+        )
+        assert "--force " in body.split("## Usage")[1].split("```")[1], (
+            f"[{key}] --force missing from Usage"
+        )
+        assert "if IS_NO_CLUSTER:" in body, f"[{key}] Step 4 does not branch on IS_NO_CLUSTER"
+        assert "communities = {0: list(G.nodes())}" in body, (
+            f"[{key}] Step 4 missing the flat --no-cluster community shortcut"
+        )
+        assert "force=IS_FORCE" in body, f"[{key}] to_json is not wired to IS_FORCE"
+        # Both to_json(...graph.json...) calls in the main build path take it -
+        # Step 4's first write and Step 5's curated-labels re-export.
+        assert body.count("force=IS_FORCE") >= 2, (
+            f"[{key}] expected force=IS_FORCE on both Step 4 and Step 5 to_json calls"
+        )
+        assert "Skip this step entirely if `--no-cluster` was given in Step 4" in body, (
+            f"[{key}] Step 5 does not document skipping labeling for --no-cluster"
+        )
+
+
+def test_no_cluster_step_4_write_carries_the_full_corpus_label():
+    """Review finding on #1619: Step 5 (which normally supplies real community
+    labels) is skipped entirely for --no-cluster, making Step 4's write the
+    only one -- so it must pass community_labels=labels itself, or every node
+    in a --no-cluster build silently loses its community_name even though the
+    'Full Corpus' label was computed right above it."""
+    claude_core, _ = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        # Step 4 and Step 5 now both use this exact call shape -- Step 5's
+        # own occurrence alone would make a bare "in body" check pass even
+        # if Step 4's copy were still missing community_labels, so this
+        # counts occurrences the same way the neighboring force=IS_FORCE
+        # assertion above does.
+        step4_or_5_write = "to_json(G, communities, 'graphify-out/graph.json', community_labels=labels, force=IS_FORCE)"
+        assert body.count(step4_or_5_write) >= 2, (
+            f"[{key}] expected community_labels=labels on both Step 4 and Step 5 "
+            "to_json calls -- Step 4's is the only write for --no-cluster, since "
+            "Step 5 is skipped for that path"
+        )
+
+
+def test_input_path_forward_slash_guidance_is_present():
+    """#1619 B1: a Windows INPUT_PATH substitution with backslashes corrupts
+    the Python string literal it's spliced into. Every host must tell the
+    agent to substitute forward slashes instead, and the PowerShell scan
+    root save must not splice INPUT_PATH directly into a Resolve-Path call
+    at all -- issue #3642 replaced that (a bareword substitution there, even
+    single-quoted, still lets a stray `;`/`|`/`$(...)` in the path execute
+    as script code) with a single-quoted here-string capture, which also
+    subsumes #1619 B1's own space-safety concern: a PowerShell variable
+    reference is passed as one argument regardless of internal spaces,
+    unlike a bareword substitution."""
+    claude_core, _ = _platform_artifacts("claude")
+    windows_core, _ = _platform_artifacts("windows")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core, "windows": windows_core}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        assert "substitute it with forward slashes" in body.lower(), (
+            f"[{key}] missing the forward-slash INPUT_PATH guidance"
+        )
+
+    assert "$InputPathRaw = @'" in bodies["windows"], (
+        "skill-windows.md's scan root save must capture INPUT_PATH through "
+        "a literal here-string, not a direct substitution (#3642)"
+    )
+    assert "(Resolve-Path $InputPathRaw.Trim())" in bodies["windows"], (
+        "the captured here-string must be what Resolve-Path resolves"
+    )
+    assert "(Resolve-Path 'INPUT_PATH')" not in bodies["windows"], (
+        "the old quoted-but-still-direct Resolve-Path substitution must not survive"
+    )
+    assert "(Resolve-Path INPUT_PATH)" not in bodies["windows"], (
+        "the unquoted Resolve-Path call must not survive"
+    )
+
+
+def test_input_path_quote_escaping_guidance_is_present():
+    """Review finding on PR 3621: INPUT_PATH is substituted into a Python
+    string literal (e.g. Path('INPUT_PATH')) with no guidance about a
+    literal single quote in the path itself. A path like
+    /Users/o'brien/project closes the string literal early, corrupting or
+    hijacking the code that follows -- the same class of gap the existing
+    backslash guidance already covers for a different character."""
+    claude_core, _ = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        assert "escape it as" in body and "\\'" in body, (
+            f"[{key}] missing the single quote escaping guidance for INPUT_PATH"
+        )
+
+
+def test_save_result_answer_is_captured_through_a_heredoc_not_inlined():
+    """Review finding on PR 3621: ANSWER, the agent's own free text
+    explanation, was spliced directly into a double quoted
+    --answer "ANSWER" shell argument, so an ordinary quote, backtick, or
+    dollar sign anywhere in a normal explanation broke or hijacked the
+    command -- not just an adversarial input, everyday technical prose
+    routinely contains those characters. ANSWER must now be captured
+    through a single quoted heredoc into a temp file first, then passed
+    via --answer-file, which is never re-parsed as shell syntax."""
+    claude_core, claude_refs = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core + "".join(claude_refs.values())}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        assert '--answer "ANSWER"' not in body, (
+            f"[{key}] the old direct-substitution --answer form must not survive"
+        )
+        assert "cat > graphify-out/.save_result_answer.tmp <<'EOF'" in body, (
+            f"[{key}] missing the heredoc capture for the save-result answer"
+        )
+        assert "--answer-file graphify-out/.save_result_answer.tmp" in body, (
+            f"[{key}] save-result must read the answer back from the captured file"
+        )
+
+
+def test_ingest_add_call_captures_url_author_contributor_through_files():
+    """Issue 3640: URL/AUTHOR/CONTRIBUTOR were spliced directly into single
+    quoted Python string literals inside ingest('URL', ..., author='AUTHOR',
+    contributor='CONTRIBUTOR'). AUTHOR/CONTRIBUTOR are free text that can be
+    lifted verbatim from a fetched page, and even an ordinary embedded quote
+    breaks out of the literal and lets arbitrary Python run inside the -c
+    script. This affects every host with a /graphify add flow, not just
+    aider/devin -- the shared add-watch reference all the file-write-capable
+    platforms load has the exact same pattern. Each value must now be
+    captured through its own single quoted heredoc into a temp file first,
+    then read back as a plain string, never re-parsed as Python source."""
+    claude_core, claude_refs = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core + "".join(claude_refs.values())}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        assert "ingest('URL', Path('./raw'), author='AUTHOR', contributor='CONTRIBUTOR')" not in body, (
+            f"[{key}] the old direct-substitution ingest(...) form must not survive"
+        )
+        for tmp_name in ("url", "author", "contributor"):
+            assert f"cat > graphify-out/.ingest_{tmp_name}.tmp <<'EOF'" in body, (
+                f"[{key}] missing the heredoc capture for ingest's {tmp_name}"
+            )
+            assert f"Path('graphify-out/.ingest_{tmp_name}.tmp').read_text" in body, (
+                f"[{key}] must read {tmp_name} back from its captured file"
+            )
+        assert "ingest(_url, Path('./raw'), author=_author, contributor=_contributor)" in body, (
+            f"[{key}] ingest(...) must be called with the file-captured values"
+        )
+
+
+def test_step1_gates_on_a_still_failed_install():
+    """#1619 B4: a failed install must stop with an actionable error instead of
+    silently writing a broken interpreter path that fails every later step
+    with a cryptic error far from the real cause.
+    """
+    claude_core, _ = _platform_artifacts("claude")
+    windows_core, _ = _platform_artifacts("windows")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core, "windows": windows_core}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        assert "could not install or locate a Python interpreter with graphify" in body, (
+            f"[{key}] missing the Step 1 failure-gate error message"
+        )
+        lines = body.splitlines()
+        gate_i = next(
+            i for i, l in enumerate(lines)
+            if "could not install or locate a Python interpreter" in l
+        )
+        write_i = next(
+            i for i, l in enumerate(lines)
+            if ".graphify_python" in l and ("write(" in l or "WriteAllText" in l)
+        )
+        # the gate fires after the install attempt, before the (possibly still
+        # broken) interpreter path is persisted for every later step to read.
+        assert gate_i < write_i, f"[{key}] Step 1 gate does not precede the interpreter-path write"
+
+
+def test_update_backup_instruction_precedes_the_merge_it_backs_up():
+    """#1619 C4: "save the old graph" must appear BEFORE the merge block and
+    the diff block that consumes it. An agent reading top to bottom that
+    reaches the merge before being told to back up never creates
+    .graphify_old.json, so the post-update diff's `if old_data:` silently
+    no-ops on every run instead of ever showing a diff.
+    """
+    _, claude_refs = _platform_artifacts("claude")
+    update_body = claude_refs["update.md"]
+    platforms = gen.load_platforms()
+    bodies = {"claude (references/update.md)": update_body}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        lines = body.splitlines()
+        backup_i = next(
+            i for i, l in enumerate(lines) if l.strip().startswith("Before the merge step")
+        )
+        merge_i = next(
+            i for i, l in enumerate(lines)
+            if "build_merge(" in l or "G_existing.update(G_new)" in l
+        )
+        diff_i = next(i for i, l in enumerate(lines) if "old_data" in l and "Path(" in l)
+        assert backup_i < merge_i < diff_i, (
+            f"[{key}] backup instruction must precede both the merge and the diff "
+            f"that reads the backup (backup={backup_i}, merge={merge_i}, diff={diff_i})"
+        )
+
+
+def test_interpreter_cat_substitution_is_quoted_everywhere():
+    """#1619 B5: `$(cat graphify-out/.graphify_python)` names the interpreter to
+    run and must be quoted, like the `"$PYTHON"` form Step 1 already uses --
+    an unquoted interpreter path containing a space (a venv under
+    `C:\\Users\\First Last\\...`) would otherwise word-split into multiple
+    arguments and fail to exec.
+    """
+    claude_core, claude_refs = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core, **{f"claude:{k}": v for k, v in claude_refs.items()}}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    found_any = False
+    for key, body in bodies.items():
+        if "$(cat graphify-out/.graphify_python)" not in body:
+            continue
+        found_any = True
+        assert '"$(cat graphify-out/.graphify_python)"' in body, (
+            f"[{key}] has the interpreter substitution but not the quoted form"
+        )
+        # every occurrence must be the quoted form -- an unquoted survivor would
+        # still contain the bare substring outside any quoted instance.
+        unquoted = body.replace('"$(cat graphify-out/.graphify_python)"', "")
+        assert "$(cat graphify-out/.graphify_python)" not in unquoted, (
+            f"[{key}] an unquoted $(cat ...) interpreter substitution survived"
+        )
+    assert found_any, "no host's rendered output referenced the interpreter substitution at all"
 
 
 def test_monoliths_scope_semantic_cache_writes_to_uncached_files():
