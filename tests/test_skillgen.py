@@ -795,6 +795,39 @@ def test_save_result_answer_is_captured_through_a_heredoc_not_inlined():
         )
 
 
+def test_ingest_add_call_captures_url_author_contributor_through_files():
+    """Issue 3640: URL/AUTHOR/CONTRIBUTOR were spliced directly into single
+    quoted Python string literals inside ingest('URL', ..., author='AUTHOR',
+    contributor='CONTRIBUTOR'). AUTHOR/CONTRIBUTOR are free text that can be
+    lifted verbatim from a fetched page, and even an ordinary embedded quote
+    breaks out of the literal and lets arbitrary Python run inside the -c
+    script. This affects every host with a /graphify add flow, not just
+    aider/devin -- the shared add-watch reference all the file-write-capable
+    platforms load has the exact same pattern. Each value must now be
+    captured through its own single quoted heredoc into a temp file first,
+    then read back as a plain string, never re-parsed as Python source."""
+    claude_core, claude_refs = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core + "".join(claude_refs.values())}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        assert "ingest('URL', Path('./raw'), author='AUTHOR', contributor='CONTRIBUTOR')" not in body, (
+            f"[{key}] the old direct-substitution ingest(...) form must not survive"
+        )
+        for tmp_name in ("url", "author", "contributor"):
+            assert f"cat > graphify-out/.ingest_{tmp_name}.tmp <<'EOF'" in body, (
+                f"[{key}] missing the heredoc capture for ingest's {tmp_name}"
+            )
+            assert f"Path('graphify-out/.ingest_{tmp_name}.tmp').read_text" in body, (
+                f"[{key}] must read {tmp_name} back from its captured file"
+            )
+        assert "ingest(_url, Path('./raw'), author=_author, contributor=_contributor)" in body, (
+            f"[{key}] ingest(...) must be called with the file-captured values"
+        )
+
+
 def test_step1_gates_on_a_still_failed_install():
     """#1619 B4: a failed install must stop with an actionable error instead of
     silently writing a broken interpreter path that fails every later step
