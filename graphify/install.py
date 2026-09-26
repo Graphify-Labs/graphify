@@ -365,6 +365,14 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
 def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") -> str:
     # Heading is "# graphify" (H1) to match _SKILL_REGISTRATION_MARKER, which
     # _register_always_on_block anchors its idempotent replace-or-append on.
+    # This body must never contain a line that looks like an ATX heading
+    # (any run of 1-6 "#" then a space) -- _has_heading_before_eof in
+    # _replace_or_append_section treats any such line as a sign that real
+    # user content follows and refuses to guess where a legacy (sentinel-
+    # less) copy of this section ends, appending a fresh one instead of
+    # replacing in place. That's the correct, safe call for genuine user
+    # content; it would be an unnecessary, if harmless, duplicate append if
+    # the heading-shaped line were graphify's own.
     return (
         "# graphify\n"
         f"- **graphify** (`{skill_path}`) "
@@ -565,6 +573,47 @@ _PLATFORM_ALIASES: dict[str, str] = {"skills": "agents"}
 def _canonical_platform(platform_name: str) -> str:
     """Resolve a CLI platform alias to its real _PLATFORM_CONFIG key."""
     return _PLATFORM_ALIASES.get(platform_name, platform_name)
+# Written as the last line of every section this function inserts, from this
+# fix onward (#3791). An HTML comment renders invisibly in Markdown. Its only
+# job is giving the boundary search something exact to find on a later call,
+# instead of inferring the end from heading structure or falling through to
+# EOF -- see _replace_or_append_section's own docstring for why that guess
+# was unsafe. A section written before this fix has no such marker; that
+# legacy case is handled separately, see below.
+_SECTION_END_MARKER = "<!-- graphify-section-end -->"
+
+_ATX_HEADING_RE = re.compile(r"^#{1,6}\s")
+_FENCE_RE = re.compile(r"^(```|~~~)")
+
+
+def _has_heading_before_eof(lines: "list[str]", start: int) -> bool:
+    """True if any ATX heading (of any level) appears after index ``start``,
+    outside of a fenced code block.
+
+    Used as the last check before falling through to EOF is judged safe: a
+    section that predates the end marker and has no later ``boundary_prefix``
+    heading is only safe to replace/remove to EOF when nothing that *looks
+    like* a heading appears in the trailing content at all. A stray heading of
+    some other level is exactly the signature of the #3791 bug -- a user's own
+    ``## My own rules`` following graphify's H1 marker -- so its presence means
+    "stop here, don't guess", even though it doesn't match ``boundary_prefix``.
+
+    A ``#``-prefixed line inside a fenced code block (a shell/Python comment
+    in an example) is not a heading and must not count -- otherwise a code
+    sample with an ordinary comment line makes this return True for content
+    that is not ambiguous at all (PR 3803 review).
+    """
+    in_fence = False
+    for line in lines[start + 1:]:
+        stripped = line.strip()
+        if _FENCE_RE.match(stripped):
+            in_fence = not in_fence
+            continue
+        if not in_fence and _ATX_HEADING_RE.match(stripped):
+            return True
+    return False
+
+
 def _replace_or_append_section(
     content: str, marker: str, new_section: str, boundary_prefix: str = "## "
 ) -> str:
@@ -572,13 +621,49 @@ def _replace_or_append_section(
 
     If no line is exactly ``marker`` (the heading, at column 0), append
     ``new_section`` to the end (with a blank-line separator if there's existing
-    content).
+    content), followed by ``_SECTION_END_MARKER`` on its own line.
 
-    If a real ``marker`` heading exists, replace the existing section in place.
-    The section runs from that heading to the line before the next
-    ``boundary_prefix`` heading (default the next H2), or to EOF if none
-    follows. This lets older installs receive the updated copy without users
-    having to uninstall and reinstall (issue #580).
+    If a real ``marker`` heading exists, replace the existing section in
+    place. The section's end is found by scanning forward from the marker
+    for whichever of these is reached FIRST -- not by preferring one kind
+    of match over the other regardless of position:
+
+    1. An exact ``_SECTION_END_MARKER`` line -- written by this function
+       itself on a prior call, so it names the section's real end exactly,
+       regardless of the section's own internal structure (a multi-paragraph
+       template has its own internal blank lines, which is why a blank line
+       can't be used as a general-purpose boundary either). Scanning must
+       stop at the FIRST such line reached, not just the first one found
+       overall: a user who inserts their own heading between the marker's
+       content and its (easy to miss, since an HTML comment renders
+       invisibly) end marker -- editing the file directly rather than
+       through the installer -- has that heading precede the marker's own
+       sentinel in the file, and it must end the section there instead of
+       being swallowed as if it were more of graphify's own content (PR
+       3803 review).
+    2. A line starting with ``boundary_prefix`` (default the next H2). This
+       lets an older install (predating the end marker) still receive an
+       updated copy without the user uninstalling and reinstalling first
+       (issue #580) -- and, per the point above, also catches a user's own
+       inserted heading before an eventual stray/misplaced end marker.
+    3. Neither is reached before EOF, but no line anywhere after the marker looks like an
+       ATX heading of *any* level either: nothing suggests a separate section
+       begins somewhere in the trailing content, so it's judged to be more of
+       graphify's own old, unmarked prose and EOF is used as the end.
+    4. Neither exists, and something after the marker *does* look like a
+       heading (of any level, not just ``boundary_prefix``'s own): the
+       section's end is not knowable. That heading could be the user's own
+       writing that merely doesn't happen to use the exact level
+       ``boundary_prefix`` expects -- for an H1 marker, a user's ``## My own
+       rules`` never matches an H1 ``boundary_prefix``, yet is unmistakably a
+       separate section (#3791: falling through to EOF here silently deleted
+       a user's entire trailing section, hundreds of lines in a real report,
+       printing only "Done."). This case is treated the same as no
+       ``marker`` at all: a fresh section (carrying a fresh end marker) is
+       appended rather than an unbounded one being replaced. The stale old
+       block is left in place, orphaned, rather than destroyed -- the fresh
+       copy's own end marker means every later call finds it precisely via
+       (1), so this only ever happens once per legacy file.
 
     ``boundary_prefix`` must match whatever level ``marker`` itself is (``"# "``
     for an H1 marker, the default ``"## "`` for an H2 one) — mirrors
@@ -596,19 +681,56 @@ def _replace_or_append_section(
     starts = [i for i, line in enumerate(lines) if line.strip() == marker]
     if not starts:
         if content.strip():
-            return content.rstrip() + "\n\n" + new_section.lstrip()
-        return new_section.lstrip()
+            return content.rstrip() + "\n\n" + new_section.strip() + "\n" + _SECTION_END_MARKER + "\n"
+        return new_section.strip() + "\n" + _SECTION_END_MARKER + "\n"
 
     start = starts[-1]
-    end = len(lines)
+    # An H1 (top-level) marker's own body is documented to never contain a
+    # heading-shaped line (see _skill_registration's own invariant note), so
+    # for that specific marker level ANY heading, not just an exact
+    # boundary_prefix match, is unambiguously a separate section -- there is
+    # nothing shallower it could be nested under. A deeper marker (H2+) keeps
+    # the narrower same-level-only check, since ITS body legitimately can
+    # contain a deeper heading as its own internal structure (e.g. an H3
+    # inside an H2-marked section is nested content, not a sibling). Without
+    # this, a user's own H2 heading under an H1 marker was skipped by the
+    # scan below (it never matches an H1 boundary_prefix), letting a later,
+    # unrelated end marker swallow it (PR 3803 review).
+    _marker_is_top_level = boundary_prefix.rstrip() == "#"
+    end = None
+    in_fence = False
     for j in range(start + 1, len(lines)):
-        if lines[j].startswith(boundary_prefix):
+        stripped = lines[j].strip()
+        if stripped == _SECTION_END_MARKER:
+            end = j + 1  # consume the sentinel itself, so it never duplicates
+            break
+        if _FENCE_RE.match(stripped):
+            # A fenced code block's own content (e.g. a "#"-led shell/Python
+            # comment in an example) must never be mistaken for a heading
+            # boundary, or a top-level marker's replace/remove would split the
+            # fence in two (PR 3803 review).
+            in_fence = not in_fence
+            continue
+        if not in_fence and (
+            lines[j].startswith(boundary_prefix) or (
+                _marker_is_top_level and _ATX_HEADING_RE.match(stripped)
+            )
+        ):
             end = j
             break
+    if end is None and not _has_heading_before_eof(lines, start):
+        # No end marker, no boundary_prefix heading, and nothing that even
+        # looks like a heading anywhere in the trailing content -- safe to
+        # treat as more of graphify's own unmarked prose and fall through.
+        end = len(lines)
+    if end is None:
+        # #3791: something heading-shaped follows with no confirmed end for
+        # THIS section -- never guess EOF, append a fresh copy instead.
+        return content.rstrip() + "\n\n" + new_section.strip() + "\n" + _SECTION_END_MARKER + "\n"
 
     head = "\n".join(lines[:start]).rstrip()
     tail = "\n".join(lines[end:]).lstrip()
-    section = new_section.strip()
+    section = new_section.strip() + "\n" + _SECTION_END_MARKER
 
     parts: list[str] = []
     if head:
@@ -629,10 +751,30 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
     stripping surrounding whitespace), never as a substring. The old uninstall
     regex ``## graphify`` was unanchored, so it matched inside a user's
     ``### graphify`` heading and deleted hand-written content (#2062) — the same
-    class of bug the install side hardened against in #1688. Each section runs to
-    the line before the next ``boundary_prefix`` heading (default the next H2) or
-    EOF, mirroring ``_replace_or_append_section``. All exact-heading sections are
-    removed (pre-#1688 installs could leave duplicates).
+    class of bug the install side hardened against in #1688. Each section's end
+    is found the same way ``_replace_or_append_section`` finds it: scanning
+    forward from the marker for whichever is reached FIRST, an exact
+    ``_SECTION_END_MARKER`` line (written by an install from this fix onward)
+    or a ``boundary_prefix`` heading (default the next H2) for a section that
+    predates the end marker -- not by preferring the sentinel regardless of
+    position, which would let a user's own heading inserted before an
+    eventual stray/misplaced end marker be swallowed along with it (PR 3803
+    review). All exact-heading sections are removed (pre-#1688 installs
+    could leave duplicates).
+
+    When NEITHER an end marker NOR a later ``boundary_prefix`` heading exists
+    after an occurrence, EOF is used as the end ONLY when nothing that looks
+    like an ATX heading (of any level) appears anywhere in the trailing
+    content either -- nothing then suggests a separate section exists there.
+    If some other heading does appear (#3791's exact shape: a user's own
+    ``## My own rules`` after graphify's H1 marker, which never matches an H1
+    ``boundary_prefix``), the occurrence is left in place instead: everything
+    below it could be the user's own content that simply doesn't use the
+    expected heading level, and removing it would silently destroy it (the
+    same unbounded-EOF bug as ``_replace_or_append_section``). Stops entirely
+    at the first such ambiguous occurrence rather than skipping past it, so
+    the result is always either fully cleaned or provably untouched from that
+    point on.
 
     Returns None when no exact ``marker`` line exists — the caller must then leave
     the file untouched. This doubles as the guard: a substring mention (a bullet,
@@ -640,16 +782,44 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
     """
     lines = content.split("\n")
     removed = False
+    # See _replace_or_append_section's matching note: an H1 (top-level)
+    # marker's own body never contains a heading-shaped line, so for that
+    # marker level any heading -- not just an exact boundary_prefix match --
+    # is unambiguously a separate section (PR 3803 review).
+    _marker_is_top_level = boundary_prefix.rstrip() == "#"
     while True:
         starts = [i for i, line in enumerate(lines) if line.strip() == marker]
         if not starts:
             break
         start = starts[-1]
-        end = len(lines)
+        end = None
+        in_fence = False
         for j in range(start + 1, len(lines)):
-            if lines[j].startswith(boundary_prefix):
+            stripped = lines[j].strip()
+            if stripped == _SECTION_END_MARKER:
+                end = j + 1  # consume the sentinel itself
+                break
+            if _FENCE_RE.match(stripped):
+                # See _replace_or_append_section's matching note: a fenced
+                # code block's own content must never be mistaken for a
+                # heading boundary (PR 3803 review).
+                in_fence = not in_fence
+                continue
+            if not in_fence and (
+                lines[j].startswith(boundary_prefix) or (
+                    _marker_is_top_level and _ATX_HEADING_RE.match(stripped)
+                )
+            ):
                 end = j
                 break
+        if end is None and not _has_heading_before_eof(lines, start):
+            end = len(lines)
+        if end is None:
+            # #3791: something heading-shaped follows with no confirmed end
+            # for this occurrence -- never remove to EOF, that could be the
+            # user's own content. Leave it in place and stop, rather than
+            # guessing or skipping past it.
+            break
         head = "\n".join(lines[:start]).rstrip()
         tail = "\n".join(lines[end:]).lstrip()
         merged = head + "\n\n" + tail if head and tail else (head or tail)
@@ -804,13 +974,10 @@ def gemini_install(project_dir: Path | None = None, *, project: bool = False) ->
 
     target = project_dir / "GEMINI.md"
 
-    if target.exists():
-        content = target.read_text(encoding="utf-8")
-        new_content = _replace_or_append_section(
-            content, _GEMINI_MD_MARKER, _always_on("gemini-md")
-        )
-    else:
-        new_content = _always_on("gemini-md")
+    content = target.read_text(encoding="utf-8") if target.exists() else ""
+    new_content = _replace_or_append_section(
+        content, _GEMINI_MD_MARKER, _always_on("gemini-md")
+    )
 
     if target.exists() and new_content == target.read_text(encoding="utf-8"):
         print(f"graphify already configured in {target.resolve()} (no change)")
@@ -969,19 +1136,15 @@ def vscode_install(project_dir: Path | None = None) -> None:
 
     instructions = (project_dir or Path(".")) / ".github" / "copilot-instructions.md"
     instructions.parent.mkdir(parents=True, exist_ok=True)
-    if instructions.exists():
-        content = instructions.read_text(encoding="utf-8")
-        new_content = _replace_or_append_section(
-            content, _VSCODE_INSTRUCTIONS_MARKER, _always_on("vscode-instructions")
-        )
-        if new_content == content:
-            print(f"  {instructions}  ->  already configured (no change)")
-        else:
-            instructions.write_text(new_content, encoding="utf-8")
-            print(f"  {instructions}  ->  graphify section {'updated' if _VSCODE_INSTRUCTIONS_MARKER in content else 'added'}")
+    content = instructions.read_text(encoding="utf-8") if instructions.exists() else ""
+    new_content = _replace_or_append_section(
+        content, _VSCODE_INSTRUCTIONS_MARKER, _always_on("vscode-instructions")
+    )
+    if instructions.exists() and new_content == content:
+        print(f"  {instructions}  ->  already configured (no change)")
     else:
-        instructions.write_text(_always_on("vscode-instructions"), encoding="utf-8")
-        print(f"  {instructions}  ->  created")
+        instructions.write_text(new_content, encoding="utf-8")
+        print(f"  {instructions}  ->  graphify section {'updated' if _VSCODE_INSTRUCTIONS_MARKER in content else 'added'}")
 
     print()
     print(
@@ -1592,13 +1755,10 @@ def _agents_install(project_dir: Path, platform: str, project: bool = False) -> 
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
     target = (project_dir or Path(".")) / "AGENTS.md"
 
-    if target.exists():
-        content = target.read_text(encoding="utf-8")
-        new_content = _replace_or_append_section(
-            content, _AGENTS_MD_MARKER, _always_on("agents-md")
-        )
-    else:
-        new_content = _always_on("agents-md")
+    content = target.read_text(encoding="utf-8") if target.exists() else ""
+    new_content = _replace_or_append_section(
+        content, _AGENTS_MD_MARKER, _always_on("agents-md")
+    )
 
     if target.exists() and new_content == target.read_text(encoding="utf-8"):
         print(f"graphify already configured in {target.resolve()} (no change)")
@@ -1828,13 +1988,10 @@ def claude_install(project_dir: Path | None = None, strict: bool = False, projec
     """Write the graphify section to the local CLAUDE.md."""
     target = (project_dir or Path(".")) / "CLAUDE.md"
 
-    if target.exists():
-        content = target.read_text(encoding="utf-8")
-        new_content = _replace_or_append_section(
-            content, _CLAUDE_MD_MARKER, _always_on("claude-md")
-        )
-    else:
-        new_content = _always_on("claude-md")
+    content = target.read_text(encoding="utf-8") if target.exists() else ""
+    new_content = _replace_or_append_section(
+        content, _CLAUDE_MD_MARKER, _always_on("claude-md")
+    )
 
     if target.exists() and new_content == target.read_text(encoding="utf-8"):
         print(f"graphify already configured in {target.resolve()} (no change)")
@@ -2018,13 +2175,10 @@ def codebuddy_install(project_dir: Path | None = None) -> None:
     _copy_skill_file("codebuddy", project=bool(project_dir), project_dir=project_dir)
     target = (project_dir or Path(".")) / "CODEBUDDY.md"
 
-    if target.exists():
-        content = target.read_text(encoding="utf-8")
-        new_content = _replace_or_append_section(
-            content, _CODEBUDDY_MD_MARKER, _always_on("claude-md")
-        )
-    else:
-        new_content = _always_on("claude-md")
+    content = target.read_text(encoding="utf-8") if target.exists() else ""
+    new_content = _replace_or_append_section(
+        content, _CODEBUDDY_MD_MARKER, _always_on("claude-md")
+    )
 
     if target.exists() and new_content == target.read_text(encoding="utf-8"):
         print(f"graphify already configured in {target.resolve()} (no change)")
