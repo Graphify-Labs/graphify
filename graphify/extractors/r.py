@@ -252,6 +252,10 @@ def extract_r(path: Path) -> dict:
 
     def process_call_declaration(node: Node, owner: str) -> bool:
         call_name, arguments = call_parts(node)
+        # A namespace-qualified constructor (`methods::setClass`, `R6::R6Class`)
+        # is the same declaration as its bare form; drop the qualifier so it is
+        # still recognised rather than treated as an ordinary call.
+        call_name = call_name.split("::")[-1].strip()
         if arguments is None:
             return False
         args = [child for child in arguments.named_children if child.type == "argument"]
@@ -332,6 +336,12 @@ def extract_r(path: Path) -> dict:
                     continue
                 if value.type == "call":
                     constructor, arguments = call_parts(value)
+                    # `R6::R6Class(...)` is the idiomatic, library()-free way to
+                    # define an R6 class. call_parts returns the qualified text
+                    # `R6::R6Class`, which never matched _CLASS_CONSTRUCTORS, so
+                    # the whole class body (every method) was dropped and the
+                    # binding fell through to a plain variable node.
+                    constructor = constructor.split("::")[-1].strip()
                     if constructor in _CLASS_CONSTRUCTORS:
                         class_name = name
                         if arguments is not None:
