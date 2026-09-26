@@ -300,20 +300,27 @@ def test_windows_frontmatter_name_and_shell_and_extra():
     assert core.index("## Troubleshooting") < core.index("## Honesty Rules")
 
 
-def test_codex_dispatch_is_agenttask_and_collects_in_memory():
-    """codex: spawn/wait/close_agent dispatch needing multi_agent = true."""
-    core, _ = _platform_artifacts("codex")
-    assert "spawn_agent" in core
-    assert "wait_agent" in core
-    assert "close_agent" in core
-    assert "multi_agent = true" in core
-    assert "Codex collects in memory" in core
-    # The B2 dispatch slot itself (Codex heading -> Step B3) must not carry the
-    # claude Agent-tool example. The shared Step B3 prose mentions the agent type
-    # in a re-run hint, so scope the check to the dispatch block only.
+def test_codex_dispatch_writes_chunk_files():
+    import json
+
+    from graphify.extractors.base import _file_stem, _make_id
+
+    core, refs = _platform_artifacts("codex")
+    claude, claude_refs = _platform_artifacts("claude")
     b2 = core[core.index("**Step B2"):core.index("**Step B3")]
-    assert "Concrete example for 3 chunks" not in b2
-    assert "Agent tool call 1" not in b2
+    for value in ("spawn_agent", "wait_agent", "CHUNK_PATH", "absolute", "current working directory", "write", "completed"):
+        assert value in b2
+    for value in ("collects in memory", "return the JSON inline", ".graphify_semantic_new.json", "agent_type=", "wait_agent(handle)"):
+        assert value not in b2
+    assert refs["extraction-spec.md"] == claude_refs["extraction-spec.md"]
+    schema = json.loads(next(line for line in refs["extraction-spec.md"].splitlines() if line.startswith('{"nodes":')))
+    assert schema["nodes"][0]["id"] == _make_id(_file_stem(Path("src/auth/session.py")), "ValidateToken")
+    b3 = core[core.index("**Step B3"):core.index("### Step 4")]
+    assert b3 == claude[claude.index("**Step B3"):claude.index("### Step 4")]
+    assert "glob.glob" in b3
+    assert "more than half" in b3
+    assert 'subagent_type="general-purpose"' not in b3
+    assert "Explore type" not in b3
 
 
 def test_codex_and_windows_unify_enum_to_six_values():
@@ -328,11 +335,11 @@ def test_codex_and_windows_unify_enum_to_six_values():
             assert '"file_type":"code|document|paper|image"' not in body
 
 
-def test_codex_uses_compact_extraction_windows_uses_verbose():
-    """The extraction variant differs: codex compact, windows verbose."""
+def test_codex_and_windows_share_verbose_extraction():
+    """Both hosts use the shared file-output extraction prompt."""
     _, codex_refs = _platform_artifacts("codex")
     _, windows_refs = _platform_artifacts("windows")
-    assert "(compact)" in codex_refs["extraction-spec.md"]
+    assert codex_refs["extraction-spec.md"] == windows_refs["extraction-spec.md"]
     assert "(compact)" not in windows_refs["extraction-spec.md"]
 
 
