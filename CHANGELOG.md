@@ -4,7 +4,7 @@ Full release notes with details on each version: [GitHub Releases](https://githu
 
 ## Unreleased
 
-- Feature: Salam (`.salam`) language extractor — English and Persian keyword spellings, packages and imports (including Persian package names via `@fa`), functions, structs with methods, enums, interfaces, `impl` blocks, type aliases, constants, `extern:` C functions, `link` libraries, layout blocks and components, plus `calls` and `references` edges; pure token scanner, no new dependency. A cross-file resolver binds `pkg.Func()`, string-import aliases, receiver-typed method calls, and type references.
+- Feature: Salam (`.salam`) language extractor — current English and Persian keyword set (including the Persian comma `،`), packages and imports (including Persian package names via `@fa`), functions, structs with methods, enums, interfaces, `impl` blocks, type aliases, constants, `extern:` C functions, `link` libraries, layout blocks and components, plus `calls` and `references` edges; pure token scanner, no new dependency. A cross-file resolver binds `pkg.Func()`, string-import aliases, receiver-typed method calls, and type references.
 
 ## 0.9.68 (2026-09-25)
 

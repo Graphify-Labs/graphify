@@ -87,14 +87,14 @@ def test_annotations_become_aliases():
     assert circle["metadata"]["aliases"] == {"en": "Circle", "fa": "دایره"}
 
 
-def test_persian_keywords_old_and_new(tmp_path):
+def test_persian_keywords(tmp_path):
     fa = extract_salam(FIXTURES / "sample_fa.salam")
     kinds = _kinds(fa)
     assert kinds["نقطه"] == "struct"
     assert kinds["جمع()"] == "function"
-    assert kinds["آغازین()"] == "function"
+    assert kinds["ریشه()"] == "function"
     assert ("نقطه", ".مجموع()") in _edges(fa, "method")
-    assert ("آغازین()", "جمع()") in _edges(fa, "calls")
+    assert ("ریشه()", "جمع()") in _edges(fa, "calls")
 
     new = _write(
         tmp_path,
@@ -104,7 +104,7 @@ def test_persian_keywords_old_and_new(tmp_path):
         "پایان\n"
         "\n"
         "روال ریشه:\n"
-        "    تکرار 0 تا 100 هر 10 با i:\n"
+        "    تکرار 0 تا 100 هر 10 از i:\n"
         "        اگر i > 50:\n"
         "            سرچاپ جمع(i, 1)\n"
         "        پایان\n"
@@ -252,7 +252,7 @@ def test_cross_file_calls_types_and_persian_aliases(tmp_path):
     _write(
         tmp_path,
         "app/fa.salam",
-        "فراخوانی ریاضی\n"
+        "واردسازی ریاضی\n"
         "\n"
         "روال ریشه:\n"
         "    چاپ ریاضی.مربع(3)\n"

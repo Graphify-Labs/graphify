@@ -36,38 +36,35 @@ def _kw_key(text: str) -> str:
 
 
 _KEYWORD_SPELLINGS: dict[str, tuple[str, ...]] = {
-    "func": ("func", "کارکرد", "روال"),
+    "func": ("func", "روال"),
     "struct": ("struct", "ساختار"),
-    "enum": ("enum", "شمارش", "جداشمار"),
+    "enum": ("enum", "جداشمار"),
     "interface": ("interface", "میانجی"),
-    "impl": ("impl", "پیاده‌سازی", "کاربست"),
-    "type": ("type", "ریخت", "گونه"),
-    "const": ("const", "پایدار", "پایا"),
-    "import": ("import", "فراخوانی", "خواندن"),
+    "impl": ("impl", "کاربست"),
+    "type": ("type", "گونه"),
+    "const": ("const", "پایا"),
+    "import": ("import", "واردسازی"),
     "package": ("package", "بسته"),
-    "extern": ("extern", "بیرونی", "فراخوانه"),
+    "extern": ("extern", "فراخوانه"),
     "layout": ("layout", "چیدمان"),
-    "component": ("component", "سازه", "بخش"),
+    "component": ("component", "بخش"),
     "end": ("end", "پایان"),
     "if": ("if", "اگر"),
     "else": ("else", "وگرنه"),
-    "loop": ("while", "until", "repeat", "each",
-             "تاهنگام", "تاوقتی", "چرخه", "تکرار", "هر"),
-    "match": ("match", "برگزین", "همخوان"),
+    "loop": ("until", "repeat", "each", "تکرار", "هر"),
+    "match": ("match", "همخوان"),
     "on": ("on", "بر"),
-    "mut": ("mut", "گذرا", "ناپایا"),
+    "mut": ("mut", "ناپایا"),
     "pub": ("pub", "همگانی"),
     "modifier": ("deprecated", "inline", "noinline", "pure", "noret",
-                 "ازکارافتاده", "توکار", "جدا", "درونزا", "بی‌بازگشت",
                  "بی‌کاره", "درخط", "نادرخط", "ناب", "نابرگشت"),
     "until_or_to": ("تا",),
     "other": ("ret", "as", "true", "false", "null", "break", "continue", "print",
               "println", "printerr", "printerrln", "input", "defer", "operator",
-              "to", "by", "in", "with", "and", "or",
-              "بازگشت", "برگشت", "برگردان", "درست", "نادرست", "پوچ", "بشکن", "بگذر",
-              "گذر", "بنویس", "چاپ", "سرچاپ", "نادرستینویس", "نادرستیچاپ",
-              "نادرست‌چاپ", "نادرست‌سرچاپ", "بخوان", "ورودی", "دیرکرد", "دیرکن",
-              "کنشگر", "کارور", "گام", "در", "از", "با", "و", "یا"),
+              "to", "by", "in", "with",
+              "برگشت", "برگردان", "درست", "نادرست", "پوچ", "بشکن", "گذر",
+              "چاپ", "سرچاپ", "نادرست‌چاپ", "نادرست‌سرچاپ", "ورودی", "دیرکن",
+              "کارور", "از", "و", "یا", "برابر", "نابرابر"),
 }
 _KW: dict[str, str] = {}
 for _canon, _spellings in _KEYWORD_SPELLINGS.items():
@@ -84,10 +81,10 @@ _BODY_DECLS = frozenset({
 _LINK_WORDS = frozenset({"link", "پیوند"})
 _LINK_KINDS = frozenset({"static", "dynamic", "framework", "ایستا", "پویا", "چارچوب"})
 _THIS_WORDS = frozenset({"this", "این"})
-_REPEAT_WORDS = frozenset({"repeat", "چرخه", "تکرار"})
-_OPERATOR_WORDS = frozenset({"operator", "کارور", "کنشگر"})
+_REPEAT_WORDS = frozenset({"repeat", "تکرار"})
+_OPERATOR_WORDS = frozenset({"operator", "کارور"})
 _VARIADIC_ARITY = 1000
-_RETURN_WORDS = frozenset({"ret", "بازگشت", "برگشت"})
+_RETURN_WORDS = frozenset({"ret", "برگشت"})
 _BUILTIN_CALLS = frozenset({"len", "cap", "spawn", "join"})
 
 _BUILTIN_TYPES = frozenset(_norm(name) for name in (
@@ -193,6 +190,10 @@ def _tokenize(text: str) -> list[Token]:
                 toks.append((_STR, match.group()[1:-1], line, col))
                 pos = match.end()
                 continue
+        if ch in "\u060c\u061f":
+            toks.append((_OP, "," if ch == "\u060c" else "?", line, col))
+            pos += 1
+            continue
         if ch == "@":
             match = _IDENT.match(text, pos + 1)
             if match is not None:
@@ -1386,8 +1387,8 @@ class _SalamExtractor:
         return i + 1
 
     def is_repeat_step(self, i: int) -> bool:
-        """New Persian spells the ``repeat ... by N`` step ``هر``, same as ``each``."""
-        if _kw_key(self.toks[i][1]) != "هر":
+        """Inside a ``repeat`` header ``each``/``هر`` is the step, not a loop opener."""
+        if _kw_key(self.toks[i][1]) not in ("each", "هر"):
             return False
         j = i - 1
         while j >= 0 and self.toks[j][0] != _NL:
