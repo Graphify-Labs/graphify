@@ -83,6 +83,6 @@ rsl-siege-manager is structurally interesting for graphify evaluation because:
 
 ## Reference
 
-- graphify repo: https://github.com/safishamsi/graphify
+- graphify repo: https://github.com/Graphify-Labs/graphify
 - graphify PyPI: https://pypi.org/project/graphifyy/
 - rsl-siege-manager: https://github.com/glitchwerks/rsl-siege-manager

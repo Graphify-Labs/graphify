@@ -243,6 +243,91 @@ def test_kotlin_fq_call_to_ambiguous_name_yields_no_edge(tmp_path):
         "guard must refuse to pick"
 
 
+# ── #1698: object/class qualified member calls across files ─────────────────
+
+_OBJECT_CALL_CORPUS = {
+    "config/Config.kt": (
+        "package com.demo.config\n"
+        "\n"
+        "object Config {\n"
+        "    fun load() { }\n"
+        "}\n"
+    ),
+    "app/App.kt": (
+        "package com.demo.app\n"
+        "\n"
+        "import com.demo.config.Config\n"
+        "\n"
+        "fun Start() {\n"
+        "    Config.load()\n"
+        "}\n"
+    ),
+}
+
+
+def test_kotlin_object_member_call_resolves_across_files(tmp_path):
+    r = _extract(tmp_path, _OBJECT_CALL_CORPUS)
+    start = _find(r, "Start()")
+    load = _find(r, ".load()")
+    calls = _edges(r, "calls")
+    assert (start, load) in calls, \
+        "`Config.load()` in another file must resolve to `object Config`'s method"
+    edge = next(
+        e for e in r["edges"]
+        if e["relation"] == "calls" and e["source"] == start and e["target"] == load
+    )
+    assert edge["confidence"] == "EXTRACTED"
+
+
+def test_kotlin_object_member_call_same_file_control_unaffected(tmp_path):
+    r = _extract(tmp_path, {
+        "Same.kt": (
+            "package com.demo.same\n"
+            "\n"
+            "object Config {\n"
+            "    fun load() { }\n"
+            "}\n"
+            "\n"
+            "fun Start() {\n"
+            "    Config.load()\n"
+            "}\n"
+        ),
+    })
+    start = _find(r, "Start()")
+    load = _find(r, ".load()")
+    assert (start, load) in _edges(r, "calls"), \
+        "the pre existing same file object member call resolution must be unaffected"
+
+
+def test_kotlin_object_member_call_ambiguous_receiver_yields_no_edge(tmp_path):
+    r = _extract(tmp_path, {
+        "one/One.kt": (
+            "package com.demo.one\n"
+            "\n"
+            "object Config {\n"
+            "    fun load() { }\n"
+            "}\n"
+        ),
+        "two/Two.kt": (
+            "package com.demo.two\n"
+            "\n"
+            "object Config {\n"
+            "    fun load() { }\n"
+            "}\n"
+        ),
+        "callr/Caller.kt": (
+            "package com.demo.callr\n"
+            "\n"
+            "fun Start() {\n"
+            "    Config.load()\n"
+            "}\n"
+        ),
+    })
+    start = _find(r, "Start()")
+    assert not {t for s, t in _edges(r, "calls") if s == start}, \
+        "`Config` exists in two packages — the exactly one candidate guard must refuse to pick"
+
+
 # ── #2551: one-line type bodies + ERROR recovery ─────────────────────────────
 
 def test_kotlin_partial_parse_warns_with_file_and_line(tmp_path, capsys):
@@ -492,3 +577,83 @@ def test_multiline_kotlin_unchanged(tmp_path, capsys):
                   if e["relation"] == "references" and e.get("context") == "field"}
     assert (cart, inv) in field_refs
     assert "syntax errors" not in capsys.readouterr().err
+
+
+def test_kotlin_companion_member_call_resolves_across_files(tmp_path):
+    """A `companion object` member is attributed to its enclosing class (#2565),
+    so `Service.create()` in another file resolves to the class's method — the
+    resolver relies on that attribution, so pin it directly (#1698)."""
+    r = _extract(tmp_path, {
+        "svc/Service.kt": (
+            "package com.demo.svc\n"
+            "\n"
+            "class Service {\n"
+            "    companion object {\n"
+            "        fun create() { }\n"
+            "    }\n"
+            "}\n"
+        ),
+        "app/Main.kt": (
+            "package com.demo.app\n"
+            "\n"
+            "import com.demo.svc.Service\n"
+            "\n"
+            "fun run() {\n"
+            "    Service.create()\n"
+            "}\n"
+        ),
+    })
+    run = _find(r, "run()")
+    create = _find(r, ".create()")
+    calls = _edges(r, "calls")
+    assert (run, create) in calls, \
+        "`Service.create()` must resolve to the companion member on the enclosing class"
+    edge = next(e for e in r["edges"] if e["relation"] == "calls"
+                and e["source"] == run and e["target"] == create)
+    assert edge["confidence"] == "EXTRACTED"
+
+
+def test_kotlin_object_member_call_survives_incremental_rebuild(tmp_path):
+    """The cross-file resolution must hold on the real `graphify update` / watch
+    path, where the unchanged receiver-type file arrives as a resolution-context
+    node. This exercises the actual watch context builder — it only works if the
+    `_callable_class` marker and `method` edges ride through its allow-list
+    (#1698). Routes through the real rebuild, not a hand-fed context list."""
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    (corpus / "config").mkdir(parents=True)
+    (corpus / "app").mkdir(parents=True)
+    (corpus / "config" / "Config.kt").write_text(
+        "package com.demo.config\n\nobject Config {\n    fun load() { }\n}\n",
+        encoding="utf-8",
+    )
+    app = corpus / "app" / "App.kt"
+
+    def _app(extra: str = "") -> str:
+        return ("package com.demo.app\n\nimport com.demo.config.Config\n\n"
+                "fun Start() {\n    Config.load()\n" + extra + "}\n")
+
+    app.write_text(_app(), encoding="utf-8")
+    graph_path = corpus / "graphify-out" / "graph.json"
+
+    def _resolves() -> bool:
+        data = json.loads(graph_path.read_text(encoding="utf-8"))
+        start = next((n["id"] for n in data["nodes"] if n.get("label") == "Start()"), None)
+        load = next((n["id"] for n in data["nodes"] if n.get("label") == ".load()"), None)
+        if start is None or load is None:
+            return False
+        return any(e.get("relation") == "calls"
+                   and {e.get("source"), e.get("target")} == {start, load}
+                   for e in data["links"])
+
+    assert _rebuild_code(corpus, no_cluster=True, acquire_lock=False) is True
+    assert _resolves(), "full build resolves the cross-file object member call"
+
+    # Change ONLY the caller: Config.kt is unchanged, so its object node + method
+    # edge are fed back as resolution context. The call must still resolve.
+    app.write_text(_app("    Config.load()\n"), encoding="utf-8")
+    assert _rebuild_code(corpus, changed_paths=[app], no_cluster=True,
+                         acquire_lock=False) is True
+    assert _resolves(), "call stays resolved after an incremental rebuild"

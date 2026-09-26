@@ -37,6 +37,7 @@ from graphify.extractors.base import (  # noqa: F401
 from graphify.extractors.apex import extract_apex  # noqa: F401
 from graphify.extractors.bash import extract_bash  # noqa: F401
 from graphify.extractors.blade import extract_blade  # noqa: F401
+from graphify.extractors.cobol import extract_cobol  # noqa: F401
 from graphify.extractors.csharp import (
     CsharpNameResolver,
     _resolve_cross_file_csharp_imports,
@@ -45,6 +46,7 @@ from graphify.extractors.csharp import (
 from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
+from graphify.extractors.erlang import extract_erlang, resolve_erlang_remote_calls  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
@@ -53,13 +55,19 @@ from graphify.extractors.markdown import extract_markdown, _MD_LINK_INDEX_CACHE 
 from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
+from graphify.extractors.r import extract_r, resolve_r_sourced_calls  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
+from graphify.extractors.solidity import (  # noqa: F401
+    extract_solidity,
+    resolve_solidity_type_references,
+)
 from graphify.extractors.sql import extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform, prepare_terraform, resolve_terraform_modules  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
+from graphify.extractors.vbnet import extract_vbnet, resolve_vbnet_partial_calls  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
 from graphify.paths import disambiguate_ambiguous_candidates
@@ -136,6 +144,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_lua_import_target,
     _probe_python_module_candidate,
     _resolve_python_module_path,
+    _resolve_python_namespace_dir,
     _resolve_tsconfig_alias,
     _resolve_workspace_import,
     _source_key,
@@ -173,8 +182,12 @@ def _raise_recursion_limit() -> None:
         sys.setrecursionlimit(_RECURSION_LIMIT)
 
 
-def _safe_extract(extractor: Callable, path: Path) -> dict:
+def _safe_extract(
+    extractor: Callable, path: Path, *, scan_root: Path | None = None
+) -> dict:
     try:
+        if extractor is extract_python:
+            return extractor(path, root=scan_root)
         return extractor(path)
     except RecursionError:
         print(f"  warning: skipped {path} (recursion limit exceeded)", file=sys.stderr, flush=True)
@@ -195,6 +208,208 @@ def _file_node_id(rel_path: Path) -> str:
     ID semantic subagents generate, or AST and semantic extraction split a file
     into two disconnected ghost nodes (#1033)."""
     return _make_id(_file_stem(rel_path))
+
+
+def _python_absolute_import_alias_files(paths, root) -> tuple[dict[str, set[str]], set[str]]:
+    """Map importable absolute module ids to their scanned file paths.
+
+    A file can be importable from more than one sys.path root inside the scan
+    root (for example ``a/src/pkg/mod.py`` as either ``pkg.mod`` or
+    ``src.pkg.mod``). Probe each in-root, non-package ancestor the same way the
+    shared resolver does. Keeping every candidate lets the extraction passes
+    fail closed when the same absolute module name identifies multiple files.
+    """
+    try:
+        root = Path(root).resolve()
+    except OSError:
+        root = Path(root)
+
+    package_dirs: dict[Path, bool] = {}
+
+    def _is_package(path: Path) -> bool:
+        if path not in package_dirs:
+            package_dirs[path] = (path / "__init__.py").is_file()
+        return package_dirs[path]
+
+    aliases: dict[str, set[str]] = {}
+    scan_root_aliases: set[str] = set()
+    for raw_path in paths:
+        p = Path(raw_path)
+        if p.suffix.lower() != ".py":
+            # _resolve_python_module_path probes .py, not a lone .pyi file.
+            continue
+        try:
+            p = p.resolve()
+            rel = p.relative_to(root)
+        except (ValueError, OSError, RuntimeError):
+            continue
+
+        module_path = p.parent if p.name == "__init__.py" else p.with_suffix("")
+        candidate_roots = [root]
+        for ancestor in p.parents:
+            if ancestor == root:
+                break
+            try:
+                ancestor.relative_to(root)
+            except ValueError:
+                break
+            if not _is_package(ancestor):
+                candidate_roots.append(ancestor)
+
+        for candidate_root in candidate_roots:
+            try:
+                module_rel = module_path.relative_to(candidate_root)
+            except ValueError:
+                continue
+            if not module_rel.parts or not all(part.isidentifier() for part in module_rel.parts):
+                continue
+            module_name = ".".join(module_rel.parts)
+            candidate = candidate_root.joinpath(*module_rel.parts)
+            try:
+                hit = _probe_python_module_candidate(candidate)
+                if hit is None or hit.resolve() != p:
+                    continue
+            except (OSError, RuntimeError):
+                continue
+            module_id = _make_id(module_name)
+            aliases.setdefault(module_id, set()).add(str(p))
+            if candidate_root == root:
+                # The shared resolver probes the scan root before importer
+                # ancestors. A unique root hit is therefore authoritative even
+                # if a nested, independently importable tree has the same name.
+                scan_root_aliases.add(module_id)
+    return aliases, scan_root_aliases
+
+
+def _suppress_ambiguous_python_imports(
+    edges: list[dict],
+    nodes: list[dict],
+    raw_calls: list[dict],
+    ambiguous_modules: set[str],
+    module_alias_files: dict[str, set[str]],
+    root: Path,
+) -> None:
+    """Keep ambiguous Python imports dangling instead of choosing one file.
+
+    The transient module name is also consumed by the symbol-level resolvers;
+    removing it here prevents a direct file edge and any later inferred symbol
+    or call edge from binding to an arbitrary same-named package. A plain
+    ``import helper`` resolved to a scanned loose sibling in the importer's own
+    non-package directory is an exception: that directory-local target is
+    unambiguous even when another loose directory has its own ``helper.py``.
+    """
+    node_ids = {n.get("id") for n in nodes if isinstance(n, dict)}
+    ambiguous_bindings_by_file: dict[str, set[str]] = {}
+    ambiguous_all_call_files: set[str] = set()
+
+    def _is_resolved_loose_sibling(edge: dict, module_id: str) -> bool:
+        """Trust only a concrete, scanned same-directory target for a bare import."""
+        target_file = edge.get("target_file")
+        source_file = edge.get("source_file")
+        if not target_file or not source_file:
+            return False
+        candidates = module_alias_files.get(module_id, set())
+        if not candidates:
+            return False
+        try:
+            source_path = Path(source_file)
+            if not source_path.is_absolute():
+                source_path = root / source_path
+            source_path = source_path.resolve()
+            target_path = Path(target_file).resolve()
+            if target_path.parent != source_path.parent:
+                return False
+            if (source_path.parent / "__init__.py").is_file() or (
+                source_path.parent / "__init__.pyi"
+            ).is_file():
+                return False
+            return any(Path(candidate).resolve() == target_path for candidate in candidates)
+        except (OSError, RuntimeError):
+            return False
+
+    kept_edges: list[dict] = []
+    for edge in edges:
+        if not isinstance(edge, dict):
+            kept_edges.append(edge)
+            continue
+        module_name = edge.pop("_python_import_module", None)
+        bindings = edge.pop("_python_import_bindings", [])
+        is_module_binding = edge.pop("_python_import_module_binding", False)
+        marker_only = edge.pop("_python_import_marker_only", False)
+        if not module_name:
+            if not marker_only:
+                kept_edges.append(edge)
+            continue
+        if not marker_only and edge.get("relation") not in ("imports", "imports_from"):
+            kept_edges.append(edge)
+            continue
+        module_id = _make_id(module_name)
+        module_is_ambiguous = module_id in ambiguous_modules
+        if (
+            module_is_ambiguous
+            and is_module_binding
+            and "." not in module_name
+            and _is_resolved_loose_sibling(edge, module_id)
+        ):
+            module_is_ambiguous = False
+        if is_module_binding:
+            if module_is_ambiguous:
+                ambiguous_bindings_by_file.setdefault(
+                    str(edge.get("source_file", "")), set()
+                ).update(local for _, local in bindings)
+        else:
+            for imported, local in bindings:
+                if imported == "*":
+                    module_prefix = _make_id(module_name) + "_"
+                    if (
+                        module_is_ambiguous
+                        or any(name.startswith(module_prefix) for name in ambiguous_modules)
+                    ):
+                        ambiguous_all_call_files.add(
+                            str(edge.get("source_file", ""))
+                        )
+                    continue
+                if (
+                    module_is_ambiguous
+                    or _make_id(f"{module_name}.{imported}") in ambiguous_modules
+                ):
+                    ambiguous_bindings_by_file.setdefault(
+                        str(edge.get("source_file", "")), set()
+                    ).add(local)
+        if marker_only:
+            continue
+        if not module_is_ambiguous:
+            kept_edges.append(edge)
+            continue
+        # A raw dotted alias could itself belong to an unrelated real node. Use
+        # a stable, node-less id so the graph builder drops the unresolved edge
+        # instead of fabricating a link to that node.
+        identity = "\0".join((
+            str(module_name), str(edge.get("source_file", "")),
+            str(edge.get("source_location", "")), str(edge.get("source", "")),
+        ))
+        target = _make_id(f"ambiguous_python_import_{hashlib.sha1(identity.encode()).hexdigest()[:12]}")
+        while target in node_ids:
+            target += "_"
+        edge["target"] = target
+        edge.pop("target_file", None)
+        kept_edges.append(edge)
+
+    edges[:] = kept_edges
+
+    for raw_call in raw_calls:
+        source_file = str(raw_call.get("source_file", ""))
+        if source_file in ambiguous_all_call_files:
+            raw_call["_ambiguous_python_import"] = True
+            continue
+        bindings = ambiguous_bindings_by_file.get(source_file)
+        if not bindings:
+            continue
+        callee = str(raw_call.get("callee", ""))
+        receiver = str(raw_call.get("receiver", ""))
+        receiver_root = receiver.split(".", 1)[0]
+        if callee in bindings or receiver_root in bindings:
+            raw_call["_ambiguous_python_import"] = True
 
 
 def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
@@ -428,15 +643,73 @@ def _resolve_name(node, source: bytes, config: LanguageConfig) -> str | None:
 
 # ── Import handlers ───────────────────────────────────────────────────────────
 
-def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
+def _python_import_bindings(node, source: bytes) -> list[tuple[str, str]]:
+    """Return (imported name, local binding) pairs from a Python import node."""
+    bindings: list[tuple[str, str]] = []
+    past_import = False
+    for child in node.children:
+        if child.type == "import":
+            past_import = True
+            continue
+        if not past_import:
+            continue
+        if child.type == "dotted_name":
+            imported = _read_text(child, source)
+            bindings.append((imported, imported.split(".")[-1]))
+        elif child.type == "aliased_import":
+            name_node = child.child_by_field_name("name")
+            alias_node = child.child_by_field_name("alias")
+            if name_node is None:
+                continue
+            imported = _read_text(name_node, source)
+            local = _read_text(alias_node, source) if alias_node is not None else imported.split(".")[-1]
+            bindings.append((imported, local))
+        elif child.type == "wildcard_import":
+            bindings.append(("*", "*"))
+    return bindings
+
+
+def _import_python(
+    node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str,
+    scope_stack: list[str] | None = None, scan_root: Path | None = None,
+) -> None:
     t = node.type
+    current_path = Path(str_path)
+    try:
+        current_path = current_path.resolve()
+    except OSError:
+        pass
+    root = Path(scan_root) if scan_root is not None else current_path.parent
+    try:
+        root = root.resolve()
+    except OSError:
+        pass
     if t == "import_statement":
         for child in node.children:
             if child.type in ("dotted_name", "aliased_import"):
                 raw = _read_text(child, source)
                 raw_module, _, raw_alias = raw.partition(" as ")
                 module_name = raw_module.strip().lstrip(".")
-                tgt_nid = _make_id(module_name)
+                local_binding = raw_alias.strip() if raw_alias else module_name.split(".")[0]
+                target_path = _resolve_python_module_path(
+                    module_name, current_path, root, level=0
+                )
+                # Keep the target-file stamp even for a nested sys.path root so
+                # incremental extraction can canonicalize imports whose target
+                # is not in this batch. The corpus-wide ambiguity guard runs
+                # before symbol resolution and clears this edge when another
+                # scanned file claims the same absolute module name.
+                if target_path is not None:
+                    try:
+                        if target_path.resolve() == current_path:
+                            target_path = None
+                    except OSError:
+                        pass
+                tgt_nid = (
+                    _make_id(str(target_path))
+                    if target_path is not None
+                    else _make_id(module_name)
+                )
                 edge = {
                     "source": file_nid,
                     "target": tgt_nid,
@@ -446,7 +719,12 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                     "source_file": str_path,
                     "source_location": f"L{node.start_point[0] + 1}",
                     "weight": 1.0,
+                    "_python_import_module": module_name,
+                    "_python_import_bindings": [(module_name, local_binding)],
+                    "_python_import_module_binding": True,
                 }
+                if target_path is not None:
+                    edge["target_file"] = str(target_path)
                 if raw_alias:
                     # `import pkg.mod as alias` binds the local name `alias`, not
                     # `mod`'s own stem, to the module -- stash it so the cross-file
@@ -463,26 +741,50 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                 # Relative import - resolve to full path so IDs match file node IDs
                 dots = len(raw) - len(raw.lstrip("."))
                 module_name = raw.lstrip(".")
-                base = Path(str_path).parent
-                for _ in range(dots - 1):
-                    base = base.parent
-                # A relative import can name a subpackage (a directory with an
-                # __init__.py), not a module file. Probing the candidate on disk
-                # (mirroring the companion `imports` edge's
-                # _resolve_python_module_path) resolves `graphs` -> graphs/__init__.py
-                # instead of a nonexistent graphs.py: without it the target keeps an
-                # absolute-path-derived slug that the target_file stamp below can't
-                # heal, so it dangles per-checkout (#2455).
-                candidate = base / module_name.replace(".", "/") if module_name else base
-                resolved = _probe_python_module_candidate(candidate)
-                if resolved is not None:
-                    target_path = resolved
-                else:
+                target_path = _resolve_python_module_path(
+                    module_name, current_path, root, level=dots
+                )
+                if target_path is None:
+                    base = current_path.parent
+                    for _ in range(dots - 1):
+                        base = base.parent
                     rel = (module_name.replace(".", "/") + ".py") if module_name else "__init__.py"
                     target_path = base / rel
                 tgt_nid = _make_id(str(target_path))
             else:
-                tgt_nid = _make_id(raw)
+                # Use the shared scan-root-aware resolver for absolute imports.
+                # It stops at the corpus boundary and handles package roots the
+                # same way as symbol resolution. A namespace package has no file
+                # node of its own; the corpus pass will emit edges to any
+                # imported submodules that exist on disk.
+                target_path = _resolve_python_module_path(raw, current_path, root, level=0)
+                if target_path is None and _resolve_python_namespace_dir(
+                    raw, current_path, root, level=0
+                ) is not None:
+                    # Namespace packages have no file node for the named
+                    # package, but their imported names can still bind to
+                    # ambiguous submodules. Carry a private marker so the
+                    # corpus-wide guard can suppress false symbol/call edges;
+                    # it is removed before any graph resolver sees the edges.
+                    edges.append({
+                        "source": file_nid,
+                        "target": "",
+                        "relation": "_python_import_marker",
+                        "source_file": str_path,
+                        "_python_import_module": raw,
+                        "_python_import_bindings": _python_import_bindings(node, source),
+                        "_python_import_marker_only": True,
+                    })
+                    return
+                if target_path is not None:
+                    try:
+                        if target_path.resolve() == current_path:
+                            # Do not turn an import of the current file into a
+                            # self-loop.
+                            target_path = None
+                    except OSError:
+                        pass
+                tgt_nid = _make_id(str(target_path)) if target_path is not None else _make_id(raw)
             edge = {
                 "source": file_nid,
                 "target": tgt_nid,
@@ -493,6 +795,9 @@ def _import_python(node, source: bytes, file_nid: str, stem: str, edges: list, s
                 "source_location": f"L{node.start_point[0] + 1}",
                 "weight": 1.0,
             }
+            if not raw.startswith("."):
+                edge["_python_import_module"] = raw
+                edge["_python_import_bindings"] = _python_import_bindings(node, source)
             # Stamp the resolved target file (mirroring _import_js, #1814) so
             # the #2169 remap pass can canonicalize this edge's target on an
             # incremental run where the target file itself is not in the
@@ -1154,7 +1459,7 @@ _PHP_CONFIG = LanguageConfig(
         "enum_declaration",
         "trait_declaration",
     }),
-    function_types=frozenset({"function_definition", "method_declaration"}),
+    function_types=frozenset({"function_definition", "method_declaration", "anonymous_function", "arrow_function"}),
     import_types=frozenset({"namespace_use_clause"}),
     # object_creation_expression joins the dispatch set so `new Foo(...)` links
     # the constructing method to Foo (engine has a dedicated PHP branch: the
@@ -1172,7 +1477,7 @@ _PHP_CONFIG = LanguageConfig(
     # enums wrap their members in an enum_declaration_list rather than a
     # declaration_list, so the body walk needs it to reach enum methods/cases.
     body_fallback_child_types=("declaration_list", "compound_statement", "enum_declaration_list"),
-    function_boundary_types=frozenset({"function_definition", "method_declaration"}),
+    function_boundary_types=frozenset({"function_definition", "method_declaration", "anonymous_function", "arrow_function"}),
     import_handler=_import_php,
 )
 
@@ -1249,7 +1554,11 @@ def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, st
 _SWIFT_CONFIG = LanguageConfig(
     ts_module="tree_sitter_swift",
     class_types=frozenset({"class_declaration", "protocol_declaration"}),
-    function_types=frozenset({"function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration"}),
+    # `protocol_function_declaration` is the body-less method requirement inside a
+    # `protocol { ... }`; tree-sitter-swift gives it its own node type rather than
+    # reusing `function_declaration`, so without it a protocol's method contract
+    # is dropped and the protocol becomes an empty node.
+    function_types=frozenset({"function_declaration", "protocol_function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration"}),
     import_types=frozenset({"import_declaration"}),
     call_types=frozenset({"call_expression"}),
     call_function_field="",
@@ -1257,7 +1566,7 @@ _SWIFT_CONFIG = LanguageConfig(
     call_accessor_field="",
     name_fallback_child_types=("simple_identifier", "type_identifier", "user_type"),
     body_fallback_child_types=("class_body", "protocol_body", "function_body", "enum_class_body"),
-    function_boundary_types=frozenset({"function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration"}),
+    function_boundary_types=frozenset({"function_declaration", "protocol_function_declaration", "init_declaration", "deinit_declaration", "subscript_declaration"}),
     import_handler=_import_swift,
 )
 
@@ -1684,9 +1993,9 @@ def _normalize_ts_import_types(source: bytes, *, tsx: bool = False) -> bytes | N
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def extract_python(path: Path) -> dict:
+def extract_python(path: Path, *, root: Path | None = None) -> dict:
     """Extract classes, functions, and imports from a .py file via tree-sitter AST."""
-    result = _extract_generic(path, _PYTHON_CONFIG)
+    result = _extract_generic(path, _PYTHON_CONFIG, scan_root=root)
     if "error" not in result:
         _extract_python_rationale(path, result)
     return result
@@ -2546,9 +2855,91 @@ def extract_scala(path: Path) -> dict:
     return _extract_generic(path, _SCALA_CONFIG)
 
 
+_PHP_SCRIPT_RE = re.compile(
+    r"<script\b(?:\"[^\"]*\"|'[^']*'|[^>\"'])*>([\s\S]*?)</script\s*>",
+    re.IGNORECASE,
+)
+
+
+def _php_mask_to_script_blocks(src: str) -> tuple[str, bool]:
+    """Blank everything outside inline ``<script>`` bodies, keeping line numbers.
+
+    tree-sitter-php treats non-PHP spans (including inline ``<script>`` blocks)
+    as opaque text, so JS declared there is invisible to the PHP grammar (#2320).
+    Mirrors :func:`_vue_mask_non_script`'s approach: replace every character
+    outside a script body with a space (preserving ``\\r``/``\\n`` so source
+    locations still line up), leaving only the script content for a JS parse.
+    A ``<script src="…"></script>`` with no body masks to an empty region,
+    which parses as empty JS and contributes nothing — no special-casing needed.
+    Returns ``(masked_source, had_script)``; the caller skips the JS pass
+    entirely when ``had_script`` is False.
+    """
+    def _blank(s: str) -> str:
+        return re.sub(r"[^\r\n]", " ", s)
+
+    out: list[str] = []
+    pos = 0
+    had_script = False
+    for m in _PHP_SCRIPT_RE.finditer(src):
+        had_script = True
+        out.append(_blank(src[pos:m.start(1)]))  # everything up to and including <script ...>
+        out.append(m.group(1))                    # script body, verbatim
+        out.append(_blank(src[m.end(1):m.end()]))  # </script> and any trailing part of the match
+        pos = m.end()
+    if not had_script:
+        return src, False
+    out.append(_blank(src[pos:]))
+    return "".join(out), True
+
+
 def extract_php(path: Path) -> dict:
-    """Extract classes, functions, methods, namespace uses, and calls from a .php file."""
-    return _extract_generic(path, _PHP_CONFIG)
+    """Extract classes, functions, methods, namespace uses, and calls from a .php file.
+
+    Also parses any inline ``<script>`` blocks as JavaScript (#2320): the PHP
+    grammar sees those spans as opaque markup, so a page mixing PHP with
+    client-side JS previously indexed only its PHP half. The JS pass masks
+    everything else to blanks (preserving line numbers) and reuses the same
+    file node id, so JS symbols land under the one file node like any other
+    PHP symbol; a same-name PHP/JS collision (rare — different languages,
+    same file) is resolved by keeping the PHP node, since PHP is the file's
+    primary language, and dropping every JS edge that touches the id the
+    dropped JS node would have used, so no edge from the discarded symbol
+    is left to silently attach to the unrelated PHP node sharing its id.
+    """
+    result = _extract_generic(path, _PHP_CONFIG)
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+        masked, had_script = _php_mask_to_script_blocks(src)
+        if not had_script:
+            return result
+        js_result = _extract_generic(path, _JS_CONFIG, source_override=masked.encode("utf-8"))
+        # The file node itself always collides by construction -- both passes
+        # derive its id from the same path, on purpose, so JS symbols can
+        # land under the one PHP file node. That expected collision must not
+        # be treated as a dropped-symbol collision below, or every JS edge
+        # sourced from the file node (i.e. every top-level JS symbol's own
+        # `contains` edge) would be discarded along with it.
+        file_node_id = result["nodes"][0]["id"] if result.get("nodes") else None
+        existing_ids = {n["id"] for n in result.get("nodes", [])}
+        colliding_ids: set = set()
+        for n in js_result.get("nodes", []):
+            if n["id"] in existing_ids:
+                if n["id"] != file_node_id:
+                    colliding_ids.add(n["id"])
+                continue
+            result.setdefault("nodes", []).append(n)
+            existing_ids.add(n["id"])
+        for e in js_result.get("edges", []):
+            # A JS node dropped above for colliding with an existing PHP
+            # node id must not leave its edges behind -- otherwise an edge
+            # meant for the dropped JS symbol silently attaches to the
+            # unrelated retained PHP node that happens to share its id.
+            if e.get("source") in colliding_ids or e.get("target") in colliding_ids:
+                continue
+            result.setdefault("edges", []).append(e)
+    except Exception:
+        pass
+    return result
 
 
 # One level of balanced parens (e.g. `Foo #(Bar #(int))`) — bounded so malformed
@@ -2642,6 +3033,8 @@ _CASE_INSENSITIVE_EXTS = frozenset({
     ".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps",  # PHP fns/classes
     ".sql",                                                          # SQL identifiers
     ".nim", ".nims", ".nimble",                                      # Nim (style-insensitive)
+    ".cbl", ".cob", ".cobol", ".cpy",
+    ".vb",
 })
 
 
@@ -2677,10 +3070,14 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".py": "python",
     ".go": "go",
     ".rs": "rust",
+    ".cbl": "cobol", ".cob": "cobol", ".cobol": "cobol", ".cpy": "cobol",
+    ".r": "r",
+    ".sol": "solidity",
+    ".erl": "erlang", ".hrl": "erlang", ".escript": "erlang",
     ".rb": "ruby", ".rake": "ruby",
     ".php": "php", ".phtml": "php", ".php3": "php", ".php4": "php",
     ".php5": "php", ".php7": "php", ".phps": "php",
-    ".cs": "dotnet", ".razor": "dotnet", ".cshtml": "dotnet", ".xaml": "dotnet",
+    ".cs": "dotnet", ".vb": "dotnet", ".razor": "dotnet", ".cshtml": "dotnet", ".xaml": "dotnet",
     ".lua": "lua", ".luau": "lua",
     ".zig": "zig",
     ".ex": "elixir", ".exs": "elixir",
@@ -3546,6 +3943,8 @@ def _resolve_python_member_calls(
         })
 
     for rc in all_raw_calls:
+        if rc.get("_ambiguous_python_import"):
+            continue
         if not rc.get("is_member_call"):
             continue
         receiver = rc.get("receiver")
@@ -3793,6 +4192,23 @@ def _resolve_cpp_member_calls(
             enclosing_type.setdefault(tgt, src)
             method_index[(src, _key(tnode.get("label", "")))] = tgt
 
+    # Qualified label ("Class::method()") -> node id(s), for a Foo::bar() call
+    # whose callee exists ONLY as this fallback shape with no `defines`/`method`
+    # edge to its class at all (#2348). A macro-heavy class body (Unreal's
+    # UCLASS()/GENERATED_BODY()) can defeat the bundled grammar's error recovery
+    # badly enough that the in-class declaration is never parsed as a member;
+    # the out-of-line .cpp definition then has nothing to attach to, so the
+    # extractor falls back to a qualified-labeled node contained by its FILE
+    # instead of a bare-labeled one contained by its class. method_index can
+    # never find that node (it only indexes defines/method targets), so this is
+    # a second-chance lookup by the exact qualified label, still guarded by
+    # exactly-one-candidate.
+    qualified_method_nids: dict[str, list[str]] = {}
+    for n in all_nodes:
+        label = str(n.get("label", ""))
+        if n.get("source_file") and label.endswith("()") and "::" in label:
+            qualified_method_nids.setdefault(label, []).append(n["id"])
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
@@ -3813,6 +4229,7 @@ def _resolve_cpp_member_calls(
         if rc.get("lang") != "cpp":
             continue
         # Determine the receiver's type and the resulting confidence.
+        qualified_fallback_label: str | None = None
         if receiver == "this":
             # this->bar(): receiver is the caller's own enclosing class.
             type_nid = enclosing_type.get(caller)
@@ -3821,6 +4238,7 @@ def _resolve_cpp_member_calls(
             type_qualified = True
         elif receiver[:1].isupper():
             # Foo::bar(): the type is named explicitly in source.
+            qualified_fallback_label = f"{receiver}::{callee}()"
             type_defs = type_def_nids.get(_key(receiver), [])
             if not type_defs:
                 # Declared nowhere here, which in a multi-repo setup usually means
@@ -3852,6 +4270,10 @@ def _resolve_cpp_member_calls(
             type_nid = type_defs[0]
             type_qualified = False
         method_nid = method_index.get((type_nid, _key(callee)))
+        if method_nid is None and qualified_fallback_label is not None:
+            candidates = qualified_method_nids.get(qualified_fallback_label, [])
+            if len(candidates) == 1:
+                method_nid = candidates[0]
         target = method_nid or type_nid
         relation = "calls" if method_nid else "references"
         if target == caller or (caller, target) in existing_pairs:
@@ -4753,6 +5175,11 @@ def _resolve_rust_self_member_calls(
 
     Only `self.` receivers are handled: a non-self receiver needs local type
     inference this pass does not attempt, left for a future extension.
+
+    Simple unbounded generic impls use a persisted owner/arity marker instead
+    of their parameter-spelling-sensitive labels (`Bucket<T>` vs `Bucket<U>`).
+    That path additionally requires exactly one bare declaration and never
+    falls back to bare-label pooling when marker context is missing.
     """
     raw = [
         rc
@@ -4765,9 +5192,13 @@ def _resolve_rust_self_member_calls(
 
     node_by_id: dict[str, dict] = {n.get("id"): n for n in all_nodes}
     nids_by_label: dict[str, list[str]] = {}
+    nids_by_rust_impl_key: dict[str, list[str]] = {}
     for n in all_nodes:
         if str(n.get("source_file") or "").endswith(".rs"):
             nids_by_label.setdefault(n.get("label", ""), []).append(n.get("id"))
+            impl_key = n.get("_rust_impl_key")
+            if isinstance(impl_key, str) and impl_key:
+                nids_by_rust_impl_key.setdefault(impl_key, []).append(n.get("id"))
 
     # Pooling methods across every same-labeled node is safe when they are all
     # impl blocks for ONE real type spread across files, but not when the bare
@@ -4782,9 +5213,20 @@ def _resolve_rust_self_member_calls(
     # -- however many files its impl blocks are spread across -- is safe to
     # pool, which is the split-impl-block shape this pass exists for.
     declared_type_count: dict[str, int] = {}
+    generic_declared_type_count: dict[str, int] = {}
     contains_targets = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
     for label, nids in nids_by_label.items():
         declared_type_count[label] = sum(1 for nid in nids if nid in contains_targets)
+        generic_declared_type_count[label] = sum(
+            count
+            for nid in nids
+            if isinstance(
+                count := node_by_id.get(nid, {}).get("_rust_declaration_count"),
+                int,
+            )
+            and not isinstance(count, bool)
+            and count > 0
+        )
 
     # (impl/type node id, bare method name) -> method node id(s), from `method`
     # edges. A set, not a single overwritten value: two distinct method nodes
@@ -4814,10 +5256,20 @@ def _resolve_rust_self_member_calls(
         caller = rc["caller_nid"]
         callee = rc["callee"]
         self_type = rc["rust_self_type"]
-        if declared_type_count.get(self_type, 0) >= 2:
-            continue  # the type name itself is ambiguous -- two unrelated types share it
+        impl_key = rc.get("rust_self_impl_key")
+        if isinstance(impl_key, str) and impl_key:
+            # A generic owner/arity marker proves family identity only with one
+            # declaration in the corpus. Never fall back to bare-label pooling
+            # when persisted marker context is absent or ambiguous.
+            if generic_declared_type_count.get(self_type, 0) != 1:
+                continue
+            owner_nids = nids_by_rust_impl_key.get(impl_key, [])
+        else:
+            if declared_type_count.get(self_type, 0) >= 2:
+                continue  # two unrelated types share this bare name
+            owner_nids = nids_by_label.get(self_type, [])
         candidates: set[str] = set()
-        for nid in nids_by_label.get(self_type, []):
+        for nid in owner_nids:
             candidates |= method_index.get((nid, callee), set())
         if len(candidates) != 1:  # zero or ambiguous -> no edge (god-node guard)
             continue
@@ -4910,6 +5362,92 @@ def _resolve_elixir_import_targets(
         e["target"] = target_nid
 
 
+def _resolve_kotlin_member_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve Kotlin object/class-qualified member calls across files (#1698).
+
+    ``Receiver.method()`` (exactly two navigation segments, a capitalized
+    receiver — an object singleton or a class/companion member) resolves
+    in-file through the engine's own bare-name lookup, so a call reaches
+    ``raw_calls`` here only when that lookup already failed: the receiver and
+    the callee are declared in different files. The shared cross-file pass
+    skips every ``is_member_call`` unconditionally (a bare method name like
+    ``log`` collides across the corpus and inflates god-nodes, #543/#1219),
+    and Kotlin deliberately never stamps ``member_receiver`` for this shape
+    either (see ``extractors/engine.py``), so nothing else can ever answer it.
+
+    Guarded by exactly-one-candidate at both steps, the same god-node guard
+    ``_resolve_kotlin_qualified_calls`` uses just above: a receiver name
+    matching 2+ declared types, or a method name matching 2+ methods of the
+    matched type, yields no edge. The receiver names the type explicitly in
+    source, so a unique match is EXTRACTED (mirrors the type-qualified case
+    in ``_resolve_swift_member_calls``, #1356).
+    """
+    raw = [
+        rc
+        for result in per_file
+        for rc in result.get("raw_calls", [])
+        if rc.get("lang") == "kotlin" and rc.get("kotlin_object_receiver")
+        and rc.get("callee") and rc.get("caller_nid")
+    ]
+    if not raw:
+        return
+
+    node_by_id: dict[str, dict] = {n.get("id"): n for n in all_nodes}
+    methods_by_type: dict[str, list[str]] = {}
+    for e in all_edges:
+        if e.get("relation") == "method":
+            methods_by_type.setdefault(e.get("source"), []).append(e.get("target"))
+
+    # Receiver name -> declaring type node ids, scoped to Kotlin-sourced
+    # definitions only (a same-named type in another language must not
+    # answer a Kotlin call). len != 1 is the god-node guard.
+    types_by_name: dict[str, list[str]] = {}
+    for n in all_nodes:
+        if not n.get("_callable_class"):
+            continue
+        sf = str(n.get("source_file") or "")
+        if not sf.endswith((".kt", ".kts")):
+            continue
+        name = str(n.get("label", ""))
+        if name:
+            types_by_name.setdefault(name, []).append(n["id"])
+
+    existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    for rc in raw:
+        receiver = rc["kotlin_object_receiver"]
+        callee = rc["callee"]
+        caller = rc["caller_nid"]
+        type_nids = types_by_name.get(receiver, [])
+        if len(type_nids) != 1:
+            continue
+        wanted = f".{callee}"
+        candidates = [
+            m for m in methods_by_type.get(type_nids[0], [])
+            if str(node_by_id.get(m, {}).get("label", "")).strip("()") == wanted
+        ]
+        if len(candidates) != 1:
+            continue
+        tgt = candidates[0]
+        if tgt == caller or (caller, tgt) in existing_pairs:
+            continue
+        existing_pairs.add((caller, tgt))
+        all_edges.append({
+            "source": caller,
+            "target": tgt,
+            "relation": "calls",
+            "context": "call",
+            "confidence": "EXTRACTED",  # the receiver names the type explicitly in source
+            "confidence_score": 1.0,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
 # Kotlin import-target resolution runs EARLY (directly in extract(), before the
 # shared call pass builds its import-evidence index) — registering it in the
 # tail registry would rewrite the targets after promotion already read them.
@@ -4970,6 +5508,24 @@ register_language_resolver(
     LanguageResolver("rust_self_member_calls", frozenset({".rs"}), _resolve_rust_self_member_calls)
 )
 register_language_resolver(
+    LanguageResolver("vbnet_partial_calls", frozenset({".vb"}), resolve_vbnet_partial_calls)
+)
+register_language_resolver(
+    LanguageResolver("r_sourced_calls", frozenset({".r", ".R"}), resolve_r_sourced_calls)
+)
+register_language_resolver(
+    LanguageResolver(
+        "solidity_type_references", frozenset({".sol"}), resolve_solidity_type_references
+    )
+)
+register_language_resolver(
+    LanguageResolver(
+        "erlang_remote_calls",
+        frozenset({".erl", ".hrl", ".escript"}),
+        resolve_erlang_remote_calls,
+    )
+)
+register_language_resolver(
     LanguageResolver(
         "elixir_import_targets",
         frozenset({".ex", ".exs"}),
@@ -4996,6 +5552,14 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "kotlin_qualified_calls", frozenset({".kt", ".kts"}), _resolve_kotlin_qualified_calls
+    )
+)
+# Kotlin object/class-qualified member calls resolved across files (#1698):
+# `Receiver.method()` where the receiver's object/class is declared in another
+# file. Same god-node guard as kotlin_qualified_calls; runs in the tail registry.
+register_language_resolver(
+    LanguageResolver(
+        "kotlin_member_calls", frozenset({".kt", ".kts"}), _resolve_kotlin_member_calls
     )
 )
 # C# qualified construction (#2997): `new A.B.Cache()` arrives as the bare name,
@@ -6046,6 +6610,8 @@ _DISPATCH: dict[str, Any] = {
     ".cts": extract_js,
     ".go": extract_go,
     ".rs": extract_rust,
+    ".r": extract_r,
+    ".sol": extract_solidity,
     ".java": extract_java,
     ".groovy": extract_groovy,
     ".gradle": extract_groovy,
@@ -6060,6 +6626,11 @@ _DISPATCH: dict[str, Any] = {
     ".metal": extract_cpp,
     ".rb": extract_ruby, ".rake": extract_ruby,
     ".cs": extract_csharp,
+    ".cbl": extract_cobol,
+    ".cob": extract_cobol,
+    ".cobol": extract_cobol,
+    ".cpy": extract_cobol,
+    ".vb": extract_vbnet,
     ".kt": extract_kotlin,
     ".kts": extract_kotlin,
     ".scala": extract_scala,
@@ -6074,6 +6645,9 @@ _DISPATCH: dict[str, Any] = {
     ".psd1": extract_powershell_manifest,
     ".ex": extract_elixir,
     ".exs": extract_elixir,
+    ".erl": extract_erlang,
+    ".hrl": extract_erlang,
+    ".escript": extract_erlang,
     ".m": extract_objc,
     ".mm": extract_objc,
     ".jl": extract_julia,
@@ -6145,6 +6719,12 @@ _DISPATCH: dict[str, Any] = {
 # rather than falling back like Pascal does. Used by the #1745 warning in
 # extract() to tell the user which extra restores the language.
 _EXTRA_FOR_EXTENSION = {
+    ".vb": "vbnet",
+    ".r": "r",
+    ".sol": "solidity",
+    ".erl": "erlang",
+    ".hrl": "erlang",
+    ".escript": "erlang",
     ".sql": "sql",
     ".tf": "terraform",
     ".tfvars": "terraform",
@@ -6190,6 +6770,7 @@ _SHEBANG_DISPATCH: dict[str, Any] = {
     "lua": extract_lua,
     "php": extract_php,
     "julia": extract_julia,
+    "Rscript": extract_r,
 }
 
 
@@ -6317,7 +6898,7 @@ def _safe_extract_with_xaml_root(extractor, path: Path, root: Path) -> dict:
     previous_root = _XAML_ACTIVE_EXTRACT_ROOT
     _XAML_ACTIVE_EXTRACT_ROOT = root.resolve()
     try:
-        return _safe_extract(extractor, path)
+        return _safe_extract(extractor, path, scan_root=root)
     finally:
         _XAML_ACTIVE_EXTRACT_ROOT = previous_root
 
@@ -6650,6 +7231,24 @@ def extract(
     elif cache_root is not None:
         root = cache_root
     root = root.resolve()
+    python_scan_paths = list(paths)
+    for context_node in resolution_context_nodes or []:
+        source_file = context_node.get("source_file")
+        if not source_file or Path(source_file).suffix.lower() != ".py":
+            continue
+        context_path = Path(source_file)
+        if not context_path.is_absolute():
+            context_path = root / context_path
+        if context_path.is_file():
+            python_scan_paths.append(context_path)
+    python_module_alias_files, scan_root_aliases = _python_absolute_import_alias_files(
+        python_scan_paths, root
+    )
+    ambiguous_python_modules = {
+        module_id
+        for module_id, module_paths in python_module_alias_files.items()
+        if len(module_paths) > 1 and module_id not in scan_root_aliases
+    }
 
     # #1774: the cache is an OUTPUT, so when no explicit cache_root is given it is
     # written under the current working directory — never `root` (the inferred
@@ -6753,7 +7352,7 @@ def extract(
                 _failed_seen.add(_key)
 
     # #1689: a file counted as code (extension in CODE_EXTENSIONS) but with no AST
-    # extractor wired up (e.g. .r/.R — there is no tree-sitter-r dispatch) silently
+    # extractor wired up (e.g. .ets — there is no ArkTS dispatch) silently
     # contributes zero nodes. The #1666 warning above deliberately skips these (it
     # only fires when an extractor exists), so surface them explicitly, grouped by
     # extension, rather than reporting success as if the language were mapped.
@@ -6883,7 +7482,15 @@ def extract(
     # marker set in the per-file extractor. Populated just before the pass that uses it.
     callable_nids: set[str] = set()
 
-    _augment_symbol_resolution_edges(paths, all_nodes, all_edges, root)
+    _suppress_ambiguous_python_imports(
+        all_edges, all_nodes, all_raw_calls, ambiguous_python_modules,
+        python_module_alias_files, root,
+    )
+    _augment_symbol_resolution_edges(
+        paths, all_nodes, all_edges, root,
+        ambiguous_python_modules=ambiguous_python_modules,
+        resolution_context_nodes=resolution_context_nodes,
+    )
 
     # Merge a header-declared class (and its methods) with its sibling-impl
     # definition into ONE node (C/C++/ObjC #1547/#1556). Runs BEFORE the id-remap
@@ -7359,7 +7966,10 @@ def extract(
     if py_paths:
         py_results = [r for r, p in zip(per_file, paths) if p.suffix == ".py"]
         try:
-            cross_file_edges = _resolve_cross_file_imports(py_results, py_paths, all_nodes, all_edges)
+            cross_file_edges = _resolve_cross_file_imports(
+                py_results, py_paths, all_nodes, all_edges,
+                ambiguous_python_modules=ambiguous_python_modules,
+            )
             all_edges.extend(cross_file_edges)
         except Exception as exc:
             import logging
@@ -7573,6 +8183,8 @@ def extract(
     _JS_TS_CALL_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
     _go_module_cache: dict[Path, str | None] = {}
     for rc in all_raw_calls:
+        if rc.get("_ambiguous_python_import"):
+            continue
         callee = rc.get("callee", "")
         if not callee:
             continue
@@ -7782,6 +8394,42 @@ def extract(
                 "source_location": rc.get("source_location"),
                 "weight": 1.0,
             })
+
+    # Go: repoint intra-module `imports_from` edges from the synthetic
+    # `go_pkg_<import path>` sink onto the imported package's file nodes.
+    # extractors/go.py mints the sink from the raw import string with no module
+    # lookup, so the edge never reaches a file and `affected` / reachability miss
+    # every consumer that arrives through an import. The inverse mapping is one
+    # dict away: _go_import_path_for_file (used above to bind qualified calls to
+    # the exact package) gives every Go file its canonical import path. Stdlib
+    # and external imports have no file here and stay sinks by design. (#3746)
+    go_pkg_files: dict[str, list[str]] = {}
+    for sf, fnid in sf_to_file_nid.items():
+        if not sf.endswith(".go"):
+            continue
+        import_path = _go_import_path_for_file(sf, root, _go_module_cache)
+        if import_path:
+            go_pkg_files.setdefault(import_path, []).append(fnid)
+    if go_pkg_files:
+        go_pkg_sink_ids = {_make_id("go", "pkg", ip): ip for ip in go_pkg_files}
+        rewritten_edges: list[dict] = []
+        for e in all_edges:
+            import_path = (
+                go_pkg_sink_ids.get(e.get("target", ""))
+                if e.get("relation") == "imports_from"
+                else None
+            )
+            if import_path is None:
+                rewritten_edges.append(e)
+                continue
+            for fnid in go_pkg_files[import_path]:
+                if fnid == e["source"] or (e["source"], fnid) in existing_pairs:
+                    continue
+                repointed = dict(e)
+                repointed["target"] = fnid
+                rewritten_edges.append(repointed)
+                existing_pairs.add((e["source"], fnid))
+        all_edges[:] = rewritten_edges
 
     # Cross-file, language-specific member-call resolution. Runs after the shared
     # call pass so node ids/caller_nids are final; each pass is additive (only the
