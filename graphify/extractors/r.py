@@ -399,6 +399,22 @@ def extract_r(path: Path) -> dict:
                         "source_file": source_file,
                         "source_location": f"L{line}",
                     })
+            elif callee_node is not None and callee_node.type == "extract_operator":
+                # `self$method()` / `private$method()`: an R6 method reaches its
+                # siblings only through self/private, never as a bare name, so
+                # these intra-class calls were dropped entirely. Resolve the
+                # method against the enclosing class scope (walked from the caller
+                # via scope_parent). super$ is left out: it dispatches to a parent
+                # class this pass cannot see, so binding it locally would be wrong.
+                parts = [c for c in callee_node.children if c.type == "identifier"]
+                if (
+                    len(parts) == 2
+                    and _read_text(parts[0], source) in ("self", "private")
+                ):
+                    method = _read_text(parts[1], source)
+                    target = resolve_local(caller_id, method)
+                    if target is not None:
+                        add_edge(caller_id, target, "calls", node.start_point[0] + 1)
             elif callee_node is not None and callee_node.type == "namespace_operator":
                 package_node = callee_node.child_by_field_name("lhs")
                 function_node = callee_node.child_by_field_name("rhs")
