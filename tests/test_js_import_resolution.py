@@ -1880,3 +1880,51 @@ def test_export_bare_root_types_condition_falls_through_to_default(tmp_path: Pat
     result = _extract_for([target, importer], tmp_path)
 
     assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/index.ts")
+
+
+def test_ts_paths_alias_behind_solution_file_references_resolves(tmp_path: Path):
+    """Vite / `tsc -b` layout: the root tsconfig.json is a solution file
+    (`files: []` + `references`) with no `paths` of its own; the alias lives in
+    the referenced project config. The loader followed `extends` but not
+    `references`, so it found the solution file, saw no paths, and every alias
+    import silently got no edge (#3745). Following references resolves it."""
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({"files": [], "references": [{"path": "./tsconfig.app.json"}]}),
+    )
+    _write(
+        tmp_path / "tsconfig.app.json",
+        json.dumps({"compilerOptions": {"paths": {"@app/*": ["./src/*"]}}, "include": ["src"]}),
+    )
+    target = _write(tmp_path / "src/b.ts", "export const b = 1\n")
+    importer = _write(
+        tmp_path / "src/a.ts",
+        "import { b } from '@app/b'\nexport const a = b + 1\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "src/a.ts", "src/b.ts")
+
+
+def test_ts_paths_alias_behind_directory_reference_resolves(tmp_path: Path):
+    """A `references` entry may name a directory rather than a config file
+    (`{path: "./packages/app"}`), which `tsc -b` resolves to that directory's
+    tsconfig.json. The alias declared there must still be reached (#3745)."""
+    _write(
+        tmp_path / "tsconfig.json",
+        json.dumps({"files": [], "references": [{"path": "./packages/app"}]}),
+    )
+    _write(
+        tmp_path / "packages/app/tsconfig.json",
+        json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@lib/*": ["../../src/*"]}}}),
+    )
+    target = _write(tmp_path / "src/b.ts", "export const b = 1\n")
+    importer = _write(
+        tmp_path / "src/a.ts",
+        "import { b } from '@lib/b'\nexport const a = b + 1\n",
+    )
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "src/a.ts", "src/b.ts")

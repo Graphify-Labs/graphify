@@ -733,6 +733,39 @@ def _kotlin_user_type_name(user_type_node, source: bytes) -> str | None:
                     break
     return name
 
+def _kotlin_annotation_names(declaration_node, source: bytes) -> list[tuple[str, str]]:
+    """Collect ``(simple, raw)`` annotation names from a Kotlin declaration's
+    `modifiers` child, safely handling `use_site_target` and parameters."""
+    names: list[tuple[str, str]] = []
+    modifiers = None
+    if declaration_node is None:
+        return names
+    for child in declaration_node.children:
+        if child.type == "modifiers":
+            modifiers = child
+            break
+    if modifiers is None:
+        return names
+    for anno in modifiers.children:
+        if anno.type != "annotation":
+            continue
+        # Support bracketed lists: @[Inject VisibleForTesting]
+        for sub in anno.children:
+            user_type_node = None
+            if sub.type == "user_type":
+                user_type_node = sub
+            elif sub.type == "constructor_invocation":
+                for inner in sub.children:
+                    if inner.type == "user_type":
+                        user_type_node = inner
+                        break
+            if user_type_node is not None:
+                name = _kotlin_user_type_name(user_type_node, source)
+                if name:
+                    raw = _read_text(user_type_node, source)
+                    names.append((name, raw))
+    return names
+
 def _kotlin_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a Kotlin type expression; append (name, role) tuples."""
     if node is None:
@@ -4098,6 +4131,50 @@ def _extract_generic(
                                             add_edge(class_nid, target, "references", line,
                                                      context="generic_arg")
 
+                annotation_targets: set[str] = set()
+                for anno_name, anno_raw in _kotlin_annotation_names(node, source):
+                    target_nid = ensure_named_node(anno_name, line)
+                    if target_nid != class_nid and target_nid not in annotation_targets:
+                        add_edge(class_nid, target_nid, "references", line, context="attribute")
+                        annotation_targets.add(target_nid)
+
+                for c in node.children:
+                    if c.type == "primary_constructor":
+                        for cp_list in c.children:
+                            if cp_list.type == "class_parameters":
+                                for cp in cp_list.children:
+                                    if cp.type != "class_parameter":
+                                        continue
+                                    has_val_var = False
+                                    for sub in cp.children:
+                                        if sub.type in ("val", "var"):
+                                            has_val_var = True
+                                            break
+                                    if not has_val_var:
+                                        continue
+                                    ptype = None
+                                    for sub in cp.children:
+                                        if sub.type in ("user_type", "nullable_type", "type_reference"):
+                                            ptype = sub
+                                            break
+                                    if ptype is not None:
+                                        cp_line = cp.start_point[0] + 1
+                                        refs: list[tuple[str, str]] = []
+                                        _kotlin_collect_type_refs(ptype, source, False, refs)
+                                        for ref_name, role in refs:
+                                            ctx = "generic_arg" if role == "generic_arg" else "field"
+                                            target_nid = ensure_named_node(ref_name, cp_line)
+                                            if target_nid != class_nid:
+                                                add_edge(class_nid, target_nid, "references",
+                                                         cp_line, context=ctx)
+                                        param_annotation_targets: set[str] = set()
+                                        for anno_name, anno_raw in _kotlin_annotation_names(cp, source):
+                                            target_nid = ensure_named_node(anno_name, cp_line)
+                                            if target_nid != class_nid and target_nid not in param_annotation_targets:
+                                                add_edge(class_nid, target_nid, "references",
+                                                         cp_line, context="attribute")
+                                                param_annotation_targets.add(target_nid)
+
             # Ruby: `class Dog < Animal` puts the base class in the `superclass`
             # field (a `<` token followed by a constant or scope_resolution).
             # There was no Ruby branch, so every Ruby inherits edge was dropped.
@@ -4774,6 +4851,12 @@ def _extract_generic(
                         target_nid = ensure_named_node(ref_name, line)
                         if target_nid != parent_class_nid:
                             add_edge(parent_class_nid, target_nid, "references", line, context=ctx)
+                annotation_targets: set[str] = set()
+                for anno_name, anno_raw in _kotlin_annotation_names(node, source):
+                    target_nid = ensure_named_node(anno_name, line)
+                    if target_nid != parent_class_nid and target_nid not in annotation_targets:
+                        add_edge(parent_class_nid, target_nid, "references", line, context="attribute")
+                        annotation_targets.add(target_nid)
             # #2565: seed the initializer into initializer_nodes so walk_calls
             # collects its calls (`val repo = createRepo()`), which previously
             # died at the `return` below. Seeding the WHOLE expression (not just
@@ -5295,6 +5378,12 @@ def _extract_generic(
                         target_nid = ensure_named_node(ref_name, line)
                         if target_nid != func_nid:
                             add_edge(func_nid, target_nid, "references", line, context=ctx)
+                annotation_targets: set[str] = set()
+                for anno_name, anno_raw in _kotlin_annotation_names(node, source):
+                    target_nid = ensure_named_node(anno_name, line)
+                    if target_nid != func_nid and target_nid not in annotation_targets:
+                        add_edge(func_nid, target_nid, "references", line, context="attribute")
+                        annotation_targets.add(target_nid)
 
             if config.ts_module == "tree_sitter_swift":
                 for p in node.children:
