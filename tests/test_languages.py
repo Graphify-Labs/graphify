@@ -3367,6 +3367,44 @@ def test_groovy_implements_edge():
     assert found, "ExtendedService should have implements edge to Resettable"
 
 
+def test_groovy_enum_and_constants_are_extracted(tmp_path):
+    """A Groovy `enum` must become a type node with a `case_of` edge per member.
+
+    `enum_declaration` was absent from the Groovy config's class_types, so the
+    enum type — and every constant it declared — was dropped entirely, leaving
+    consumers with no way to see which value a branch selects.
+    """
+    src = tmp_path / "cards.groovy"
+    src.write_text(
+        "enum Suit { HEARTS, SPADES, CLUBS, DIAMONDS }\n"
+        "class Deck {}\n"
+    )
+    r = extract_groovy(src)
+    assert "error" not in r
+    labels = _labels(r)
+    assert "Suit" in labels, "enum type dropped"
+    cases = {
+        (node_id_label(r, e["source"]), node_id_label(r, e["target"]))
+        for e in r["edges"] if e["relation"] == "case_of"
+    }
+    assert {("Suit", "HEARTS"), ("Suit", "SPADES"),
+            ("Suit", "CLUBS"), ("Suit", "DIAMONDS")} <= cases
+    # constants hang off the enum, not the file
+    file_nid = next(n["id"] for n in r["nodes"] if n["label"] == "cards.groovy")
+    lab = {n["id"]: n["label"] for n in r["nodes"]}
+    assert not [
+        e for e in r["edges"]
+        if e["source"] == file_nid and lab.get(e["target"]) == "HEARTS"
+    ]
+
+
+def node_id_label(r, nid):
+    for n in r["nodes"]:
+        if n["id"] == nid:
+            return n["label"]
+    return nid
+
+
 def test_groovy_spock_finds_class():
     r = extract_groovy(FIXTURES / "sample_spock.groovy")
     assert any("SampleSpec" in l for l in _labels(r))
