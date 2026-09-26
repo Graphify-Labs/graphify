@@ -2,6 +2,17 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.69 (2026-09-26)
+
+- Feature: five language extractors gained structural depth — **OCaml** classes now emit their methods (via the `method` relation) and instance variables (#3838, thanks @rajatnagda45); **Elixir** `defprotocol`/`defimpl` are extracted as containers holding their functions, with a same-file `implements` link (#3839, thanks @rajatnagda45); **Fortran** derived-type `contains` blocks link type-bound procedures to the type, resolving the `=> impl` target (#3840, thanks @rajatnagda45); **Julia** macro definitions and `@enum` types are extracted, including valued (`red = 1`) and typed (`Color::UInt8`) enum forms, with members using the `case_of` relation (#3841, thanks @rajatnagda45); **Kotlin** annotations (class/function/property, use-site targets) and `val`/`var` primary-constructor properties now produce edges (#3848, #3842, thanks @nikhilsaxena04).
+- Fix: a TypeScript "solution" `tsconfig.json` that only carries `references` (no `paths` of its own) now resolves path aliases declared in the referenced project configs, so alias imports in a `tsc -b` layout no longer dangle (#3753, #3745, thanks @abhay-codes07).
+- Fix: extraction now skips the process pool up front when the `spawn` start method can't re-import `__main__` (stdin, `python -c`, REPL, embedded callers), falling back to a correct sequential run instead of a wall of `BrokenProcessPool` tracebacks (#3754, #3669, thanks @abhay-codes07).
+- Fix: entity deduplication preserves a genuine pre-existing self-loop (a recursive call, a self-referential FK) while still dropping a self-loop newly created by a merge (#3825, thanks @Abhirup0).
+- Fix: `ingest` classifies a URL by its parsed host, not by text anywhere in the URL, so `example.com/article-about-youtube` is no longer mistaken for a YouTube link; subdomains and `youtu.be` still match, path-based extension detection is unchanged (#3831, thanks @L4XB).
+- Fix: `graphify update` on a destination outside the scan root no longer leaks a stat-index cache into the corpus — the incremental detection path now forwards `cache_root` like the fresh-scan path (#3850, #3847, thanks @ayushcodes10).
+- Fix: manifest duplicate-key collapse breaks ties by last-seen time instead of arbitrary iteration order, so a stale duplicate can no longer win and under-report changed files; also re-anchors foreign-platform absolute keys and normalizes `..`/`.` segments so more duplicates actually collapse (#3781, #1964, thanks @ayushcodes10).
+- Docs: a community-health and contributor-guide overhaul — new `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `RELEASING.md`, refreshed issue/PR templates, and corrected factual drift in `SECURITY.md` (supported version, network/XSS boundaries), `ARCHITECTURE.md` (shared-state), and `AGENTS.md` (scoped-query workflow) (#3845, thanks @nikhilsaxena04).
+
 ## 0.9.68 (2026-09-25)
 
 - Security: the `/graphify add ... --watch` reference no longer passes the raw, agent-substituted `INPUT_PATH` placeholder unquoted into a shell command (`… -m graphify.watch INPUT_PATH`), where a scan root containing `$(…)`, backticks, or `;` could execute — a follow-on to the Step 1 fix. The watcher now reads the trusted `graphify-out/.graphify_root` that Step 1 resolves, so there is no path to substitute (#3742, #3642, thanks @ayushcodes10). The identical placeholder still appears in the Aider/Devin monolith `--watch` snippet and is tracked separately.
