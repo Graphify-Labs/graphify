@@ -60,10 +60,10 @@ _KEYWORD_SPELLINGS: dict[str, tuple[str, ...]] = {
     "modifier": ("deprecated", "inline", "noinline", "pure", "noret",
                  "بی‌کاره", "درخط", "نادرخط", "ناب", "نابرگشت"),
     "until_or_to": ("تا",),
-    "other": ("ret", "as", "true", "false", "null", "break", "continue", "print",
-              "println", "printerr", "printerrln", "input", "defer", "operator",
-              "to", "by", "in", "with",
-              "برگشت", "برگردان", "درست", "نادرست", "پوچ", "بشکن", "گذر",
+    "other": ("ret", "as", "true", "false", "null", "this", "break", "continue",
+              "print", "println", "printerr", "printerrln", "input", "defer",
+              "operator", "to", "by", "in", "with",
+              "برگشت", "برگردان", "درست", "نادرست", "پوچ", "این", "بشکن", "گذر",
               "چاپ", "سرچاپ", "نادرست‌چاپ", "نادرست‌سرچاپ", "ورودی", "دیرکن",
               "کارور", "از", "و", "یا", "برابر", "نابرابر"),
 }
@@ -286,6 +286,9 @@ class _SalamExtractor:
         self.type_nodes: dict[str, str] = {}
         self.components: dict[str, str] = {}
         self.calls: list[dict[str, Any]] = []
+        self.indirect_refs: list[tuple[str, str, str, int]] = []
+        self.import_aliases: set[str] = set()
+        self.owner_local_names: dict[str, set[str]] = {}
         self._call_by_close: dict[int, dict[str, Any]] = {}
         self.type_refs: list[dict[str, Any]] = []
         self.paren_stack: list[int] = []
@@ -677,16 +680,19 @@ class _SalamExtractor:
     def add_import(self, alias: str, value: str, is_string: bool, line: int) -> None:
         if is_string and value.endswith(".salam") and "://" not in value:
             target = Path(os.path.normpath(self.path.parent / value))
+            resolved_alias = alias or _norm(target.stem)
+            self.import_aliases.add(resolved_alias)
             self.add_edge(
                 self.file_id, _make_id(str(target)), "imports_from", line,
                 target_file=str(target),
-                metadata={"alias": alias or _norm(target.stem), "salam_import": True},
+                metadata={"alias": resolved_alias, "salam_import": True},
             )
             return
         dotted = value.strip("/").replace("/", ".") if is_string else value
         leaf = _norm(dotted.split(".")[-1])
         if not leaf:
             return
+        self.import_aliases.add(alias or leaf)
         self.add_edge(
             self.file_id, _make_id("salam", "import", leaf), "imports_from", line,
             metadata={"alias": alias or leaf, "path": dotted, "salam_import": True},
@@ -829,7 +835,9 @@ class _SalamExtractor:
             "func", nid, name, brace_mode=brace_mode, typarams=tparams,
             owner=(frame.owner or frame.name) if in_type else "",
         )
+        local_names = self.owner_local_names.setdefault(nid, set())
         for pname, ptype, _default in params:
+            local_names.add(pname)
             if ptype:
                 fn.locals[pname] = ptype
         self.frames.append(fn)
@@ -1134,9 +1142,14 @@ class _SalamExtractor:
             run: list[str] = []
             line = self.toks[j][2]
             while k >= 0 and self.toks[k][0] == _ID and self.toks[k][2] == line:
-                if self.kw_at(k) is not None:
+                is_this = _norm(self.toks[k][1]) in _THIS_WORDS
+                if self.kw_at(k) is not None and not is_this:
                     break
                 run.append(self.toks[k][1])
+                if is_this:
+                    # "this"/"این" is a keyword but always the chain's root -
+                    # include it, then stop (nothing legitimately precedes it).
+                    break
                 k -= 1
                 if self.is_op(k, "."):
                     break
@@ -1146,6 +1159,15 @@ class _SalamExtractor:
             j = k
         segments.reverse()
         return segments
+
+    def mark_local(self, name: str) -> None:
+        """Record *name* as a param/local of the enclosing function, regardless
+        of whether a type was inferred - shadowing (`func Escape(db: Database)`
+        alongside a same-file `import db`) must still hide the import alias
+        from the qualified-argument-reference check, unrelated to typing."""
+        owner = self.fn_frame()
+        if owner is not None:
+            self.owner_local_names.setdefault(owner.nid, set()).add(name)
 
     def lookup_local_type(self, name: str) -> str:
         for frame in reversed(self.frames):
@@ -1211,20 +1233,20 @@ class _SalamExtractor:
     def note_call(self, i: int, open_index: int) -> None:
         t = self.toks[i]
         line = t[2]
-        member = self.is_op(i - 1, ".")
-        if member:
-            run_end = i
-            callee_parts = [t[1]]
-        else:
-            k = i
-            callee_parts = [t[1]]
-            while (
-                k - 1 >= 0 and self.toks[k - 1][0] == _ID and self.toks[k - 1][2] == line
-                and self.kw_at(k - 1) is None
-            ):
-                k -= 1
-                callee_parts.insert(0, self.toks[k][1])
-            run_end = k
+        # Multi-word names are real (`func is weekend(...)`, `dog.is weekend()`):
+        # merge backward across plain identifiers first, THEN look at whatever
+        # precedes the whole run to decide member vs. bare - a `.` right before
+        # "weekend" alone would otherwise cut a member call's name to one word.
+        k = i
+        callee_parts = [t[1]]
+        while (
+            k - 1 >= 0 and self.toks[k - 1][0] == _ID and self.toks[k - 1][2] == line
+            and self.kw_at(k - 1) is None
+        ):
+            k -= 1
+            callee_parts.insert(0, self.toks[k][1])
+        run_end = k
+        member = self.is_op(run_end - 1, ".")
         callee = _norm(" ".join(callee_parts))
         if not callee or (not member and callee in _BUILTIN_CALLS):
             return
@@ -1277,6 +1299,49 @@ class _SalamExtractor:
         close_index = self.matching_close(open_index)
         self._call_by_close[close_index] = call
         self.calls.append(call)
+        self.note_arg_references(open_index, close_index)
+
+    def note_arg_references(self, open_index: int, close_index: int) -> None:
+        """A bare identifier that is a WHOLE call argument (``h(r, "/", home)``)
+        names a function value, not a call: "a bare named function decays to its
+        address" (SKILL.md §2). Record it as a candidate indirect reference,
+        resolved in ``finish()`` once every definition in this file is known.
+        Scoped to call-argument position only (not assignments or literal
+        fields) to keep this a precise, low-noise signal.
+        """
+        depth = 0
+        span: list[int] = []
+        j = open_index + 1
+        while j <= close_index:
+            if self.is_op(j, "(") or self.is_op(j, "[") or self.is_op(j, "{"):
+                depth += 1
+            elif self.is_op(j, ")") or self.is_op(j, "]") or self.is_op(j, "}"):
+                depth -= 1
+            at_boundary = j == close_index or (depth == 0 and self.is_op(j, ","))
+            if not at_boundary and self.toks[j][0] != _NL:
+                span.append(j)
+            if at_boundary:
+                self.note_one_arg_reference(span)
+                span = []
+            j += 1
+
+    def note_one_arg_reference(self, span: list[int]) -> None:
+        caller = self.owner_frame().nid
+        if len(span) == 1 and self.toks[span[0]][0] == _ID and self.kw_at(span[0]) is None:
+            name = _norm(self.toks[span[0]][1])
+            if name:
+                self.indirect_refs.append((caller, name, "", self.toks[span[0]][2]))
+            return
+        # `pkg.Name` as a whole argument: same value-reference shape, package-qualified.
+        if (
+            len(span) == 3 and self.toks[span[0]][0] == _ID and self.kw_at(span[0]) is None
+            and self.is_op(span[1], ".") and self.toks[span[2]][0] == _ID
+            and self.kw_at(span[2]) is None
+        ):
+            qualifier = _norm(self.toks[span[0]][1])
+            name = _norm(self.toks[span[2]][1])
+            if qualifier and name:
+                self.indirect_refs.append((caller, name, qualifier, self.toks[span[2]][2]))
 
     def note_construction(self, i: int) -> None:
         t = self.toks[i]
@@ -1332,6 +1397,7 @@ class _SalamExtractor:
         if not parts:
             return i + 1
         name = _norm(" ".join(parts))
+        self.mark_local(name)
         if self.is_op(j, ":="):
             cast_type = self.rhs_cast_type_after(j + 1)
             if cast_type and cast_type not in _BUILTIN_TYPES:
@@ -1621,6 +1687,44 @@ class _SalamExtractor:
             self.resolve_call(call)
         for ref in self.type_refs:
             self.resolve_type_ref(ref)
+        for caller, name, qualifier, line in self.indirect_refs:
+            self.resolve_indirect_ref(caller, name, qualifier, line)
+
+    def resolve_indirect_ref(self, caller: str, name: str, qualifier: str, line: int) -> None:
+        if not qualifier:
+            # Same-file only: Salam bans a variable/param reusing a function's
+            # name (E090), but only within the scope that sees both - a plain
+            # local elsewhere in a 2600-file corpus can coincidentally share a
+            # name with some unrelated function, and unlike a real call there is
+            # no argc to disambiguate a value reference with. Deferring this to
+            # the cross-file generic indirect_call pass turned nearly every
+            # bare-identifier argument in the corpus into a same-named-anywhere
+            # guess; same-file resolution has no such collision risk.
+            candidates = self.funcs.get(name)
+            if not candidates or len(candidates) != 1 or candidates[0][0] == caller:
+                return
+            self.add_edge(
+                caller, candidates[0][0], "indirect_call", line,
+                context="argument", confidence="INFERRED",
+            )
+            return
+        # `qualifier.Name` as a whole argument is ambiguous at the token level -
+        # `c.query` (a field read) looks identical to `pkg.Func` (a reference) -
+        # so only proceed when `qualifier` is an actual import alias declared
+        # SOMEWHERE in this file (checked here, in finish(), so it doesn't
+        # matter whether the call site precedes the import in the token
+        # stream), AND not shadowed by a param/local of THIS SPECIFIC function
+        # (`func Escape(db: Database)` alongside a same-file `import db` is
+        # real code here - the param wins inside its own function).
+        if qualifier not in self.import_aliases:
+            return
+        if qualifier in self.owner_local_names.get(caller, ()):
+            return
+        self.raw_calls.append({
+            "caller_nid": caller, "callee": name, "language": "salam",
+            "source_file": self.source_file, "source_location": f"L{line}",
+            "indirect": True, "context": "argument", "qualifier": qualifier,
+        })
 
     def pick_overload(
         self, candidates: list[tuple[str, int, int]], argc: int
@@ -1794,6 +1898,10 @@ def resolve_salam_references(
     existing = {
         (e.get("source"), e.get("target")) for e in all_edges if e.get("relation") == "calls"
     }
+    existing_indirect = {
+        (e.get("source"), e.get("target"))
+        for e in all_edges if e.get("relation") == "indirect_call"
+    }
 
     def fits(nodes: list[dict], argc: int) -> list[dict]:
         matching = [n for n in nodes if meta(n).get("arity", argc) >= argc]
@@ -1830,6 +1938,37 @@ def resolve_salam_references(
     for result in per_file:
         for call in result.get("raw_calls", []) or []:
             if call.get("language") != "salam":
+                continue
+            if call.get("indirect"):
+                # A bare `pkg.Name` argument (a function reference, not a call):
+                # package-qualified, so resolved here the same way a qualified
+                # call is, rather than by extract.py's own generic same-label
+                # indirect_call pass, which knows nothing of Salam packages. An
+                # unqualified bare name is left to that shared pass.
+                qualifier = call.get("qualifier")
+                if not qualifier:
+                    continue
+                caller = call.get("caller_nid")
+                source_file = str(call.get("source_file", ""))
+                candidates, context, _confidence = targets_for(call, source_file, caller)
+                if context:
+                    candidates = fits(candidates, 0)
+                if len(candidates) == 1:
+                    target = candidates[0]["id"]
+                    pair = (caller, target)
+                    if caller and target != caller and pair not in existing and pair not in existing_indirect:
+                        existing_indirect.add(pair)
+                        all_edges.append({
+                            "source": caller,
+                            "target": target,
+                            "relation": "indirect_call",
+                            "context": "argument",
+                            "confidence": "INFERRED",
+                            "confidence_score": 0.8,
+                            "source_file": source_file,
+                            "source_location": call.get("source_location"),
+                            "weight": 1.0,
+                        })
                 continue
             caller, callee = call.get("caller_nid"), _norm(str(call.get("callee", "")))
             source_file = str(call.get("source_file", ""))

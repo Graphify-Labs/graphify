@@ -2,6 +2,12 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Feature: the Salam extractor now resolves a bare function name passed as a call argument (`register("/", home)`, `pool.submit(worker)`) to its definition as an `indirect_call` edge - Salam decays a bare function reference to its address, so this is a real, common pattern (route handlers, thread entry points, callback registries), not a call. A package-qualified reference (`handlers.Home`) resolves across files; an unqualified one only within the same file, since nothing else can tell a same-named local/param/constant apart from a genuine reference without risking a wrong cross-file guess.
+- Fix: a param/local that shadows an import alias (`func Escape(db: Database)` alongside a same-file `import db`, real code in `std/db/mysql/mysql.salam`) no longer has its own field read (`db.handle`) misread as a package-qualified function reference.
+- Fix: a multi-word method name (`.is weekend()`) is no longer truncated to its last word when called - previously only multi-word top-level functions merged correctly; `this`/`این` is now a registered keyword (it was accidentally omitted from the keyword-table refresh), fixing the receiver chain for `this.field` when a preceding identifier could otherwise merge into it.
+
 ## 0.9.69 (2026-09-26)
 
 - Feature: the Salam extractor now resolves a member call chained off another call's return value (`makeCircle(r).area()`), off a local variable bound from one (`c := makeCircle(r) ... c.area()`), off a struct literal (`Circle{r=1}.area()`), and off an `as Type` cast (`f() as Circle`) - reading the callee's declared return type across files where needed. A 2+-hop chain (`f().g().h()`) is left unresolved rather than guessed.

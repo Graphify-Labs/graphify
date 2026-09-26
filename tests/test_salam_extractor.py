@@ -544,3 +544,128 @@ def test_deeper_chain_stays_unresolved_rather_than_guess(tmp_path):
     calls = _edges(result, "calls")
     assert ("deep_area()", "make wrapper()") in calls
     assert ("deep_area()", ".area()") not in calls
+
+
+def test_multiword_method_call_keeps_the_full_name(tmp_path):
+    """`.is weekend()`: a multi-word method name, not just its last word."""
+    source = _write(
+        tmp_path,
+        "multiword_method.salam",
+        "struct Day:\n"
+        "    pub n: int = 0\n"
+        "    pub func is weekend(): bool: ret this.n == 0 end\n"
+        "end\n"
+        "\n"
+        "func check(d: Day): bool: ret d.is weekend() end\n",
+    )
+    result = extract_salam(source)
+    labels = [n["label"] for n in result["nodes"]]
+    assert ".is weekend()" in labels
+    assert ".weekend()" not in labels
+    assert ("check()", ".is weekend()") in _edges(result, "calls")
+
+
+def test_this_is_a_reserved_word_not_a_mergeable_identifier(tmp_path):
+    """``this``/``این`` must not be swallowed into a preceding multi-word name."""
+    source = _write(
+        tmp_path,
+        "this_word.salam",
+        "struct Box:\n"
+        "    pub n: int = 0\n"
+        "    pub func bump(): int:\n"
+        "        this.n = this.n + 1\n"
+        "        ret this.n\n"
+        "    end\n"
+        "end\n",
+    )
+    result = extract_salam(source)
+    kinds = _kinds(result)
+    assert kinds["Box"] == "struct"
+    assert kinds[".bump()"] == "method"
+
+
+def test_bare_function_reference_resolves_same_file(tmp_path):
+    """A bare function name passed as an argument decays to its address
+    (SKILL.md §2, `web.Get(r, "/", home)`) - not a call, a reference."""
+    source = _write(
+        tmp_path,
+        "callback.salam",
+        "func home(r: int): int: ret r + 1 end\n"
+        "func other(r: int): int: ret r - 1 end\n"
+        "\n"
+        "func register(path: str, handler: func (int) int):\n"
+        "    println path\n"
+        "end\n"
+        "\n"
+        "func main:\n"
+        "    register(\"/\", home)\n"
+        "    register(\"/2\", other)\n"
+        "end\n",
+    )
+    result = extract_salam(source)
+    assert ("main()", "home()") in _edges(result, "indirect_call")
+    assert ("main()", "other()") in _edges(result, "indirect_call")
+    assert ("main()", "home()") not in _edges(result, "calls")
+
+
+def test_bare_reference_does_not_fire_for_plain_arguments(tmp_path):
+    """A local var, a constant, or a struct name as an argument is not a
+    reference to a same-named function elsewhere - no edge at all."""
+    source = _write(
+        tmp_path,
+        "not_a_ref.salam",
+        "const LIMIT := 10\n"
+        "struct Box: pub n: int = 0 end\n"
+        "\n"
+        "func take(x: int): end\n"
+        "func take box(b: Box): end\n"
+        "\n"
+        "func main:\n"
+        "    x := 5\n"
+        "    take(x)\n"
+        "    take(LIMIT)\n"
+        "    take box(Box {})\n"
+        "end\n",
+    )
+    result = extract_salam(source)
+    assert _edges(result, "indirect_call") == set()
+
+
+def test_package_qualified_function_reference_across_files(tmp_path):
+    _write(
+        tmp_path,
+        "handlers.salam",
+        "package handlers\n\npub func Home(r: int): int: ret r + 1 end\n",
+    )
+    _write(
+        tmp_path,
+        "main.salam",
+        "import handlers\n\n"
+        "func register(path: str, handler: func (int) int): end\n\n"
+        'func main: register("/", handlers.Home) end\n',
+    )
+    result = extract(sorted(tmp_path.glob("*.salam")), cache_root=tmp_path)
+    assert ("main()", "Home()") in _edges(result, "indirect_call")
+
+
+def test_param_shadowing_import_alias_is_not_a_reference(tmp_path):
+    """`func Escape(db: Database)` alongside a same-file `import db`: inside
+    Escape, `db.handle` is the PARAMETER's field, not a reference into the
+    `db` package - a real pattern in std/db/mysql/mysql.salam."""
+    _write(
+        tmp_path,
+        "db.salam",
+        "package db\n\npub func handle(x: int): int: ret x end\n",
+    )
+    _write(
+        tmp_path,
+        "conn.salam",
+        "import db\n\n"
+        "struct Database: pub handle: int = 0 end\n\n"
+        "func mysql_real_escape(h: int, s: str): str: ret s end\n\n"
+        "pub func Escape(db: Database, s: str): str:\n"
+        "    ret mysql_real_escape(db.handle, s)\n"
+        "end\n",
+    )
+    result = extract(sorted(tmp_path.glob("*.salam")), cache_root=tmp_path)
+    assert _edges(result, "indirect_call") == set()
