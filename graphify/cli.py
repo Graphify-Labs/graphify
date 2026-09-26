@@ -4367,7 +4367,11 @@ def dispatch_command(cmd: str) -> None:
             # clustered path (whose DiGraph collapses both) and stays deterministic
             # across modes (#1317; node dedup also collapses shared Swift module
             # anchors emitted per importing file, #1327).
-            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
+            from graphify.build import (
+                dedupe_edges as _dedupe_edges,
+                dedupe_nodes as _dedupe_nodes,
+                mint_external_stubs_in_data as _mint_external_stubs_in_data,
+            )
             from graphify.export import (
                 backup_if_protected as _backup,
                 existing_graph_node_count as _existing_graph_node_count,
@@ -4458,6 +4462,10 @@ def dispatch_command(cmd: str) -> None:
             # gets this), so apply it directly on the merged node list.
             from graphify.build import disambiguate_file_labels_in_nodes as _disamb_labels
             _disamb_labels(merged["nodes"])
+            # Fresh --no-cluster extraction bypasses build_from_json, so close
+            # external import endpoints before graph.json is persisted. This
+            # keeps the raw writer consistent with update --no-cluster.
+            _mint_external_stubs_in_data(merged)
             # Backfill source_file from endpoint nodes — this raw path bypasses
             # build_from_json's backfill, and semantic edges sometimes omit it (#1279).
             _node_sf = {n.get("id"): n.get("source_file") for n in merged["nodes"]}

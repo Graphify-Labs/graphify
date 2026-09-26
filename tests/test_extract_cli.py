@@ -10,6 +10,51 @@ import pytest
 import graphify.__main__ as mainmod
 
 
+def test_fresh_no_cluster_extract_declares_external_import_endpoints(
+    monkeypatch, tmp_path
+):
+    """The raw writer must not persist imports to undeclared phantom nodes."""
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "main.py").write_text(
+        "import json\nfrom pathlib import Path\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "output"
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        [
+            "graphify",
+            "extract",
+            str(corpus),
+            "--code-only",
+            "--no-cluster",
+            "--out",
+            str(output),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 0
+    graph = json.loads(
+        (output / "graphify-out" / "graph.json").read_text(encoding="utf-8")
+    )
+    declared = {node["id"] for node in graph["nodes"]}
+    edges = graph.get("links", graph.get("edges", []))
+    dangling = [
+        (edge.get("source"), edge.get("target"))
+        for edge in edges
+        if edge.get("source") not in declared or edge.get("target") not in declared
+    ]
+    assert not dangling, f"graph.json has undeclared edge endpoints: {dangling}"
+    externals = {node["id"] for node in graph["nodes"] if node.get("external")}
+    assert {"json", "pathlib"} <= externals
+
+
 def test_extract_merges_local_semantic_adapter_artifacts(monkeypatch, tmp_path):
     """Removing CLI enrichment wiring must drop the analyzer-produced symbol."""
     corpus = tmp_path / "corpus"
