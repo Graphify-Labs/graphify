@@ -1142,6 +1142,42 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_edge_loss_guard_fix_line(line: str) -> bool:
+    """Whether a line is part of the edge-side companion to the #479 guard.
+
+    ``to_json``'s #479 guard compares NODES only, so a rebuild that gains nodes
+    and loses edges is written silently. Step 4 now reads the previous graph's
+    node and edge counts before overwriting it and reports an edge drop as a
+    proportion. Reported, not fatal: an edge drop can be legitimate, and a guard
+    that aborted here would be switched off during exactly the rebuild it should
+    be watching. The ``try:``/``except Exception:`` pair belongs to the
+    defensive read of the existing graph.json, which must not crash a build when
+    that file is corrupt or mid-write.
+    """
+    s = line.strip()
+    return (
+        "_prev_n" in line
+        or "_prev_e" in line
+        or "_prev_path" in line
+        or "_prev = json.loads" in line
+        or "_new_n" in line
+        or "_new_e" in line
+        or "_pct" in line
+        or "EDGE LOSS:" in line
+        or "Nodes did not shrink" in line
+        or "Read the previous graph's counts" in line
+        or "compares NODES only" in line
+        or "silently: measured on a real corpus" in line
+        or "went 3,378 -> 2,978" in line
+        or "to_json writes node_link_data" in line
+        or "can emit 'edges' instead" in line
+        or "Edge side of the same guard" in line
+        or "files deleted, a noisy extractor tightened" in line
+        or "be switched off during exactly the rebuild" in line
+        or s == "try:"
+        or s == "except Exception:"
+    )
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1163,6 +1199,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_edge_loss_guard_fix_line,
 )
 
 
