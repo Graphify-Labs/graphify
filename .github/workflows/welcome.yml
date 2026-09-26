@@ -38,12 +38,12 @@ jobs:
 
             const body = isPR
               ? `Thanks for the pull request, @${author}. A maintainer will review it soon.\n\n`
-                + `Want to talk it through while it is in review? Come join us on Discord: ${discord}. `
+                + `Want to talk it through while it is in review? Come join us on our [Discord server](${discord}). `
                 + `For longer-form discussion there is also [GitHub Discussions](${discussions}).\n\n`
                 + `A couple of things that speed up review: make sure the test suite passes on Python 3.10 and 3.13, `
                 + `and that the change keeps extraction deterministic.`
               : `Thanks for opening this issue, @${author}. A maintainer will take a look soon.\n\n`
-                + `If you would like to discuss it in real time, come say hi on our Discord: ${discord}. `
+                + `If you would like to discuss it in real time, come say hi on our [Discord server](${discord}). `
                 + `For longer-form questions and ideas there is also [GitHub Discussions](${discussions}).\n\n`
                 + `To help us triage, please make sure the report includes what you expected, what actually happened, `
                 + `and the steps (and a small sample) to reproduce it.`;
