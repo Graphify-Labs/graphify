@@ -449,16 +449,14 @@ def test_generic_logging_thread_safe_reload(tmp_path, monkeypatch):
     assert errors == []
 
 
-def test_cache_dir_ast_with_prompt_fp(tmp_path):
-    """Test that cache_dir honors prompt_fp even when kind is prefixed with ast-."""
-    from graphify.cache import cache_dir
+def test_cache_dir_ast_logging_versioned_schema(tmp_path):
+    """Test that cache_dir applies versioned schema to ast-logging kinds."""
+    from graphify.cache import cache_dir, _EXTRACTOR_VERSION, _AST_CACHE_SCHEMA
 
-    d_with_prompt = cache_dir(root=tmp_path, kind="ast-logging-12345678", prompt_fp="prompt123")
-    assert "pprompt123" in str(d_with_prompt)
-
-    d_without_prompt = cache_dir(root=tmp_path, kind="ast-logging-12345678", prompt_fp=None)
-    assert "pprompt123" not in str(d_without_prompt)
-    assert "v0." in str(d_without_prompt)
+    d = cache_dir(root=tmp_path, kind="ast-logging-12345678")
+    expected_schema = f"v{_EXTRACTOR_VERSION}-s{_AST_CACHE_SCHEMA}"
+    assert expected_schema in str(d)
+    assert "ast-logging-12345678" in str(d)
 
 
 def test_generic_logging_internal_exception_prevents_cache_poison(tmp_path, monkeypatch):
@@ -582,7 +580,4 @@ logging_rules:
     for e in res.get("edges", []):
         assert e["source"] in node_ids, f"Dangling edge source detected: {e['source']}"
         assert e["target"] in node_ids, f"Dangling edge target detected: {e['target']}"
-
-
-
 
