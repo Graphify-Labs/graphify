@@ -4690,8 +4690,7 @@ def test_robot_path_variables_match_case_space_underscore_insensitively():
     assert _resolve_robot_import("..${/}Resource${/}common.robot", rel_src) == P("Tests/Resource/common.robot")
     # any other variable, in any casing, still yields no edge
     assert _resolve_robot_import("${Root_Dir}/x.robot", rel_src) is None
-import tree_sitter_kotlin
-from tree_sitter import Language, Parser
+
 
 def test_kotlin_class_annotation_emits_attribute_edge(tmp_path):
     from graphify.extract import extract_kotlin
@@ -4732,6 +4731,16 @@ def test_kotlin_primary_constructor_val_emits_field_type_edge(tmp_path):
     result = extract_kotlin(source)
     refs = _edge_labels(result, "references", "field")
     assert ("Order", "User") in refs
+
+def test_kotlin_primary_constructor_plain_param_is_not_a_field(tmp_path):
+    # Only `val`/`var` constructor params are properties; a bare param is not.
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "PlainParam.kt"
+    source.write_text('class Order(val user: User, note: Note)')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "field")
+    assert ("Order", "User") in refs
+    assert ("Order", "Note") not in refs
 
 def test_kotlin_primary_constructor_annotations_emits_attribute_edge(tmp_path):
     from graphify.extract import extract_kotlin
