@@ -567,3 +567,201 @@ def test_csharp_alias_using_scoped_to_its_block(tmp_path: Path):
     inh = {(e["source"], e["target"]) for e in result["edges"] if e.get("relation") == "inherits"}
     assert (good["id"], n_t["id"]) in inh, "Good must bind N.T via the in-block alias"
     assert (bad["id"], n_t["id"]) not in inh, "Bad (sibling block) must NOT see the alias"
+
+
+def test_csharp_same_file_enum_member_does_not_preempt_class_inheritance(tmp_path: Path):
+    # Repro A (#3795): enum member Follow must not take the inheritance edge from class Follow.
+    f = _write(
+        tmp_path / "effects.cs",
+        "namespace Demo {\n"
+        "    public enum EffectKind { Tween, Follow }\n"
+        "    public abstract class Follow { }\n"
+        "    public sealed class FollowFloat : Follow { }\n"
+        "}\n",
+    )
+    result = extract([f], cache_root=tmp_path)
+    follow_class = next(
+        n for n in result["nodes"]
+        if n.get("label") == "Follow" and "effectkind" not in str(n.get("id", "")).lower()
+    )
+    follow_member = next(
+        n for n in result["nodes"]
+        if n.get("label") == "Follow" and "effectkind" in str(n.get("id", "")).lower()
+    )
+    followfloat = next(n for n in result["nodes"] if n.get("label") == "FollowFloat")
+    inh = {(e["source"], e["target"]) for e in result["edges"] if e.get("relation") == "inherits"}
+
+    assert (followfloat["id"], follow_class["id"]) in inh, \
+        "FollowFloat must inherit from class Follow"
+    assert (followfloat["id"], follow_member["id"]) not in inh, \
+        "FollowFloat must NOT inherit from enum member EffectKind.Follow"
+
+
+def test_csharp_enum_member_cannot_steal_external_parameter_type(tmp_path: Path):
+    # Repro B (#3795): Vector2 parameter must not bind to Channel.Vector2 enum member.
+    kinds = _write(
+        tmp_path / "Kinds.cs",
+        "namespace Demo {\n"
+        "    public enum Channel { Vector2 }\n"
+        "}\n",
+    )
+    mover = _write(
+        tmp_path / "Mover.cs",
+        "using UnityEngine;\n"
+        "namespace Demo {\n"
+        "    public class Mover {\n"
+        "        public void Move(Vector2 delta) { }\n"
+        "    }\n"
+        "}\n",
+    )
+    result = extract([kinds, mover], cache_root=tmp_path)
+    channel_v2 = next(
+        n for n in result["nodes"]
+        if n.get("label") == "Vector2" and n.get("source_file")
+    )
+    move_refs = [
+        e["target"] for e in result["edges"]
+        if e.get("relation") == "references"
+        and e.get("context") == "parameter_type"
+        and "move" in str(e.get("source", "")).lower()
+    ]
+    assert channel_v2["id"] not in move_refs, \
+        "Mover.Move(Vector2) must NOT resolve to Channel.Vector2 enum member"
+    by_id = {n["id"]: n for n in result["nodes"]}
+    assert any(
+        by_id[tgt].get("label") == "Vector2" and not by_id[tgt].get("source_file")
+        for tgt in move_refs
+    ), f"Vector2 parameter must remain on an external stub: {move_refs}"
+
+
+def test_csharp_property_cannot_steal_external_parameter_type(tmp_path: Path):
+    # Repro B (#3795): System.Type parameter must not bind to Node.Type property.
+    node = _write(
+        tmp_path / "Node.cs",
+        "namespace Demo {\n"
+        "    public class Node {\n"
+        "        public System.Type Type { get; set; }\n"
+        "    }\n"
+        "}\n",
+    )
+    mover = _write(
+        tmp_path / "Mover.cs",
+        "using System;\n"
+        "namespace Demo {\n"
+        "    public class Mover {\n"
+        "        public string Describe(Type t) => t.Name;\n"
+        "    }\n"
+        "}\n",
+    )
+    result = extract([node, mover], cache_root=tmp_path)
+    node_prop_type = next(
+        n for n in result["nodes"]
+        if n.get("label") == "Type" and n.get("source_file")
+    )
+    describe_refs = [
+        e["target"] for e in result["edges"]
+        if e.get("relation") == "references"
+        and e.get("context") == "parameter_type"
+        and "describe" in str(e.get("source", "")).lower()
+    ]
+    assert node_prop_type["id"] not in describe_refs, \
+        "Mover.Describe(Type) must NOT resolve to Node.Type property"
+    by_id = {n["id"]: n for n in result["nodes"]}
+    assert any(
+        by_id[tgt].get("label") == "Type" and not by_id[tgt].get("source_file")
+        for tgt in describe_refs
+    ), f"Type parameter must remain on an external stub: {describe_refs}"
+
+
+def test_csharp_cross_file_collision_resolved_by_kind_not_filename_order(tmp_path: Path):
+    # Enum member in A_Enum.cs (alphabetically first) must not steal inheritance from class in Follow.cs.
+    a_enum = _write(
+        tmp_path / "A_Enum.cs",
+        "namespace Demo {\n"
+        "    public enum EffectKind { Tween, Follow }\n"
+        "}\n",
+    )
+    follow = _write(
+        tmp_path / "Follow.cs",
+        "namespace Demo {\n"
+        "    public abstract class Follow { }\n"
+        "    public sealed class FollowFloat : Follow { }\n"
+        "}\n",
+    )
+    result = extract([a_enum, follow], cache_root=tmp_path)
+    follow_class = next(
+        n for n in result["nodes"]
+        if n.get("label") == "Follow" and "follow.cs" in str(n.get("source_file", "")).lower()
+    )
+    follow_member = next(
+        n for n in result["nodes"]
+        if n.get("label") == "Follow" and "a_enum.cs" in str(n.get("source_file", "")).lower()
+    )
+    followfloat = next(n for n in result["nodes"] if n.get("label") == "FollowFloat")
+    inh = {(e["source"], e["target"]) for e in result["edges"] if e.get("relation") == "inherits"}
+
+    assert (followfloat["id"], follow_class["id"]) in inh, \
+        "FollowFloat must inherit from class Follow despite A_Enum.cs sorting first"
+    assert (followfloat["id"], follow_member["id"]) not in inh, \
+        "FollowFloat must NOT inherit from enum member EffectKind.Follow in A_Enum.cs"
+
+
+def test_csharp_name_resolver_resolves_type_in_partial_graph_without_contains():
+    # A partial or cross-repo graph intentionally lacks structural `contains` edges
+    # from file nodes. CsharpNameResolver must still resolve valid types while
+    # excluding member nodes (methods, properties, enum members).
+    from graphify.extractors.csharp import CsharpNameResolver
+
+    nodes = [
+        {
+            "id": "app::file",
+            "label": "OrderService.cs",
+            "source_file": "src/OrderService.cs",
+            "file_type": "code",
+            "repo": "app",
+        },
+        {
+            "id": "app::run",
+            "label": ".Run()",
+            "source_file": "src/OrderService.cs",
+            "file_type": "code",
+            "repo": "app",
+        },
+        {
+            "id": "lib::type",
+            "label": "IValidator",
+            "source_file": "src/IValidator.cs",
+            "file_type": "code",
+            "repo": "lib",
+            "metadata": {"namespace": "Lib.Domain.Interfaces"},
+        },
+        {
+            "id": "lib::method",
+            "label": ".ValidateAsync()",
+            "source_file": "src/IValidator.cs",
+            "file_type": "code",
+            "repo": "lib",
+        },
+    ]
+    edges = [
+        {
+            "source": "app::file",
+            "target": "app::using",
+            "relation": "imports",
+            "metadata": {"using_kind": "namespace", "target_fqn": "Lib.Domain.Interfaces"},
+        },
+        {
+            "source": "lib::type",
+            "target": "lib::method",
+            "relation": "method",
+        },
+    ]
+
+    resolver = CsharpNameResolver(nodes, edges)
+    resolved, decisive = resolver.resolve_type_name(
+        "IValidator",
+        nodes[1],
+        "src/OrderService.cs",
+    )
+    assert resolved == "lib::type", "Valid C# type must resolve even without `contains` edges"
+    assert decisive is True

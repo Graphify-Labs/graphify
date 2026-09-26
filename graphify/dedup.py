@@ -12,6 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from graphify._minhash import MinHash, MinHashLSH
+from graphify.ids import normalize_id
 from rapidfuzz.distance import DamerauLevenshtein, Jaro, JaroWinkler
 
 
@@ -265,7 +266,6 @@ def _is_code(node: dict) -> bool:
 
 # ── ID collisions ─────────────────────────────────────────────────────────────
 
-_ID_SEGMENT = re.compile(r"[^a-z0-9]+")
 _EXTENSION = re.compile(r"\.[^./]+$")
 
 
@@ -276,10 +276,17 @@ def _id_prefixes(source_file: str) -> set[str]:
     path, each segment slugified and joined with ``_``. Every trailing slice of the
     path counts as a prefix: the stored path may be absolute or repo-relative, and
     graphs built under the pre-#1504 scheme keyed off the bare filename stem.
+
+    Each segment is slugified with ``normalize_id`` (#3352), the same
+    Unicode-aware casefold-then-NFKC-then-``[^\\w]+`` recipe every real ID is
+    minted with. An ASCII-only slug here silently dropped every non-Latin
+    character (Korean, CJK, Cyrillic, ...) instead of preserving it, so a
+    node's own defining file was never recognized as the file that ID
+    encodes and the definer-wins collision rule (see ``_defines_id``,
+    ``_collision_rank``) fell through to arrival-order for any such path.
     """
     stem = _EXTENSION.sub("", source_file.replace("\\", "/"))
-    segments = [s for s in (_ID_SEGMENT.sub("_", p.casefold()).strip("_")
-                            for p in stem.split("/")) if s]
+    segments = [s for s in (normalize_id(p) for p in stem.split("/")) if s]
     return {"_".join(segments[i:]) for i in range(len(segments))}
 
 
@@ -1059,8 +1066,8 @@ def _content_richness(n: dict) -> int:
 
 
 def _pick_winner(nodes: list[dict]) -> dict:
-    """Pick the canonical survivor: no chunk suffix, then richer content,
-    then shorter ID.
+    """Pick the canonical survivor: no chunk suffix, then real provenance,
+    then richer content, then shorter ID.
 
     ID length used to be the primary signal after the chunk-suffix check,
     which made a passing one-line mention on a shallow page (short id, one
@@ -1069,13 +1076,46 @@ def _pick_winner(nodes: list[dict]) -> dict:
     discarded (#3372). Content richness now decides first; ID shape only
     breaks ties between equally-rich candidates, preserving the old
     deterministic ordering there.
+
+    ``source_file``/``source_location`` are in ``_RICHNESS_IGNORED_KEYS``, so
+    richness alone cannot tell a real, located declaration apart from a
+    source-less stub carrying a couple of incidental bookkeeping keys (e.g.
+    ``external``/``type``/``_origin``) — the stub could out-score and replace
+    the genuine record purely on field count (#3775). Provenance is checked
+    ahead of richness, in two steps: a node with a ``source_file`` always
+    beats one without, and among nodes that both have one, a node that also
+    has a ``source_location`` beats one that doesn't (the codebase genuinely
+    emits ``source_location: None`` on some records, so this is a real
+    distinction, not a hypothetical one — richness ignores it too, the same
+    gap #3775 closed one level up). The location step only counts a
+    ``source_location`` when ``source_file`` is also present — a location
+    with no file isn't a real provenance signal and must not out-rank a
+    fully bare candidate on its own. Each step only changes the outcome
+    when the two sides disagree; whenever they agree (both or neither have
+    a source file, and both or neither have a counted location), the
+    existing richness-then-length ordering decides as before.
     """
     if not nodes:
         raise ValueError("Cannot pick winner from empty list")
 
-    def _score(n: dict) -> tuple[int, int, int]:
+    def _score(n: dict) -> tuple[int, int, int, int, int]:
         has_suffix = bool(_CHUNK_SUFFIX.search(n["id"]))
-        return (1 if has_suffix else 0, -_content_richness(n), len(n["id"]))
+        has_source = bool(n.get("source_file"))
+        no_source = 0 if has_source else 1
+        # A source_file with no source_location (the codebase genuinely emits
+        # `source_location: None`, see _merge_missing_attributes above) is a
+        # weaker provenance claim than a fully located record -- richness
+        # ignores source_location too, so without this check a candidate that
+        # merely knows which file it came from could still out-score, and
+        # replace, one that also knows exactly where in it (#3775 review).
+        # Gated on has_source too: a source_location with no source_file (a
+        # location pointing at an unstated file, which _merge_missing_attributes
+        # can produce by backfilling one field but not the other when a survivor's
+        # own source_file is an empty string rather than None) isn't a real
+        # provenance signal on its own, and must not out-rank a fully bare
+        # candidate by richness's own rules (PR 3786 review).
+        no_location = 0 if (has_source and n.get("source_location")) else 1
+        return (1 if has_suffix else 0, no_source, no_location, -_content_richness(n), len(n["id"]))
 
     return min(nodes, key=_score)
 
