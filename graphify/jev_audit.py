@@ -13,10 +13,11 @@ from typing import Dict, List, Any, Optional
 from graphify.jev_bridge import _call_jev_choice, is_available
 
 
-def analyze_blast_radius(G: nx.Graph, symbol_query: str, max_depth: int = 2) -> Dict[str, Any]:
+def analyze_blast_radius(G: nx.Graph, symbol_query: str, max_depth: int = 2, active_graph_path: str | None = None) -> Dict[str, Any]:
     """
     全自动变更影响面分析（Blast Radius）。
     逆向有向边追踪（Predecessors），毫秒级列出所有会受影响的上游调用者。
+    支持 project_path 作用域感知与 multi-project 隔离。
     """
     from graphify.jev_bridge import pick_seeds_with_jev
 
@@ -29,7 +30,7 @@ def analyze_blast_radius(G: nx.Graph, symbol_query: str, max_depth: int = 2) -> 
             break
 
     if not matched_nid and is_available():
-        seeds = pick_seeds_with_jev(G, symbol_query, max_seeds=1)
+        seeds = pick_seeds_with_jev(G, symbol_query, max_seeds=1, graph_path=active_graph_path)
         if seeds:
             matched_nid = seeds[0]
 

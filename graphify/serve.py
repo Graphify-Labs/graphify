@@ -1413,7 +1413,7 @@ def _query_graph_text(
     try:
         from graphify.jev_bridge import pick_seeds_with_jev, is_available as _jev_available
         if _jev_available():
-            jev_seeds = pick_seeds_with_jev(G, question)
+            jev_seeds = pick_seeds_with_jev(G, question, graph_path=graph_path)
     except Exception:
         jev_seeds = None
 
@@ -2313,7 +2313,7 @@ def _build_server(graph_path: str):
         from graphify.jev_audit import analyze_blast_radius
         symbol = arguments["symbol"]
         max_depth = min(int(arguments.get("max_depth", 2)), 4)
-        report = analyze_blast_radius(G, symbol, max_depth=max_depth)
+        report = analyze_blast_radius(G, symbol, max_depth=max_depth, active_graph_path=str(active_graph_path))
         if "error" in report:
             return report["error"]
         lines = [

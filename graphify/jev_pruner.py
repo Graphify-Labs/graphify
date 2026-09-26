@@ -58,12 +58,12 @@ def prune_bfs_neighbors_with_jev(
     instr = "在当前函数调用的下级依赖中，哪一个与开发者的核心诉求具有最直接的业务因果关系？（过滤掉纯辅助日志与通用工具）"
 
     res = _call_jev_choice(state, instr, candidates_to_judge)
-    if res and res[0] in G:
+    if res and res[0] in raw_neighbors:
         best_neighbor = res[0]
-        # 保证最佳邻居在前，附带其他高质量非噪音邻居
+        # 严格防御：仅从传入的 raw_neighbors 候选集中挑选，防止幻觉 ID
         kept = [best_neighbor]
         for n in candidates_to_judge:
-            if n != best_neighbor and len(kept) < max_keep:
+            if n in raw_neighbors and n != best_neighbor and len(kept) < max_keep:
                 kept.append(n)
         return kept
 

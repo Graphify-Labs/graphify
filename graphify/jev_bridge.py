@@ -31,11 +31,18 @@ _SEED_CACHE: Dict[str, list[str]] = {}
 _MAX_CACHE_SIZE = 128
 
 
+def _get_trusted_project_root() -> str | None:
+    """获取受信任的当前项目根目录，绝不随意向上遍历或读取不可信目录"""
+    return os.environ.get("GRAPHIFY_PROJECT_ROOT", "").strip() or None
+
+
 def _load_env_file() -> None:
-    """自动加载当前工作目录或上级目录中的 .env 文件（轻量原生实现，不引入 python-dotenv 依赖）"""
+    """安全加载 .env 文件：仅限受信任的当前工作目录或显式项目根目录"""
     try:
         from pathlib import Path
-        for base in [Path.cwd(), Path(__file__).resolve().parent.parent]:
+        trusted_root = _get_trusted_project_root()
+        search_dirs = [Path(trusted_root)] if trusted_root else [Path.cwd()]
+        for base in search_dirs:
             env_file = base / ".env"
             if env_file.is_file():
                 for line in env_file.read_text(encoding="utf-8").splitlines():
@@ -124,15 +131,15 @@ def _call_jev_choice(
     return None
 
 
-def _get_cache_key(G: nx.Graph, question: str) -> str:
-    """生成结合图谱规模与查询文本的缓存键"""
-    # 结合节点数和边数作为图谱状态指纹，图谱改动时缓存自动不匹配
-    graph_fingerprint = f"{G.number_of_nodes()}_{G.number_of_edges()}"
+def _get_cache_key(G: nx.Graph, question: str, graph_path: str | None = None) -> str:
+    """生成结合图谱文件路径、图谱拓扑规模与查询文本的唯一指纹缓存键，防止跨项目缓存污染"""
+    graph_id = graph_path or f"graph_{id(G)}"
+    graph_fingerprint = f"{graph_id}_{G.number_of_nodes()}_{G.number_of_edges()}"
     norm_q = question.strip().lower()
     return f"{graph_fingerprint}::{norm_q}"
 
 
-def pick_seeds_with_jev(G: nx.Graph, question: str, max_seeds: int = 3) -> list[str] | None:
+def pick_seeds_with_jev(G: nx.Graph, question: str, max_seeds: int = 3, graph_path: str | None = None) -> list[str] | None:
     """使用 Jev 在代码图谱中执行工业级两阶段语义穿透寻种。
 
     成功时返回种子节点列表 [seed_node_id, ...]；
@@ -141,10 +148,13 @@ def pick_seeds_with_jev(G: nx.Graph, question: str, max_seeds: int = 3) -> list[
     if not is_available() or G.number_of_nodes() == 0:
         return None
 
-    # 优化点 4：检查缓存
-    cache_key = _get_cache_key(G, question)
+    # 优化点 4：检查缓存 (附带 graph_path 作用域，防跨项目污染)
+    cache_key = _get_cache_key(G, question, graph_path=graph_path)
     if cache_key in _SEED_CACHE:
-        return _SEED_CACHE[cache_key]
+        # 校验缓存的种子是否依然存在于当前图谱中，防过时引用
+        cached_seeds = [s for s in _SEED_CACHE[cache_key] if s in G]
+        if cached_seeds:
+            return cached_seeds
 
     try:
         from graphify.cluster import cluster
