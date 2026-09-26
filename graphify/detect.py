@@ -2456,6 +2456,7 @@ def detect_incremental(
     kind: str = "semantic",
     extra_excludes: list[str] | None = None,
     gitignore: bool = True,
+    cache_root: Path | None = None,
 ) -> dict:
     """Like detect(), but returns only new or modified files since the last run.
 
@@ -2478,6 +2479,13 @@ def detect_incremental(
     symlinked sub-trees are scanned consistently between full and incremental
     runs. ``None`` (default) does not follow symlinked directories; callers must
     opt in explicitly, and resolved targets outside the scan root are skipped.
+
+    ``cache_root`` is forwarded to :func:`detect`'s own word-count cache the
+    same way the fresh-scan (non-incremental) call site already does. Without
+    it, an incremental run with a ``--out`` destination outside the scan root
+    falls back to anchoring the cache at the scan root itself, leaking
+    ``graphify-out/cache/stat-index.json`` there even though the fresh-scan
+    path stays clean (#3847).
     """
     full = detect(
         root,
@@ -2485,6 +2493,7 @@ def detect_incremental(
         google_workspace=google_workspace,
         extra_excludes=extra_excludes,
         gitignore=gitignore,
+        cache_root=cache_root,
     )
     # Pass ``root`` so a manifest written with relative keys (post-#777) is
     # re-anchored to the absolute form the rest of this function compares
