@@ -123,8 +123,15 @@ if (-not $GRAPHIFY_PYTHON) {
 # encoding writes the bytes POSIX writes, and adds no trailing newline.
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_python'), [string]$GRAPHIFY_PYTHON, $Utf8NoBom)
-# Save scan root so `graphify update` (no args) knows where to look next time
-[System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path INPUT_PATH).Path, $Utf8NoBom)
+# Save scan root so `graphify update` (no args) knows where to look next time.
+# INPUT_PATH is captured through a single-quoted (literal) here-string, never
+# substituted directly into the command line: an unquoted bareword argument
+# substituted here would let a malicious path (a stray `;`, `|`, or `$(...)`)
+# execute as script code the moment this line runs.
+$InputPathRaw = @'
+INPUT_PATH
+'@
+[System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path $InputPathRaw.Trim()).Path, $Utf8NoBom)
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
@@ -742,7 +749,7 @@ If vertical scrolling breaks in PowerShell after running graphify, this is cause
 1. **Upgrade graphify**: `pip install --upgrade graphifyy`
 2. **Use Windows Terminal** instead of the legacy PowerShell console — Windows Terminal handles ANSI codes correctly
 3. **Reset your terminal**: close and reopen PowerShell
-4. **Skip graspologic**: uninstall it (`pip uninstall graspologic`) and graphify will fall back to NetworkX's built-in Louvain algorithm, which produces no ANSI output
+4. **Skip Leiden**: uninstall its backend (`pip uninstall graspologic` on Python < 3.13, `pip uninstall graspologic-native` on Python 3.13+) and graphify will fall back to NetworkX's built-in Louvain algorithm, which produces no ANSI output
 
 ---
 

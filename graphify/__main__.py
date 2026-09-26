@@ -160,8 +160,26 @@ def __getattr__(name: str) -> str:
 
 
 
-def _check_skill_version(skill_dst: Path) -> None:
-    """Warn if the installed skill is from an older graphify version."""
+def _check_skill_version(skill_dst: Path, platform_names: "list[str] | None" = None) -> None:
+    """Warn if the installed skill is from an older graphify version.
+
+    ``platform_names`` are the platforms installing into this destination
+    (resolved here when not given - the call site passes one positional
+    argument only, because tests stub this function with one-arg lambdas), so
+    the warning can name the exact command that refreshes THIS copy (#3144):
+    a plain `graphify install` only refreshes the detected platform, and a
+    stale marker at another platform's destination made the warning permanent
+    - the user followed the advice, the warning stayed, and only editing the
+    marker by hand cleared it.
+    """
+    if platform_names is None:
+        try:
+            platform_names = [
+                name for name in _PLATFORM_CONFIG
+                if _platform_skill_destination(name) == skill_dst
+            ]
+        except Exception:
+            platform_names = []
     version_file = skill_dst.parent / ".graphify_version"
     try:
         if not version_file.exists():
@@ -203,7 +221,16 @@ def _check_skill_version(skill_dst: Path) -> None:
                 file=sys.stderr,
             )
         else:
-            print(f"  warning: skill is from graphify {installed}, package is {__version__}. Run 'graphify install' to update.", file=sys.stderr)
+            _cmd = (
+                f"graphify install --platform {platform_names[0]}"
+                if platform_names else "graphify install"
+            )
+            print(
+                f"  warning: skill at {skill_dst.parent} is from graphify {installed}, "
+                f"package is {__version__}. Run '{_cmd}' to update it "
+                f"(a plain 'graphify install' refreshes only the detected platform).",
+                file=sys.stderr,
+            )
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -456,11 +483,85 @@ def _silence_broken_pipe() -> None:
     sys.exit(0)
 
 
+_HASHSEED_PINNED_COMMANDS = frozenset({"update", "extract", "cluster-only", "label"})
+
+
+def _pin_hash_seed_if_needed() -> None:
+    """Re-exec with PYTHONHASHSEED=0 for commands whose output must be
+    deterministic run-to-run (#3641).
+
+    PYTHONHASHSEED is read once at interpreter startup; setting it on
+    os.environ from inside an already-running process has no effect on that
+    process's own hash randomization, so pinning it requires restarting the
+    interpreter with it set from the start. The generated git hooks already
+    export it for exactly this reason: networkx's Louvain implementation
+    iterates string-keyed sets whose order is randomized per-process, so
+    community assignments otherwise churn between runs with no code change.
+    A bare `graphify update .` (which the CLAUDE.md template tells agents to
+    run after every code change) skipped this, re-clustering differently
+    every time and producing a large, spurious graphify-out diff.
+
+    Only re-execs for the commands whose output actually depends on
+    clustering, and only when the caller has not already set
+    PYTHONHASHSEED themselves — an explicit choice is left alone. Degrades
+    instead of raising if the re-exec itself fails, since an unusual host
+    that disallows it should still be able to run graphify, just without
+    this determinism guarantee.
+
+    Also does nothing under pytest: dozens of existing tests call main()
+    directly with a monkeypatched sys.argv to simulate a full CLI run in
+    process, an approach that only works because main() was previously
+    side-effect-free at the point it starts. A real os.execvpe there would
+    replace the test process running those tests, not something to launch
+    for real -- PYTEST_CURRENT_TEST is set by pytest for exactly the
+    duration of a running test's setup/call/teardown, so this only ever
+    skips the pin inside an actual test, never a real invocation.
+    """
+    if len(sys.argv) < 2 or sys.argv[1] not in _HASHSEED_PINNED_COMMANDS:
+        return
+    if "PYTHONHASHSEED" in os.environ or "PYTEST_CURRENT_TEST" in os.environ:
+        return
+    try:
+        # Re-exec as a module (-m graphify) rather than replaying sys.argv[0]
+        # as a script path: that works for a POSIX console-script wrapper or
+        # a `python -m graphify` invocation, but a uv/pip/pipx console-script
+        # launcher on Windows is a native .exe with no .py content, so
+        # `python.exe <that .exe path>` fails outright with "can't open
+        # file" -- every command this function touches (#3779).
+        _reexec(
+            [sys.executable, "-m", "graphify", *sys.argv[1:]],
+            {**os.environ, "PYTHONHASHSEED": "0"},
+        )
+    except OSError:
+        pass
+
+
+def _reexec(argv: list[str], env: dict[str, str], windows: bool | None = None) -> None:
+    """Replace the current command with `argv` run under `env`.
+
+    On POSIX this is a real os.execvpe. On Windows os.exec* does not replace
+    the process: CPython spawns a new one and the calling process exits at
+    once, so the caller sees the command "finish" while the work continues
+    detached, and the exiting parent intermittently dies with an access
+    violation (exit 139 / 0xC0000005) instead (#3799). There the child is
+    run with subprocess and waited for, and its exit status is propagated.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        import subprocess
+        sys.stdout.flush()
+        sys.stderr.flush()
+        raise SystemExit(subprocess.run(argv, env=env).returncode)
+    os.execvpe(argv[0], argv, env)
+
+
 def main() -> None:
     """Console entry point. Wraps the CLI so that when a downstream consumer closes
     stdout early, graphify treats it as success instead of crashing with an
     unhandled write-to-closed-pipe error and exit 255 — which made CI wrappers and
     agent harnesses read a successful query as a command failure (#1807)."""
+    _pin_hash_seed_if_needed()
     try:
         _run_cli()
         # Flush explicitly, inside the guard. Piped stdout is block-buffered, so a
@@ -567,6 +668,7 @@ def _run_cli() -> None:
         print("    --top N                 how many to show (default 10)")
         print("    --graph <path>          path to graph.json (default graphify-out/graph.json)")
         print("    --json                  emit JSON instead of text")
+        print("  prs                     PR dashboard: CI state, review status, worktree mapping")
         print("  save-result             save a Q&A result to graphify-out/memory/ for graph feedback loop")
         print("    --question Q            the question asked")
         print("    --answer A              the answer to save")
@@ -621,13 +723,25 @@ def _run_cli() -> None:
         print("    --logging-config PATH   custom logging config YAML path (default: logging_config.yaml)")
         print("    --global                also merge the resulting graph into the global graph")
         print("    --as <tag>              repo tag for --global (default: target directory name)")
+        print("  provider [list|show|add|remove]  manage custom LLM providers")
         print("  global add <graph.json>  add/update a project graph in the global graph (~/.graphify/global-graph.json)")
         print("    --as <tag>               repo tag (default: parent directory name)")
         print("  global remove <tag>      remove a repo's nodes from the global graph")
         print("  global list              list repos in the global graph")
         print("  global path              print path to the global graph file")
         print("  benchmark [graph.json]  measure token reduction vs naive full-corpus approach")
+        print("  export html             emit interactive graph.html [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]")
         print("  export callflow-html    emit Mermaid-based architecture/call-flow HTML")
+        print("                          [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]")
+        print("                          [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N]")
+        print("  export obsidian         emit Obsidian vault notes + canvas [--graph PATH] [--labels PATH] [--dir PATH]")
+        print("  export wiki             emit wiki markdown articles [--graph PATH] [--labels PATH]")
+        print("  export svg              emit graph.svg [--graph PATH] [--labels PATH]")
+        print("  export graphml          emit GraphML [--graph PATH]")
+        print("  export neo4j            emit Cypher or push to Neo4j [--graph PATH] [--push URI] [--user U] [--password P]")
+        print("                          (or set NEO4J_PASSWORD instead of --password to keep it off argv)")
+        print("  export falkordb         emit Cypher or push to FalkorDB [--graph PATH] [--push URI] [--user U] [--password P]")
+        print("                          (or set FALKORDB_PASSWORD instead of --password to keep it off argv)")
         print("  hook install            install post-commit/post-checkout git hooks (all platforms)")
         print("  hook uninstall          remove git hooks")
         print("  hook status             check if git hooks are installed")

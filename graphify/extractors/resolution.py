@@ -10,6 +10,7 @@ from graphify.extractors.base import (  # noqa: F401
     _make_id,
     _read_text,
 )
+import functools
 import hashlib
 import json
 import os
@@ -23,6 +24,11 @@ _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
 _TSCONFIG_BASEURL_CACHE: "dict[str, Path | None]" = {}
 
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
+
+# Nearest package.json `imports` map (Node subpath imports), keyed by the
+# resolved start directory. Same lifetime rule as _TSCONFIG_ALIAS_CACHE: no
+# mtime component, so extract() clears it per run.
+_PACKAGE_IMPORTS_CACHE: "dict[str, tuple[Path, dict] | None]" = {}
 
 _JS_RESOLVE_EXTS = (".ts", ".tsx", ".mts", ".cts", ".svelte", ".js", ".jsx", ".mjs", ".cjs")
 
@@ -132,7 +138,7 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
         # Skip scoped npm package configs (e.g. @tsconfig/svelte) — not on disk.
         if not ext or ext.startswith("@"):
             continue
-        extended_path = (base_dir / ext).resolve()
+        extended_path = _resolve_cached((base_dir / ext))
         if not extended_path.suffix:
             extended_path = extended_path.with_suffix(".json")
         if extended_path.exists():
@@ -195,7 +201,7 @@ def _find_js_config(start_dir: Path) -> "tuple[Path, Path] | None":
     tsconfig.json wins when both sit in one directory, matching tsc and editors,
     which consult jsconfig.json only when there is no tsconfig.json.
     """
-    current = start_dir.resolve()
+    current = _resolve_cached(start_dir)
     for candidate in [current, *current.parents]:
         for name in ("tsconfig.json", "jsconfig.json"):
             config = candidate / name
@@ -325,7 +331,7 @@ def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]],
     return first
 
 def _find_workspace_root(start_dir: Path) -> Path | None:
-    current = start_dir.resolve()
+    current = _resolve_cached(start_dir)
     for candidate in [current, *current.parents]:
         if (candidate / "pnpm-workspace.yaml").exists():
             return candidate
@@ -408,37 +414,123 @@ def _load_workspace_packages(start_dir: Path) -> dict[str, Path]:
     _WORKSPACE_PACKAGE_CACHE[key] = packages
     return packages
 
+# `types` is LAST. It is a declaration-only condition that normally points into
+# `dist/`, which is build output and not part of the corpus, so letting it win
+# creates an edge to a node that does not exist while the runtime target the
+# source actually lives behind is skipped (#3487). This is the order #1308
+# specified when the exports map was added; the tuple had `types` ahead of
+# `require`/`default` instead.
 _EXPORT_CONDITION_PRIORITY = (
-    "source", "import", "module", "svelte", "types", "require", "default",
+    "source", "import", "module", "svelte", "require", "default", "types",
 )
+
+# Conditions a bundler opts into per platform. `react-native` is a custom
+# condition, so it is honoured only for an importer that is itself native — a
+# web importer resolves the same specifier through `default`, or the native file
+# is attributed to code that never imports it (#3487).
+_PLATFORM_EXPORT_CONDITIONS = {"native": ("react-native",)}
+
+_PLATFORM_SUFFIXES = ("web", "native", "ios", "android")
+
+# Whole-path-segment hints only: `apps/mobile/src` is native, `packages/web-utils`
+# is not web, so segment-wide matching keeps this from firing on package names.
+_PLATFORM_PATH_HINTS = (
+    ("native", ("native", "mobile", "ios", "android", "react-native")),
+    ("web", ("web", "browser", "desktop", "electron")),
+)
+
+def _importer_platform(start_dir: Path) -> str | None:
+    """Best-effort platform of the importing file, from its directory path.
+
+    Exports conditions and platform-suffixed files are chosen per importer
+    (#3487), and `start_dir` is the importer's directory — the filename itself
+    is not available at this point, so a platform-named segment is the signal.
+    Returns None when nothing distinguishes the importer, which leaves every
+    platform at the same priority afterwards."""
+    for part in reversed(start_dir.parts):
+        segment = part.lower()
+        for platform, hints in _PLATFORM_PATH_HINTS:
+            if segment in hints:
+                return platform
+    return None
+
+def _platform_variants(candidate: Path, platform: str | None) -> list[Path]:
+    """Platform-suffixed siblings of an `exports` target, importer's first.
+
+    `"./controls/*": {"default": "./src/controls/*.tsx"}` names `BottomNav.tsx`,
+    which does not exist — the real files are `BottomNav.web.tsx` and
+    `BottomNav.native.tsx`, and a bundler finds them through its platform list.
+    The importer's own platform wins; the rest stay in a fixed order so an
+    ambiguous importer resolves deterministically rather than dropping the edge
+    entirely (#3487)."""
+    order = [p for p in (platform,) if p in _PLATFORM_SUFFIXES]
+    order.extend(p for p in _PLATFORM_SUFFIXES if p not in order)
+    return [
+        candidate.parent / f"{candidate.stem}.{p}{candidate.suffix}"
+        for p in order
+    ]
+
+def _resolve_export_targets(value: Any, platform: str | None = None) -> list[str]:
+    """Every target an `exports` value offers, in preference order.
+
+    Keeping the whole list rather than the first match lets a target that is
+    not on disk fall through to the next condition instead of dropping the
+    import: a package whose `import`/`default`/`types` split across `dist/` and
+    `src/` still resolves to the one target that is real source (#3487).
+    Only conditions in _EXPORT_CONDITION_PRIORITY are considered, plus the
+    platform's own conditions when the importer has a platform."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        targets: list[str] = []
+        for cond in (*_PLATFORM_EXPORT_CONDITIONS.get(platform or "", ()),
+                     *_EXPORT_CONDITION_PRIORITY):
+            v = value.get(cond)
+            if isinstance(v, (str, dict)):
+                targets.extend(_resolve_export_targets(v, platform))
+        return targets
+    return []
 
 def _resolve_export_target(value: Any) -> str | None:
     """Resolve an `exports` map value (string or condition object) to a
     relative target string, honouring _EXPORT_CONDITION_PRIORITY for objects
     and recursing into nested condition objects."""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        for cond in _EXPORT_CONDITION_PRIORITY:
-            v = value.get(cond)
-            if isinstance(v, str):
-                return v
-            if isinstance(v, dict):
-                nested = _resolve_export_target(v)
-                if nested:
-                    return nested
-    return None
+    targets = _resolve_export_targets(value)
+    return targets[0] if targets else None
 
 def _contained_in_package(resolved: Path, package_dir: Path) -> bool:
     """Guard against `exports` targets that escape the package directory
     (e.g. "./evil": "../../../etc/passwd"). Only accept paths that stay
     within package_dir after resolution."""
     try:
-        return resolved.resolve().is_relative_to(package_dir.resolve())
+        return _resolve_cached(resolved).is_relative_to(_resolve_cached(package_dir))
     except ValueError:
         return False
 
-def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
+def _exports_candidates(
+    package_dir: Path,
+    targets: list[str],
+    platform: str | None,
+) -> list[Path]:
+    """Turn ordered `exports` targets into ordered on-disk candidates.
+
+    Each target is followed by its platform-suffixed siblings, so a target that
+    is absent falls through to the platform split next to it. Targets that
+    escape the package directory are rejected (#1308 security guard)."""
+    candidates: list[Path] = []
+    for target in targets:
+        candidate = package_dir / target
+        if not _contained_in_package(candidate, package_dir):
+            continue
+        candidates.append(candidate)
+        candidates.extend(_platform_variants(candidate, platform))
+    return candidates
+
+def _package_entry_candidates(
+    package_dir: Path,
+    subpath: str,
+    platform: str | None = None,
+) -> list[Path]:
     manifest = package_dir / "package.json"
     manifest_data: dict[str, Any] = {}
     try:
@@ -449,16 +541,19 @@ def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
     if subpath:
         # Consult the package's `exports` subpath map before the bare-path
         # fallback (#1308): "./browser" -> conditions -> file, plus single
-        # wildcard "./*" patterns. Targets that escape the package dir are
-        # rejected; resolution then falls through to the bare path.
+        # wildcard "./*" patterns. Every matching condition is kept in
+        # preference order, so one whose target is not on disk does not take
+        # the whole import down with it (#3487). Targets that escape the
+        # package dir are rejected; resolution then falls through to the bare
+        # path.
         exports = manifest_data.get("exports")
         if isinstance(exports, dict):
             subpath_key = "./" + subpath
-            target = _resolve_export_target(exports.get(subpath_key))
-            if target:
-                candidate = package_dir / target
-                if _contained_in_package(candidate, package_dir):
-                    return [candidate]
+            targets = _resolve_export_targets(exports.get(subpath_key), platform)
+            if targets:
+                candidates = _exports_candidates(package_dir, targets, platform)
+                if candidates:
+                    return candidates
             else:
                 for pattern, pattern_value in exports.items():
                     if "*" in pattern and pattern.count("*") == 1:
@@ -466,20 +561,26 @@ def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
                         if (subpath_key.startswith(prefix)
                                 and (not suffix or subpath_key.endswith(suffix))):
                             matched = subpath_key[len(prefix):len(subpath_key) - len(suffix) if suffix else None]
-                            resolved = _resolve_export_target(pattern_value)
-                            if resolved and "*" in resolved:
-                                candidate = package_dir / resolved.replace("*", matched)
-                                if _contained_in_package(candidate, package_dir):
-                                    return [candidate]
+                            wildcard_targets = [
+                                resolved.replace("*", matched)
+                                for resolved in _resolve_export_targets(pattern_value, platform)
+                                if "*" in resolved
+                            ]
+                            if wildcard_targets:
+                                candidates = _exports_candidates(
+                                    package_dir, wildcard_targets, platform
+                                )
+                                if candidates:
+                                    return candidates
         return [package_dir / subpath]
 
     exports = manifest_data.get("exports")
     if isinstance(exports, str):
         return [package_dir / exports]
     if isinstance(exports, dict):
-        dot_target = _resolve_export_target(exports.get("."))
-        if dot_target:
-            return [package_dir / dot_target]
+        dot_targets = _resolve_export_targets(exports.get("."), platform)
+        if dot_targets:
+            return _exports_candidates(package_dir, dot_targets, platform)
 
     candidates: list[Path] = []
     for key in ("svelte", "module", "main", "types"):
@@ -492,6 +593,7 @@ def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
 
 def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
     packages = _load_workspace_packages(start_dir)
+    platform = _importer_platform(start_dir)
     for package_name, package_dir in packages.items():
         if raw == package_name:
             subpath = ""
@@ -499,11 +601,125 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
             subpath = raw[len(package_name) + 1:]
         else:
             continue
-        for candidate in _package_entry_candidates(package_dir, subpath):
+        for candidate in _package_entry_candidates(package_dir, subpath, platform):
             resolved = _resolve_js_import_path(candidate)
             if resolved.is_file():
                 return resolved
     return None
+
+def _find_js_project_anchor(start_dir: Path) -> Path:
+    """Discover the project root anchor for unmapped JS/TS convention aliases (#3357).
+
+    Walks upward from start_dir looking for:
+    1. Nearest directory containing package.json or pnpm-workspace.yaml
+    2. Nearest directory containing a VCS marker (_find_vcs_root)
+    3. Fallback: start_dir itself
+    """
+    from graphify.detect import _find_vcs_root
+
+    current = _resolve_cached(start_dir)
+    home = Path.home()
+
+    for candidate in [current, *current.parents]:
+        if candidate == home:
+            break
+        if (candidate / "package.json").is_file() or (candidate / "pnpm-workspace.yaml").is_file():
+            return candidate
+
+    vcs_root = _find_vcs_root(start_dir)
+    if vcs_root is not None:
+        return vcs_root
+
+    return current
+
+
+def _load_package_imports(start_dir: Path) -> "tuple[Path, dict] | None":
+    """Nearest package.json `imports` map walking up from start_dir.
+
+    Node subpath imports (https://nodejs.org/api/packages.html#subpath-imports):
+    keys start with `#`, values are relative targets or condition objects, and
+    the map applies to every file inside that package. AdonisJS 6 scaffolds
+    `"#services/*": "./app/services/*.js"` and imports through it everywhere;
+    without this map ~90% of an Adonis app's imports resolved to nothing and
+    `affected` saw only the handful of files using relative paths. Unlike
+    tsconfig `paths`, a nested tsconfig (e.g. `inertia/tsconfig.json`) cannot
+    shadow it, which matches how Node and tsc actually resolve these.
+
+    Returns (package_dir, imports) or None. The nearest package.json wins even
+    when it has no `imports` (Node never walks past the enclosing package).
+    """
+    current = _resolve_cached(start_dir)
+    key = str(current)
+    if key in _PACKAGE_IMPORTS_CACHE:
+        return _PACKAGE_IMPORTS_CACHE[key]
+    result: "tuple[Path, dict] | None" = None
+    for candidate in [current, *current.parents]:
+        manifest = candidate / "package.json"
+        if manifest.is_file():
+            data = _read_json_config(manifest)
+            imports = data.get("imports") if isinstance(data, dict) else None
+            if isinstance(imports, dict) and imports:
+                result = (candidate, imports)
+            break
+    _PACKAGE_IMPORTS_CACHE[key] = result
+    return result
+
+def _match_subpath_import(raw: str, pattern: str) -> "tuple[int, str, bool] | None":
+    """Node semantics for an `imports` key: exact match, or a single `*` wildcard.
+
+    Stricter than _match_tsconfig_alias on purpose: `#utils` must NOT match
+    `#utils/x` (Node treats a non-wildcard key as an exact specifier). Returns
+    (specificity, captured, is_wildcard); lower specificity wins, longest
+    literal prefix first among wildcards, mirroring Node's pattern ranking.
+    """
+    if "*" in pattern:
+        if pattern.count("*") != 1:
+            return None
+        prefix, suffix = pattern.split("*", 1)
+        if not raw.startswith(prefix) or not raw.endswith(suffix):
+            return None
+        end = len(raw) - len(suffix) if suffix else len(raw)
+        if end < len(prefix):
+            return None
+        return -len(prefix), raw[len(prefix):end], True
+    if raw == pattern:
+        return -(len(pattern) + 1_000_000), "", False
+    return None
+
+def _resolve_package_import(raw: str, start_dir: Path) -> "Path | None":
+    """Resolve a `#subpath` specifier through package.json `imports` to a local file.
+
+    Only local targets (`./…`) are followed: a value naming an external package
+    (`"#dep": "dep-node-native"`) is a third-party dependency and must keep the
+    existing external-reference behavior in _resolve_js_import_target.
+    """
+    if not raw.startswith("#"):
+        return None
+    loaded = _load_package_imports(start_dir)
+    if loaded is None:
+        return None
+    package_dir, imports = loaded
+    best: "tuple[int, str, bool, object] | None" = None
+    for pattern, value in imports.items():
+        if not isinstance(pattern, str) or not pattern.startswith("#"):
+            continue
+        match = _match_subpath_import(raw, pattern)
+        if match is None:
+            continue
+        specificity, captured, is_wildcard = match
+        if best is None or specificity < best[0]:
+            best = (specificity, captured, is_wildcard, value)
+    if best is None:
+        return None
+    _, captured, is_wildcard, value = best
+    target = _resolve_export_target(value)
+    if not isinstance(target, str) or not target.startswith("./"):
+        return None
+    if is_wildcard:
+        target = target.replace("*", captured, 1) if captured else target
+    candidate = Path(os.path.normpath(package_dir / target))
+    resolved = _resolve_js_import_path(candidate)
+    return resolved if resolved.is_file() else None
 
 def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> Path | None:
     """Resolve a JS/TS module path or specifier to a local source file.
@@ -526,7 +742,32 @@ def _resolve_js_module_path(raw: str | Path, start_dir: Path | None = None) -> P
     if hit is not None:
         return _resolve_js_import_path(hit)
 
-    return _resolve_workspace_import(raw, start_dir)
+    # Node subpath imports (`#services/foo` via package.json `imports`). Tried
+    # after tsconfig `paths` so an explicit alias keeps precedence (#1269).
+    if raw.startswith("#"):
+        hit = _resolve_package_import(raw, start_dir)
+        if hit is not None:
+            return hit
+
+    workspace_hit = _resolve_workspace_import(raw, start_dir)
+    if workspace_hit is not None:
+        return workspace_hit
+
+    # Unmapped `@/` project-root convention fallback (#3357).
+    # Active ONLY when NO tsconfig.json or jsconfig.json exists anywhere in the upward tree.
+    if raw.startswith("@/") and _find_js_config(start_dir) is None:
+        subpath = raw[2:]
+        if subpath:
+            anchor = _find_js_project_anchor(start_dir)
+            if (anchor / "src").is_dir():
+                cand = _resolve_js_import_path(anchor / "src" / subpath)
+                if cand.is_file():
+                    return cand
+            cand = _resolve_js_import_path(anchor / subpath)
+            if cand.is_file():
+                return cand
+
+    return None
 
 def _resolve_js_import_target(raw: str, str_path: str) -> "tuple[str, Path | None] | None":
     """Resolve a JS/TS import path string to (target_nid, resolved_path).
@@ -553,7 +794,20 @@ def _resolve_js_import_target(raw: str, str_path: str) -> "tuple[str, Path | Non
     # producing a confident (EXTRACTED) cross-language phantom imports_from edge
     # (#1638). The ref-namespaced target has no node, so build drops it as an
     # external reference — the correct outcome for a third-party import.
-    return _make_id("ref", raw), None
+    #
+    # Namespace on the PACKAGE root, not the raw specifier (#3595): a package
+    # subpath import ("next/image") named the whole specifier, so it minted
+    # "ref:next/image" while package.json's own dependency node for the same
+    # package is "ref:next" (json_config.py keys that node off the bare
+    # dependency name). The two could never match, so every subpath import
+    # dangled even though the bare package import resolved fine. A scoped
+    # package's root is its first two segments ("@scope/pkg"); anything else
+    # is its first segment alone.
+    if raw.startswith("@"):
+        package_root = "/".join(raw.split("/")[:2])
+    else:
+        package_root = raw.split("/")[0]
+    return _make_id("ref", package_root), None
 
 def _resolve_c_include_path(raw: str, str_path: str) -> "Path | None":
     """Resolve a quoted #include path to a real file on disk.
@@ -563,7 +817,7 @@ def _resolve_c_include_path(raw: str, str_path: str) -> "Path | None":
     """
     if not raw:
         return None
-    candidate = (Path(str_path).parent / raw).resolve()
+    candidate = _resolve_cached((Path(str_path).parent / raw))
     if candidate.is_file():
         return candidate
     return None
@@ -640,14 +894,31 @@ def _vue_mask_non_script(src: str) -> tuple[str, str | None]:
     out.append(_blank(src[pos:]))
     return "".join(out), lang
 
+@functools.lru_cache(maxsize=65536)
+def _cached_source_key(source_file: str, root_str: str, _cwd: str) -> str:
+    """Resolve-and-relativize one source path, memoized (#perf).
+
+    ``_resolve_cached(Path)`` walks the path through ``nt._getfinalpathname`` /
+    ``readlink`` syscalls, and ``_disambiguate_colliding_node_ids`` calls
+    ``_source_key`` once per node, per edge endpoint and per raw_call — tens
+    of thousands of calls for a few hundred distinct ``source_file`` strings.
+    On a 364-file corpus this pass alone spent 15s (34% of a sequential
+    extract) re-resolving the same strings. ``_cwd`` is part of the key
+    because a relative ``source_file`` resolves against the current working
+    directory, so a chdir between calls must miss the cache rather than
+    replay a stale resolution.
+    """
+    source_path = Path(source_file)
+    try:
+        return str(source_path.resolve().relative_to(root_str))
+    except Exception:
+        return str(source_path)
+
+
 def _source_key(source_file: str, root: Path) -> str:
     if not source_file:
         return ""
-    source_path = Path(source_file)
-    try:
-        return str(source_path.resolve().relative_to(root))
-    except Exception:
-        return str(source_path)
+    return _cached_source_key(source_file, str(root), os.getcwd())
 
 def _node_disambiguation_source_key(node: dict, root: Path) -> str:
     source_file = str(node.get("source_file", ""))
@@ -808,6 +1079,27 @@ def _is_type_like_definition(node: dict) -> bool:
         return False
     return node.get("file_type") == "code"
 
+@functools.lru_cache(maxsize=65536)
+def _cached_realpath(path_str: str, _cwd: str) -> Path:
+    return Path(path_str).resolve()
+
+
+def _resolve_cached(path: "Path | str") -> Path:
+    """``Path.resolve()`` with a per-(path, cwd) memo (#perf).
+
+    The symbol-resolution passes resolve the same few hundred corpus paths
+    once per FACT — per import, per export, per use, per node — which on
+    Windows walks ``nt._getfinalpathname`` every time: 44k resolve calls and
+    ~15s of a sequential 364-file extract after the source-key memo alone.
+    Results are stable within a run (files do not move mid-extract); the cwd
+    is part of the key so a relative path resolved after a chdir misses the
+    cache instead of replaying a stale answer. Raises exactly like
+    ``Path.resolve()`` — callers keep their own try/except — and an
+    exception is never cached.
+    """
+    return _cached_realpath(str(path), os.getcwd())
+
+
 def _js_source_path(source_file: str, root: Path) -> Path | None:
     if not source_file:
         return None
@@ -815,7 +1107,7 @@ def _js_source_path(source_file: str, root: Path) -> Path | None:
     if not path.is_absolute():
         path = root / path
     try:
-        return path.resolve()
+        return _resolve_cached(path)
     except Exception:
         return path
 
@@ -825,6 +1117,7 @@ def _apply_symbol_resolution_facts(
     edges: list[dict],
     root: Path,
     facts: _SymbolResolutionFacts,
+    resolution_context_nodes: list[dict] | None = None,
 ) -> None:
     """Apply language-provided import/export/use facts to graph edges."""
     if not (
@@ -839,19 +1132,58 @@ def _apply_symbol_resolution_facts(
     ):
         return
 
-    path_by_resolved = {path.resolve(): path for path in paths}
-    source_file_id = {path.resolve(): _make_id(str(path)) for path in paths}
+    path_by_resolved = {_resolve_cached(path): path for path in paths}
+    source_file_id = {_resolve_cached(path): _make_id(str(path)) for path in paths}
     symbol_nodes: dict[tuple[Path, str], str] = {}
+    # Member nodes (`.method()` labels) share their bare name with top-level
+    # symbols once the leading dot is stripped. A module can only re-export
+    # top-level bindings, so a star-export walk must never bind an imported
+    # name to a class/interface member (#3436). Track those keys separately
+    # and never let a member shadow a same-named top-level symbol.
+    member_symbol_keys: set[tuple[Path, str]] = set()
+
+    if resolution_context_nodes:
+        _fresh_node_ids = {n.get("id") for n in nodes if n.get("id")}
+        _fresh_paths = {_resolve_cached(p) for p in paths}
+        for node in resolution_context_nodes:
+            nid = node.get("id")
+            if not nid or nid in _fresh_node_ids:
+                continue
+            source_path = _js_source_path(str(node.get("source_file", "")), root)
+            if source_path is None or source_path in _fresh_paths:
+                continue
+            raw_label = str(node.get("label", "")).strip()
+            label = raw_label.strip("()").lstrip(".")
+            if not label:
+                continue
+            key = (source_path, label)
+            if raw_label.startswith("."):
+                if key in symbol_nodes:
+                    continue
+                member_symbol_keys.add(key)
+            else:
+                member_symbol_keys.discard(key)
+            symbol_nodes[key] = str(nid)
+
     for node in nodes:
         source_path = _js_source_path(str(node.get("source_file", "")), root)
         if source_path is None:
             continue
-        label = str(node.get("label", "")).strip().strip("()").lstrip(".")
-        if label and node.get("id"):
-            symbol_nodes[(source_path, label)] = str(node["id"])
+        raw_label = str(node.get("label", "")).strip()
+        label = raw_label.strip("()").lstrip(".")
+        if not label or not node.get("id"):
+            continue
+        key = (source_path, label)
+        if raw_label.startswith("."):
+            if key in symbol_nodes:
+                continue
+            member_symbol_keys.add(key)
+        else:
+            member_symbol_keys.discard(key)
+        symbol_nodes[key] = str(node["id"])
 
     def ensure_symbol_node(path: Path, name: str, line: int) -> str:
-        resolved_path = path.resolve()
+        resolved_path = _resolve_cached(path)
         existing = symbol_nodes.get((resolved_path, name))
         if existing is not None:
             return existing
@@ -876,7 +1208,7 @@ def _apply_symbol_resolution_facts(
         for edge in edges
     }
 
-    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None) -> None:
+    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None, type_only: bool = False) -> None:
         key = (source, target, relation, context or "")
         if key in existing_edges:
             return
@@ -901,6 +1233,9 @@ def _apply_symbol_resolution_facts(
         # cross-file member-call resolver match `alias.func()` (#2082).
         if local_alias is not None:
             edge["local_alias"] = local_alias
+        # Erased at compile time (#3123): Import Cycles skips these edges.
+        if type_only:
+            edge["type_only"] = True
         edges.append(edge)
 
     for declaration in facts.declarations:
@@ -908,15 +1243,15 @@ def _apply_symbol_resolution_facts(
 
     local_aliases_by_file: dict[Path, dict[str, tuple[Path, str]]] = {}
     for import_fact in facts.imports:
-        file_path = import_fact.file_path.resolve()
+        file_path = _resolve_cached(import_fact.file_path)
         local_aliases_by_file.setdefault(file_path, {})[import_fact.local_name] = (
-            import_fact.target_path.resolve(),
+            _resolve_cached(import_fact.target_path),
             import_fact.imported_name,
         )
 
     pending_aliases_by_file: dict[Path, list[_SymbolAliasFact]] = {}
     for alias_fact in facts.aliases:
-        pending_aliases_by_file.setdefault(alias_fact.file_path.resolve(), []).append(alias_fact)
+        pending_aliases_by_file.setdefault(_resolve_cached(alias_fact.file_path), []).append(alias_fact)
 
     for file_path, aliases in pending_aliases_by_file.items():
         local_aliases = local_aliases_by_file.setdefault(file_path, {})
@@ -932,11 +1267,12 @@ def _apply_symbol_resolution_facts(
                     changed = True
 
     named_exports_by_file: dict[Path, dict[str, tuple[Path, str]]] = {}
+    export_origins: dict[tuple[Path, str], set[tuple[Path, str]]] = {}
     star_exports_by_file: dict[Path, list[Path]] = {}
 
     for star_fact in facts.star_exports:
-        source_path = star_fact.file_path.resolve()
-        target_path = star_fact.target_path.resolve()
+        source_path = _resolve_cached(star_fact.file_path)
+        target_path = _resolve_cached(star_fact.target_path)
         star_exports_by_file.setdefault(source_path, []).append(target_path)
         source_id = source_file_id.get(source_path)
         if source_id is not None:
@@ -948,11 +1284,12 @@ def _apply_symbol_resolution_facts(
                 star_fact.line,
                 star_fact.file_path,
                 target_file=str(path_by_resolved.get(target_path, target_path)),
+                type_only=star_fact.type_only,
             )
 
     for namespace_fact in facts.namespace_exports:
-        source_path = namespace_fact.file_path.resolve()
-        target_path = namespace_fact.target_path.resolve()
+        source_path = _resolve_cached(namespace_fact.file_path)
+        target_path = _resolve_cached(namespace_fact.target_path)
         namespace_id = ensure_symbol_node(
             namespace_fact.file_path,
             namespace_fact.exported_name,
@@ -979,19 +1316,27 @@ def _apply_symbol_resolution_facts(
                 namespace_fact.line,
                 namespace_fact.file_path,
                 target_file=str(path_by_resolved.get(target_path, target_path)),
+                type_only=namespace_fact.type_only,
             )
 
     for export_fact in facts.exports:
-        file_path = export_fact.file_path.resolve()
+        file_path = _resolve_cached(export_fact.file_path)
         origin: tuple[Path, str] | None = None
         if export_fact.target_path is not None and export_fact.target_name is not None:
-            origin = (export_fact.target_path.resolve(), export_fact.target_name)
+            origin = (_resolve_cached(export_fact.target_path), export_fact.target_name)
         elif export_fact.local_name is not None:
             origin = local_aliases_by_file.get(file_path, {}).get(export_fact.local_name)
             if origin is None and (file_path, export_fact.local_name) in symbol_nodes:
                 origin = (file_path, export_fact.local_name)
         if origin is None:
+            # An explicit export remains evidence even when extraction did not
+            # materialize its binding. Do not mistake it for an absent export.
+            if export_fact.local_name is not None:
+                export_origins.setdefault((file_path, export_fact.exported_name), set()).add(
+                    (file_path, export_fact.local_name)
+                )
             continue
+        export_origins.setdefault((file_path, export_fact.exported_name), set()).add(origin)
         named_exports_by_file.setdefault(file_path, {})[export_fact.exported_name] = origin
         if origin[0] != file_path:
             source_id = source_file_id.get(file_path)
@@ -1004,10 +1349,11 @@ def _apply_symbol_resolution_facts(
                     export_fact.line,
                     export_fact.file_path,
                     target_file=str(path_by_resolved.get(origin[0], origin[0])),
+                    type_only=export_fact.type_only,
                 )
 
     def resolve_exported_origin(target_path: Path, imported_name: str, seen: set[tuple[Path, str]] | None = None) -> tuple[Path, str]:
-        target_path = target_path.resolve()
+        target_path = _resolve_cached(target_path)
         key = (target_path, imported_name)
         if seen is None:
             seen = set()
@@ -1019,15 +1365,80 @@ def _apply_symbol_resolution_facts(
             return resolve_exported_origin(origin[0], origin[1], seen)
         for star_target in star_exports_by_file.get(target_path, []):
             star_key = (star_target, imported_name)
-            if star_key in symbol_nodes:
+            if star_key in symbol_nodes and star_key not in member_symbol_keys:
                 return star_key
             resolved = resolve_exported_origin(star_target, imported_name, seen)
-            if resolved in symbol_nodes:
+            if resolved in symbol_nodes and resolved not in member_symbol_keys:
                 return resolved
         return key
 
+    def exported_candidates(
+        key: tuple[Path, str], seen: frozenset[tuple[Path, str]]
+    ) -> tuple[set[tuple[Path, str]], bool]:
+        # Distinguish a cycle cutoff from an absent export. A cycle contributes
+        # no origin; a named export of an unrepresented binding remains unknown.
+        if key in seen:
+            return set(), True
+        seen = seen | {key}
+        origins = export_origins.get(key)
+        candidates: set[tuple[Path, str]] = set()
+        cyclic = False
+        if origins is None:
+            for path in star_exports_by_file.get(key[0], []):
+                branch, branch_cyclic = exported_candidates((path, key[1]), seen)
+                candidates.update(branch)
+                cyclic |= branch_cyclic
+            return candidates, cyclic
+        for origin in origins:
+            if origin == key:
+                candidates.add(origin)
+            else:
+                branch, branch_cyclic = exported_candidates(origin, seen)
+                candidates.update(branch)
+                cyclic |= branch_cyclic
+                if not branch and not branch_cyclic:
+                    candidates.add(origin)
+        return candidates, cyclic
+
+    # The structural extractor names the immediate barrel's symbol. Resolve
+    # that exact authored export site through the shared import/export facts,
+    # including `import {x}; export {x}` bridges with no local declaration.
+    export_sites: dict[tuple[Path, str, Path], list[_SymbolExportFact]] = {}
+    for export_fact in facts.exports:
+        if export_fact.target_path is not None and export_fact.target_name is not None:
+            site = (
+                _resolve_cached(export_fact.file_path),
+                f"L{export_fact.line}",
+                _resolve_cached(export_fact.target_path),
+            )
+            export_sites.setdefault(site, []).append(export_fact)
+    owned_ids = {node.get("id") for node in nodes}
+    for edge in edges:
+        if edge.get("relation") != "re_exports" or edge.get("target") in owned_ids:
+            continue
+        target_file = edge.get("target_file")
+        source_path = _js_source_path(str(edge.get("source_file", "")), root)
+        if not target_file or source_path is None:
+            continue
+        target_path = Path(target_file)
+        site = (source_path, str(edge.get("source_location", "")), _resolve_cached(target_path))
+        for export_fact in export_sites.get(site, []):
+            expected = _make_id(_file_stem(target_path), export_fact.target_name)
+            if edge.get("target") != expected:
+                continue
+            candidates, _ = exported_candidates(
+                (_resolve_cached(export_fact.target_path), export_fact.target_name), frozenset()
+            )
+            if len(candidates) == 1:
+                origin = next(iter(candidates))
+                target_id = symbol_nodes.get(origin)
+                if target_id in owned_ids:
+                    edge["target"] = target_id
+                    edge["target_file"] = str(path_by_resolved.get(origin[0], origin[0]))
+            break
+
     for import_fact in facts.imports:
-        source_id = source_file_id.get(import_fact.file_path.resolve())
+        source_id = source_file_id.get(_resolve_cached(import_fact.file_path))
         if source_id is None:
             continue
         origin_path, origin_symbol = resolve_exported_origin(
@@ -1047,6 +1458,18 @@ def _apply_symbol_resolution_facts(
         )
 
     # #1146: emit file-to-file imports_from edges for package-form submodule imports.
+    # #3777: retract provisional `imports_from` AST edges whose package ID coincided
+    # with a same-named sibling module file (e.g. `from nettacker import logger`
+    # emitting a provisional edge to `nettacker.py`).
+    provisional_by_loc: dict[tuple[Path, str], list[dict]] = {}
+    for edge in edges:
+        if edge.get("relation") == "imports_from" and edge.get("context") == "import":
+            src = _js_source_path(str(edge.get("source_file", "")), root)
+            loc = edge.get("source_location")
+            if src is not None and loc:
+                provisional_by_loc.setdefault((src, loc), []).append(edge)
+
+    retracted_edge_ids: set[int] = set()
     for from_path, to_path, line, local_name in facts.module_imports:
         try:
             from_rel = from_path.relative_to(root)
@@ -1055,10 +1478,64 @@ def _apply_symbol_resolution_facts(
             continue
         source_id = _make_id(_file_stem(from_rel))
         target_id = _make_id(_file_stem(to_rel))
+
+        from_canon = _resolve_cached(from_path)
+        pkg_dir = to_path.parent
+        candidate_targets: set[str] = set()
+        try:
+            pkg_rel = pkg_dir.relative_to(root)
+            candidate_targets.add(_make_id(".".join(pkg_rel.parts)))
+            candidate_targets.add(_make_id(_file_stem(pkg_rel)))
+            candidate_targets.add(_make_id(str(pkg_rel)))
+        except ValueError:
+            pass
+        candidate_targets.add(_make_id(str(pkg_dir)))
+        candidate_targets.add(_make_id(str(pkg_dir.with_suffix(".py"))))
+        try:
+            from_rel_parent = from_path.parent.relative_to(root)
+            candidate_targets.add(_make_id(str(from_rel_parent.with_suffix(".py"))))
+        except ValueError:
+            pass
+        # Deliberately NOT adding the package `__init__.py` id form: since #3729,
+        # a legitimate `from pkg import sub` resolves its provisional edge to the
+        # real `pkg/__init__.py` node, which is a correct package-dependency edge
+        # (the package's __init__ runs on import) and must survive alongside the
+        # submodule edge we add below. Only the *module-file* collision ids
+        # (`pkg` / `pkg.py`, the #3777 phantom) are retraction candidates.
+
+        loc_str = f"L{line}"
+        loc_candidates = [
+            e for e in provisional_by_loc.get((from_canon, loc_str), [])
+            if id(e) not in retracted_edge_ids
+        ]
+        matched_edge = None
+        for edge in loc_candidates:
+            if edge.get("target") in candidate_targets:
+                matched_edge = edge
+                break
+        # Retract ONLY on a genuine module-collision candidate match. The old
+        # `len(loc_candidates) == 1` blind fallback over-retracted: since #3729 a
+        # legitimately-resolved `from pkg import sub` edge (target `pkg/__init__.py`)
+        # is the sole edge at its line and is NOT a collision, so the fallback
+        # would wrongly drop it. A real #3777 phantom always matches by its
+        # module-file id above, so no fallback is needed (#3784 follow-up).
+
+        if matched_edge is not None:
+            retracted_edge_ids.add(id(matched_edge))
+            existing_edges.discard((
+                str(matched_edge.get("source")),
+                str(matched_edge.get("target")),
+                str(matched_edge.get("relation")),
+                str(matched_edge.get("context") or ""),
+            ))
+
         add_edge(
             source_id, target_id, "imports_from", "submodule_import", line, from_path,
             local_alias=local_name if local_name != to_path.stem else None,
         )
+
+    if retracted_edge_ids:
+        edges[:] = [e for e in edges if id(e) not in retracted_edge_ids]
 
     # #2262 producer guard: never emit a `calls` use-edge from a source id
     # that owns no node. All node appends (ensure_symbol_node, declarations,
@@ -1071,7 +1548,7 @@ def _apply_symbol_resolution_facts(
     # canonicalizes — or drop it when no file node id is available.
     owned = {str(n.get("id")) for n in nodes}
     for use_fact in facts.uses:
-        file_path = use_fact.file_path.resolve()
+        file_path = _resolve_cached(use_fact.file_path)
         target_id = None
         unresolved_origin = local_aliases_by_file.get(file_path, {}).get(use_fact.local_name)
         if unresolved_origin is not None:
@@ -1088,6 +1565,11 @@ def _apply_symbol_resolution_facts(
         if target_id is None:
             continue
         source_id = use_fact.source_id
+        # Structural walking can omit named-function-local declarations while
+        # materializing callback-local ones. Only actual node ownership decides
+        # whether a type relationship has a represented source declaration.
+        if use_fact.relation in ("inherits", "implements", "references") and source_id not in owned:
+            continue
         if use_fact.relation == "calls" and source_id not in owned:
             source_id = source_file_id.get(file_path)
             if source_id is None:
@@ -1216,8 +1698,18 @@ def _js_exported_declaration_names(node, source: bytes) -> list[str]:
     if declaration is None:
         return names
 
-    if declaration.type == "lexical_declaration":
+    if declaration.type in ("lexical_declaration", "variable_declaration"):
+        # Preserve legacy aggregate-pattern facts for identifier-valued lexical
+        # declarations; individual destructured bindings are a separate feature.
         names.extend(alias for alias, _target in _js_lexical_aliases(declaration, source))
+        for declarator in declaration.named_children:
+            if declarator.type != "variable_declarator":
+                continue
+            name_node = declarator.child_by_field_name("name")
+            if name_node is not None and name_node.type == "identifier":
+                name = _read_text(name_node, source)
+                if name not in names:
+                    names.append(name)
         return names
 
     if declaration.type in (
@@ -1270,7 +1762,25 @@ def _js_default_export_name(node, source: bytes) -> str | None:
 def _js_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
     bodies: list[tuple[str, object]] = []
     stem = _file_stem(path)
+    # A top-level `export function f(){}` / `export const g = () => {}` is an
+    # export_statement WRAPPING the declaration, not a bare program child, so
+    # scanning only direct children missed every exported function — and the
+    # calls inside them never became `uses` facts, so an aliased-import call
+    # (`import { bar as baz }; baz()`) never resolved through the import table
+    # (#3346). Unwrap a non-re-export export_statement to its inner declaration
+    # so exported and non-exported functions are treated identically.
+    top_nodes: list = []
     for node in root_node.children:
+        if node.type == "export_statement" and not any(
+            c.type == "string" for c in node.children  # `export ... from '...'` is a re-export
+        ):
+            top_nodes.extend(
+                c for c in node.children
+                if c.type in ("function_declaration", "lexical_declaration")
+            )
+        else:
+            top_nodes.append(node)
+    for node in top_nodes:
         if node.type == "function_declaration":
             name_node = node.child_by_field_name("name")
             body = node.child_by_field_name("body")
@@ -1391,19 +1901,34 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
     line = class_node.start_point[0] + 1
     for child in class_node.children:
         if child.type == "class_heritage":
+            saw_clause = False
             for clause in child.children:
                 if clause.type == "extends_clause":
+                    saw_clause = True
                     for name in _ts_heritage_clause_entries(clause, source):
                         facts.uses.append(
                             _SymbolUseFact(path, class_nid, name, "inherits", "type",
                                            clause.start_point[0] + 1)
                         )
                 elif clause.type == "implements_clause":
+                    saw_clause = True
                     for name in _ts_heritage_clause_entries(clause, source):
                         facts.uses.append(
                             _SymbolUseFact(path, class_nid, name, "implements", "type",
                                            clause.start_point[0] + 1)
                         )
+            if not saw_clause:
+                # The JavaScript grammar carries the base directly under
+                # class_heritage (`extends Base` -> [extends, identifier]) with no
+                # extends_clause/implements_clause wrapper like the TypeScript
+                # grammar. Treat the heritage node itself as the extends clause so
+                # `class Derived extends Base {}` in a .js file still emits an
+                # inherits edge. Mirrors the extends_type_clause branch below.
+                for name in _ts_heritage_clause_entries(child, source):
+                    facts.uses.append(
+                        _SymbolUseFact(path, class_nid, name, "inherits", "type",
+                                       child.start_point[0] + 1)
+                    )
         elif child.type == "extends_type_clause":
             # Interface heritage (`interface A extends B, C`) is an
             # extends_type_clause node, NOT a class_heritage. Its base entries
@@ -1478,7 +2003,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
     trees: dict[Path, tuple[bytes, object]] = {}
 
     for path in js_paths:
-        resolved_path = path.resolve()
+        resolved_path = _resolve_cached(path)
         parsed = _parse_js_tree(path)
         if parsed is None:
             continue
@@ -1500,7 +2025,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
             target_path = _resolve_js_module_path(raw_module, path.parent)
             if target_path is None:
                 continue
-            target_path = target_path.resolve()
+            target_path = _resolve_cached(target_path)
             for imported_name, local_name in _js_named_specifiers(node, source, "import_specifier"):
                 facts.imports.append(
                     _SymbolImportFact(
@@ -1530,7 +2055,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                 )
 
     for path in js_paths:
-        resolved_path = path.resolve()
+        resolved_path = _resolve_cached(path)
         parsed = trees.get(resolved_path)
         if parsed is None:
             continue
@@ -1542,11 +2067,18 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
 
             raw_module = _js_module_specifier(node, source)
             export_clause = _js_export_clause(node)
+            # `export type { X } from ...` / `export type * from ...`: the
+            # statement-level `type` keyword is a bare anonymous child; the
+            # default binding NAMED type sits inside the clause instead (#3123).
+            stmt_type_only = any(
+                child.type == "type" and not child.is_named
+                for child in node.children
+            )
             if raw_module is not None:
                 target_path = _resolve_js_module_path(raw_module, path.parent)
                 if target_path is None:
                     continue
-                target_path = target_path.resolve()
+                target_path = _resolve_cached(target_path)
                 namespace_name = _js_namespace_export_name(node, source)
                 if namespace_name is not None:
                     facts.namespace_exports.append(
@@ -1555,11 +2087,13 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                             namespace_name,
                             target_path,
                             node.start_point[0] + 1,
+                            type_only=stmt_type_only,
                         )
                     )
                 elif _js_export_statement_is_star(node):
                     facts.star_exports.append(
-                        _StarExportFact(path, target_path, node.start_point[0] + 1)
+                        _StarExportFact(path, target_path, node.start_point[0] + 1,
+                                        type_only=stmt_type_only)
                     )
                 if export_clause is not None:
                     for original_name, exported_name in _js_named_specifiers(
@@ -1572,6 +2106,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                                 node.start_point[0] + 1,
                                 target_path=target_path,
                                 target_name=original_name,
+                                type_only=stmt_type_only,
                             )
                         )
                 continue
@@ -1616,7 +2151,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                 )
 
     for path in js_paths:
-        resolved_path = path.resolve()
+        resolved_path = _resolve_cached(path)
         parsed = trees.get(resolved_path)
         if parsed is None:
             continue
@@ -1638,7 +2173,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                 )
 
     for path in js_paths:
-        resolved_path = path.resolve()
+        resolved_path = _resolve_cached(path)
         parsed = trees.get(resolved_path)
         if parsed is None:
             continue
@@ -1660,20 +2195,48 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
             class_nid = _make_id(stem, class_name)
             _ts_walk_class_members(node, source, path, class_nid, facts)
 
+@functools.lru_cache(maxsize=2048)
+def _parse_python_tree_cached(path_str: str, _mtime_ns: int, _size: int):
+    import tree_sitter_python as tspython
+    from tree_sitter import Language, Parser
+    source = Path(path_str).read_bytes()
+    parser = Parser(Language(tspython.language()))
+    return source, parser.parse(source).root_node
+
+
 def _parse_python_tree(path: Path):
+    """Parse one Python file to ``(source, root_node)``, memoized (#perf).
+
+    The Python symbol-resolution facts pass and the cross-file import pass each
+    parse the entire ``.py`` corpus, back to back, from the main process after
+    the workers return — so every file was tree-sitter-parsed (and read from
+    disk) twice for no reason. Keying the memo on ``(path, mtime_ns, size)``
+    lets the second pass reuse the first pass's tree while still re-parsing a
+    file that changed between runs (watch mode). Both passes only read the
+    tree, so sharing one parse is behaviour-preserving. Returns ``None`` on any
+    error, exactly as before — callers already treat that as "skip this file".
+    """
     try:
-        import tree_sitter_python as tspython
-        from tree_sitter import Language, Parser
-        source = path.read_bytes()
-        parser = Parser(Language(tspython.language()))
-        return source, parser.parse(source).root_node
+        st = path.stat()
+        return _parse_python_tree_cached(str(path), st.st_mtime_ns, st.st_size)
     except Exception:
         return None
 
 def _walk_python_tree(node):
-    yield node
-    for child in node.children:
-        yield from _walk_python_tree(child)
+    """Preorder walk of a tree-sitter tree, iteratively.
+
+    The recursive ``yield from`` form built one suspended generator frame per
+    ancestor and re-propagated every node up the whole chain — ~25M frame
+    resumptions on a 364-file corpus for ~2.8M actual nodes. An explicit stack
+    yields each node exactly once in the identical preorder (children pushed
+    reversed so the first child pops first). Same rewrite, same reasoning as
+    ``_walk_js_tree`` above.
+    """
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(reversed(current.children))
 
 def _python_import_from_module(node, source: bytes) -> tuple[int, str] | None:
     level = 0
@@ -1773,6 +2336,49 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
             return cand
     return None
 
+def _resolve_python_namespace_dir(module_name: str, current_path: Path, root: Path, level: int) -> "Path | None":
+    """The directory a ``from <module> import ...`` names when that module is a
+    PEP 420 namespace package: a directory under the scan root with no
+    ``__init__.py``. ``_resolve_python_module_path`` returns None for it (there is
+    no module file to probe), so a package that omits ``__init__.py`` -- which
+    ``python -m pkg.mod`` runs without complaint -- had every ``from . import
+    sibling`` dropped whole, and with it every ``sibling.func()`` call the #1883
+    module arm would otherwise have resolved: the most-called functions in such a
+    repo carried in-degree 0. Mirrors that resolver's walk (relative base, then
+    scan root, then sys.path-root ancestors) and returns only a directory that
+    exists inside the root."""
+    def _namespace(candidate: Path) -> "Path | None":
+        if not candidate.is_dir() or (candidate / "__init__.py").is_file():
+            return None
+        try:
+            _resolve_cached(candidate).relative_to(_resolve_cached(root))
+        except ValueError:
+            return None
+        return candidate
+
+    if level > 0:
+        base = current_path.parent
+        for _ in range(level - 1):
+            base = base.parent
+        return _namespace(base / module_name.replace(".", "/") if module_name else base)
+    if not module_name:
+        return None
+    rel = module_name.replace(".", "/")
+    hit = _namespace(root / rel)
+    if hit is not None:
+        return hit
+    for anc in current_path.parents:
+        try:
+            anc.relative_to(root)
+        except ValueError:
+            break  # left the scan root; stop walking up
+        if anc == root or (anc / "__init__.py").is_file():
+            continue  # root already probed; a package dir is not a sys.path root (#2072)
+        hit = _namespace(anc / rel)
+        if hit is not None:
+            return hit
+    return None
+
 def _python_top_level_function_bodies(path: Path, root_node, source: bytes) -> list[tuple[str, object]]:
     bodies: list[tuple[str, object]] = []
     stem = _file_stem(path)
@@ -1797,7 +2403,9 @@ def _collect_python_symbol_resolution_facts(
     paths: list[Path],
     root: Path,
     facts: _SymbolResolutionFacts,
+    ambiguous_python_modules: set[str] | None = None,
 ) -> None:
+    ambiguous_python_modules = ambiguous_python_modules or set()
     py_paths = [path for path in paths if path.suffix == ".py"]
     if not py_paths:
         return
@@ -1808,7 +2416,7 @@ def _collect_python_symbol_resolution_facts(
         if parsed is None:
             continue
         source, root_node = parsed
-        trees[path.resolve()] = parsed
+        trees[_resolve_cached(path)] = parsed
 
         for node in _walk_python_tree(root_node):
             if node.type != "import_from_statement":
@@ -1817,14 +2425,24 @@ def _collect_python_symbol_resolution_facts(
             if module is None:
                 continue
             level, module_name = module
-            target_path = _resolve_python_module_path(module_name, path, root, level)
-            if target_path is None:
+            if level == 0 and _make_id(module_name) in ambiguous_python_modules:
                 continue
-            # #1146: `from pkg import submod` — if the target is a package
-            # (__init__.py) and an imported name matches a submodule file on
-            # disk, emit a file-level import edge to that submodule rather
-            # than only to the package.
-            pkg_dir = target_path.parent if target_path.name == "__init__.py" else None
+            target_path = _resolve_python_module_path(module_name, path, root, level)
+            if target_path is not None:
+                # #1146: `from pkg import submod` — if the target is a package
+                # (__init__.py) and an imported name matches a submodule file on
+                # disk, emit a file-level import edge to that submodule rather
+                # than only to the package.
+                pkg_dir = target_path.parent if target_path.name == "__init__.py" else None
+            else:
+                # A PEP 420 namespace package: the module names a directory with
+                # no __init__.py, so there is no module file to resolve to, but
+                # the names it imports can still be submodule files on disk.
+                # Without this branch `from . import brain` in such a package
+                # emitted nothing, and `brain.think()` never became an edge.
+                pkg_dir = _resolve_python_namespace_dir(module_name, path, root, level)
+                if pkg_dir is None:
+                    continue
             for imported_name, local_name in _python_imported_names(node, source):
                 line = node.start_point[0] + 1
                 if pkg_dir is not None:
@@ -1832,8 +2450,19 @@ def _collect_python_symbol_resolution_facts(
                     sub_pkg = pkg_dir / imported_name / "__init__.py"
                     submodule = sub_py if sub_py.is_file() else (sub_pkg if sub_pkg.is_file() else None)
                     if submodule is not None:
+                        imported_module = (
+                            f"{module_name}.{imported_name}"
+                            if module_name else imported_name
+                        )
+                        if (
+                            level == 0
+                            and _make_id(imported_module) in ambiguous_python_modules
+                        ):
+                            continue
                         facts.module_imports.append((path, submodule, line, local_name))
                         continue
+                if target_path is None:
+                    continue  # a namespace package owns no symbols of its own to bind
                 facts.imports.append(
                     _SymbolImportFact(path, local_name, target_path, imported_name, line)
                 )
@@ -1849,7 +2478,7 @@ def _collect_python_symbol_resolution_facts(
                     )
 
     for path in py_paths:
-        parsed = trees.get(path.resolve())
+        parsed = trees.get(_resolve_cached(path))
         if parsed is None:
             continue
         source, root_node = parsed
@@ -1874,15 +2503,29 @@ def _augment_symbol_resolution_edges(
     nodes: list[dict],
     edges: list[dict],
     root: Path,
+    ambiguous_python_modules: set[str] | None = None,
+    resolution_context_nodes: list[dict] | None = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
     _collect_js_symbol_resolution_facts(paths, facts)
-    _collect_python_symbol_resolution_facts(paths, root, facts)
-    _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
+    _collect_python_symbol_resolution_facts(
+        paths, root, facts,
+        ambiguous_python_modules=ambiguous_python_modules,
+    )
+    if resolution_context_nodes:
+        _apply_symbol_resolution_facts(
+            paths, nodes, edges, root, facts,
+            resolution_context_nodes=resolution_context_nodes,
+        )
+    else:
+        _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 
 def _resolve_cross_file_imports(
     per_file: list[dict],
     paths: list[Path],
+    all_nodes: list[dict] | None = None,
+    all_edges: list[dict] | None = None,
+    ambiguous_python_modules: set[str] | None = None,
 ) -> list[dict]:
     """
     Two-pass import resolution: turn file-level imports into class-level edges.
@@ -1899,13 +2542,10 @@ def _resolve_cross_file_imports(
         BasicAuth  --uses--> Request   [INFERRED]
     """
     try:
-        import tree_sitter_python as tspython
-        from tree_sitter import Language, Parser
+        import tree_sitter_python  # noqa: F401  (availability check only)
     except ImportError:
         return []
-
-    language = Language(tspython.language())
-    parser = Parser(language)
+    ambiguous_python_modules = ambiguous_python_modules or set()
 
     # Pass 1: _file_stem(path) → {ClassName: node_id}
     # Keyed by directory-qualified stem (e.g. "auth_models") to avoid collisions
@@ -1944,9 +2584,15 @@ def _resolve_cross_file_imports(
     # shares the file (#2652). The edge is anchored at the real reference, not
     # the import line, so `source_location` points at genuine corroboration.
     new_edges: list[dict] = []
+    node_by_id = {node["id"]: node for node in all_nodes if node.get("id")} if all_nodes else {}
+    repointed_from: set[str] = set()
+    TYPE_REPOINT_RELATIONS = frozenset({"references", "inherits", "implements", "extends"})
 
     for file_result, path in zip(per_file, paths):
         str_path = str(path)
+        file_srcs = {n.get("source_file") for n in file_result.get("nodes", []) if n.get("source_file")}
+        file_srcs.add(str_path)
+        file_srcs.add(path.as_posix())
 
         # Map each local symbol (class or function) to its node id, keyed by the
         # bare symbol name. Function labels end in "()"; the file node ends in
@@ -1965,12 +2611,12 @@ def _resolve_cross_file_imports(
         if not name_to_nid:
             continue
 
-        # Parse imports from this file
-        try:
-            source = path.read_bytes()
-            tree = parser.parse(source)
-        except Exception:
+        # Parse imports from this file (shared with the facts pass via the
+        # mtime-keyed memo, so each .py is parsed once across both passes).
+        parsed = _parse_python_tree(path)
+        if parsed is None:
             continue
+        source, root_node = parsed
 
         # local_name -> target node id (local_name honours `import X as Y`, so a
         # reference to the alias in the body still attributes correctly).
@@ -1990,18 +2636,44 @@ def _resolve_cross_file_imports(
             # importing file's directory; absolute imports fall back to the
             # bare-stem secondary index (first-writer-wins when names collide).
             target_fq: str | None = None
+            absolute_module: str | None = None
             for child in node.children:
                 if child.type == "relative_import":
+                    prefix_text = ""
+                    dotted_text = ""
                     for sub in child.children:
-                        if sub.type == "dotted_name":
-                            bare = _text(sub).split(".")[-1]
-                            candidate = path.parent / f"{bare}.py"
-                            target_fq = _file_stem(candidate)
-                            break
+                        if sub.type == "import_prefix":
+                            prefix_text = _text(sub)
+                        elif sub.type == "dotted_name":
+                            dotted_text = _text(sub)
+                    dots = prefix_text.count(".") if prefix_text else 1
+                    cur_dir = path.parent
+                    for _ in range(dots - 1):
+                        cur_dir = cur_dir.parent
+                    if dotted_text:
+                        candidate = cur_dir.joinpath(*dotted_text.split(".")).with_suffix(".py")
+                    else:
+                        candidate = cur_dir / "__init__.py"
+                    target_fq = _file_stem(candidate)
                     break
                 if child.type == "dotted_name" and target_fq is None:
-                    bare = _text(child).split(".")[-1]
-                    target_fq = bare_to_qualified.get(bare)
+                    dotted_name = _text(child)
+                    absolute_module = dotted_name
+                    if _make_id(dotted_name) in ambiguous_python_modules:
+                        return
+                    dotted_as_path = "/".join(dotted_name.split("."))
+                    if dotted_as_path in stem_to_entities:
+                        target_fq = dotted_as_path
+                    else:
+                        suffix_matches = [
+                            fq for fq in stem_to_entities
+                            if fq.endswith(f"/{dotted_as_path}") or fq.endswith(f"\\{dotted_as_path}")
+                        ]
+                        if len(suffix_matches) == 1:
+                            target_fq = suffix_matches[0]
+                        else:
+                            bare = dotted_name.split(".")[-1]
+                            target_fq = bare_to_qualified.get(bare)
 
             if not target_fq or target_fq not in stem_to_entities:
                 return
@@ -2026,6 +2698,12 @@ def _resolve_cross_file_imports(
                         imported_name = _text(name_node)
                         local_name = _text(alias_node) if alias_node is not None else imported_name
                 if not imported_name or not local_name:
+                    continue
+                if (
+                    absolute_module is not None
+                    and _make_id(f"{absolute_module}.{imported_name}")
+                    in ambiguous_python_modules
+                ):
                     continue
                 tgt_nid = stem_to_entities[target_fq].get(imported_name)
                 if tgt_nid:
@@ -2054,7 +2732,7 @@ def _resolve_cross_file_imports(
             for child in node.children:
                 visit(child, current_nid)
 
-        visit(tree.root_node, None)
+        visit(root_node, None)
 
         for name, tgt_nid in import_targets.items():
             for src_nid, line in ref_sources.get(name, {}).items():
@@ -2075,6 +2753,31 @@ def _resolve_cross_file_imports(
                     "source_location": f"L{line}",
                     "weight": 0.8,
                 })
+
+        # Repoint AST type-reference and inheritance edges from sourceless stubs
+        # to the exact imported target definition (#3252).
+        if all_edges and import_targets:
+            for edge in all_edges:
+                if edge.get("source_file") not in file_srcs:
+                    continue
+                if edge.get("relation") not in TYPE_REPOINT_RELATIONS:
+                    continue
+                tgt = edge.get("target")
+                tgt_node = node_by_id.get(tgt)
+                if not tgt_node or tgt_node.get("source_file"):
+                    continue
+                stub_label = tgt_node.get("label", "")
+                resolved_id = import_targets.get(stub_label)
+                if resolved_id and resolved_id != tgt:
+                    edge["target"] = resolved_id
+                    repointed_from.add(tgt)
+
+    if all_nodes is not None and all_edges is not None and repointed_from:
+        still_referenced = {e.get("source") for e in all_edges} | {e.get("target") for e in all_edges}
+        all_nodes[:] = [
+            node for node in all_nodes
+            if node.get("id") not in repointed_from or node.get("id") in still_referenced
+        ]
 
     return new_edges
 
@@ -2399,7 +3102,7 @@ def _go_import_path_for_file(
     if not path.is_absolute():
         path = root / path
     try:
-        directory = path.resolve().parent
+        directory = _resolve_cached(path).parent
     except OSError:
         directory = path.absolute().parent
 

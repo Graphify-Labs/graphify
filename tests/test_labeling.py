@@ -203,6 +203,9 @@ def test_generate_community_labels_degrades_on_error(monkeypatch):
 def test_generate_community_labels_no_backend(monkeypatch):
     G, communities = _graph()
     monkeypatch.setattr("graphify.llm.detect_backend", lambda: None)
+    # Keep hermetic: the claude-cli labelling fallback (#3475) probes PATH, so a
+    # machine with `claude` installed would otherwise take the CLI path here.
+    monkeypatch.setattr("graphify.llm._claude_cli_available", lambda: False)
     labels, source = generate_community_labels(G, communities, backend=None, quiet=True)
     assert source == "placeholder"
     assert labels == {0: "Community 0", 1: "Community 1"}
@@ -215,6 +218,20 @@ def test_generate_community_labels_success(monkeypatch):
     labels, source = generate_community_labels(G, communities, backend="gemini", quiet=True)
     assert source == "llm"
     assert labels == {0: "Orders", 1: "Payments"}
+
+
+def test_generate_community_labels_warns_on_partial_success(monkeypatch, capsys):
+    G, communities = _graph()
+    monkeypatch.setattr(
+        "graphify.llm.label_communities",
+        lambda *args, **kwargs: {0: "Orders", 1: "Community 1"},
+    )
+
+    labels, source = generate_community_labels(G, communities, backend="gemini")
+
+    assert source == "llm"
+    assert labels == {0: "Orders", 1: "Community 1"}
+    assert "labeled 1 of 2 communities" in capsys.readouterr().err
 
 
 def test_gods_as_dicts_do_not_crash(monkeypatch):
@@ -275,7 +292,11 @@ def test_label_communities_batches_when_over_batch_size(monkeypatch):
         return "{" + ", ".join(f'"{c}": "Cluster {c}"' for c in cids) + "}"
 
     monkeypatch.setattr("graphify.llm._call_llm", fake_call)
-    labels = label_communities(G, communities, backend="gemini", batch_size=100)
+    # max_concurrency=1 keeps the batches sequential so `calls` records them in a
+    # deterministic order; the default concurrent path can complete them out of
+    # order (the ordering is asserted separately in
+    # test_label_communities_parallel_matches_sequential).
+    labels = label_communities(G, communities, backend="gemini", batch_size=100, max_concurrency=1)
 
     # 250 communities / 100 per batch -> 3 batches (100, 100, 50)
     assert calls == [100, 100, 50]
@@ -445,8 +466,12 @@ def test_label_communities_accumulates_token_usage(monkeypatch):
             usage_out["input"] = usage_out.get("input", 0) + 100
             usage_out["output"] = usage_out.get("output", 0) + 10
         # one name per community id present in this batch
-        cids = [int(line.split()[1].rstrip(":")) for line in prompt.splitlines()
-                if line.startswith("Community ")]
+        cids = []
+        for line in prompt.splitlines():
+            if line.startswith("Community "):
+                cids.append(int(line.split()[1].rstrip(":")))
+            elif re.match(r"^\d+: ", line):
+                cids.append(int(line.split(":", 1)[0]))
         return json.dumps({str(c): f"Name {c}" for c in cids})
 
     monkeypatch.setattr("graphify.llm._call_llm", fake_call)
