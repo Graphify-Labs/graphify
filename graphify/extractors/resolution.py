@@ -794,7 +794,20 @@ def _resolve_js_import_target(raw: str, str_path: str) -> "tuple[str, Path | Non
     # producing a confident (EXTRACTED) cross-language phantom imports_from edge
     # (#1638). The ref-namespaced target has no node, so build drops it as an
     # external reference — the correct outcome for a third-party import.
-    return _make_id("ref", raw), None
+    #
+    # Namespace on the PACKAGE root, not the raw specifier (#3595): a package
+    # subpath import ("next/image") named the whole specifier, so it minted
+    # "ref:next/image" while package.json's own dependency node for the same
+    # package is "ref:next" (json_config.py keys that node off the bare
+    # dependency name). The two could never match, so every subpath import
+    # dangled even though the bare package import resolved fine. A scoped
+    # package's root is its first two segments ("@scope/pkg"); anything else
+    # is its first segment alone.
+    if raw.startswith("@"):
+        package_root = "/".join(raw.split("/")[:2])
+    else:
+        package_root = raw.split("/")[0]
+    return _make_id("ref", package_root), None
 
 def _resolve_c_include_path(raw: str, str_path: str) -> "Path | None":
     """Resolve a quoted #include path to a real file on disk.
@@ -1104,6 +1117,7 @@ def _apply_symbol_resolution_facts(
     edges: list[dict],
     root: Path,
     facts: _SymbolResolutionFacts,
+    resolution_context_nodes: list[dict] | None = None,
 ) -> None:
     """Apply language-provided import/export/use facts to graph edges."""
     if not (
@@ -1127,6 +1141,30 @@ def _apply_symbol_resolution_facts(
     # name to a class/interface member (#3436). Track those keys separately
     # and never let a member shadow a same-named top-level symbol.
     member_symbol_keys: set[tuple[Path, str]] = set()
+
+    if resolution_context_nodes:
+        _fresh_node_ids = {n.get("id") for n in nodes if n.get("id")}
+        _fresh_paths = {_resolve_cached(p) for p in paths}
+        for node in resolution_context_nodes:
+            nid = node.get("id")
+            if not nid or nid in _fresh_node_ids:
+                continue
+            source_path = _js_source_path(str(node.get("source_file", "")), root)
+            if source_path is None or source_path in _fresh_paths:
+                continue
+            raw_label = str(node.get("label", "")).strip()
+            label = raw_label.strip("()").lstrip(".")
+            if not label:
+                continue
+            key = (source_path, label)
+            if raw_label.startswith("."):
+                if key in symbol_nodes:
+                    continue
+                member_symbol_keys.add(key)
+            else:
+                member_symbol_keys.discard(key)
+            symbol_nodes[key] = str(nid)
+
     for node in nodes:
         source_path = _js_source_path(str(node.get("source_file", "")), root)
         if source_path is None:
@@ -1420,6 +1458,18 @@ def _apply_symbol_resolution_facts(
         )
 
     # #1146: emit file-to-file imports_from edges for package-form submodule imports.
+    # #3777: retract provisional `imports_from` AST edges whose package ID coincided
+    # with a same-named sibling module file (e.g. `from nettacker import logger`
+    # emitting a provisional edge to `nettacker.py`).
+    provisional_by_loc: dict[tuple[Path, str], list[dict]] = {}
+    for edge in edges:
+        if edge.get("relation") == "imports_from" and edge.get("context") == "import":
+            src = _js_source_path(str(edge.get("source_file", "")), root)
+            loc = edge.get("source_location")
+            if src is not None and loc:
+                provisional_by_loc.setdefault((src, loc), []).append(edge)
+
+    retracted_edge_ids: set[int] = set()
     for from_path, to_path, line, local_name in facts.module_imports:
         try:
             from_rel = from_path.relative_to(root)
@@ -1428,10 +1478,64 @@ def _apply_symbol_resolution_facts(
             continue
         source_id = _make_id(_file_stem(from_rel))
         target_id = _make_id(_file_stem(to_rel))
+
+        from_canon = _resolve_cached(from_path)
+        pkg_dir = to_path.parent
+        candidate_targets: set[str] = set()
+        try:
+            pkg_rel = pkg_dir.relative_to(root)
+            candidate_targets.add(_make_id(".".join(pkg_rel.parts)))
+            candidate_targets.add(_make_id(_file_stem(pkg_rel)))
+            candidate_targets.add(_make_id(str(pkg_rel)))
+        except ValueError:
+            pass
+        candidate_targets.add(_make_id(str(pkg_dir)))
+        candidate_targets.add(_make_id(str(pkg_dir.with_suffix(".py"))))
+        try:
+            from_rel_parent = from_path.parent.relative_to(root)
+            candidate_targets.add(_make_id(str(from_rel_parent.with_suffix(".py"))))
+        except ValueError:
+            pass
+        # Deliberately NOT adding the package `__init__.py` id form: since #3729,
+        # a legitimate `from pkg import sub` resolves its provisional edge to the
+        # real `pkg/__init__.py` node, which is a correct package-dependency edge
+        # (the package's __init__ runs on import) and must survive alongside the
+        # submodule edge we add below. Only the *module-file* collision ids
+        # (`pkg` / `pkg.py`, the #3777 phantom) are retraction candidates.
+
+        loc_str = f"L{line}"
+        loc_candidates = [
+            e for e in provisional_by_loc.get((from_canon, loc_str), [])
+            if id(e) not in retracted_edge_ids
+        ]
+        matched_edge = None
+        for edge in loc_candidates:
+            if edge.get("target") in candidate_targets:
+                matched_edge = edge
+                break
+        # Retract ONLY on a genuine module-collision candidate match. The old
+        # `len(loc_candidates) == 1` blind fallback over-retracted: since #3729 a
+        # legitimately-resolved `from pkg import sub` edge (target `pkg/__init__.py`)
+        # is the sole edge at its line and is NOT a collision, so the fallback
+        # would wrongly drop it. A real #3777 phantom always matches by its
+        # module-file id above, so no fallback is needed (#3784 follow-up).
+
+        if matched_edge is not None:
+            retracted_edge_ids.add(id(matched_edge))
+            existing_edges.discard((
+                str(matched_edge.get("source")),
+                str(matched_edge.get("target")),
+                str(matched_edge.get("relation")),
+                str(matched_edge.get("context") or ""),
+            ))
+
         add_edge(
             source_id, target_id, "imports_from", "submodule_import", line, from_path,
             local_alias=local_name if local_name != to_path.stem else None,
         )
+
+    if retracted_edge_ids:
+        edges[:] = [e for e in edges if id(e) not in retracted_edge_ids]
 
     # #2262 producer guard: never emit a `calls` use-edge from a source id
     # that owns no node. All node appends (ensure_symbol_node, declarations,
@@ -2299,7 +2403,9 @@ def _collect_python_symbol_resolution_facts(
     paths: list[Path],
     root: Path,
     facts: _SymbolResolutionFacts,
+    ambiguous_python_modules: set[str] | None = None,
 ) -> None:
+    ambiguous_python_modules = ambiguous_python_modules or set()
     py_paths = [path for path in paths if path.suffix == ".py"]
     if not py_paths:
         return
@@ -2319,6 +2425,8 @@ def _collect_python_symbol_resolution_facts(
             if module is None:
                 continue
             level, module_name = module
+            if level == 0 and _make_id(module_name) in ambiguous_python_modules:
+                continue
             target_path = _resolve_python_module_path(module_name, path, root, level)
             if target_path is not None:
                 # #1146: `from pkg import submod` — if the target is a package
@@ -2342,6 +2450,15 @@ def _collect_python_symbol_resolution_facts(
                     sub_pkg = pkg_dir / imported_name / "__init__.py"
                     submodule = sub_py if sub_py.is_file() else (sub_pkg if sub_pkg.is_file() else None)
                     if submodule is not None:
+                        imported_module = (
+                            f"{module_name}.{imported_name}"
+                            if module_name else imported_name
+                        )
+                        if (
+                            level == 0
+                            and _make_id(imported_module) in ambiguous_python_modules
+                        ):
+                            continue
                         facts.module_imports.append((path, submodule, line, local_name))
                         continue
                 if target_path is None:
@@ -2386,17 +2503,29 @@ def _augment_symbol_resolution_edges(
     nodes: list[dict],
     edges: list[dict],
     root: Path,
+    ambiguous_python_modules: set[str] | None = None,
+    resolution_context_nodes: list[dict] | None = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
     _collect_js_symbol_resolution_facts(paths, facts)
-    _collect_python_symbol_resolution_facts(paths, root, facts)
-    _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
+    _collect_python_symbol_resolution_facts(
+        paths, root, facts,
+        ambiguous_python_modules=ambiguous_python_modules,
+    )
+    if resolution_context_nodes:
+        _apply_symbol_resolution_facts(
+            paths, nodes, edges, root, facts,
+            resolution_context_nodes=resolution_context_nodes,
+        )
+    else:
+        _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 
 def _resolve_cross_file_imports(
     per_file: list[dict],
     paths: list[Path],
     all_nodes: list[dict] | None = None,
     all_edges: list[dict] | None = None,
+    ambiguous_python_modules: set[str] | None = None,
 ) -> list[dict]:
     """
     Two-pass import resolution: turn file-level imports into class-level edges.
@@ -2416,6 +2545,7 @@ def _resolve_cross_file_imports(
         import tree_sitter_python  # noqa: F401  (availability check only)
     except ImportError:
         return []
+    ambiguous_python_modules = ambiguous_python_modules or set()
 
     # Pass 1: _file_stem(path) → {ClassName: node_id}
     # Keyed by directory-qualified stem (e.g. "auth_models") to avoid collisions
@@ -2506,6 +2636,7 @@ def _resolve_cross_file_imports(
             # importing file's directory; absolute imports fall back to the
             # bare-stem secondary index (first-writer-wins when names collide).
             target_fq: str | None = None
+            absolute_module: str | None = None
             for child in node.children:
                 if child.type == "relative_import":
                     prefix_text = ""
@@ -2527,6 +2658,9 @@ def _resolve_cross_file_imports(
                     break
                 if child.type == "dotted_name" and target_fq is None:
                     dotted_name = _text(child)
+                    absolute_module = dotted_name
+                    if _make_id(dotted_name) in ambiguous_python_modules:
+                        return
                     dotted_as_path = "/".join(dotted_name.split("."))
                     if dotted_as_path in stem_to_entities:
                         target_fq = dotted_as_path
@@ -2564,6 +2698,12 @@ def _resolve_cross_file_imports(
                         imported_name = _text(name_node)
                         local_name = _text(alias_node) if alias_node is not None else imported_name
                 if not imported_name or not local_name:
+                    continue
+                if (
+                    absolute_module is not None
+                    and _make_id(f"{absolute_module}.{imported_name}")
+                    in ambiguous_python_modules
+                ):
                     continue
                 tgt_nid = stem_to_entities[target_fq].get(imported_name)
                 if tgt_nid:

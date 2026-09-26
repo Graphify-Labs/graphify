@@ -96,6 +96,112 @@ def test_relative_subpackage_import_from_targets_package_init(tmp_path: Path):
     assert all(t.endswith("graphs_init") for t in health_targets), health_targets
 
 
+def test_absolute_package_import_targets_package_init(tmp_path: Path):
+    """Absolute package imports must not leave dotted-name dangling edges (#3723)."""
+    files = [
+        _write(tmp_path / "pkg/__init__.py", ""),
+        _write(tmp_path / "pkg/sub/__init__.py", ""),
+        _write(tmp_path / "pkg/sub/thing.py", "def run():\n    return 1\n"),
+        _write(tmp_path / "pkg/consumer.py", "from pkg import sub\n"),
+        _write(tmp_path / "user.py", "from pkg.sub import thing\n"),
+    ]
+
+    result = extract(files, cache_root=tmp_path)
+
+    consumer = _node_id(result, "consumer.py", "pkg/consumer.py")
+    user = _node_id(result, "user.py", "user.py")
+    import_targets = {
+        edge["target"]
+        for edge in result["edges"]
+        if edge["relation"] == "imports_from"
+        and edge["source"] in {consumer, user}
+    }
+
+    assert {"pkg_init", "pkg_sub_init"} <= import_targets
+    assert "pkg" not in import_targets
+    assert "pkg_sub" not in import_targets
+
+
+def test_plain_absolute_import_targets_package_module(tmp_path: Path):
+    package_init = _write(tmp_path / "pkg/__init__.py", "")
+    subpackage_init = _write(tmp_path / "pkg/sub/__init__.py", "")
+    consumer_path = _write(tmp_path / "app.py", "import pkg.sub\n")
+
+    result = extract(
+        [package_init, subpackage_init, consumer_path],
+        cache_root=tmp_path,
+        root=tmp_path,
+        parallel=False,
+    )
+
+    consumer = _node_id(result, "app.py", "app.py")
+    subpackage = _node_id(result, "__init__.py", "pkg/sub/__init__.py")
+    assert _has_edge(result, consumer, subpackage, "imports")
+
+
+def test_nested_plain_import_target_is_stamped_for_incremental_remap(tmp_path: Path):
+    """A changed importer can target an unchanged module outside its batch."""
+    _write(tmp_path / "src/pkg/__init__.py", "")
+    target = _write(tmp_path / "src/pkg/sub/__init__.py", "")
+    app_path = _write(tmp_path / "src/pkg/app.py", "import pkg.sub\n")
+
+    result = extract(
+        [app_path], cache_root=tmp_path / "cache", root=tmp_path, parallel=False
+    )
+
+    app = next(
+        node["id"] for node in result["nodes"] if node.get("label") == "app.py"
+    )
+    target_id = "src_pkg_sub_init"
+    assert _has_edge(result, app, target_id, "imports")
+    assert target.is_file()
+
+
+def test_absolute_import_does_not_resolve_above_scan_root(tmp_path: Path):
+    scan_root = tmp_path / "scan"
+    source = _write(
+        scan_root / "app.py",
+        "from outside_pkg import thing\nimport outside_pkg\n",
+    )
+    _write(tmp_path / "outside_pkg/__init__.py", "")
+    _write(tmp_path / "outside_pkg/thing.py", "def run():\n    return 1\n")
+
+    result = extract(
+        [source], cache_root=tmp_path / "cache", root=scan_root, parallel=False
+    )
+
+    app = _node_id(result, "app.py", "app.py")
+    targets = {
+        (edge["relation"], edge["target"])
+        for edge in result["edges"]
+        if edge["source"] == app
+        and edge["relation"] in ("imports", "imports_from")
+    }
+    assert targets == {
+        ("imports", "outside_pkg"),
+        ("imports_from", "outside_pkg"),
+    }
+
+
+def test_absolute_from_import_keeps_namespace_package_submodule_edge(tmp_path: Path):
+    namespace_package = tmp_path / "namespace_pkg"
+    namespace_package.mkdir()
+    submodule = _write(
+        namespace_package / "subspace/worker.py", "def run():\n    return 1\n"
+    )
+    consumer_path = _write(
+        tmp_path / "app.py", "from namespace_pkg.subspace import worker\n"
+    )
+
+    result = extract(
+        [consumer_path, submodule], cache_root=tmp_path, root=tmp_path, parallel=False
+    )
+
+    consumer = _node_id(result, "app.py", "app.py")
+    worker = _node_id(result, "worker.py", "namespace_pkg/subspace/worker.py")
+    assert _has_edge(result, consumer, worker, "imports_from")
+
+
 def test_python_package_reexport_resolves_import_and_call_to_origin_symbol(tmp_path: Path):
     origin = _write(tmp_path / "pkg/foo.py", "def Foo():\n    return 1\n")
     barrel = _write(tmp_path / "pkg/__init__.py", "from .foo import Foo as PublicFoo\n")
@@ -150,3 +256,103 @@ def test_python_parameter_return_and_generic_contexts(tmp_path: Path):
     assert ("process()", "Payload", "parameter_type") in pairs
     assert ("process()", "Result", "return_type") in pairs
     assert ("process_many()", "Payload", "generic_arg") in pairs
+
+
+def test_issue_3777_package_module_collision_phantom_cycle_absent(tmp_path: Path):
+    from graphify.analyze import find_import_cycles
+    from graphify.build import build_from_json
+
+    nettacker_py = _write(
+        tmp_path / "nettacker.py",
+        "from nettacker.main import run\n\ndef cli():\n    run()\n",
+    )
+    init_py = _write(tmp_path / "nettacker/__init__.py", "")
+    main_py = _write(
+        tmp_path / "nettacker/main.py",
+        "from nettacker.core.app import Nettacker\n\ndef run():\n    return Nettacker()\n",
+    )
+    app_py = _write(
+        tmp_path / "nettacker/core/app.py",
+        "from nettacker import logger\n\nclass Nettacker:\n    def start(self):\n        logger.log_info('start')\n",
+    )
+    logger_py = _write(
+        tmp_path / "nettacker/logger.py",
+        "def log_info(msg):\n    print(msg)\n",
+    )
+
+    result = extract(
+        [nettacker_py, init_py, main_py, app_py, logger_py],
+        cache_root=tmp_path,
+        root=tmp_path,
+    )
+
+    app_file = _node_id(result, "app.py", "nettacker/core/app.py")
+    logger_file = _node_id(result, "logger.py", "nettacker/logger.py")
+    nettacker_file = _node_id(result, "nettacker.py", "nettacker.py")
+
+    assert _has_edge(result, app_file, logger_file, "imports_from")
+    assert not _has_edge(result, app_file, nettacker_file, "imports_from")
+
+    graph = build_from_json(result)
+    assert find_import_cycles(graph) == []
+
+
+def test_issue_3777_nested_module_package_collision_resolves_to_submodule(tmp_path: Path):
+    from graphify.analyze import find_import_cycles
+    from graphify.build import build_from_json
+
+    runner_py = _write(
+        tmp_path / "pkg/runner.py",
+        "from pkg.runner.step import run\n\ndef start():\n    run()\n",
+    )
+    init_py = _write(tmp_path / "pkg/runner/__init__.py", "")
+    step_py = _write(
+        tmp_path / "pkg/runner/step.py",
+        "from pkg.runner import helper\n\ndef run():\n    helper.work()\n",
+    )
+    helper_py = _write(
+        tmp_path / "pkg/runner/helper.py",
+        "def work():\n    pass\n",
+    )
+
+    result = extract(
+        [runner_py, init_py, step_py, helper_py],
+        cache_root=tmp_path,
+        root=tmp_path,
+    )
+
+    step_file = _node_id(result, "step.py", "pkg/runner/step.py")
+    helper_file = _node_id(result, "helper.py", "pkg/runner/helper.py")
+    runner_file = _node_id(result, "runner.py", "pkg/runner.py")
+
+    assert _has_edge(result, step_file, helper_file, "imports_from")
+    assert not _has_edge(result, step_file, runner_file, "imports_from")
+
+    graph = build_from_json(result)
+    assert find_import_cycles(graph) == []
+
+
+def test_issue_3777_namespace_package_submodule_import(tmp_path: Path):
+    sub = _write(tmp_path / "ns/sub.py", "def helper():\n    pass\n")
+    consumer = _write(tmp_path / "ns/consumer.py", "from ns import sub\n")
+
+    result = extract([sub, consumer], cache_root=tmp_path, root=tmp_path)
+
+    consumer_file = _node_id(result, "consumer.py", "ns/consumer.py")
+    sub_file = _node_id(result, "sub.py", "ns/sub.py")
+
+    assert _has_edge(result, consumer_file, sub_file, "imports_from")
+
+
+def test_issue_3777_standalone_module_import_unaffected(tmp_path: Path):
+    standalone = _write(tmp_path / "standalone.py", "def fn():\n    return 42\n")
+    consumer = _write(tmp_path / "consumer.py", "from standalone import fn\n")
+
+    result = extract([standalone, consumer], cache_root=tmp_path, root=tmp_path)
+
+    consumer_file = _node_id(result, "consumer.py", "consumer.py")
+    standalone_file = _node_id(result, "standalone.py", "standalone.py")
+    fn_symbol = _node_id(result, "fn()", "standalone.py")
+
+    assert _has_edge(result, consumer_file, standalone_file, "imports_from")
+    assert _has_edge(result, consumer_file, fn_symbol, "imports")

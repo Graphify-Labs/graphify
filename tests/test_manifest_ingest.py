@@ -163,3 +163,42 @@ def test_cargo_workspace_inherited_version_does_not_crash(tmp_path):
                '[package]\nname = "member"\nversion.workspace = true\n')
     pkg = _pkg_nodes(extract_package_manifest(p))[0]
     assert pkg["label"] == "member" and "version" not in pkg
+
+
+# ── #3806: inherited groupId and ${...} properties in pom.xml ────────────────
+
+def test_pom_inherits_groupid_and_resolves_properties(tmp_path):
+    _write(tmp_path / "rsc/pom.xml",
+           '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+           '  <parent><groupId>org.acme</groupId><artifactId>main</artifactId><version>1.0</version></parent>\n'
+           '  <groupId>org.acme</groupId>\n  <artifactId>acme-rsc</artifactId>\n</project>\n')
+    _write(tmp_path / "server/pom.xml",
+           '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+           '  <parent><groupId>org.acme</groupId><artifactId>main</artifactId><version>1.0</version></parent>\n'
+           '  <artifactId>acme-server</artifactId>\n'
+           '  <properties><core.suffix>2.12</core.suffix></properties>\n'
+           '  <dependencies>\n'
+           '    <dependency><groupId>${project.groupId}</groupId><artifactId>acme-rsc</artifactId></dependency>\n'
+           '    <dependency><groupId>org.acme</groupId><artifactId>acme-core_${core.suffix}</artifactId></dependency>\n'
+           '  </dependencies>\n</project>\n')
+    _write(tmp_path / "web/pom.xml",
+           '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+           '  <parent><groupId>org.acme</groupId><artifactId>main</artifactId><version>1.0</version></parent>\n'
+           '  <artifactId>acme-web</artifactId>\n'
+           '  <dependencies>\n'
+           '    <dependency><groupId>org.acme</groupId><artifactId>acme-server</artifactId></dependency>\n'
+           '  </dependencies>\n</project>\n')
+
+    server = extract_package_manifest(tmp_path / "server/pom.xml")
+    pkg = _pkg_nodes(server)[0]
+    assert pkg["label"] == "org.acme:acme-server" and pkg["version"] == "1.0"
+    targets = {e["target"] for e in server["edges"] if e["relation"] == "depends_on"}
+    assert {"pkg_org_acme_acme_rsc", "pkg_org_acme_acme_core_2_12"} <= targets
+
+    result = extract(sorted(tmp_path.rglob("pom.xml")), cache_root=tmp_path)
+    g = build_from_json(result)
+    labels = {n: d.get("label") for n, d in g.nodes(data=True)}
+    dep_edges = {frozenset((labels[u], labels[v])) for u, v, d in g.edges(data=True)
+                 if d.get("relation") == "depends_on"}
+    assert frozenset(("org.acme:acme-server", "org.acme:acme-rsc")) in dep_edges
+    assert frozenset(("org.acme:acme-web", "org.acme:acme-server")) in dep_edges

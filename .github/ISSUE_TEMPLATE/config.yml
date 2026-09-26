@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security policy
+    url: https://github.com/Graphify-Labs/graphify/security/policy
+    about: Please report vulnerabilities privately using the security policy.
+  - name: 📖 Documentation
+    url: https://github.com/Graphify-Labs/graphify/blob/v8/README.md
+    about: Check the README and docs before opening an issue.
+  - name: 🤝 Contributing guide
+    url: https://github.com/Graphify-Labs/graphify/blob/v8/README.md#development-setup
+    about: Read the development and contribution guidelines before opening a pull request.

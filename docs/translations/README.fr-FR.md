@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/safishamsi/graphify/v4/docs/logo-text.svg" width="260" height="64" alt="Graphify"/>
+  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graphify-logo.png" width="480" height="252" alt="Graphify"/></a>
 </p>
 
 <p align="center">
@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/safishamsi/graphify/actions/workflows/ci.yml"><img src="https://github.com/safishamsi/graphify/actions/workflows/ci.yml/badge.svg?branch=v4" alt="CI"/></a>
+  <a href="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml"><img src="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml/badge.svg?branch=v8" alt="CI"/></a>
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://static.pepy.tech/badge/graphifyy" alt="Downloads"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>
@@ -65,7 +65,7 @@ pipx install graphifyy && graphify install
 pip install graphifyy && graphify install
 ```
 
-> **Package officiel :** Le package PyPI s'appelle `graphifyy` (installer avec `pip install graphifyy`). Les autres packages nommés `graphify*` sur PyPI ne sont pas affiliés à ce projet. Le seul dépôt officiel est [safishamsi/graphify](https://github.com/safishamsi/graphify).
+> **Package officiel :** Le package PyPI s'appelle `graphifyy` (installer avec `pip install graphifyy`). Les autres packages nommés `graphify*` sur PyPI ne sont pas affiliés à ce projet. Le seul dépôt officiel est [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
 
 ### Support des plateformes
 
@@ -167,4 +167,4 @@ NetworkX + Leiden (graspologic) + tree-sitter + vis.js. Extraction sémantique v
 
 ## Historique des étoiles
 
-[![Star History Chart](https://api.star-history.com/svg?repos=safishamsi/graphify&type=Date)](https://star-history.com/#safishamsi/graphify&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=Graphify-Labs/graphify&type=Date)](https://star-history.com/#Graphify-Labs/graphify&Date)

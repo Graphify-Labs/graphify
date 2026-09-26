@@ -1,0 +1,55 @@
+name: Bug report
+description: Report incorrect behavior, a crash, or a regression.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search existing issues first. Include the smallest reproducible example you can.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the actual behavior and the behavior you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include commands, input files, and the smallest useful example.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Error output or graph output
+      description: Paste the relevant traceback, diagnostic, or incorrect result.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Graphify version
+      placeholder: "0.9.64"
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include operating system, Python version, and installation method.
+      placeholder: "macOS 15, Python 3.12, uv tool install"
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Add related files, screenshots, or links if they help explain the issue.

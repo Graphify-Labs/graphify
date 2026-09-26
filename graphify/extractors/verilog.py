@@ -243,6 +243,21 @@ def extract_verilog(path: Path) -> dict:
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
+    # Pre-scan module names so an instantiation resolves to a module defined
+    # later in the same file — Verilog allows instantiating a module declared
+    # further down the source (or in any order across the compilation unit).
+    local_modules: set[str] = set()
+
+    def _scan_modules(node) -> None:
+        if node.type == "module_declaration":
+            mn = _sv_first_identifier(_sv_child(node, "module_header"), source)
+            if mn:
+                local_modules.add(mn)
+        for child in node.children:
+            _scan_modules(child)
+
+    _scan_modules(root)
+
     def walk(node, module_nid: str | None = None) -> None:
         t = node.type
 
@@ -309,8 +324,28 @@ def extract_verilog(path: Path) -> dict:
                              else _sv_first_identifier(node, source))
                 if inst_type:
                     line = node.start_point[0] + 1
-                    tgt_nid = _make_id(inst_type)
-                    add_node(tgt_nid, inst_type, line)
+                    if inst_type in local_modules:
+                        # The instantiated module is defined in this file: point
+                        # at its definition id (`_make_id(stem, name)`) instead of
+                        # minting a second, bare-id node for the same module. A
+                        # bare `_make_id(name)` never matches the scoped definition
+                        # id, so the module was split into a real definition node
+                        # and a phantom instantiation-target duplicate.
+                        tgt_nid = _make_id(stem, inst_type)
+                    else:
+                        # Defined in another file: emit a SOURCELESS stub so the
+                        # corpus-level rewire collapses it onto the real
+                        # definition. A sourced stub bakes this file's path into
+                        # the id and blocks the rewire — the #1402 phantom
+                        # duplicate the other extractors avoid the same way.
+                        tgt_nid = _make_id(inst_type)
+                        if tgt_nid not in seen_ids:
+                            seen_ids.add(tgt_nid)
+                            nodes.append({
+                                "id": tgt_nid, "label": inst_type,
+                                "file_type": "code", "source_file": "",
+                                "source_location": "", "confidence_score": 1.0,
+                            })
                     add_edge(module_nid, tgt_nid, "instantiates", line)
 
         for child in node.children:

@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest an improvement or new capability.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search existing issues first and describe the user problem before proposing an implementation.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do that Graphify cannot do today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the expected behavior, command, API, or workflow.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What other approaches or workarounds did you consider?
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Extraction or language support
+        - Graph building or querying
+        - CLI or installation
+        - Skills or assistant integrations
+        - Documentation
+        - Performance
+        - Security
+        - Developer experience or CI
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add examples, links, or sample input where useful.

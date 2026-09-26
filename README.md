@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
-  <a href="https://discord.gg/2DDrEgvZb4"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
@@ -158,6 +158,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ## Install
 
 > **Official package:** The PyPI package is `graphifyy` (double-y). Other `graphify*` packages on PyPI are not affiliated. The CLI command is still `graphify`.
+
+The official source repository is [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
 
 **Step 1 — install the package:**
 
@@ -849,7 +851,7 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 
 ## graphify Enterprise
 
-[**graphify Enterprise**](https://graphify.com) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working context: meetings, files, docs, and code, updating continuously in the background.
+[**graphify Enterprise**](https://graphify.com/enterprise) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working context: meetings, files, docs, and code, updating continuously in the background.
 
 Built for people and teams whose work lives across hundreds of conversations and documents they can never fully reconstruct.
 
@@ -865,7 +867,7 @@ Built for people and teams whose work lives across hundreds of conversations and
 The project uses [uv](https://docs.astral.sh/uv/) for dev workflow. Install it once, then:
 
 ```bash
-git clone https://github.com/safishamsi/graphify.git
+git clone https://github.com/Graphify-Labs/graphify.git
 cd graphify
 git checkout v8                        # active development branch
 
@@ -946,7 +948,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for module responsibilities and how to ad
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://discord.gg/2DDrEgvZb4"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>

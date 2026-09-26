@@ -148,9 +148,15 @@ function esc(s) {{
 }}
 
 // Build vis datasets
-const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
+const nodesDS = new vis.DataSet(RAW_NODES.map((n, i) => ({{
   id: n.id, label: n.label, color: n.color, size: n.size,
   font: n.font, title: n.title,
+  // Fermat/golden-angle spiral seed positions (#3699): spreading nodes out
+  // before physics runs keeps avoidOverlap from computing near-zero-distance
+  // repulsion that blows the BarnesHut recursion into a stack overflow on large
+  // graphs. `i` is the map index — physics still settles small graphs identically.
+  x: 30 * Math.sqrt(i) * Math.cos(i * 2.4),
+  y: 30 * Math.sqrt(i) * Math.sin(i * 2.4),
   _community: n.community, _community_name: n.community_name,
   _source_file: n.source_file, _file_type: n.file_type, _degree: n.degree,
 }})));
@@ -519,7 +525,16 @@ def to_html(
             "color": {"background": color, "border": color, "highlight": {"background": "#ffffff", "border": color}},
             "size": round(size, 1),
             "font": {"size": font_size, "color": "#ffffff"},
-            "title": _html.escape(label),
+            # Tooltip `title` is a STRING, which vis-network renders via
+            # Popup.setText -> `frame.innerText = t` (verified in the pinned
+            # 9.1.6 bundle: the only non-Element branch is innerText, and the
+            # bundle has zero `innerHTML = <var>` sinks). So raw special chars
+            # are shown literally and must NOT be html-escaped here or the user
+            # sees `&amp;`/`&lt;` in the tooltip (#3664/#3686). This is the
+            # #1838 stored-XSS boundary: never pass an HTMLElement as `title`,
+            # and do not change the vis-network pin below without re-checking
+            # Popup rendering (the test_export version-pin guard enforces this).
+            "title": label,
             "community": cid,
             "community_name": sanitize_label((community_labels or {}).get(cid, f"Community {cid}")),
             "source_file": sanitize_label(str(data.get("source_file") or "")),
@@ -555,7 +570,7 @@ def to_html(
                 lesson = f"Lesson: {status} ({entry.get('uses', 0)} useful)"
             if stale:
                 lesson += " [code changed — re-verify]"
-            node["title"] = _html.escape(label) + "\n" + _html.escape(sanitize_label(lesson))
+            node["title"] = f"{label}\n{sanitize_label(lesson)}"
         vis_nodes.append(node)
 
     # Build edges list. Restore original edge direction from _src/_tgt
@@ -572,7 +587,7 @@ def to_html(
             "from": true_src,
             "to": true_tgt,
             "label": relation,
-            "title": _html.escape(f"{relation} [{confidence}]"),
+            "title": sanitize_label(f"{relation} [{confidence}]"),
             "dashes": confidence != "EXTRACTED",
             "width": 2 if confidence == "EXTRACTED" else 1,
             "color": {"opacity": 0.7 if confidence == "EXTRACTED" else 0.35},

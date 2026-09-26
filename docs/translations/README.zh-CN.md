@@ -1,8 +1,12 @@
+<p align="center">
+  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graphify-logo.png" width="480" height="252" alt="Graphify"/></a>
+</p>
+
 # graphify
 
 🇺🇸 [English](../../README.md) | 🇨🇳 [简体中文](README.zh-CN.md) | 🇯🇵 [日本語](README.ja-JP.md) | 🇰🇷 [한국어](README.ko-KR.md) | 🇩🇪 [Deutsch](README.de-DE.md) | 🇫🇷 [Français](README.fr-FR.md) | 🇪🇸 [Español](README.es-ES.md) | 🇮🇳 [हिन्दी](README.hi-IN.md) | 🇧🇷 [Português](README.pt-BR.md) | 🇷🇺 [Русский](README.ru-RU.md) | 🇸🇦 [العربية](README.ar-SA.md) | 🇮🇹 [Italiano](README.it-IT.md) | 🇵🇱 [Polski](README.pl-PL.md) | 🇳🇱 [Nederlands](README.nl-NL.md) | 🇹🇷 [Türkçe](README.tr-TR.md) | 🇺🇦 [Українська](README.uk-UA.md) | 🇻🇳 [Tiếng Việt](README.vi-VN.md) | 🇮🇩 [Bahasa Indonesia](README.id-ID.md) | 🇸🇪 [Svenska](README.sv-SE.md) | 🇬🇷 [Ελληνικά](README.el-GR.md) | 🇷🇴 [Română](README.ro-RO.md) | 🇨🇿 [Čeština](README.cs-CZ.md) | 🇫🇮 [Suomi](README.fi-FI.md) | 🇩🇰 [Dansk](README.da-DK.md) | 🇳🇴 [Norsk](README.no-NO.md) | 🇭🇺 [Magyar](README.hu-HU.md) | 🇹🇭 [ภาษาไทย](README.th-TH.md) | 🇺🇿 [Oʻzbekcha](README.uz-UZ.md) | 🇹🇼 [繁體中文](README.zh-TW.md)
 
-[![CI](https://github.com/safishamsi/graphify/actions/workflows/ci.yml/badge.svg?branch=v3)](https://github.com/safishamsi/graphify/actions/workflows/ci.yml)
+[![CI](https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml/badge.svg?branch=v8)](https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/graphifyy)](https://pypi.org/project/graphifyy/)
 
 **一个面向 AI 编码助手的技能。** 在 Claude Code、CodeBuddy、Codex、OpenCode、OpenClaw、Factory Droid 或 Trae 中输入 `/graphify`，它会读取你的文件、构建知识图谱，并把原本不明显的结构关系还给你。更快理解代码库，找到架构决策背后的"为什么"。
@@ -96,24 +100,6 @@ Codex 用户还需要在 `~/.codex/config.toml` 的 `[features]` 下打开 `mult
 `/graphify query`、`/graphify path` 和 `/graphify explain` 会更深入：它们会逐跳遍历底层 `graph.json`，追踪节点之间的精确路径，并展示边级别细节（关系类型、置信度、源位置）。当你想从图谱里精确回答某个问题，而不仅仅是获得整体感知时，就该用这些命令。
 
 可以这样理解：常驻 hook 是先给助手一张地图，`/graphify` 这几个命令则是让它沿着地图精确导航。
-
-<details>
-<summary>手动安装（curl）</summary>
-
-```bash
-mkdir -p ~/.claude/skills/graphify
-curl -fsSL https://raw.githubusercontent.com/safishamsi/graphify/v3/graphify/skill.md \
-  > ~/.claude/skills/graphify/SKILL.md
-```
-
-把下面内容加到 `~/.claude/CLAUDE.md`：
-
-```
-- **graphify** (`~/.claude/skills/graphify/SKILL.md`) - any input to knowledge graph. Trigger: `/graphify`
-When the user types `/graphify`, use the installed graphify skill or instructions before doing anything else.
-```
-
-</details>
 
 ## 用法
 

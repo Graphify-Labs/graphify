@@ -62,6 +62,7 @@ def _is_ast_tier(item: dict) -> bool:
 # cross-axis judgement, whereas "specific beats generic" is the only comparison
 # this collapse actually needs.
 _GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"})
+_CONFIDENCE_RANK: dict[str, int] = {"EXTRACTED": 3, "INFERRED": 2, "AMBIGUOUS": 1}
 
 # Import-family relations whose target may legitimately be a module OUTSIDE the
 # graph (stdlib, a third-party dependency, another repo). Historically the edge
@@ -514,8 +515,9 @@ def _infer_merge_root(graph_path: Path) -> str | None:
         marker = parent / ".graphify_root"
         if marker.exists():
             recorded = marker.read_text(encoding="utf-8-sig").strip()
-            if recorded:
-                return str(Path(recorded).resolve())
+            recorded_path = Path(recorded)
+            if recorded and recorded_path.is_dir():
+                return str(recorded_path.resolve())
     except OSError:
         pass
     from .paths import GRAPHIFY_OUT
@@ -1068,6 +1070,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     _loc_collisions: set[tuple[str, str]] = set()  # keys shared by 2+ AST nodes
     _noloc_nodes: dict[tuple[str, str], str] = {}  # (source_file, label) -> ghost node id
     _ast_file_nodes: list[tuple[str, str]] = []  # (node_id, source_file) for AST file-self nodes (#3344)
+    _ast_method_nodes: dict[tuple[str, str], list[str]] = {}  # (source_file, norm_method) -> [ast_nid, ...]
 
     # Pass 1: collect canonical nodes — AST-origin nodes take precedence over LLM nodes.
     # When 2+ AST nodes share a key (same-named symbols in same-named files across
@@ -1124,6 +1127,14 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 # Pass 2b below can catch these by label alone.
                 if _is_file_node_label(label, sf):
                     _ast_file_nodes.append((nid, sf))
+                # Only a method-shaped label (`.name()`) is a method-ghost
+                # candidate — gate on BOTH the leading dot and the `()` suffix so
+                # a dotfile label like `.env` is never mistaken for a method
+                # (#3705 follow-up). Key on the normalized name for parity with
+                # the alias index below and the rest of the dedup passes.
+                if label.startswith(".") and label.endswith("()"):
+                    m_name = make_id(label.removeprefix(".").removesuffix("()"))
+                    _ast_method_nodes.setdefault((sf, m_name), []).append(nid)
             else:
                 # First non-AST node for this (file, label) wins as canonical; a
                 # later same-key node is a genuine same-file duplicate and still
@@ -1131,6 +1142,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 _loc_nodes.setdefault(key, nid)
 
     # Pass 2: find ghosts — non-AST nodes that have an AST canonical twin.
+    _ghost_remap: dict[str, str] = {}  # ghost_id -> canonical_id
     for nid in sorted(node_set):
         attrs = G.nodes[nid]
         if attrs.get("_origin") == "ast":
@@ -1144,8 +1156,16 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             continue  # ambiguous key: no safe canonical winner, leave ghost intact
         if key in _loc_nodes and _loc_nodes[key] != nid:
             _noloc_nodes[key] = nid
+        elif key not in _loc_nodes:
+            # Spec-conformant method ghost omitting class segment / leading dot
+            # (#3705). Normalize the same way the index was built so raw-label
+            # casing/punctuation differences still match; remap only on a single
+            # unambiguous AST-method candidate.
+            m_name = make_id(label.removeprefix(".").removesuffix("()"))
+            m_candidates = _ast_method_nodes.get((sf, m_name), [])
+            if len(m_candidates) == 1:
+                _ghost_remap[nid] = m_candidates[0]
     # For every ghost that has an AST counterpart, record a remap.
-    _ghost_remap: dict[str, str] = {}  # ghost_id -> canonical_id
     for key, sem_id in _noloc_nodes.items():
         ast_id = _loc_nodes.get(key)
         if ast_id is not None:
@@ -1246,6 +1266,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             alias = old_stem + suffix
             _alias_candidates.setdefault(_normalize_id(alias), set()).add(nid)
             _alias_candidates.setdefault(alias, set()).add(nid)
+        if attrs.get("_origin") == "ast" and str(attrs.get("label", "")).startswith("."):
+            m_name = make_id(str(attrs.get("label", "")).strip().removeprefix(".").removesuffix("()"))
+            m_alias = f"{new_stem}_{m_name}"
+            if _normalize_id(nid) != _normalize_id(m_alias):
+                _alias_candidates.setdefault(_normalize_id(m_alias), set()).add(nid)
+                _alias_candidates.setdefault(m_alias, set()).add(nid)
     for alias_key, candidates in _alias_candidates.items():
         if len(candidates) == 1:
             norm_to_id.setdefault(alias_key, next(iter(candidates)))
@@ -1413,13 +1439,32 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # fact does. The reverse (specific arriving after generic) still
         # overwrites, so the outcome no longer depends on edge order at all.
         if G.has_edge(src, tgt):
-            existing_rel = edge_data(G, src, tgt).get("relation")
+            existing_attrs = edge_data(G, src, tgt)
+            existing_rel = existing_attrs.get("relation")
             if (
                 attrs.get("relation") in _GENERIC_RELATIONS
                 and existing_rel is not None
                 and existing_rel not in _GENERIC_RELATIONS
             ):
                 continue
+            if existing_rel == attrs.get("relation"):
+                existing_conf = existing_attrs.get("confidence")
+                incoming_conf = attrs.get("confidence")
+                existing_rank = _CONFIDENCE_RANK.get(existing_conf, 0)
+                incoming_rank = _CONFIDENCE_RANK.get(incoming_conf, 0)
+                if existing_rank > incoming_rank:
+                    continue
+                if existing_rank == incoming_rank:
+                    if existing_attrs.get("source_location") and not attrs.get("source_location"):
+                        continue
+                    existing_score = existing_attrs.get("confidence_score")
+                    incoming_score = attrs.get("confidence_score")
+                    if (
+                        existing_score is not None
+                        and incoming_score is not None
+                        and existing_score > incoming_score
+                    ):
+                        continue
         G.add_edge(src, tgt, **attrs)
     hyperedges = extraction.get("hyperedges", [])
     if hyperedges:

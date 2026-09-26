@@ -110,3 +110,30 @@ def test_isolated_count_is_auditable_against_the_raw_graph():
     assert m
     G, _ = _graph_and_communities()
     assert int(m.group(1)) == sum(1 for n in G.nodes() if G.degree(n) <= 1)
+
+
+def test_undocumented_components_omitted_without_a_semantic_layer():
+    """#3801: "undocumented components" only means anything when a semantic
+    layer (document/paper/image nodes) exists to be undocumented. This
+    fixture is code + concept only, so the reason offered for an isolated
+    node must not claim a possibility the graph structurally cannot have."""
+    text = _report(3)
+    assert "isolated node(s):" in text
+    gaps = text.split("## Knowledge Gaps")[-1].split("## ")[0]
+    assert "possible missing edges" in gaps
+    assert "undocumented components" not in gaps
+
+
+def test_undocumented_components_offered_when_a_semantic_layer_exists():
+    """The flip side of #3801: once the graph has at least one
+    document/paper/image node anywhere, "undocumented components" is a real
+    possibility again and the reason should still offer it."""
+    G, communities = _graph_and_communities()
+    G.add_node("doc1", label="doc1.md", file_type="document", source_file="docs/doc1.md")
+    text = generate(
+        G, communities, {}, {}, [], [],
+        {"total_files": 4, "total_words": 100}, {},
+        root="proj", min_community_size=3,
+    )
+    gaps = text.split("## Knowledge Gaps")[-1].split("## ")[0]
+    assert "possible missing edges or undocumented components" in gaps
