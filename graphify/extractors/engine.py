@@ -4133,7 +4133,7 @@ def _extract_generic(
 
                 annotation_targets: set[str] = set()
                 for anno_name, anno_raw in _kotlin_annotation_names(node, source):
-                    target_nid = ensure_named_node(anno_raw if "." in anno_raw else anno_name, line)
+                    target_nid = ensure_named_node(anno_name, line)
                     if target_nid != class_nid and target_nid not in annotation_targets:
                         add_edge(class_nid, target_nid, "references", line, context="attribute")
                         annotation_targets.add(target_nid)
@@ -4169,7 +4169,7 @@ def _extract_generic(
                                                          cp_line, context=ctx)
                                         param_annotation_targets: set[str] = set()
                                         for anno_name, anno_raw in _kotlin_annotation_names(cp, source):
-                                            target_nid = ensure_named_node(anno_raw if "." in anno_raw else anno_name, cp_line)
+                                            target_nid = ensure_named_node(anno_name, cp_line)
                                             if target_nid != class_nid and target_nid not in param_annotation_targets:
                                                 add_edge(class_nid, target_nid, "references",
                                                          cp_line, context="attribute")
@@ -4853,7 +4853,7 @@ def _extract_generic(
                             add_edge(parent_class_nid, target_nid, "references", line, context=ctx)
                 annotation_targets: set[str] = set()
                 for anno_name, anno_raw in _kotlin_annotation_names(node, source):
-                    target_nid = ensure_named_node(anno_raw if "." in anno_raw else anno_name, line)
+                    target_nid = ensure_named_node(anno_name, line)
                     if target_nid != parent_class_nid and target_nid not in annotation_targets:
                         add_edge(parent_class_nid, target_nid, "references", line, context="attribute")
                         annotation_targets.add(target_nid)
@@ -5380,7 +5380,7 @@ def _extract_generic(
                             add_edge(func_nid, target_nid, "references", line, context=ctx)
                 annotation_targets: set[str] = set()
                 for anno_name, anno_raw in _kotlin_annotation_names(node, source):
-                    target_nid = ensure_named_node(anno_raw if "." in anno_raw else anno_name, line)
+                    target_nid = ensure_named_node(anno_name, line)
                     if target_nid != func_nid and target_nid not in annotation_targets:
                         add_edge(func_nid, target_nid, "references", line, context="attribute")
                         annotation_targets.add(target_nid)
