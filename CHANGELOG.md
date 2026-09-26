@@ -2,6 +2,10 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## Unreleased
+
+- Feature: Salam (`.salam`) language extractor — English and Persian keyword spellings, packages and imports (including Persian package names via `@fa`), functions, structs with methods, enums, interfaces, `impl` blocks, type aliases, constants, `extern:` C functions, `link` libraries, layout blocks and components, plus `calls` and `references` edges; pure token scanner, no new dependency. A cross-file resolver binds `pkg.Func()`, string-import aliases, receiver-typed method calls, and type references.
+
 ## 0.9.68 (2026-09-25)
 
 - Security: the `/graphify add ... --watch` reference no longer passes the raw, agent-substituted `INPUT_PATH` placeholder unquoted into a shell command (`… -m graphify.watch INPUT_PATH`), where a scan root containing `$(…)`, backticks, or `;` could execute — a follow-on to the Step 1 fix. The watcher now reads the trusted `graphify-out/.graphify_root` that Step 1 resolves, so there is no path to substitute (#3742, #3642, thanks @ayushcodes10). The identical placeholder still appears in the Aider/Devin monolith `--watch` snippet and is tracked separately.

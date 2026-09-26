@@ -59,6 +59,7 @@ from graphify.extractors.r import extract_r, resolve_r_sourced_calls  # noqa: F4
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
+from graphify.extractors.salam import extract_salam, resolve_salam_references  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.solidity import (  # noqa: F401
     extract_solidity,
@@ -3070,6 +3071,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".py": "python",
     ".go": "go",
     ".rs": "rust",
+    ".salam": "salam",
     ".cbl": "cobol", ".cob": "cobol", ".cobol": "cobol", ".cpy": "cobol",
     ".r": "r",
     ".sol": "solidity",
@@ -5519,6 +5521,9 @@ register_language_resolver(
     )
 )
 register_language_resolver(
+    LanguageResolver("salam_references", frozenset({".salam"}), resolve_salam_references)
+)
+register_language_resolver(
     LanguageResolver(
         "erlang_remote_calls",
         frozenset({".erl", ".hrl", ".escript"}),
@@ -6626,6 +6631,7 @@ _DISPATCH: dict[str, Any] = {
     ".metal": extract_cpp,
     ".rb": extract_ruby, ".rake": extract_ruby,
     ".cs": extract_csharp,
+    ".salam": extract_salam,
     ".cbl": extract_cobol,
     ".cob": extract_cobol,
     ".cobol": extract_cobol,
