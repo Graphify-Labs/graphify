@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 
-from graphify.extract import extract
+from graphify.extract import extract, extract_r
 
 
 
@@ -109,6 +109,43 @@ def test_r_malformed_tail_comments_and_strings_do_not_create_phantoms(tmp_path):
     labels = {node["label"].casefold() for node in result["nodes"]}
     assert 'valid()' in labels
     assert labels.isdisjoint({'ghost()', 'hidden()'})
+
+
+def test_r_namespaced_r6class_extracts_the_class_body(tmp_path):
+    """`R6::R6Class(...)` is the idiomatic library()-free way to define an R6
+    class. The qualified name never matched the class-constructor set, so the
+    class collapsed to a plain variable and every method was dropped."""
+    source = tmp_path / "counter.R"
+    source.write_text(
+        'Counter <- R6::R6Class("Counter",\n'
+        "  public = list(\n"
+        "    increment = function() self$count,\n"
+        "    report = function() print(1)\n"
+        "  )\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    result = extract_r(source)
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"Counter", "increment()", "report()"} <= labels
+    methods = _edge_labels(result, "method")
+    assert ("Counter", "increment()") in methods
+    assert ("Counter", "report()") in methods
+
+
+def test_r_namespaced_setrefclass_is_recognised(tmp_path):
+    """A namespace-qualified `methods::setRefClass` declares a class too."""
+    source = tmp_path / "acc.R"
+    source.write_text(
+        'Acc <- methods::setRefClass("Acc",\n'
+        "  methods = list(add = function(x) x)\n"
+        ")\n",
+        encoding="utf-8",
+    )
+    result = extract_r(source)
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"Acc", "add()"} <= labels
+    assert ("Acc", "add()") in _edge_labels(result, "method")
 
 
 def test_r_missing_parser_reports_install_hint(tmp_path, monkeypatch, capsys):
