@@ -1142,6 +1142,44 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_step1_root_marker_fix_line(line: str) -> bool:
+    """Whether a line is part of Step 1 writing .graphify_root via quoted heredoc (#3642/#3844).
+
+    The v8 monoliths did not persist .graphify_root in Step 1. The fix adds the
+    safe quoted-heredoc scan-root writer to Step 1, persisting
+    graphify-out/.graphify_root so that `graphify update` and `--watch` can consume
+    the trusted resolved path.
+    """
+    stripped = line.strip()
+    return (
+        stripped.startswith('"$PYTHON" -c "import os, sys; out_path = os.path.abspath(\'graphify-out/.graphify_root\')')
+        or stripped in ("INPUT_PATH", "GRAPHIFY_ROOT_EOF")
+        or stripped == "# Save scan root so `graphify update` (no args) knows where to look next time."
+        or stripped == "# INPUT_PATH is passed through a quoted heredoc, never substituted into the"
+        or stripped == "# command line itself: a bare `cd INPUT_PATH` (or an unquoted heredoc, which"
+        or stripped == "# still expands $()/backticks in its body) would let a malicious path execute"
+        or stripped == "# as shell code the moment this line runs."
+    )
+
+
+def _is_watch_injection_fix_line(line: str) -> bool:
+    """Whether a line is part of the --watch INPUT_PATH injection fix (#3844).
+
+    The v8 monoliths passed the raw, agent-substituted INPUT_PATH placeholder
+    unquoted to `graphify.watch` in bash (`python3 -m graphify.watch INPUT_PATH --debounce 3`),
+    which executed command substitutions in hostile paths. The fix consumes the
+    trusted `graphify-out/.graphify_root` resolved in Step 1 via $(cat ...).
+    Both the removed v8 command/prose and the added trusted-root command/prose match here.
+    """
+    stripped = line.strip()
+    return (
+        stripped == "python3 -m graphify.watch INPUT_PATH --debounce 3"
+        or stripped == '$(cat graphify-out/.graphify_python) -m graphify.watch "$(cat graphify-out/.graphify_root)" --debounce 3'
+        or stripped == "Replace INPUT_PATH with the folder to watch. Behavior depends on what changed:"
+        or stripped == "This watches the same folder graphify extracted, read from the trusted `graphify-out/.graphify_root` that Step 1 resolved - there is no path to substitute, so a scan root containing shell metacharacters can never be re-interpreted here. Behavior depends on what changed:"
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1163,6 +1201,8 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_step1_root_marker_fix_line,
+    _is_watch_injection_fix_line,
 )
 
 
