@@ -768,6 +768,33 @@ def test_input_path_quote_escaping_guidance_is_present():
         )
 
 
+def test_save_result_answer_is_captured_through_a_heredoc_not_inlined():
+    """Review finding on PR 3621: ANSWER, the agent's own free text
+    explanation, was spliced directly into a double quoted
+    --answer "ANSWER" shell argument, so an ordinary quote, backtick, or
+    dollar sign anywhere in a normal explanation broke or hijacked the
+    command -- not just an adversarial input, everyday technical prose
+    routinely contains those characters. ANSWER must now be captured
+    through a single quoted heredoc into a temp file first, then passed
+    via --answer-file, which is never re-parsed as shell syntax."""
+    claude_core, claude_refs = _platform_artifacts("claude")
+    platforms = gen.load_platforms()
+    bodies = {"claude": claude_core + "".join(claude_refs.values())}
+    for key in ("aider", "devin"):
+        bodies[key] = gen.render(platforms[key])[0].content
+
+    for key, body in bodies.items():
+        assert '--answer "ANSWER"' not in body, (
+            f"[{key}] the old direct-substitution --answer form must not survive"
+        )
+        assert "cat > graphify-out/.save_result_answer.tmp <<'EOF'" in body, (
+            f"[{key}] missing the heredoc capture for the save-result answer"
+        )
+        assert "--answer-file graphify-out/.save_result_answer.tmp" in body, (
+            f"[{key}] save-result must read the answer back from the captured file"
+        )
+
+
 def test_step1_gates_on_a_still_failed_install():
     """#1619 B4: a failed install must stop with an actionable error instead of
     silently writing a broken interpreter path that fails every later step
