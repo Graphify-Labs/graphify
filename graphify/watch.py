@@ -1255,6 +1255,39 @@ def _check_shrink(
     return False
 
 
+def _force_shrink_summary(
+    force: bool,
+    existing_data: dict | None,
+    new_data: dict,
+) -> str | None:
+    """Describe a forced node-count shrink after graph.json is replaced."""
+    if not force or not existing_data:
+        return None
+    existing_nodes = existing_data.get("nodes", [])
+    new_nodes = new_data.get("nodes", [])
+    if len(new_nodes) >= len(existing_nodes):
+        return None
+    existing_edges = existing_data.get("links", existing_data.get("edges", []))
+    new_edges = new_data.get("links", new_data.get("edges", []))
+    node_delta = len(new_nodes) - len(existing_nodes)
+    edge_delta = len(new_edges) - len(existing_edges)
+    return (
+        "[graphify] --force: graph.json shrink: observed "
+        f"{len(existing_nodes):,} nodes / {len(existing_edges):,} edges; wrote "
+        f"{len(new_nodes):,} nodes / {len(new_edges):,} edges "
+        f"({node_delta:+,} nodes, {edge_delta:+,} edges)"
+    )
+
+
+def _emit_force_shrink_summary(summary: str | None) -> None:
+    """Write the receipt without letting a closed output stream abort a rebuild."""
+    if summary:
+        try:
+            print(summary)
+        except (OSError, ValueError):
+            pass
+
+
 def _report_for_compare(report_text: str) -> str:
     return re.sub(r"^- Built from commit: `[^`]+`\n?", "", report_text, flags=re.MULTILINE)
 
@@ -1939,6 +1972,8 @@ def _rebuild_code(
             _mint_external_stubs_in_data(candidate_graph_data)
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
+            existing_payload = None
+            force_summary = None
             if existing_graph.exists():
                 try:
                     check_graph_file_size_cap(existing_graph)
@@ -1981,7 +2016,11 @@ def _rebuild_code(
                 # even on the same drive.
                 graph_tmp = out / ".graph.tmp.json"
                 graph_tmp.write_text(candidate_graph_text, encoding="utf-8")
+                force_summary = _force_shrink_summary(
+                    force, existing_payload, candidate_graph_data,
+                )
                 os_replace_with_fallback(graph_tmp, existing_graph)
+                _emit_force_shrink_summary(force_summary)
 
             # Write the scan root only after the candidate graph is accepted,
             # so a refused shrink cannot mismatch graph and marker. See
@@ -2145,6 +2184,7 @@ def _rebuild_code(
         candidate_graph_data = json.loads(graph_tmp.read_text(encoding="utf-8"))
         same_graph = False
         same_report = False
+        existing_payload = None
         if existing_graph.exists():
             try:
                 check_graph_file_size_cap(existing_graph)
@@ -2173,6 +2213,7 @@ def _rebuild_code(
             old_report = report_path.read_text(encoding="utf-8")
             same_report = _report_for_compare(old_report) == _report_for_compare(report)
         no_change = same_graph and same_report
+        force_summary = None
         if no_change:
             graph_tmp.unlink(missing_ok=True)
             print("[graphify watch] No code-graph changes detected; graph.json/GRAPH_REPORT.md left untouched.")
@@ -2191,12 +2232,16 @@ def _rebuild_code(
             (out / _HTML_STALE_MARKER).touch()
             from graphify.export import backup_if_protected as _backup
             _backup(out)
+            force_summary = _force_shrink_summary(
+                force, existing_payload, candidate_graph_data,
+            )
             # os_replace_with_fallback, not a plain Path.replace (#2689): this
             # function read existing_graph a few lines up for the same_graph
             # comparison, and on a VMware HGFS shared folder a replace over a
             # destination read earlier in the same process raises
             # PermissionError even on the same drive.
             os_replace_with_fallback(graph_tmp, existing_graph)
+            _emit_force_shrink_summary(force_summary)
             report_path.write_text(report, encoding="utf-8")
             labels_file.write_text(labels_json, encoding="utf-8")
             # Keep the membership signatures in step with the labels we just wrote.
