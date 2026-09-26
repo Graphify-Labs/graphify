@@ -2329,6 +2329,56 @@ def _probe_python_module_candidate(candidate: Path) -> Path | None:
     return None
 
 
+# Cache: scan root (resolved str) → dotted namespace prefix or ""
+_SCAN_ROOT_NAMESPACE_CACHE: dict[str, str] = {}
+
+def _infer_scan_root_namespace(root: Path) -> str:
+    """Infer the dotted Python package namespace of the scan root.
+
+    Walks upward from `root` collecting ancestor directory names as long as each
+    ancestor contains an ``__init__.py``. Stops at the first ancestor without one
+    (the true package boundary). Returns the dotted namespace prefix that should
+    be stripped from absolute imports that reference the scan root's own modules.
+
+    Example: root = /repo/Company/Apps/Jobs/Team, and Company/, Apps/, Jobs/
+    each contain __init__.py → returns "Company.Apps.Jobs.Team".
+
+    Returns "" when root is already at or above the package boundary.
+
+    Cached per resolved root path string; cleared when resolution caches are
+    cleared (extract() resets caches per run).
+    """
+    key = str(_resolve_cached(root))
+    cached_ns = _SCAN_ROOT_NAMESPACE_CACHE.get(key)
+    if cached_ns is not None:
+        return cached_ns
+
+    parts: list[str] = []
+    current = _resolve_cached(root)
+    # Include root's own name in the namespace
+    parts.append(current.name)
+    parent = current.parent
+
+    while parent != current:  # stop at filesystem root
+        if not (parent / "__init__.py").is_file():
+            break
+        parts.append(parent.name)
+        current = parent
+        parent = parent.parent
+
+    if len(parts) <= 1:
+        # Root itself is the package boundary (or root IS the top-level package).
+        # Only return a namespace if the root's PARENT has __init__.py (meaning
+        # root is nested inside a package chain).
+        _SCAN_ROOT_NAMESPACE_CACHE[key] = ""
+        return ""
+
+    parts.reverse()
+    namespace = ".".join(parts)
+    _SCAN_ROOT_NAMESPACE_CACHE[key] = namespace
+    return namespace
+
+
 def _resolve_python_module_path(module_name: str, current_path: Path, root: Path, level: int) -> Path | None:
     if level > 0:
         base = current_path.parent
@@ -2347,6 +2397,25 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
     hit = _probe_python_module_candidate(root / rel)
     if hit is not None:
         return hit
+
+    # NEW: Scan-root namespace projection (#3843).
+    # When the scan root is nested inside a package hierarchy
+    # (e.g., root = Team/, namespace = Company.Apps.Jobs.Team),
+    # an import like "Company.Apps.Jobs.Team.lib" fails the probe above
+    # because root/Company/Apps/Jobs/Team/lib doesn't exist. Strip the
+    # namespace prefix and re-probe relative to root.
+    ns = _infer_scan_root_namespace(root)
+    if ns and (module_name == ns or module_name.startswith(ns + ".")):
+        stripped = module_name[len(ns) + 1:] if module_name != ns else ""
+        if stripped:
+            hit = _probe_python_module_candidate(root / stripped.replace(".", "/"))
+            if hit is not None:
+                return hit
+        else:
+            hit = _probe_python_module_candidate(root)
+            if hit is not None:
+                return hit
+
     for anc in current_path.parents:
         try:
             anc.relative_to(root)
@@ -2398,6 +2467,19 @@ def _resolve_python_namespace_dir(module_name: str, current_path: Path, root: Pa
     hit = _namespace(root / rel)
     if hit is not None:
         return hit
+
+    # NEW: Scan-root namespace projection (#3843).
+    ns = _infer_scan_root_namespace(root)
+    if ns and (module_name == ns or module_name.startswith(ns + ".")):
+        stripped = module_name[len(ns) + 1:] if module_name != ns else ""
+        if stripped:
+            hit = _namespace(root / stripped.replace(".", "/"))
+            if hit is not None:
+                return hit
+        else:
+            hit = _namespace(root)
+            if hit is not None:
+                return hit
     for anc in current_path.parents:
         try:
             anc.relative_to(root)
