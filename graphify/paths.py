@@ -21,6 +21,7 @@ import os
 import re
 import stat
 import tempfile
+import time
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
@@ -50,12 +51,18 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
     final rename fails, the backup is renamed straight back so a mid-swap
     failure leaves the original in place rather than leaving ``dst`` missing.
     """
-    try:
-        os.replace(src, dst)
-        return
-    except OSError as exc:
-        if not isinstance(exc, PermissionError) and getattr(exc, "winerror", None) != 17:
-            raise
+    for attempt in range(5):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as exc:
+            if isinstance(exc, PermissionError):
+                if attempt < 4:
+                    time.sleep(0.1)
+                    continue
+            if not isinstance(exc, PermissionError) and getattr(exc, "winerror", None) != 17:
+                raise
+            break
     import shutil
     dst = os.fspath(dst)
     if os.path.normcase(os.path.abspath(os.fspath(src))) == os.path.normcase(os.path.abspath(dst)):
@@ -76,7 +83,15 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
             os.unlink(backup)  # reserve the name only; rename needs it free on Windows
             os.rename(dst, backup)  # a plain rename moves a symlink itself, never its target
         try:
-            os.rename(tmp_copy, dst)
+            for attempt in range(5):
+                try:
+                    os.rename(tmp_copy, dst)
+                    break
+                except PermissionError:
+                    if attempt < 4:
+                        time.sleep(0.1)
+                        continue
+                    raise
         except BaseException:
             if backup is not None:
                 try:
@@ -117,39 +132,79 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
     # atomic rename) and the replace writes through the link, not over it.
     real = Path(os.path.realpath(str(path)))
     real.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(real.parent), prefix=".gfy-", suffix=".tmp")
+    
+    lock_file = real.parent / f"{real.name}.lock"
+    timeout = 10.0
+    start_time = time.time()
+    
+    lock_fd = None
+    lock_acquired = False
+    
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            write_fn(f)
-        # mkstemp creates the temp file 0600; match the destination's existing
-        # mode (or the umask default for a new file) so an atomic replace never
-        # silently tightens a previously group/world-readable output to
-        # owner-only. Best-effort — a chmod failure must not fail the write.
-        try:
-            mode = stat.S_IMODE(os.stat(real).st_mode)
-        except OSError:
-            umask = os.umask(0)
-            os.umask(umask)
-            mode = 0o666 & ~umask
-        try:
-            os.chmod(tmp, mode)
-        except OSError:
-            pass
-        os_replace_with_fallback(tmp, str(real))
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            # The temp was chmod'd to match the destination above, so when the
-            # destination is read-only the temp is too — and Windows refuses to
-            # unlink a read-only file. Clear the bit and retry, or every failed
-            # write leaks a `.gfy-*.tmp` into the output directory.
+        lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR)
+        
+        while True:
             try:
-                os.chmod(tmp, stat.S_IWRITE)
-                os.unlink(tmp)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_acquired = True
+                break
+            except OSError:
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Timeout waiting for lock {lock_file}")
+                time.sleep(0.05)
+                
+        fd, tmp = tempfile.mkstemp(dir=str(real.parent), prefix=".gfy-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                write_fn(f)
+            # mkstemp creates the temp file 0600; match the destination's existing
+            # mode (or the umask default for a new file) so an atomic replace never
+            # silently tightens a previously group/world-readable output to
+            # owner-only. Best-effort — a chmod failure must not fail the write.
+            try:
+                mode = stat.S_IMODE(os.stat(real).st_mode)
+            except OSError:
+                umask = os.umask(0)
+                os.umask(umask)
+                mode = 0o666 & ~umask
+            try:
+                os.chmod(tmp, mode)
             except OSError:
                 pass
-        raise
+            os_replace_with_fallback(tmp, str(real))
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                # The temp was chmod'd to match the destination above, so when the
+                # destination is read-only the temp is too — and Windows refuses to
+                # unlink a read-only file. Clear the bit and retry, or every failed
+                # write leaks a `.gfy-*.tmp` into the output directory.
+                try:
+                    os.chmod(tmp, stat.S_IWRITE)
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+            raise
+    finally:
+        if lock_acquired:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    os.lseek(lock_fd, 0, os.SEEK_SET)
+                    msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+        if lock_fd is not None:
+            os.close(lock_fd)
 
 
 def write_text_atomic(path: "str | Path", text: str) -> None:

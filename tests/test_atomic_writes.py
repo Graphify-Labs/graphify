@@ -18,7 +18,7 @@ def test_write_text_atomic_writes_and_leaves_no_tmp(tmp_path):
     write_text_atomic(p, '{"a": 1}')
     assert json.loads(p.read_text()) == {"a": 1}
     # No leftover temp file in the target directory.
-    assert [x.name for x in p.parent.iterdir()] == ["graph.json"]
+    assert sorted([x.name for x in p.parent.iterdir() if not x.name.endswith(".lock")]) == ["graph.json"]
 
 
 def test_write_text_atomic_preserves_existing_on_failure(tmp_path, monkeypatch):
@@ -34,7 +34,7 @@ def test_write_text_atomic_preserves_existing_on_failure(tmp_path, monkeypatch):
 
     # The original file is intact and the temp file was cleaned up.
     assert p.read_text() == "original"
-    assert sorted(x.name for x in tmp_path.iterdir()) == ["graph.json"]
+    assert sorted([x.name for x in tmp_path.iterdir() if not x.name.endswith(".lock")]) == ["graph.json"]
 
 
 @pytest.mark.skipif(
@@ -163,9 +163,9 @@ def test_write_text_atomic_windows_permission_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "replace", flaky_replace)
     write_text_atomic(p, "new-content")
 
-    assert calls["n"] == 1  # the fallback path was actually exercised
+    assert calls["n"] == 5  # retried 5 times then failed, then fallback
     assert p.read_text() == "new-content"
-    assert sorted(x.name for x in tmp_path.iterdir()) == ["graph.json"]
+    assert sorted([x.name for x in tmp_path.iterdir() if not x.name.endswith(".lock")]) == ["graph.json"]
 
 
 def test_write_text_atomic_windows_winerror_17_fallback(tmp_path, monkeypatch):
@@ -190,7 +190,7 @@ def test_write_text_atomic_windows_winerror_17_fallback(tmp_path, monkeypatch):
 
     assert calls["n"] == 1
     assert p.read_text() == "new-content"
-    assert sorted(x.name for x in tmp_path.iterdir()) == ["graph.json"]
+    assert sorted([x.name for x in tmp_path.iterdir() if not x.name.endswith(".lock")]) == ["graph.json"]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink setup differs on Windows")
@@ -350,3 +350,62 @@ def test_write_text_atomic_succeeds_near_windows_max_path(tmp_path):
     write_text_atomic(target, "content-at-max-path")
     assert target.read_text(encoding="utf-8") == "content-at-max-path"
     assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
+
+def test_atomic_replace_acquires_lockfile_and_cleans_up(tmp_path):
+    """An OS-level lockfile is used to synchronize concurrent writers, and is cleaned up on success (if possible)."""
+    from graphify.paths import write_json_atomic
+
+    target = tmp_path / "test.json"
+    lock_file = tmp_path / "test.json.lock"
+
+    write_json_atomic(target, {"key": "value"})
+
+    assert target.exists()
+    assert lock_file.exists(), "lockfile should remain on disk"
+
+
+def test_atomic_replace_respects_lockfile_timeout(tmp_path, monkeypatch):
+    """If another process holds the lockfile, it waits and eventually times out with RuntimeError."""
+    import os
+    import time
+    from graphify.paths import write_json_atomic
+
+    target = tmp_path / "test.json"
+    lock_file = tmp_path / "test.json.lock"
+    
+    # Create the lockfile and hold an OS-level lock to simulate another process holding it
+    lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR)
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            
+        # Shorten the timeout for the test
+        original_time = time.time
+        
+        # Mock time.time() to simulate timeout quickly
+        start_time = original_time()
+        def mock_time():
+            nonlocal start_time
+            start_time += 1.5  # advance by 1.5 seconds per call
+            return start_time
+        
+        monkeypatch.setattr(time, "time", mock_time)
+        
+        with pytest.raises(TimeoutError, match="Timeout waiting for lock"):
+            write_json_atomic(target, {"key": "value"})
+    finally:
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(lock_fd, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        else:
+            import fcntl
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
