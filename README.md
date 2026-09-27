@@ -936,10 +936,10 @@ is added to CI later. The Bandit and pip-audit CI steps currently use
 
 - Active development happens on the `v8` branch.
 - **Fork → branch → PR to upstream.** Contributors work from a personal
-  fork whose `origin` points at their fork of `safishamsi/graphify`; `v8`
+  fork whose `origin` points at their fork of `Graphify-Labs/graphify`; `v8`
   is the active-development branch on both. Sync local `v8` to `origin/v8`
   (which tracks upstream) before cutting a feature branch, then open the PR
-  from `<your-fork>:<feature-branch>` against `safishamsi/graphify:v8`.
+  from `<your-fork>:<feature-branch>` against `Graphify-Labs/graphify:v8`.
 - **One branch, one PR per feature** — carry each milestone as a separate
   commit inside that branch rather than opening a PR per milestone.
 - Commit style: `fix: <description>` / `feat: <description>` / `docs: <description>`

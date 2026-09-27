@@ -641,7 +641,7 @@ This repo's contribution conventions (README "Contributing" section,
 the ones specific to AGE that aren't automatically obvious from those docs.
 
 - **Fork/branch model**: `origin` is a fork (e.g. `e4c5/graphify`) of
-  upstream `safishamsi/graphify`; `v8` is the active-development branch on
+  upstream `Graphify-Labs/graphify`; `v8` is the active-development branch on
   both. Sync local `v8` to `origin/v8` (which tracks upstream) before
   cutting a branch.
 - **One branch, one PR per feature — not one per phase.** The repo's own
