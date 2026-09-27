@@ -6,7 +6,7 @@ import os
 import unicodedata
 
 from pathlib import Path
-from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS
+from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS, classify_file
 from graphify.extractors.base import _file_stem, _make_id
 from graphify.security import sanitize_metadata
 
@@ -220,6 +220,10 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
     The anchor fragment (``#section``) and query (``?x=1``) are stripped before
     resolution so ``./repo.md#setup`` resolves to the same node as ``./repo.md``.
     Extension-less targets (typical of wikilinks) are treated as sibling ``.md``.
+    A wikilink whose note name itself contains a dot (``[[note.en]]``,
+    ``[[v1.2 release]]``) gets the same ``.md`` completion, but only when that
+    document exists and no file graphify indexes sits at the literal target;
+    otherwise (``[[image.png]]``) it stays skipped.
 
     With ``wikilink=True``, a target whose lexically resolved path does not
     exist is retried as a vault-global lookup across the active scan root (see
@@ -242,7 +246,20 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
         target = target + ".md"
         suffix = ".md"
     if suffix not in _MD_LINKABLE_EXTS:
-        return None
+        if not wikilink:
+            return None
+        # The suffix may be part of the note name ([[v1.2 release]]): try
+        # <name>.md through the same sibling-then-vault resolution and keep
+        # the link only when that document exists. A literal target graphify
+        # indexes itself ([[pic.png]] beside pic.png.md) keeps precedence.
+        literal = Path(os.path.normpath(str(source_dir / target)))
+        try:
+            if literal.is_file() and classify_file(literal) is not None:
+                return None
+            hit = _resolve_markdown_link(target + ".md", source_dir, wikilink=True)
+            return hit if hit is not None and hit.is_file() else None
+        except OSError:
+            return None
     candidate = Path(target)
     if not candidate.is_absolute():
         candidate = source_dir / candidate

@@ -3339,6 +3339,64 @@ def test_markdown_wikilink_index_prunes_ignored_directories(tmp_path, monkeypatc
     assert not any("bigdata" in e["target"] for e in refs), f"wikilink resolved into ignored path: {refs}"
 
 
+def test_markdown_wikilink_dotted_note_name(tmp_path):
+    """A dot inside a note name is not a file extension: [[note.en]] (sibling),
+    [[v1.2 release]] (vault-wide) and [[sub/deep.fr|alias]] (path-qualified)
+    resolve to the existing <name>.md like any extension-less wikilink."""
+    vault = tmp_path / "vault"
+    (vault / "log" / "sub").mkdir(parents=True)
+    (vault / "log" / "note.en.md").write_text("# Note\n")
+    (vault / "log" / "sub" / "deep.fr.md").write_text("# Deep\n")
+    (vault / "v1.2 release.md").write_text("# Release\n")
+    (vault / "log" / "entry.md").write_text(
+        "See [[note.en]], [[v1.2 release]] and [[sub/deep.fr|deep]].\n")
+    docs = [vault / "log" / "note.en.md", vault / "log" / "sub" / "deep.fr.md",
+            vault / "v1.2 release.md"]
+    node_ids, refs, page_id = _vault_extract(vault, docs + [vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    targets = {e["target"] for e in refs if e["source"] == entry_id}
+    assert targets == {page_id(d) for d in docs}, f"dotted wikilink lost: {refs}"
+    for e in refs:
+        assert e["target"] in node_ids, f"link target is a ghost node: {e}"
+
+
+def test_markdown_dotted_link_without_note_stays_skipped(tmp_path):
+    """The .md completion needs an existing note and a wikilink: [[missing.en]]
+    with no missing.en.md, [[image.png]] (an asset) and the inline
+    [text](note.en) produce no edge, exactly as before."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "log" / "image.png").write_bytes(b"\x89PNG\r\n")
+    (vault / "log" / "note.en.md").write_text("# Note\n")
+    (vault / "log" / "entry.md").write_text(
+        "See [[missing.en]], [[image.png]] and [note](note.en).\n")
+    _, refs, page_id = _vault_extract(
+        vault, [vault / "log" / "note.en.md", vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    assert [e for e in refs if e["source"] == entry_id] == [], (
+        f"a dotted link without a matching note must stay skipped: {refs}")
+
+
+def test_markdown_dotted_wikilink_literal_file_keeps_precedence(tmp_path):
+    """A literal target graphify indexes itself wins over <name>.md:
+    [[pic.png]] beside pic.png and pic.png.md stays skipped, while
+    [[thirteen.en]] beside a raw thirteen.en (a format graphify does not
+    index) still resolves to thirteen.en.md."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "log" / "pic.png").write_bytes(b"\x89PNG\r\n")
+    (vault / "log" / "pic.png.md").write_text("# Pic\n")
+    (vault / "log" / "thirteen.en").write_text("raw\n")
+    (vault / "log" / "thirteen.en.md").write_text("# Thirteen\n")
+    (vault / "log" / "entry.md").write_text("See [[pic.png]] and [[thirteen.en]].\n")
+    notes = [vault / "log" / "pic.png.md", vault / "log" / "thirteen.en.md"]
+    _, refs, page_id = _vault_extract(vault, notes + [vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    targets = {e["target"] for e in refs if e["source"] == entry_id}
+    assert targets == {page_id(vault / "log" / "thirteen.en.md")}, (
+        f"an indexed literal file must keep precedence over its .md note: {refs}")
+
+
 # ── Groovy ───────────────────────────────────────────────────────────────────
 
 
