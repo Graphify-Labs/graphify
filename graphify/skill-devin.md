@@ -331,10 +331,10 @@ FILE_LIST
 Wait for all subagents. For each result:
 - Check that `graphify-out/.graphify_chunk_N.json` exists on disk — this is the success signal
 - If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
-- If the file is missing, the subagent was likely dispatched as read-only — print a warning: "chunk N missing from disk — subagent may have been read-only. Re-run with general-purpose agent." Do not silently skip.
+- If the file is missing, the subagent was likely dispatched as a read-only type — print a warning: "chunk N missing from disk — subagent may have been dispatched without Write and Bash access. Re-run with a subagent type that has both." Do not silently skip.
 - If a subagent failed or returned invalid JSON, print a warning and skip that chunk - do not abort
 
-If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
+If more than half the chunks failed or are missing, stop and tell the user to re-run using a subagent type that has Write and Bash access (`general-purpose` by default; any host-permitted type with those two tools otherwise).
 
 After each subagent call completes, write its result to `graphify-out/.graphify_chunk_N.json`. **After each subagent call completes, read the real token counts from the subagent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then merge:
 
