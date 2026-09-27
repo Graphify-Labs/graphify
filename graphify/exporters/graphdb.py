@@ -5,6 +5,14 @@ from graphify.analyze import _node_community_map
 import json
 import networkx as nx
 import re
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    # typing.LiteralString is 3.11+ but requires-python is >=3.10, so the
+    # check-time name comes from typing_extensions. It is only referenced
+    # via cast("LiteralString", ...) string form, so this never runs at
+    # module load.
+    from typing_extensions import LiteralString
 
 
 def _safe_rel(relation: str) -> str:
@@ -203,6 +211,20 @@ _AGE_LEAN_NODE_FIELDS = (
 _AGE_LEAN_EDGE_FIELDS = ("relation", "confidence")
 
 
+def _is_age_safe_prop_key(key: str) -> bool:
+    """Whether an attribute key may be emitted as a Cypher property name.
+
+    In full_props mode discovered field names are interpolated raw into
+    the Cypher text (``SET n.{key} = row.{key}``) -- sql.Literal only
+    protects the row *values*, not identifiers -- so attribute names must
+    be treated as untrusted (CONTRIBUTING.md: source text is untrusted).
+    Only keys that are already valid Cypher identifiers are pushed; no
+    sanitizing rewrite, because a rewritten name would silently collide
+    with or shadow a real property.
+    """
+    return re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is not None
+
+
 def _age_node_field_names(G: nx.Graph, full_props: bool) -> tuple[str, ...]:
     """The fixed field list every node row will carry, in a stable order.
 
@@ -218,7 +240,11 @@ def _age_node_field_names(G: nx.Graph, full_props: bool) -> tuple[str, ...]:
     keys: set[str] = set(_AGE_LEAN_NODE_FIELDS)
     for _, data in G.nodes(data=True):
         for k, v in data.items():
-            if isinstance(v, (str, int, float, bool)) and not k.startswith("_"):
+            if (
+                isinstance(v, (str, int, float, bool))
+                and not k.startswith("_")
+                and _is_age_safe_prop_key(k)
+            ):
                 keys.add(k)
     # Stable order: lean fields first (fixed position), then the rest sorted.
     rest = sorted(keys - set(_AGE_LEAN_NODE_FIELDS))
@@ -232,7 +258,11 @@ def _age_edge_field_names(G: nx.Graph, full_props: bool) -> tuple[str, ...]:
     keys: set[str] = set(_AGE_LEAN_EDGE_FIELDS)
     for _, _, data in G.edges(data=True):
         for k, v in data.items():
-            if isinstance(v, (str, int, float, bool)) and not k.startswith("_"):
+            if (
+                isinstance(v, (str, int, float, bool))
+                and not k.startswith("_")
+                and _is_age_safe_prop_key(k)
+            ):
                 keys.add(k)
     rest = sorted(keys - set(_AGE_LEAN_EDGE_FIELDS))
     return _AGE_LEAN_EDGE_FIELDS + tuple(rest)
@@ -534,9 +564,21 @@ def push_to_age(
 
     graph_lit = sql.Literal(graph_name)
 
+    def _sql_text(fragment: str) -> sql.SQL:
+        """Wrap an internally-built SQL fragment for sql.format().
+
+        psycopg's sql.SQL() takes a LiteralString so dynamic interpolation
+        cannot sneak in unchecked; every fragment passed through here is
+        safe by construction -- labels/relation types are whitelisted by
+        _safe_label()/_safe_rel() ([A-Za-z0-9_]/[A-Z0-9_] only), SET
+        clauses are built from whitelisted field names, and a_pat/b_pat
+        are fixed ``a``/``b`` prefixes over those same whitelisted labels.
+        """
+        return sql.SQL(cast("LiteralString", fragment))
+
     def _cypher(body: str, returns: str = "(result agtype)") -> sql.Composed:
         return sql.SQL("SELECT * FROM cypher({graph}, $${body}$$) AS {returns};").format(
-            graph=graph_lit, body=sql.SQL(body), returns=sql.SQL(returns)
+            graph=graph_lit, body=_sql_text(body), returns=_sql_text(returns)
         )
 
     def _execute_prepared(cur, stmt_name: str, payload: dict) -> None:
@@ -560,7 +602,8 @@ def push_to_age(
             cur.execute(
                 "SELECT count(*) FROM ag_catalog.ag_graph WHERE name = %s;", (graph_name,)
             )
-            if not cur.fetchone()[0]:
+            graph_count = cur.fetchone()
+            if graph_count is None or not graph_count[0]:
                 cur.execute("SELECT create_graph(%s);", (graph_name,))
 
             # Index properties->id before any MATCH/MERGE: without it every
@@ -602,7 +645,7 @@ def push_to_age(
                         ).format(
                             name=sql.Identifier(stmt_name),
                             graph=graph_lit,
-                            label=sql.SQL(label),
+                            label=_sql_text(label),
                         )
                     )
                     _execute_prepared(cur, stmt_name, {"ids": [r["id"] for r in batch]})
@@ -624,8 +667,8 @@ def push_to_age(
                     ).format(
                         name=sql.Identifier(stmt_name),
                         graph=graph_lit,
-                        label=sql.SQL(label),
-                        set_clause=sql.SQL(set_clause),
+                        label=_sql_text(label),
+                        set_clause=_sql_text(set_clause),
                     )
                 )
                 for batch in _age_batches(rows, batch_size):
@@ -666,7 +709,7 @@ def push_to_age(
                             "  MATCH (a {{id: row.src}})-[r:{rel}]->(b {{id: row.tgt}}) "
                             "  DELETE r "
                             "$$, $1) AS (result agtype);"
-                        ).format(name=sql.Identifier(stmt_name), graph=graph_lit, rel=sql.SQL(rel))
+                        ).format(name=sql.Identifier(stmt_name), graph=graph_lit, rel=_sql_text(rel))
                     )
                     _execute_prepared(cur, stmt_name, {"rows": batch})
                     cur.execute(sql.SQL("DEALLOCATE {name};").format(name=sql.Identifier(stmt_name)))
@@ -704,10 +747,10 @@ def push_to_age(
                         ).format(
                             name=sql.Identifier(stmt_name),
                             graph=graph_lit,
-                            a_pat=sql.SQL(a_pat),
-                            b_pat=sql.SQL(b_pat),
-                            rel=sql.SQL(rel),
-                            set_clause=sql.SQL(set_clause),
+                            a_pat=_sql_text(a_pat),
+                            b_pat=_sql_text(b_pat),
+                            rel=_sql_text(rel),
+                            set_clause=_sql_text(set_clause),
                         )
                     )
                     for batch in _age_batches(sub_rows, batch_size):

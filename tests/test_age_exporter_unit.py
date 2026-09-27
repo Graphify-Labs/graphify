@@ -122,6 +122,62 @@ def test_full_edge_field_names_include_extras():
     assert set(graphdb._AGE_LEAN_EDGE_FIELDS) <= set(fields)
 
 
+def test_full_node_field_names_drop_non_identifier_keys():
+    """Defense-in-depth: full-props field names are interpolated raw into
+    the Cypher SET clause ("SET n.{key} = row.{key}") -- only the row
+    *values* travel via sql.Literal. A key that is not a valid Cypher
+    identifier (a space, "}", ";", "$", a leading digit, ...) would be an
+    injection vector, so it is excluded rather than sanitized."""
+    G = _graph(
+        [
+            (
+                "a",
+                {
+                    "file_type": "code",
+                    "ok_key": 1,
+                    "trailing_underscore_": "x",
+                    "a} //": 1,      # would break out of the SET clause
+                    "has space": 1,
+                    "semi;colon": 1,
+                    "dollar$sign": 1,
+                    "9leading_digit": 1,
+                },
+            )
+        ],
+        [],
+    )
+    fields = graphdb._age_node_field_names(G, full_props=True)
+    assert "ok_key" in fields
+    assert "trailing_underscore_" in fields
+    for bad in ("a} //", "has space", "semi;colon", "dollar$sign", "9leading_digit"):
+        assert bad not in fields
+
+
+def test_full_edge_field_names_drop_non_identifier_keys():
+    """Same defense-in-depth as the node variant: edge attribute keys land
+    raw in "SET r.{key} = row.{key}"."""
+    G = _graph(
+        [("a", {}), ("b", {})],
+        [
+            (
+                "a",
+                "b",
+                {
+                    "relation": "calls",
+                    "confidence": "EXTRACTED",
+                    "weight": 1.0,
+                    "evil} //": 2,
+                    "has space": 2,
+                },
+            )
+        ],
+    )
+    fields = graphdb._age_edge_field_names(G, full_props=True)
+    assert "weight" in fields
+    assert "evil} //" not in fields
+    assert "has space" not in fields
+
+
 # ---------------------------------------------------------------------------
 # Row grouping: labels/relations sanitized, structural metrics stamped.
 # ---------------------------------------------------------------------------
