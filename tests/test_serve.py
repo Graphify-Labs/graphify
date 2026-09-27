@@ -803,6 +803,16 @@ def test_projection_gaps_preserves_reciprocal_directed_relations():
     assert projection_gaps(graph, {"handler"}, RUNTIME_FLOW) == ["transfers"]
 
 
+def test_projection_gaps_treats_null_relation_as_missing():
+    """A serialized null must not become a fabricated relation named ``none``."""
+    from graphify.query_planning import RUNTIME_FLOW, projection_gaps
+
+    graph = nx.DiGraph()
+    graph.add_edge("handler", "ledger", relation=None)
+
+    assert projection_gaps(graph, {"handler"}, RUNTIME_FLOW) == []
+
+
 @pytest.mark.parametrize(
     ("alias", "canonical"),
     [

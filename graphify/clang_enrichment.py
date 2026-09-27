@@ -16,7 +16,8 @@ from pathlib import PurePosixPath
 import re
 import shlex
 import subprocess
-import tempfile
+import threading
+import time
 from typing import Callable
 
 from graphify.symbol_names import normalize_symbol_name
@@ -89,34 +90,113 @@ def _line(value: object) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def run_clang_command(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
-    """Run Clang without a shell and bound the JSON AST retained in memory."""
+def _read_process_stream(
+    stream: object,
+    *,
+    retain_bytes: int,
+    overflow_bytes: int | None,
+    overflow: threading.Event,
+    destination: list[bytes],
+) -> None:
+    """Drain one compiler pipe while retaining only its admitted prefix."""
 
-    with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
-        try:
-            completed = subprocess.run(  # nosec B603 - sanitized argv; shell is never used.
-                command,
-                cwd=cwd,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                timeout=timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise TimeoutError(f"clang exceeded {timeout:.0f}s") from exc
-        stdout_size = stdout_file.tell()
-        stderr_size = stderr_file.tell()
-        if stdout_size > 128 * 1024 * 1024:
-            return ProcessResult(completed.returncode, "", "clang JSON AST exceeded 128 MiB")
-        stdout_file.seek(0)
-        stderr_file.seek(0)
-        raw_stdout = stdout_file.read()
-        raw_stderr = stderr_file.read(min(stderr_size, 32 * 1024)).decode("utf-8", "replace")
+    retained = bytearray()
+    total = 0
+    read = getattr(stream, "read1", getattr(stream, "read"))
+    while chunk := read(64 * 1024):
+        total += len(chunk)
+        if len(retained) < retain_bytes:
+            retained.extend(chunk[:retain_bytes - len(retained)])
+        if overflow_bytes is not None and total > overflow_bytes:
+            overflow.set()
+    destination.append(bytes(retained))
+
+
+def _display_byte_limit(value: int) -> str:
+    if value % (1024 * 1024) == 0:
+        return f"{value // (1024 * 1024)} MiB"
+    if value % 1024 == 0:
+        return f"{value // 1024} KiB"
+    return f"{value} bytes"
+
+
+def run_clang_command(
+    command: tuple[str, ...],
+    cwd: Path,
+    timeout: float,
+    *,
+    max_stdout_bytes: int = 128 * 1024 * 1024,
+) -> ProcessResult:
+    """Run Clang without a shell and stop it when its JSON AST exceeds the cap."""
+
+    process = subprocess.Popen(  # nosec B603 - sanitized argv; shell is never used.
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert process.stdout is not None and process.stderr is not None
+    overflow = threading.Event()
+    stdout_parts: list[bytes] = []
+    stderr_parts: list[bytes] = []
+    readers = (
+        threading.Thread(
+            target=_read_process_stream,
+            kwargs={
+                "stream": process.stdout,
+                "retain_bytes": max_stdout_bytes,
+                "overflow_bytes": max_stdout_bytes,
+                "overflow": overflow,
+                "destination": stdout_parts,
+            },
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_read_process_stream,
+            kwargs={
+                "stream": process.stderr,
+                "retain_bytes": 32 * 1024,
+                "overflow_bytes": None,
+                "overflow": overflow,
+                "destination": stderr_parts,
+            },
+            daemon=True,
+        ),
+    )
+    for reader in readers:
+        reader.start()
+
+    deadline = time.monotonic() + timeout
+    timed_out = False
+    while process.poll() is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            process.kill()
+            break
+        if overflow.wait(min(0.05, remaining)):
+            # Killing immediately bounds both memory and temporary-storage use;
+            # merely checking a completed file would still permit disk exhaustion.
+            process.kill()
+            break
+    returncode = process.wait()
+    for reader in readers:
+        reader.join()
+    process.stdout.close()
+    process.stderr.close()
+
+    if timed_out:
+        raise TimeoutError(f"clang exceeded {timeout:.0f}s")
+    if overflow.is_set():
+        limit = _display_byte_limit(max_stdout_bytes)
+        return ProcessResult(returncode, "", f"clang JSON AST exceeded {limit}")
+    raw_stdout = stdout_parts[0] if stdout_parts else b""
+    raw_stderr = (stderr_parts[0] if stderr_parts else b"").decode("utf-8", "replace")
     try:
         payload: dict | str = json.loads(raw_stdout.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
         payload = ""
-    return ProcessResult(completed.returncode, payload, raw_stderr)
+    return ProcessResult(returncode, payload, raw_stderr)
 
 
 class ClangSemanticEnricher:
@@ -384,8 +464,14 @@ class ClangSemanticEnricher:
         """
 
         output_with_value = {
-            "-o", "-MF", "-MT", "-MQ", "-MJ", "--serialize-diagnostics",
+            "-o", "--output", "-MF", "-MT", "-MQ", "-MJ", "--serialize-diagnostics",
             "-dependency-file",
+        }
+        parse_option_with_value = {
+            # This is a real Clang parse option, not the joined ``-o<file>``
+            # output form. Preserve the pair atomically so its directory cannot
+            # be orphaned and reinterpreted as a translation-unit input.
+            "-objc-isystem",
         }
         drop_one_after = {
             "-Xclang", "-load", "-plugin",
@@ -434,6 +520,7 @@ class ClangSemanticEnricher:
             # forms above. Include the complete option name where possible;
             # lowercase `-o...` is Clang's attached output-path form.
             "-o",
+            "--output=",
             "-MF",
             "-MT",
             "-MQ",
@@ -473,6 +560,12 @@ class ClangSemanticEnricher:
             # frontend, preprocessor, analyzer, and offload variants.
             if argument.startswith("-X"):
                 index += 1 if "=" in argument else 2
+                continue
+            if argument in parse_option_with_value:
+                safe.append(original_argument)
+                if index + 1 < len(arguments):
+                    safe.append(logical_arguments[index + 1][1])
+                index += 2
                 continue
             if argument in output_with_value or argument in drop_one_after:
                 index += 2

@@ -1,7 +1,11 @@
 """Markdown extractor. Moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
-from graphify.document_index import build_document_index, iter_markdown_content_lines
+from graphify.document_index import (
+    build_document_index,
+    iter_markdown_content_lines,
+    parse_atx_heading,
+)
 import re
 import os
 import unicodedata
@@ -468,11 +472,11 @@ def extract_markdown(path: Path) -> dict:
         if line_num_0 < body_start:
             continue
 
-        # Detect headings: # Heading, ## Heading, etc.
-        heading_match = re.match(r'^(#{1,6})\s+(.+)', line_text)
-        if heading_match:
-            level = len(heading_match.group(1))
-            title = heading_match.group(2).strip()
+        # Heading syntax is centralized with the lazy section index so both
+        # consumers publish identical titles and source boundaries.
+        heading = parse_atx_heading(line_text)
+        if heading is not None:
+            level, title = heading
             h_nid = _make_id(stem, title)
             # Avoid duplicate heading IDs by appending line number
             if h_nid in seen_ids:

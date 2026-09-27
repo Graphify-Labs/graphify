@@ -58,6 +58,25 @@ def test_document_index_ignores_headings_inside_markdown_fences():
     ]
 
 
+def test_document_index_accepts_indented_and_closed_atx_headings(tmp_path):
+    """Both heading consumers must apply CommonMark ATX indentation and closure rules."""
+    text = "   # Overview #\nintro\n  ## Runtime Flow ##   \ndetails\n"
+    source = tmp_path / "guide.md"
+    source.write_text(text, encoding="utf-8")
+
+    index = build_document_index("guide.md", text)
+    extraction = extract_markdown(source)
+    extracted_titles = {
+        node["label"] for node in extraction["nodes"] if node["label"] != source.name
+    }
+
+    assert [section.path for section in index.sections] == [
+        "Overview",
+        "Overview / Runtime Flow",
+    ]
+    assert extracted_titles == {"Overview", "Runtime Flow"}
+
+
 def test_markdown_extractor_and_document_index_share_fence_boundaries(tmp_path):
     """Every heading consumer must exclude the same fenced Markdown content."""
     source = tmp_path / "guide.md"

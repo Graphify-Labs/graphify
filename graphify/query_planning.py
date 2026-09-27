@@ -20,7 +20,10 @@ from graphify.ontology import normalize_relation, normalize_relation_with_direct
 def _canonical_relation(data: dict) -> str:
     """Normalize known aliases while preserving unknown names for diagnostics."""
 
-    raw = str(data.get("relation", "")).strip().lower()
+    value = data.get("relation", "")
+    # JSON null means the producer supplied no relation. Stringifying it would
+    # fabricate an unsupported relation named ``none`` and force needless LLM use.
+    raw = "" if value is None else str(value).strip().lower()
     return normalize_relation(raw) or raw
 
 

@@ -7,7 +7,8 @@ import hashlib
 import re
 
 
-_HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+_ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?)|[ \t]*)$")
+_ATX_CLOSING_SEQUENCE = re.compile(r"(?:^|[ \t]+)#+[ \t]*$")
 _FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
@@ -33,6 +34,19 @@ class DocumentIndex:
 def _section_id(source_file: str, path: str, start_line: int) -> str:
     digest = hashlib.sha256(f"{source_file}\0{path}\0{start_line}".encode()).hexdigest()[:20]
     return f"docsec:{digest}"
+
+
+def parse_atx_heading(line: str) -> tuple[int, str] | None:
+    """Parse a CommonMark ATX heading shared by extraction and lazy indexing."""
+
+    match = _ATX_HEADING.match(line)
+    if match is None:
+        return None
+    content = match.group(2) or ""
+    # A closing hash sequence is markup only when it is separated from the
+    # title by whitespace; hashes in names such as ``C#`` remain content.
+    title = _ATX_CLOSING_SEQUENCE.sub("", content).strip()
+    return len(match.group(1)), title
 
 
 def iter_markdown_content_lines(lines: Iterable[str]) -> Iterator[tuple[int, str]]:
@@ -71,9 +85,10 @@ def build_document_index(source_file: str, text: str) -> DocumentIndex:
     lines = text.splitlines()
     headings: list[tuple[int, int, str]] = []
     for line_number, line in iter_markdown_content_lines(lines):
-        match = _HEADING.match(line)
-        if match:
-            headings.append((len(match.group(1)), line_number, match.group(2).strip()))
+        heading = parse_atx_heading(line)
+        if heading is not None:
+            level, title = heading
+            headings.append((level, line_number, title))
 
     sections: list[DocumentSection] = []
     stack: list[tuple[int, str, str]] = []
