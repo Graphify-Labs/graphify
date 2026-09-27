@@ -648,6 +648,107 @@ def test_clang_compile_database_drops_configuration_file_options(tmp_path: Path)
     assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["clang++", "-wrapper", "./attacker", "-DMODE=1"],
+        ["clang++", "-Wp,-plugin,./attacker.so", "-DMODE=1"],
+        ["clang++", "-Wa,-I,./attacker", "-DMODE=1"],
+    ],
+)
+def test_clang_compile_database_drops_external_tool_forwarding(
+    tmp_path: Path,
+    arguments: list[str],
+):
+    """Compile metadata cannot choose helpers or forward opaque option streams."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// hostile compile database\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [*arguments, "-c", str(source)],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "-DMODE=1" in command
+        assert "-wrapper" not in command
+        assert "./attacker" not in command
+        assert not any(argument.startswith(("-Wp,", "-Wa,")) for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_windows_compile_command_preserves_backslashes_and_spaces():
+    """Windows command parsing must follow CommandLineToArgvW quoting rules."""
+    from graphify.clang_enrichment import split_windows_commandline
+
+    assert split_windows_commandline(
+        'clang++ -I"C:\\Program Files\\SDK" -DNAME=\\"value\\" "src\\main.C"'
+    ) == [
+        "clang++",
+        "-IC:\\Program Files\\SDK",
+        '-DNAME="value"',
+        "src\\main.C",
+    ]
+
+
+def test_installed_clang_smoke_confirms_real_cpp_call(tmp_path: Path):
+    """Exercise the real compiler boundary when Clang is available locally."""
+    executable = shutil.which("clang++") or shutil.which("clang")
+    if executable is None:
+        pytest.skip("Clang is not installed")
+    include = tmp_path / "include"
+    source_dir = tmp_path / "src"
+    include.mkdir()
+    source_dir.mkdir()
+    (include / "worker.h").write_text(
+        "class Worker { public: void run() {} };\n",
+        encoding="utf-8",
+    )
+    source = source_dir / "main.C"
+    source.write_text(
+        '#include "worker.h"\n'
+        "void process() {\n"
+        "  Worker worker;\n"
+        "  worker.run();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    graph = _graph_with_pending_cpp_call()
+    graph["nodes"][1]["source_location"] = "L2"
+    graph["nodes"][1]["metadata"]["unresolved_calls"][0]["line"] = "L4"
+    graph["nodes"][2]["source_file"] = "include/worker.h"
+    graph["nodes"][2]["source_location"] = "L1"
+    graph["nodes"][3]["source_file"] = "include/worker.h"
+    graph["nodes"][3]["source_location"] = "L1"
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": ["clang++", "-I", str(include), "-std=c++17", "-c", str(source)],
+    }]), encoding="utf-8")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable=executable,
+        runner=run_clang_command,
+    ).enrich(graph)
+
+    assert any(
+        edge.get("source") == "process"
+        and edge.get("target") == "worker_run"
+        and edge.get("semantic_provider") == "clang"
+        for edge in result["edges"]
+    )
+
+
 def test_semantic_service_runs_compiler_enrichers_before_artifact_merge(tmp_path: Path):
     """Disconnecting executable enrichers from extraction must lose the call edge."""
     source = tmp_path / "src" / "main.C"
@@ -676,8 +777,8 @@ def test_semantic_service_runs_compiler_enrichers_before_artifact_merge(tmp_path
     assert result["semantic_enrichment"]["artifacts_loaded"] == 0
 
 
-def test_semantic_service_automatically_activates_available_clang(tmp_path: Path):
-    """Requiring a prebuilt SCIP artifact must not disable local Clang evidence."""
+def test_semantic_service_activates_explicitly_selected_clang(tmp_path: Path):
+    """Selecting Clang must not require a prebuilt SCIP artifact."""
     source = tmp_path / "src" / "main.C"
     source.parent.mkdir()
     source.write_text("// automatic service fixture\n", encoding="utf-8")
@@ -690,6 +791,7 @@ def test_semantic_service_automatically_activates_available_clang(tmp_path: Path
 
     result = SemanticEnrichmentService(
         tmp_path,
+        enabled_adapters=("clang",),
         executable_locator=locator,
         process_runner=runner,
     ).enrich(_graph_with_pending_cpp_call())

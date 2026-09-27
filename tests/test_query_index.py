@@ -231,3 +231,53 @@ def test_query_index_store_rejects_stale_sidecar_after_digest_carrying_graph_cha
 
     assert cache_hit is False
     assert index.search("UniqueFreshSymbol").candidates[0].node_id == "fresh"
+
+
+def test_query_index_keeps_string_and_integer_node_ids_distinct():
+    """Stringification must not collapse distinct NetworkX node identities."""
+    graph = nx.Graph()
+    graph.add_node(1, label="IntegerIdentity")
+    graph.add_node("1", label="StringIdentity")
+
+    index = QueryIndex.from_graph(graph)
+    restored = QueryIndex.from_dict(index.to_dict())
+
+    assert restored.matches_graph(graph)
+    assert restored.search("IntegerIdentity").candidates[0].node_id == 1
+    assert restored.search("StringIdentity").candidates[0].node_id == "1"
+
+
+def test_query_index_rejects_node_key_identity_mismatch():
+    index = QueryIndex.from_graph(_graph())
+    payload = index.to_dict()
+    payload["nodes"][next(iter(payload["nodes"]))]["node_id"] = ["str", "injected"]
+
+    try:
+        QueryIndex.from_dict(payload)
+    except ValueError as exc:
+        assert "node identity" in str(exc)
+    else:
+        raise AssertionError("tampered node identity was accepted")
+
+
+def test_query_index_ranking_tie_handles_mixed_node_id_types():
+    graph = nx.Graph()
+    graph.add_node(1, label="SameLabel")
+    graph.add_node("1", label="SameLabel")
+
+    candidates = QueryIndex.from_graph(graph).search("SameLabel").candidates
+
+    assert {candidate.node_id for candidate in candidates} == {1, "1"}
+
+
+def test_query_index_round_trips_exotic_hashable_identity_without_key_collision():
+    from uuid import UUID
+
+    node_id = UUID("12345678-1234-5678-1234-567812345678")
+    graph = nx.Graph()
+    graph.add_node(node_id, label="UuidIdentity")
+
+    restored = QueryIndex.from_dict(QueryIndex.from_graph(graph).to_dict())
+
+    assert restored.matches_graph(graph)
+    assert restored.search("UuidIdentity").candidates[0].node_id == str(node_id)

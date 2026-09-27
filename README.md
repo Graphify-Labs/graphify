@@ -372,6 +372,49 @@ instances. Incremental Terraform changes reconcile the scanned `.tf` corpus,
 reusing cached syntax for unchanged files. After upgrading an existing graph,
 run `graphify update .` once to regenerate Terraform IDs and topology.
 
+### Optional compiler-assisted enrichment
+
+Graphify always keeps its deterministic tree-sitter graph as the baseline. A
+compiler or language-server integration may add evidence, but failure or tool
+absence never removes AST nodes or edges.
+
+Use `--semantic-analyzers` with `graphify extract` to select a comma-separated
+set of adapters. When the option is omitted, no executable analyzer runs.
+`none` also disables executable analyzers while continuing to load validated
+local artifacts:
+
+```bash
+graphify extract . --code-only --semantic-analyzers clang,typescript,pyright
+graphify extract . --code-only --semantic-analyzers none
+```
+
+| Adapter ID | Languages | Direct execution | Validated fallback artifact |
+|---|---|---|---|
+| `clang` | C/C++ (including `.C`) | Clang JSON AST edge confirmation | `.graphify/semantic/clang.scip.json` |
+| `jdt` | Java/Kotlin | Artifact only | `.graphify/semantic/jdt.scip.json` |
+| `roslyn` | C# | Artifact only | `.graphify/semantic/roslyn.scip.json` |
+| `typescript` | TypeScript/JavaScript | Artifact only | `.graphify/semantic/typescript.scip.json` |
+| `gopls` | Go | Artifact only | `.graphify/semantic/gopls.scip.json` |
+| `rust_analyzer` | Rust | Artifact only | `.graphify/semantic/rust_analyzer.scip.json` |
+| `pyright` | Python | Artifact only | `.graphify/semantic/pyright.scip.json` |
+| `php_static_analysis` | PHP (PHPStan/Psalm discovery) | Artifact only | `.graphify/semantic/php_static_analysis.scip.json` |
+
+The artifact-only designation is deliberate: these tools do not share a stable
+offline output protocol with Graphify. Merely finding an executable is reported
+as `unsupported_output`, not as successful semantic coverage. Generate SCIP
+JSON outside Graphify using the ecosystem's trusted indexing workflow, place it
+at the fixed path above, and Graphify will validate and merge it. Artifacts are
+limited to 64 MiB, must resolve inside the project semantic directory, and fail
+soft when malformed.
+
+Clang compilation databases are untrusted input. Graphify replaces the compiler
+executable, discards source/output/plugin/wrapper/response/configuration and
+opaque forwarding options, and reconstructs only a small allowlist of parsing
+flags before adding `-fsyntax-only` and JSON AST output. Analyzer processes run
+without a shell, with bounded stdout/stderr and time, a minimal environment,
+and POSIX process-group cleanup. This is process hardening, not an OS-level
+network or filesystem sandbox; only enable analyzers you trust.
+
 Code is extracted **locally with no API calls** (AST via tree-sitter). Everything else goes through your AI assistant's model API.
 
 Google Drive for desktop `.gdoc`, `.gsheet`, and `.gslides` files are shortcut

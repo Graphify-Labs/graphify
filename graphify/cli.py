@@ -3293,6 +3293,7 @@ def dispatch_command(cmd: str) -> None:
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
                 "[--no-gitignore] [--code-only] [--no-dedup] "
+                "[--semantic-analyzers ID,...|none] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
@@ -3340,6 +3341,7 @@ def dispatch_command(cmd: str) -> None:
         cli_exclude_hubs: float | None = None
         cli_excludes: list[str] = []
         cli_timing: bool = False
+        cli_semantic_adapters: tuple[str, ...] | None = None
         # --force parity with `graphify update`: the flag or GRAPHIFY_FORCE=1
         # disables the incremental gate and skips semantic-cache reads (#1894).
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
@@ -3446,6 +3448,37 @@ def dispatch_command(cmd: str) -> None:
                 cli_allow_partial = True; i += 1
             elif a == "--timing":
                 cli_timing = True; i += 1
+            elif a == "--semantic-analyzers":
+                if i + 1 >= len(args):
+                    print("error: --semantic-analyzers requires a value", file=sys.stderr)
+                    sys.exit(2)
+                from graphify.semantic_tool_adapters import validate_adapter_selection
+
+                raw_selection = args[i + 1]
+                try:
+                    cli_semantic_adapters = (
+                        ()
+                        if raw_selection.strip().lower() == "none"
+                        else validate_adapter_selection(raw_selection.split(","))
+                    )
+                except ValueError as exc:
+                    print(f"error: {exc}", file=sys.stderr)
+                    sys.exit(2)
+                i += 2
+            elif a.startswith("--semantic-analyzers="):
+                from graphify.semantic_tool_adapters import validate_adapter_selection
+
+                raw_selection = a.split("=", 1)[1]
+                try:
+                    cli_semantic_adapters = (
+                        ()
+                        if raw_selection.strip().lower() == "none"
+                        else validate_adapter_selection(raw_selection.split(","))
+                    )
+                except ValueError as exc:
+                    print(f"error: {exc}", file=sys.stderr)
+                    sys.exit(2)
+                i += 1
             else:
                 i += 1
 
@@ -4027,7 +4060,10 @@ def dispatch_command(cmd: str) -> None:
         # semantics, while treating malformed optional outputs as diagnostics
         # rather than a reason to discard the deterministic AST pass.
         from graphify.semantic_adapters import SemanticEnrichmentService
-        ast_result = SemanticEnrichmentService(target).enrich(ast_result)
+        ast_result = SemanticEnrichmentService(
+            target,
+            enabled_adapters=cli_semantic_adapters,
+        ).enrich(ast_result)
         _enrichment = ast_result.get("semantic_enrichment", {})
         if _enrichment.get("artifacts_loaded"):
             print(
@@ -4039,6 +4075,15 @@ def dispatch_command(cmd: str) -> None:
                 f"[graphify extract] semantic adapter warning: {_diagnostic}",
                 file=sys.stderr,
             )
+        if cli_semantic_adapters is not None:
+            for _adapter_id, _status in sorted(_enrichment.get("adapters", {}).items()):
+                _state = _status.get("state", "unavailable")
+                _detail = _status.get("detail", "no detail")
+                _stream = sys.stdout if _state in {"executed", "artifact_loaded"} else sys.stderr
+                print(
+                    f"[graphify extract] semantic adapter {_adapter_id}: {_state} ({_detail})",
+                    file=_stream,
+                )
         stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.

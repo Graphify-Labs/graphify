@@ -16,6 +16,12 @@ import shutil
 from typing import Callable, Protocol, Sequence
 
 from graphify.ontology import normalize_relation_with_direction
+from graphify.semantic_tool_adapters import (
+    SemanticOutputContract,
+    semantic_tool_profile,
+    semantic_tool_profiles,
+    validate_adapter_selection,
+)
 
 
 class AdapterState(str, Enum):
@@ -86,55 +92,14 @@ class SemanticGraphEnricher(Protocol):
     def enrich(self, extraction: dict) -> dict: ...
 
 
-_SPECS: tuple[SemanticAdapterSpec, ...] = (
+_SPECS: tuple[SemanticAdapterSpec, ...] = tuple(
     SemanticAdapterSpec(
-        "clang",
-        frozenset({"c", "cpp"}),
-        ("clang++", "clang"),
-        ("compile_commands.json", "build/compile_commands.json", "out/compile_commands.json"),
-    ),
-    SemanticAdapterSpec(
-        "jdt",
-        frozenset({"java", "kotlin"}),
-        ("jdtls",),
-        ("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"),
-    ),
-    SemanticAdapterSpec(
-        "roslyn",
-        frozenset({"csharp"}),
-        ("csharp-ls", "Microsoft.CodeAnalysis.LanguageServer"),
-        ("*.sln", "*.csproj", "**/*.csproj"),
-    ),
-    SemanticAdapterSpec(
-        "typescript",
-        frozenset({"javascript", "typescript"}),
-        ("typescript-language-server", "tsserver"),
-        ("tsconfig.json", "jsconfig.json", "package.json"),
-    ),
-    SemanticAdapterSpec(
-        "gopls",
-        frozenset({"go"}),
-        ("gopls",),
-        ("go.mod", "go.work"),
-    ),
-    SemanticAdapterSpec(
-        "rust_analyzer",
-        frozenset({"rust"}),
-        ("rust-analyzer",),
-        ("Cargo.toml",),
-    ),
-    SemanticAdapterSpec(
-        "pyright",
-        frozenset({"python"}),
-        ("pyright-langserver", "pyright"),
-        ("pyrightconfig.json", "pyproject.toml", "setup.cfg"),
-    ),
-    SemanticAdapterSpec(
-        "php_static_analysis",
-        frozenset({"php"}),
-        ("phpstan", "psalm", "psalm-language-server"),
-        ("phpstan.neon", "phpstan.neon.dist", "psalm.xml", "psalm.xml.dist", "composer.json"),
-    ),
+        profile.adapter_id,
+        profile.languages,
+        profile.executables,
+        profile.project_markers,
+    )
+    for profile in semantic_tool_profiles()
 )
 
 
@@ -147,11 +112,28 @@ def semantic_adapter_specs() -> tuple[SemanticAdapterSpec, ...]:
 def _first_executable(
     candidates: Sequence[str],
     locator: Callable[[str], str | None],
+    project_root: Path | None = None,
 ) -> str | None:
     for candidate in candidates:
         executable = locator(candidate)
-        if executable:
-            return executable
+        if not executable:
+            continue
+        executable_path = Path(executable)
+        if not executable_path.is_absolute():
+            continue
+        if project_root is not None:
+            for path in (executable_path, executable_path.resolve()):
+                try:
+                    path.relative_to(project_root)
+                except ValueError:
+                    continue
+                break
+            else:
+                return str(executable_path.resolve())
+            # Both a repository-local binary and a repository-local symlink are
+            # untrusted automatic execution targets.
+            continue
+        return str(executable_path.resolve())
     return None
 
 
@@ -179,7 +161,7 @@ def discover_semantic_adapters(
     root = Path(project_root).resolve()
     statuses: list[AdapterStatus] = []
     for spec in _SPECS:
-        executable = _first_executable(spec.executables, locator)
+        executable = _first_executable(spec.executables, locator, root)
         marker = _first_project_marker(root, spec.project_markers)
         if executable is None:
             state = AdapterState.MISSING_TOOL
@@ -218,14 +200,21 @@ class SemanticEnrichmentService:
         enrichers: Sequence[SemanticGraphEnricher] | None = None,
         executable_locator: Callable[[str], str | None] = shutil.which,
         process_runner: Callable | None = None,
+        enabled_adapters: Sequence[str] | None = None,
     ) -> None:
         self.project_root = Path(project_root).resolve()
         self.artifact_root = (self.project_root / ".graphify" / "semantic").resolve()
         self._adapter_ids = frozenset(spec.adapter_id for spec in _SPECS)
+        self._enabled_adapters = validate_adapter_selection(enabled_adapters or ())
+        self._executable_locator = executable_locator
         if enrichers is None:
             from graphify.clang_enrichment import ClangSemanticEnricher, run_clang_command
 
-            clang = executable_locator("clang++") or executable_locator("clang")
+            clang = _first_executable(
+                ("clang++", "clang"),
+                executable_locator,
+                self.project_root,
+            ) if "clang" in self._enabled_adapters else None
             enrichers = (
                 ClangSemanticEnricher(
                     self.project_root,
@@ -244,13 +233,52 @@ class SemanticEnrichmentService:
         # here so optional semantics can never discard the AST baseline.
         working = dict(extraction)
         runner_diagnostics: list[str] = []
+        adapter_statuses = self._initial_adapter_statuses()
+        clang_executed = False
         for enricher in self._enrichers:
             try:
                 working = enricher.enrich(working)
+                if "clang" in self._enabled_adapters:
+                    enrichment = working.get("semantic_enrichment")
+                    clang_report = (
+                        enrichment.get("clang")
+                        if isinstance(enrichment, dict)
+                        else None
+                    )
+                    analyzer_runs = (
+                        clang_report.get("analyzer_runs")
+                        if isinstance(clang_report, dict)
+                        else None
+                    )
+                    clang_executed = bool(
+                        isinstance(analyzer_runs, int)
+                        and not isinstance(analyzer_runs, bool)
+                        and analyzer_runs > 0
+                    )
             except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
                 runner_diagnostics.append(
                     f"{type(enricher).__name__}: {type(exc).__name__}: {exc}"
                 )
+                if "clang" in self._enabled_adapters:
+                    adapter_statuses["clang"] = {
+                        "state": "unavailable",
+                        "detail": f"direct translator failed safely: {type(exc).__name__}",
+                    }
+        if clang_executed:
+            adapter_statuses["clang"] = {
+                "state": "executed",
+                "detail": "Clang direct graph-fact translator completed",
+            }
+        elif (
+            "clang" in self._enabled_adapters
+            and self._enrichers
+            and adapter_statuses.get("clang", {}).get("detail")
+            == "direct translator has not completed"
+        ):
+            adapter_statuses["clang"] = {
+                "state": "unavailable",
+                "detail": "Clang did not run because no eligible translation unit was found",
+            }
         node_map = {
             str(node.get("id")): dict(node)
             for node in working.get("nodes", [])
@@ -270,12 +298,23 @@ class SemanticEnrichmentService:
                 if artifact.stat().st_size > self._MAX_ARTIFACT_BYTES:
                     raise ValueError("artifact exceeds 64 MiB safety limit")
                 payload = json.loads(artifact.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict) or not isinstance(
+                    payload.get("documents"),
+                    list,
+                ):
+                    raise ValueError("artifact must contain a SCIP documents list")
                 # Import lazily: projects that never opt into compiler artifacts
                 # do not pay for, or become coupled to, the SCIP translator.
                 from graphify.scip_ingest import ingest_scip_json
 
                 facts = ingest_scip_json(payload)
-            except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            except (
+                OSError,
+                UnicodeError,
+                json.JSONDecodeError,
+                ValueError,
+                RecursionError,
+            ) as exc:
                 diagnostics.append(f"{artifact.name}: {type(exc).__name__}: {exc}")
                 continue
 
@@ -302,6 +341,11 @@ class SemanticEnrichmentService:
                 edge_keys.add(key)
                 edges.append(dict(edge))
             loaded += 1
+            adapter_statuses[adapter_id] = {
+                "state": "artifact_loaded",
+                "detail": "validated local SCIP JSON artifact merged",
+                "artifact": artifact.relative_to(self.project_root).as_posix(),
+            }
 
         result = dict(working)
         result["nodes"] = list(node_map.values())
@@ -311,9 +355,44 @@ class SemanticEnrichmentService:
         enrichment.update({
             "artifacts_loaded": loaded,
             "diagnostics": diagnostics,
+            "adapters": adapter_statuses,
         })
         result["semantic_enrichment"] = enrichment
         return result
+
+    def _initial_adapter_statuses(self) -> dict[str, dict[str, str]]:
+        statuses: dict[str, dict[str, str]] = {}
+        for adapter_id in self._enabled_adapters:
+            profile = semantic_tool_profile(adapter_id)
+            executable = _first_executable(
+                profile.executables,
+                self._executable_locator,
+                self.project_root,
+            )
+            if profile.output_contract is SemanticOutputContract.DIRECT_GRAPH_FACTS:
+                statuses[adapter_id] = {
+                    "state": "unavailable",
+                    "detail": (
+                        "direct translator has not completed"
+                        if executable is not None or self._enrichers
+                        else "no supported analyzer executable found"
+                    ),
+                }
+            elif executable is None:
+                statuses[adapter_id] = {
+                    "state": "unavailable",
+                    "detail": "tool unavailable; provide the fixed local SCIP JSON artifact",
+                }
+            else:
+                statuses[adapter_id] = {
+                    "state": "unsupported_output",
+                    "detail": (
+                        "installed tool has no deterministic Graphify translator; "
+                        "provide the fixed local SCIP JSON artifact"
+                    ),
+                }
+                statuses[adapter_id]["executable"] = executable
+        return statuses
 
     def enrich_node_link(self, graph: dict) -> dict:
         """Apply semantic enrichment to persisted ``links``-shaped graph JSON."""

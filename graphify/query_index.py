@@ -20,6 +20,59 @@ _TOKEN_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+")
 _STOP = frozenset({"the", "and", "how", "does", "is", "are", "of", "to", "a", "an"})
 
 
+def _encode_node_id(value: Hashable) -> list:
+    """Encode node identity without conflating values such as ``1`` and ``"1"``."""
+
+    if value is None:
+        return ["none", None]
+    if isinstance(value, bool):
+        return ["bool", value]
+    if isinstance(value, int):
+        return ["int", value]
+    if isinstance(value, float):
+        return ["float", repr(value)]
+    if isinstance(value, str):
+        return ["str", value]
+    if isinstance(value, tuple):
+        return ["tuple", [_encode_node_id(item) for item in value]]
+    # Graphify emits string IDs, but NetworkX permits arbitrary hashables. A
+    # typed representation keeps cache keys collision-safe even when an exotic
+    # ID cannot be reconstructed as its original Python class.
+    type_name = f"{type(value).__module__}.{type(value).__qualname__}"
+    return ["repr", type_name, str(value)]
+
+
+def _decode_node_id(encoded: object) -> Hashable:
+    if not isinstance(encoded, list) or len(encoded) < 2 or not isinstance(encoded[0], str):
+        raise ValueError("invalid encoded query index node id")
+    kind = encoded[0]
+    value = encoded[1]
+    if kind == "none" and value is None:
+        return None
+    if kind == "bool" and isinstance(value, bool):
+        return value
+    if kind == "int" and isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if kind == "float" and isinstance(value, str):
+        return float(value)
+    if kind == "str" and isinstance(value, str):
+        return value
+    if kind == "tuple" and isinstance(value, list):
+        return tuple(_decode_node_id(item) for item in value)
+    if (
+        kind == "repr"
+        and len(encoded) == 3
+        and isinstance(encoded[1], str)
+        and isinstance(encoded[2], str)
+    ):
+        return encoded[2]
+    raise ValueError("invalid encoded query index node id")
+
+
+def _node_key(value: Hashable) -> str:
+    return json.dumps(_encode_node_id(value), ensure_ascii=False, separators=(",", ":"))
+
+
 def _tokens(value: str) -> frozenset[str]:
     return frozenset(
         token.lower()
@@ -73,8 +126,8 @@ def graph_fingerprint(graph: nx.Graph) -> str:
     """Hash graph identity fields so an index is never reused after graph drift."""
 
     digest = hashlib.sha256()
-    for node_id, data in sorted(graph.nodes(data=True), key=lambda item: str(item[0])):
-        digest.update(str(node_id).encode())
+    for node_id, data in sorted(graph.nodes(data=True), key=lambda item: _node_key(item[0])):
+        digest.update(_node_key(node_id).encode())
         digest.update(b"\0")
         digest.update(str(data.get("label", "")).encode())
         digest.update(b"\0")
@@ -90,15 +143,21 @@ def graph_fingerprint(graph: nx.Graph) -> str:
         edge_rows = list(graph.edges(data=True))
     for source, target, data in sorted(
         edge_rows,
-        key=lambda item: (str(item[0]), str(item[1]), str(item[2].get("relation", ""))),
+        key=lambda item: (
+            _node_key(item[0]),
+            _node_key(item[1]),
+            str(item[2].get("relation", "")),
+        ),
     ):
-        digest.update(f"{source}\0{target}\0{data.get('relation', '')}\n".encode())
+        digest.update(
+            f"{_node_key(source)}\0{_node_key(target)}\0{data.get('relation', '')}\n".encode()
+        )
     return digest.hexdigest()
 
 
 @dataclass(frozen=True)
 class QueryCandidate:
-    node_id: str
+    node_id: Hashable
     label: str
     score: float
     matched_terms: frozenset[str]
@@ -142,8 +201,9 @@ class QueryIndex:
                 spec = relation_spec(relation)
                 if spec and spec.category in {"runtime", "data", "reference"}:
                     relations.add(spec.name)
-            node_key = str(node_id)
+            node_key = _node_key(node_id)
             nodes[node_key] = {
+                "node_id": _encode_node_id(node_id),
                 "label": str(data.get("label", node_id)),
                 "tokens": sorted(node_tokens),
                 "relations": sorted(relations),
@@ -169,20 +229,22 @@ class QueryIndex:
             coverage = len(matched) / max(1, len(terms))
             score = len(matched) * 10.0 + coverage * 5.0 + min(data["degree"], 20) / 20
             ranked.append(QueryCandidate(
-                node_id=node_id,
+                node_id=_decode_node_id(data["node_id"]),
                 label=data["label"],
                 score=round(score, 4),
                 matched_terms=matched,
                 strong_relations=tuple(data["relations"]),
             ))
-        ranked.sort(key=lambda item: (-item.score, len(item.label), item.node_id))
+        ranked.sort(
+            key=lambda item: (-item.score, len(item.label), _node_key(item.node_id))
+        )
         return TierZeroPacket(tuple(ranked[:max(0, int(limit))]), terms)
 
     def matches_graph(self, graph: nx.Graph) -> bool:
         # The sidecar lives in a repository-controlled directory. Its stored
         # fingerprint alone is not proof that its candidate set came from the
         # graph, so reject injected or omitted node identifiers before reuse.
-        graph_node_ids = {str(node_id) for node_id in graph.nodes}
+        graph_node_ids = {_node_key(node_id) for node_id in graph.nodes}
         return (
             self.fingerprint == graph_fingerprint(graph)
             and set(self._nodes) == graph_node_ids
@@ -190,7 +252,7 @@ class QueryIndex:
 
     def to_dict(self) -> dict:
         return {
-            "version": 1,
+            "version": 2,
             "graph_fingerprint": self.fingerprint,
             "nodes": self._nodes,
             "postings": {token: list(ids) for token, ids in self._postings.items()},
@@ -198,7 +260,7 @@ class QueryIndex:
 
     @classmethod
     def from_dict(cls, payload: dict) -> "QueryIndex":
-        if not isinstance(payload, dict) or payload.get("version") != 1:
+        if not isinstance(payload, dict) or payload.get("version") != 2:
             raise ValueError("unsupported query index version")
         raw_nodes = payload.get("nodes")
         raw_postings = payload.get("postings")
@@ -212,6 +274,15 @@ class QueryIndex:
             tokens = value.get("tokens")
             relations = value.get("relations")
             degree = value.get("degree")
+            encoded_node_id = value.get("node_id")
+            _decode_node_id(encoded_node_id)
+            encoded_key = json.dumps(
+                encoded_node_id,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if str(key) != encoded_key:
+                raise ValueError("query index node identity does not match its key")
             if (
                 not isinstance(value.get("label"), str)
                 or not isinstance(tokens, list)

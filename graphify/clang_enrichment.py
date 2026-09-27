@@ -11,15 +11,14 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
 import shlex
-import subprocess
-import threading
-import time
 from typing import Callable
 
+from graphify.analyzer_runtime import AnalyzerProcessRequest, AnalyzerRuntime
 from graphify.symbol_names import normalize_symbol_name
 
 
@@ -90,28 +89,6 @@ def _line(value: object) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def _read_process_stream(
-    stream: object,
-    *,
-    retain_bytes: int,
-    overflow_bytes: int | None,
-    overflow: threading.Event,
-    destination: list[bytes],
-) -> None:
-    """Drain one compiler pipe while retaining only its admitted prefix."""
-
-    retained = bytearray()
-    total = 0
-    read = getattr(stream, "read1", getattr(stream, "read"))
-    while chunk := read(64 * 1024):
-        total += len(chunk)
-        if len(retained) < retain_bytes:
-            retained.extend(chunk[:retain_bytes - len(retained)])
-        if overflow_bytes is not None and total > overflow_bytes:
-            overflow.set()
-    destination.append(bytes(retained))
-
-
 def _display_byte_limit(value: int) -> str:
     if value % (1024 * 1024) == 0:
         return f"{value // (1024 * 1024)} MiB"
@@ -129,74 +106,156 @@ def run_clang_command(
 ) -> ProcessResult:
     """Run Clang without a shell and stop it when its JSON AST exceeds the cap."""
 
-    process = subprocess.Popen(  # nosec B603 - sanitized argv; shell is never used.
-        command,
+    completed = AnalyzerRuntime(cwd).run(AnalyzerProcessRequest(
+        command=command,
         cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    assert process.stdout is not None and process.stderr is not None
-    overflow = threading.Event()
-    stdout_parts: list[bytes] = []
-    stderr_parts: list[bytes] = []
-    readers = (
-        threading.Thread(
-            target=_read_process_stream,
-            kwargs={
-                "stream": process.stdout,
-                "retain_bytes": max_stdout_bytes,
-                "overflow_bytes": max_stdout_bytes,
-                "overflow": overflow,
-                "destination": stdout_parts,
-            },
-            daemon=True,
-        ),
-        threading.Thread(
-            target=_read_process_stream,
-            kwargs={
-                "stream": process.stderr,
-                "retain_bytes": 32 * 1024,
-                "overflow_bytes": None,
-                "overflow": overflow,
-                "destination": stderr_parts,
-            },
-            daemon=True,
-        ),
-    )
-    for reader in readers:
-        reader.start()
-
-    deadline = time.monotonic() + timeout
-    timed_out = False
-    while process.poll() is None:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            timed_out = True
-            process.kill()
-            break
-        if overflow.wait(min(0.05, remaining)):
-            # Killing immediately bounds both memory and temporary-storage use;
-            # merely checking a completed file would still permit disk exhaustion.
-            process.kill()
-            break
-    returncode = process.wait()
-    for reader in readers:
-        reader.join()
-    process.stdout.close()
-    process.stderr.close()
-
-    if timed_out:
+        timeout_seconds=timeout,
+        max_stdout_bytes=max_stdout_bytes,
+        max_stderr_bytes=32 * 1024,
+    ))
+    if completed.timed_out:
         raise TimeoutError(f"clang exceeded {timeout:.0f}s")
-    if overflow.is_set():
+    if completed.output_limit_exceeded:
         limit = _display_byte_limit(max_stdout_bytes)
-        return ProcessResult(returncode, "", f"clang JSON AST exceeded {limit}")
-    raw_stdout = stdout_parts[0] if stdout_parts else b""
-    raw_stderr = (stderr_parts[0] if stderr_parts else b"").decode("utf-8", "replace")
+        return ProcessResult(
+            completed.returncode,
+            "",
+            f"clang JSON AST exceeded {limit}",
+        )
+    raw_stdout = completed.stdout
+    raw_stderr = completed.stderr.decode("utf-8", "replace")
     try:
         payload: dict | str = json.loads(raw_stdout.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
         payload = ""
-    return ProcessResult(returncode, payload, raw_stderr)
+    return ProcessResult(completed.returncode, payload, raw_stderr)
+
+
+def split_windows_commandline(command: str) -> list[str]:
+    """Split a Windows command line using the CommandLineToArgvW rules.
+
+    ``shlex`` implements POSIX quoting and can silently remove path
+    backslashes. This small parser covers the quoting contract used by JSON
+    compilation databases without invoking a shell or platform API.
+    """
+
+    arguments: list[str] = []
+    index = 0
+    while index < len(command):
+        while index < len(command) and command[index] in " \t":
+            index += 1
+        if index >= len(command):
+            break
+        value: list[str] = []
+        quoted = False
+        while index < len(command):
+            if command[index] in " \t" and not quoted:
+                break
+            backslashes = 0
+            while index < len(command) and command[index] == "\\":
+                backslashes += 1
+                index += 1
+            if index < len(command) and command[index] == '"':
+                value.extend("\\" * (backslashes // 2))
+                if backslashes % 2:
+                    value.append('"')
+                else:
+                    quoted = not quoted
+                index += 1
+                continue
+            value.extend("\\" * backslashes)
+            if index < len(command):
+                value.append(command[index])
+                index += 1
+        arguments.append("".join(value))
+    return arguments
+
+
+def _split_compile_command(command: str) -> list[str]:
+    return split_windows_commandline(command) if os.name == "nt" else shlex.split(command)
+
+
+class _ClangArgumentPolicy:
+    """Reconstruct a parse-only argv from untrusted compilation metadata.
+
+    A strict allowlist is intentionally smaller than Clang's driver surface.
+    Unknown flags are omitted instead of forwarded because new driver options
+    can acquire plugin, helper-process, output, or indirection behavior without
+    Graphify changing. The deterministic AST remains the fallback when a
+    dropped build flag prevents compiler confirmation.
+    """
+
+    _VALUE_OPTIONS = frozenset({
+        "-D", "-U", "-I", "-F", "-isystem", "-iquote", "-idirafter",
+        "-iframework", "-isysroot", "--sysroot", "-resource-dir", "-x",
+        "-std", "-stdlib", "-target", "--target", "-arch", "-objc-isystem",
+    })
+    _JOINED_PREFIXES = (
+        "-D", "-U", "-I", "-F", "-isystem", "-iquote", "-idirafter",
+        "-iframework", "-isysroot", "--sysroot=", "-resource-dir=",
+        "-std=", "--std=", "-stdlib=", "-target=", "--target=",
+    )
+    _EXACT_OPTIONS = frozenset({
+        "-ansi", "-ffreestanding", "-fno-builtin", "-fblocks",
+        "-fcoroutines-ts", "-fdeclspec", "-fexceptions", "-fno-exceptions",
+        "-fms-compatibility", "-fms-extensions", "-fdelayed-template-parsing",
+        "-fno-delayed-template-parsing", "-foperator-names",
+        "-fno-operator-names", "-frtti", "-fno-rtti", "-fshort-wchar",
+        "-fchar8_t", "-fno-char8_t", "-pthread", "-nostdinc", "-nostdinc++",
+        "/permissive-", "/TP", "/TC", "/EHsc", "/EHs", "/EHa",
+    })
+    _MSVC_PREFIXES = ("/D", "/U", "/I", "/std:", "/Zc:")
+
+    @classmethod
+    def filter(cls, arguments: list[str]) -> tuple[str, ...]:
+        logical = [cls._logical(argument) for argument in arguments]
+        safe: list[str] = []
+        index = cls._first_driver_argument(arguments)
+        while index < len(arguments):
+            argument, original = logical[index]
+            if argument in cls._VALUE_OPTIONS:
+                if index + 1 < len(arguments):
+                    value, original_value = logical[index + 1]
+                    # An option-looking value is ambiguous and could otherwise
+                    # re-enter Clang's option parser with a different arity.
+                    if value and not value.startswith(("-", "/clang:")):
+                        safe.extend((original, original_value))
+                index += 2
+                continue
+            if cls._is_joined_safe(argument) or argument in cls._EXACT_OPTIONS:
+                safe.append(original)
+            index += 1
+        return tuple(safe)
+
+    @staticmethod
+    def _logical(argument: str) -> tuple[str, str]:
+        if argument.lower().startswith("/clang:"):
+            return argument[7:], argument
+        return argument, argument
+
+    @classmethod
+    def _is_joined_safe(cls, argument: str) -> bool:
+        if any(
+            argument.startswith(prefix) and argument != prefix
+            for prefix in cls._JOINED_PREFIXES
+        ):
+            return True
+        return any(
+            argument.startswith(prefix) and len(argument) > len(prefix)
+            for prefix in cls._MSVC_PREFIXES
+        )
+
+    @staticmethod
+    def _first_driver_argument(arguments: list[str]) -> int:
+        if not arguments:
+            return 0
+        if Path(arguments[0]).name.lower() not in _COMPILER_LAUNCHERS:
+            return 1
+        for index, candidate in enumerate(arguments[1:], 1):
+            name = candidate.replace("\\", "/").rsplit("/", 1)[-1]
+            if _COMPILER_EXECUTABLE_RE.fullmatch(name):
+                return index + 1
+        return len(arguments)
 
 
 class ClangSemanticEnricher:
@@ -222,6 +281,7 @@ class ClangSemanticEnricher:
         report = {
             "candidate_calls": len(candidates),
             "translation_units": 0,
+            "analyzer_runs": 0,
             "parsed_translation_units": 0,
             "resolved_calls": 0,
             "upgraded_calls": 0,
@@ -258,6 +318,7 @@ class ClangSemanticEnricher:
                 completed = self.runner(
                     invocation.command, invocation.cwd, 30.0,
                 )
+                report["analyzer_runs"] += 1
             except (OSError, TimeoutError) as exc:
                 report["diagnostics"].append(f"{source_file}: {type(exc).__name__}: {exc}")
                 continue
@@ -449,145 +510,20 @@ class ClangSemanticEnricher:
                 command = entry.get("command")
                 if isinstance(command, str):
                     try:
-                        return shlex.split(command), directory
+                        return _split_compile_command(command), directory
                     except ValueError:
                         continue
         return None
 
     @staticmethod
     def _safe_compile_arguments(arguments: list[str], source_path: Path, cwd: Path) -> tuple[str, ...]:
-        """Keep parse-affecting flags while removing outputs and executable plugins.
+        """Return only explicitly admitted parse-affecting driver options."""
 
-        Compilation databases are repository-controlled input. Graphify invokes
-        Clang directly without a shell, but Clang itself can load native plugins;
-        those switches and response files are therefore never forwarded.
-        """
-
-        output_with_value = {
-            "-o", "--output", "-MF", "-MT", "-MQ", "-MJ", "--serialize-diagnostics",
-            "-dependency-file",
-        }
-        parse_option_with_value = {
-            # This is a real Clang parse option, not the joined ``-o<file>``
-            # output form. Preserve the pair atomically so its directory cannot
-            # be orphaned and reinterpreted as a translation-unit input.
-            "-objc-isystem",
-        }
-        drop_one_after = {
-            "-Xclang", "-load", "-plugin",
-            "-fcas-plugin-path", "-fcas-plugin-option", "-mllvm",
-            "-B", "--offload-arch-tool",
-            # VFS overlays can remap arbitrary compiler reads outside the
-            # repository, so they are unsafe even in syntax-only mode.
-            "-ivfsoverlay", "-vfsoverlay",
-            # Serialized ASTs are compiler state, not source-level build
-            # context, and must not influence compiler-confirmed edges.
-            "-include-pch",
-            # A Clang config can contain any driver option, including native
-            # plugin loads. Config search directories are equivalent indirection.
-            "--config", "--config-system-dir", "--config-user-dir",
-        }
-        # Compilation databases describe driver invocations. Never let one
-        # switch Graphify into a lower-level frontend with a wider option set.
-        drop_exact = {
-            "-c", "-S", "-E", "--coverage", "-save-temps", "-cc1", "-cc1as",
-            "-M", "-MM", "-MD", "-MMD",
-        }
-        unsafe_option_prefixes = (
-            "-fplugin",
-            "-fpass-plugin",
-            "--hipspv-pass-plugin",
-            "-load-pass-plugin",
-            # Joined frontend arguments are equivalent to `-Xclang value`; if
-            # forwarded, `-Xclang=-load` can execute a repository-supplied DSO.
-            "-Xclang=",
-            "-fcas-plugin-path=",
-            "-fcas-plugin-option=",
-            "-load=",
-            "-plugin=",
-            # LLVM backend options can reach its native plugin loader without
-            # passing through Clang's frontend plugin switches.
-            "-mllvm=",
-            "-B",
-            "--offload-arch-tool=",
-            "--config=",
-            "--config-system-dir=",
-            "--config-user-dir=",
-            "-include-pch=",
-            "-fmodule-file=",
-            "-fprebuilt-module-path=",
-            # Joined spellings carry the same side effects as their separated
-            # forms above. Include the complete option name where possible;
-            # lowercase `-o...` is Clang's attached output-path form.
-            "-o",
-            "--output=",
-            "-MF",
-            "-MT",
-            "-MQ",
-            "-MJ",
-            "--serialize-diagnostics=",
-            "-dependency-file=",
-            "-ivfsoverlay",
-            "-vfsoverlay",
-        )
-        # clang-cl's /clang:<arg> escape hatch forwards its payload to the
-        # Clang driver. Inspect that payload with the same policy as ordinary
-        # driver arguments while retaining the wrapper for safe parse flags.
-        logical_arguments = [
-            (argument[7:], argument)
-            if argument.lower().startswith("/clang:")
-            else (argument, argument)
-            for argument in arguments
-        ]
-        safe: list[str] = []
-        index = 1 if arguments else 0  # argv[0] is the compiler from the build.
-        if arguments and Path(arguments[0]).name.lower() in _COMPILER_LAUNCHERS:
-            # Launchers may place their own options before the wrapped compiler.
-            # Find that executable explicitly; if it is not recognizable, drop
-            # all launcher-controlled argv and rely on the syntax-only fallback
-            # flags appended by _invocation instead of guessing at boundaries.
-            index = len(arguments)
-            for candidate_index, candidate in enumerate(arguments[1:], 1):
-                executable_name = candidate.replace("\\", "/").rsplit("/", 1)[-1]
-                if _COMPILER_EXECUTABLE_RE.fullmatch(executable_name):
-                    index = candidate_index + 1
-                    break
-        while index < len(arguments):
-            argument, original_argument = logical_arguments[index]
-            # Every `-X...` spelling forwards the next value into another
-            # compiler component. Treat the family as one trust boundary
-            # instead of maintaining an incomplete list of plugin-capable
-            # frontend, preprocessor, analyzer, and offload variants.
-            if argument.startswith("-X"):
-                index += 1 if "=" in argument else 2
-                continue
-            if argument in parse_option_with_value:
-                safe.append(original_argument)
-                if index + 1 < len(arguments):
-                    safe.append(logical_arguments[index + 1][1])
-                index += 2
-                continue
-            if argument in output_with_value or argument in drop_one_after:
-                index += 2
-                continue
-            if argument in drop_exact or argument.startswith((
-                *unsafe_option_prefixes,
-                "-fprofile", "-ftime-trace", "-save-temps=", "@",
-            )):
-                index += 1
-                continue
-            candidate = Path(argument)
-            if not argument.startswith("-"):
-                candidate = candidate if candidate.is_absolute() else cwd / candidate
-                try:
-                    if candidate.resolve() == source_path.resolve():
-                        index += 1
-                        continue
-                except OSError:
-                    pass
-            safe.append(original_argument)
-            index += 1
-        return tuple(safe)
+        # ``source_path`` and ``cwd`` remain in the signature for compatibility
+        # with injected tests and callers; source inputs are always reconstructed
+        # by ``_invocation`` rather than trusted from the compile database.
+        del source_path, cwd
+        return _ClangArgumentPolicy.filter(arguments)
 
     @staticmethod
     def _candidates(nodes: list[dict]) -> list[_Candidate]:

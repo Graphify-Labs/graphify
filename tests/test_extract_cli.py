@@ -91,6 +91,40 @@ def test_extract_merges_local_semantic_adapter_artifacts(monkeypatch, tmp_path):
     assert "semanticOnly" in {node.get("label") for node in graph["nodes"]}
 
 
+def test_extract_rejects_unknown_semantic_analyzer(monkeypatch, tmp_path, capsys):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--semantic-analyzers", "attacker"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 2
+    assert "unknown semantic analyzer" in capsys.readouterr().err
+
+
+def test_extract_rejects_semantic_analyzer_flag_without_value(monkeypatch, tmp_path, capsys):
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--semantic-analyzers"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+
+    assert exc_info.value.code == 2
+    assert "requires a value" in capsys.readouterr().err
+
+
 def _make_corpus(tmp_path):
     """Minimal corpus: one Go code file + one Markdown doc.
 
