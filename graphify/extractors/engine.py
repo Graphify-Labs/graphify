@@ -235,6 +235,17 @@ def _csharp_collect_type_refs(
             if c.is_named:
                 _csharp_collect_type_refs(c, source, generic, out, skip)
         return
+    if t == "tuple_type":
+        # A named tuple element carries both a `type` and a `name` field
+        # (`(int mode, string label)`). Only the `type` field feeds
+        # type-reference collection; the `name` is an identifier, not a type
+        # reference, and minting it produces junk "type" nodes (#3796).
+        for el in node.children:
+            if el.type == "tuple_element":
+                type_child = el.child_by_field_name("type")
+                if type_child is not None:
+                    _csharp_collect_type_refs(type_child, source, generic, out, skip)
+        return
     if node.is_named:
         for c in node.children:
             if c.is_named:
