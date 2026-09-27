@@ -1142,6 +1142,35 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_semantic_origin_stamp_fix_line(line: str) -> bool:
+    """Whether a line is part of the Part-C `_origin` stamping fix (#2843).
+
+    build._is_ast_tier reads ``_origin`` when present and otherwise guesses the
+    tier from the shape of ``source_location`` (``L<line>`` means AST). Part C
+    never stamped the semantic side, so a subagent writing ``L12`` for a doc
+    section made that node read as AST and the next ``graphify update`` deleted
+    it with the re-extracted code file it seemed to belong to. Part C now
+    ``setdefault``s ``_origin: 'semantic'`` on every semantic node and edge
+    before the merge. These are the comment block and the four code lines.
+    """
+    stripped = line.strip()
+    return (
+        stripped in (
+            "for n in sem['nodes']:",
+            "n.setdefault('_origin', 'semantic')",
+            "for e in sem['edges']:",
+            "e.setdefault('_origin', 'semantic')",
+        )
+        or "Stamp tier provenance on the semantic side" in line
+        or "_origin when present and otherwise guesses from the SHAPE of" in line
+        or "source_location ('L<line>' means AST). A subagent that writes 'L12' for a" in line
+        or "doc section therefore made that node read as AST, and the next" in line
+        or "`graphify update` deleted it along with the re-extracted code file it" in line
+        or "seemed to belong to (#2843). extract() stamps its own items 'ast'; the" in line
+        or "semantic side must say so explicitly." in line
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1163,6 +1192,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_uv_from_interpreter_fix_line,
     _is_semantic_cache_scope_fix_line,
     _is_community_label_export_fix_line,
+    _is_semantic_origin_stamp_fix_line,
 )
 
 
