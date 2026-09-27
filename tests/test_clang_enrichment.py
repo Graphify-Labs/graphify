@@ -388,6 +388,24 @@ def test_run_clang_command_stops_when_ast_output_exceeds_limit(tmp_path: Path):
     assert "exceeded 1 KiB" in result.stderr
 
 
+def test_run_clang_command_preserves_ast_when_only_stderr_exceeds_limit(tmp_path: Path):
+    """Oversized diagnostics must not be mislabeled as JSON AST overflow."""
+    executable = shutil.which("python") or shutil.which("python3")
+    assert executable is not None
+    script = (
+        "import os\n"
+        "for _ in range(128): os.write(2,b'e'*1024)\n"
+        "os.write(1,b'{\"kind\":\"TranslationUnitDecl\"}')"
+    )
+
+    result = run_clang_command((executable, "-c", script), tmp_path, 5.0)
+
+    assert result.returncode == 0
+    assert result.stdout == {"kind": "TranslationUnitDecl"}
+    assert "stderr exceeded 32 KiB" in result.stderr
+    assert "JSON AST exceeded" not in result.stderr
+
+
 def test_clang_compile_database_drops_llvm_backend_escape_hatches(tmp_path: Path):
     """Repository flags must not reach LLVM's native plugin option parser."""
     source = tmp_path / "src" / "main.C"

@@ -115,7 +115,9 @@ def run_clang_command(
     ))
     if completed.timed_out:
         raise TimeoutError(f"clang exceeded {timeout:.0f}s")
-    if completed.output_limit_exceeded:
+    if completed.stdout_limit_exceeded or (
+        completed.output_limit_exceeded and not completed.stderr_limit_exceeded
+    ):
         limit = _display_byte_limit(max_stdout_bytes)
         return ProcessResult(
             completed.returncode,
@@ -124,11 +126,22 @@ def run_clang_command(
         )
     raw_stdout = completed.stdout
     raw_stderr = completed.stderr.decode("utf-8", "replace")
+    if completed.stderr_limit_exceeded:
+        limit = _display_byte_limit(32 * 1024)
+        raw_stderr = f"clang stderr exceeded {limit}; output truncated\n{raw_stderr}"
+    if completed.cleanup_error:
+        raw_stderr = (
+            f"analyzer process-tree cleanup failed: {completed.cleanup_error}\n{raw_stderr}"
+        )
     try:
         payload: dict | str = json.loads(raw_stdout.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
         payload = ""
-    return ProcessResult(completed.returncode, payload, raw_stderr)
+    return ProcessResult(
+        completed.returncode if not completed.cleanup_error else (completed.returncode or 1),
+        payload,
+        raw_stderr,
+    )
 
 
 def split_windows_commandline(command: str) -> list[str]:
