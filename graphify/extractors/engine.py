@@ -6094,6 +6094,7 @@ def _extract_generic(
             callee_name: str | None = None
             is_member_call: bool = False
             is_this_field_call: bool = False
+            is_scoped_call: bool = False
             swift_receiver: str | None = None
             member_receiver: str | None = None
             kotlin_qualified_prefix: str | None = None
@@ -6359,6 +6360,7 @@ def _extract_generic(
                     # qualified-call branch here, so a dedicated PHP resolver can
                     # bind it to the actual method on that class.
                     is_member_call = True
+                    is_scoped_call = True
                     name_node = node.child_by_field_name("name")
                     if name_node:
                         callee_name = _read_text(name_node, source)
@@ -6545,7 +6547,7 @@ def _extract_generic(
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
-                if _python_defer or _java_defer or _builtin_member_call or (
+                if _python_defer or _java_defer or _builtin_member_call or is_scoped_call or (
                     is_member_call
                     and member_receiver
                     and (
