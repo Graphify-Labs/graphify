@@ -79,6 +79,55 @@ def test_dynamic_scope_produces_no_phantom_edge(tmp_path):
     assert not any(s == ".run()" for s, _t in calls)
 
 
+def test_lowercase_class_name_still_resolves(tmp_path):
+    """PHP class names are conventionally StudlyCase but the language does not
+    enforce it - a lowercase-first class is still a class, not a variable, and
+    must resolve the same way (review finding on PR #3874)."""
+    calls, _ = _extract(tmp_path, {
+        "helper.php": (
+            "<?php\nnamespace App;\nclass helper {\n"
+            "    public static function sanitize($x) { return $x; }\n}\n"),
+        "Caller.php": (
+            "<?php\nnamespace App;\nclass Caller {\n"
+            "    public function run($x) { return helper::sanitize($x); }\n}\n"),
+    })
+    edge = calls.get((".run()", ".sanitize()"))
+    assert edge is not None
+    assert edge["confidence"] == "EXTRACTED"
+
+
+def test_fully_qualified_scope_resolves_by_last_segment(tmp_path):
+    """A fully-qualified scope (`\\App\\Helper::method()` or
+    `App\\Helper::method()`) must match the class's own unqualified label,
+    not be left parked as unresolved (review finding on PR #3874)."""
+    calls, _ = _extract(tmp_path, {
+        "Helper.php": (
+            "<?php\nnamespace App;\nclass Helper {\n"
+            "    public static function sanitize($x) { return $x; }\n}\n"),
+        "Caller.php": (
+            "<?php\nnamespace Other;\nclass Caller {\n"
+            "    public function run($x) { return \\App\\Helper::sanitize($x); }\n}\n"),
+    })
+    edge = calls.get((".run()", ".sanitize()"))
+    assert edge is not None
+    assert edge["confidence"] == "EXTRACTED"
+
+
+def test_method_name_case_insensitivity(tmp_path):
+    """PHP method names are case-insensitive at the call site - a call spelled
+    with different case than the declaration must still resolve (review
+    finding on PR #3874)."""
+    calls, _ = _extract(tmp_path, {
+        "Helper.php": (
+            "<?php\nnamespace App;\nclass Helper {\n"
+            "    public static function Sanitize($x) { return $x; }\n}\n"),
+        "Caller.php": (
+            "<?php\nnamespace App;\nclass Caller {\n"
+            "    public function run($x) { return Helper::sanitize($x); }\n}\n"),
+    })
+    assert any(s == ".run()" and t.lower() == ".sanitize()" for s, t in calls)
+
+
 def test_instance_call_is_still_unresolved_no_regression(tmp_path):
     """`$obj->method()` was never resolved before this fix (no receiver-typed
     PHP resolver existed) and must remain so - this fix only targets scoped

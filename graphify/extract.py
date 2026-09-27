@@ -4570,7 +4570,7 @@ def _resolve_php_member_calls(
     all_nodes: list[dict],
     all_edges: list[dict],
 ) -> None:
-    """Resolve PHP ``ClassName::method()`` / ``self::``/``static::``/``parent::``
+    r"""Resolve PHP ``ClassName::method()`` / ``self::``/``static::``/``parent::``
     static calls against the receiver's class (#3872).
 
     The shared engine's PHP branch used to treat ``scoped_call_expression`` as a
@@ -4586,14 +4586,20 @@ def _resolve_php_member_calls(
 
     ``self::``/``static::`` resolve to the enclosing class (exact — the keyword
     names it as unambiguously as a literal class name would). ``parent::``
-    resolves through a single `inherits` edge from the enclosing class. Any
-    other (lowercase, i.e. array/variable) scope is left unresolved — PHP has no
-    declared-type table for `$var::method()` dynamic scopes to resolve against,
-    and guessing would risk the same over-connection the #543/#1219 guard
-    exists to prevent.
+    resolves through a single `inherits` edge from the enclosing class. A
+    ``$var::method()`` dynamic scope is left unresolved — PHP has no
+    declared-type table for it to resolve against, and guessing would risk the
+    same over-connection the #543/#1219 guard exists to prevent. Every other
+    scope is treated as a class reference regardless of case (PHP class and
+    method names are case-insensitive) or namespace qualification (a
+    fully-qualified ``\App\Models\User::method()`` or ``App\Models\User::``
+    matches the class's own unqualified label by its last segment).
     """
     def key(label: str) -> str:
-        return str(label).strip().removeprefix(".").removesuffix("()")
+        return str(label).strip().removeprefix(".").removesuffix("()").lower()
+
+    def class_key(name: str) -> str:
+        return str(name).strip().lstrip("\\").rsplit("\\", 1)[-1].lower()
 
     contained = {edge.get("target") for edge in all_edges
                  if edge.get("relation") == "contains"}
@@ -4606,7 +4612,7 @@ def _resolve_php_member_calls(
             and node.get("id") in contained
             and _is_type_like_definition(node)
         ):
-            type_def_nids.setdefault(key(node.get("label", "")), []).append(node["id"])
+            type_def_nids.setdefault(class_key(node.get("label", "")), []).append(node["id"])
 
     method_index: dict[tuple[str, str], set[str]] = {}
     enclosing_type: dict[str, str] = {}
@@ -4648,8 +4654,8 @@ def _resolve_php_member_calls(
                 if len(bases) != 1:
                     continue
                 type_nid = bases[0]
-            elif receiver[:1].isupper():
-                type_defs = type_def_nids.get(key(receiver), [])
+            elif not receiver.startswith("$"):
+                type_defs = type_def_nids.get(class_key(receiver), [])
                 if not type_defs:
                     _park_unresolved_member_call(
                         node_by_id.get(caller), callee, receiver, "php", raw_call,
