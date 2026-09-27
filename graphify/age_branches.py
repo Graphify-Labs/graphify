@@ -281,9 +281,13 @@ def ensure_base_snapshot(
 
     match = next((r for r in rows if r[1] == base_commit_sha), None)
     if match is not None:
-        payload, _commit_sha, snapshot_id = _snap._reconstruct_payload_up_to(rows, match[0])
+        payload, _commit_sha, _snapshot_id = _snap._reconstruct_payload_up_to(rows, match[0])
         if payload is not None:
-            return snapshot_id, _snap.payload_to_graph(payload)
+            # Reconstruction succeeded through `match`, so the snapshot_id
+            # it returns is exactly match[0] (typed Optional only because
+            # _reconstruct_payload_up_to also signals target-not-found,
+            # which can't happen for a row already in `rows`).
+            return match[0], _snap.payload_to_graph(payload)
 
     G = _extract_graph_at_commit(cwd, base_commit_sha)
     result = _snap.record_historical_checkpoint(
@@ -434,7 +438,11 @@ def _append_branch_push(
                 "WHERE repository_id = %s AND branch = %s AND generation = %s;",
                 (repository_id, branch, generation),
             )
-            (max_seq,) = cur.fetchone()
+            max_seq_row = cur.fetchone()
+            # SELECT COALESCE(MAX(seq), 0) is an aggregate without GROUP BY
+            # -- it always returns exactly one row.
+            assert max_seq_row is not None
+            (max_seq,) = max_seq_row
             _insert_diff_rows(cur, repository_id, branch, generation, from_sha, to_sha, rows, start_seq=max_seq + 1)
             cur.execute(
                 "UPDATE graphify_branches SET head_commit_sha = %s, last_push_hash = %s, "
@@ -450,6 +458,8 @@ def _append_branch_push(
 
         if age_graph_name is not None:
             from graphify.exporters.graphdb import push_to_age
+            # Callers only pass a graph name alongside the pushed graph.
+            assert G is not None
             push_to_age(G, conninfo=conninfo, graph_name=age_graph_name, diff=diff, conn=conn)
 
         conn.commit()

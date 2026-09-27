@@ -15,7 +15,16 @@ import re
 import subprocess as _sp
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    # typing.LiteralString is 3.11+, past this project's 3.10 floor; only
+    # the type checker needs the name (see _MIGRATIONS) -- psycopg's
+    # Cursor.execute() types a plain-str query as LiteralString so
+    # dynamically built SQL can't be passed without an explicit
+    # psycopg.sql.SQL wrap.
+    from typing_extensions import LiteralString
 
 # Fixed namespace for deriving a stable repository_id from a normalized
 # remote URL via uuid5 (docs/AGE_PLAN.md: "a stable repository_id (UUID)
@@ -209,7 +218,7 @@ def graphify_package_version() -> str:
 # dependency on an external migration framework.
 # ---------------------------------------------------------------------------
 
-_MIGRATIONS: list[tuple[int, str]] = [
+_MIGRATIONS: list[tuple[int, LiteralString]] = [
     (1, """
         CREATE TABLE IF NOT EXISTS graphify_repos (
             repository_id UUID PRIMARY KEY,
@@ -383,6 +392,9 @@ def register_repository(
                 (repository_id, normalized, repo_tag, owner_id, default_branch, age_graph_name),
             )
             row = cur.fetchone()
+            # INSERT ... RETURNING always yields the upserted row, and a
+            # cursor for a RETURNING query always carries a description.
+            assert row is not None and cur.description is not None
             columns = [d.name for d in cur.description]
         conn.commit()
     except Exception:
@@ -427,6 +439,8 @@ def get_repository(conninfo: str, remote_url: str) -> dict | None:
             row = cur.fetchone()
             if row is None:
                 return None
+            # A cursor that returned a row always carries a description.
+            assert cur.description is not None
             columns = [d.name for d in cur.description]
     finally:
         conn.close()
