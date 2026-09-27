@@ -114,7 +114,7 @@ def test_merge_chunks_accepts_unicode_id(tmp_path, monkeypatch):
                "edges": [], "hyperedges": []})
     out = tmp_path / "merged.json"
     _run_merge(monkeypatch, ["graphify", "merge-chunks", str(c), "--out", str(out)])
-    merged = json.loads(out.read_text())
+    merged = json.loads(out.read_text(encoding="utf-8"))
     assert {n["id"] for n in merged["nodes"]} == {"mod_处理数据"}
 
 
@@ -148,3 +148,71 @@ def test_merge_chunks_merges_valid_chunks(tmp_path, monkeypatch):
     assert {n["id"] for n in merged["nodes"]} == {"a", "b"}
     assert merged["input_tokens"] == 17
     assert merged["output_tokens"] == 8
+
+
+def test_merge_chunks_partial_observability(tmp_path, monkeypatch):
+    """#3658: Partial observability sums observed numeric values and ignores None."""
+    c0 = tmp_path / ".graphify_chunk_0.json"
+    _write(c0, {"nodes": [], "edges": [], "hyperedges": [],
+               "input_tokens": 100, "output_tokens": 200})
+    c1 = tmp_path / ".graphify_chunk_1.json"
+    _write(c1, {"nodes": [], "edges": [], "hyperedges": [],
+               "input_tokens": None, "output_tokens": 300})
+    out = tmp_path / "merged.json"
+
+    _run_merge(monkeypatch, ["graphify", "merge-chunks", str(c0), str(c1), "--out", str(out)])
+
+    merged = json.loads(out.read_text())
+    assert merged["input_tokens"] == 100
+    assert merged["output_tokens"] == 500
+
+
+def test_merge_chunks_entirely_unobserved_input(tmp_path, monkeypatch):
+    """#3658: If a token dimension is never observed across chunks, merged value is None."""
+    c0 = tmp_path / ".graphify_chunk_0.json"
+    _write(c0, {"nodes": [], "edges": [], "hyperedges": [],
+               "input_tokens": None, "output_tokens": 200})
+    c1 = tmp_path / ".graphify_chunk_1.json"
+    _write(c1, {"nodes": [], "edges": [], "hyperedges": [],
+               "input_tokens": None, "output_tokens": 300})
+    out = tmp_path / "merged.json"
+
+    _run_merge(monkeypatch, ["graphify", "merge-chunks", str(c0), str(c1), "--out", str(out)])
+
+    merged = json.loads(out.read_text())
+    assert merged["input_tokens"] is None
+    assert merged["output_tokens"] == 500
+
+
+def test_merge_chunks_explicit_zeros(tmp_path, monkeypatch):
+    """#3658: Explicit 0s are observed measurements and merge to 0, not None."""
+    c0 = tmp_path / ".graphify_chunk_0.json"
+    _write(c0, {"nodes": [], "edges": [], "hyperedges": [],
+               "input_tokens": 0, "output_tokens": 0})
+    c1 = tmp_path / ".graphify_chunk_1.json"
+    _write(c1, {"nodes": [], "edges": [], "hyperedges": [],
+               "input_tokens": 0, "output_tokens": 0})
+    out = tmp_path / "merged.json"
+
+    _run_merge(monkeypatch, ["graphify", "merge-chunks", str(c0), str(c1), "--out", str(out)])
+
+    merged = json.loads(out.read_text())
+    assert merged["input_tokens"] == 0
+    assert merged["output_tokens"] == 0
+
+
+def test_merge_chunks_booleans_not_treated_as_tokens(tmp_path, monkeypatch):
+    """#3658: Booleans (subclass of int) are rejected and not treated as token counts."""
+    c0 = tmp_path / ".graphify_chunk_0.json"
+    _write(c0, {"nodes": [], "edges": [], "hyperedges": [],
+               "input_tokens": True, "output_tokens": False})
+    c1 = tmp_path / ".graphify_chunk_1.json"
+    _write(c1, {"nodes": [], "edges": [], "hyperedges": [],
+               "input_tokens": True, "output_tokens": 150})
+    out = tmp_path / "merged.json"
+
+    _run_merge(monkeypatch, ["graphify", "merge-chunks", str(c0), str(c1), "--out", str(out)])
+
+    merged = json.loads(out.read_text())
+    assert merged["input_tokens"] is None
+    assert merged["output_tokens"] == 150

@@ -179,6 +179,11 @@ def generate(
         if _real_count(nodes) >= min_community_size
     )
 
+    in_tok = token_cost.get("input") if isinstance(token_cost, dict) else None
+    out_tok = token_cost.get("output") if isinstance(token_cost, dict) else None
+    in_str = f"{int(in_tok):,}" if isinstance(in_tok, (int, float)) and not isinstance(in_tok, bool) else "unknown"
+    out_str = f"{int(out_tok):,}" if isinstance(out_tok, (int, float)) and not isinstance(out_tok, bool) else "unknown"
+
     lines += [
         "",
         "## Summary",
@@ -186,7 +191,7 @@ def generate(
         + (f" ({shown_count} shown, {thin_count_summary} thin omitted)" if thin_count_summary else ""),
         f"- Extraction: {ext_pct}% EXTRACTED · {inf_pct}% INFERRED · {amb_pct}% AMBIGUOUS"
         + (f" · INFERRED: {len(inf_edges)} edges (avg confidence: {inf_avg})" if inf_avg is not None else ""),
-        f"- Token cost: {token_cost.get('input', 0):,} input · {token_cost.get('output', 0):,} output",
+        f"- Token cost: {in_str} input · {out_str} output",
     ]
 
     if built_at_commit:

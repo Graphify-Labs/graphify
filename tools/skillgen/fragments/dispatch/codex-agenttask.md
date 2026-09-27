@@ -15,7 +15,7 @@ After all agents are dispatched, collect results sequentially in memory:
 result = wait_agent(handle); close_agent(handle)   # repeat per handle
 ```
 
-Parse each result as JSON. Accumulate nodes/edges/hyperedges across all results and write to `graphify-out/.graphify_semantic_new.json`. Codex collects in memory, so there are no per-chunk files on disk; the disk-based success checks in Step B3 do not apply — a chunk that returns invalid JSON is the failure signal instead.
+Parse each result as JSON. Accumulate nodes/edges/hyperedges across all results and write to `graphify-out/.graphify_semantic_new.json`. Normalize and preserve token usage across chunks: check `input_tokens`/`prompt_tokens`/`inputTokens` and `output_tokens`/`completion_tokens`/`outputTokens` on each result or handle usage object. If observed, sum numeric counts; if a dimension is unobserved across all chunks, preserve it as `null` in `.graphify_semantic_new.json` — never write `0` for unobserved tokens. Codex collects in memory, so there are no per-chunk files on disk; the disk-based success checks in Step B3 do not apply — a chunk that returns invalid JSON is the failure signal instead.
 
 Subagent prompt template:
 
