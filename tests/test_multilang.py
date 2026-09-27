@@ -457,6 +457,137 @@ def test_rust_no_cross_crate_spurious_edges():
     )
 
 
+def test_rust_forward_type_reference_resolves_to_local_declaration(tmp_path):
+    """#3782: a struct, enum or trait used above its declaration in the same file
+    must resolve to that declaration, not to a sourceless stub."""
+    p = tmp_path / "engine.rs"
+    p.write_text(
+        "fn before(s: &Sink) -> Mode { Mode::A }\n"
+        "\n"
+        "struct Sink {\n"
+        "    n: u32,\n"
+        "}\n"
+        "\n"
+        "impl Handler for Sink {}\n"
+        "\n"
+        "enum Mode {\n"
+        "    A,\n"
+        "}\n"
+        "\n"
+        "trait Handler {}\n",
+        encoding="utf-8",
+    )
+    r = extract_rust(p)
+    assert [n["label"] for n in r["nodes"] if not n["source_file"]] == []
+    assert ("before", "Sink") in _edge_labels(r, "references", "parameter_type")
+    assert ("before", "Mode") in _edge_labels(r, "references", "return_type")
+    assert ("Sink", "Handler") in _edge_labels(r, "implements")
+
+
+def test_rust_forward_reference_prescan_skips_items_that_are_not_nodes(tmp_path):
+    """#3782: only struct/enum/trait declarations become nodes, so only they may
+    resolve a forward reference. A `type` alias, a `union`, a struct declared in a
+    function body and a name declared nowhere in the file produce no node here;
+    references to them must keep their sourceless stub instead of being dropped."""
+    p = tmp_path / "shapes.rs"
+    p.write_text(
+        "fn user(a: &Alias, u: &Bits, l: &Local, e: &Elsewhere) {}\n"
+        "\n"
+        "type Alias = u32;\n"
+        "\n"
+        "union Bits { a: u32, b: f32 }\n"
+        "\n"
+        "fn host() {\n"
+        "    struct Local;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    r = extract_rust(p)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    targets = {
+        by_id[e["target"]]["label"]: by_id[e["target"]]
+        for e in r["edges"]
+        if e["relation"] == "references" and e["target"] in by_id
+    }
+    for name in ("Alias", "Bits", "Local", "Elsewhere"):
+        assert name in targets, f"reference to {name} was dropped"
+        assert targets[name]["source_file"] == "", name
+
+
+def test_rust_forward_reference_resolves_into_an_inline_module(tmp_path):
+    """#3782: the pre-scan reaches the same items walk() does, so a type declared
+    in an inline `mod` below its use resolves like a use placed after it."""
+    p = tmp_path / "nested.rs"
+    p.write_text(
+        "use inner::Sink;\n"
+        "\n"
+        "fn before(s: &Sink) {}\n"
+        "\n"
+        "mod inner {\n"
+        "    pub struct Sink;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    r = extract_rust(p)
+    sink = next(n for n in r["nodes"] if n["label"] == "Sink")
+    before = next(n for n in r["nodes"] if n["label"] == "before()")
+    assert sink["source_file"] == str(p)
+    assert any(
+        e["relation"] == "references" and e["source"] == before["id"] and e["target"] == sink["id"]
+        for e in r["edges"]
+    )
+
+
+def test_rust_forward_reference_skips_items_in_const_and_static_initializers(tmp_path):
+    """#3782: walk() never enters a const or static initializer, so a struct
+    declared there is no node; a reference to it keeps its sourceless stub."""
+    p = tmp_path / "initializers.rs"
+    p.write_text(
+        "fn before(a: &Hidden, b: &Guarded) {}\n"
+        "\n"
+        "const _: () = {\n"
+        "    struct Hidden;\n"
+        "};\n"
+        "\n"
+        "static GUARD: () = {\n"
+        "    struct Guarded;\n"
+        "};\n",
+        encoding="utf-8",
+    )
+    r = extract_rust(p)
+    by_id = {n["id"]: n for n in r["nodes"]}
+    targets = {
+        by_id[e["target"]]["label"]: by_id[e["target"]]["source_file"]
+        for e in r["edges"]
+        if e["relation"] == "references" and e["target"] in by_id
+    }
+    assert targets == {"Hidden": "", "Guarded": ""}
+
+
+def test_rust_forward_reference_to_ambiguous_type_name_stays_local(tmp_path):
+    """#3782: when two files declare the same struct, the corpus-level rewire
+    declines the ambiguous stub, so the reference above the declaration must
+    already point at the local struct. Checked cold, then from the warm cache."""
+    (tmp_path / "engine_a.rs").write_text(
+        "fn before(s: &Sink) {}\n\nstruct Sink {\n    n: u32,\n}\n\nfn after(s: &Sink) {}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "engine_b.rs").write_text(
+        "struct Sink {\n    n: u32,\n}\n", encoding="utf-8",
+    )
+    files = sorted(tmp_path.glob("*.rs"))
+    for _ in range(2):
+        r = extract(files, cache_root=tmp_path, parallel=False)
+        sinks = [n for n in r["nodes"] if n["label"] == "Sink"]
+        assert all(n["source_file"] for n in sinks), "sourceless Sink stub left behind"
+        local = next(n["id"] for n in sinks if Path(n["source_file"]).name == "engine_a.rs")
+        before = next(n["id"] for n in r["nodes"] if n["label"] == "before()")
+        after = next(n["id"] for n in r["nodes"] if n["label"] == "after()")
+        refs = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "references"}
+        assert (before, local) in refs
+        assert (after, local) in refs
+
+
 # ── extract() dispatch ────────────────────────────────────────────────────────
 
 def test_extract_dispatches_all_languages():

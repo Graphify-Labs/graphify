@@ -162,9 +162,34 @@ def extract_rust(path: Path) -> dict:
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
+    # Pre-scan the struct/enum/trait names declared in this file so a type used
+    # above its declaration resolves exactly as a use below it already does,
+    # rather than to a sourceless stub that the corpus-level rewire only folds
+    # back when the name is unique across the corpus (#3782). Only these three
+    # items are pre-registered: walk() never makes a node of a `type` alias or a
+    # `union`, so registering one would leave its references pointing at no node.
+    # The scan never descends further than walk() does, so every id registered
+    # here ends up as a node.
+    local_type_ids: set[str] = set()
+
+    def _scan_type_items(node) -> None:
+        t = node.type
+        if t in ("struct_item", "enum_item", "trait_item"):
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                local_type_ids.add(_make_id(stem, _read_text(name_node, source)))
+            return
+        if t in ("function_item", "function_signature_item", "static_item",
+                 "const_item", "impl_item", "use_declaration"):
+            return
+        for child in node.children:
+            _scan_type_items(child)
+
+    _scan_type_items(root)
+
     def ensure_named_node(name: str, line: int) -> str:
         nid = _make_id(stem, name)
-        if nid in seen_ids:
+        if nid in seen_ids or nid in local_type_ids:
             return nid
         nid = _make_id(name)
         if nid not in seen_ids:
