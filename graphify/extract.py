@@ -3803,9 +3803,7 @@ def _resolve_swift_member_calls(
             # language and Swift raw_calls carry no `lang` tag, so the parked
             # entry's language comes from the declaring file's suffix.
             if str(rc.get("source_file", "")).lower().endswith(".swift"):
-                _park_unresolved_member_call(
-                    node_by_id.get(caller), callee, type_name, "swift", rc,
-                )
+                _record_unresolved_call(node_by_id.get(caller), callee=callee, receiver_type=type_name, lang="swift", reason="external_unresolved", raw_call=rc)
             continue
         if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
             continue
@@ -4244,9 +4242,7 @@ def _resolve_cpp_member_calls(
                 # also the shape of a namespace-qualified free function, so the
                 # merge side's guards do the deciding: it acts only when exactly
                 # one other repo declares a `Foo` owning exactly one `bar`.
-                _park_unresolved_member_call(
-                    node_by_id.get(caller), callee, receiver, "cpp", rc,
-                )
+                _record_unresolved_call(node_by_id.get(caller), callee=callee, receiver_type=receiver, lang="cpp", reason="external_unresolved", raw_call=rc)
                 continue
             if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
                 continue
@@ -4259,9 +4255,7 @@ def _resolve_cpp_member_calls(
                 continue
             type_defs = type_def_nids.get(_key(type_name), [])
             if not type_defs:
-                _park_unresolved_member_call(
-                    node_by_id.get(caller), callee, type_name, "cpp", rc,
-                )
+                _record_unresolved_call(node_by_id.get(caller), callee=callee, receiver_type=type_name, lang="cpp", reason="external_unresolved", raw_call=rc)
                 continue
             if len(type_defs) != 1:  # ambiguous -> bail (god-node guard)
                 continue
@@ -4439,9 +4433,7 @@ def _resolve_csharp_member_calls(
         so re-check the bare-name index instead of trusting the ``None``.
         """
         if type_name and not type_def_nids.get(_key(type_name)):
-            _park_unresolved_member_call(
-                caller_node, rc.get("callee"), type_name, "csharp", rc,
-            )
+            _record_unresolved_call(caller_node, callee=rc.get("callee"), receiver_type=type_name, lang="csharp", reason="external_unresolved", raw_call=rc)
 
     all_raw_calls: list[dict] = []
     for result in per_file:
@@ -4664,9 +4656,7 @@ def _resolve_java_member_calls(
                     # merge (#3152). An ambiguous name (>1 declaration) is a
                     # local ambiguity that merging only widens, so it stays
                     # dropped, exactly as the guard below already decided.
-                    _park_unresolved_member_call(
-                        node_by_id.get(caller), callee, type_name, "java", raw_call,
-                    )
+                    _record_unresolved_call(node_by_id.get(caller), callee=callee, receiver_type=type_name, lang="java", reason="external_unresolved", raw_call=raw_call)
                     continue
                 if len(type_defs) != 1:
                     continue
