@@ -72,6 +72,32 @@ def test_runtime_bounds_stdout_while_process_is_running(tmp_path: Path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group assertion")
+def test_runtime_does_not_wait_for_inherited_pipes_after_parent_exits(
+    tmp_path: Path,
+):
+    """A short-lived analyzer must not let a surviving child defeat the deadline."""
+    script = (
+        "import subprocess,sys;"
+        "subprocess.Popen([sys.executable,'-c','import time;time.sleep(1.5)']);"
+        "sys.stdout.write('ready');sys.stdout.flush()"
+    )
+    runtime = AnalyzerRuntime(tmp_path)
+    request = AnalyzerProcessRequest(
+        command=(_python(), "-c", script),
+        cwd=tmp_path,
+        timeout_seconds=0.2,
+    )
+
+    started = time.monotonic()
+    result = runtime.run(request)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0
+    assert result.timed_out is False
+    assert result.stdout == b"ready"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group assertion")
 def test_runtime_kills_descendants_after_timeout(tmp_path: Path):
     """Timeout cleanup must stop children, not only the analyzer parent."""
     marker = tmp_path / "child-survived"

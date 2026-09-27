@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
-import threading
+import tempfile
 import time
 from typing import Mapping
 
@@ -60,59 +60,63 @@ class AnalyzerRuntime:
 
     def run(self, request: AnalyzerProcessRequest) -> AnalyzerProcessResult:
         command, cwd = self._validate(request)
-        overflow = threading.Event()
-        stdout_parts: list[bytes] = []
-        stderr_parts: list[bytes] = []
-        # The request validator requires an absolute executable and text-only
-        # argv; shell interpretation is explicitly disabled below.
-        process = subprocess.Popen(  # nosec B603
-            command,
-            cwd=cwd,
-            env=self._environment(request.environment),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.DEVNULL,
-            shell=False,
-            close_fds=True,
-            start_new_session=os.name != "nt",
-            creationflags=(
-                subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
-                if os.name == "nt"
-                else 0
-            ),
-        )
-        assert process.stdout is not None and process.stderr is not None
-        readers = (
-            self._reader(process.stdout, request.max_stdout_bytes, overflow, stdout_parts),
-            self._reader(process.stderr, request.max_stderr_bytes, overflow, stderr_parts),
-        )
-        for reader in readers:
-            reader.start()
+        # Temporary streams make analyzer completion independent of pipe EOF.
+        # Compiler helpers may inherit stdout/stderr and outlive their parent;
+        # pipe-reader threads would otherwise extend or defeat the deadline.
+        with tempfile.TemporaryFile() as stdout_stream, tempfile.TemporaryFile() as stderr_stream:
+            # The request validator requires an absolute executable and text-only
+            # argv; shell interpretation is explicitly disabled below.
+            process = subprocess.Popen(  # nosec B603
+                command,
+                cwd=cwd,
+                env=self._environment(request.environment),
+                stdout=stdout_stream,
+                stderr=stderr_stream,
+                stdin=subprocess.DEVNULL,
+                shell=False,
+                close_fds=True,
+                start_new_session=os.name != "nt",
+                creationflags=(
+                    subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+                    if os.name == "nt"
+                    else 0
+                ),
+            )
+            deadline = time.monotonic() + request.timeout_seconds
+            timed_out = False
+            output_limit_exceeded = False
+            while True:
+                output_limit_exceeded = self._stream_exceeded(
+                    stdout_stream, request.max_stdout_bytes
+                ) or self._stream_exceeded(stderr_stream, request.max_stderr_bytes)
+                if output_limit_exceeded:
+                    self._kill_process_tree(process)
+                    break
+                if process.poll() is not None:
+                    # The direct analyzer may exit before helpers that inherited
+                    # its capture handles. Clean its POSIX process group before
+                    # reading a bounded snapshot of the temporary streams.
+                    self._kill_process_tree(process)
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    self._kill_process_tree(process)
+                    break
+                time.sleep(min(0.05, remaining))
 
-        deadline = time.monotonic() + request.timeout_seconds
-        timed_out = False
-        while process.poll() is None:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                timed_out = True
-                self._kill_process_tree(process)
-                break
-            if overflow.wait(min(0.05, remaining)):
-                self._kill_process_tree(process)
-                break
-
-        returncode = process.wait()
-        for reader in readers:
-            reader.join(timeout=2)
-        process.stdout.close()
-        process.stderr.close()
-        return AnalyzerProcessResult(
-            returncode=returncode,
-            stdout=stdout_parts[0] if stdout_parts else b"",
-            stderr=stderr_parts[0] if stderr_parts else b"",
-            timed_out=timed_out,
-            output_limit_exceeded=overflow.is_set(),
-        )
+            returncode = process.wait()
+            output_limit_exceeded = output_limit_exceeded or (
+                self._stream_exceeded(stdout_stream, request.max_stdout_bytes)
+                or self._stream_exceeded(stderr_stream, request.max_stderr_bytes)
+            )
+            return AnalyzerProcessResult(
+                returncode=returncode,
+                stdout=self._read_prefix(stdout_stream, request.max_stdout_bytes),
+                stderr=self._read_prefix(stderr_stream, request.max_stderr_bytes),
+                timed_out=timed_out,
+                output_limit_exceeded=output_limit_exceeded,
+            )
 
     def _validate(self, request: AnalyzerProcessRequest) -> tuple[tuple[str, ...], Path]:
         if not request.command or not all(
@@ -157,36 +161,23 @@ class AnalyzerRuntime:
         return environment
 
     @staticmethod
-    def _reader(
-        stream: object,
-        byte_limit: int,
-        overflow: threading.Event,
-        destination: list[bytes],
-    ) -> threading.Thread:
-        def read_stream() -> None:
-            retained = bytearray()
-            total = 0
-            read = getattr(stream, "read1", getattr(stream, "read"))
-            while chunk := read(64 * 1024):
-                total += len(chunk)
-                if len(retained) < byte_limit:
-                    retained.extend(chunk[:byte_limit - len(retained)])
-                if total > byte_limit:
-                    overflow.set()
-            destination.append(bytes(retained))
+    def _stream_exceeded(stream: object, byte_limit: int) -> bool:
+        return os.fstat(stream.fileno()).st_size > byte_limit
 
-        return threading.Thread(target=read_stream, daemon=True)
+    @staticmethod
+    def _read_prefix(stream: object, byte_limit: int) -> bytes:
+        stream.seek(0)
+        return stream.read(byte_limit)
 
     @staticmethod
     def _kill_process_tree(process: subprocess.Popen) -> None:
-        if process.poll() is not None:
-            return
         try:
             if os.name != "nt":
                 # start_new_session gives every analyzer an isolated process
-                # group, so timeout cleanup also reaches compiler helpers.
+                # group. The group can remain alive after its leader exits, so
+                # cleanup must not depend on the parent's current return code.
                 os.killpg(process.pid, signal.SIGKILL)
-            else:
+            elif process.poll() is None:
                 process.kill()
         except ProcessLookupError:
             pass
