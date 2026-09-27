@@ -4565,6 +4565,124 @@ def _bind_member_field_tables(
     return bound
 
 
+def _resolve_php_member_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve PHP ``ClassName::method()`` / ``self::``/``static::``/``parent::``
+    static calls against the receiver's class (#3872).
+
+    The shared engine's PHP branch used to treat ``scoped_call_expression`` as a
+    bare function call named after the *scope* (``Helper::format()`` bound the
+    callee name to ``"Helper"``), so the cross-file bare-name pass silently
+    resolved every static call to whichever node happened to share the class's
+    label — almost always the class definition itself — instead of the actual
+    method, and did so with the generic import-evidence confidence gate even
+    though the receiver class is named explicitly in source. The engine now
+    captures the real method name as the callee and the scope text as the
+    receiver and marks it a member call; this resolver binds it to the class's
+    actual method node, mirroring ``_resolve_java_member_calls``.
+
+    ``self::``/``static::`` resolve to the enclosing class (exact — the keyword
+    names it as unambiguously as a literal class name would). ``parent::``
+    resolves through a single `inherits` edge from the enclosing class. Any
+    other (lowercase, i.e. array/variable) scope is left unresolved — PHP has no
+    declared-type table for `$var::method()` dynamic scopes to resolve against,
+    and guessing would risk the same over-connection the #543/#1219 guard
+    exists to prevent.
+    """
+    def key(label: str) -> str:
+        return str(label).strip().removeprefix(".").removesuffix("()")
+
+    contained = {edge.get("target") for edge in all_edges
+                 if edge.get("relation") == "contains"}
+    node_by_id = {node.get("id"): node for node in all_nodes}
+
+    type_def_nids: dict[str, list[str]] = {}
+    for node in all_nodes:
+        if (
+            node.get("source_file")
+            and node.get("id") in contained
+            and _is_type_like_definition(node)
+        ):
+            type_def_nids.setdefault(key(node.get("label", "")), []).append(node["id"])
+
+    method_index: dict[tuple[str, str], set[str]] = {}
+    enclosing_type: dict[str, str] = {}
+    for edge in all_edges:
+        if edge.get("relation") != "method":
+            continue
+        owner, method = edge.get("source"), edge.get("target")
+        method_node = node_by_id.get(method)
+        if method_node is None:
+            continue
+        enclosing_type.setdefault(method, owner)
+        method_index.setdefault((owner, key(method_node.get("label", ""))), set()).add(method)
+
+    inherits_bases: dict[str, list[str]] = {}
+    for edge in all_edges:
+        if edge.get("relation") == "inherits":
+            inherits_bases.setdefault(edge["source"], []).append(edge["target"])
+
+    existing_pairs = {(edge.get("source"), edge.get("target")) for edge in all_edges}
+    for result in per_file:
+        for raw_call in result.get("raw_calls", []):
+            if not raw_call.get("is_member_call"):
+                continue
+            if not str(raw_call.get("source_file", "")).endswith(".php"):
+                continue
+            receiver = raw_call.get("receiver")
+            callee = raw_call.get("callee")
+            caller = raw_call.get("caller_nid")
+            if not receiver or not callee or not caller:
+                continue
+
+            receiver_lower = receiver.lower()
+            if receiver_lower in ("self", "static"):
+                type_nid = enclosing_type.get(caller)
+                if not type_nid:
+                    continue
+            elif receiver_lower == "parent":
+                bases = inherits_bases.get(enclosing_type.get(caller), [])
+                if len(bases) != 1:
+                    continue
+                type_nid = bases[0]
+            elif receiver[:1].isupper():
+                type_defs = type_def_nids.get(key(receiver), [])
+                if not type_defs:
+                    _park_unresolved_member_call(
+                        node_by_id.get(caller), callee, receiver, "php", raw_call,
+                    )
+                    continue
+                if len(type_defs) != 1:
+                    continue
+                type_nid = type_defs[0]
+            else:
+                # Dynamic scope ($var::method()) — no declared-type table to
+                # resolve against; leave unresolved rather than guess.
+                continue
+
+            method_nids = method_index.get((type_nid, key(callee)), set())
+            if len(method_nids) != 1:
+                continue
+            method_nid = next(iter(method_nids))
+            if method_nid == caller or (caller, method_nid) in existing_pairs:
+                continue
+            existing_pairs.add((caller, method_nid))
+            all_edges.append({
+                "source": caller,
+                "target": method_nid,
+                "relation": "calls",
+                "context": "call",
+                "confidence": "EXTRACTED",
+                "confidence_score": 1.0,
+                "source_file": raw_call.get("source_file", ""),
+                "source_location": raw_call.get("source_location"),
+                "weight": 1.0,
+            })
+
+
 def _resolve_java_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -5503,6 +5621,9 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver("java_member_calls", frozenset({".java"}), _resolve_java_member_calls)
+)
+register_language_resolver(
+    LanguageResolver("php_member_calls", frozenset({".php"}), _resolve_php_member_calls)
 )
 register_language_resolver(
     LanguageResolver("rust_self_member_calls", frozenset({".rs"}), _resolve_rust_self_member_calls)
