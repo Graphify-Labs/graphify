@@ -1,6 +1,6 @@
 # graphify reference: extra exports and benchmark
 
-Load this when the user passed one of the export flags (`--wiki`, `--neo4j`, `--neo4j-push`, `--falkordb`, `--falkordb-push`, `--svg`, `--graphml`, `--mcp`), or when the corpus is large enough for the token-reduction benchmark. Each step runs only for its own flag.
+Load this when the user passed one of the export flags (`--wiki`, `--neo4j`, `--neo4j-push`, `--falkordb`, `--falkordb-push`, `--age-push`, `--svg`, `--graphml`, `--mcp`), or when the corpus is large enough for the token-reduction benchmark. Each step runs only for its own flag.
 
 ### Step 6b - Wiki (only if --wiki flag)
 
@@ -43,6 +43,17 @@ graphify export falkordb --push falkordb://localhost:6379
 ```
 
 Default URI is `falkordb://localhost:6379` (the scheme is informational - `redis://` or a bare `host:port` work too), auth is optional, and the target graph defaults to `graphify`. Uses MERGE - safe to re-run without creating duplicates.
+
+### Step 7aa - Apache AGE export (only if --age-push flag)
+
+**If `--age-push <uri>`** - push directly to a running Apache AGE instance (a PostgreSQL extension). Push-only backend - there is no file-export variant. Requires the `age` extra (`uv tool install "graphifyy[age]"`, provides `psycopg[binary]`). Prefer `AGE_PASSWORD` / `PGPASSWORD` over embedding the password in `--push`:
+
+```bash
+export AGE_PASSWORD=...
+graphify export age --push postgresql://user@host/db
+```
+
+The target graph defaults to `graphify` (`--graph-name NAME` to override); `--owner`, `--repo-tag`, `--remote-url`, `--default-branch`, `--extraction-config`, `--no-register`, and `--full-props` carry repo metadata and push options. Deletion-safe - nodes and edges absent from the pushed graph are removed in the same transaction, so re-runs keep the database in sync.
 
 ### Step 7b - SVG export (only if --svg flag)
 

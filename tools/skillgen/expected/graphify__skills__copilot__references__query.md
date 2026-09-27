@@ -66,7 +66,11 @@ Prefer the CLI when it is installed:
 ```bash
 graphify query "QUESTION"
 # or: graphify query "QUESTION" --dfs --budget 3000
+# or, against an already-pushed Apache AGE graph instead of graphify-out/graph.json:
+#     graphify query "QUESTION" --age postgresql://... --graph-name NAME
 ```
+
+The same `--age postgresql://... [--graph-name NAME]` flag works on `graphify path` and `graphify explain`.
 
 If the CLI is unavailable, load `graphify-out/graph.json` and run the traversal inline:
 
