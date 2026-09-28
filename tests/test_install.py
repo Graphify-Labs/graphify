@@ -940,7 +940,7 @@ def test_opencode_agents_install_writes_plugin(tmp_path):
 def test_opencode_plugin_reminder_has_no_backticks(tmp_path):
     """The bash reminder string must not contain backticks or $(...) (regression test for #1413).
 
-    The plugin prepends `echo "<reminder>" && <cmd>` to the user's bash command.
+    The plugin prepends `echo "<reminder>" ; <cmd>` to the user's bash command.
     Backticks or $() inside the reminder trigger bash command substitution
     when the echo runs, which both corrupts tool output and silently executes
     the very graphify command we are only suggesting.
@@ -948,12 +948,11 @@ def test_opencode_plugin_reminder_has_no_backticks(tmp_path):
     _agents_install(tmp_path, "opencode")
     plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
     body = plugin.read_text()
-    # Extract the echoed reminder string literal between the double-quotes
-    # of the `output.args.command = 'echo "..." && ' +` line.
+    # Extract the shared reminder literal (`const REMINDER = 'echo "..." ; ';`).
     import re
 
-    m = re.search(r'echo "([^"]*)"', body)
-    assert m, "echo reminder not found in plugin body"
+    m = re.search(r"const REMINDER\s*=\s*\n?\s*'echo \"([^\"]*)\"", body)
+    assert m, "REMINDER literal not found in plugin body"
     reminder = m.group(1)
     assert "`" not in reminder, f"backtick in reminder would trigger command substitution: {reminder!r}"
     assert "$(" not in reminder, f"$() in reminder would trigger command substitution: {reminder!r}"
@@ -966,9 +965,11 @@ def test_opencode_plugin_uses_semicolon_not_ampersand(tmp_path):
     in PowerShell 5.1, Bash, and POSIX shells."""
     _agents_install(tmp_path, "opencode")
     body = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
-    # The prepend line ends with the separator before `' +`.
-    assert '" ; \' +' in body or '." ; \' +' in body, "reminder should join with ';'"
-    assert '" && \' +' not in body, "'&&' breaks PowerShell 5.1 (#1646)"
+    # The shared reminder literal ends with the ';' separator before the command.
+    assert " ; '" in body, "reminder should join with ';'"
+    # The old bug joined with a shell '&&' (literal `" && '`). JS logical-and
+    # (`&& `) is allowed; a shell statement separator is not.
+    assert '" && \'' not in body, "'&&' as a shell separator breaks PowerShell 5.1 (#1646)"
 
 
 def test_opencode_agents_install_registers_plugin_in_config(tmp_path):
@@ -1007,6 +1008,77 @@ def test_opencode_agents_uninstall_removes_plugin(tmp_path):
     if config_file.exists():
         config = _json.loads(config_file.read_text())
         assert not any("graphify.js" in p for p in config.get("plugin", []))
+
+
+def test_opencode_plugin_exports_v2_default_definition(tmp_path):
+    """The generated plugin must export a v2 default definition ({ id, setup }).
+
+    OpenCode v2 loads local plugins through the v2 plugin host and rejects a file
+    without a default `{ id, effect|setup }` definition:
+
+        Plugin must export a default definition with an id and an effect or setup
+        function (cause: SchemaError(Missing key at ["default"]))
+
+    The v2 path rewrites the command through ctx.shell.hook("create.before").
+    The v1 named export is kept alongside so the same file loads on v1 too.
+    """
+    _agents_install(tmp_path, "opencode")
+    body = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
+    assert "export default" in body, "v2 needs a default export"
+    assert 'id: "graphify"' in body
+    assert "setup:" in body
+    assert 'ctx.shell.hook("create.before"' in body
+    # v1 path preserved for the named export.
+    assert "export const GraphifyPlugin" in body
+    assert "tool.execute.before" in body
+
+
+def test_opencode_config_registers_absolute_file_uri(tmp_path):
+    """The opencode.json plugin entry must be an absolute file:// URI.
+
+    OpenCode v2 resolves a bare relative path (".opencode/plugins/graphify.js")
+    as an npm package spec and fails with:
+
+        NpmInstallFailedError (cause: Could not read package.json: ENOENT ...)
+
+    Registering the resolved file:// URI (the form the Kilo installer already
+    uses) loads the local file on both v1 and v2.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    _agents_install(tmp_path, "opencode")
+    config = _json.loads((tmp_path / ".opencode" / "opencode.json").read_text())
+    entries = config["plugin"]
+    assert len(entries) == 1, entries
+    entry = entries[0]
+    assert entry.startswith("file://"), entry
+    assert entry.endswith("/.opencode/plugins/graphify.js"), entry
+    # Must point at the file that was actually written.
+    assert _Path(entry[len("file://"):]).resolve() == (
+        tmp_path / ".opencode" / "plugins" / "graphify.js"
+    ).resolve()
+
+
+def test_opencode_uninstall_removes_legacy_relative_entry(tmp_path):
+    """Uninstall must also drop a legacy bare relative plugin entry.
+
+    Older graphify installers registered ".opencode/plugins/graphify.js"
+    (relative). Uninstall should clean that up instead of leaving a stale entry
+    that continues to trip OpenCode v2's npm-spec resolution.
+    """
+    import json as _json
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(
+        _json.dumps({"plugin": [".opencode/plugins/graphify.js", "some-other-plugin"]})
+    )
+    _agents_install(tmp_path, "opencode")
+    _agents_uninstall(tmp_path, platform="opencode")
+    config = _json.loads(config_file.read_text())
+    assert not any("graphify.js" in p for p in config.get("plugin", []))
+    assert "some-other-plugin" in config.get("plugin", [])
 
 
 def test_kilo_agents_install_writes_agents_md(tmp_path):

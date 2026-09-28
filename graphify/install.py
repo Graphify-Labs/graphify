@@ -1423,18 +1423,70 @@ def _uninstall_kilo_plugin(project_dir: Path) -> None:
         )
 # OpenCode tool.execute.before plugin — fires before every tool call.
 # Injects a graph reminder into bash command output when graph.json exists.
+#
+# Dual-compatible: exports a v2 `default` definition ({ id, setup }) AND a v1
+# named `GraphifyPlugin`. OpenCode v2 requires the default definition; v1 uses
+# the named export. Keep both so one file installs into either runtime.
 _OPENCODE_PLUGIN_JS = """\
 // graphify OpenCode plugin
-// Injects a knowledge graph reminder before bash tool calls when the graph exists.
+// Injects a knowledge graph reminder before the first bash/shell command when a graph exists.
+//
+// OpenCode v2 (default export): register a shell hook via
+//   ctx.shell.hook("create.before", event), where event = {command, cwd, ...};
+//   rewrite event.command to prepend the reminder.
+// OpenCode v1 (named export): the "tool.execute.before" hook.
 //
 // IMPORTANT: keep the reminder string free of backticks and $(...) constructs.
-// The hook prepends `echo "<reminder>" && <cmd>` to the user's bash command;
+// The hook prepends `echo "<reminder>" ; <cmd>` to the user's bash command;
 // backticks inside the double-quoted echo trigger bash command substitution,
 // which both corrupts tool output and silently executes the very graphify
 // command we are only suggesting. Plain words render fine in opencode's TUI.
+//
+// IMPORTANT: do NOT also mirror this logic under a `server:` field. `server` is
+// the v1-compat hook provider: its input carries no `shell` domain and OpenCode
+// v2 never invokes it. A `server` entry that calls ctx.shell.hook aborts the
+// whole plugin load with "undefined is not an object (evaluating 'ctx.shell.hook')".
 import { existsSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
 
+const REMINDER =
+  'echo "[graphify] knowledge graph at graphify-out/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." ; ';
+
+// Walk up from the hook's cwd (bounded) so the reminder also fires when the
+// first command runs from a subdirectory of the project root.
+const hasGraph = (dir) => {
+  if (!dir) return false;
+  let cur = dir;
+  for (let i = 0; i < 5 && cur; i++) {
+    if (existsSync(join(cur, "graphify-out", "graph.json"))) return true;
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return false;
+};
+
+// --- OpenCode v2 ---
+export default {
+  id: "graphify",
+  setup: async (ctx) => {
+    let reminded = false;
+
+    await ctx.shell.hook("create.before", (event) => {
+      if (reminded) return;
+      if (!hasGraph(event?.cwd)) return;
+
+      if (typeof event.command === "string" && event.command) {
+        // ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a statement
+        // separator, breaking the first bash command of the session (#1646).
+        event.command = REMINDER + event.command;
+        reminded = true;
+      }
+    });
+  },
+};
+
+// --- OpenCode v1 ---
 export const GraphifyPlugin = async ({ directory }) => {
   let reminded = false;
 
@@ -1444,11 +1496,7 @@ export const GraphifyPlugin = async ({ directory }) => {
       if (!existsSync(join(directory, "graphify-out", "graph.json"))) return;
 
       if (input.tool === "bash") {
-        // ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a statement
-        // separator, breaking the first bash command of the session (#1646).
-        output.args.command =
-          'echo "[graphify] knowledge graph at graphify-out/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." ; ' +
-          output.args.command;
+        output.args.command = REMINDER + output.args.command;
         reminded = true;
       }
     },
@@ -1474,7 +1522,12 @@ def _install_opencode_plugin(project_dir: Path) -> None:
         config = {}
 
     plugins = config.setdefault("plugin", [])
-    entry = _OPENCODE_PLUGIN_PATH.as_posix()
+    # OpenCode v2 resolves a bare relative path as an npm package spec and fails
+    # with NpmInstallFailedError ("Could not read package.json"); register an
+    # absolute file:// URI instead — the same form the Kilo installer uses. The
+    # plugin is auto-discovered from .opencode/plugins/ regardless, and OpenCode
+    # dedupes plugin instances by id, so an absolute entry stays portable-safe.
+    entry = plugin_file.resolve().as_uri()
     if entry not in plugins:
         plugins.append(entry)
         config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
@@ -1496,11 +1549,18 @@ def _uninstall_opencode_plugin(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     plugins = config.get("plugin", [])
-    entry = _OPENCODE_PLUGIN_PATH.as_posix()
-    if entry in plugins:
-        plugins.remove(entry)
-        if not plugins:
-            config.pop("plugin")
+    # Drop the current file:// URI form and any legacy bare relative entry
+    # (".opencode/plugins/graphify.js") written by older installers.
+    kept = [
+        p
+        for p in plugins
+        if not (isinstance(p, str) and p.endswith("plugins/graphify.js"))
+    ]
+    if kept != plugins:
+        if kept:
+            config["plugin"] = kept
+        else:
+            config.pop("plugin", None)
         config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
         print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin deregistered")
 def _resolve_graphify_exe(project: bool = False) -> str:
