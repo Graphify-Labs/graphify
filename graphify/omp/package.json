@@ -1,6 +1,6 @@
 {
   "name": "graphify-omp",
-  "version": "0.9.70",
+  "version": "0.9.71",
   "private": true,
   "description": "Native Oh My Pi bridge to Graphify's installed hook-guard CLI",
   "license": "Apache-2.0",
