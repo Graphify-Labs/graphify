@@ -361,14 +361,22 @@ def _expand(value: str | None, props: dict[str, str]) -> str | None:
 
 def _parent_pom_path(pom: Path, root: ET.Element) -> Path | None:
     """Parent POM location per Maven's ``<relativePath>`` rule (default
-    ``../pom.xml``); ``None`` for ``<relativePath/>`` (repository parent)."""
+    ``../pom.xml``); ``None`` for ``<relativePath/>`` (repository parent) or
+    an absolute path outside the POM's repository."""
     parent = root.find("parent")
     if parent is None:
         return None
     rel = parent.findtext("relativePath")
     if rel is not None and not rel.strip():
         return None
-    return pom.parent / (rel.strip() if rel else "../pom.xml")
+    path = pom.parent / (rel.strip() if rel else "../pom.xml")
+    if path.is_absolute():
+        from graphify.detect import _find_vcs_root
+
+        vcs_root = _find_vcs_root(pom)
+        if vcs_root is not None and not path.resolve().is_relative_to(vcs_root):
+            return None
+    return path
 
 
 def _inherited_pom_properties(pom: Path, root: ET.Element) -> dict[str, str]:

@@ -482,3 +482,69 @@ def test_pom_without_path_still_parses_its_own_properties():
         "version": None,
         "deps": ["org.acme:acme-util_2.12"],
     }
+
+
+def test_pom_absolute_relative_path_inside_repo_is_followed(tmp_path):
+    (tmp_path / ".git").mkdir()
+    root = _write(
+        tmp_path / "root.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <groupId>org.acme</groupId>\n  <artifactId>root</artifactId>\n  <version>1.0</version>\n"
+        "  <properties><compat>2.12</compat></properties>\n</project>\n",
+    )
+    child = _write(
+        tmp_path / "mid/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        f"  <parent><groupId>org.acme</groupId><artifactId>root</artifactId>"
+        f"<version>1.0</version><relativePath>{root}</relativePath></parent>\n"
+        "  <artifactId>acme-mid</artifactId>\n"
+        "  <dependencies><dependency><groupId>org.acme</groupId>"
+        "    <artifactId>acme-core_${compat}</artifactId>"
+        "    </dependency></dependencies>\n</project>\n",
+    )
+    targets = {e["target"] for e in extract_package_manifest(child)["edges"]}
+    assert targets == {"pkg_org_acme_acme_core_2_12"}
+
+
+def test_pom_absolute_relative_path_outside_repo_is_not_followed(tmp_path):
+    (tmp_path / "repo/.git").mkdir(parents=True)
+    secret = _write(
+        tmp_path / "secret.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <groupId>org.acme</groupId>\n  <artifactId>root</artifactId>\n  <version>1.0</version>\n"
+        "  <properties><token>hunter2</token></properties>\n</project>\n",
+    )
+    child = _write(
+        tmp_path / "repo/mid/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        f"  <parent><groupId>org.acme</groupId><artifactId>root</artifactId>"
+        f"<version>1.0</version><relativePath>{secret}</relativePath></parent>\n"
+        "  <artifactId>acme-mid</artifactId>\n"
+        "  <dependencies><dependency><groupId>org.acme</groupId>"
+        "    <artifactId>acme-core_${token}</artifactId>"
+        "    </dependency></dependencies>\n</project>\n",
+    )
+    assert [e["target"] for e in extract_package_manifest(child)["edges"]] == [
+        "pkg_org_acme_acme_core_token"
+    ]
+
+
+def test_pom_absolute_relative_path_without_vcs_root_is_followed(tmp_path):
+    root = _write(
+        tmp_path / "root.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <groupId>org.acme</groupId>\n  <artifactId>root</artifactId>\n  <version>1.0</version>\n"
+        "  <properties><compat>2.12</compat></properties>\n</project>\n",
+    )
+    child = _write(
+        tmp_path / "mid/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        f"  <parent><groupId>org.acme</groupId><artifactId>root</artifactId>"
+        f"<version>1.0</version><relativePath>{root}</relativePath></parent>\n"
+        "  <artifactId>acme-mid</artifactId>\n"
+        "  <dependencies><dependency><groupId>org.acme</groupId>"
+        "    <artifactId>acme-core_${compat}</artifactId>"
+        "    </dependency></dependencies>\n</project>\n",
+    )
+    targets = {e["target"] for e in extract_package_manifest(child)["edges"]}
+    assert targets == {"pkg_org_acme_acme_core_2_12"}
