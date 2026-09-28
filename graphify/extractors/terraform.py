@@ -32,6 +32,7 @@ _SENSITIVE_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 _REDACTED = "[redacted]"
+_PAIRED_VALUE_KEYS = frozenset({"value", "valuefrom", "value_from"})
 
 
 def _redact_value(key: str, value: object) -> object:
@@ -52,7 +53,18 @@ def _redact_value(key: str, value: object) -> object:
     if _SENSITIVE_KEY_RE.search(key):
         return _REDACTED
     if isinstance(value, dict):
-        return {k: _redact_value(str(k), v) for k, v in value.items()}
+        redacted = {k: _redact_value(str(k), v) for k, v in value.items()}
+        # Name/value-pair idiom (ECS `environment`/`secrets`, `[{name, value}]`):
+        # the secret signal is the `name` literal, not a key, so key matching
+        # alone let `{ name = "DB_PASSWORD", value = "hunter2" }` leak (#3787).
+        if any(
+            str(k).lower() == "name" and isinstance(v, str) and _SENSITIVE_KEY_RE.search(v)
+            for k, v in value.items()
+        ):
+            for k in redacted:
+                if str(k).lower() in _PAIRED_VALUE_KEYS:
+                    redacted[k] = _REDACTED
+        return redacted
     if isinstance(value, (list, tuple)):
         return [_redact_value(key, item) for item in value]
     return value
@@ -432,6 +444,17 @@ def extract_terraform(path: Path) -> dict:
             continue
         if blk_body is not None:
             attrs = _collect_direct_attributes(blk_body)
+            # A variable/output names its secret in the block LABEL, so the
+            # literal sits under a generic key (`default` / `value`) that the
+            # key-name check never flags. Redact it when the label names a
+            # secret or the block carries Terraform's own `sensitive = true`.
+            if btype in ("variable", "output") and (
+                _SENSITIVE_KEY_RE.search(labels[0])
+                or attrs.get("sensitive") in (True, "true")
+            ):
+                for secret_key in ("default", "value"):
+                    if secret_key in attrs:
+                        attrs[secret_key] = _REDACTED
             if attrs:
                 nodes_by_id[owner]["attributes"] = attrs
             _collect_refs(blk_body, owner, "references")

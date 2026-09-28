@@ -82,6 +82,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _JS_PRIMITIVE_TYPES,
     _JS_RESOLVE_EXTS,
     _PACKAGE_IMPORTS_CACHE,
+    _SCAN_ROOT_NAMESPACE_CACHE,
     _TSCONFIG_ALIAS_CACHE,
     _TSCONFIG_BASEURL_CACHE,
     _VUE_SCRIPT_LANG_RE,
@@ -1239,7 +1240,7 @@ _JS_CONFIG = LanguageConfig(
     class_types=frozenset({"class_declaration"}),
     function_types=frozenset({"function_declaration", "generator_function_declaration", "method_definition"}),
     import_types=frozenset({"import_statement", "export_statement"}),
-    call_types=frozenset({"call_expression", "new_expression"}),
+    call_types=frozenset({"call_expression", "new_expression", "jsx_opening_element", "jsx_self_closing_element"}),
     call_function_field="function",
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
@@ -1287,7 +1288,8 @@ _TSX_CONFIG = LanguageConfig(
     class_types=_TS_CONFIG.class_types,
     function_types=_TS_CONFIG.function_types,
     import_types=_TS_CONFIG.import_types,
-    call_types=_TS_CONFIG.call_types,
+    # JSX component usage (`<Comp />`) renders Comp; extracted like a call.
+    call_types=_TS_CONFIG.call_types | {"jsx_opening_element", "jsx_self_closing_element"},
     call_function_field=_TS_CONFIG.call_function_field,
     call_accessor_node_types=_TS_CONFIG.call_accessor_node_types,
     call_accessor_field=_TS_CONFIG.call_accessor_field,
@@ -6954,6 +6956,34 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     return idx, result
 
 
+def _spawn_cannot_reimport_main() -> bool:
+    """True when a spawn-based process pool cannot bootstrap because the caller's
+    ``__main__`` has no importable file — stdin (``… | python -``), ``python -c``,
+    or a REPL.
+
+    Under the spawn start method (the Windows default, and macOS since 3.8) each
+    worker re-imports the parent's ``__main__`` by its ``__file__`` path. For a
+    stdin/-c/REPL caller that path is missing or bogus (``<stdin>``), so every
+    worker dies during bootstrap and the pool raises ``BrokenProcessPool`` before
+    any work is done. The shipped SKILL.md pipes a heredoc into the interpreter,
+    so on Windows this is the common path, not an edge case — detecting it up
+    front lets the caller run sequentially without a wall of worker tracebacks
+    (#3669). A script WITH a real ``__main__`` file but no ``if __name__ ==
+    "__main__"`` guard is a different failure this does not (and cannot) catch
+    here; that one still surfaces via the ``BrokenProcessPool`` fallback."""
+    import multiprocessing
+
+    if (
+        multiprocessing.get_start_method(allow_none=True) != "spawn"
+        and sys.platform != "win32"
+    ):
+        return False
+    import __main__
+
+    main_file = getattr(__main__, "__file__", None)
+    return main_file is None or not os.path.isfile(main_file)
+
+
 def _extract_parallel(
     uncached_work: list[tuple[int, Path]],
     per_file: list[dict | None],
@@ -7202,6 +7232,7 @@ def extract(
     _PACKAGE_IMPORTS_CACHE.clear()
     _XAML_CSHARP_CLASS_CACHE.clear()
     _MD_LINK_INDEX_CACHE.clear()
+    _SCAN_ROOT_NAMESPACE_CACHE.clear()
     # Path-resolution memoization (#3500) is keyed by (path, cwd) with no mtime
     # component, so — like the alias caches above — a symlink repoint or a path
     # that starts/stops existing between rebuilds in a long-lived `graphify
@@ -7281,6 +7312,26 @@ def extract(
 
     # Phase 2: extract uncached files (parallel or sequential)
     if uncached_work:
+        # Skip the pool up front when spawn workers could not re-import our
+        # __main__ (stdin/-c/REPL) — otherwise every worker dies on bootstrap and
+        # the run is a wall of BrokenProcessPool tracebacks before falling back to
+        # the same sequential path anyway. This is exactly what SKILL.md's stdin
+        # invocation triggers on Windows (#3669).
+        if (
+            parallel
+            and len(uncached_work) >= _PARALLEL_THRESHOLD
+            and _spawn_cannot_reimport_main()
+        ):
+            print(
+                "  note: running AST extraction sequentially — a parallel pool "
+                "needs an importable __main__ to relaunch workers, which a stdin "
+                "(`… | python -`), `python -c`, or REPL invocation does not have. "
+                "Write the step to a .py file (or pass parallel=False) to silence "
+                "this.",
+                file=sys.stderr,
+                flush=True,
+            )
+            parallel = False
         ran_parallel = False
         if parallel and len(uncached_work) >= _PARALLEL_THRESHOLD:
             ran_parallel = _extract_parallel(
@@ -7493,6 +7544,7 @@ def extract(
     _augment_symbol_resolution_edges(
         paths, all_nodes, all_edges, root,
         ambiguous_python_modules=ambiguous_python_modules,
+        resolution_context_nodes=resolution_context_nodes,
     )
 
     # Merge a header-declared class (and its methods) with its sibling-impl

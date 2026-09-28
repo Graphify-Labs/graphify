@@ -2250,6 +2250,83 @@ def test_extract_parallel_returns_false_when_pool_cannot_start(tmp_path, monkeyp
     assert "No space left on device" in capsys.readouterr().out, "warning must name the OS error"
 
 
+def test_spawn_cannot_reimport_main_true_for_stdin_caller(monkeypatch):
+    """stdin (`… | python -`) leaves __main__.__file__ as a non-file (`<stdin>`),
+    which spawn workers cannot re-import — the pool is unusable up front (#3669)."""
+    import multiprocessing
+    import __main__
+    from graphify import extract as extract_mod
+
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=True: "spawn")
+    monkeypatch.setattr(__main__, "__file__", "<stdin>", raising=False)
+    assert extract_mod._spawn_cannot_reimport_main() is True
+
+
+def test_spawn_cannot_reimport_main_true_for_repl_without_file(monkeypatch):
+    """A REPL / `python -c` __main__ has no __file__ attribute at all."""
+    import multiprocessing
+    import __main__
+    from graphify import extract as extract_mod
+
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=True: "spawn")
+    monkeypatch.delattr(__main__, "__file__", raising=False)
+    assert extract_mod._spawn_cannot_reimport_main() is True
+
+
+def test_spawn_cannot_reimport_main_false_for_real_script(tmp_path, monkeypatch):
+    """A normal script whose __main__ is a real file CAN be re-imported, so the
+    pool is usable and must not be skipped (that case is the common happy path)."""
+    import multiprocessing
+    import __main__
+    from graphify import extract as extract_mod
+
+    script = tmp_path / "runner.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=True: "spawn")
+    monkeypatch.setattr(__main__, "__file__", str(script), raising=False)
+    assert extract_mod._spawn_cannot_reimport_main() is False
+
+
+def test_spawn_cannot_reimport_main_false_under_fork(monkeypatch):
+    """The fork start method (Linux default) does not re-import __main__, so a
+    stdin caller is fine and the pool must not be pre-emptively skipped."""
+    import multiprocessing
+    import __main__
+    from graphify import extract as extract_mod
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=True: "fork")
+    monkeypatch.setattr(__main__, "__file__", "<stdin>", raising=False)
+    assert extract_mod._spawn_cannot_reimport_main() is False
+
+
+def test_extract_skips_pool_up_front_on_unusable_main(tmp_path, monkeypatch, capsys):
+    """With >= _PARALLEL_THRESHOLD uncached files but an unusable __main__, the
+    pool is not attempted at all — extract() runs sequentially, producing correct
+    output with an explanatory note instead of a wall of BrokenProcessPool
+    tracebacks (#3669)."""
+    from graphify import extract as extract_mod
+
+    files = [FIXTURES / "sample.py"] * 25  # >= _PARALLEL_THRESHOLD
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+
+    calls = {"parallel": 0}
+
+    def fake_parallel(*a, **kw):
+        calls["parallel"] += 1
+        return True
+
+    monkeypatch.setattr(extract_mod, "_extract_parallel", fake_parallel)
+    monkeypatch.setattr(extract_mod, "_spawn_cannot_reimport_main", lambda: True)
+
+    result = extract_mod.extract(files, cache_root=cache_root)
+
+    assert calls["parallel"] == 0, "the pool must not be attempted when __main__ is unusable"
+    assert result["nodes"], "sequential extraction must still produce nodes"
+    assert "sequentially" in capsys.readouterr().err, "must explain the sequential fallback"
+
+
 def test_extract_parallel_skips_pool_when_max_workers_is_one(tmp_path, monkeypatch):
     """#2173: a resolved worker count of 1 must not spawn a ProcessPoolExecutor.
 

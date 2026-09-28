@@ -214,6 +214,82 @@ def extract_julia(path: Path) -> dict:
                     function_bodies.append((func_nid, node))
             return
 
+        # Macro: macro foo(...) ... end. Same grammar shape as a function (a
+        # `signature` wrapping a call_expression). Without this branch every
+        # macro definition was dropped, even though macros are first-class,
+        # heavily used definitions in Julia.
+        if t == "macro_definition":
+            sig_node = next((c for c in node.children if c.type == "signature"), None)
+            if sig_node:
+                macro_name = _func_name_from_signature(sig_node)
+                if macro_name:
+                    macro_nid = _make_id(stem, "@" + macro_name)
+                    line = node.start_point[0] + 1
+                    add_node(macro_nid, f"@{macro_name}", line)
+                    add_edge(scope_nid, macro_nid, "defines", line)
+                    function_bodies.append((macro_nid, node))
+            return
+
+        # @enum: `@enum Name a b c` or `@enum Name begin a; b end`. This lowers
+        # to a macrocall_expression; the first identifier in the argument list is
+        # the enum type, the rest (including those inside a begin/end block) are
+        # its members. Other macro calls fall through so definitions nested in
+        # e.g. an `@testset begin ... end` are still walked.
+        if t == "macrocall_expression":
+            macro_id = next((c for c in node.children if c.type == "macro_identifier"), None)
+            macro_name = None
+            if macro_id is not None:
+                id_node = next((c for c in macro_id.children if c.type == "identifier"), None)
+                if id_node is not None:
+                    macro_name = _read_text(id_node, source)
+            if macro_name == "enum":
+                arglist = next((c for c in node.children if c.type == "macro_argument_list"), None)
+                # First positional arg is the enum type; the rest are members.
+                # A member can be a bare `identifier` (`red`) or an `assignment`
+                # for an explicit value (`red = 1`); the block form nests them in
+                # a `compound_statement`. The type may itself be a
+                # `typed_expression` for a typed enum (`Color::UInt8`).
+                arg_nodes = []
+                if arglist is not None:
+                    for c in arglist.children:
+                        if c.type in ("identifier", "typed_expression", "assignment"):
+                            arg_nodes.append(c)
+                        elif c.type == "compound_statement":
+                            arg_nodes.extend(
+                                cc for cc in c.children
+                                if cc.type in ("identifier", "assignment")
+                            )
+
+                def _member_ident(n):
+                    # bare identifier, or the LHS identifier of `name = value`,
+                    # or the base name of a typed head `Color::UInt8`
+                    if n.type == "identifier":
+                        return n
+                    return next((cc for cc in n.children if cc.type == "identifier"), None)
+
+                type_node = _member_ident(arg_nodes[0]) if arg_nodes else None
+                if type_node is not None:
+                    enum_name = _read_text(type_node, source)
+                    line = node.start_point[0] + 1
+                    enum_nid = _make_id(stem, enum_name)
+                    add_node(enum_nid, enum_name, line)
+                    add_edge(scope_nid, enum_nid, "defines", line)
+                    for member in arg_nodes[1:]:
+                        m_node = _member_ident(member)
+                        if m_node is None:
+                            continue
+                        m_name = _read_text(m_node, source)
+                        m_line = m_node.start_point[0] + 1
+                        m_nid = _make_id(stem, enum_name, m_name)
+                        add_node(m_nid, m_name, m_line)
+                        # enum members use `case_of` (the tree-sitter convention
+                        # shared by C#/Java/Kotlin/Swift/TS), not `contains`.
+                        add_edge(enum_nid, m_nid, "case_of", m_line)
+                return
+            for child in node.children:
+                walk(child, scope_nid)
+            return
+
         # Short function: foo(x) = expr
         if t == "assignment":
             lhs = node.children[0] if node.children else None
@@ -279,7 +355,7 @@ def extract_julia(path: Path) -> dict:
         # the boundary check returning early on the top-level node itself.
         # Skip the "signature" child — it contains the function's own call_expression
         # which would create a self-loop.
-        if body_node.type == "function_definition":
+        if body_node.type in ("function_definition", "macro_definition"):
             for child in body_node.children:
                 if child.type != "signature":
                     walk_calls(child, func_nid)

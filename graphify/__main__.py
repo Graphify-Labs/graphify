@@ -528,13 +528,32 @@ def _pin_hash_seed_if_needed() -> None:
         # launcher on Windows is a native .exe with no .py content, so
         # `python.exe <that .exe path>` fails outright with "can't open
         # file" -- every command this function touches (#3779).
-        os.execvpe(
-            sys.executable,
+        _reexec(
             [sys.executable, "-m", "graphify", *sys.argv[1:]],
             {**os.environ, "PYTHONHASHSEED": "0"},
         )
     except OSError:
         pass
+
+
+def _reexec(argv: list[str], env: dict[str, str], windows: bool | None = None) -> None:
+    """Replace the current command with `argv` run under `env`.
+
+    On POSIX this is a real os.execvpe. On Windows os.exec* does not replace
+    the process: CPython spawns a new one and the calling process exits at
+    once, so the caller sees the command "finish" while the work continues
+    detached, and the exiting parent intermittently dies with an access
+    violation (exit 139 / 0xC0000005) instead (#3799). There the child is
+    run with subprocess and waited for, and its exit status is propagated.
+    """
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        import subprocess
+        sys.stdout.flush()
+        sys.stderr.flush()
+        raise SystemExit(subprocess.run(argv, env=env).returncode)
+    os.execvpe(argv[0], argv, env)
 
 
 def main() -> None:
