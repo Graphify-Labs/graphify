@@ -1,9 +1,5 @@
-# graphify
-
-🇺🇸 [English](../../README.md) | 🇨🇳 [简体中文](README.zh-CN.md) | 🇯🇵 [日本語](README.ja-JP.md) | 🇰🇷 [한국어](README.ko-KR.md) | 🇩🇪 [Deutsch](README.de-DE.md) | 🇫🇷 [Français](README.fr-FR.md) | 🇪🇸 [Español](README.es-ES.md) | 🇮🇳 [हिन्दी](README.hi-IN.md) | 🇧🇷 [Português](README.pt-BR.md) | 🇷🇺 [Русский](README.ru-RU.md) | 🇸🇦 [العربية](README.ar-SA.md) | 🇮🇹 [Italiano](README.it-IT.md) | 🇵🇱 [Polski](README.pl-PL.md) | 🇳🇱 [Nederlands](README.nl-NL.md) | 🇹🇷 [Türkçe](README.tr-TR.md) | 🇺🇦 [Українська](README.uk-UA.md) | 🇻🇳 [Tiếng Việt](README.vi-VN.md) | 🇮🇩 [Bahasa Indonesia](README.id-ID.md) | 🇸🇪 [Svenska](README.sv-SE.md) | 🇬🇷 [Ελληνικά](README.el-GR.md) | 🇷🇴 [Română](README.ro-RO.md) | 🇨🇿 [Čeština](README.cs-CZ.md) | 🇫🇮 [Suomi](README.fi-FI.md) | 🇩🇰 [Dansk](README.da-DK.md) | 🇳🇴 [Norsk](README.no-NO.md) | 🇭🇺 [Magyar](README.hu-HU.md) | 🇹🇭 [ภาษาไทย](README.th-TH.md) | 🇺🇿 [Oʻzbekcha](README.uz-UZ.md) | 🇹🇼 [繁體中文](README.zh-TW.md)
-
 <p align="center">
-  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graphify-card.png" width="300" height="214" alt="Graphify"/></a>
+  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graphify-logo.png" width="480" height="252" alt="Graphify"/></a>
 </p>
 
 <p align="center">
@@ -20,8 +16,11 @@
 
 <p align="center">
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
+  <a href="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml"><img src="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml/badge.svg?branch=v8" alt="CI"/></a>
+  <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="다운로드 수"/></a>
-  <a href="https://discord.gg/2DDrEgvZb4"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
+  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
@@ -107,26 +106,26 @@ Shortest path (3 hops):
 
 기본으로 제공되는 기능은 다음과 같습니다.
 
-| 기능 | 제공 내용 |
-|---|---|
-| **핵심 허브 노드(God nodes)** | 연결이 가장 많은 개념을 찾아, 프로젝트의 흐름이 어디에 집중되는지 보여 줍니다. |
-| **커뮤니티** | Leiden 알고리즘으로 그래프를 하위 시스템 단위로 나누고, LLM 없이 이름을 붙입니다. |
-| **파일 간 연결** | tree-sitter AST를 사용해 약 40개 언어에서 `calls` / `imports` / `inherits` / `mixes_in` 관계를 파악합니다. |
-| **질의·경로 추적·설명** | `graph.json`을 바탕으로 질문에 답하고, 두 요소 사이의 경로를 추적하고, 특정 개념을 설명합니다. |
-| **설계 근거와 문서 참조** | `# NOTE:` / `# WHY:` 주석과 ADR/RFC 인용을 독립적인 노드로 만들고 관련 코드에 연결합니다. |
-| **코드 외의 자료도 지원** | 문서, PDF, 이미지, 동영상·오디오를 모두 같은 그래프에 담습니다. |
-| **로컬 우선 처리** | 코드는 tree-sitter로 로컬에서 파싱합니다(LLM을 사용하지 않으며 외부 전송도 없습니다). 문서·미디어의 의미 분석에만 백엔드를 호출하며, 이 역시 백엔드를 설정했을 때만 수행합니다. |
+| 기능                          | 제공 내용                                                                                                                                                                       |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **핵심 허브 노드(God nodes)** | 연결이 가장 많은 개념을 찾아, 프로젝트의 흐름이 어디에 집중되는지 보여 줍니다.                                                                                                  |
+| **커뮤니티**                  | Leiden 알고리즘으로 그래프를 하위 시스템 단위로 나누고, LLM 없이 이름을 붙입니다.                                                                                               |
+| **파일 간 연결**              | tree-sitter AST를 사용해 약 40개 언어에서 `calls` / `imports` / `inherits` / `mixes_in` 관계를 파악합니다.                                                                      |
+| **질의·경로 추적·설명**       | `graph.json`을 바탕으로 질문에 답하고, 두 요소 사이의 경로를 추적하고, 특정 개념을 설명합니다.                                                                                  |
+| **설계 근거와 문서 참조**     | `# NOTE:` / `# WHY:` 주석과 ADR/RFC 인용을 독립적인 노드로 만들고 관련 코드에 연결합니다.                                                                                       |
+| **코드 외의 자료도 지원**     | 문서, PDF, 이미지, 동영상·오디오를 모두 같은 그래프에 담습니다.                                                                                                                 |
+| **로컬 우선 처리**            | 코드는 tree-sitter로 로컬에서 파싱합니다(LLM을 사용하지 않으며 외부 전송도 없습니다). 문서·미디어의 의미 분석에만 백엔드를 호출하며, 이 역시 백엔드를 설정했을 때만 수행합니다. |
 
 ---
 
 ## 벤치마크
 
-| 벤치마크 | 지표 | graphify | 비교 대상 |
-|---|---|---|---|
-| LOCOMO (n=300) | recall@10 | **0.497** | mem0 0.048, supermemory 0.149 |
-| LOCOMO (n=300) | 질의응답 정확도 | 45.3% | supermemory 49.7%, mem0 27.3% |
-| LongMemEval-S (n=50) | 질의응답 정확도 | **76%** | dense RAG와 동률 |
-| 그래프 구축 | LLM 크레딧 | **0** | 대부분의 시스템은 토큰별 과금 |
+| 벤치마크             | 지표            | graphify  | 비교 대상                     |
+| -------------------- | --------------- | --------- | ----------------------------- |
+| LOCOMO (n=300)       | recall@10       | **0.497** | mem0 0.048, supermemory 0.149 |
+| LOCOMO (n=300)       | 질의응답 정확도 | 45.3%     | supermemory 49.7%, mem0 27.3% |
+| LongMemEval-S (n=50) | 질의응답 정확도 | **76%**   | dense RAG와 동률              |
+| 그래프 구축          | LLM 크레딧      | **0**     | 대부분의 시스템은 토큰별 과금 |
 
 모든 시스템을 동일한 평가 환경에서 같은 모델과 예산으로 실행했습니다. 평가자가 결과를 채점했으며, 그 판정을 두 번째 평가자의 판정과 블라인드 방식으로 대조해 검증했습니다(일치율 90.6%, Cohen's kappa 0.81). 시스템별 전체 결과표, 코드 이해 성능 결과, 재현 명령어는 **[BENCHMARKS.md](../../BENCHMARKS.md)**에서 확인할 수 있습니다.
 
@@ -134,11 +133,11 @@ Shortest path (3 hops):
 
 ## 사전 준비
 
-| 필수 도구 | 최소 버전 | 확인 방법 | 설치 방법 |
-|---|---|---|---|
-| Python | 3.10 이상 | `python --version` | [python.org](https://www.python.org/downloads/) |
-| uv *(권장)* | 제한 없음 | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| pipx *(대안)* | 제한 없음 | `pipx --version` | `pip install pipx` |
+| 필수 도구     | 최소 버전 | 확인 방법          | 설치 방법                                          |
+| ------------- | --------- | ------------------ | -------------------------------------------------- |
+| Python        | 3.10 이상 | `python --version` | [python.org](https://www.python.org/downloads/)    |
+| uv _(권장)_   | 제한 없음 | `uv --version`     | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
+| pipx _(대안)_ | 제한 없음 | `pipx --version`   | `pip install pipx`                                 |
 
 **macOS 빠른 설치(Homebrew):**
 
@@ -167,6 +166,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ## 설치
 
 > **공식 패키지:** PyPI 패키지 이름은 `graphifyy`입니다(y가 두 개). PyPI의 다른 `graphify*` 패키지는 이 프로젝트와 관련이 없습니다. CLI 명령어는 그대로 `graphify`입니다.
+
+공식 소스 저장소는 [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify)입니다.
 
 **1단계 — 패키지 설치:**
 
@@ -200,7 +201,7 @@ graphify install --project --platform codex
 
 > **`graphify: command not found`가 표시되나요?** `uv tool install` / `pipx install`은 도구 실행 파일 디렉터리(`~/.local/bin`)에 `graphify` 명령어를 설치합니다. 설치 직후 셸이 명령어를 찾지 못한다면 이 디렉터리가 아직 `PATH`에 없는 것입니다. 새로 설정한 macOS + zsh 환경에서 흔히 발생합니다. `uv tool update-shell`(또는 `pipx ensurepath`)을 실행한 뒤 새 터미널을 여세요. 일반 `pip`로 설치했다면 `~/.local/bin`(Linux) 또는 `~/Library/Python/3.x/bin`(Mac)을 PATH에 추가하거나 `python -m graphify`로 실행하세요.
 
-> **설치 없이 `uvx` / `uv tool run`으로 실행하려면?** 명령어 이름이 아닌 패키지 이름을 지정하세요: `uvx --from graphifyy graphify install`. 단순히 `uvx graphify …`로 실행하면 `No solution found … no versions of graphify` 오류가 발생합니다. `uv tool run`은 첫 단어를 *패키지* 이름으로 해석하기 때문입니다. 패키지 이름은 `graphifyy`이고, 그 안에 `graphify` 명령어가 들어 있습니다.
+> **설치 없이 `uvx` / `uv tool run`으로 실행하려면?** 명령어 이름이 아닌 패키지 이름을 지정하세요: `uvx --from graphifyy graphify install`. 단순히 `uvx graphify …`로 실행하면 `No solution found … no versions of graphify` 오류가 발생합니다. `uv tool run`은 첫 단어를 _패키지_ 이름으로 해석하기 때문입니다. 패키지 이름은 `graphifyy`이고, 그 안에 `graphify` 명령어가 들어 있습니다.
 
 > **Mac/Windows에서는 가능하면 `pip install`을 피하세요.** 스킬은 실행 시 `graphify-out/.graphify_python`에서 Python 경로를 확인합니다. 이 경로가 `pip`로 패키지를 설치한 환경과 다르면 `ModuleNotFoundError: No module named 'graphify'`가 발생합니다. `uv tool install`과 `pipx install`은 패키지를 별도 환경에 격리하므로 이 문제를 방지할 수 있습니다.
 
@@ -211,31 +212,31 @@ graphify install --project --platform codex
 <details>
 <summary><b>플랫폼 선택</b> (20개 이상의 도우미 지원, 클릭하여 펼치기)</summary>
 
-| 플랫폼 | 설치 명령어 |
-|----------|----------------|
-| Claude Code (Linux/Mac) | `graphify install` |
-| Claude Code (Windows) | `graphify install` (자동 감지) 또는 `graphify install --platform windows` |
-| CodeBuddy | `graphify install --platform codebuddy` |
-| Codex | `graphify install --platform codex` |
-| OpenCode | `graphify install --platform opencode` |
-| Kilo Code | `graphify install --platform kilo` |
-| GitHub Copilot CLI | `graphify install --platform copilot` |
-| VS Code Copilot Chat | `graphify vscode install` |
-| Aider | `graphify install --platform aider` |
-| OpenClaw | `graphify install --platform claw` |
-| Factory Droid | `graphify install --platform droid` |
-| Trae | `graphify install --platform trae` |
-| Trae CN | `graphify install --platform trae-cn` |
-| Gemini CLI | `graphify install --platform gemini` |
-| Hermes | `graphify install --platform hermes` |
-| Kimi Code | `graphify install --platform kimi` |
-| Amp | `graphify amp install` |
-| Agent Skills (프레임워크 공통) | `graphify install --platform agents` (별칭: `--platform skills`) |
-| Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify install --platform pi` |
-| Cursor | `graphify cursor install` |
-| Devin CLI | `graphify devin install` |
-| Google Antigravity | `graphify antigravity install` |
+| 플랫폼                         | 설치 명령어                                                               |
+| ------------------------------ | ------------------------------------------------------------------------- |
+| Claude Code (Linux/Mac)        | `graphify install`                                                        |
+| Claude Code (Windows)          | `graphify install` (자동 감지) 또는 `graphify install --platform windows` |
+| CodeBuddy                      | `graphify install --platform codebuddy`                                   |
+| Codex                          | `graphify install --platform codex`                                       |
+| OpenCode                       | `graphify install --platform opencode`                                    |
+| Kilo Code                      | `graphify install --platform kilo`                                        |
+| GitHub Copilot CLI             | `graphify install --platform copilot`                                     |
+| VS Code Copilot Chat           | `graphify vscode install`                                                 |
+| Aider                          | `graphify install --platform aider`                                       |
+| OpenClaw                       | `graphify install --platform claw`                                        |
+| Factory Droid                  | `graphify install --platform droid`                                       |
+| Trae                           | `graphify install --platform trae`                                        |
+| Trae CN                        | `graphify install --platform trae-cn`                                     |
+| Gemini CLI                     | `graphify install --platform gemini`                                      |
+| Hermes                         | `graphify install --platform hermes`                                      |
+| Kimi Code                      | `graphify install --platform kimi`                                        |
+| Amp                            | `graphify amp install`                                                    |
+| Agent Skills (프레임워크 공통) | `graphify install --platform agents` (별칭: `--platform skills`)          |
+| Kiro IDE/CLI                   | `graphify kiro install`                                                   |
+| Pi coding agent                | `graphify install --platform pi`                                          |
+| Cursor                         | `graphify cursor install`                                                 |
+| Devin CLI                      | `graphify devin install`                                                  |
+| Google Antigravity             | `graphify antigravity install`                                            |
 
 Codex에서 병렬 추출을 사용하려면 `~/.codex/config.toml`의 `[features]` 아래에 `multi_agent = true`도 설정해야 합니다. CodeBuddy는 Claude Code와 같은 Agent 도구 및 PreToolUse 훅 방식을 사용합니다. Factory Droid는 `Task` 도구로 하위 에이전트를 병렬 실행합니다. OpenClaw와 Aider는 순차 추출을 사용합니다(두 플랫폼의 병렬 에이전트 지원은 아직 초기 단계입니다). Trae는 Agent 도구로 하위 에이전트를 병렬 실행하며, `PreToolUse` 훅을 지원하지 **않으므로** AGENTS.md를 통해 그래프 사용 지침을 상시 적용합니다.
 
@@ -248,33 +249,33 @@ Codex에서 병렬 추출을 사용하려면 `~/.codex/config.toml`의 `[feature
 <details>
 <summary><b>선택 기능</b> (필요한 항목만 설치하세요)</summary>
 
-| 추가 옵션 | 제공 기능 | 설치 명령어 |
-|---|---|---|
-| `pdf` | PDF 추출 | `uv tool install "graphifyy[pdf]"` |
-| `office` | `.docx` 및 `.xlsx` 지원 | `uv tool install "graphifyy[office]"` |
-| `google` | Google Sheets 렌더링 | `uv tool install "graphifyy[google]"` |
-| `video` | 동영상·오디오 전사(음성을 텍스트로 변환, faster-whisper + yt-dlp) | `uv tool install "graphifyy[video]"` |
-| `mcp` | MCP stdio 서버 | `uv tool install "graphifyy[mcp]"` |
-| `neo4j` | Neo4j로 전송 지원 | `uv tool install "graphifyy[neo4j]"` |
-| `falkordb` | FalkorDB로 전송 지원 | `uv tool install "graphifyy[falkordb]"` |
-| `svg` | 그래프를 SVG로 내보내기 | `uv tool install "graphifyy[svg]"` |
-| `leiden` | Leiden 커뮤니티 탐지(Python 3.13 미만은 graspologic, 3.13 이상은 네이티브 백엔드) | `uv tool install "graphifyy[leiden]"` |
-| `ollama` | Ollama 로컬 추론 | `uv tool install "graphifyy[ollama]"` |
-| `openai` | OpenAI 및 OpenAI 호환 API | `uv tool install "graphifyy[openai]"` |
-| `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
-| `anthropic` | Anthropic Claude API(`--backend claude`, `ANTHROPIC_API_KEY` 사용) | `uv tool install "graphifyy[anthropic]"` |
-| `bedrock` | AWS Bedrock(IAM 사용, API 키 불필요) | `uv tool install "graphifyy[bedrock]"` |
-| `azure` | Azure OpenAI Service(`--backend azure`, `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` 사용) | `uv tool install "graphifyy[openai]"` |
-| `sql` | SQL 스키마 추출 | `uv tool install "graphifyy[sql]"` |
-| `postgres` | 실행 중인 PostgreSQL의 스키마 조사(`--postgres DSN`) | `uv tool install "graphifyy[postgres]"` |
-| `dm` | BYOND DreamMaker `.dm`/`.dme` AST 추출(플랫폼에 맞는 wheel이 없으면 C 컴파일러와 `python3-dev`가 필요할 수 있음) | `uv tool install "graphifyy[dm]"` |
-| `terraform` | Terraform / HCL `.tf`/`.tfvars`/`.hcl` AST 추출 | `uv tool install "graphifyy[terraform]"` |
-| `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST 추출(`calls`/`inherits` 관계의 정확도 향상, 미설치 시 정규식 추출기로 대체) | `uv tool install "graphifyy[pascal]"` |
-| `ocaml` | OCaml `.ml`/`.mli` AST 추출 | `uv tool install "graphifyy[ocaml]"` |
-| `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST 추출 | `uv tool install "graphifyy[commonlisp]"` |
-| `robot` | Robot Framework `.robot`/`.resource` 추출(스위트, 테스트 케이스, 키워드, 키워드 호출 및 리소스·라이브러리 가져오기 관계) | `uv tool install "graphifyy[robot]"` |
-| `chinese` | 중국어 질의의 단어 분리(jieba) | `uv tool install "graphifyy[chinese]"` |
-| `all` | 위의 모든 기능 | `uv tool install "graphifyy[all]"` |
+| 추가 옵션    | 제공 기능                                                                                                                   | 설치 명령어                               |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `pdf`        | PDF 추출                                                                                                                    | `uv tool install "graphifyy[pdf]"`        |
+| `office`     | `.docx` 및 `.xlsx` 지원                                                                                                     | `uv tool install "graphifyy[office]"`     |
+| `google`     | Google Sheets 렌더링                                                                                                        | `uv tool install "graphifyy[google]"`     |
+| `video`      | 동영상·오디오 전사(음성을 텍스트로 변환, faster-whisper + yt-dlp)                                                           | `uv tool install "graphifyy[video]"`      |
+| `mcp`        | MCP stdio 서버                                                                                                              | `uv tool install "graphifyy[mcp]"`        |
+| `neo4j`      | Neo4j로 전송 지원                                                                                                           | `uv tool install "graphifyy[neo4j]"`      |
+| `falkordb`   | FalkorDB로 전송 지원                                                                                                        | `uv tool install "graphifyy[falkordb]"`   |
+| `svg`        | 그래프를 SVG로 내보내기                                                                                                     | `uv tool install "graphifyy[svg]"`        |
+| `leiden`     | Leiden 커뮤니티 탐지(Python 3.13 미만은 graspologic, 3.13 이상은 네이티브 백엔드)                                           | `uv tool install "graphifyy[leiden]"`     |
+| `ollama`     | Ollama 로컬 추론                                                                                                            | `uv tool install "graphifyy[ollama]"`     |
+| `openai`     | OpenAI 및 OpenAI 호환 API                                                                                                   | `uv tool install "graphifyy[openai]"`     |
+| `gemini`     | Google Gemini API                                                                                                           | `uv tool install "graphifyy[gemini]"`     |
+| `anthropic`  | Anthropic Claude API(`--backend claude`, `ANTHROPIC_API_KEY` 사용)                                                          | `uv tool install "graphifyy[anthropic]"`  |
+| `bedrock`    | AWS Bedrock(IAM 사용, API 키 불필요)                                                                                        | `uv tool install "graphifyy[bedrock]"`    |
+| `azure`      | Azure OpenAI Service(`--backend azure`, `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT` 사용)                              | `uv tool install "graphifyy[openai]"`     |
+| `sql`        | SQL 스키마 추출                                                                                                             | `uv tool install "graphifyy[sql]"`        |
+| `postgres`   | 실행 중인 PostgreSQL의 스키마 조사(`--postgres DSN`)                                                                        | `uv tool install "graphifyy[postgres]"`   |
+| `dm`         | BYOND DreamMaker `.dm`/`.dme` AST 추출(플랫폼에 맞는 wheel이 없으면 C 컴파일러와 `python3-dev`가 필요할 수 있음)            | `uv tool install "graphifyy[dm]"`         |
+| `terraform`  | Terraform / HCL `.tf`/`.tfvars`/`.hcl` AST 추출                                                                             | `uv tool install "graphifyy[terraform]"`  |
+| `pascal`     | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST 추출(`calls`/`inherits` 관계의 정확도 향상, 미설치 시 정규식 추출기로 대체) | `uv tool install "graphifyy[pascal]"`     |
+| `ocaml`      | OCaml `.ml`/`.mli` AST 추출                                                                                                 | `uv tool install "graphifyy[ocaml]"`      |
+| `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST 추출                                                                            | `uv tool install "graphifyy[commonlisp]"` |
+| `robot`      | Robot Framework `.robot`/`.resource` 추출(스위트, 테스트 케이스, 키워드, 키워드 호출 및 리소스·라이브러리 가져오기 관계)    | `uv tool install "graphifyy[robot]"`      |
+| `chinese`    | 중국어 질의의 단어 분리(jieba)                                                                                              | `uv tool install "graphifyy[chinese]"`    |
+| `all`        | 위의 모든 기능                                                                                                              | `uv tool install "graphifyy[all]"`        |
 
 </details>
 
@@ -284,30 +285,30 @@ Codex에서 병렬 추출을 사용하려면 `~/.codex/config.toml`의 `[feature
 
 그래프를 만든 뒤 프로젝트에서 아래 명령어를 한 번 실행하세요.
 
-| 플랫폼 | 명령어 |
-|----------|---------|
-| Claude Code | `graphify claude install` |
-| CodeBuddy | `graphify codebuddy install` |
-| Codex | `graphify codex install` |
-| OpenCode | `graphify opencode install` |
-| Kilo Code | `graphify kilo install` |
-| GitHub Copilot CLI | `graphify copilot install` |
-| VS Code Copilot Chat | `graphify vscode install` |
-| Aider | `graphify aider install` |
-| OpenClaw | `graphify claw install` |
-| Factory Droid | `graphify droid install` |
-| Trae | `graphify trae install` |
-| Trae CN | `graphify trae-cn install` |
-| Cursor | `graphify cursor install` |
-| Gemini CLI | `graphify gemini install` |
-| Hermes | `graphify hermes install` |
-| Kimi Code | `graphify install --platform kimi` |
-| Amp | `graphify amp install` |
+| 플랫폼                         | 명령어                                                      |
+| ------------------------------ | ----------------------------------------------------------- |
+| Claude Code                    | `graphify claude install`                                   |
+| CodeBuddy                      | `graphify codebuddy install`                                |
+| Codex                          | `graphify codex install`                                    |
+| OpenCode                       | `graphify opencode install`                                 |
+| Kilo Code                      | `graphify kilo install`                                     |
+| GitHub Copilot CLI             | `graphify copilot install`                                  |
+| VS Code Copilot Chat           | `graphify vscode install`                                   |
+| Aider                          | `graphify aider install`                                    |
+| OpenClaw                       | `graphify claw install`                                     |
+| Factory Droid                  | `graphify droid install`                                    |
+| Trae                           | `graphify trae install`                                     |
+| Trae CN                        | `graphify trae-cn install`                                  |
+| Cursor                         | `graphify cursor install`                                   |
+| Gemini CLI                     | `graphify gemini install`                                   |
+| Hermes                         | `graphify hermes install`                                   |
+| Kimi Code                      | `graphify install --platform kimi`                          |
+| Amp                            | `graphify amp install`                                      |
 | Agent Skills (프레임워크 공통) | `graphify agents install` (별칭: `graphify skills install`) |
-| Kiro IDE/CLI | `graphify kiro install` |
-| Pi coding agent | `graphify pi install` |
-| Devin CLI | `graphify devin install` |
-| Google Antigravity | `graphify antigravity install` |
+| Kiro IDE/CLI                   | `graphify kiro install`                                     |
+| Pi coding agent                | `graphify pi install`                                       |
+| Devin CLI                      | `graphify devin install`                                    |
+| Google Antigravity             | `graphify antigravity install`                              |
 
 이 명령어는 코드베이스 관련 질문에 답할 때 지식 그래프를 참조하도록 안내하는 작은 설정 파일을 만듭니다. 전체 보고서를 읽거나 원본 파일을 grep으로 검색하기보다 `graphify query "<question>"`처럼 범위를 좁힌 질의를 우선하도록 합니다.
 
@@ -340,23 +341,27 @@ Codex에서 병렬 추출을 사용하려면 `~/.codex/config.toml`의 `[feature
 
 ## 지원하는 파일
 
-| 유형 | 확장자 |
-|------|-----------|
+| 유형                        | 확장자                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 코드(tree-sitter 문법 37종) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .ml .mli .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme`는 `uv tool install graphifyy[dm]`, `.ml`/`.mli`는 `uv tool install graphifyy[ocaml]` 필요. `.mts`/`.cts`는 TypeScript 문법을, `.cc`/`.cxx`, CUDA의 `.cu`/`.cuh`, Metal의 `.metal`은 C++ 문법을 재사용) |
-| Salesforce Apex | `.cls .trigger` (정규식 기반. 클래스, 인터페이스, 열거형, 메서드, 트리거 및 SOQL/DML 연결 관계 추출) |
-| Terraform / HCL | `.tf .tfvars .hcl` (`uv tool install graphifyy[terraform]` 필요) |
-| OCaml | `.ml .mli` (`uv tool install graphifyy[ocaml]` 필요) |
-| Common Lisp | `.lisp .cl .lsp .asd` (`uv tool install graphifyy[commonlisp]` 필요) |
-| Robot Framework | `.robot .resource` (공식 `robot.api` 파서 사용, `uv tool install graphifyy[robot]` 필요. 스위트, 테스트 케이스, 사용자 키워드, 키워드 호출 및 Resource/Library/Variables 가져오기 관계 추출) |
-| MCP 설정 | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — 서버 노드, 패키지 참조, 필요한 환경 변수 추출 |
-| 패키지 매니페스트 | `apm.yml` `pyproject.toml` `go.mod` `pom.xml` — 이름을 기준으로 패키지마다 하나의 대표 노드를 만들고 `depends_on` 관계를 추가. 여러 매니페스트에서 참조하는 패키지도 하나의 허브로 통합 |
-| 문서 | `.md .mdx .qmd .html .txt .rst .yaml .yml` (Markdown의 `[text](./other.md)` 링크와 `[[wikilinks]]`를 문서 간 `references` 관계로 변환) |
-| Office | `.docx .xlsx` (`uv tool install graphifyy[office]` 필요) |
-| Google Workspace | `.gdoc .gsheet .gslides` (명시적으로 활성화해야 함. `gws` 인증과 `--google-workspace` 필요. Sheets는 `uv tool install graphifyy[google]` 필요) |
-| PDF | `.pdf` |
-| 이미지 | `.png .jpg .webp .gif` |
-| 동영상 / 오디오 | `.mp4 .mov .mp3 .wav` 등 (`uv tool install graphifyy[video]` 필요) |
-| YouTube / URL | 모든 동영상 URL (`uv tool install graphifyy[video]` 필요) |
+| Salesforce Apex             | `.cls .trigger` (정규식 기반. 클래스, 인터페이스, 열거형, 메서드, 트리거 및 SOQL/DML 연결 관계 추출)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Terraform / HCL             | `.tf .tfvars .hcl` (`uv tool install graphifyy[terraform]` 필요)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| OCaml                       | `.ml .mli` (`uv tool install graphifyy[ocaml]` 필요)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Common Lisp                 | `.lisp .cl .lsp .asd` (`uv tool install graphifyy[commonlisp]` 필요)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Robot Framework             | `.robot .resource` (공식 `robot.api` 파서 사용, `uv tool install graphifyy[robot]` 필요. 스위트, 테스트 케이스, 사용자 키워드, 키워드 호출 및 Resource/Library/Variables 가져오기 관계 추출)                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| MCP 설정                    | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — 서버 노드, 패키지 참조, 필요한 환경 변수 추출                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 패키지 매니페스트           | `apm.yml` `pyproject.toml` `go.mod` `pom.xml` — 이름을 기준으로 패키지마다 하나의 대표 노드를 만들고 `depends_on` 관계를 추가. 여러 매니페스트에서 참조하는 패키지도 하나의 허브로 통합                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 문서                        | `.md .mdx .qmd .html .txt .rst .yaml .yml` (Markdown의 `[text](./other.md)` 링크와 `[[wikilinks]]`를 문서 간 `references` 관계로 변환)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Office                      | `.docx .xlsx` (`uv tool install graphifyy[office]` 필요)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Google Workspace            | `.gdoc .gsheet .gslides` (명시적으로 활성화해야 함. `gws` 인증과 `--google-workspace` 필요. Sheets는 `uv tool install graphifyy[google]` 필요)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| PDF                         | `.pdf`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 이미지                      | `.png .jpg .webp .gif`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 동영상 / 오디오             | `.mp4 .mov .mp3 .wav` 등 (`uv tool install graphifyy[video]` 필요)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| YouTube / URL               | 모든 동영상 URL (`uv tool install graphifyy[video]` 필요)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+
+리터럴 로컬 `source`(`./...` 또는 `../...`)를 사용하는 Terraform 모듈 호출은 `EXTRACTED` `module_source` 엣지를 통해 디렉터리 모듈 노드와 연결됩니다. 각 디렉터리 노드는 그 아래에서 스캔한 `.tf` 파일을 담고 있어, 중첩된 호출도 환경 → 애플리케이션 → 기반 → 리소스 같은 경로로 드러납니다. 호출하는 쪽과 구현 양쪽을 모두 포함하려면 공통 저장소 루트를 스캔하세요. 경로는 호출하는 모듈을 기준으로 해석하며, 제외된 파일이나 루트 밖의 파일은 암묵적으로 읽지 않습니다.
+
+원격 소스와 `source` 표현식은 해석하지 않습니다. `.tfvars`, 일반 `.hcl`, `.tf.json` 파일은 모듈 소스 대상을 정의하지 않습니다. `module.app.output` 참조는 구현 쪽의 출력이 아니라 모듈 호출을 가리킵니다. 그래프는 평가된 Terraform 인스턴스가 아니라 소스 설정을 표현합니다. Terraform의 증분 변경은 스캔한 `.tf` 자료를 다시 맞추며, 변경되지 않은 파일은 캐시된 구문을 재사용합니다. 기존 그래프를 업그레이드한 뒤에는 `graphify update .`를 한 번 실행해 Terraform ID와 토폴로지를 다시 생성하세요.
 
 코드는 **API 호출 없이 로컬에서 추출**합니다(tree-sitter AST 사용). 그 외의 자료는 AI 도우미의 모델 API를 거칩니다.
 
@@ -428,16 +433,22 @@ dist/
 
 ## 팀 환경 설정
 
-`graphify-out/`은 팀원 모두가 프로젝트 지도를 갖고 시작할 수 있도록 Git에 커밋하는 것을 전제로 합니다.
+팀 그래프를 만들려는 경우, `graphify-out/` 디렉터리는 기본적으로 gitignore 대상입니다. 팀에서 그래프를 공유하려면 팀원이 사용할 수 있도록 **질의 가능한 산출물만 명시적으로 강제 추가**해야 합니다.
 
-**`.gitignore`에 추가할 권장 항목:**
+_(참고: Graphify 저장소 자체에 기여하는 경우에는, 특정 테스트 픽스처가 아닌 한 로컬 `graphify-out/`을 커밋하지 마세요.)_
 
-```
-graphify-out/cost.json        # 로컬에서만 사용
-# graphify-out/cache/         # 선택 사항: 속도를 원하면 커밋, 저장소 크기를 줄이려면 제외
+**그래프 공유를 위한 권장 git 명령어(강제 추가는 한 번만 하면 되고, 이후 변경은 git이 정상적으로 추적합니다):**
+
+```bash
+git add -f graphify-out/graph.json
+git add -f graphify-out/GRAPH_REPORT.md
+# git add -f graphify-out/wiki/         # 선택 사항: 위키 내보내기를 사용하는 경우
+# git add -f graphify-out/obsidian/     # 선택 사항: Obsidian 내보내기를 사용하는 경우
 ```
 
 > 이제 `manifest.json`은 다른 환경에서도 사용할 수 있습니다. 키를 상대 경로로 저장하고 불러올 때 기준 경로를 다시 설정하므로, 커밋해도 안전하며 첫 체크아웃 시 전체 그래프를 다시 만들지 않아도 됩니다.
+
+나머지 `graphify-out/` 파일은 각자의 컴퓨터에만 해당하므로 강제 추가하면 **안 됩니다**: `.graphify_root`와 `.graphify_python`(이 컴퓨터의 스캔 루트와 인터프리터의 절대 경로), `.graphify_analysis.json`, `graphify-out/cache/` 아래의 AST 캐시, 그리고 `needs_update` 플래그가 여기에 해당합니다. 공유된 `graph.json`을 받은 팀원은 바로 질의할 수 있고, `graphify update`를 실행하면 커밋된 `manifest.json`의 기준 경로가 다시 설정되어 각자의 환경에서 변경된 부분만 다시 만듭니다.
 
 <a id="recommended-workflow"></a>
 
@@ -445,13 +456,13 @@ graphify-out/cost.json        # 로컬에서만 사용
 
 저장소를 복제한 뒤 한 번만 설정하세요. 이후에는 평소 사용하는 Git 명령어 세 개가 그래프를 자동으로 최신 상태로 유지하고, 나머지 한 단계로 팀의 변경 사항과 동기화할 수 있습니다.
 
-| 실행하는 작업 | graphify의 동작 |
-|---|---|
-| `graphify hook install` (복제 직후 한 번) | 아래 훅과 함께 병합 드라이버를 설치해 `graph.json`에 충돌 표시가 생기지 않도록 함 |
-| `git commit` | 자동 재생성 — AST만 사용하므로 API 비용 없음 |
-| `git checkout` / `git switch` (브랜치 전환) | 자동 재생성(파일만 체크아웃하는 `git checkout -- <path>`는 해당 없음) |
-| `git pull` / `git merge` | 직후에 `graphify update .` 실행 필요 |
-| `git push` | 별도 작업 없음 |
+| 실행하는 작업                               | graphify의 동작                                                                   |
+| ------------------------------------------- | --------------------------------------------------------------------------------- |
+| `graphify hook install` (복제 직후 한 번)   | 아래 훅과 함께 병합 드라이버를 설치해 `graph.json`에 충돌 표시가 생기지 않도록 함 |
+| `git commit`                                | 자동 재생성 — AST만 사용하므로 API 비용 없음                                      |
+| `git checkout` / `git switch` (브랜치 전환) | 자동 재생성(파일만 체크아웃하는 `git checkout -- <path>`는 해당 없음)             |
+| `git pull` / `git merge`                    | 직후에 `graphify update .` 실행 필요                                              |
+| `git push`                                  | 별도 작업 없음                                                                    |
 
 커밋과 브랜치 전환에 따른 재생성은 백그라운드에서 실행되며 명령어는 즉시 반환됩니다. 따라서 큰 저장소에서는 그래프 갱신이 커밋보다 몇 초 늦을 수 있습니다. 갱신 전에 질의하는 드문 경우의 대처 방법은 아래 5단계를 참고하세요.
 
@@ -493,16 +504,16 @@ MCP 서버는 도우미가 구조화된 방식으로 접근할 수 있는 다음
 
 `--transport stdio`(기본값)는 개발자마다 로컬 서버를 하나씩 실행합니다. `--transport http`는 같은 도구를 MCP Streamable HTTP 전송 방식으로 제공하므로, 하나의 공유 프로세스가 팀 전체에 그래프를 제공할 수 있습니다. 각 클라이언트는 graphify를 로컬에서 실행하는 대신 IDE의 MCP 설정에 `http://<host>:8080/mcp`를 지정하면 됩니다.
 
-| 플래그 | 기본값 | 용도 |
-|---|---|---|
-| `--transport {stdio,http}` | `stdio` | 서버의 전송 방식 |
-| `--host` | `127.0.0.1` | HTTP 바인딩 호스트(localhost 외부에 공개하려면 `0.0.0.0` 사용) |
-| `--port` | `8080` | HTTP 바인딩 포트 |
-| `--api-key` | 환경 변수 `GRAPHIFY_API_KEY` | `Authorization: Bearer <key>` 또는 `X-API-Key` 인증 요구 |
-| `--path` | `/mcp` | HTTP 서비스 경로 |
-| `--json-response` | 꺼짐 | SSE 스트림 대신 일반 JSON 반환 |
-| `--stateless` | 꺼짐 | 세션별 상태를 유지하지 않음(로드 밸런싱·CI 배포용) |
-| `--session-timeout` | `3600` | 상태를 유지하는 세션이 N초 동안 유휴 상태이면 정리(`0`이면 비활성화) |
+| 플래그                     | 기본값                       | 용도                                                                 |
+| -------------------------- | ---------------------------- | -------------------------------------------------------------------- |
+| `--transport {stdio,http}` | `stdio`                      | 서버의 전송 방식                                                     |
+| `--host`                   | `127.0.0.1`                  | HTTP 바인딩 호스트(localhost 외부에 공개하려면 `0.0.0.0` 사용)       |
+| `--port`                   | `8080`                       | HTTP 바인딩 포트                                                     |
+| `--api-key`                | 환경 변수 `GRAPHIFY_API_KEY` | `Authorization: Bearer <key>` 또는 `X-API-Key` 인증 요구             |
+| `--path`                   | `/mcp`                       | HTTP 서비스 경로                                                     |
+| `--json-response`          | 꺼짐                         | SSE 스트림 대신 일반 JSON 반환                                       |
+| `--stateless`              | 꺼짐                         | 세션별 상태를 유지하지 않음(로드 밸런싱·CI 배포용)                   |
+| `--session-timeout`        | `3600`                       | 상태를 유지하는 세션이 N초 동안 유휴 상태이면 정리(`0`이면 비활성화) |
 
 기본 바인딩 주소 `127.0.0.1`은 루프백 연결만 허용합니다. 공유 호스트에서 외부에 공개할 때는 **`--host 0.0.0.0`과 `--api-key`를 함께** 설정하세요. 컨테이너에서 실행하는 예시는 다음과 같습니다.
 
@@ -513,6 +524,7 @@ docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
 ```
 
 > **WSL / Linux 참고:** Ubuntu는 `python`이 아니라 `python3`를 제공합니다. 충돌을 피하려면 가상 환경을 사용하세요.
+>
 > ```bash
 > python3 -m venv .venv && .venv/bin/pip install "graphifyy[mcp]"
 > ```
@@ -523,42 +535,42 @@ docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
 
 다음 변수는 **헤드리스 환경 또는 CI에서 추출**할 때(`graphify extract`)만 필요합니다. IDE 안에서 `/graphify` 스킬로 실행하면 IDE 세션이 모델 API를 제공하므로 추가 키가 필요하지 않습니다.
 
-| 변수 | 용도 | 필요한 경우 |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | Claude(Anthropic) 백엔드 | `--backend claude` |
-| `ANTHROPIC_BASE_URL` | Anthropic 호환 엔드포인트 URL(LiteLLM 프록시, 게이트웨이 등) | `--backend claude` (기본값: `https://api.anthropic.com`) |
-| `ANTHROPIC_MODEL` | Claude 백엔드의 모델 이름. 사용자 지정 엔드포인트에서는 서버가 제공하는 모델 이름이나 별칭 사용 | `--backend claude` (기본값: `claude-sonnet-4-6`) |
-| `GEMINI_API_KEY` 또는 `GOOGLE_API_KEY` | Google Gemini 백엔드 | `--backend gemini` |
-| `OPENAI_API_KEY` | OpenAI 또는 OpenAI 호환 API | `--backend openai` (로컬 서버는 비어 있지 않은 값이면 허용) |
-| `OPENAI_BASE_URL` | OpenAI 호환 서버 URL(llama.cpp, vLLM, LM Studio 등) | `--backend openai` (기본값: `https://api.openai.com/v1`) |
-| `OPENAI_MODEL` | OpenAI 백엔드의 모델 이름. 자체 호스팅 서버에서는 서버가 제공하는 모델 이름이나 별칭 사용(`/v1/models` 엔드포인트에서 확인). 예: llama.cpp의 `LFM2.5-8B-A1B-UD-Q4_K_XL` | `--backend openai` (기본값: `gpt-4.1-mini`) |
-| `DEEPSEEK_API_KEY` | DeepSeek 백엔드 | `--backend deepseek` |
-| `MOONSHOT_API_KEY` | Kimi Code 백엔드 | `--backend kimi` |
-| `OLLAMA_BASE_URL` | Ollama 로컬 추론 URL | `--backend ollama` (기본값: `http://localhost:11434`) |
-| `OLLAMA_MODEL` | Ollama 모델 이름 | `--backend ollama` (기본값: 자동 감지) |
-| `GRAPHIFY_OLLAMA_NUM_CTX` | Ollama KV 캐시 윈도 크기를 직접 지정 | 선택 사항 — 기본적으로 자동 조정 |
-| `GRAPHIFY_OLLAMA_KEEP_ALIVE` | Ollama 모델을 메모리에 유지할 시간(분) | 선택 사항 — `0`으로 설정하면 청크 처리 후마다 모델을 메모리에서 해제 |
-| `AZURE_OPENAI_API_KEY` | Azure OpenAI Service 백엔드 | `--backend azure` |
-| `AZURE_OPENAI_ENDPOINT` | Azure 리소스 엔드포인트 URL | `--backend azure` (API 키와 함께 필수) |
-| `AZURE_OPENAI_API_VERSION` | Azure API 버전을 직접 지정 | 선택 사항 — 기본값 `2024-12-01-preview` |
-| `AZURE_OPENAI_DEPLOYMENT` 또는 `GRAPHIFY_AZURE_MODEL` | Azure 배포 이름 | 선택 사항 — 기본값 `gpt-4o` |
-| `AWS_*` / `~/.aws/credentials` | AWS Bedrock — 표준 자격 증명 체인 | `--backend bedrock` (API 키 없이 IAM 사용) |
-| `GRAPHIFY_MAX_WORKERS` | AST 병렬 처리 스레드 수 | 선택 사항 — `--max-workers` 플래그로도 설정 가능 |
-| `GRAPHIFY_MAX_OUTPUT_TOKENS` | 정보 밀도가 높은 자료 모음의 출력 한도 상향 | 선택 사항 — 큰 파일의 경우 예: `32768` |
-| `GRAPHIFY_API_TIMEOUT` | HTTP, claude-cli, Anthropic SDK, Bedrock 백엔드의 호출별 제한 시간(초, 기본값: 600) | 선택 사항 — `--api-timeout` 플래그로도 설정 가능 |
-| `GRAPHIFY_MAX_RETRIES` | 요청 한도 초과(429) 시 포기하기 전 재시도 횟수(기본값: 6, `Retry-After` 준수) | 선택 사항 — 조직별 한도가 엄격한 경우(예: kimi) 늘릴 수 있음. `0`이면 비활성화 |
-| `GRAPHIFY_MAX_RETRY_DEPTH` | 응답이 잘린 청크를 이분할해 재추출할 최대 깊이(기본값: 3, 청크 하나가 최대 8개의 하위 청크로 나뉘어 각각 재호출됨) | 선택 사항 — 최악의 경우 비용을 제한하려면 낮게 설정. `0`이면 모든 재시도(이분할 및 내용 없는 응답의 재시도)를 비활성화하여 청크당 정확히 한 번만 호출 |
-| `GRAPHIFY_FORCE` | 노드 수가 줄어도 그래프 강제 재생성 | 선택 사항 — `--force` 플래그로도 설정 가능 |
-| `GRAPHIFY_GOOGLE_WORKSPACE` | Google Workspace 내보내기 자동 활성화 | 선택 사항 — `1`로 설정 |
-| `GRAPHIFY_TRIAGE_BACKEND` | `graphify prs --triage`에 사용할 백엔드 | 선택 사항 — 사용 가능한 키에서 자동 감지 |
-| `GRAPHIFY_TRIAGE_MODEL` | 우선순위 분류에 사용할 모델을 직접 지정 | 선택 사항 — 예: `claude-opus-4-7` |
-| `GRAPHIFY_QUERY_LOG_ENABLE` | `1`로 설정하면 `~/.cache/graphify-queries.log`의 로컬 질의 로그 활성화(query/path/explain의 각 질문과 자료 경로 기록). 기본적으로 꺼져 있으며, 명시적으로 활성화하지 않으면 기록하지 않음(#1797) | 선택 사항 |
-| `GRAPHIFY_QUERY_LOG` | 질의 로그를 활성화하고 기본 경로 대신 지정한 경로에 기록 | 선택 사항 — 이 변수나 `_ENABLE`을 설정하지 않으면 꺼짐 |
-| `GRAPHIFY_QUERY_LOG_DISABLE` | `1`로 설정하면 질의 로그를 강제로 끔(활성화 변수보다 우선) | 선택 사항 |
-| `GRAPHIFY_QUERY_LOG_RESPONSES` | 로그 활성화 시 전체 부분 그래프 응답도 기록(기본적으로 꺼짐) | 선택 사항 |
-| `GRAPHIFY_MAX_GRAPH_BYTES` | graph.json의 512 MiB 크기 제한 변경 — 예: `700MB`, `2GB` 또는 바이트 단위 숫자 | 선택 사항 — 매우 큰 자료 모음에 유용 |
-| `GRAPHIFY_MAX_CONTEXTS` | 다중 프로젝트 MCP 서버 하나가 유지할 기본 프로젝트 외 그래프의 최대 수 | 선택 사항 — 기본값: `8`. 잘못된 값은 `8`, `1`보다 작은 값은 `1` 사용 |
-| `GRAPHIFY_LLM_TEMPERATURE` | 의미 추출에 사용할 LLM temperature를 직접 지정 — 예: `0.7`, 생략하려면 `none` | 선택 사항 — o1/o3/o4/gpt-5 추론 모델에서는 자동으로 생략 |
+| 변수                                                  | 용도                                                                                                                                                                                             | 필요한 경우                                                                                                                                           |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`                                   | Claude(Anthropic) 백엔드                                                                                                                                                                         | `--backend claude`                                                                                                                                    |
+| `ANTHROPIC_BASE_URL`                                  | Anthropic 호환 엔드포인트 URL(LiteLLM 프록시, 게이트웨이 등)                                                                                                                                     | `--backend claude` (기본값: `https://api.anthropic.com`)                                                                                              |
+| `ANTHROPIC_MODEL`                                     | Claude 백엔드의 모델 이름. 사용자 지정 엔드포인트에서는 서버가 제공하는 모델 이름이나 별칭 사용                                                                                                  | `--backend claude` (기본값: `claude-sonnet-4-6`)                                                                                                      |
+| `GEMINI_API_KEY` 또는 `GOOGLE_API_KEY`                | Google Gemini 백엔드                                                                                                                                                                             | `--backend gemini`                                                                                                                                    |
+| `OPENAI_API_KEY`                                      | OpenAI 또는 OpenAI 호환 API                                                                                                                                                                      | `--backend openai` (로컬 서버는 비어 있지 않은 값이면 허용)                                                                                           |
+| `OPENAI_BASE_URL`                                     | OpenAI 호환 서버 URL(llama.cpp, vLLM, LM Studio 등)                                                                                                                                              | `--backend openai` (기본값: `https://api.openai.com/v1`)                                                                                              |
+| `OPENAI_MODEL`                                        | OpenAI 백엔드의 모델 이름. 자체 호스팅 서버에서는 서버가 제공하는 모델 이름이나 별칭 사용(`/v1/models` 엔드포인트에서 확인). 예: llama.cpp의 `LFM2.5-8B-A1B-UD-Q4_K_XL`                          | `--backend openai` (기본값: `gpt-4.1-mini`)                                                                                                           |
+| `DEEPSEEK_API_KEY`                                    | DeepSeek 백엔드                                                                                                                                                                                  | `--backend deepseek`                                                                                                                                  |
+| `MOONSHOT_API_KEY`                                    | Kimi Code 백엔드                                                                                                                                                                                 | `--backend kimi`                                                                                                                                      |
+| `OLLAMA_BASE_URL`                                     | Ollama 로컬 추론 URL                                                                                                                                                                             | `--backend ollama` (기본값: `http://localhost:11434`)                                                                                                 |
+| `OLLAMA_MODEL`                                        | Ollama 모델 이름                                                                                                                                                                                 | `--backend ollama` (기본값: 자동 감지)                                                                                                                |
+| `GRAPHIFY_OLLAMA_NUM_CTX`                             | Ollama KV 캐시 윈도 크기를 직접 지정                                                                                                                                                             | 선택 사항 — 기본적으로 자동 조정                                                                                                                      |
+| `GRAPHIFY_OLLAMA_KEEP_ALIVE`                          | Ollama 모델을 메모리에 유지할 시간(분)                                                                                                                                                           | 선택 사항 — `0`으로 설정하면 청크 처리 후마다 모델을 메모리에서 해제                                                                                  |
+| `AZURE_OPENAI_API_KEY`                                | Azure OpenAI Service 백엔드                                                                                                                                                                      | `--backend azure`                                                                                                                                     |
+| `AZURE_OPENAI_ENDPOINT`                               | Azure 리소스 엔드포인트 URL                                                                                                                                                                      | `--backend azure` (API 키와 함께 필수)                                                                                                                |
+| `AZURE_OPENAI_API_VERSION`                            | Azure API 버전을 직접 지정                                                                                                                                                                       | 선택 사항 — 기본값 `2024-12-01-preview`                                                                                                               |
+| `AZURE_OPENAI_DEPLOYMENT` 또는 `GRAPHIFY_AZURE_MODEL` | Azure 배포 이름                                                                                                                                                                                  | 선택 사항 — 기본값 `gpt-4o`                                                                                                                           |
+| `AWS_*` / `~/.aws/credentials`                        | AWS Bedrock — 표준 자격 증명 체인                                                                                                                                                                | `--backend bedrock` (API 키 없이 IAM 사용)                                                                                                            |
+| `GRAPHIFY_MAX_WORKERS`                                | AST 병렬 처리 스레드 수                                                                                                                                                                          | 선택 사항 — `--max-workers` 플래그로도 설정 가능                                                                                                      |
+| `GRAPHIFY_MAX_OUTPUT_TOKENS`                          | 정보 밀도가 높은 자료 모음의 출력 한도 상향                                                                                                                                                      | 선택 사항 — 큰 파일의 경우 예: `32768`                                                                                                                |
+| `GRAPHIFY_API_TIMEOUT`                                | HTTP, claude-cli, Anthropic SDK, Bedrock 백엔드의 호출별 제한 시간(초, 기본값: 600)                                                                                                              | 선택 사항 — `--api-timeout` 플래그로도 설정 가능                                                                                                      |
+| `GRAPHIFY_MAX_RETRIES`                                | 요청 한도 초과(429) 시 포기하기 전 재시도 횟수(기본값: 6, `Retry-After` 준수)                                                                                                                    | 선택 사항 — 조직별 한도가 엄격한 경우(예: kimi) 늘릴 수 있음. `0`이면 비활성화                                                                        |
+| `GRAPHIFY_MAX_RETRY_DEPTH`                            | 응답이 잘린 청크를 이분할해 재추출할 최대 깊이(기본값: 3, 청크 하나가 최대 8개의 하위 청크로 나뉘어 각각 재호출됨)                                                                               | 선택 사항 — 최악의 경우 비용을 제한하려면 낮게 설정. `0`이면 모든 재시도(이분할 및 내용 없는 응답의 재시도)를 비활성화하여 청크당 정확히 한 번만 호출 |
+| `GRAPHIFY_FORCE`                                      | 노드 수가 줄어도 그래프 강제 재생성                                                                                                                                                              | 선택 사항 — `--force` 플래그로도 설정 가능                                                                                                            |
+| `GRAPHIFY_GOOGLE_WORKSPACE`                           | Google Workspace 내보내기 자동 활성화                                                                                                                                                            | 선택 사항 — `1`로 설정                                                                                                                                |
+| `GRAPHIFY_TRIAGE_BACKEND`                             | `graphify prs --triage`에 사용할 백엔드                                                                                                                                                          | 선택 사항 — 사용 가능한 키에서 자동 감지                                                                                                              |
+| `GRAPHIFY_TRIAGE_MODEL`                               | 우선순위 분류에 사용할 모델을 직접 지정                                                                                                                                                          | 선택 사항 — 예: `claude-opus-4-7`                                                                                                                     |
+| `GRAPHIFY_QUERY_LOG_ENABLE`                           | `1`로 설정하면 `~/.cache/graphify-queries.log`의 로컬 질의 로그 활성화(query/path/explain의 각 질문과 자료 경로 기록). 기본적으로 꺼져 있으며, 명시적으로 활성화하지 않으면 기록하지 않음(#1797) | 선택 사항                                                                                                                                             |
+| `GRAPHIFY_QUERY_LOG`                                  | 질의 로그를 활성화하고 기본 경로 대신 지정한 경로에 기록                                                                                                                                         | 선택 사항 — 이 변수나 `_ENABLE`을 설정하지 않으면 꺼짐                                                                                                |
+| `GRAPHIFY_QUERY_LOG_DISABLE`                          | `1`로 설정하면 질의 로그를 강제로 끔(활성화 변수보다 우선)                                                                                                                                       | 선택 사항                                                                                                                                             |
+| `GRAPHIFY_QUERY_LOG_RESPONSES`                        | 로그 활성화 시 전체 부분 그래프 응답도 기록(기본적으로 꺼짐)                                                                                                                                     | 선택 사항                                                                                                                                             |
+| `GRAPHIFY_MAX_GRAPH_BYTES`                            | graph.json의 512 MiB 크기 제한 변경 — 예: `700MB`, `2GB` 또는 바이트 단위 숫자                                                                                                                   | 선택 사항 — 매우 큰 자료 모음에 유용                                                                                                                  |
+| `GRAPHIFY_MAX_CONTEXTS`                               | 다중 프로젝트 MCP 서버 하나가 유지할 기본 프로젝트 외 그래프의 최대 수                                                                                                                           | 선택 사항 — 기본값: `8`. 잘못된 값은 `8`, `1`보다 작은 값은 `1` 사용                                                                                  |
+| `GRAPHIFY_LLM_TEMPERATURE`                            | 의미 추출에 사용할 LLM temperature를 직접 지정 — 예: `0.7`, 생략하려면 `none`                                                                                                                    | 선택 사항 — o1/o3/o4/gpt-5 추론 모델에서는 자동으로 생략                                                                                              |
 
 ---
 
@@ -569,7 +581,7 @@ docker run -p 8080:8080 -v "$(pwd)/graphify-out:/data" graphify \
 - **문서, PDF, 이미지** — 의미 추출을 위해 AI 도우미로 전송합니다(`/graphify` 스킬을 통해 IDE 세션에서 사용 중인 모델을 이용). 헤드리스 방식의 `graphify extract`에는 `GEMINI_API_KEY` / `GOOGLE_API_KEY`(Gemini), `MOONSHOT_API_KEY`(Kimi), `ANTHROPIC_API_KEY`(Claude), `OPENAI_API_KEY`(OpenAI), `DEEPSEEK_API_KEY`(DeepSeek), 실행 중인 Ollama 인스턴스(`OLLAMA_BASE_URL`), 표준 공급자 체인의 AWS 자격 증명(Bedrock — API 키 없이 IAM 사용), 또는 `claude` CLI 실행 파일(Claude Code — API 키 없이 Claude 구독 사용) 중 하나가 필요합니다. `--dedup-llm` 플래그도 같은 키를 사용합니다.
 - **데이터 처리 위치** — `graphify extract`는 설정된 API 키를 기준으로 공급자를 자동 감지합니다(우선순위: Gemini → Kimi → Claude → OpenAI → DeepSeek → Azure → Bedrock → Ollama). 데이터 처리 위치에 관한 요구 사항이 있는 코드에는 `--backend ollama`(완전한 로컬 처리)를 사용하거나 `--backend` 플래그로 백엔드를 명시하세요. Kimi(`MOONSHOT_API_KEY`)는 중국에 있는 Moonshot AI 서버로 요청을 보냅니다.
 - **텔레메트리 없음** — 사용 추적이나 분석 데이터를 수집하지 않습니다.
-- **질의 로그** — 기본적으로 꺼져 있으며, 명시적으로 활성화하지 않으면 기록하지 않습니다. `GRAPHIFY_QUERY_LOG_ENABLE=1`을 설정하면 `graphify query`, `graphify path`, `graphify explain`, MCP `query_graph` 호출을 `~/.cache/graphify-queries.log`에 JSON Lines 형식으로 기록합니다(타임스탬프, 질문, 자료 모음, 반환된 노드 수, 소요 시간). `GRAPHIFY_QUERY_LOG`에 경로를 지정하면 로깅을 활성화하고 해당 경로에 기록합니다. 전체 부분 그래프 응답은 기본적으로 저장하지 **않으며**, 로깅이 활성화된 상태에서 `GRAPHIFY_QUERY_LOG_RESPONSES=1`을 설정해야 함께 기록됩니다. `GRAPHIFY_QUERY_LOG_DISABLE=1`은 다른 활성화 설정보다 우선하며 로깅을 강제로 끕니다. 로깅 코드 경로를 비활성화하지 않고 출력을 버리려면 `GRAPHIFY_QUERY_LOG=/dev/null`을 사용하세요.
+- **질의 로그** — 모든 `graphify query`, `graphify path`, `graphify explain`, MCP `query_graph` 호출은 `~/.cache/graphify-queries.log`에 JSON Lines 형식으로 기록됩니다(타임스탬프, 질문, 자료 모음, 반환된 노드 수, 소요 시간). 전체 부분 그래프 응답은 기본적으로 저장하지 **않습니다**. `GRAPHIFY_QUERY_LOG_DISABLE=1`을 설정하면 기록을 끌 수 있고, 로깅 코드 경로를 비활성화하지 않고 출력만 버리려면 `GRAPHIFY_QUERY_LOG=/dev/null`을 사용하세요.
 
 ---
 
@@ -589,7 +601,7 @@ PyPI 패키지 이름은 `graphifyy`이며, `graphify`는 이 패키지가 제�
 
 **`uv run --with graphifyy python -m graphify`가 별다른 경고 없이 이전 설치본을 실행하는 경우**
 
-`uv run`은 *시스템* Python을 사용합니다. 따라서 같은 환경에 이전 `graphifyy`가 설치되어 있으면(예: 과거에 `pip install graphifyy`로 설치), Python이 `sys.path`에서 그 사본을 먼저 찾을 수 있으며 `--with graphifyy`가 이를 대체하지 못합니다. 오류 없이 실행되지만 *이전* 버전처럼 동작합니다. 예를 들어 `OPENAI_BASE_URL` 같은 환경 변수 설정이 조용히 무시되어 요청이 기본 엔드포인트로 전달되고, 잘못된 API 키처럼 보이는 401 오류가 발생할 수 있습니다. `warning: skill is from graphify <newer>, package is <older>`라는 줄이 보인다면 이 경우를 의심할 수 있습니다. 단순히 스킬이 오래된 것이 아니라 다른 설치본을 불러왔다는 뜻입니다. 실제로 불러온 사본을 확인하세요.
+`uv run`은 _시스템_ Python을 사용합니다. 따라서 같은 환경에 이전 `graphifyy`가 설치되어 있으면(예: 과거에 `pip install graphifyy`로 설치), Python이 `sys.path`에서 그 사본을 먼저 찾을 수 있으며 `--with graphifyy`가 이를 대체하지 못합니다. 오류 없이 실행되지만 _이전_ 버전처럼 동작합니다. 예를 들어 `OPENAI_BASE_URL` 같은 환경 변수 설정이 조용히 무시되어 요청이 기본 엔드포인트로 전달되고, 잘못된 API 키처럼 보이는 401 오류가 발생할 수 있습니다. `warning: skill is from graphify <newer>, package is <older>`라는 줄이 보인다면 이 경우를 의심할 수 있습니다. 단순히 스킬이 오래된 것이 아니라 다른 설치본을 불러왔다는 뜻입니다. 실제로 불러온 사본을 확인하세요.
 
 ```bash
 python -c "import graphify; print(graphify.__file__)"
@@ -869,85 +881,17 @@ graphify label ./my-project --backend=openai --model gpt-4o   # 특정 백엔드
 
 ## graphify Enterprise
 
-[**graphify Enterprise**](https://graphify.com)는 graphify를 기반으로 상시 작동하는 서비스입니다. 회의, 파일, 문서, 코드 등 업무 맥락 전체에 같은 그래프 접근 방식을 적용하고, 백그라운드에서 계속 갱신합니다.
+[**graphify Enterprise**](https://graphify.com/enterprise)는 graphify를 기반으로 상시 작동하는 서비스입니다. 회의, 파일, 문서, 코드 등 업무 맥락 전체에 같은 그래프 접근 방식을 적용하고, 백그라운드에서 계속 갱신합니다.
 
 수백 건의 대화와 문서에 흩어진 업무 내용을 온전히 되짚기 어려운 개인과 팀을 위해 만들었습니다.
 
 **[graphify.com에서 대기자 명단에 등록하세요](https://graphify.com).** 무료 체험도 곧 제공될 예정입니다.
 
----
+## 기여하기
 
-<details>
-<summary>기여하기</summary>
+기여를 환영합니다. 개발 환경 설정, 테스트와 CI 동일 조건 검사 명령어, Git 작업 흐름, 어떤 기여가 특히 도움이 되는지(실제 사용 사례와 추출 버그 보고가 가장 유용합니다)는 **[CONTRIBUTING.md](../../CONTRIBUTING.md)**를 참고하세요. 아키텍처와 언어 추가 방법은 [ARCHITECTURE.md](../../ARCHITECTURE.md)에 있습니다.
 
-### 개발 환경 설정
-
-이 프로젝트는 개발 작업에 [uv](https://docs.astral.sh/uv/)를 사용합니다. uv를 한 번 설치한 뒤 다음을 실행하세요.
-
-```bash
-git clone https://github.com/Graphify-Labs/graphify.git
-cd graphify
-git checkout v8                        # 현재 개발이 진행되는 브랜치
-
-# 프로젝트 가상 환경을 만들고 graphify, 모든 선택 기능, 개발 의존성 그룹
-# (pytest)을 설치합니다. uv는 기본적으로 개발 의존성 그룹도 설치합니다.
-# 제외하려면 --no-dev를 전달하세요.
-uv sync --all-extras
-```
-
-소스 수정 사항이 바로 반영되는 개발용 설치(editable install)가 정상적으로 되었는지 확인하세요.
-
-```bash
-uv run graphify --version
-uv run python -c "import graphify; print(graphify.__file__)"
-```
-
-### 테스트 실행
-
-```bash
-uv run pytest tests/ -q                # 전체 테스트 실행
-uv run pytest tests/test_extract.py -q # 단일 모듈 실행
-uv run pytest tests/ -q -k "python"    # 이름으로 필터링
-```
-
-### CI와 동일한 조건으로 검사하기
-
-기준이 되는 CI 명령어는 [`.github/workflows/`](../../.github/workflows/)에 있습니다. 로컬에서 CI와 같은 방식으로 검증하려면 Python 3.10, 3.12, 3.13 또는 3.14를 사용해 다음을 실행하세요.
-
-```bash
-uv sync --all-extras --frozen
-uv run --frozen pytest tests/ -q --tb=short
-uv run --frozen python -m tools.skillgen --check
-uv run --frozen python -m tools.skillgen --audit-coverage
-uv run --frozen python -m tools.skillgen --schema-singleton
-uv run --frozen python -m tools.skillgen --monolith-roundtrip
-uv run --frozen python -m tools.skillgen --always-on-roundtrip
-uv run --frozen graphify --help
-uv run --frozen graphify install
-```
-
-Ruff는 추가 로컬 검사(`uv run --frozen ruff check .`)에 유용하지만, 현재는 실패 시 CI를 중단시키는 필수 작업이 아닙니다. Pyright도 향후 CI에 추가되기 전까지는 로컬 참고용 검사입니다. Bandit과 pip-audit CI 단계에는 현재 `continue-on-error`가 설정되어 있으므로, 발견 사항은 참고용이며 CI를 중단시키지 않습니다.
-
-> macOS 참고: 테스트 모음에는 `sample.f90`과 `sample.F90` 픽스처가 모두 포함되어 있습니다. 대소문자를 구분하지 않는 HFS+ / APFS 파일 시스템에서는 두 파일이 충돌합니다. 두 Fortran 변형을 동시에 테스트하려면 Linux나 Docker 컨테이너에서 실행하세요.
-
-> Windows 참고: 네이티브 Windows 테스트 모음은 심볼릭 링크, 긴 경로, POSIX 권한, 경로 구분자, UTF-8 파일 시스템 동작을 검사합니다. 관리자 권한 없이 심볼릭 링크를 만들 수 있도록 Windows 개발자 모드를 켜거나, 관리자 권한 셸에서 테스트를 실행하세요. 긴 경로 테스트를 사용하기 전에 Windows의 `LongPathsEnabled` 정책을 활성화하세요. 두 설정 중 하나를 변경했다면 영향을 받는 셸이나 애플리케이션을 다시 시작하세요. 필수 GitHub Actions 테스트 매트릭스와 정확히 같은 조건을 맞추려면 WSL이나 Linux에서 테스트를 실행하세요. 현재 CI는 Ubuntu에서 Python 3.10, 3.12, 3.13, 3.14로 실행됩니다. Pyright는 로컬 참고용 검사로 사용할 수 있지만, 현재 필수 CI 작업은 아닙니다.
-
-### Git 작업 흐름
-
-- 개발은 `v8` 브랜치에서 진행합니다.
-- 커밋 형식: `fix: <description>` / `feat: <description>` / `docs: <description>`
-- PR을 열기 전에 `uv run pytest tests/ -q`를 실행하고 통과하는지 확인하세요.
-- 새 언어 추출기를 추가할 때는 `tests/fixtures/`에 픽스처 파일을, `tests/test_languages.py`에 테스트를 추가하세요.
-
-### 기여할 수 있는 내용
-
-가장 유용한 기여는 **실제 사용 사례**입니다. 실제 자료 모음에 `/graphify`를 실행하고, 결과를 `worked/{slug}/`에 저장한 뒤, 그래프가 잘 파악한 점과 잘못 파악한 점을 솔직하게 담은 `review.md`를 작성해 PR을 열어 주세요.
-
-**추출 버그** — 입력 파일, 캐시 항목(`graphify-out/cache/`), 누락되거나 잘못된 내용을 첨부해 이슈를 등록하세요.
-
-모듈별 역할과 언어 추가 방법은 [ARCHITECTURE.md](../../ARCHITECTURE.md)를 참고하세요.
-
-</details>
+처음이신가요? [Discord](https://discord.gg/XDnKVpzdXB)나 [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions)에서 인사를 남겨 주세요.
 
 ---
 
@@ -955,9 +899,10 @@ Ruff는 추가 로컬 검사(`uv run --frozen ruff check .`)에 유용하지만,
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="웹사이트"/></a>
-  <a href="https://discord.gg/2DDrEgvZb4"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="후원"/></a>
   <a href="https://safishamsi.gumroad.com/l/qetvlo"><img src="https://img.shields.io/badge/Book-The%20Memory%20Layer-2ea44f?style=flat&logo=gitbook&logoColor=white" alt="The Memory Layer"/></a>
 </p>
+

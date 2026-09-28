@@ -199,6 +199,91 @@ def test_install_claude_md_success_output_unchanged(tmp_path, monkeypatch, capsy
     assert "  CLAUDE.md        ->  already registered (no change)" in second
 
 
+def test_install_claude_md_does_not_skip_on_an_unrelated_mention_of_the_word(tmp_path, monkeypatch):
+    """#3668: the idempotency guard used to be a bare `"graphify" in content`
+    substring check, so any pre-existing mention of the word anywhere in the
+    file (a note to self, an unrelated project instruction) was wrongly
+    treated as "already registered" and the real block never got written."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    claude_md = home / ".claude" / "CLAUDE.md"
+    claude_md.parent.mkdir(parents=True)
+    claude_md.write_text("See https://github.com/Graphify-Labs/graphify for details.\n", encoding="utf-8")
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        install(platform="claude")
+
+    content = claude_md.read_text(encoding="utf-8")
+    assert "# graphify\n" in content, (
+        f"an unrelated mention of the word must not suppress the real "
+        f"registration block; got {content!r}"
+    )
+    assert "See https://github.com/Graphify-Labs/graphify for details." in content, (
+        "the user's own pre-existing content must survive"
+    )
+
+
+def test_install_claude_md_refreshes_a_stale_registration_block(tmp_path, monkeypatch):
+    """#3668: a previously-installed block that has since been hand-edited (or
+    predates a skill-path change) must be refreshed on re-install, not
+    silently left stale because the bare word "graphify" is still present."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    claude_md = home / ".claude" / "CLAUDE.md"
+    claude_md.parent.mkdir(parents=True)
+    claude_md.write_text(
+        "# graphify\n- an old, hand-edited line that does not match the "
+        "current registration text\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        install(platform="claude")
+
+    content = claude_md.read_text(encoding="utf-8")
+    assert "hand-edited line" not in content, "the stale block must be replaced, not kept"
+    assert "Trigger: `/graphify`" in content, "the current registration text must be written"
+
+
+def test_register_always_on_block_writes_without_newline_translation(tmp_path, monkeypatch):
+    """#3668: Path.write_text opens in text mode, which on Windows turns a
+    pre-existing bare-LF file's WHOLE content into CRLF just to append a few
+    lines. newline="" must be passed so no translation happens. The bug
+    itself is only observable on Windows, so this checks the call was made
+    correctly rather than depending on the host OS's own newline handling."""
+    from graphify import install as install_mod
+
+    target = tmp_path / "CLAUDE.md"
+    target.write_text("Some existing notes.\n", encoding="utf-8")
+
+    calls: list[dict] = []
+    orig_write_text = Path.write_text
+
+    def _tracking_write_text(self, *args, **kwargs):
+        calls.append(kwargs)
+        return orig_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _tracking_write_text)
+
+    install_mod._register_always_on_block(
+        target, "  CLAUDE.md        ->  ", install_mod._skill_registration()
+    )
+
+    assert calls, "write_text should have been called"
+    assert calls[-1].get("newline") == "", (
+        f"write_text must pass newline='' so the rest of the file's line "
+        f"endings are never translated; got kwargs {calls[-1]!r}"
+    )
+
+
 def test_install_codebuddy(tmp_path):
     _install(tmp_path, "codebuddy")
     assert (tmp_path / ".codebuddy" / "skills" / "graphify" / "SKILL.md").exists()
@@ -1128,6 +1213,36 @@ def test_gemini_install_merges_existing_gemini_md(tmp_path):
     content = (tmp_path / "GEMINI.md").read_text()
     assert "# My project rules" in content
     assert "graphify-out/GRAPH_REPORT.md" in content
+
+
+def test_gemini_install_writes_gemini_md_without_newline_translation(tmp_path, monkeypatch):
+    """#3668: same CRLF issue as _register_always_on_block, here in the
+    GEMINI.md write. Path.write_text opens in text mode, which on Windows
+    would turn a pre-existing bare-LF GEMINI.md's WHOLE content into CRLF
+    just to merge in a few lines. Checks the call was made correctly rather
+    than depending on the host OS's own newline handling."""
+    from graphify.__main__ import gemini_install
+
+    gemini_md = tmp_path / "GEMINI.md"
+    gemini_md.write_text("# My project rules\n", encoding="utf-8")
+
+    calls: list[dict] = []
+    orig_write_text = Path.write_text
+
+    def _tracking_write_text(self, *args, **kwargs):
+        if self == gemini_md:
+            calls.append(kwargs)
+        return orig_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", _tracking_write_text)
+
+    gemini_install(tmp_path)
+
+    assert calls, "write_text should have been called for GEMINI.md"
+    assert calls[-1].get("newline") == "", (
+        f"write_text must pass newline='' so the rest of the file's line "
+        f"endings are never translated; got kwargs {calls[-1]!r}"
+    )
 
 
 def test_gemini_uninstall_removes_section(tmp_path):

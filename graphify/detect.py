@@ -41,7 +41,7 @@ _MANIFEST_PATH = str(out_path("manifest.json"))
 _MTIME_COARSE_S = 2.0
 _MTIME_SUBSECOND_S = 0.05
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -183,6 +183,13 @@ _GENERIC_KEYWORD_PATTERNS = [
 # stays excluded — see _is_prose_note.
 _PROSE_EXTS = frozenset({".md", ".markdown", ".rst", ".org", ".adoc", ".tex"})
 
+# Bare PLURAL "tokens" in a prose file (TOKENS.md) reads as a design-token
+# reference doc, not a credential dump — unlike every other generic keyword's
+# plural (secrets.md, passwords.md, credentials.md still read as dumps) and
+# unlike the singular "token.md", which stays excluded (#3527). Scoped to
+# prose extensions only: "tokens.txt" is still a plausible secret store.
+_BARE_PLURAL_TOKENS = re.compile(r'(?<![a-zA-Z0-9])tokens(?![a-zA-Z])', re.IGNORECASE)
+
 # Data/serialization extensions that commonly ARE secret stores when their name
 # hits a generic keyword (credentials.json, secrets.yaml, token.toml) or they sit
 # in an ambiguous sensitive dir (secrets/db.json). These stay subject to the
@@ -208,10 +215,14 @@ def _is_prose_note(path: Path) -> bool:
     """A prose/note file (.md/.rst/...) whose stem is a multi-word topic slug is
     exempt from the generic-keyword drop (#2106). A stem that IS exactly a bare
     keyword (secrets / token / passwords) is NOT exempt — that still reads as a
-    credential dump."""
+    credential dump. The one exception is bare plural "tokens" (TOKENS.md),
+    which reads as a design-token reference doc rather than a secret store
+    (#3527)."""
     if path.suffix.lower() not in _PROSE_EXTS:
         return False
     stem = Path(path.name).stem.lstrip('.') or Path(path.name).stem
+    if _BARE_PLURAL_TOKENS.fullmatch(stem):
+        return True
     return not any(p.fullmatch(stem) for p in _GENERIC_KEYWORD_PATTERNS)
 
 
@@ -2136,23 +2147,96 @@ def _to_relative_for_storage(key: str, root: Path) -> str:
     return rel.replace(os.sep, "/")
 
 
+_DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _looks_absolute(key: str) -> bool:
+    """True if ``key`` is absolute under ANY platform's path syntax, not
+    just the current one.
+
+    ``Path.is_absolute()`` only recognizes the CURRENT platform's own
+    syntax: a POSIX-style ``/abs/path`` key loaded on Windows (or a
+    ``C:\\...``/UNC key loaded on POSIX) is wrongly judged relative, and
+    :func:`_to_absolute_from_storage` then joins it onto ``root`` instead of
+    leaving it alone — silently producing a nonsense path rather than the
+    unreachable-but-at-least-recognizable foreign one (#1964 review: a
+    manifest genuinely can move between platforms, per this module's own
+    "mix of call sites/versions" scope).
+    """
+    return (
+        Path(key).is_absolute()
+        or key.startswith(("/", "\\"))
+        or bool(_DRIVE_LETTER_RE.match(key))
+    )
+
+
 def _to_absolute_from_storage(key: str, root: Path) -> str:
     """Inverse of :func:`_to_relative_for_storage`.
 
     Re-anchor a stored key against ``root``. Already-absolute keys
-    (legacy manifests, out-of-root entries) pass through unchanged so
-    that newly-loaded manifests from before this change remain readable.
+    (legacy manifests, out-of-root entries, or a foreign-platform key —
+    see :func:`_looks_absolute`) pass through unchanged so that newly-loaded
+    manifests from before this change remain readable.
     Uses ``Path(root).resolve()`` so the produced absolute path matches
     what :func:`detect` returns (which also resolves the scan root).
     NFC both sides so a relative key and an NFD-resolved root still join
     to the same string form the rest of the manifest path uses (#2221).
+
+    The joined result is lexically normalized (``os.path.normpath``, not
+    ``.resolve()``) so a stray ``..``/``.`` segment collapses to the same
+    string an equivalent absolute key would use — otherwise two keys for
+    the same file (one absolute, one relative-with-dot-segments, the kind
+    of mismatch a foreign tool or an older graphify version can leave
+    behind, per this function's own caller) fail to canonicalize to the
+    same value and the duplicate collapse this function exists for misses
+    them (#1964 review). Only the key's own dot segments are normalized,
+    never symlinks — ``normpath`` never touches the filesystem, matching
+    :func:`_to_relative_for_storage`'s own choice not to resolve the key.
     """
-    p = Path(key)
-    if p.is_absolute():
-        return str(p)
+    if _looks_absolute(key):
+        return os.path.normpath(key)
     # NFC the joined result so an NFD-resolved root + relative key lands on
     # the same form load_manifest / detect_incremental compare against.
-    return _nfc(str(Path(root).resolve() / p))
+    return _nfc(os.path.normpath(str(Path(root).resolve() / Path(key))))
+
+
+def _collapse_manifest_duplicates(items, key_fn) -> dict:
+    """Canonicalize each raw key via ``key_fn``, keeping the more recently
+    observed entry when two distinct raw keys collapse to the same
+    canonical one (#1964).
+
+    A manifest written across a mix of graphify versions/call sites — some
+    passing ``root`` to relativize keys, some not (an outdated installed
+    skill runbook, for one) — can end up with both an absolute and a
+    relative key for the same file, each carrying different data. A plain
+    dict comprehension over such a manifest silently keeps whichever raw
+    key happens to iterate last, an artifact of on-disk JSON key order that
+    has nothing to do with which entry is actually current — so a fresher
+    hash could be discarded in favor of a stale one purely because of how
+    the keys happened to accumulate, letting detect_incremental() call a
+    genuinely changed file unchanged.
+
+    Ties are broken by each entry's own ``seen`` timestamp (when present on
+    both sides and they disagree) rather than iteration order, since that
+    field exists specifically to record when an entry was last confirmed
+    current. Legacy scalar/partial entries (no ``seen``, or either side not
+    a dict) fall back to the historical last-wins behavior, unchanged.
+    """
+    result: dict = {}
+    for k, v in items:
+        canonical = key_fn(k)
+        if canonical in result:
+            prev = result[canonical]
+            prev_seen = prev.get("seen") if isinstance(prev, dict) else None
+            new_seen = v.get("seen") if isinstance(v, dict) else None
+            if (
+                isinstance(prev_seen, (int, float))
+                and isinstance(new_seen, (int, float))
+                and new_seen < prev_seen
+            ):
+                continue
+        result[canonical] = v
+    return result
 
 
 def load_manifest(
@@ -2178,8 +2262,10 @@ def load_manifest(
     if not isinstance(raw, dict):
         return raw
     if root is None:
-        return {_nfc(k): v for k, v in raw.items()}
-    return {_nfc(_to_absolute_from_storage(k, root)): v for k, v in raw.items()}
+        return _collapse_manifest_duplicates(raw.items(), _nfc)
+    return _collapse_manifest_duplicates(
+        raw.items(), lambda k: _nfc(_to_absolute_from_storage(k, root))
+    )
 
 
 def save_manifest(
@@ -2386,10 +2472,15 @@ def save_manifest(
         # their absolute form so the manifest round-trips on the saving
         # machine even when not every entry can be portably encoded.
         # NFC after relativize so on-disk keys match what load_manifest
-        # re-anchors and compares against (#2221).
-        manifest = {_nfc(_to_relative_for_storage(k, root)): v for k, v in manifest.items()}
+        # re-anchors and compares against (#2221). A seeded absolute key and
+        # a seeded relative key for the same file collapse here too (#1964)
+        # -- _collapse_manifest_duplicates keeps whichever is more recently
+        # seen instead of whichever the dict comprehension iterates last.
+        manifest = _collapse_manifest_duplicates(
+            manifest.items(), lambda k: _nfc(_to_relative_for_storage(k, root))
+        )
     else:
-        manifest = {_nfc(k): v for k, v in manifest.items()}
+        manifest = _collapse_manifest_duplicates(manifest.items(), _nfc)
 
     # Avoid rewriting manifest.json when the serialized payload is identical (#2838).
     manifest_p = Path(manifest_path)
@@ -2445,6 +2536,7 @@ def detect_incremental(
     kind: str = "semantic",
     extra_excludes: list[str] | None = None,
     gitignore: bool = True,
+    cache_root: Path | None = None,
 ) -> dict:
     """Like detect(), but returns only new or modified files since the last run.
 
@@ -2467,6 +2559,13 @@ def detect_incremental(
     symlinked sub-trees are scanned consistently between full and incremental
     runs. ``None`` (default) does not follow symlinked directories; callers must
     opt in explicitly, and resolved targets outside the scan root are skipped.
+
+    ``cache_root`` is forwarded to :func:`detect`'s own word-count cache the
+    same way the fresh-scan (non-incremental) call site already does. Without
+    it, an incremental run with a ``--out`` destination outside the scan root
+    falls back to anchoring the cache at the scan root itself, leaking
+    ``graphify-out/cache/stat-index.json`` there even though the fresh-scan
+    path stays clean (#3847).
     """
     full = detect(
         root,
@@ -2474,6 +2573,7 @@ def detect_incremental(
         google_workspace=google_workspace,
         extra_excludes=extra_excludes,
         gitignore=gitignore,
+        cache_root=cache_root,
     )
     # Pass ``root`` so a manifest written with relative keys (post-#777) is
     # re-anchored to the absolute form the rest of this function compares

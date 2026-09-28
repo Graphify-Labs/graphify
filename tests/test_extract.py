@@ -2250,6 +2250,83 @@ def test_extract_parallel_returns_false_when_pool_cannot_start(tmp_path, monkeyp
     assert "No space left on device" in capsys.readouterr().out, "warning must name the OS error"
 
 
+def test_spawn_cannot_reimport_main_true_for_stdin_caller(monkeypatch):
+    """stdin (`… | python -`) leaves __main__.__file__ as a non-file (`<stdin>`),
+    which spawn workers cannot re-import — the pool is unusable up front (#3669)."""
+    import multiprocessing
+    import __main__
+    from graphify import extract as extract_mod
+
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=True: "spawn")
+    monkeypatch.setattr(__main__, "__file__", "<stdin>", raising=False)
+    assert extract_mod._spawn_cannot_reimport_main() is True
+
+
+def test_spawn_cannot_reimport_main_true_for_repl_without_file(monkeypatch):
+    """A REPL / `python -c` __main__ has no __file__ attribute at all."""
+    import multiprocessing
+    import __main__
+    from graphify import extract as extract_mod
+
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=True: "spawn")
+    monkeypatch.delattr(__main__, "__file__", raising=False)
+    assert extract_mod._spawn_cannot_reimport_main() is True
+
+
+def test_spawn_cannot_reimport_main_false_for_real_script(tmp_path, monkeypatch):
+    """A normal script whose __main__ is a real file CAN be re-imported, so the
+    pool is usable and must not be skipped (that case is the common happy path)."""
+    import multiprocessing
+    import __main__
+    from graphify import extract as extract_mod
+
+    script = tmp_path / "runner.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=True: "spawn")
+    monkeypatch.setattr(__main__, "__file__", str(script), raising=False)
+    assert extract_mod._spawn_cannot_reimport_main() is False
+
+
+def test_spawn_cannot_reimport_main_false_under_fork(monkeypatch):
+    """The fork start method (Linux default) does not re-import __main__, so a
+    stdin caller is fine and the pool must not be pre-emptively skipped."""
+    import multiprocessing
+    import __main__
+    from graphify import extract as extract_mod
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=True: "fork")
+    monkeypatch.setattr(__main__, "__file__", "<stdin>", raising=False)
+    assert extract_mod._spawn_cannot_reimport_main() is False
+
+
+def test_extract_skips_pool_up_front_on_unusable_main(tmp_path, monkeypatch, capsys):
+    """With >= _PARALLEL_THRESHOLD uncached files but an unusable __main__, the
+    pool is not attempted at all — extract() runs sequentially, producing correct
+    output with an explanatory note instead of a wall of BrokenProcessPool
+    tracebacks (#3669)."""
+    from graphify import extract as extract_mod
+
+    files = [FIXTURES / "sample.py"] * 25  # >= _PARALLEL_THRESHOLD
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+
+    calls = {"parallel": 0}
+
+    def fake_parallel(*a, **kw):
+        calls["parallel"] += 1
+        return True
+
+    monkeypatch.setattr(extract_mod, "_extract_parallel", fake_parallel)
+    monkeypatch.setattr(extract_mod, "_spawn_cannot_reimport_main", lambda: True)
+
+    result = extract_mod.extract(files, cache_root=cache_root)
+
+    assert calls["parallel"] == 0, "the pool must not be attempted when __main__ is unusable"
+    assert result["nodes"], "sequential extraction must still produce nodes"
+    assert "sequentially" in capsys.readouterr().err, "must explain the sequential fallback"
+
+
 def test_extract_parallel_skips_pool_when_max_workers_is_one(tmp_path, monkeypatch):
     """#2173: a resolved worker count of 1 must not spawn a ProcessPoolExecutor.
 
@@ -4015,18 +4092,18 @@ def test_case_insensitive_suffix_filtering(tmp_path):
 
 
 def test_extract_warns_on_code_files_with_no_ast_extractor(tmp_path, capsys):
-    # #1689: .r/.R is in CODE_EXTENSIONS (counted as code) but has no AST extractor,
-    # so R files silently contribute nothing. extract() must surface that instead of
+    # #1689: .ets is in CODE_EXTENSIONS (counted as code) but has no AST extractor,
+    # so ArkTS files silently contribute nothing. extract() must surface that instead of
     # reporting success as if the language were mapped.
-    r1 = tmp_path / "analysis.R"; r1.write_text("f <- function(x) x + 1\n")
-    r2 = tmp_path / "helper.r"; r2.write_text("g <- function(y) y * 2\n")
+    r1 = tmp_path / "analysis.ets"; r1.write_text("@Component struct Analysis {}\n")
+    r2 = tmp_path / "helper.ets"; r2.write_text("@Component struct Helper {}\n")
     py = tmp_path / "main.py"; py.write_text("def main():\n    return 1\n")
 
     result = extract([r1, r2, py], cache_root=tmp_path)
     err = capsys.readouterr().err
 
     assert "no AST extractor" in err
-    assert ".r (2)" in err            # both R files grouped under the lowercased ext
+    assert ".ets (2)" in err
     assert "#1689" in err
     # the Python file still extracts normally
     labels = [n.get("label") for n in result["nodes"]]
@@ -4146,8 +4223,8 @@ def test_extract_progress_final_line_uses_consistent_denominator(tmp_path, capsy
     for i in range(100):
         (tmp_path / f"m{i}.py").write_text(f"def f{i}():\n    return {i}\n")
     for i in range(5):
-        (tmp_path / f"s{i}.r").write_text(f"g{i} <- function(x) x\n")  # no extractor
-    paths = sorted(tmp_path.glob("*.py")) + sorted(tmp_path.glob("*.r"))  # total 105
+        (tmp_path / f"s{i}.ets").write_text(f"function g{i}(x) {{ return x; }}\n")  # no extractor
+    paths = sorted(tmp_path.glob("*.py")) + sorted(tmp_path.glob("*.ets"))  # total 105
 
     extract(paths, cache_root=tmp_path, parallel=False)
     out = capsys.readouterr().out
@@ -4176,6 +4253,17 @@ def test_get_extractor_routes_matlab_m_away_from_objc(tmp_path):
     assert _get_extractor(matlab_fn) is None               # MATLAB function -> no garbage
     assert _get_extractor(matlab_cls) is None              # MATLAB classdef -> no garbage
     assert _get_extractor(mm) is extract_objc              # .mm is unambiguously ObjC++
+
+
+def test_markdown_dispatch_matches_resolution_suffixes():
+    from graphify.extract import _DISPATCH, extract_markdown
+    from graphify.markdown_resolution import MARKDOWN_MENTION_SUFFIXES
+
+    dispatched = {
+        suffix for suffix, extractor in _DISPATCH.items()
+        if extractor is extract_markdown
+    }
+    assert dispatched == MARKDOWN_MENTION_SUFFIXES
 
 
 def test_matlab_m_not_extracted_as_garbage(tmp_path, capsys):

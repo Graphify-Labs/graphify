@@ -36,7 +36,7 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 2
+_AST_CACHE_SCHEMA = 4  # Rust generic-impl identity markers + Terraform block attributes.
 
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()
@@ -1490,6 +1490,31 @@ def save_semantic_cache(
     if allowed_source_files is not None:
         allowed_paths = {source_path(path) for path in allowed_source_files}
 
+    def _recover_group_path(fpath: str) -> tuple[Path, Path]:
+        """Return ``(cache_path, resolved_path)`` for one ``by_file`` group,
+        recovering an unresolvable ``source_file`` via an unambiguous
+        basename match against ``allowed_paths`` when one is available (#2973).
+
+        The adaptive-retry split path (``llm.py``'s bisect-and-retry on a
+        chunk that overflowed a weak/local backend's context) sometimes
+        re-prompts with a reduced file subset and loses track of which of
+        the original chunk's files a given node came from, so its
+        ``source_file`` never resolves to a real path at all. Recovering it
+        against the known-good, already-dispatched allowlist -- and ONLY
+        when the basename is unambiguous there -- lets that group's nodes
+        and edges reach the cache instead of silently vanishing on every
+        incremental run. A genuinely bogus or ambiguous basename still
+        falls through unrecovered to the existing skip behavior below.
+        """
+        cache_path = source_path(fpath)
+        resolved = resolved_source_path(fpath)
+        if not resolved.is_file() and allowed_paths is not None:
+            candidates = [ap for ap in allowed_paths if ap.name == cache_path.name]
+            if len(candidates) == 1:
+                cache_path = candidates[0]
+                resolved = candidates[0]
+        return cache_path, resolved
+
     partial_paths = None
     if partial_source_files is not None:
         partial_paths = {source_path(path) for path in partial_source_files}
@@ -1506,9 +1531,9 @@ def save_semantic_cache(
 
     def group_skipped(fpath: str) -> bool:
         """Mirror the write-loop skip condition for one source_file group."""
-        p = resolved_source_path(fpath)
+        cache_path, p = _recover_group_path(fpath)
         return not p.is_file() or (
-            allowed_paths is not None and source_path(fpath) not in allowed_paths
+            allowed_paths is not None and cache_path not in allowed_paths
         )
 
     # Dangling-reference pruning (#1916). A node group is skipped by the write
@@ -1565,9 +1590,26 @@ def save_semantic_cache(
     saved = 0
     skipped_not_file = 0
     for fpath, result in by_file.items():
-        cache_path = source_path(fpath)
-        p = resolved_source_path(fpath)
+        cache_path, p = _recover_group_path(fpath)
         if p.is_file():
+            if cache_path != source_path(fpath):
+                # #2973: recovery only redirected the WRITE KEY. Each item in
+                # this group still carries the original unresolvable
+                # source_file string, and _semantic_entry_matches_path
+                # rejects an entry on read if any item's source_file doesn't
+                # match the path it was loaded under -- so leaving the old
+                # value in place would write a "successful" entry that can
+                # never actually be read back, silently reproducing the same
+                # loss this recovery exists to fix.
+                corrected = _normalize_value(str(cache_path))
+                result = {
+                    **result,
+                    "nodes": [{**n, "source_file": corrected} for n in result["nodes"]],
+                    "edges": [{**e, "source_file": corrected} for e in result["edges"]],
+                    "hyperedges": [
+                        {**h, "source_file": corrected} for h in result["hyperedges"]
+                    ],
+                }
             if allowed_paths is not None and cache_path not in allowed_paths:
                 warnings.warn(
                     "semantic cache skipped out-of-scope source_file "

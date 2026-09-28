@@ -127,7 +127,12 @@ def test_same_name_modules_in_separate_loose_directories(tmp_path):
         tools / "helper.py",
         tools / "main.py",
     ]
-    res = extract(paths, root=tmp_path, parallel=False)
+    # Keep this cold: the shared content-hash cache can replay an extraction
+    # that predates private import-resolution metadata and mask the ambiguity
+    # guard's behavior.
+    res = extract(
+        paths, root=tmp_path, parallel=False, cache_root=tmp_path / "graphify-cache"
+    )
     G = build_from_json(res, root=str(tmp_path), directed=True)
 
     edges = _edge_set(G)

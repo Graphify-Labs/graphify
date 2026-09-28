@@ -13,7 +13,7 @@ import threading
 from typing import NamedTuple
 import networkx as nx
 from networkx.readwrite import json_graph
-from graphify.security import sanitize_label, check_graph_file_size_cap
+from graphify.security import sanitize_label, check_graph_file_size_cap, _CONTROL_CHAR_RE
 from graphify.build import edge_data, edge_datas
 from graphify.paths import default_graph_json as _default_graph_json
 
@@ -180,6 +180,18 @@ class _GraphContextCache:
             return entry["G"], entry["communities"]
 
 
+def _node_arg(arguments: dict) -> str:
+    """The node identifier a lookup tool was called with.
+
+    ``get_node``/``get_neighbors`` historically read ``arguments["label"]`` only, so a client that
+    passes the node under ``node_id`` (or ``id``) — several of the agent frameworks graphify targets
+    do — raised ``KeyError('label')`` instead of being served. Accept the common spellings; callers
+    treat an empty string as "no identifier given" and answer with guidance rather than a traceback.
+    """
+    v = arguments.get("label") or arguments.get("node_id") or arguments.get("id") or ""
+    return v if isinstance(v, str) else str(v)
+
+
 def _strip_diacritics(text: str | None) -> str:
     import unicodedata
     if not isinstance(text, str):
@@ -312,6 +324,35 @@ _SOURCE_MATCH_BONUS = 0.5
 # toward term coverage, so a long rationale adds recall without winning back
 # an exact-label tier it did not earn.
 _RATIONALE_MATCH_BONUS = 0.75
+_ATTRIBUTE_MATCH_BONUS = 0.75
+
+
+def _flatten_attr_text(val, parts: list[str]) -> None:
+    if isinstance(val, dict):
+        for k, v in val.items():
+            parts.append(str(k))
+            _flatten_attr_text(v, parts)
+    elif isinstance(val, (list, tuple)):
+        for item in val:
+            _flatten_attr_text(item, parts)
+    elif val is not None:
+        parts.append(str(val))
+
+
+def _node_attributes_text(data: dict) -> tuple[str, str]:
+    """The node's `attributes` key-value pairs normalized and tokenized for search."""
+    attrs = data.get("attributes")
+    if not isinstance(attrs, dict) or not attrs:
+        return "", ""
+    parts: list[str] = []
+    _flatten_attr_text(attrs, parts)
+    if not parts:
+        return "", ""
+    raw_text = " ".join(parts)
+    norm = _strip_diacritics(raw_text).lower()
+    tokens = " ".join(_search_tokens(norm))
+    return norm, tokens
+
 
 
 def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
@@ -401,6 +442,9 @@ def _node_search_text(data: dict, nid: str) -> str:
     rationale = _node_rationale_text(data)
     if rationale:
         fields += (rationale,)
+    attr_norm, attr_tokens = _node_attributes_text(data)
+    if attr_norm:
+        fields += (attr_norm, attr_tokens)
     return "\x00".join(fields)
 
 
@@ -578,6 +622,7 @@ def _score_query(
         label_tokens = " ".join(_search_tokens(data.get("label") or ""))
         source = (data.get("source_file") or "").lower()
         rationale = _node_rationale_text(data)
+        attr_norm, attr_tokens = _node_attributes_text(data)
         # `nid_lower` is needed both by the full-query tier (`if joined`) and by
         # the per-token singleton tier (joined-singlet exact-match check). When
         # neither runs (`joined` empty AND not collecting seeds) skip the call;
@@ -643,6 +688,11 @@ def _score_query(
             if rationale and t in rationale:
                 rationale_value = _RATIONALE_MATCH_BONUS * w
                 score += rationale_value
+            # Attribute tier (#3625): recall for questions naming attributes or literal values.
+            attr_value = 0.0
+            if attr_norm and (t in attr_norm or t in attr_tokens):
+                attr_value = _ATTRIBUTE_MATCH_BONUS * w
+                score += attr_value
             tiered += tier_value
             if collect_per_term_seeds and best_by_term is not None:
                 # Singleton score for [t] on this node, mirroring
@@ -661,7 +711,7 @@ def _score_query(
                     singleton = _PREFIX_MATCH_BONUS * 10 * w
                 else:
                     singleton = 0.0
-                singleton += tier_value + substr_value + source_value + rationale_value
+                singleton += tier_value + substr_value + source_value + rationale_value + attr_value
                 if singleton > 0:
                     # Tie-break key mirrors the legacy sort+max(degree):
                     # (-singleton, -degree, label_len, nid) — the minimum
@@ -1089,12 +1139,38 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             status = sanitize_label(str(entry.get("status", "")))
             if status:
                 learning_suffix = f" learning={status}{':stale' if entry.get('stale') else ''}"
+        attrs = d.get("attributes")
+        attrs_suffix = ""
+        if isinstance(attrs, dict) and attrs:
+            pairs = []
+            for k, v in sorted(attrs.items()):
+                if isinstance(v, (dict, list)):
+                    v_str = json.dumps(v, sort_keys=True)
+                elif isinstance(v, str):
+                    v_str = f'"{v}"'
+                elif isinstance(v, bool):
+                    v_str = "true" if v else "false"
+                elif v is None:
+                    v_str = "null"
+                else:
+                    v_str = str(v)
+                if len(v_str) > 60:
+                    v_str = v_str[:57] + "..."
+                pairs.append(f"{k}={v_str}")
+                if len(pairs) >= 10:
+                    pairs.append("...")
+                    break
+            attrs_summary = ", ".join(pairs)
+            if len(attrs_summary) > 200:
+                attrs_summary = attrs_summary[:197] + "..."
+            attrs_suffix = f" attrs={{{sanitize_label(attrs_summary)}}}"
         line = (
             f"NODE {sanitize_label(d.get('label', nid))} "
             f"[src={sanitize_label(str(d.get('source_file', '')))} "
             f"loc={sanitize_label(str(d.get('source_location', '')))} "
             f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
-            f"{learning_suffix}]"
+            f"{learning_suffix}"
+            f"{attrs_suffix}]"
         )
         lines.append(line)
     for u, v in edges:
@@ -1826,8 +1902,10 @@ def _build_server(graph_path: str):
                 description="Get full details for a specific node by label or ID.",
                 inputSchema={
                     "type": "object",
-                    "properties": {"label": {"type": "string", "description": "Node label or ID to look up"}},
-                    "required": ["label"],
+                    "properties": {
+                        "label": {"type": "string", "description": "Node label or ID to look up"},
+                        "node_id": {"type": "string", "description": "Alias for label (node id)"},
+                    },
                 },
             ),
             types.Tool(
@@ -1837,10 +1915,10 @@ def _build_server(graph_path: str):
                     "type": "object",
                     "properties": {
                         "label": {"type": "string"},
+                        "node_id": {"type": "string", "description": "Alias for label (node id)"},
                         "relation_filter": {"type": "string", "description": "Optional: filter by relation type"},
                         "token_budget": {"type": "integer", "default": 2000, "description": "Max output tokens"},
                     },
-                    "required": ["label"],
                 },
             ),
             types.Tool(
@@ -1985,11 +2063,21 @@ def _build_server(graph_path: str):
         return result
 
     def _tool_get_node(arguments: dict) -> str:
-        label = arguments["label"].lower()
+        raw = _node_arg(arguments)
+        if not raw:
+            return "Provide a node label or id (accepted keys: label, node_id, id)."
+        label = raw.lower()
         nid, err = _resolve_single_node(G, label)
         if err:
             return err
         d = G.nodes[nid]
+        attrs = d.get("attributes")
+        attrs_line = []
+        if isinstance(attrs, dict) and attrs:
+            raw_attrs = json.dumps(attrs, sort_keys=True)
+            if len(raw_attrs) > 1000:
+                raw_attrs = raw_attrs[:997] + "..."
+            attrs_line = [f"  Attributes: {_CONTROL_CHAR_RE.sub('', raw_attrs)}"]
         # Sanitise every LLM-derived field before concatenation (F-010).
         return "\n".join([
             f"Node: {sanitize_label(d.get('label', nid))}",
@@ -2004,10 +2092,14 @@ def _build_server(graph_path: str):
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",
+            *attrs_line,
         ])
 
     def _tool_get_neighbors(arguments: dict) -> str:
-        label = arguments["label"].lower()
+        raw = _node_arg(arguments)
+        if not raw:
+            return "Provide a node label or id (accepted keys: label, node_id, id)."
+        label = raw.lower()
         rel_filter = arguments.get("relation_filter", "").lower()
         nid, err = _resolve_single_node(G, label)
         if err:

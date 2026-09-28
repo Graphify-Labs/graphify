@@ -94,6 +94,48 @@ def test_self_loops_dropped_after_merge():
     assert result_edges == []
 
 
+def test_preexisting_self_loops_preserved_after_unrelated_merge():
+    # #3809: Pre-existing self-loops (e.g. recursive calls, self-referencing FKs)
+    # must survive entity deduplication even when an unrelated merge occurs.
+    # Only self-loops created by the merge itself should be dropped.
+    nodes = [
+        {"id": "walk", "label": "walk()", "source_file": "src/tree.py", "file_type": "code"},
+        {"id": "categories", "label": "categories", "source_file": "schema.sql", "file_type": "code"},
+        {"id": "cache", "label": "Cache", "source_file": "docs/guide.md", "file_type": "concept"},
+        {"id": "cache_2", "label": "cache", "source_file": "docs/guide.md", "file_type": "concept"},
+    ]
+    edges = [
+        {"source": "walk", "target": "walk", "relation": "calls"},
+        {"source": "categories", "target": "categories", "relation": "references"},
+        # An edge between the duplicate concepts that collapses upon merge
+        {"source": "cache_2", "target": "cache", "relation": "references"},
+    ]
+    _, result_edges = deduplicate_entities(nodes, edges, communities={})
+
+    loops = [(e["source"], e["target"], e.get("relation")) for e in result_edges if e["source"] == e["target"]]
+    assert ("walk", "walk", "calls") in loops
+    assert ("categories", "categories", "references") in loops
+    # The collapsed edge cache_2 -> cache must NOT produce a self-loop
+    assert len(loops) == 2
+
+
+def test_preexisting_self_loop_on_merged_node_rewires_to_winner():
+    # If a merged node itself had a pre-existing self-loop, the self-loop
+    # is rewired to the winner, not dropped.
+    nodes = [
+        {"id": "cache", "label": "Cache", "source_file": "docs/guide.md", "file_type": "concept"},
+        {"id": "cache_2", "label": "cache", "source_file": "docs/guide.md", "file_type": "concept"},
+    ]
+    edges = [
+        {"source": "cache_2", "target": "cache_2", "relation": "references"},
+    ]
+    _, result_edges = deduplicate_entities(nodes, edges, communities={})
+    assert len(result_edges) == 1
+    assert result_edges[0]["source"] == "cache"
+    assert result_edges[0]["target"] == "cache"
+
+
+
 def test_community_boost_aids_merge():
     # Two nodes in same community with score in 0.75-0.85 zone get boosted
     nodes = _make_nodes("AuthManager", "Auth Manager")
@@ -523,6 +565,62 @@ def test_absolute_source_path_still_defines_id(capsys):
     assert len(result_nodes) == 1
     assert result_nodes[0]["label"] == "make-batch-fixtures agent"
     assert "WARNING" not in capsys.readouterr().err
+
+
+# ── #3352: non-Latin source paths must still define their own id ─────────────
+# _id_prefixes reimplemented id slugification with an ASCII-only regex instead
+# of the canonical normalize_id every real extractor mints an id with, so a
+# path segment made of Korean, CJK, or Cyrillic characters collapsed to
+# nothing instead of being preserved. The reconstructed prefix then never
+# matched the id actually minted for that file, so the defining page lost the
+# definer-wins tiebreak to a page that merely references the same entity.
+
+def test_id_prefixes_preserves_non_latin_segments():
+    from graphify.dedup import _id_prefixes
+    prefixes = _id_prefixes("concepts/작업 단위 폴더 + README 진입점 컨벤션.md")
+    assert "concepts_작업_단위_폴더_readme_진입점_컨벤션" in prefixes
+    assert "작업_단위_폴더_readme_진입점_컨벤션" in prefixes
+
+
+_KOREAN_DEFINING = {
+    "id": "concepts_작업_단위_폴더_readme_진입점_컨벤션",
+    "label": "README 진입점 컨벤션", "file_type": "concept",
+    "source_file": "concepts/작업 단위 폴더 + README 진입점 컨벤션.md",
+}
+_KOREAN_REFERENCING = {
+    "id": "concepts_작업_단위_폴더_readme_진입점_컨벤션",
+    "label": "README 진입점 컨벤션", "file_type": "concept",
+    "source_file": "concepts/LLM Schema - CLAUDE.md를 가이드로 활용하기.md",
+}
+
+
+def test_defines_id_recognizes_a_non_latin_path():
+    assert _defines_id(_KOREAN_DEFINING)
+    assert not _defines_id(_KOREAN_REFERENCING)
+
+
+@pytest.mark.parametrize("nodes", [
+    [_KOREAN_DEFINING, _KOREAN_REFERENCING],
+    [_KOREAN_REFERENCING, _KOREAN_DEFINING],
+], ids=["definition-first", "reference-first"])
+def test_korean_defining_file_wins_over_referencing_file(nodes):
+    """The issue's own repro shape: the page that defines a concept must keep
+    its own node instead of losing it to a page that merely mentions it."""
+    result_nodes, _ = deduplicate_entities(list(nodes), [], communities={})
+
+    assert len(result_nodes) == 1
+    assert result_nodes[0]["source_file"] == (
+        "concepts/작업 단위 폴더 + README 진입점 컨벤션.md"
+    )
+
+
+def test_id_prefixes_ascii_path_unchanged():
+    """Negative control: an ordinary ASCII path's reconstructed prefixes must
+    be identical to what the old ASCII only regex produced."""
+    from graphify.dedup import _id_prefixes
+    assert _id_prefixes("docs/v1/api/README.md") == {
+        "readme", "api_readme", "v1_api_readme", "docs_v1_api_readme",
+    }
 
 
 def test_same_file_relabel_is_noted(capsys):

@@ -1406,3 +1406,130 @@ def test_hook_probes_snap_confined_uv_tool_dirs():
 
     assert '"$HOME"/snap/*/[0-9]*/.local/share/uv/tools' in _HOOK_SCRIPT
     assert '"$HOME"/snap/*/current/.local/share/uv/tools' in _HOOK_SCRIPT
+
+
+# ── GRAPHIFY_OUT: the shell gates in front of the rebuild must honour it ─────
+#
+# #1423 moved the Python rebuild bodies onto GRAPHIFY_OUT, but the sh that runs
+# BEFORE them still hardcoded graphify-out/: post-checkout exited unless a
+# literal graphify-out/ directory existed, and post-commit's "only graph
+# artifacts changed" filter only recognised graphify-out/ paths. With the
+# documented override (#686) the branch-switch rebuild therefore never launched
+# and a commit touching only the renamed output dir triggered a full rebuild.
+# Behaviour of the emitted script under a real sh, per the #2126/#2641
+# convention, with the launcher stubbed so the test observes whether the hook
+# REACHES the launch rather than running a rebuild.
+
+_LAUNCH_LINE = "launching background rebuild"
+
+
+def _stub_python(tmp_path: Path) -> Path:
+    """A 'python' that passes the find_spec probe and swallows the launcher."""
+    py = tmp_path / "stubpy"
+    py.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+    py.chmod(0o755)
+    return py
+
+
+def _emitted_hook_run(repo: Path, script: str, args: list[str], env_extra: dict[str, str]):
+    stub = _stub_python(repo.parent)
+    rendered = script.replace("__PINNED_PYTHON__", str(stub)).replace("__VIZ_LIMIT_EXPORT__", "")
+    hook = repo.parent / "emitted-hook.sh"
+    hook.write_text(rendered, encoding="utf-8", newline="\n")
+    env = dict(os.environ)
+    env["HOME"] = str(repo.parent / "home")
+    for key in ("GIT_DIR", "GRAPHIFY_OUT", "GRAPHIFY_SKIP_HOOK"):
+        env.pop(key, None)
+    env.update(env_extra)
+    return subprocess.run(
+        ["sh", str(hook), *args], capture_output=True, text=True, cwd=str(repo), env=env,
+    )
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
+         "-c", "core.hooksPath=/dev/null", "-C", str(repo), *args],
+        check=True, capture_output=True,
+    )
+
+
+def _repo_with_graph_only_commit(tmp_path: Path, out_dir: str) -> Path:
+    """Two commits: a source file, then ONLY <out_dir>/graph.json — the
+    tracked-output case the post-commit filter exists for."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "a.py")
+    _git(repo, "commit", "-q", "-m", "src")
+    (repo / out_dir).mkdir()
+    (repo / out_dir / "graph.json").write_text("{}", encoding="utf-8")
+    _git(repo, "add", f"{out_dir}/graph.json")
+    _git(repo, "commit", "-q", "-m", "graph")
+    return repo
+
+
+_SH_ONLY = pytest.mark.skipif(
+    shutil.which("sh") is None or os.name == "nt", reason="sh required to run the emitted hook"
+)
+
+
+@_SH_ONLY
+def test_checkout_hook_rebuilds_when_graphify_out_is_renamed(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "custom-out").mkdir()  # the configured output dir; no graphify-out/
+    result = _emitted_hook_run(repo, _CHECKOUT_SCRIPT, ["aaa", "bbb", "1"], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE in result.stdout, (
+        "post-checkout exited before the launch: it gates on a literal graphify-out/ "
+        f"instead of $GRAPHIFY_OUT\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
+
+
+@_SH_ONLY
+def test_checkout_hook_still_skips_when_no_graph_was_built(tmp_path):
+    """Control: with neither the default nor the configured dir present there is
+    no graph to refresh, so the branch-switch hook stays a no-op."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    result = _emitted_hook_run(repo, _CHECKOUT_SCRIPT, ["aaa", "bbb", "1"], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE not in result.stdout
+
+
+@_SH_ONLY
+def test_commit_hook_skips_graph_only_commit_when_graphify_out_is_renamed(tmp_path):
+    repo = _repo_with_graph_only_commit(tmp_path, "custom-out")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE not in result.stdout, (
+        "post-commit launched a rebuild for a commit that only touched the configured "
+        f"output dir\nstdout={result.stdout!r}"
+    )
+
+
+@_SH_ONLY
+def test_commit_hook_skips_graph_only_commit_under_default_dir(tmp_path):
+    """Control: the default-name case the filter always handled keeps working."""
+    repo = _repo_with_graph_only_commit(tmp_path, "graphify-out")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE not in result.stdout
+
+
+@_SH_ONLY
+def test_commit_hook_still_rebuilds_for_a_source_change(tmp_path):
+    """Control: a commit that touches source alongside the renamed output dir
+    must still launch — the filter drops output-dir paths, not the rebuild."""
+    repo = _repo_with_graph_only_commit(tmp_path, "custom-out")
+    (repo / "b.py").write_text("y = 2\n", encoding="utf-8")
+    (repo / "custom-out" / "graph.json").write_text("{\"n\": 1}", encoding="utf-8")
+    _git(repo, "add", "b.py", "custom-out/graph.json")
+    _git(repo, "commit", "-q", "-m", "src+graph")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE in result.stdout, result.stdout
