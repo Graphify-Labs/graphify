@@ -2405,6 +2405,42 @@ def extract_svelte(path: Path) -> dict:
     return result
 
 
+_ASTRO_FRONTMATTER_RE = re.compile(r"\A\s*---[^\S\r\n]*\r?\n([\s\S]*?)\r?\n---")
+_ASTRO_SCRIPT_RE = re.compile(
+    r"<script\b((?:\"[^\"]*\"|'[^']*'|[^>\"'])*)>([\s\S]*?)</script\s*>",
+    re.IGNORECASE,
+)
+_ASTRO_NON_JS_TYPE_RE = re.compile(
+    r"""\btype\s*=\s*["']?(?!module\b|text/javascript\b|application/javascript\b)""",
+    re.IGNORECASE,
+)
+
+
+def _astro_mask_non_script(src: str) -> str:
+    """Blank everything in a ``.astro`` file except frontmatter and JS ``<script>`` bodies.
+
+    Every character outside those regions becomes a space (``\\r``/``\\n`` are kept),
+    so AST locations match the original file. Scripts with a non-JS ``type``
+    (``application/ld+json`` and the like) are blanked too: their bodies are not
+    statements and would only add parse errors.
+    """
+    keep: list[tuple[int, int]] = []
+    fm = _ASTRO_FRONTMATTER_RE.match(src)
+    if fm:
+        keep.append((fm.start(1), fm.end(1)))
+    for m in _ASTRO_SCRIPT_RE.finditer(src, fm.end() if fm else 0):
+        if not _ASTRO_NON_JS_TYPE_RE.search(m.group(1)):
+            keep.append((m.start(2), m.end(2)))
+    chars = [c if c in "\r\n" else " " for c in src]
+    for start, end in keep:
+        chars[start:end] = src[start:end]
+        # Terminate the region in place of the following `<`, so two scripts on
+        # one line don't run together into a single statement.
+        if end < len(chars) and chars[end] == " ":
+            chars[end] = ";"
+    return "".join(chars)
+
+
 def extract_astro(path: Path) -> dict:
     """Extract imports from .astro files: frontmatter (TS) + template regex fallback.
 
@@ -2417,8 +2453,19 @@ def extract_astro(path: Path) -> dict:
     silently dropped (#850). Mirrors :func:`extract_svelte` — same regex-rescue
     approach, scanning the frontmatter block and any client-side ``<script>`` blocks
     for static and dynamic imports.
+
+    The AST pass parses only the frontmatter and JS ``<script>`` bodies with the TS
+    grammar (Astro's default), blanking everything else so line numbers still
+    line up — the same masking as :func:`_vue_mask_non_script`. Parsing the whole
+    file flagged every template as a syntax error and dropped frontmatter symbols.
     """
-    result = _extract_generic(path, _JS_CONFIG)
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"nodes": [], "edges": []}
+    masked = _astro_mask_non_script(src).encode("utf-8")
+    masked = _normalize_ts_import_types(masked) or masked
+    result = _extract_generic(path, _TS_CONFIG, source_override=masked)
     try:
         import re as _re
         src = path.read_text(encoding="utf-8", errors="replace")
