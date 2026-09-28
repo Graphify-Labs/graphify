@@ -676,6 +676,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             # BEGIN; ... COMMIT; wraps DDL in a transaction node whose children
             # are statement nodes, not direct create_table nodes (#2953).
             walk(stmt)
+        elif stmt.type == "block":
+            # A bare `BEGIN;` followed by a `DO $$ ... END $$;` parses as a
+            # block that closes on the DO body's END, so the DDL before it sits
+            # under a block node instead of a transaction (#3886).
+            walk(stmt)
         elif stmt.type in ("fb_proc_or_trigger", "set_term", "declare_external_function", "ERROR"):
             walk(stmt)
 
