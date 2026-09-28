@@ -2,11 +2,11 @@ import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { delimiter, isAbsolute, relative, sep } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 // resolveReadPath, not the async sibling: the async variant is missing from
 // older host-provided pi-coding-agent copies -- a blocked statSync beats an unloadable extension.
 import {
   expandDelimitedPathEntries,
-  isInternalUrlPath,
   normalizePathLikeInput,
   resolveReadPath,
   splitPathAndSelPreferringLiteral,
@@ -28,7 +28,7 @@ const TIMEOUT_MS = 2000;
 const TOOL_NAMES = { bash: "Bash", grep: "Grep", read: "Read", glob: "Glob" } as const;
 const FILE_URL_RE = /^file:\/\//i;
 
-// isInternalUrlPath/isReadableUrlPath still earn their place even though the
+// InternalUrlRouter/isReadableUrlPath still earn their place even though the
 // guard now defends itself against URL-shaped input: resolveReadPath
 // below pre-resolves a rootless value to an absolute path
 // (`path.resolve(cwd, x)`) before the guard ever sees it, which for a
@@ -57,7 +57,9 @@ function isRemote(path: string): boolean {
       // through to the generic checks below.
     }
   }
-  return isInternalUrlPath(path) || isReadableUrlPath(path) || path.includes("://");
+  const router = InternalUrlRouter.instance();
+  const normalized = path.replace(/^(local:)\/(?!\/)/, "$1//");
+  return router.canHandle(normalized) || isReadableUrlPath(path) || path.includes("://");
 }
 
 function installedCommand(cwd: string): string | undefined {
@@ -85,21 +87,16 @@ function runGuard(command: string, kind: string, payload: string, cwd: string, s
 }
 
 export default function graphify(api: ExtensionAPI): void {
-  // Claude PreToolUse additionalContext parity: `tool_call` captures the guard's
-  // guidance for that call, `tool_result` delivers it with that call's result.
-  // Claude Code wraps the text in a system reminder naming the hook instead of
-  // passing it off as tool output, so it leads the result as one labelled
-  // <system-reminder> block -- the shape OMP's own per-tool TTSR reminders use.
-  // Every qualifying call carries its own nudge (no dedup), and it survives
-  // compaction like any other tool output.
-  const pending = new Map<string, string>();
+  // OMP's passive tool-call context channel emits trusted extension guidance as
+  // a separate developer message after the batch. Raw tool output stays
+  // untouched, so a file or command cannot forge this instruction channel.
+  // Every qualifying call carries its own nudge (no dedup).
   let generation = 0;
   let controller = new AbortController();
   const reset = () => {
     generation++;
     controller.abort();
     controller = new AbortController();
-    pending.clear();
   };
   api.on("session_start", reset);
   api.on("session_switch", reset);
@@ -114,6 +111,7 @@ export default function graphify(api: ExtensionAPI): void {
     const current = generation;
     const signal = controller.signal;
     const deadline = performance.now() + TIMEOUT_MS;
+    const contexts: string[] = [];
     try {
       if (Buffer.byteLength(JSON.stringify(event.input)) > INPUT_LIMIT) return;
       const command = installedCommand(ctx.cwd);
@@ -147,8 +145,7 @@ export default function graphify(api: ExtensionAPI): void {
           return { block: true, reason: hook.permissionDecisionReason };
         }
         if (typeof hook.additionalContext === "string" && hook.additionalContext.trim()) {
-          const previous = pending.get(event.toolCallId);
-          pending.set(event.toolCallId, previous ? `${previous}\n\n${hook.additionalContext}` : hook.additionalContext);
+          contexts.push(hook.additionalContext);
         }
         // The search CLI does not inspect individual targets; one call suffices.
         if (toolName === "Grep") break;
@@ -157,14 +154,7 @@ export default function graphify(api: ExtensionAPI): void {
       // Optional guidance must not break native tools on missing executables,
       // invalid paths, malformed hook output, timeout, or cancellation.
     }
+    if (contexts.length > 0) return { additionalContext: contexts.join("\n\n") };
   });
 
-  api.on("tool_result", (event, ctx) => {
-    if (!ctx.isProjectTrusted()) { pending.clear(); return; }
-    const nudge = pending.get(event.toolCallId);
-    if (nudge === undefined) return;
-    pending.delete(event.toolCallId);
-    const reminder = `<system-reminder source="graphify">\n${nudge}\n</system-reminder>`;
-    return { content: [{ type: "text" as const, text: reminder }, ...event.content] };
-  });
 }
