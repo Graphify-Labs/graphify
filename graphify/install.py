@@ -660,8 +660,21 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
     return "\n".join(lines).rstrip()
 
 
+_BANNER_LOGO = """\
+     ▄▄▀█▀▄▄
+ ▄▄▀▀  ▄█▄  ▀▀▄▄
+██▀▀▀▀▀███▀▀▀▀▀▀▀    ▄█████▄                           ██       ██  ▄████
+█ ▀▄  ▄▀            ██▀   ▀▀▀ ██▄███  ██████▄ ██▄████▄ ██▄████▄ ▄▄ █████  ██    ██
+█   ███    ███▀▀█   ██  █████ ██▀     ▄▄▄▄▄██ ██▀  ▀██ ██▀  ▀██ ██  ██    ▀██  ██▀
+█   ▀▀█▄   ▀▀▀▄ █   ██▄   ▄██ ██     ██▀▀▀▀██ ██▄  ▄██ ██    ██ ██  ██     ▀█▄▄█▀
+█      ███     ▀█    ▀████▀██ ██     ▀██████▀ ██▀████▀ ██    ██ ██  ██      ▀██▀
+▀██▀▀▀▀▀█▀▀▀▀▀██▀                             ██                           ▄██
+   ▀▀▄▄ █ ▄▄▀▀                                ██                          ██▀
+       ▀▀▀"""
+
+
 def _print_banner() -> None:
-    """Amber brain banner on graphify install. TTY-only, never raises."""
+    """Green graphify logo banner on graphify install. TTY-only, never raises."""
     if not sys.stdout.isatty():
         return
     try:
@@ -670,22 +683,13 @@ def _print_banner() -> None:
             ctypes.windll.kernel32.SetConsoleMode(
                 ctypes.windll.kernel32.GetStdHandle(-11), 7
             )
-        A = "\033[38;5;214m"
-        D = "\033[38;5;130m"
+        G = "\033[38;2;17;141;79m"
+        D = "\033[2m"
         R = "\033[0m"
-        print(f"""{A}
-  ╭──◉──╮     ╭──◉──╮
- ╱  ◉   ◉ ╲ ╱ ◉   ◉  ╲
-│   ◉─◉─◉  ◉  ◉─◉─◉   │
-│    ◉   ◉ │ ◉   ◉    │
-│   ◉─◉─◉  ◉  ◉─◉─◉   │
- ╲  ◉   ◉ ╱ ╲ ◉   ◉  ╱
-  ╰──◉──╯     ╰──◉──╯
-           ◉
-
-  █▀▀ █▀█ ▄▀█ █▀█ █ █ █ █▀▀ █▄█
-  █▄█ █▀▄ █▀█ █▀▀ █▀█ █ █▀   █{D}  {__version__}{R}
-""")
+        lines = [f"  {G}{line}{R}" for line in _BANNER_LOGO.splitlines()]
+        # Version sits after the wordmark baseline, like the old banner.
+        lines[6] += f"  {D}{__version__}{R}"
+        print("\n" + "\n".join(lines) + "\n")
     except Exception:
         pass
 def install(platform: str = "claude", *, project: bool = False, project_dir: Path | None = None) -> None:
