@@ -235,21 +235,54 @@ def test_search_out_path_error_is_swallowed(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # soft nudge bounds (#3435): fresh query stamp suppresses, per-session cap
 # --------------------------------------------------------------------------- #
-def _read_payload(sid="s1"):
-    return {"session_id": sid, "tool_name": "Read", "tool_input": {"file_path": "src/app.py"}}
+def _read_payload(sid="s1", agent=None):
+    p = {"session_id": sid, "tool_name": "Read", "tool_input": {"file_path": "src/app.py"}}
+    if agent:
+        p["agent_id"] = agent
+    return p
 
 
 def _search_payload(sid="s1"):
     return {"session_id": sid, "tool_input": {"command": "grep -rn foo ."}}
 
 
-def test_read_nudge_skipped_while_query_stamp_fresh(tmp_path, monkeypatch):
-    import time
+def _fresh_stamp(tmp_path):
     stamp = tmp_path / "graphify-out" / "cache" / "last_query_stamp"
     stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.write_text(str(time.time()), encoding="utf-8")
+    stamp.write_text("x", encoding="utf-8")
+
+
+def test_fresh_query_stamp_silences_nudges_after_the_first(tmp_path, monkeypatch):
+    _fresh_stamp(tmp_path)
+    # The stamp is project-wide and cannot tell which agent queried, so each
+    # agent still gets its first nudge; later ones are silenced.
+    assert "MANDATORY" in _invoke("read", _read_payload(), tmp_path, monkeypatch)
     assert _invoke("read", _read_payload(), tmp_path, monkeypatch) == ""
     assert _invoke("search", _search_payload(), tmp_path, monkeypatch) == ""
+
+
+def test_fresh_query_stamp_silences_nudges_without_session_id(tmp_path, monkeypatch):
+    _fresh_stamp(tmp_path)
+    payload = {"tool_name": "Read", "tool_input": {"file_path": "src/app.py"}}
+    assert _invoke("read", payload, tmp_path, monkeypatch) == ""
+
+
+def test_subagents_get_their_own_nudge_budget(tmp_path, monkeypatch):
+    # Claude Code subagents share the parent's session_id and differ by agent_id.
+    monkeypatch.setenv("GRAPHIFY_HOOK_NUDGE_CAP", "1")
+    sid = "s" * 64  # long ids must not truncate distinct agents into one key
+    assert "MANDATORY" in _invoke("read", _read_payload(sid), tmp_path, monkeypatch)
+    assert _invoke("read", _read_payload(sid), tmp_path, monkeypatch) == ""
+    assert "MANDATORY" in _invoke("read", _read_payload(sid, "agent-a"), tmp_path, monkeypatch)
+    assert _invoke("read", _read_payload(sid, "agent-a"), tmp_path, monkeypatch) == ""
+    assert "MANDATORY" in _invoke("read", _read_payload(sid, "agent-b"), tmp_path, monkeypatch)
+
+
+def test_subagent_first_nudge_survives_parent_query(tmp_path, monkeypatch):
+    assert "MANDATORY" in _invoke("read", _read_payload(), tmp_path, monkeypatch)
+    _fresh_stamp(tmp_path)  # parent queried
+    assert _invoke("read", _read_payload(), tmp_path, monkeypatch) == ""
+    assert "MANDATORY" in _invoke("read", _read_payload(agent="agent-a"), tmp_path, monkeypatch)
 
 
 def test_nudges_capped_per_session(tmp_path, monkeypatch):
