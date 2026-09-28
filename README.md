@@ -579,6 +579,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_QUERY_LOG` | Enable the query log and write it to this path instead of the default | optional — off unless this or `_ENABLE` is set |
 | `GRAPHIFY_QUERY_LOG_DISABLE` | Set to `1` to force the query log off (wins over the enable vars) | optional |
 | `GRAPHIFY_QUERY_LOG_RESPONSES` | When the log is enabled, also record full subgraph responses (off by default) | optional |
+| `GRAPHIFY_NO_AUTO_REFRESH` | Set to `1` to stop the CLI from refreshing installed skills that are older than the package after an upgrade | optional — refresh is on by default |
 | `GRAPHIFY_MAX_GRAPH_BYTES` | Override the 512 MiB graph.json size cap — e.g. `700MB`, `2GB`, or plain bytes | optional — useful for very large corpora |
 | `GRAPHIFY_MAX_CONTEXTS` | Maximum number of non-default project graphs retained by one multi-project MCP server | optional — default: `8`; invalid values use `8`, and values below `1` use `1` |
 | `GRAPHIFY_LLM_TEMPERATURE` | Override LLM temperature for semantic extraction — e.g. `0.7`, or `none` to omit | optional — auto-omitted for o1/o3/o4/gpt-5 reasoning models |
@@ -674,10 +675,10 @@ ANTHROPIC_API_KEY=sk-... graphify extract ./docs --backend claude
 ```
 
 **Skill version mismatch warning in your IDE**
-Your installed graphify version is different from the skill file. Update:
+Your installed graphify version is different from the skill file. After an upgrade, the first `graphify` command refreshes every installed skill that is older than the package, on all platforms at once, and keeps a locally edited `SKILL.md` as `SKILL.md.bak`. Set `GRAPHIFY_NO_AUTO_REFRESH=1` to turn this off. A skill it can't refresh safely keeps the warning: one newer than the package, or a directory that two installers share (for example Copilot and `graphify vscode install`). Reinstall that platform by hand:
 ```bash
 uv tool upgrade graphifyy
-graphify install  # overwrites the skill file
+graphify install --platform <name>  # overwrites the skill file
 ```
 
 **Claude Code prompt cache invalidated after every `graphify extract`**

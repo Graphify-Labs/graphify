@@ -11,7 +11,10 @@ installers resolve packaged assets via `Path(__file__).parent / "always_on"` and
 """
 
 from __future__ import annotations
+import contextlib
+import errno
 import functools
+import hashlib
 import json
 import os
 import platform
@@ -19,8 +22,17 @@ import re
 import shutil
 import stat
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import NoReturn
+
+if sys.platform == "win32":
+    import msvcrt
+    fcntl = None
+else:
+    import fcntl
+    msvcrt = None
 
 try:
     from importlib.metadata import version as _pkg_version
@@ -31,6 +43,106 @@ except Exception:
 
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
+
+
+def _skill_lock_path(skill_dir: Path) -> Path:
+    """The lock file for ``skill_dir``, kept out of the skill directory.
+
+    Inside it, a project-scope install would leave the file in the user's
+    repository, and uninstall would have to delete a file another process may
+    still hold - letting that process and a new one both own the lock.
+    """
+    try:
+        real = skill_dir.resolve()
+    except (OSError, RuntimeError):  # symlink loop
+        real = skill_dir.absolute()
+    digest = hashlib.sha256(os.path.normcase(str(real)).encode("utf-8")).hexdigest()[:16]
+    return Path.home() / ".cache" / "graphify" / "skill-locks" / f"{digest}.lock"
+
+
+# Lock files this thread holds: the CLI's refresh takes the lock and then calls
+# _copy_skill_file, which takes it again. Per thread, so another thread of the
+# same process still waits its turn.
+_held_skill_locks = threading.local()
+
+
+def _try_skill_lock(fh) -> bool:
+    """Take the lock on ``fh`` without waiting; False if another process holds it.
+
+    Raises OSError when the file system cannot lock at all (e.g. some network
+    mounts).
+    """
+    try:
+        if fcntl is not None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError as exc:
+        if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+            return False
+        raise
+    return True
+
+
+def _release_skill_lock(fh) -> None:
+    with contextlib.suppress(OSError):
+        if fcntl is not None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        else:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+@contextlib.contextmanager
+def _skill_lock(skill_dir: Path, *, wait: bool = True):
+    """Serialize every process that writes ``skill_dir``.
+
+    Install, uninstall and the CLI's stale-skill refresh (#1805) all write the
+    same files and stage through fixed ``SKILL.md.tmp`` / ``references.tmp``
+    names, so two of them at once would write through each other - and an
+    uninstall racing a refresh could see the refresh put the skill back.
+
+    Yields True while this process holds the lock. With ``wait`` off (the
+    refresh) it yields False instead of waiting when another process holds it.
+    It yields None when locking is unavailable here (no writable cache
+    directory, a file system that refuses to lock): install and uninstall then
+    go ahead unlocked, as they did before the lock existed; the refresh skips.
+
+    An OS lock (flock / msvcrt.locking): the OS releases it however the holder
+    exits, so a crash or a kill never leaves the directory locked and there is
+    no staleness timeout to guess. The lock file is never deleted.
+    """
+    path = _skill_lock_path(skill_dir)
+    held = _held_skill_locks.__dict__.setdefault("paths", set())
+    if path in held:
+        yield True
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(path, "a+b")
+    except OSError:
+        fh = None
+    if fh is None:
+        yield None
+        return
+    with fh:
+        try:
+            locked = _try_skill_lock(fh)
+            while not locked and wait:
+                time.sleep(0.05)
+                locked = _try_skill_lock(fh)
+        except OSError:
+            locked = None
+        if not locked:
+            yield locked
+            return
+        held.add(path)
+        try:
+            yield True
+        finally:
+            held.discard(path)
+            _release_skill_lock(fh)
 
 
 def _write_version_stamp(skill_dst: Path, version: str) -> None:
@@ -219,70 +331,72 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
         sys.exit(1)
 
     skill_dst = _platform_skill_destination(platform_name, project=project, project_dir=project_dir)
-    skill_dst.parent.mkdir(parents=True, exist_ok=True)
+    with _skill_lock(skill_dst.parent):
+        skill_dst.parent.mkdir(parents=True, exist_ok=True)
 
-    # Install the references/ sidecar (or clear an orphan one) BEFORE writing
-    # SKILL.md, so SKILL.md is the last artifact laid down. An install that is
-    # interrupted partway then leaves no SKILL.md rather than a SKILL.md that
-    # points at an absent references/ dir.
-    if refs_src is not None:
-        _install_skill_references(skill_dst, refs_src)
-        print(f"  references       ->  {skill_dst.parent / 'references'}")
-    else:
-        # Monolith (or progressive-with-no-refs): clear any orphan references/.
-        orphan_refs = skill_dst.parent / "references"
-        if orphan_refs.exists():
-            shutil.rmtree(orphan_refs)
+        # Install the references/ sidecar (or clear an orphan one) BEFORE writing
+        # SKILL.md, so SKILL.md is the last artifact laid down. An install that is
+        # interrupted partway then leaves no SKILL.md rather than a SKILL.md that
+        # points at an absent references/ dir.
+        if refs_src is not None:
+            _install_skill_references(skill_dst, refs_src)
+            print(f"  references       ->  {skill_dst.parent / 'references'}")
+        else:
+            # Monolith (or progressive-with-no-refs): clear any orphan references/.
+            orphan_refs = skill_dst.parent / "references"
+            if orphan_refs.exists():
+                shutil.rmtree(orphan_refs)
 
-    # A SKILL.md that differs from what is about to be written may carry the
-    # user's local edits (a tuned description:, extra guidance); replacing it
-    # wholesale with only "skill installed ->" for output read like a no-op
-    # while the edits were gone (#3144). Keep one .bak beside it and say so.
-    # Every upgrade differs too - the .bak is overwritten each install, so it
-    # always holds exactly the previous copy.
-    try:
-        if skill_dst.exists() and skill_dst.read_bytes() != skill_src.read_bytes():
-            backup = skill_dst.with_suffix(skill_dst.suffix + ".bak")
-            shutil.copy2(skill_dst, backup)
-            print(f"  previous copy    ->  {backup} (differed from the packaged skill)")
-    except OSError:
-        pass  # a failed backup must not block the install
-    # SKILL.md last (crash-safety), via an atomic temp + rename.
-    tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
-    try:
-        shutil.copy(skill_src, tmp_dst)
-        _os_replace_with_fallback(tmp_dst, skill_dst)
-    except Exception:
+        # A SKILL.md that differs from what is about to be written may carry the
+        # user's local edits (a tuned description:, extra guidance); replacing it
+        # wholesale with only "skill installed ->" for output read like a no-op
+        # while the edits were gone (#3144). Keep one .bak beside it and say so.
+        # Every upgrade differs too - the .bak is overwritten each install, so it
+        # always holds exactly the previous copy.
         try:
-            tmp_dst.unlink(missing_ok=True)
+            if skill_dst.exists() and skill_dst.read_bytes() != skill_src.read_bytes():
+                backup = skill_dst.with_suffix(skill_dst.suffix + ".bak")
+                shutil.copy2(skill_dst, backup)
+                print(f"  previous copy    ->  {backup} (differed from the packaged skill)")
         except OSError:
-            pass
-        raise
+            pass  # a failed backup must not block the install
+        # SKILL.md last (crash-safety), via an atomic temp + rename.
+        tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
+        try:
+            shutil.copy(skill_src, tmp_dst)
+            _os_replace_with_fallback(tmp_dst, skill_dst)
+        except Exception:
+            try:
+                tmp_dst.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
-    _write_version_stamp(skill_dst, __version__)
-    print(f"  skill installed  ->  {skill_dst}")
+        _write_version_stamp(skill_dst, __version__)
+        print(f"  skill installed  ->  {skill_dst}")
     return skill_dst
 def _remove_skill_file(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> bool:
     """Remove a platform skill file and its version stamp without touching other scopes."""
     skill_dst = _platform_skill_destination(platform_name, project=project, project_dir=project_dir)
     removed = False
-    if skill_dst.exists():
-        skill_dst.unlink()
-        print(f"  skill removed    ->  {skill_dst}")
-        removed = True
-    version_file = skill_dst.parent / ".graphify_version"
-    if version_file.exists():
-        version_file.unlink()
-        removed = True
-    refs_dir = skill_dst.parent / "references"
-    if refs_dir.exists():
-        shutil.rmtree(refs_dir)
-        removed = True
-    for d in (skill_dst.parent, skill_dst.parent.parent, skill_dst.parent.parent.parent):
-        try:
-            d.rmdir()
-        except OSError:
-            break
+    with _skill_lock(skill_dst.parent):
+        if skill_dst.exists():
+            skill_dst.unlink()
+            print(f"  skill removed    ->  {skill_dst}")
+            removed = True
+        version_file = skill_dst.parent / ".graphify_version"
+        if version_file.exists():
+            version_file.unlink()
+            removed = True
+        refs_dir = skill_dst.parent / "references"
+        if refs_dir.exists():
+            shutil.rmtree(refs_dir)
+            removed = True
+        for d in (skill_dst.parent, skill_dst.parent.parent, skill_dst.parent.parent.parent):
+            try:
+                d.rmdir()
+            except OSError:
+                break
     return removed
 def _project_scope_root(path: Path, project_dir: Path) -> Path:
     """Return the top-level project artifact for a project-scoped skill path."""
@@ -940,6 +1054,14 @@ def gemini_uninstall(project_dir: Path | None = None, *, project: bool = False, 
         print(f"GEMINI.md was empty after removal - deleted {target.resolve()}")
     _uninstall_gemini_hook(project_dir)
 _VSCODE_INSTRUCTIONS_MARKER = "## graphify"
+def _vscode_skill_destination() -> Path:
+    """Skill path written by ``graphify vscode install``.
+
+    The same directory as the ``copilot`` platform's user-scope skill, but with
+    the VS Code variant of SKILL.md, so the version stamp there cannot tell which
+    of the two is installed.
+    """
+    return Path.home() / ".copilot" / "skills" / "graphify" / "SKILL.md"
 def vscode_install(project_dir: Path | None = None) -> None:
     """Install graphify skill for VS Code Copilot Chat + write .github/copilot-instructions.md."""
     skill_src = Path(__file__).parent / "skill-vscode.md"
@@ -947,29 +1069,30 @@ def vscode_install(project_dir: Path | None = None) -> None:
     if not skill_src.exists():
         skill_src = Path(__file__).parent / "skill-copilot.md"
         refs_bundle = "copilot"
-    skill_dst = Path.home() / ".copilot" / "skills" / "graphify" / "SKILL.md"
-    skill_dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
-    try:
-        shutil.copy(skill_src, tmp_dst)
-        _os_replace_with_fallback(tmp_dst, skill_dst)
-    except Exception:
+    skill_dst = _vscode_skill_destination()
+    with _skill_lock(skill_dst.parent):
+        skill_dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
         try:
-            tmp_dst.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-    # Progressive-capable: install the packaged references/ sidecar when present.
-    refs_src = Path(__file__).parent / "skills" / refs_bundle / "references"
-    if refs_src.exists():
-        _install_skill_references(skill_dst, refs_src)
-        print(f"  references       ->  {skill_dst.parent / 'references'}")
-    else:
-        orphan_refs = skill_dst.parent / "references"
-        if orphan_refs.exists():
-            shutil.rmtree(orphan_refs)
-    _write_version_stamp(skill_dst, __version__)
-    print(f"  skill installed  ->  {skill_dst}")
+            shutil.copy(skill_src, tmp_dst)
+            _os_replace_with_fallback(tmp_dst, skill_dst)
+        except Exception:
+            try:
+                tmp_dst.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        # Progressive-capable: install the packaged references/ sidecar when present.
+        refs_src = Path(__file__).parent / "skills" / refs_bundle / "references"
+        if refs_src.exists():
+            _install_skill_references(skill_dst, refs_src)
+            print(f"  references       ->  {skill_dst.parent / 'references'}")
+        else:
+            orphan_refs = skill_dst.parent / "references"
+            if orphan_refs.exists():
+                shutil.rmtree(orphan_refs)
+        _write_version_stamp(skill_dst, __version__)
+        print(f"  skill installed  ->  {skill_dst}")
 
     instructions = (project_dir or Path(".")) / ".github" / "copilot-instructions.md"
     instructions.parent.mkdir(parents=True, exist_ok=True)
@@ -994,25 +1117,26 @@ def vscode_install(project_dir: Path | None = None) -> None:
     print("Note: for GitHub Copilot CLI (terminal), use: graphify copilot install")
 def vscode_uninstall(project_dir: Path | None = None) -> None:
     """Remove graphify VS Code Copilot Chat skill and .github/copilot-instructions.md section."""
-    skill_dst = Path.home() / ".copilot" / "skills" / "graphify" / "SKILL.md"
-    if skill_dst.exists():
-        skill_dst.unlink()
-        print(f"  skill removed    ->  {skill_dst}")
-    version_file = skill_dst.parent / ".graphify_version"
-    if version_file.exists():
-        version_file.unlink()
-    refs_dir = skill_dst.parent / "references"
-    if refs_dir.exists():
-        shutil.rmtree(refs_dir)
-    for d in (
-        skill_dst.parent,
-        skill_dst.parent.parent,
-        skill_dst.parent.parent.parent,
-    ):
-        try:
-            d.rmdir()
-        except OSError:
-            break
+    skill_dst = _vscode_skill_destination()
+    with _skill_lock(skill_dst.parent):
+        if skill_dst.exists():
+            skill_dst.unlink()
+            print(f"  skill removed    ->  {skill_dst}")
+        version_file = skill_dst.parent / ".graphify_version"
+        if version_file.exists():
+            version_file.unlink()
+        refs_dir = skill_dst.parent / "references"
+        if refs_dir.exists():
+            shutil.rmtree(refs_dir)
+        for d in (
+            skill_dst.parent,
+            skill_dst.parent.parent,
+            skill_dst.parent.parent.parent,
+        ):
+            try:
+                d.rmdir()
+            except OSError:
+                break
 
     instructions = (project_dir or Path(".")) / ".github" / "copilot-instructions.md"
     if not instructions.exists():
@@ -1167,24 +1291,25 @@ def _antigravity_uninstall(project_dir: Path, *, project: bool = False) -> None:
 
     # Remove skill file
     skill_dst = _platform_skill_destination("antigravity", project=project, project_dir=project_dir)
-    if skill_dst.exists():
-        skill_dst.unlink()
-        print(f"graphify skill removed from {skill_dst}")
-    version_file = skill_dst.parent / ".graphify_version"
-    if version_file.exists():
-        version_file.unlink()
-    refs_dir = skill_dst.parent / "references"
-    if refs_dir.exists():
-        shutil.rmtree(refs_dir)
-    for d in (
-        skill_dst.parent,
-        skill_dst.parent.parent,
-        skill_dst.parent.parent.parent,
-    ):
-        try:
-            d.rmdir()
-        except OSError:
-            break
+    with _skill_lock(skill_dst.parent):
+        if skill_dst.exists():
+            skill_dst.unlink()
+            print(f"graphify skill removed from {skill_dst}")
+        version_file = skill_dst.parent / ".graphify_version"
+        if version_file.exists():
+            version_file.unlink()
+        refs_dir = skill_dst.parent / "references"
+        if refs_dir.exists():
+            shutil.rmtree(refs_dir)
+        for d in (
+            skill_dst.parent,
+            skill_dst.parent.parent,
+            skill_dst.parent.parent.parent,
+        ):
+            try:
+                d.rmdir()
+            except OSError:
+                break
 _CURSOR_RULE_PATH = Path(".cursor") / "rules" / "graphify.mdc"
 _CURSOR_RULE = """\
 ---
@@ -1802,21 +1927,22 @@ def _kilo_uninstall_global() -> list[str]:
         pass
 
     skill_dst = Path.home() / _PLATFORM_CONFIG["kilo"]["skill_dst"]
-    if skill_dst.exists():
-        skill_dst.unlink()
-        removed.append(f"skill removed: {skill_dst}")
-    version_file = skill_dst.parent / ".graphify_version"
-    if version_file.exists():
-        version_file.unlink()
-    for d in (
-        skill_dst.parent,
-        skill_dst.parent.parent,
-        skill_dst.parent.parent.parent,
-    ):
-        try:
-            d.rmdir()
-        except OSError:
-            break
+    with _skill_lock(skill_dst.parent):
+        if skill_dst.exists():
+            skill_dst.unlink()
+            removed.append(f"skill removed: {skill_dst}")
+        version_file = skill_dst.parent / ".graphify_version"
+        if version_file.exists():
+            version_file.unlink()
+        for d in (
+            skill_dst.parent,
+            skill_dst.parent.parent,
+            skill_dst.parent.parent.parent,
+        ):
+            try:
+                d.rmdir()
+            except OSError:
+                break
 
     return removed
 def _kilo_install(project_dir: Path) -> None:
