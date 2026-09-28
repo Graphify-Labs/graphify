@@ -3719,6 +3719,23 @@ def test_razor_finds_code_block_methods():
     assert any("IncrementCount" in l for l in labels)
     assert any("LoadData" in l for l in labels)
 
+def test_razor_finds_functions_block_methods(tmp_path):
+    # @functions is the Razor Pages / MVC (.cshtml) spelling of the Blazor
+    # @code block. Both compile to class members and this extractor serves both
+    # file types, but only @code was recognised, so .cshtml methods vanished.
+    page = tmp_path / "Page.cshtml"
+    page.write_text(
+        "@functions {\n"
+        "    public int Square(int x) { return x * x; }\n"
+        "    public string Greet() { return \"hi\"; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    r = extract_razor(page)
+    labels = _labels(r)
+    assert "Square" in labels
+    assert "Greet" in labels
+
 def test_razor_no_dangling_edges():
     r = extract_razor(FIXTURES / "sample.razor")
     node_ids = {n["id"] for n in r["nodes"]}
