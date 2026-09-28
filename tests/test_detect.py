@@ -872,6 +872,58 @@ def test_detect_converts_google_workspace_shortcuts_when_enabled(tmp_path, monke
     assert result["total_words"] > 0
 
 
+def test_detect_office_sidecar_survives_a_gitignored_output_dir(tmp_path, monkeypatch):
+    """#3504: the documented .gitignore advice puts graphify-out/ (and so
+    graphify-out/converted/, where Office sidecars land) inside a gitignored
+    tree. The ignore check exists to keep USER files out of the scan, not to
+    filter output this same pass just produced from an already-admitted
+    source file -- so a sidecar landing under converted/ must survive it,
+    or every .docx/.xlsx silently vanishes from the corpus the moment a repo
+    follows that advice."""
+    (tmp_path / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    src = tmp_path / "report.docx"
+    src.write_text("placeholder", encoding="utf-8")
+
+    def fake_convert(path, out_dir, root=None):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / "report_converted.md"
+        out.write_text("# Report\n\nConverted content.", encoding="utf-8")
+        return out
+
+    monkeypatch.setattr("graphify.detect.convert_office_file", fake_convert)
+
+    result = detect(tmp_path)
+
+    assert len(result["files"]["document"]) == 1, (
+        "the Office sidecar was dropped by the gitignore check on the tool's own output dir"
+    )
+    assert result["files"]["document"][0].endswith("report_converted.md")
+    assert result["total_words"] > 0
+
+
+def test_detect_google_workspace_sidecar_survives_a_gitignored_output_dir(tmp_path, monkeypatch):
+    """Same trap as the Office sidecar case (#3504), for the Google Workspace
+    conversion branch, which writes into the same converted/ directory."""
+    (tmp_path / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    shortcut = tmp_path / "notes.gdoc"
+    shortcut.write_text('{"doc_id":"doc-1"}', encoding="utf-8")
+
+    def fake_convert(path, out_dir, *, xlsx_to_markdown=None, root=None):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / "notes_converted.md"
+        out.write_text("# Notes\n\nA converted Google Doc.", encoding="utf-8")
+        return out
+
+    monkeypatch.setattr("graphify.detect.convert_google_workspace_file", fake_convert)
+
+    result = detect(tmp_path, google_workspace=True)
+
+    assert len(result["files"]["document"]) == 1, (
+        "the Google Workspace sidecar was dropped by the gitignore check on the tool's own output dir"
+    )
+    assert result["files"]["document"][0].endswith("notes_converted.md")
+
+
 def test_detect_includes_video_key(tmp_path):
     """detect() result always includes a 'video' key even with no video files."""
     (tmp_path / "main.py").write_text("x = 1")
@@ -2464,6 +2516,164 @@ def test_load_manifest_passes_through_legacy_absolute_keys(tmp_path):
     assert abs_key in loaded
 
 
+def test_load_manifest_prefers_the_more_recently_seen_duplicate(tmp_path):
+    """#1964: a manifest written across a mix of call sites — some passing
+    root (relative keys), some not (an outdated installed skill runbook,
+    for one) — can end up with both an absolute and a relative key for the
+    same file, each carrying different data. load_manifest must keep
+    whichever was more recently seen, not whichever raw key happens to
+    iterate last in the on-disk JSON."""
+    import json
+    from graphify.detect import load_manifest
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("def x(): pass\n")
+    abs_key = str((tmp_path / "src" / "foo.py").resolve())
+
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+
+    # Stale entry (absolute key) written first, fresh entry (relative key)
+    # written second -- the fresh one iterates last and should win either way.
+    manifest_path.write_text(json.dumps({
+        abs_key: {"mtime": 1.0, "seen": 1.0, "ast_hash": "stale", "semantic_hash": ""},
+        "src/foo.py": {"mtime": 2.0, "seen": 2.0, "ast_hash": "fresh", "semantic_hash": "fresh_sem"},
+    }))
+    loaded = load_manifest(str(manifest_path), root=tmp_path)
+    assert loaded[abs_key]["ast_hash"] == "fresh"
+
+    # Same two entries, opposite on-disk order: the stale one now iterates
+    # last, so a plain "keep whichever is seen last" collapse would wrongly
+    # keep it. The seen timestamp must still pick the fresh one.
+    manifest_path.write_text(json.dumps({
+        "src/foo.py": {"mtime": 2.0, "seen": 2.0, "ast_hash": "fresh", "semantic_hash": "fresh_sem"},
+        abs_key: {"mtime": 1.0, "seen": 1.0, "ast_hash": "stale", "semantic_hash": ""},
+    }))
+    loaded = load_manifest(str(manifest_path), root=tmp_path)
+    assert loaded[abs_key]["ast_hash"] == "fresh", (
+        "the entry with the later seen timestamp must win regardless of "
+        "on-disk key order"
+    )
+    assert loaded[abs_key]["semantic_hash"] == "fresh_sem"
+
+
+def test_load_manifest_collapses_a_relative_key_with_a_dot_dot_segment(tmp_path):
+    """Review finding on #1964: _to_absolute_from_storage joined a relative
+    key onto the resolved root with a plain Path '/' , which never collapses
+    a '..' segment the way .resolve() does. A relative key like
+    'sub/../foo.py' (the kind of format mismatch this function exists to
+    tolerate, per its own docstring on mixed call sites/versions) then
+    canonicalized to a different string than the plain absolute key for the
+    same file, so the two entries never collapsed at all."""
+    import json
+    from graphify.detect import load_manifest
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("def x(): pass\n")
+    abs_key = str((tmp_path / "src" / "foo.py").resolve())
+
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(json.dumps({
+        abs_key: {"mtime": 1.0, "seen": 1.0, "ast_hash": "stale", "semantic_hash": ""},
+        "src/../src/foo.py": {"mtime": 2.0, "seen": 2.0, "ast_hash": "fresh", "semantic_hash": "fresh_sem"},
+    }))
+    loaded = load_manifest(str(manifest_path), root=tmp_path)
+    assert len(loaded) == 1, (
+        f"the dotted-segment key must canonicalize onto the same absolute "
+        f"path and collapse with the plain one, got {list(loaded)!r}"
+    )
+    assert loaded[abs_key]["ast_hash"] == "fresh"
+
+
+def test_to_absolute_from_storage_recognizes_a_foreign_platform_absolute_key(tmp_path):
+    """Review finding on #1964: Path.is_absolute() only recognizes the
+    CURRENT platform's own syntax, so a manifest genuinely moved between
+    platforms (this module's own stated scope) could carry a key like
+    'C:/Users/x/foo.py' or '\\\\server\\share\\foo.py' loaded on POSIX, or
+    '/abs/path' loaded on Windows. Pre-fix, such a key was wrongly judged
+    relative and joined onto root, producing a nonsense path like
+    '<root>/C:/Users/x/foo.py' instead of being left alone."""
+    from graphify.detect import _looks_absolute, _to_absolute_from_storage
+
+    for foreign_key in (
+        "C:/Users/x/foo.py",
+        "C:\\Users\\x\\foo.py",
+        "\\\\server\\share\\foo.py",
+        "/abs/path/foo.py",
+    ):
+        assert _looks_absolute(foreign_key), foreign_key
+
+    result = _to_absolute_from_storage("C:/Users/x/foo.py", tmp_path)
+    assert str(tmp_path) not in result, (
+        f"a foreign-platform absolute key must not be joined onto root, got {result!r}"
+    )
+    assert _looks_absolute("src/foo.py") is False
+
+
+def test_to_absolute_from_storage_keeps_a_foreign_key_in_its_own_syntax(tmp_path):
+    """Review finding on #1964: a foreign-platform absolute key went through
+    os.path.normpath, which applies the CURRENT platform's rules -- on
+    Windows '/home/u/foo.py' became '\\\\home\\\\u\\\\foo.py', which POSIX
+    cannot read back. Dot segments must still collapse, but under the
+    key's own syntax, so every platform canonicalizes it identically."""
+    from graphify.detect import _to_absolute_from_storage
+
+    assert _to_absolute_from_storage("/home/u/foo.py", tmp_path) == "/home/u/foo.py"
+    assert _to_absolute_from_storage("/home/u/sub/../foo.py", tmp_path) == "/home/u/foo.py"
+    assert (
+        _to_absolute_from_storage("C:\\Users\\x\\sub\\..\\foo.py", tmp_path)
+        == "C:\\Users\\x\\foo.py"
+    )
+
+
+def test_save_manifest_relativize_step_collapses_seeded_duplicates(tmp_path, monkeypatch):
+    """#1964: the same collapse must happen on the WRITE side too. If the
+    seeded rows hold two keys for a file untouched by this save (#917) that
+    relativize to the same stored key, the relativize step must not silently
+    keep the stale one just because it happens to iterate last.
+
+    load_manifest already collapses duplicates it can canonicalize, so a
+    real on-disk manifest never reaches save_manifest's own collapse with
+    both rows (the save side only sees keys that differ in ways relpath
+    normalizes but load does not, e.g. case on Windows). Stub load_manifest
+    to hand over the un-collapsed rows directly, so this test fails if the
+    save-side collapse regresses to last-wins even while load's is intact."""
+    import json
+    import os
+    import graphify.detect as detect
+
+    (tmp_path / "src").mkdir()
+    tracked = tmp_path / "src" / "foo.py"
+    tracked.write_text("def x(): pass\n")
+    other = tmp_path / "bar.py"
+    other.write_text("def y(): pass\n")
+    abs_key = str(tracked.resolve())
+    # Same file, different string: relpath collapses the '..', load's
+    # canonical form would too, but the stub bypasses that.
+    dotted_key = os.path.join(str(tmp_path.resolve()), "src", "..", "src", "foo.py")
+
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    # Fresh entry iterates first, stale entry last -- save_manifest's own
+    # collapse must still prefer the fresher one.
+    seeded = {
+        dotted_key: {"mtime": 2.0, "seen": 2.0, "ast_hash": "fresh", "semantic_hash": "fresh_sem"},
+        abs_key: {"mtime": 1.0, "seen": 1.0, "ast_hash": "stale", "semantic_hash": ""},
+    }
+    monkeypatch.setattr(detect, "load_manifest", lambda *a, **kw: dict(seeded))
+
+    # Save touching only a DIFFERENT file, so foo.py's row is only seeded
+    # through, never freshly stamped -- isolates the relativize collapse.
+    detect.save_manifest({"code": [str(other)]}, str(manifest_path), root=tmp_path)
+
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert raw["src/foo.py"]["ast_hash"] == "fresh", (
+        "the seed step must keep the more recently seen duplicate when "
+        "collapsing keys, not whichever iterates last"
+    )
+
+
 def test_save_manifest_out_of_root_keeps_absolute(tmp_path):
     """Files outside ``root`` (e.g. symlinked external corpora) are stored
     absolute so they round-trip on the saving machine even when they can't
@@ -2786,6 +2996,41 @@ def test_detect_office_conversion_respects_cache_root(tmp_path, monkeypatch):
     import hashlib
     expected_hash = hashlib.sha256(unicodedata.normalize("NFC", "spec.docx").encode()).hexdigest()[:8]
     assert sidecar_path.name == f"spec_{expected_hash}.md"
+
+
+def test_detect_incremental_respects_cache_root(tmp_path, monkeypatch):
+    """#3847: detect_incremental had no cache_root parameter at all, unlike
+    detect(), so an incremental extract run with a --out destination outside
+    the scan root fell back to anchoring the word-count stat index at the
+    scan root itself — leaking graphify-out/cache/stat-index.json into the
+    corpus even though a fresh (non-incremental) run to the same destination
+    stays clean."""
+    from graphify import cache as cache_mod
+
+    monkeypatch.setattr(cache_mod, "_stat_index", {})
+    monkeypatch.setattr(cache_mod, "_stat_index_root", None)
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    cache_out = tmp_path / "cache_out"
+    cache_out.mkdir()
+
+    doc = corpus / "notes.md"
+    doc.write_text("Some notes content here.")
+
+    manifest_path = str(cache_out / "manifest.json")
+    save_manifest({}, manifest_path, root=corpus)
+
+    detect_incremental(corpus, manifest_path=manifest_path, cache_root=cache_out)
+    cache_mod._flush_stat_index()
+
+    assert not (corpus / detect_mod.GRAPHIFY_OUT).exists(), (
+        "detect_incremental() must not write graphify-out into the scanned "
+        "corpus tree when cache_root is provided (#3847)"
+    )
+    assert (cache_out / detect_mod.GRAPHIFY_OUT / "cache" / "stat-index.json").is_file(), (
+        "the word-count stat index must land under cache_root instead"
+    )
 
 
 def test_detect_keeps_env_source_dirs(tmp_path):
@@ -3358,6 +3603,40 @@ def test_sensitive_bare_keyword_prose_still_dropped():
     assert _is_sensitive(Path("secrets.md"))
     assert _is_sensitive(Path("token.rst"))
     assert not _is_sensitive(Path("token-lifecycle.md"))  # multi-word slug indexed
+
+
+@pytest.mark.parametrize("path", [
+    "TOKENS.md",
+    "tokens.md",
+    "tokens.rst",
+])
+def test_sensitive_bare_plural_tokens_prose_indexed(path):
+    """Bare plural "tokens" in a prose file is a design-token reference doc,
+    not a credential dump — unlike "token.md" (singular) or "secrets.md"
+    (another keyword's bare plural), which still read as dumps (#3527)."""
+    from graphify.detect import _is_sensitive
+    assert not _is_sensitive(Path(path))
+
+
+def test_sensitive_bare_plural_tokens_still_flagged_outside_prose():
+    """The plural exemption is scoped to prose extensions only — "tokens.txt"
+    is still a plausible secret store and stays excluded (#3527)."""
+    from graphify.detect import _is_sensitive
+    assert _is_sensitive(Path("tokens.txt"))
+    assert _is_sensitive(Path("tokens.json"))
+
+
+@pytest.mark.parametrize("path", [
+    "app/lib/theme/shell_tokens.dart",
+    "src/design/tokens.ts",
+    "src/hard-tokens.ts",
+])
+def test_sensitive_design_token_source_files_indexed(path):
+    """Genuine design-token source files (.dart/.ts) are graphable source and
+    exempt from the generic-keyword drop regardless of the bare/plural rules
+    above — they were the headline repro in #3527."""
+    from graphify.detect import _is_sensitive
+    assert not _is_sensitive(Path(path))
 
 
 # ── #2232 / #2184: committed dotenv templates (.env.example etc.) are graphable ──

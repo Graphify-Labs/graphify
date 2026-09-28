@@ -1,5 +1,8 @@
 """Tests for serve.py - MCP graph query helpers (no mcp package required)."""
+import importlib.util
 import json
+import subprocess
+import sys
 import unicodedata
 
 import pytest
@@ -7,6 +10,7 @@ import networkx as nx
 from networkx.readwrite import json_graph
 
 from graphify.serve import (
+    _node_arg,
     _strip_diacritics,
     _communities_from_graph,
     _score_nodes,
@@ -1126,6 +1130,22 @@ def test_query_graph_text_context_filter_aliases_resolve():
 
 # --- Chinese segmentation ---
 
+def test_serve_import_is_clean_under_syntax_warnings(tmp_path):
+    """Optional tokenizers must remain importable under Python's strict warning mode."""
+    if importlib.util.find_spec("jieba") is None:
+        pytest.skip("jieba tokenizer extra is not installed")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-X", f"pycache_prefix={tmp_path / 'pycache'}",
+            "-W", "error::SyntaxWarning",
+            "-c", "import graphify.serve as serve; assert serve._jieba is not None",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
 def test_query_terms_chinese_segments_with_cached_jieba(monkeypatch):
     """Chinese text should use the cached jieba module and keep the original term."""
     import graphify.serve as serve_mod
@@ -1808,3 +1828,17 @@ def test_query_graph_text_seeds_the_node_whose_rationale_answers_a_why_question(
     )
     header = text.split("\n\n", 1)[0]
     assert "FAB visibility rule" in header, header
+
+
+def test_node_arg_accepts_label_node_id_and_id_aliases():
+    # get_node/get_neighbors must serve a client that passes the node under any of these keys;
+    # a node_id-only call used to raise KeyError('label') instead of resolving.
+    assert _node_arg({"label": "Foo()"}) == "Foo()"
+    assert _node_arg({"node_id": "Foo()"}) == "Foo()"
+    assert _node_arg({"id": "Foo()"}) == "Foo()"
+    # label wins when several are present; a non-string is coerced, not fatal
+    assert _node_arg({"label": "a", "node_id": "b"}) == "a"
+    assert _node_arg({"node_id": 123}) == "123"
+    # nothing usable -> empty string, so the caller can answer with guidance
+    assert _node_arg({}) == ""
+    assert _node_arg({"relation_filter": "calls"}) == ""

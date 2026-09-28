@@ -101,11 +101,19 @@ fi
 # Scan the uv tool envs directly; UV_TOOL_DIR overrides the default
 # location. A tool env is adopted only if its python passes the probe, so a
 # co-installed tool without graphify never satisfies it.
+#
+# The snap roots matter because an install made from inside a snap-confined
+# editor lands in that snap's private HOME, which the plain $HOME roots above
+# never see once the hook runs from an ordinary shell. Revisions are globbed
+# rather than pinned: snap rotates them on update, which is exactly what makes
+# a pinned path unsafe (see _is_rotating_prefix).
 if [ -z "$GRAPHIFY_PYTHON" ]; then
     for _GFY_TOOLS in \
         "${UV_TOOL_DIR:-}" \
         "$HOME/.local/share/uv/tools" \
-        "$HOME/AppData/Roaming/uv/tools"; do
+        "$HOME/AppData/Roaming/uv/tools" \
+        "$HOME"/snap/*/current/.local/share/uv/tools \
+        "$HOME"/snap/*/[0-9]*/.local/share/uv/tools; do
         [ -n "$_GFY_TOOLS" ] || continue
         for _GFY_CAND in "$_GFY_TOOLS"/*/bin/python "$_GFY_TOOLS"/*/Scripts/python.exe; do
             [ -x "$_GFY_CAND" ] || continue
@@ -180,7 +188,20 @@ try:
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
-            _root = Path(_txt)
+            _candidate = Path(_txt)
+            try:
+                _cwd = Path.cwd().resolve()
+                _resolved = _candidate.resolve()
+                # Python 3.13 no longer raises on a symlink loop (resolve returns
+                # the path unresolved), so require a real directory: a loop or a
+                # dangling target is not a dir and correctly falls back.
+                _in_repo = (_resolved == _cwd or _cwd in _resolved.parents) and _resolved.is_dir()
+            except (OSError, RuntimeError):
+                _in_repo = False
+            if _in_repo:
+                _root = _candidate
+            else:
+                print(f'[graphify hook] ignoring out-of-repo .graphify_root: {_txt}')
     _rebuild_code(_root, changed_paths=changed, force=_force)
     # Refresh the work-memory lessons doc when saved Q&A outcomes exist
     # (best-effort; never fails the hook).
@@ -242,7 +263,20 @@ try:
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
-            _root = Path(_txt)
+            _candidate = Path(_txt)
+            try:
+                _cwd = Path.cwd().resolve()
+                _resolved = _candidate.resolve()
+                # Python 3.13 no longer raises on a symlink loop (resolve returns
+                # the path unresolved), so require a real directory: a loop or a
+                # dangling target is not a dir and correctly falls back.
+                _in_repo = (_resolved == _cwd or _cwd in _resolved.parents) and _resolved.is_dir()
+            except (OSError, RuntimeError):
+                _in_repo = False
+            if _in_repo:
+                _root = _candidate
+            else:
+                print(f'[graphify] ignoring out-of-repo .graphify_root: {_txt}')
     _rebuild_code(_root, force=_force)
     # Refresh the work-memory lessons doc when saved Q&A outcomes exist
     # (best-effort; never fails the hook).
@@ -381,8 +415,20 @@ if [ -z "$CHANGED" ]; then
     exit 0
 fi
 
-# Skip when only graphify-out/ artifacts changed (avoids rebuild loop when graph outputs are tracked in git)
-_NON_GRAPH=$(echo "$CHANGED" | grep -v '^graphify-out/' || true)
+# Skip when only output-dir artifacts changed (avoids rebuild loop when graph
+# outputs are tracked in git). The dir is whatever GRAPHIFY_OUT names, the same
+# source the rebuild body reads (#1423): a literal graphify-out/ here let a
+# commit touching only a renamed output dir's graph.json trigger a full rebuild.
+_GFY_OUT="${GRAPHIFY_OUT:-graphify-out}"
+_GFY_OUT="${_GFY_OUT%/}"
+# The leading ( on each pattern is POSIX and keeps bash 3.2 (macOS /bin/sh)
+# from mis-parsing the pattern's ) as the end of the $(...) substitution.
+_NON_GRAPH=$(printf '%s\n' "$CHANGED" | while IFS= read -r _GFY_F; do
+    case "$_GFY_F" in
+        ("$_GFY_OUT"/*) ;;
+        (*) printf '%s\n' "$_GFY_F" ;;
+    esac
+done)
 if [ -z "$_NON_GRAPH" ]; then
     exit 0
 fi
@@ -434,8 +480,11 @@ fi
 # branch switch but leaves the tree unchanged ΓÇö nothing to rebuild (#2421).
 [ "$PREV_HEAD" = "$NEW_HEAD" ] && exit 0
 
-# Only run if graphify-out/ exists (graph has been built before)
-if [ ! -d "graphify-out" ]; then
+# Only run if the output dir exists (graph has been built before). Resolve it
+# from GRAPHIFY_OUT like the rebuild body does (#1423): a literal graphify-out/
+# here made the branch-switch rebuild a silent no-op for every renamed output dir.
+_GFY_OUT="${GRAPHIFY_OUT:-graphify-out}"
+if [ ! -d "${_GFY_OUT%/}" ]; then
     exit 0
 fi
 
@@ -647,7 +696,29 @@ def _pinned_python() -> str:
     """
     if re.search(r"[^a-zA-Z0-9/_.@: \\-]", sys.executable):
         return ""
+    if _is_rotating_prefix(sys.executable):
+        return ""
     return sys.executable
+
+
+# ``~/snap/<app>/<revision>/`` — snap swaps <revision> on every package update and
+# prunes the old tree, so anything under it is a path with an expiry date.
+_ROTATING_PREFIX_RE = re.compile(r"/snap/[^/]+/(\d+|current)/")
+
+
+def _is_rotating_prefix(path: str) -> bool:
+    """True if `path` lives under a directory the packaging system rotates.
+
+    A pin is only worth writing if it will still resolve tomorrow. An interpreter
+    inside a snap revision will not: the revision number changes on update and the
+    old tree is removed, which silently kills every hook pinned to it — observed
+    across 15 repositories at once when an editor snap moved past its revision.
+
+    Returning "" here is the documented safe degradation: the hook falls through to
+    its other probes, including the uv-tools scan, which searches snap-confined
+    homes too.
+    """
+    return bool(_ROTATING_PREFIX_RE.search(path.replace("\\", "/")))
 
 
 def _merge_attr_line() -> str:

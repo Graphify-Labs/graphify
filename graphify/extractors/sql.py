@@ -40,6 +40,25 @@ _ROUTINE_RECOVERY_RX = re.compile(
     re.IGNORECASE,
 )
 
+# A trigger with a procedural body (`... FOR EACH ROW BEGIN ... END`) has no
+# grammar production, so the whole statement lands in an ERROR node and the
+# trigger — plus the table it fires on — was dropped entirely. TRIGGER is
+# deliberately kept OUT of _ROUTINE_RECOVERY_RX (that path labels its matches
+# `name()`, but a trigger is not callable); it is recovered here instead, with
+# the subject table taken from the first ON after the name (the timing clause,
+# `BEFORE INSERT`, carries none). Same delimited-identifier atom as above.
+_TRIGGER_IDENT = (
+    r"(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"
+    r"(?:\s*\.\s*(?:\"(?:[^\"\n]|\"\")+\"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*"
+)
+_TRIGGER_RECOVERY_RX = re.compile(
+    r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?TRIGGER\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"(" + _TRIGGER_IDENT + r")"
+    r".*?\bON\s+(" + _TRIGGER_IDENT + r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
 # _mask_sql_comments is a linear character scanner, not a regex: the four
 # span kinds interact in ways a single pattern cannot express safely —
 # comment-opener parity inside strings, nested block comments, and
@@ -469,15 +488,18 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             trig_name: str | None = None
             tbl_name: str | None = None
             after_trigger = False
-            after_for = False
+            after_on = False
             for c in node.children:
                 if c.type == "keyword_trigger":
                     after_trigger = True
                 elif after_trigger and not trig_name and c.type == "object_reference":
                     trig_name = _read(c)
-                elif c.type == "keyword_for":
-                    after_for = True
-                elif after_for and not tbl_name and c.type == "object_reference":
+                # The subject table follows ON (`... AFTER INSERT ON users`), not
+                # FOR: `FOR EACH ROW` carries no table, so keying off keyword_for
+                # left every trigger without a link to the table it fires on.
+                elif c.type == "keyword_on":
+                    after_on = True
+                elif after_on and not tbl_name and c.type == "object_reference":
                     tbl_name = _read(c)
             if trig_name:
                 trig_nid = _make_id(stem, trig_name)
@@ -485,6 +507,32 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 if tbl_name:
                     tbl_nid = table_nids.get(_norm_ident(tbl_name)) or _ref_stub(tbl_name)
                     _add_edge(trig_nid, tbl_nid, "triggers", line)
+
+        elif t == "create_index":
+            # CREATE [UNIQUE] INDEX [CONCURRENTLY] [IF NOT EXISTS] <name>
+            # ON <table> (...). Unlike CREATE POLICY (#3401) the grammar
+            # parses this statement fine; the walk simply never dispatched on
+            # it, so every index was silently dropped (#3467). The name is the
+            # identifier (or a quoted literal) before ON; the table is the
+            # object_reference after it. An unnamed index (`CREATE INDEX ON
+            # t (c)`) has nothing to name a node after and is skipped.
+            index_name: str | None = None
+            index_table: str | None = None
+            after_on = False
+            for c in node.children:
+                if c.type == "keyword_on":
+                    after_on = True
+                elif not after_on and index_name is None and c.type in ("identifier", "literal"):
+                    index_name = _read(c).strip('"`')
+                elif after_on and index_table is None and c.type == "object_reference":
+                    index_table = _read(c)
+            if index_name:
+                index_nid = _make_id(stem, index_name)
+                _add_node(index_nid, index_name, line)
+                if index_table:
+                    index_tbl_nid = (table_nids.get(_norm_ident(index_table))
+                                     or _ref_stub(index_table))
+                    _add_edge(index_nid, index_tbl_nid, "indexes", line)
 
         # NOTE: there is deliberately NO recovery scan on individual ERROR
         # nodes. Any ERROR node anywhere makes root.has_error true, so the
@@ -690,5 +738,20 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             fn_name = m.group(1)
             fn_line = src_text[: m.start()].count("\n") + 1
             _add_node(_make_id(stem, fn_name), f"{fn_name}()", fn_line)
+
+        for m in _TRIGGER_RECOVERY_RX.finditer(masked_src):
+            if any(s <= m.start() < e for s, e in ident_spans):
+                continue
+            trig_name = m.group(1)
+            trig_nid = _make_id(stem, trig_name)
+            # A cleanly-parsed trigger elsewhere already owns this id (with its
+            # own ON edge); don't re-add and duplicate the edge.
+            if trig_nid in seen_ids:
+                continue
+            trig_line = src_text[: m.start()].count("\n") + 1
+            _add_node(trig_nid, trig_name, trig_line)
+            tbl_name = m.group(2)
+            tbl_nid = table_nids.get(_norm_ident(tbl_name)) or _ref_stub(tbl_name)
+            _add_edge(trig_nid, tbl_nid, "triggers", trig_line)
 
     return {"nodes": nodes, "edges": edges}

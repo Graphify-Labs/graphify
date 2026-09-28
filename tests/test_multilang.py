@@ -315,6 +315,32 @@ def test_rust_calls_are_extracted():
             assert e["confidence"] == "EXTRACTED"
 
 
+def test_rust_finds_static_and_const_items():
+    r = extract_rust(FIXTURES / "sample.rs")
+    by_id = {n["id"]: n["label"] for n in r["nodes"]}
+    labels = set(by_id.values())
+    for name in ("RETRY_LIMIT", "DEFAULT_MODE", "NODE_LIMIT"):
+        assert name in labels, name
+        assert any(
+            e["relation"] == "contains" and by_id.get(e["target"]) == name
+            for e in r["edges"]
+        ), f"{name} has no file-level contains edge"
+    # An associated const is attributed to its impl, like a method.
+    assert ".CAPACITY" in labels
+    assert any(
+        e["relation"] == "contains"
+        and by_id.get(e["source"]) == "Graph"
+        and by_id.get(e["target"]) == ".CAPACITY"
+        for e in r["edges"]
+    )
+    # The declared type is referenced like a struct field type.
+    assert any(
+        e["relation"] == "references"
+        and by_id.get(e["source"]) == "NODE_LIMIT"
+        and by_id.get(e["target"]) == "Limit"
+        for e in r["edges"]
+    )
+
 def test_rust_import_edges_have_import_context():
     r = extract_rust(FIXTURES / "sample.rs")
     import_edges = _edges_with_relation(r, "imports", "imports_from")
@@ -530,6 +556,92 @@ def test_sql_no_dangling_edges():
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids, f"dangling source: {e['source']}"
+
+def test_sql_create_index_emits_index_node_linked_to_its_table(tmp_path):
+    """#3467: CREATE [UNIQUE] INDEX parsed fine but the walk never dispatched
+    on create_index, so every index was silently dropped."""
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE public.profiles (id uuid PRIMARY KEY, owner uuid NOT NULL);\n"
+        "CREATE INDEX profiles_owner_idx ON public.profiles (owner);\n"
+        "CREATE UNIQUE INDEX IF NOT EXISTS profiles_id_uniq ON public.profiles (id);\n"
+        "CREATE INDEX CONCURRENTLY orders_customer_idx ON public.orders (customer_id);\n"
+        'CREATE INDEX "quoted idx" ON public.profiles (owner);\n'
+        "CREATE INDEX ON public.profiles (owner);\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    for name in ("profiles_owner_idx", "profiles_id_uniq", "orders_customer_idx", "quoted idx"):
+        assert name in by_label, name
+        assert by_label[name]["source_file"] == str(p)
+    edges = {(e["source"], e["relation"], e["target"]) for e in r["edges"]}
+    profiles = by_label["public.profiles"]["id"]
+    assert (by_label["profiles_owner_idx"]["id"], "indexes", profiles) in edges
+    assert (by_label["profiles_id_uniq"]["id"], "indexes", profiles) in edges
+    assert (by_label["quoted idx"]["id"], "indexes", profiles) in edges
+    # An index on a table defined in another file links to a sourceless stub,
+    # the same way a trigger does (#2324).
+    orders = by_label["public.orders"]
+    assert orders["source_file"] == ""
+    assert (by_label["orders_customer_idx"]["id"], "indexes", orders["id"]) in edges
+    # The unnamed index is skipped and nothing dangles.
+    node_ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
+    assert sum(1 for e in r["edges"] if e["relation"] == "indexes") == 4
+
+
+def test_sql_clean_trigger_links_to_its_on_table(tmp_path):
+    """A trigger's subject table follows ON, not FOR.
+
+    The create_trigger branch read the table off keyword_for, but `FOR EACH ROW`
+    carries no table — so a cleanly-parsed trigger got a node with no link to the
+    table it fires on.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE users (id INT);\n"
+        "CREATE TRIGGER audit_ins AFTER INSERT ON users EXECUTE FUNCTION log_it();\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert "audit_ins" in by_label
+    edges = {(e["source"], e["relation"], e["target"]) for e in r["edges"]}
+    assert (by_label["audit_ins"]["id"], "triggers", by_label["users"]["id"]) in edges
+
+
+def test_sql_procedural_body_trigger_is_recovered(tmp_path):
+    """A trigger with a `FOR EACH ROW BEGIN ... END` body has no grammar parse,
+    so the statement lands in ERROR recovery. TRIGGER was excluded from the
+    routine-recovery pattern, so the whole trigger — and its table — was dropped.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE users (id INT);\n"
+        "CREATE TABLE stats (cnt INT);\n"
+        "CREATE TRIGGER trg_after AFTER INSERT ON users\n"
+        "FOR EACH ROW\n"
+        "BEGIN\n"
+        "  UPDATE stats SET cnt = cnt + 1;\n"
+        "END;\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert "trg_after" in by_label, "procedural-body trigger dropped"
+    # a trigger is not callable — its label carries no ()
+    assert by_label["trg_after"]["label"] == "trg_after"
+    edges = {(e["source"], e["relation"], e["target"]) for e in r["edges"]}
+    assert (by_label["trg_after"]["id"], "triggers", by_label["users"]["id"]) in edges
+    # exactly one triggers edge, and nothing dangles
+    assert sum(1 for e in r["edges"] if e["relation"] == "triggers") == 1
+    node_ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
+
 
 def test_sql_tsql_bracketed_procedure_is_recovered(tmp_path):
     """T-SQL CREATE PROCEDURE [Schema].[Name] ... AS BEGIN...END.

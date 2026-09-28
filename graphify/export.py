@@ -16,7 +16,13 @@ from networkx.readwrite import json_graph
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
 from graphify.build import edge_data
-from graphify.paths import stem_filename_budget, write_json_atomic, write_text_atomic
+from graphify.paths import (
+    os_replace_with_fallback,
+    stem_filename_budget,
+    write_json_atomic,
+    write_text_atomic,
+    write_text_atomic_if_changed,
+)
 
 from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
@@ -720,13 +726,20 @@ def to_obsidian(
 
     def _owned_write(rel_name: str, content: str) -> bool:
         """Write a graphify-owned file, refusing to overwrite a pre-existing file
-        graphify didn't create. Returns True if written."""
+        graphify didn't create. Returns True if the note is owned/current (whether
+        or not it was physically written).
+
+        The disk write is skipped when the content is byte-identical to what is
+        already there (#3060) — an export re-runs on every graph.json change, and
+        rewriting an unchanged note churns disk and fires inotify / re-index /
+        sync for nothing. The note is still recorded in ``_written`` so it stays
+        owned and is neither pruned as stale nor dropped from the manifest."""
         target = out / rel_name
         if target.exists() and rel_name not in _owned:
             _skipped.append(rel_name)
             return False
         target.parent.mkdir(parents=True, exist_ok=True)
-        write_text_atomic(target, content)
+        write_text_atomic_if_changed(target, content)
         _written.append(rel_name)
         return True
 
@@ -1270,7 +1283,7 @@ def to_graphml(
     tmp = out.with_name(out.name + ".tmp")
     try:
         nx.write_graphml(H, str(tmp))
-        os.replace(str(tmp), str(out))
+        os_replace_with_fallback(str(tmp), str(out))
     finally:
         if tmp.exists():
             try:

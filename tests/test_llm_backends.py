@@ -1475,3 +1475,81 @@ def test_max_retry_depth_reads_the_env_var(monkeypatch):
     assert llm._resolve_max_retry_depth() == 3
     monkeypatch.setenv("GRAPHIFY_MAX_RETRY_DEPTH", "-2")
     assert llm._resolve_max_retry_depth() == 3
+
+
+import shutil  # patched by the claude-cli detection tests below
+
+
+def _clear_every_backend_signal(monkeypatch):
+    """Empty the environment of every signal detect_backend() looks at."""
+    _clear_backend_env(monkeypatch)
+    for env_key in (
+        "AWS_PROFILE",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "OLLAMA_BASE_URL",
+        "OLLAMA_HOST",
+    ):
+        monkeypatch.delenv(env_key, raising=False)
+
+
+def test_labelling_falls_back_to_the_claude_cli_instead_of_placeholders(monkeypatch):
+    """The one backend with no API key must not cost you your community names.
+
+    `detect_backend` is key-based, so claude-cli can never be found there. On a
+    machine with the Claude Code CLI and no key, labelling therefore announced "no
+    LLM backend configured", replaced every real name with a `Community N`
+    placeholder, and exited 0 — overwriting a good graph with a worse one while
+    reporting success.
+
+    Detection itself is deliberately NOT widened: extraction refuses to run without
+    a configured backend and points at --code-only, and that contract stays.
+    """
+    _clear_every_backend_signal(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude")
+    seen = {}
+
+    def _fake_label(G, communities, *, backend, **kwargs):
+        seen["backend"] = backend
+        return {int(c): f"Named {c}" for c in communities}
+
+    monkeypatch.setattr(llm, "label_communities", _fake_label)
+
+    labels, source = llm.generate_community_labels(None, [0, 1], quiet=True)
+
+    assert seen["backend"] == "claude-cli"
+    assert source == "llm"
+    assert labels == {0: "Named 0", 1: "Named 1"}
+
+
+def test_labelling_still_placeholders_when_no_cli_and_no_key(monkeypatch):
+    """Without a key AND without the CLI there is genuinely nothing to call."""
+    _clear_every_backend_signal(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    labels, source = llm.generate_community_labels(None, [0, 1], quiet=True)
+
+    assert source == "placeholder"
+    assert labels == {0: "Community 0", 1: "Community 1"}
+
+
+def test_detection_is_not_widened_by_the_labelling_fallback(monkeypatch):
+    """Extraction's contract must be untouched: no key still means no backend.
+
+    Widening `detect_backend` itself would make `graphify extract` start shelling
+    out to the CLI on any machine that happens to have it, instead of erroring and
+    pointing at --code-only.
+    """
+    _clear_every_backend_signal(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude")
+
+    assert llm.detect_backend() is None
+
+
+def test_claude_cli_never_shadows_a_configured_api_key(monkeypatch):
+    """An incidental CLI on PATH must not outrank a key the user configured."""
+    _clear_every_backend_signal(monkeypatch)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/claude")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key")
+
+    assert llm.detect_backend() == "gemini"

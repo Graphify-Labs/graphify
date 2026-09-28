@@ -6,6 +6,7 @@ directory then `os.replace`s it into place; on failure the original is untouched
 """
 import json
 import os
+import sys
 
 import pytest
 
@@ -165,6 +166,129 @@ def test_write_text_atomic_windows_permission_fallback(tmp_path, monkeypatch):
     assert calls["n"] == 1  # the fallback path was actually exercised
     assert p.read_text() == "new-content"
     assert sorted(x.name for x in tmp_path.iterdir()) == ["graph.json"]
+
+
+def test_write_text_atomic_windows_winerror_17_fallback(tmp_path, monkeypatch):
+    """#3508: `os.replace` can raise WinError 17 ("cannot move to a different
+    disk drive") even when src/dst are the same directory on the same drive,
+    on some Windows/filesystem combinations. Unlike WinError 5/32, this is a
+    plain OSError rather than PermissionError, so the fallback must key off
+    winerror rather than the exception type alone."""
+    p = tmp_path / "graph.json"
+    p.write_text("original", encoding="utf-8")
+
+    calls = {"n": 0}
+
+    def flaky_replace(src, dst):
+        calls["n"] += 1
+        exc = OSError("cannot move to a different disk drive")
+        exc.winerror = 17
+        raise exc
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    write_text_atomic(p, "new-content")
+
+    assert calls["n"] == 1
+    assert p.read_text() == "new-content"
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["graph.json"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink setup differs on Windows")
+def test_os_replace_with_fallback_replaces_a_symlink_destination_in_place(tmp_path, monkeypatch):
+    """`os.replace` replaces a symlinked destination itself rather than
+    following it -- install.py relies on exactly this for managed skill
+    symlinks (#3286). A naive `shutil.copy2(src, dst)` does the opposite when
+    dst is a symlink: opening it for writing follows the link and overwrites
+    its TARGET's content instead. The #3508 fallback must preserve replace's
+    semantics, not copy2's, or a Windows quirk that triggers the fallback
+    would silently clobber whatever a managed symlink pointed at."""
+    from graphify.paths import os_replace_with_fallback
+
+    target = tmp_path / "shared_target.txt"
+    target.write_text("ORIGINAL SHARED CONTENT", encoding="utf-8")
+    link = tmp_path / "skill_link"
+    link.symlink_to(target)
+    src = tmp_path / "tmp_new.txt"
+    src.write_text("NEW CONTENT", encoding="utf-8")
+
+    def flaky_replace(a, b):
+        exc = OSError("cannot move to a different disk drive")
+        exc.winerror = 17
+        raise exc
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    os_replace_with_fallback(str(src), str(link))
+
+    assert not link.is_symlink(), "link must be replaced by a plain file, not left as a symlink"
+    assert link.read_text(encoding="utf-8") == "NEW CONTENT"
+    assert target.read_text(encoding="utf-8") == "ORIGINAL SHARED CONTENT", (
+        "the shared target must be untouched -- a copy2-through-the-link would have clobbered it"
+    )
+    assert not src.exists()
+
+
+def test_os_replace_with_fallback_restores_destination_on_final_rename_failure(tmp_path, monkeypatch):
+    """The fallback removes the existing destination before renaming the new
+    content into place; if that final rename then fails for any reason, the
+    original content must be restored rather than leaving the destination
+    missing -- a bare unlink-then-rename with no recovery would silently
+    destroy the previous file on a mid-swap failure."""
+    from graphify.paths import os_replace_with_fallback
+
+    dst = tmp_path / "dst.json"
+    dst.write_text("ORIGINAL", encoding="utf-8")
+    src = tmp_path / "src.tmp"
+    src.write_text("NEW", encoding="utf-8")
+
+    def flaky_replace(a, b):
+        exc = OSError("cannot move to a different disk drive")
+        exc.winerror = 17
+        raise exc
+
+    real_rename = os.rename
+    calls = {"n": 0}
+
+    def flaky_rename(a, b):
+        calls["n"] += 1
+        # First rename swaps dst aside as a backup (must succeed so there's
+        # something to restore); force the second -- landing the new
+        # content -- to fail.
+        if calls["n"] == 2:
+            raise OSError("simulated failure landing the new content")
+        return real_rename(a, b)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    monkeypatch.setattr(os, "rename", flaky_rename)
+    with pytest.raises(OSError, match="simulated failure landing the new content"):
+        os_replace_with_fallback(str(src), str(dst))
+
+    assert dst.exists(), "destination must not be left missing after a failed swap"
+    assert dst.read_text(encoding="utf-8") == "ORIGINAL"
+    leftover = {p.name for p in tmp_path.iterdir()}
+    assert leftover == {"dst.json", "src.tmp"}, f"unexpected leftover files: {leftover}"
+
+
+def test_os_replace_with_fallback_is_a_noop_when_src_equals_dst(tmp_path, monkeypatch):
+    """Replacing a path with itself, if os.replace ever fails for that call,
+    must not crash. The swap sequence (back up dst, rename the copy into
+    place, unlink src) renames src out from under itself the moment src and
+    dst are the same path, then crashes trying to unlink a path that no
+    longer exists."""
+    from graphify.paths import os_replace_with_fallback
+
+    p = tmp_path / "x.json"
+    p.write_text("CONTENT", encoding="utf-8")
+
+    def flaky_replace(a, b):
+        exc = OSError("cannot move to a different disk drive")
+        exc.winerror = 17
+        raise exc
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+    os_replace_with_fallback(str(p), str(p))
+
+    assert p.read_text(encoding="utf-8") == "CONTENT"
+    assert {x.name for x in tmp_path.iterdir()} == {"x.json"}
 
 
 def test_write_json_atomic_ensure_ascii_false_preserves_utf8(tmp_path):

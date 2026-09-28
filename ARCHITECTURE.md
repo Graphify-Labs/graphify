@@ -8,7 +8,7 @@ graphify is a Claude Code skill backed by a Python library. The skill orchestrat
 detect()  →  extract()  →  build()  →  cluster()  →  analyze helpers  →  report.generate()  →  export.to_*()
 ```
 
-Each stage lives in its own module and they communicate through plain Python dicts and NetworkX graphs - no shared state, no side effects outside `graphify-out/`. Most stages are a single function; `analyze.py` and `export.py` are sets of sibling functions rather than one entry point.
+Each stage lives in its own module and they communicate through plain Python dicts and NetworkX graphs. While designed to minimize shared state, some stages (like extractors) rely on ambient module-level state around the active scan root. Most stages are a single function; `analyze.py` and `export.py` are sets of sibling functions rather than one entry point.
 
 ## Module responsibilities
 
@@ -87,7 +87,7 @@ All external input passes through `graphify/security.py` before use:
 - URLs → `validate_url()` (http/https only) + `_NoFileRedirectHandler` (blocks file:// redirects)
 - Fetched content → `safe_fetch()` / `safe_fetch_text()` (size cap, timeout)
 - Graph file paths → `validate_graph_path()` (must resolve inside `graphify-out/`)
-- Node labels → `sanitize_label()` (strips control chars, caps 256 chars, HTML-escapes)
+- Node labels → `sanitize_label()` (strips control chars, caps 256 chars)
 
 See `SECURITY.md` for the full threat model.
 
@@ -99,4 +99,4 @@ One test file per module under `tests/`. Run with:
 pytest tests/ -q
 ```
 
-All tests are pure unit tests - no network calls, no file system side effects outside `tmp_path`.
+The test suite is designed to avoid network access and uncontrolled filesystem effects; most tests are isolated with temporary directories and environment fixtures.
