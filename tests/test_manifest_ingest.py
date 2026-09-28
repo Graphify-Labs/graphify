@@ -590,3 +590,25 @@ def test_pom_parent_gav_ignored_fields_still_inherit(tmp_path):
     )
     targets = {e["target"] for e in extract_package_manifest(child)["edges"]}
     assert targets == {"pkg_org_acme_acme_core_2_12"}
+
+
+def test_pom_oversized_ancestor_is_skipped(tmp_path):
+    _write(
+        tmp_path / "pom.xml",
+        "<project><groupId>org.acme</groupId><artifactId>root</artifactId>"
+        "<version>1.0</version><properties><compat>2.12</compat></properties>"
+        "<pad>" + "x" * 2_000_001 + "</pad></project>",
+    )
+    child = _write(
+        tmp_path / "mid/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.acme</groupId><artifactId>root</artifactId>"
+        "<version>1.0</version></parent>\n"
+        "  <artifactId>acme-mid</artifactId>\n"
+        "  <dependencies><dependency><groupId>org.acme</groupId>"
+        "    <artifactId>acme-core_${compat}</artifactId>"
+        "    </dependency></dependencies>\n</project>\n",
+    )
+    assert [e["target"] for e in extract_package_manifest(child)["edges"]] == [
+        "pkg_org_acme_acme_core_compat"
+    ]

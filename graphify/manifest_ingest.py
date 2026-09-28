@@ -400,6 +400,8 @@ def _inherited_pom_properties(pom: Path, root: ET.Element) -> dict[str, str]:
             break
         seen.add(parent_pom)
         try:
+            if parent_pom.stat().st_size > _MAX_MANIFEST_BYTES:
+                break
             cur_root = _pom_root(parent_pom.read_text(encoding="utf-8", errors="replace"))
         except (OSError, ET.ParseError):
             break
