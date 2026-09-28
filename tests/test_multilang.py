@@ -487,11 +487,12 @@ def test_rust_forward_type_reference_resolves_to_local_declaration(tmp_path):
 def test_rust_forward_reference_prescan_skips_items_that_are_not_nodes(tmp_path):
     """#3782: only struct/enum/trait declarations become nodes, so only they may
     resolve a forward reference. A `type` alias, a `union`, a struct declared in a
-    function body and a name declared nowhere in the file produce no node here;
-    references to them must keep their sourceless stub instead of being dropped."""
+    function body, a name declared nowhere in the file and a generic type that only
+    an `impl` names produce no node of that name here; references to them must keep
+    their sourceless stub instead of being dropped."""
     p = tmp_path / "shapes.rs"
     p.write_text(
-        "fn user(a: &Alias, u: &Bits, l: &Local, e: &Elsewhere) {}\n"
+        "fn user(a: &Alias, u: &Bits, l: &Local, e: &Elsewhere, w: &Wrapper<u8>) {}\n"
         "\n"
         "type Alias = u32;\n"
         "\n"
@@ -499,7 +500,11 @@ def test_rust_forward_reference_prescan_skips_items_that_are_not_nodes(tmp_path)
         "\n"
         "fn host() {\n"
         "    struct Local;\n"
-        "}\n",
+        "}\n"
+        "\n"
+        "trait Tr {}\n"
+        "\n"
+        "impl<T> Tr for Wrapper<T> {}\n",
         encoding="utf-8",
     )
     r = extract_rust(p)
@@ -509,7 +514,7 @@ def test_rust_forward_reference_prescan_skips_items_that_are_not_nodes(tmp_path)
         for e in r["edges"]
         if e["relation"] == "references" and e["target"] in by_id
     }
-    for name in ("Alias", "Bits", "Local", "Elsewhere"):
+    for name in ("Alias", "Bits", "Local", "Elsewhere", "Wrapper"):
         assert name in targets, f"reference to {name} was dropped"
         assert targets[name]["source_file"] == "", name
 
@@ -562,6 +567,67 @@ def test_rust_forward_reference_skips_items_in_const_and_static_initializers(tmp
         if e["relation"] == "references" and e["target"] in by_id
     }
     assert targets == {"Hidden": "", "Guarded": ""}
+
+
+def test_rust_forward_reference_to_a_casefold_colliding_type_keeps_its_stub(tmp_path):
+    """#3782: ids are casefolded, so `fn handle` (also in an `extern` block),
+    `const HANDLE`, `struct HANDLE` or an `impl` for `HANDLE` share the id of
+    `struct Handle` and walk() keeps whichever comes first, and a `type HANDLE`
+    alias shares it without being a node. A reference above the declarations must
+    keep the sourceless stub v8's extractor gives it, instead of binding to another
+    item."""
+    extern_fn = 'extern "C" {\n    fn handle();\n}'
+    impl_for_alias = "type HANDLE = usize;\n\ntrait Tr {}\n\nimpl Tr for HANDLE {}"
+    for name, user, other, label in (
+        ("fn_collision.rs", "fn user(h: &Handle) {}", "fn handle() {}", "Handle"),
+        ("extern_fn_collision.rs", "fn user(h: &Handle) {}", extern_fn, "Handle"),
+        ("const_collision.rs", "fn user(h: &Handle) {}", "const HANDLE: u32 = 0;", "Handle"),
+        ("static_collision.rs", "fn user(h: &Handle) {}", "static HANDLE: u32 = 0;", "Handle"),
+        ("type_collision.rs", "fn user(h: &Handle) {}", "struct HANDLE;", "Handle"),
+        ("impl_collision.rs", "fn user(h: &Handle) {}", impl_for_alias, "Handle"),
+        ("alias_collision.rs", "fn user(h: HANDLE) {}", "type HANDLE = usize;", "HANDLE"),
+    ):
+        p = tmp_path / name
+        p.write_text(
+            f"{user}\n\n{other}\n\nstruct Handle {{\n    n: u32,\n}}\n", encoding="utf-8"
+        )
+        r = extract_rust(p)
+        by_id = {n["id"]: n for n in r["nodes"]}
+        targets = [
+            (by_id[e["target"]]["label"], by_id[e["target"]]["source_file"])
+            for e in r["edges"]
+            if e["relation"] == "references" and e["target"] in by_id
+        ]
+        assert targets == [(label, "")], name
+
+
+def test_rust_forward_reference_resolves_when_no_other_item_shares_the_id(tmp_path):
+    """#3782: the collision rule only withholds a type whose id another item
+    shares. A function with another name, `#[cfg]` twins of the type itself (one
+    node in walk()), an `impl` for the type itself or a method named like the type
+    (its id is qualified by the impl) still let the reference above resolve to it."""
+    impl_for_type = (
+        "struct Handle<'a> {\n    s: &'a str,\n}\n\ntrait Tr {}\n\n"
+        "impl Tr for Handle<'_> {}\n\nimpl Tr for &Handle<'_> {}\n"
+    )
+    for name, source in (
+        ("no_collision.rs", "struct Handle {\n    n: u32,\n}\n\nfn other() {}\n"),
+        ("cfg_twins.rs", "#[cfg(unix)]\nstruct Handle;\n\n#[cfg(not(unix))]\nstruct Handle;\n"),
+        ("impl_for_type.rs", impl_for_type),
+        ("method_like_type.rs", "struct Handle;\n\nimpl Handle {\n    fn handle(&self) {}\n}\n"),
+    ):
+        p = tmp_path / name
+        p.write_text("fn user(h: &Handle) {}\n\n" + source, encoding="utf-8")
+        r = extract_rust(p)
+        handle = next(n for n in r["nodes"] if n["label"] == "Handle")
+        user = next(n for n in r["nodes"] if n["label"] == "user()")
+        assert handle["source_file"] == str(p), name
+        assert any(
+            e["relation"] == "references"
+            and e["source"] == user["id"]
+            and e["target"] == handle["id"]
+            for e in r["edges"]
+        ), name
 
 
 def test_rust_forward_reference_to_ambiguous_type_name_stays_local(tmp_path):
