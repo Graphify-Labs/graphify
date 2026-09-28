@@ -1765,9 +1765,22 @@ def _rebuild_code(
                     # Persisted resolver markers are never re-derived from a
                     # label: callability protects indirect calls (#2438), and
                     # Rust impl identity connects alpha-renamed generic blocks.
+                    # `_php_non_class_types` (#11, #12) rides the same channel:
+                    # it is the only record of which of an unchanged PHP file's
+                    # declarations are interfaces, enums or traits rather than
+                    # classes. It drove a receiver refusal until #53 lifted it;
+                    # it is still carried, and `_php_interfaces` — that marker's
+                    # pre-#12 spelling — with it, so a graph.json written before
+                    # enums and traits joined the set still round-trips.
+                    # `_php_class_fqns` (#23) is what resolution reads today:
+                    # the declared FQNs that let a claimed `use` import bind
+                    # into an unchanged defining file (#22) and let the guard
+                    # refuse a vendor import that merely shares a short name.
                     for marker in (
                         "_callable", "_callable_class", "_elixir_module",
                         "_rust_impl_key", "_rust_declaration_count",
+                        "_php_non_class_types", "_php_interfaces",
+                        "_php_class_fqns",
                     ):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
