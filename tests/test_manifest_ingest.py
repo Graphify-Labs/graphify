@@ -19,6 +19,7 @@ def _write(p: Path, text: str) -> Path:
 
 # ── routing: manifests are deterministic (CODE), not LLM documents ───────────
 
+
 def test_manifests_classify_as_code_not_document(tmp_path):
     for name in ("apm.yml", "pyproject.toml", "go.mod", "pom.xml"):
         p = _write(tmp_path / name, "x")
@@ -30,13 +31,15 @@ def test_manifests_classify_as_code_not_document(tmp_path):
 
 # ── per-format parsing ───────────────────────────────────────────────────────
 
+
 def _pkg_nodes(result):
     return [n for n in result["nodes"] if n.get("type") == "package"]
 
 
 def test_apm_parses_name_and_deps(tmp_path):
-    p = _write(tmp_path / "apm.yml",
-               "name: my-pkg\nversion: 1.2.3\ndependencies:\n  - dep-a\n  - dep-b\n")
+    p = _write(
+        tmp_path / "apm.yml", "name: my-pkg\nversion: 1.2.3\ndependencies:\n  - dep-a\n  - dep-b\n"
+    )
     r = extract_package_manifest(p)
     pkg = _pkg_nodes(r)[0]
     assert pkg["label"] == "my-pkg" and pkg["version"] == "1.2.3"
@@ -45,9 +48,11 @@ def test_apm_parses_name_and_deps(tmp_path):
 
 
 def test_pyproject_parses_pep508_deps(tmp_path):
-    p = _write(tmp_path / "pyproject.toml",
-               '[project]\nname = "cool-lib"\nversion = "0.1"\n'
-               'dependencies = ["requests>=2.0", "rich[jupyter]==13.0", "tomli; python_version<\'3.11\'"]\n')
+    p = _write(
+        tmp_path / "pyproject.toml",
+        '[project]\nname = "cool-lib"\nversion = "0.1"\n'
+        'dependencies = ["requests>=2.0", "rich[jupyter]==13.0", "tomli; python_version<\'3.11\'"]\n',
+    )
     r = extract_package_manifest(p)
     assert _pkg_nodes(r)[0]["label"] == "cool-lib"
     deps = {e["target"] for e in r["edges"]}
@@ -55,9 +60,11 @@ def test_pyproject_parses_pep508_deps(tmp_path):
 
 
 def test_gomod_parses_module_and_requires(tmp_path):
-    p = _write(tmp_path / "go.mod",
-               "module example.com/me/app\n\ngo 1.22\n\nrequire (\n"
-               "\tgithub.com/x/y v1.2.3\n\tgithub.com/a/b v0.4.0\n)\n")
+    p = _write(
+        tmp_path / "go.mod",
+        "module example.com/me/app\n\ngo 1.22\n\nrequire (\n"
+        "\tgithub.com/x/y v1.2.3\n\tgithub.com/a/b v0.4.0\n)\n",
+    )
     r = extract_package_manifest(p)
     assert _pkg_nodes(r)[0]["label"] == "example.com/me/app"
     deps = {e["target"] for e in r["edges"]}
@@ -65,11 +72,13 @@ def test_gomod_parses_module_and_requires(tmp_path):
 
 
 def test_pom_parses_artifact_and_deps(tmp_path):
-    p = _write(tmp_path / "pom.xml",
-               '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
-               '  <groupId>com.acme</groupId>\n  <artifactId>widget</artifactId>\n  <version>2.0</version>\n'
-               '  <dependencies>\n    <dependency><groupId>org.lib</groupId><artifactId>core</artifactId></dependency>\n'
-               '  </dependencies>\n</project>\n')
+    p = _write(
+        tmp_path / "pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <groupId>com.acme</groupId>\n  <artifactId>widget</artifactId>\n  <version>2.0</version>\n"
+        "  <dependencies>\n    <dependency><groupId>org.lib</groupId><artifactId>core</artifactId></dependency>\n"
+        "  </dependencies>\n</project>\n",
+    )
     r = extract_package_manifest(p)
     assert _pkg_nodes(r)[0]["label"] == "com.acme:widget"
     assert any(e["target"] == "pkg_org_lib_core" for e in r["edges"])
@@ -77,18 +86,26 @@ def test_pom_parses_artifact_and_deps(tmp_path):
 
 # ── #1377: a package referenced by N manifests is ONE node ───────────────────
 
+
 def test_apm_dependency_collapses_to_single_canonical_node(tmp_path):
     base = tmp_path / "packages"
     _write(base / "core/apm.yml", "name: coding-standards-core\nversion: 1.0.4\n")
-    _write(base / "csharp/apm.yml",
-           "name: coding-standards-csharp\ndependencies:\n  - coding-standards-core\n")
-    _write(base / "python/apm.yml",
-           'name: coding-standards-python\ndependencies:\n  coding-standards-core: ">=1.0"\n')
+    _write(
+        base / "csharp/apm.yml",
+        "name: coding-standards-csharp\ndependencies:\n  - coding-standards-core\n",
+    )
+    _write(
+        base / "python/apm.yml",
+        'name: coding-standards-python\ndependencies:\n  coding-standards-core: ">=1.0"\n',
+    )
     files = sorted(base.rglob("apm.yml"))
     result = extract(files, cache_root=tmp_path)
 
-    core = [n for n in result["nodes"]
-            if n.get("type") == "package" and n["label"] == "coding-standards-core"]
+    core = [
+        n
+        for n in result["nodes"]
+        if n.get("type") == "package" and n["label"] == "coding-standards-core"
+    ]
     assert len(core) == 1, "core package must be a single canonical node"
     assert core[0]["id"] == "pkg_coding_standards_core" and core[0]["source_file"]
 
@@ -116,6 +133,7 @@ def test_malformed_manifest_does_not_crash(tmp_path):
 
 # ── #2434: Cargo.toml joins pyproject.toml/go.mod/pom.xml as a package manifest ─
 
+
 def test_cargo_classifies_as_code_manifest(tmp_path):
     p = _write(tmp_path / "Cargo.toml", '[package]\nname = "x"\n')
     assert is_package_manifest_path(p)
@@ -125,9 +143,11 @@ def test_cargo_classifies_as_code_manifest(tmp_path):
 def test_cargo_parses_name_version_and_deps(tmp_path):
     # A crate declares its name/version under [package]; deps appear both as a
     # bare version string and as an inline table (version + features).
-    p = _write(tmp_path / "Cargo.toml",
-               '[package]\nname = "my-crate"\nversion = "0.3.1"\nedition = "2021"\n\n'
-               '[dependencies]\nserde = "1.0"\ntokio = { version = "1", features = ["full"] }\n')
+    p = _write(
+        tmp_path / "Cargo.toml",
+        '[package]\nname = "my-crate"\nversion = "0.3.1"\nedition = "2021"\n\n'
+        '[dependencies]\nserde = "1.0"\ntokio = { version = "1", features = ["full"] }\n',
+    )
     r = extract_package_manifest(p)
     pkg = _pkg_nodes(r)[0]
     assert pkg["label"] == "my-crate" and pkg["version"] == "0.3.1"
@@ -147,10 +167,12 @@ def test_cargo_virtual_workspace_manifest_emits_no_package(tmp_path):
 def test_cargo_target_conditional_deps_are_collected(tmp_path):
     # Platform-gated deps under [target.'cfg(...)'.dependencies] are common in
     # real crates and must not be dropped just because they are conditional.
-    p = _write(tmp_path / "Cargo.toml",
-               '[package]\nname = "portable"\n\n'
-               '[dependencies]\nserde = "1"\n\n'
-               '[target."cfg(windows)".dependencies]\nwinapi = "0.3"\n')
+    p = _write(
+        tmp_path / "Cargo.toml",
+        '[package]\nname = "portable"\n\n'
+        '[dependencies]\nserde = "1"\n\n'
+        '[target."cfg(windows)".dependencies]\nwinapi = "0.3"\n',
+    )
     r = extract_package_manifest(p)
     deps = {e["target"] for e in r["edges"] if e["relation"] == "depends_on"}
     assert {"pkg_serde", "pkg_winapi"} <= deps
@@ -159,35 +181,41 @@ def test_cargo_target_conditional_deps_are_collected(tmp_path):
 def test_cargo_workspace_inherited_version_does_not_crash(tmp_path):
     # `version.workspace = true` yields a table, not a string. It must be ignored
     # (no bogus version attribute) rather than crash the parse.
-    p = _write(tmp_path / "Cargo.toml",
-               '[package]\nname = "member"\nversion.workspace = true\n')
+    p = _write(tmp_path / "Cargo.toml", '[package]\nname = "member"\nversion.workspace = true\n')
     pkg = _pkg_nodes(extract_package_manifest(p))[0]
     assert pkg["label"] == "member" and "version" not in pkg
 
 
 # ── #3806: inherited groupId and ${...} properties in pom.xml ────────────────
 
+
 def test_pom_inherits_groupid_and_resolves_properties(tmp_path):
-    _write(tmp_path / "rsc/pom.xml",
-           '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
-           '  <parent><groupId>org.acme</groupId><artifactId>main</artifactId><version>1.0</version></parent>\n'
-           '  <groupId>org.acme</groupId>\n  <artifactId>acme-rsc</artifactId>\n</project>\n')
-    _write(tmp_path / "server/pom.xml",
-           '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
-           '  <parent><groupId>org.acme</groupId><artifactId>main</artifactId><version>1.0</version></parent>\n'
-           '  <artifactId>acme-server</artifactId>\n'
-           '  <properties><core.suffix>2.12</core.suffix></properties>\n'
-           '  <dependencies>\n'
-           '    <dependency><groupId>${project.groupId}</groupId><artifactId>acme-rsc</artifactId></dependency>\n'
-           '    <dependency><groupId>org.acme</groupId><artifactId>acme-core_${core.suffix}</artifactId></dependency>\n'
-           '  </dependencies>\n</project>\n')
-    _write(tmp_path / "web/pom.xml",
-           '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
-           '  <parent><groupId>org.acme</groupId><artifactId>main</artifactId><version>1.0</version></parent>\n'
-           '  <artifactId>acme-web</artifactId>\n'
-           '  <dependencies>\n'
-           '    <dependency><groupId>org.acme</groupId><artifactId>acme-server</artifactId></dependency>\n'
-           '  </dependencies>\n</project>\n')
+    _write(
+        tmp_path / "rsc/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.acme</groupId><artifactId>main</artifactId><version>1.0</version></parent>\n"
+        "  <groupId>org.acme</groupId>\n  <artifactId>acme-rsc</artifactId>\n</project>\n",
+    )
+    _write(
+        tmp_path / "server/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.acme</groupId><artifactId>main</artifactId><version>1.0</version></parent>\n"
+        "  <artifactId>acme-server</artifactId>\n"
+        "  <properties><core.suffix>2.12</core.suffix></properties>\n"
+        "  <dependencies>\n"
+        "    <dependency><groupId>${project.groupId}</groupId><artifactId>acme-rsc</artifactId></dependency>\n"
+        "    <dependency><groupId>org.acme</groupId><artifactId>acme-core_${core.suffix}</artifactId></dependency>\n"
+        "  </dependencies>\n</project>\n",
+    )
+    _write(
+        tmp_path / "web/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.acme</groupId><artifactId>main</artifactId><version>1.0</version></parent>\n"
+        "  <artifactId>acme-web</artifactId>\n"
+        "  <dependencies>\n"
+        "    <dependency><groupId>org.acme</groupId><artifactId>acme-server</artifactId></dependency>\n"
+        "  </dependencies>\n</project>\n",
+    )
 
     server = extract_package_manifest(tmp_path / "server/pom.xml")
     pkg = _pkg_nodes(server)[0]
@@ -198,7 +226,259 @@ def test_pom_inherits_groupid_and_resolves_properties(tmp_path):
     result = extract(sorted(tmp_path.rglob("pom.xml")), cache_root=tmp_path)
     g = build_from_json(result)
     labels = {n: d.get("label") for n, d in g.nodes(data=True)}
-    dep_edges = {frozenset((labels[u], labels[v])) for u, v, d in g.edges(data=True)
-                 if d.get("relation") == "depends_on"}
+    dep_edges = {
+        frozenset((labels[u], labels[v]))
+        for u, v, d in g.edges(data=True)
+        if d.get("relation") == "depends_on"
+    }
     assert frozenset(("org.acme:acme-server", "org.acme:acme-rsc")) in dep_edges
     assert frozenset(("org.acme:acme-web", "org.acme:acme-server")) in dep_edges
+
+
+# ── properties inherited from a parent POM ───────────────────────────────────
+
+
+def _scala_poms(tmp_path):
+    """A Scala-style multi-module layout: the root POM owns the property every
+    module suffixes its artifacts with. Returns the dependent module's POM."""
+    _write(
+        tmp_path / "pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <groupId>org.apache.livy</groupId>\n"
+        "  <artifactId>livy-main</artifactId>\n  <version>1.0</version>\n"
+        "  <properties><scala.binary.version>2.12</scala.binary.version></properties>\n"
+        "</project>\n",
+    )
+    _write(
+        tmp_path / "core/scala-2.12/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.apache.livy</groupId><artifactId>livy-main</artifactId>"
+        "<version>1.0</version><relativePath>../../pom.xml</relativePath></parent>\n"
+        "  <groupId>org.apache.livy</groupId>\n"
+        "  <artifactId>livy-core_2.12</artifactId>\n</project>\n",
+    )
+    return _write(
+        tmp_path / "server/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.apache.livy</groupId><artifactId>livy-main</artifactId>"
+        "<version>1.0</version></parent>\n"
+        "  <artifactId>livy-server</artifactId>\n"
+        "  <dependencies>\n"
+        "    <dependency><groupId>${project.groupId}</groupId>"
+        "      <artifactId>livy-core_${scala.binary.version}</artifactId></dependency>\n"
+        "  </dependencies>\n</project>\n",
+    )
+
+
+def test_pom_resolves_property_declared_in_parent(tmp_path):
+    # scala.binary.version lives only in the root POM.
+    server = _scala_poms(tmp_path)
+    targets = {e["target"] for e in extract_package_manifest(server)["edges"]}
+    assert targets == {"pkg_org_apache_livy_livy_core_2_12"}
+
+
+def test_pom_parent_property_inheritance_survives_the_graph(tmp_path):
+    _scala_poms(tmp_path)
+    g = build_from_json(extract(sorted(tmp_path.rglob("pom.xml")), cache_root=tmp_path))
+    labels = {n: d.get("label") for n, d in g.nodes(data=True)}
+    dep_edges = {
+        frozenset((labels[u], labels[v]))
+        for u, v, d in g.edges(data=True)
+        if d.get("relation") == "depends_on"
+    }
+    assert frozenset(("org.apache.livy:livy-server", "org.apache.livy:livy-core_2.12")) in dep_edges
+
+
+def test_pom_property_inherited_through_grandparent(tmp_path):
+    # The middle POM writes its property in terms of the root's.
+    _write(
+        tmp_path / "pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <groupId>org.acme</groupId>\n  <artifactId>root</artifactId>\n"
+        "  <properties><scala.compat>2.12</scala.compat></properties>\n</project>\n",
+    )
+    _write(
+        tmp_path / "mid/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.acme</groupId><artifactId>root</artifactId>"
+        "<version>1.0</version></parent>\n"
+        "  <artifactId>mid</artifactId>\n"
+        "  <properties><scala.binary.version>scala-${scala.compat}</scala.binary.version>"
+        "</properties>\n</project>\n",
+    )
+    child = _write(
+        tmp_path / "mid/repl/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.acme</groupId><artifactId>mid</artifactId>"
+        "<version>1.0</version><relativePath>../pom.xml</relativePath></parent>\n"
+        "  <artifactId>acme-repl</artifactId>\n"
+        "  <dependencies><dependency><groupId>org.acme</groupId>"
+        "    <artifactId>acme-core_${scala.binary.version}</artifactId>"
+        "    </dependency></dependencies>\n</project>\n",
+    )
+    targets = {e["target"] for e in extract_package_manifest(child)["edges"]}
+    assert targets == {"pkg_org_acme_acme_core_scala_2_12"}
+
+
+def test_pom_own_property_overrides_inherited_one(tmp_path):
+    _write(
+        tmp_path / "pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <groupId>org.acme</groupId>\n  <artifactId>root</artifactId>\n"
+        "  <properties><compat>2.12</compat></properties>\n</project>\n",
+    )
+    child = _write(
+        tmp_path / "mid/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.acme</groupId><artifactId>root</artifactId>"
+        "<version>1.0</version></parent>\n"
+        "  <artifactId>acme-mid</artifactId>\n"
+        "  <properties><compat>2.13</compat></properties>\n"
+        "  <dependencies><dependency><groupId>org.acme</groupId>"
+        "    <artifactId>acme-core_${compat}</artifactId>"
+        "    </dependency></dependencies>\n</project>\n",
+    )
+    targets = {e["target"] for e in extract_package_manifest(child)["edges"]}
+    assert targets == {"pkg_org_acme_acme_core_2_13"}
+
+
+def test_pom_module_named_with_an_inherited_property(tmp_path):
+    # A module may suffix its own artifactId with an inherited property.
+    _write(
+        tmp_path / "pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <groupId>org.acme</groupId>\n  <artifactId>root</artifactId>\n"
+        "  <properties><compat>2.13</compat></properties>\n</project>\n",
+    )
+    core = _write(
+        tmp_path / "core/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.acme</groupId><artifactId>root</artifactId>"
+        "<version>1.0</version></parent>\n"
+        "  <groupId>org.acme</groupId>\n"
+        "  <artifactId>acme-core_${compat}</artifactId>\n</project>\n",
+    )
+    _write(
+        tmp_path / "server/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.acme</groupId><artifactId>root</artifactId>"
+        "<version>1.0</version></parent>\n"
+        "  <artifactId>acme-server</artifactId>\n"
+        "  <dependencies><dependency><groupId>org.acme</groupId>"
+        "    <artifactId>acme-core_${compat}</artifactId></dependency>"
+        "</dependencies>\n</project>\n",
+    )
+    assert _pkg_nodes(extract_package_manifest(core))[0]["label"] == "org.acme:acme-core_2.13"
+    g = build_from_json(extract(sorted(tmp_path.rglob("pom.xml")), cache_root=tmp_path))
+    labels = {n: d.get("label") for n, d in g.nodes(data=True)}
+    dep_edges = {
+        frozenset((labels[u], labels[v]))
+        for u, v, d in g.edges(data=True)
+        if d.get("relation") == "depends_on"
+    }
+    assert frozenset(("org.acme:acme-server", "org.acme:acme-core_2.13")) in dep_edges
+
+
+def test_pom_declared_relative_path_is_followed(tmp_path):
+    # Maven's <relativePath> overrides the ../pom.xml default.
+    _write(
+        tmp_path / "build/root.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <groupId>org.acme</groupId>\n  <artifactId>root</artifactId>\n"
+        "  <properties><compat>2.12</compat></properties>\n</project>\n",
+    )
+    child = _write(
+        tmp_path / "mid/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.acme</groupId><artifactId>root</artifactId>"
+        "<version>1.0</version><relativePath>../build/root.xml</relativePath></parent>\n"
+        "  <artifactId>acme-mid</artifactId>\n"
+        "  <dependencies><dependency><groupId>org.acme</groupId>"
+        "    <artifactId>acme-core_${compat}</artifactId>"
+        "    </dependency></dependencies>\n</project>\n",
+    )
+    targets = {e["target"] for e in extract_package_manifest(child)["edges"]}
+    assert targets == {"pkg_org_acme_acme_core_2_12"}
+
+
+def test_pom_repository_relative_path_inherits_nothing(tmp_path):
+    # <relativePath/> means a repository parent; the ../pom.xml default must
+    # not apply.
+    _write(
+        tmp_path / "pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <groupId>org.acme</groupId>\n  <artifactId>root</artifactId>\n"
+        "  <properties><compat>2.12</compat></properties>\n</project>\n",
+    )
+    child = _write(
+        tmp_path / "mid/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.apache</groupId><artifactId>apache</artifactId>"
+        "<version>18</version><relativePath/></parent>\n"
+        "  <artifactId>acme-mid</artifactId>\n"
+        "  <dependencies><dependency><groupId>org.acme</groupId>"
+        "    <artifactId>acme-core_${compat}</artifactId>"
+        "    </dependency></dependencies>\n</project>\n",
+    )
+    pkg = _pkg_nodes(extract_package_manifest(child))[0]
+    assert pkg["label"] == "org.apache:acme-mid"
+    # Unresolvable, so the reference stays literal rather than being dropped.
+    assert [e["target"] for e in extract_package_manifest(child)["edges"]] == [
+        "pkg_org_acme_acme_core_compat"
+    ]
+
+
+def test_pom_parent_cycle_terminates(tmp_path):
+    # Two POMs naming each other as parent would walk the chain forever.
+    _write(
+        tmp_path / "a/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><artifactId>b</artifactId><version>1.0</version></parent>\n"
+        "  <artifactId>a</artifactId>\n  <properties><compat>2.12</compat></properties>\n"
+        "</project>\n",
+    )
+    b = _write(
+        tmp_path / "b/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><artifactId>a</artifactId><version>1.0</version></parent>\n"
+        "  <artifactId>b</artifactId>\n"
+        "  <properties><compat>2.13</compat></properties>\n</project>\n",
+    )
+    r = extract_package_manifest(b)
+    assert _pkg_nodes(r)[0]["label"] == "b"
+    assert r["nodes"] and r["edges"] == []
+
+
+def test_pom_unparseable_ancestor_is_skipped(tmp_path):
+    # A broken POM above must not lose the module's own dependencies.
+    _write(tmp_path / "pom.xml", "<project><unclosed>")
+    child = _write(
+        tmp_path / "mid/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><artifactId>root</artifactId><version>1.0</version></parent>\n"
+        "  <artifactId>acme-mid</artifactId>\n"
+        "  <dependencies><dependency><groupId>org.acme</groupId>"
+        "    <artifactId>acme-core</artifactId></dependency>"
+        "</dependencies>\n</project>\n",
+    )
+    r = extract_package_manifest(child)
+    assert [e["target"] for e in r["edges"]] == ["pkg_org_acme_acme_core"]
+
+
+def test_pom_without_path_still_parses_its_own_properties():
+    # No path: no chain to walk, but own properties still resolve.
+    from graphify.manifest_ingest import _parse_pom
+
+    info = _parse_pom(
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <groupId>org.acme</groupId>\n  <artifactId>acme-core</artifactId>\n"
+        "  <properties><compat>2.12</compat></properties>\n"
+        "  <dependencies><dependency><groupId>org.acme</groupId>"
+        "    <artifactId>acme-util_${compat}</artifactId></dependency>"
+        "</dependencies>\n</project>\n"
+    )
+    assert info == {
+        "name": "org.acme:acme-core",
+        "version": None,
+        "deps": ["org.acme:acme-util_2.12"],
+    }
