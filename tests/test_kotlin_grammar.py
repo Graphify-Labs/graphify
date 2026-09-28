@@ -538,6 +538,29 @@ def test_kotlin_fq_initializer_call_resolves_extracted(tmp_path):
         "the FQN is written verbatim in source: exact match, EXTRACTED"
 
 
+def test_kotlin_class_property_annotation_without_explicit_type(tmp_path):
+    """A class property with an annotation and an inferred type must not crash
+    with UnboundLocalError ('line' unbound) or drop the file (#3884)."""
+    r = _extract(tmp_path, {
+        "Repro.kt": (
+            "class Repro {\n"
+            "    @Volatile\n"
+            "    var counter = 0\n"
+            "}\n"
+        ),
+    })
+    repro_class = _find(r, "Repro")
+    volatile = _find(r, "Volatile")
+    attr_edges = [
+        e for e in r["edges"]
+        if e["relation"] == "references"
+        and e.get("context") == "attribute"
+        and e["source"] == repro_class
+        and e["target"] == volatile
+    ]
+    assert len(attr_edges) == 1, f"expected Repro->Volatile attribute reference edge, got {attr_edges}"
+
+
 # ── keep-the-bar: multi-line Kotlin is byte-identical ────────────────────────
 
 def test_multiline_kotlin_unchanged(tmp_path, capsys):
