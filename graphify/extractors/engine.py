@@ -6602,6 +6602,10 @@ def _extract_generic(
                 # type/reference edge, but it is not a project-defined callable
                 # and must not become a calls hub. Real definitions have a
                 # source_file and continue through the normal call path.
+                # The stub may also stand in for a real definition in another
+                # file (an annotation elsewhere in this file created it), so the
+                # call still goes to raw_calls for cross-file resolution, which
+                # skips source-less candidates on its own (#3888).
                 external_stub_target = bool(tgt_nid and not nid_to_sf.get(tgt_nid))
                 if tgt_nid and not external_stub_target:
                     pair = (caller_nid, tgt_nid)
@@ -6618,7 +6622,7 @@ def _extract_generic(
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
-                elif callee_name and not tgt_nid:
+                elif callee_name and (not tgt_nid or external_stub_target):
                     # In Python, if an unqualified call names a local non-callable variable or parameter,
                     # do NOT append it to raw_calls (#3405 Part 3/4).
                     is_py_local_data = (
@@ -6636,6 +6640,11 @@ def _extract_generic(
                             "source_location": f"L{node.start_point[0] + 1}",
                             "receiver": swift_receiver or member_receiver,
                         }
+                        # This file already named the callee as a type it does
+                        # not define, so extract() binds it cross-file only with
+                        # import or namespace evidence (#3888).
+                        if external_stub_target:
+                            rc_entry["via_stub"] = True
                         # Ruby: attach the receiver's inferred type from the method's
                         # local `var = Const.new` bindings, when unambiguously known.
                         if member_receiver and config.ts_module == "tree_sitter_ruby":
@@ -6656,6 +6665,10 @@ def _extract_generic(
                         # class fields/properties are the base scope.
                         if config.ts_module == "tree_sitter_c_sharp":
                             rc_entry["lang"] = "csharp"
+                            # `new X()` can only construct a type, never an enum
+                            # member or property that happens to share X's name.
+                            if node.type == "object_creation_expression":
+                                rc_entry["csharp_new"] = True
                             if csharp_qualified_prefix:
                                 rc_entry["qualified_prefix"] = csharp_qualified_prefix
                             receiver_type = _csharp_scoped_receiver_type(

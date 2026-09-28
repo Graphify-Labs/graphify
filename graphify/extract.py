@@ -8236,6 +8236,13 @@ def extract(
     # of these files with no import evidence is gated below (#1659).
     _JS_TS_CALL_SUFFIXES = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
     _go_module_cache: dict[Path, str | None] = {}
+    # Enum members (`case_of`) and fields/properties (`defines`) are never what a
+    # C# `new X()` constructs. Same exclusion the C# type-definition index uses
+    # (#3815); without it a `new List<T>()` binds to an enum member named `List`.
+    _member_nids = {
+        e.get("target") for e in all_edges if e.get("relation") in ("case_of", "defines")
+    }
+    _csharp_stub_resolver: CsharpNameResolver | None = None  # built on first use
     for rc in all_raw_calls:
         if rc.get("_ambiguous_python_import"):
             continue
@@ -8284,6 +8291,28 @@ def extract(
             candidates = global_label_to_nids_ci.get(callee.lower(), [])
         if not candidates:
             continue
+        if rc.get("csharp_new"):
+            candidates = [c for c in candidates if c not in _member_nids]
+            if not candidates:
+                continue
+        # A call rescued from an annotation stub (#3888): the caller's own file
+        # names this type without defining it, and before the rescue the call
+        # got no edge at all. A same-named class elsewhere is only the target
+        # with evidence: an import (checked below) or, for C#, the namespace /
+        # `using` scope. `new List<int>()` under `using System.Collections.Generic`
+        # must not bind to an unrelated `Other.List`.
+        stub_scope_hit = False
+        if rc.get("via_stub") and rc.get("lang") == "csharp":
+            if _csharp_stub_resolver is None:
+                _csharp_stub_resolver = CsharpNameResolver(all_nodes, all_edges)
+            caller_node = _csharp_stub_resolver.node_by_id.get(rc.get("caller_nid", ""))
+            scoped = (
+                _csharp_stub_resolver.resolve_label(callee, caller_node, str(rc.get("source_file", "")))
+                if caller_node is not None else None
+            )
+            if scoped in candidates:
+                candidates = [scoped]
+                stub_scope_hit = True
         # Cross-language guard: never bind a call to a definition in a different
         # language family. Name-only matching was resolving a TSX callback passed
         # by name to a same-named Kotlin method in the Android half of the repo
@@ -8423,6 +8452,8 @@ def extract(
         # direct calls: the indirect_call path above is already conservative
         # (INFERRED, callable-target-gated) and independent of import evidence.
         if not has_import_evidence and str(rc.get("source_file", "")).endswith(_JS_TS_CALL_SUFFIXES):
+            continue
+        if rc.get("via_stub") and not (has_import_evidence or stub_scope_hit):
             continue
         if tgt != caller and (caller, tgt) not in existing_pairs:
             existing_pairs.add((caller, tgt))
