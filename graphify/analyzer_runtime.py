@@ -10,7 +10,11 @@ import signal
 import subprocess
 import threading
 import time
-from typing import BinaryIO, Mapping, Protocol
+from typing import BinaryIO, Mapping, Protocol, cast
+
+
+_CREATE_SUSPENDED = 0x00000004
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 
 @dataclass(frozen=True)
@@ -121,6 +125,8 @@ class _WindowsJobApiContract(Protocol):
 
     def assign_process(self, job_handle: int, process_handle: int) -> None: ...
 
+    def resume_process(self, process_id: int) -> None: ...
+
     def close_handle(self, job_handle: int) -> None: ...
 
 
@@ -129,6 +135,9 @@ class _WindowsJobApi:
 
     _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    _TH32CS_SNAPTHREAD = 0x00000004
+    _THREAD_SUSPEND_RESUME = 0x0002
+    _RESUME_FAILED = 0xFFFFFFFF
 
     def __init__(self) -> None:
         import ctypes
@@ -167,9 +176,22 @@ class _WindowsJobApi:
                 ("PeakJobMemoryUsed", ctypes.c_size_t),
             ]
 
+        class ThreadEntry32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ThreadID", wintypes.DWORD),
+                ("th32OwnerProcessID", wintypes.DWORD),
+                ("tpBasePri", wintypes.LONG),
+                ("tpDeltaPri", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+            ]
+
         self._ctypes = ctypes
         self._information_type = ExtendedLimitInformation
-        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._thread_entry_type = ThreadEntry32
+        win_dll = getattr(ctypes, "WinDLL")
+        self._kernel32 = win_dll("kernel32", use_last_error=True)
         # ctypes otherwise assumes 32-bit integers for arguments and return
         # values, which truncates kernel handles in a 64-bit Python process.
         self._kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
@@ -186,13 +208,36 @@ class _WindowsJobApi:
             wintypes.HANDLE,
         ]
         self._kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        self._kernel32.CreateToolhelp32Snapshot.argtypes = [
+            wintypes.DWORD,
+            wintypes.DWORD,
+        ]
+        self._kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        self._kernel32.Thread32First.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ThreadEntry32),
+        ]
+        self._kernel32.Thread32First.restype = wintypes.BOOL
+        self._kernel32.Thread32Next.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(ThreadEntry32),
+        ]
+        self._kernel32.Thread32Next.restype = wintypes.BOOL
+        self._kernel32.OpenThread.argtypes = [
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        self._kernel32.OpenThread.restype = wintypes.HANDLE
+        self._kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+        self._kernel32.ResumeThread.restype = wintypes.DWORD
         self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         self._kernel32.CloseHandle.restype = wintypes.BOOL
 
     def create_kill_on_close_job(self) -> int:
         job = self._kernel32.CreateJobObjectW(None, None)
         if not job:
-            raise self._ctypes.WinError(self._ctypes.get_last_error())
+            raise self._last_error()
         information = self._information_type()
         information.BasicLimitInformation.LimitFlags = (
             self._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -204,18 +249,66 @@ class _WindowsJobApi:
             self._ctypes.sizeof(information),
         )
         if not configured:
-            error = self._ctypes.WinError(self._ctypes.get_last_error())
+            error = self._last_error()
             self._kernel32.CloseHandle(job)
             raise error
         return int(job)
 
     def assign_process(self, job_handle: int, process_handle: int) -> None:
         if not self._kernel32.AssignProcessToJobObject(job_handle, process_handle):
-            raise self._ctypes.WinError(self._ctypes.get_last_error())
+            raise self._last_error()
+
+    def resume_process(self, process_id: int) -> None:
+        """Resume the initial thread after the process belongs to its job."""
+
+        snapshot = self._kernel32.CreateToolhelp32Snapshot(
+            self._TH32CS_SNAPTHREAD,
+            0,
+        )
+        invalid_handle = self._ctypes.c_void_p(-1).value
+        if not snapshot or int(snapshot) == invalid_handle:
+            raise self._last_error()
+        try:
+            entry = self._thread_entry_type()
+            entry.dwSize = self._ctypes.sizeof(entry)
+            has_entry = self._kernel32.Thread32First(
+                snapshot,
+                self._ctypes.byref(entry),
+            )
+            while has_entry:
+                if int(entry.th32OwnerProcessID) == process_id:
+                    thread = self._kernel32.OpenThread(
+                        self._THREAD_SUSPEND_RESUME,
+                        False,
+                        entry.th32ThreadID,
+                    )
+                    if not thread:
+                        raise self._last_error()
+                    try:
+                        previous_count = self._kernel32.ResumeThread(thread)
+                        if previous_count == self._RESUME_FAILED:
+                            raise self._last_error()
+                    finally:
+                        self._kernel32.CloseHandle(thread)
+                    return
+                has_entry = self._kernel32.Thread32Next(
+                    snapshot,
+                    self._ctypes.byref(entry),
+                )
+            raise OSError(f"no thread found for analyzer process {process_id}")
+        finally:
+            self._kernel32.CloseHandle(snapshot)
 
     def close_handle(self, job_handle: int) -> None:
         if not self._kernel32.CloseHandle(job_handle):
-            raise self._ctypes.WinError(self._ctypes.get_last_error())
+            raise self._last_error()
+
+    def _last_error(self) -> OSError:
+        """Create the platform error lazily so this module imports cross-platform."""
+
+        win_error = getattr(self._ctypes, "WinError")
+        get_last_error = getattr(self._ctypes, "get_last_error")
+        return win_error(get_last_error())
 
 
 class _WindowsProcessTree:
@@ -232,6 +325,7 @@ class _WindowsProcessTree:
         try:
             process_handle = int(getattr(process, "_handle"))
             self._api.assign_process(self._job_handle, process_handle)
+            self._api.resume_process(int(getattr(process, "pid")))
         except Exception:
             self._api.close_handle(self._job_handle)
             self._job_handle = 0
@@ -283,11 +377,7 @@ class AnalyzerRuntime:
             shell=False,
             close_fds=True,
             start_new_session=os.name != "nt",
-            creationflags=(
-                subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
-                if os.name == "nt"
-                else 0
-            ),
+            creationflags=self._creation_flags(os.name),
         )
         assert process.stdout is not None and process.stderr is not None
         try:
@@ -305,12 +395,15 @@ class AnalyzerRuntime:
             process.stderr.close()
             raise
 
-        stdout_reader = _BoundedPipeReader(process.stdout, request.max_stdout_bytes)
+        stdout_reader = _BoundedPipeReader(
+            cast(BinaryIO, process.stdout),
+            request.max_stdout_bytes,
+        )
         # Discard excess diagnostics while continuing to drain stderr. Closing
         # that pipe early could make a compiler abort before its valid stdout
         # payload is complete.
         stderr_reader = _BoundedPipeReader(
-            process.stderr,
+            cast(BinaryIO, process.stderr),
             request.max_stderr_bytes,
             drain_after_limit=True,
         )
@@ -388,8 +481,12 @@ class AnalyzerRuntime:
             or request.timeout_seconds <= 0
         ):
             raise ValueError("analyzer timeout must be a finite positive number")
-        if request.max_stdout_bytes < 0 or request.max_stderr_bytes < 0:
-            raise ValueError("analyzer output limits cannot be negative")
+        limits = (request.max_stdout_bytes, request.max_stderr_bytes)
+        if any(
+            isinstance(limit, bool) or not isinstance(limit, int) or limit < 0
+            for limit in limits
+        ):
+            raise ValueError("analyzer output limits must be non-negative integers")
         return request.command, cwd
 
     @classmethod
@@ -409,8 +506,18 @@ class AnalyzerRuntime:
                 raise ValueError("invalid analyzer environment name")
             if not isinstance(value, str) or "\0" in value:
                 raise ValueError("invalid analyzer environment value")
+            if name.upper() == "PATH":
+                raise ValueError("analyzer environment cannot override PATH")
             environment[name] = value
         return environment
+
+    @staticmethod
+    def _creation_flags(platform_name: str) -> int:
+        """Start Windows analyzers inert until their kill-on-close job owns them."""
+
+        if platform_name != "nt":
+            return 0
+        return _CREATE_SUSPENDED | _CREATE_NEW_PROCESS_GROUP
 
     @staticmethod
     def _process_tree(process: subprocess.Popen) -> _ProcessTree:

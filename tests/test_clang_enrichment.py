@@ -245,6 +245,78 @@ def test_clang_prefers_compile_database_but_drops_executable_plugin_flags(tmp_pa
     assert result["semantic_enrichment"]["clang"]["compile_database_translation_units"] == 1
 
 
+def test_clang_compile_database_drops_response_file_values(tmp_path: Path):
+    """Allowed options cannot smuggle a second argument stream through @files."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// response-file fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "clang++", "-I", "@include-flags.rsp",
+            "-D", "@definition-flags.rsp", "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert not any(argument.startswith("@") for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("directory", "bad\0directory"),
+        ("file", "bad\0source.C"),
+    ],
+)
+def test_clang_malformed_compile_database_paths_use_safe_fallback(
+    tmp_path: Path,
+    field: str,
+    value: str,
+):
+    """One malformed metadata path cannot abort enrichment for the repository."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// malformed compile-db fixture\n", encoding="utf-8")
+    entry = {
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": ["clang++", "-DMODE=1", "-c", str(source)],
+    }
+    entry[field] = value
+    (tmp_path / "compile_commands.json").write_text(
+        json.dumps([entry]),
+        encoding="utf-8",
+    )
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert cwd == tmp_path
+        assert "-fsyntax-only" in command
+        assert not any("\0" in argument for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    report = result["semantic_enrichment"]["clang"]
+    assert report["analyzer_runs"] == 1
+    assert report["compile_database_translation_units"] == 0
+    assert report["resolved_calls"] == 1
+
+
 def test_clang_resolves_relative_directory_from_compile_database_location(tmp_path: Path):
     """Relative working directories are anchored beside the database file."""
     source = tmp_path / "src" / "main.C"

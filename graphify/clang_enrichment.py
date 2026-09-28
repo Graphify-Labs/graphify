@@ -231,7 +231,7 @@ class _ClangArgumentPolicy:
                     value, original_value = logical[index + 1]
                     # An option-looking value is ambiguous and could otherwise
                     # re-enter Clang's option parser with a different arity.
-                    if value and not value.startswith(("-", "/clang:")):
+                    if value and not value.startswith(("-", "@", "/clang:")):
                         safe.extend((original, original_value))
                 index += 2
                 continue
@@ -497,25 +497,22 @@ class ClangSemanticEnricher:
             for entry in payload:
                 if not isinstance(entry, dict):
                     continue
-                raw_directory = Path(str(entry.get("directory") or self.project_root))
-                # Relative database entries are portable build metadata. They
-                # are relative to the database file, never Graphify's process
-                # working directory, which may belong to another repository.
-                directory = (
-                    raw_directory
-                    if raw_directory.is_absolute()
-                    else database.parent / raw_directory
-                ).resolve()
                 try:
+                    raw_directory = Path(str(entry.get("directory") or self.project_root))
+                    # Relative database entries are portable build metadata. They
+                    # are relative to the database file, never Graphify's process
+                    # working directory, which may belong to another repository.
+                    directory = (
+                        raw_directory
+                        if raw_directory.is_absolute()
+                        else database.parent / raw_directory
+                    ).resolve()
                     directory.relative_to(self.project_root)
-                except ValueError:
-                    continue
-                listed = Path(str(entry.get("file") or ""))
-                listed = listed if listed.is_absolute() else directory / listed
-                try:
+                    listed = Path(str(entry.get("file") or ""))
+                    listed = listed if listed.is_absolute() else directory / listed
                     if listed.resolve() != source_path.resolve():
                         continue
-                except OSError:
+                except (OSError, ValueError):
                     continue
                 raw = entry.get("arguments")
                 if isinstance(raw, list) and all(isinstance(item, str) for item in raw):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 from pathlib import Path
 import shutil
@@ -40,6 +41,57 @@ def test_runtime_uses_a_minimal_explicit_environment(tmp_path: Path):
     assert "HOME" not in names
     assert "AWS_SECRET_ACCESS_KEY" not in names
     assert "GITHUB_TOKEN" not in names
+
+
+def test_runtime_rejects_path_environment_overrides(tmp_path: Path):
+    """Analyzer-specific variables must not replace the trusted search path."""
+    request = AnalyzerProcessRequest(
+        command=(_python(), "-c", "raise SystemExit('must not run')"),
+        cwd=tmp_path,
+        environment={"PATH": str(tmp_path / "untrusted-bin")},
+    )
+
+    with pytest.raises(ValueError, match="cannot override PATH"):
+        AnalyzerRuntime(tmp_path).run(request)
+
+
+@pytest.mark.parametrize("field", ["max_stdout_bytes", "max_stderr_bytes"])
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf"), 1.5, "5", None, True],
+)
+def test_runtime_rejects_non_integer_output_limits_before_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+):
+    """Byte budgets are finite integer counts, not numeric lookalikes."""
+    from graphify import analyzer_runtime
+
+    request = replace(
+        AnalyzerProcessRequest(command=(_python(), "-c", "pass"), cwd=tmp_path),
+        **{field: value},
+    )
+
+    def reject_spawn(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("invalid output budget reached Popen")
+
+    monkeypatch.setattr(analyzer_runtime.subprocess, "Popen", reject_spawn)
+    with pytest.raises(ValueError, match="non-negative integers"):
+        AnalyzerRuntime(tmp_path).run(request)
+
+
+@pytest.mark.parametrize("field", ["max_stdout_bytes", "max_stderr_bytes"])
+def test_runtime_accepts_zero_output_limits(tmp_path: Path, field: str):
+    request = replace(
+        AnalyzerProcessRequest(command=(_python(), "-c", "pass"), cwd=tmp_path),
+        **{field: 0},
+    )
+
+    result = AnalyzerRuntime(tmp_path).run(request)
+
+    assert result.returncode == 0
 
 
 def test_runtime_rejects_working_directories_outside_project(tmp_path: Path):
@@ -220,16 +272,72 @@ def test_windows_process_tree_owns_and_closes_a_kill_on_close_job():
             events.append(("assign", job_handle))
             assert process_handle == 73
 
+        def resume_process(self, process_id: int) -> None:
+            events.append(("resume", process_id))
+
         def close_handle(self, job_handle: int) -> None:
             events.append(("close", job_handle))
 
     class FakeProcess:
         _handle = 73
+        pid = 97
 
     tree = analyzer_runtime._WindowsProcessTree(FakeProcess(), api=FakeApi())
     tree.terminate()
 
-    assert events == [("create", 41), ("assign", 41), ("close", 41)]
+    assert events == [
+        ("create", 41),
+        ("assign", 41),
+        ("resume", 97),
+        ("close", 41),
+    ]
+
+
+def test_windows_process_tree_closes_job_when_resume_fails():
+    """A suspended analyzer is killed with its job if it cannot be resumed."""
+    from graphify import analyzer_runtime
+
+    events: list[tuple[str, int]] = []
+
+    class FakeApi:
+        def create_kill_on_close_job(self) -> int:
+            events.append(("create", 41))
+            return 41
+
+        def assign_process(self, job_handle: int, process_handle: int) -> None:
+            events.append(("assign", job_handle))
+
+        def resume_process(self, process_id: int) -> None:
+            events.append(("resume", process_id))
+            raise OSError("resume denied")
+
+        def close_handle(self, job_handle: int) -> None:
+            events.append(("close", job_handle))
+
+    class FakeProcess:
+        _handle = 73
+        pid = 97
+
+    with pytest.raises(OSError, match="resume denied"):
+        analyzer_runtime._WindowsProcessTree(FakeProcess(), api=FakeApi())
+
+    assert events == [
+        ("create", 41),
+        ("assign", 41),
+        ("resume", 97),
+        ("close", 41),
+    ]
+
+
+def test_windows_creation_flags_suspend_before_job_assignment():
+    """The analyzer cannot spawn descendants before its kill-on-close job owns it."""
+    from graphify import analyzer_runtime
+
+    flags = analyzer_runtime.AnalyzerRuntime._creation_flags("nt")
+
+    assert flags & analyzer_runtime._CREATE_SUSPENDED
+    assert flags & analyzer_runtime._CREATE_NEW_PROCESS_GROUP
+    assert analyzer_runtime.AnalyzerRuntime._creation_flags("posix") == 0
 
 
 def test_windows_job_api_declares_pointer_sized_handle_signatures(
@@ -251,6 +359,11 @@ def test_windows_job_api_declares_pointer_sized_handle_signatures(
         CreateJobObjectW = FakeFunction()
         SetInformationJobObject = FakeFunction()
         AssignProcessToJobObject = FakeFunction()
+        CreateToolhelp32Snapshot = FakeFunction()
+        Thread32First = FakeFunction()
+        Thread32Next = FakeFunction()
+        OpenThread = FakeFunction()
+        ResumeThread = FakeFunction()
         CloseHandle = FakeFunction()
 
     kernel32 = FakeKernel32()
@@ -259,5 +372,71 @@ def test_windows_job_api_declares_pointer_sized_handle_signatures(
     analyzer_runtime._WindowsJobApi()
 
     assert kernel32.CreateJobObjectW.argtypes == [ctypes.c_void_p, wintypes.LPCWSTR]
+    assert isinstance(kernel32.SetInformationJobObject.argtypes, list)
     assert kernel32.SetInformationJobObject.argtypes[0] is wintypes.HANDLE
+    assert kernel32.CreateToolhelp32Snapshot.restype is wintypes.HANDLE
+    assert kernel32.OpenThread.restype is wintypes.HANDLE
+    assert kernel32.ResumeThread.argtypes == [wintypes.HANDLE]
     assert kernel32.CloseHandle.argtypes == [wintypes.HANDLE]
+
+
+def test_windows_job_api_resumes_process_thread_and_closes_handles(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The suspended process is resumed through a bounded thread snapshot."""
+    import ctypes
+    from graphify import analyzer_runtime
+
+    events: list[tuple[str, int]] = []
+
+    class FakeFunction:
+        restype: object = None
+        argtypes: object = None
+
+        def __init__(self, callback):
+            self.callback = callback
+
+        def __call__(self, *args: object) -> int:
+            return self.callback(*args)
+
+    def first(_snapshot: int, entry_pointer: object) -> int:
+        entry = getattr(entry_pointer, "_obj")
+        entry.th32OwnerProcessID = 97
+        entry.th32ThreadID = 113
+        events.append(("first", 97))
+        return 1
+
+    class FakeKernel32:
+        CreateJobObjectW = FakeFunction(lambda *_args: 1)
+        SetInformationJobObject = FakeFunction(lambda *_args: 1)
+        AssignProcessToJobObject = FakeFunction(lambda *_args: 1)
+        CreateToolhelp32Snapshot = FakeFunction(
+            lambda _flags, _process: events.append(("snapshot", 71)) or 71,
+        )
+        Thread32First = FakeFunction(first)
+        Thread32Next = FakeFunction(lambda *_args: 0)
+        OpenThread = FakeFunction(
+            lambda _access, _inherit, thread_id: (
+                events.append(("open", int(thread_id))) or 79
+            ),
+        )
+        ResumeThread = FakeFunction(
+            lambda handle: events.append(("resume", int(handle))) or 1,
+        )
+        CloseHandle = FakeFunction(
+            lambda handle: events.append(("close", int(handle))) or 1,
+        )
+
+    kernel32 = FakeKernel32()
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False)
+
+    analyzer_runtime._WindowsJobApi().resume_process(97)
+
+    assert events == [
+        ("snapshot", 71),
+        ("first", 97),
+        ("open", 113),
+        ("resume", 79),
+        ("close", 79),
+        ("close", 71),
+    ]
