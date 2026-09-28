@@ -548,3 +548,45 @@ def test_pom_absolute_relative_path_without_vcs_root_is_followed(tmp_path):
     )
     targets = {e["target"] for e in extract_package_manifest(child)["edges"]}
     assert targets == {"pkg_org_acme_acme_core_2_12"}
+
+
+def test_pom_unrelated_default_parent_not_inherited(tmp_path):
+    _write(
+        tmp_path / "pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <groupId>org.other</groupId>\n  <artifactId>other</artifactId>\n  <version>1.0</version>\n"
+        "  <properties><v>9.9</v></properties>\n</project>\n",
+    )
+    child = _write(
+        tmp_path / "sub/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.acme</groupId><artifactId>root</artifactId>"
+        "<version>1.0</version></parent>\n"
+        "  <artifactId>acme-mid</artifactId>\n"
+        "  <dependencies><dependency><groupId>org.acme</groupId>"
+        "    <artifactId>acme-core_${v}</artifactId>"
+        "    </dependency></dependencies>\n</project>\n",
+    )
+    assert [e["target"] for e in extract_package_manifest(child)["edges"]] == [
+        "pkg_org_acme_acme_core_v"
+    ]
+
+
+def test_pom_parent_gav_ignored_fields_still_inherit(tmp_path):
+    _write(
+        tmp_path / "pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <groupId>org.acme</groupId>\n  <artifactId>root</artifactId>\n  <version>2.0</version>\n"
+        "  <properties><compat>2.12</compat></properties>\n</project>\n",
+    )
+    child = _write(
+        tmp_path / "mid/pom.xml",
+        '<project xmlns="http://maven.apache.org/POM/4.0.0">\n'
+        "  <parent><groupId>org.acme</groupId><artifactId>root</artifactId></parent>\n"
+        "  <artifactId>acme-mid</artifactId>\n"
+        "  <dependencies><dependency><groupId>org.acme</groupId>"
+        "    <artifactId>acme-core_${compat}</artifactId>"
+        "    </dependency></dependencies>\n</project>\n",
+    )
+    targets = {e["target"] for e in extract_package_manifest(child)["edges"]}
+    assert targets == {"pkg_org_acme_acme_core_2_12"}

@@ -389,6 +389,9 @@ def _inherited_pom_properties(pom: Path, root: ET.Element) -> dict[str, str]:
     seen: set[Path] = {pom.resolve()}
     cur_pom, cur_root = pom, root
     while len(seen) <= _MAX_POM_ANCESTORS:
+        parent_el = cur_root.find("parent")
+        if parent_el is None:
+            break
         parent_pom = _parent_pom_path(cur_pom, cur_root)
         if parent_pom is None:
             break
@@ -399,6 +402,14 @@ def _inherited_pom_properties(pom: Path, root: ET.Element) -> dict[str, str]:
         try:
             cur_root = _pom_root(parent_pom.read_text(encoding="utf-8", errors="replace"))
         except (OSError, ET.ParseError):
+            break
+        # Inherit only from the declared parent, not any file at that path.
+        if any(
+            (want := parent_el.findtext(tag))
+            and (have := cur_root.findtext(tag) or cur_root.findtext(f"parent/{tag}"))
+            and want.strip() != have.strip()
+            for tag in ("groupId", "artifactId", "version")
+        ):
             break
         cur_pom = parent_pom
         levels.append(
