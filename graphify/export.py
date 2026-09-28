@@ -405,6 +405,15 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     if isinstance(data.get("graph"), dict) and "hyperedges" in data["graph"]:
         data["graph"]["hyperedges"] = hyperedges
     data["hyperedges"] = hyperedges
+
+    # Prevent dual persistence: exclude degraded_passes from serialized
+    # data["graph"] without mutating G.graph, and assign to top-level
+    # data["degraded_passes"] only when non-empty.
+    degraded = getattr(G, "graph", {}).get("degraded_passes")
+    if isinstance(data.get("graph"), dict):
+        data["graph"] = {k: v for k, v in data["graph"].items() if k != "degraded_passes"}
+    if degraded:
+        data["degraded_passes"] = sorted(degraded, key=lambda d: d.get("pass", ""))
     # Fallback provenance comes from the repo the graph is being written INTO
     # (output_path lives in <target>/graphify-out/), never the shell's cwd —
     # the same cwd-anchoring mistake #2316 fixed for `update`.

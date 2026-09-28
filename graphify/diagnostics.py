@@ -259,6 +259,12 @@ def diagnose_extraction(
         Path(extract_path) if extract_path else Path(__file__).with_name("extract.py")
     )
 
+    degraded_passes = extraction.get("degraded_passes")
+    if degraded_passes is None and isinstance(extraction.get("graph"), dict):
+        degraded_passes = extraction["graph"].get("degraded_passes")
+    if not isinstance(degraded_passes, list):
+        degraded_passes = []
+
     return {
         "node_count": len(node_ids),
         "unverified_node_count": unverified_node_count,
@@ -289,6 +295,7 @@ def diagnose_extraction(
         "post_build_error": build_error,
         "producer_suppression": scan_producer_suppression_sites(suppression_path),
         "examples": examples,
+        "degraded_passes": degraded_passes,
     }
 
 
@@ -394,7 +401,16 @@ def format_diagnostic_report(summary: dict[str, Any]) -> str:
         f"post_build_graph_type: {summary['post_build_graph_type']}",
         f"post_build_edges: {summary['post_build_edge_count']}",
         f"producer_suppression_sites: {suppression.get('total_sites', 0)}",
+        f"degraded_resolution_passes: {len(summary.get('degraded_passes', []))}",
     ]
+    if summary.get("degraded_passes"):
+        lines.append("degraded_resolution_pass_details:")
+        for item in summary["degraded_passes"]:
+            p = item.get("pass", "unknown")
+            err_type = item.get("error_type", "Exception")
+            err = item.get("error", "")
+            sfx = ", ".join(item.get("suffixes", []))
+            lines.append(f"  - {p} ({err_type}: {err}) suffixes=[{sfx}]")
     if summary.get("post_build_error"):
         lines.append(f"post_build_error: {summary['post_build_error']}")
     if suppression.get("error"):

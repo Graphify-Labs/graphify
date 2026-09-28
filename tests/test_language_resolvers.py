@@ -72,3 +72,29 @@ def test_resolver_mutates_edges_in_place() -> None:
     edges: list[dict] = []
     run_language_resolvers([Path("a.rb")], [], [], edges, resolvers=resolvers)
     assert edges == [{"source": "x", "target": "y", "relation": "calls"}]
+
+
+def test_failing_resolver_records_degraded_pass() -> None:
+    def _boom(per_file, all_nodes, all_edges):
+        raise TypeError("resolver type error")
+
+    resolvers = [LanguageResolver("boom", frozenset({".rb", ".rake"}), _boom)]
+    degraded: list[dict] = []
+    run_language_resolvers([Path("a.rb")], [], [], [], resolvers=resolvers, degraded_passes=degraded)
+    assert len(degraded) == 1
+    assert degraded[0] == {
+        "pass": "boom",
+        "error": "resolver type error",
+        "error_type": "TypeError",
+        "suffixes": [".rake", ".rb"],
+    }
+
+
+def test_successful_resolver_does_not_record_degraded_pass() -> None:
+    def _ok(per_file, all_nodes, all_edges):
+        pass
+
+    resolvers = [LanguageResolver("ok", frozenset({".rb"}), _ok)]
+    degraded: list[dict] = []
+    run_language_resolvers([Path("a.rb")], [], [], [], resolvers=resolvers, degraded_passes=degraded)
+    assert degraded == []

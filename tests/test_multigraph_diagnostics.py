@@ -489,3 +489,32 @@ def test_diagnose_multigraph_cli_rejects_conflicting_direction_flags(
 
     assert exc_info.value.code == 1
     assert "--directed and --undirected are mutually exclusive" in capsys.readouterr().err
+
+
+def test_diagnose_extraction_captures_degraded_passes():
+    payload = _diagnostic_fixture()
+    payload["degraded_passes"] = [
+        {
+            "pass": "go_type_references",
+            "error": "panic in resolver",
+            "error_type": "RuntimeError",
+            "suffixes": [".go"],
+        }
+    ]
+    summary = diagnose_extraction(payload)
+    assert len(summary["degraded_passes"]) == 1
+    assert summary["degraded_passes"][0]["pass"] == "go_type_references"
+
+    report = format_diagnostic_report(summary)
+    assert "degraded_resolution_passes: 1" in report
+    assert "degraded_resolution_pass_details:" in report
+    assert "go_type_references (RuntimeError: panic in resolver) suffixes=[.go]" in report
+
+
+def test_diagnose_extraction_handles_clean_degraded_passes():
+    payload = _diagnostic_fixture()
+    summary = diagnose_extraction(payload)
+    assert summary["degraded_passes"] == []
+    report = format_diagnostic_report(summary)
+    assert "degraded_resolution_passes: 0" in report
+    assert "degraded_resolution_pass_details:" not in report

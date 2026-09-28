@@ -276,6 +276,21 @@ def generate(
             conf_tag = f"{conf} {cscore:.2f}" if cscore is not None else conf
             lines.append(f"- **{h.get('label', h.get('id', ''))}** — {node_labels} [{conf_tag}]")
 
+    degraded_passes = G.graph.get("degraded_passes", [])
+    if degraded_passes:
+        lines += [
+            "",
+            "## Degraded Resolution Passes",
+            "> [!WARNING]",
+            "> One or more cross-file resolution passes failed during extraction. Call edges or type references for the affected languages may be incomplete.",
+        ]
+        for dp in degraded_passes:
+            pass_name = dp.get("pass", "unknown")
+            err = dp.get("error", "")
+            err_type = dp.get("error_type", "Exception")
+            sfx = ", ".join(dp.get("suffixes", []))
+            lines.append(f"- **{pass_name}** ({err_type}: {err}): suffixes `{sfx}`")
+
     lines += ["", f"## Communities ({len(communities)} total, {thin_count_summary} thin omitted)"]
     for cid, nodes in communities.items():
         label = community_labels.get(cid, f"Community {cid}")

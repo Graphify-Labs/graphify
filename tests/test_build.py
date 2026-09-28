@@ -1985,6 +1985,87 @@ def test_build_merge_explicit_ast_sources_argument(tmp_path):
     assert "nuget_pkg" in G1, "ast_sources explicit arg must protect undispatched A.csproj"
 
 
+def test_build_merge_reconciles_degraded_passes(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = root / "graph.json"
+    existing_data = {
+        "nodes": [
+            {"id": "a_f", "label": "f", "source_file": "a.py", "_origin": "ast"},
+            {"id": "b_g", "label": "g", "source_file": "b.py", "_origin": "ast"},
+        ],
+        "edges": [],
+        "degraded_passes": [
+            {"pass": "python_imports", "error": "err", "error_type": "RuntimeError", "suffixes": [".py"]}
+        ],
+    }
+    graph_path.write_text(json.dumps(existing_data), encoding="utf-8")
+
+    # Re-extract only a.py: b.py survives, so python_imports is preserved
+    chunk_partial = {
+        "nodes": [{"id": "a_f", "label": "f", "source_file": "a.py", "_origin": "ast"}],
+        "extracted_sources": ["a.py"],
+        "degraded_passes": [],
+    }
+    G_partial = build_merge([chunk_partial], graph_path, dedup=False, root=root)
+    assert "degraded_passes" in G_partial.graph
+    assert G_partial.graph["degraded_passes"][0]["pass"] == "python_imports"
+
+    # Re-extract both a.py and b.py: all .py sources re-extracted cleanly, so degraded_passes cleared
+    chunk_full = {
+        "nodes": [
+            {"id": "a_f", "label": "f", "source_file": "a.py", "_origin": "ast"},
+            {"id": "b_g", "label": "g", "source_file": "b.py", "_origin": "ast"},
+        ],
+        "extracted_sources": ["a.py", "b.py"],
+        "degraded_passes": [],
+    }
+    G_full = build_merge([chunk_full], graph_path, dedup=False, root=root)
+    assert "degraded_passes" not in G_full.graph
+
+
+def test_merge_raw_extraction_reconciles_degraded_passes(tmp_path):
+    from graphify.build import merge_raw_extraction
+    root = tmp_path / "corpus"
+    root.mkdir()
+    graph_path = root / "graph.json"
+    existing_data = {
+        "nodes": [
+            {"id": "a_f", "label": "f", "source_file": "a.py", "_origin": "ast"},
+            {"id": "b_g", "label": "g", "source_file": "b.py", "_origin": "ast"},
+        ],
+        "edges": [],
+        "degraded_passes": [
+            {"pass": "python_imports", "error": "err", "error_type": "RuntimeError", "suffixes": [".py"]}
+        ],
+    }
+    graph_path.write_text(json.dumps(existing_data), encoding="utf-8")
+
+    # Partial re-extract keeps degraded_passes
+    new_partial = {
+        "nodes": [{"id": "a_f", "label": "f", "source_file": "a.py", "_origin": "ast"}],
+        "edges": [],
+        "extracted_sources": ["a.py"],
+        "degraded_passes": [],
+    }
+    merged_partial = merge_raw_extraction(new_partial, graph_path, root=root)
+    assert "degraded_passes" in merged_partial
+    assert merged_partial["degraded_passes"][0]["pass"] == "python_imports"
+
+    # Full re-extract clears degraded_passes
+    new_full = {
+        "nodes": [
+            {"id": "a_f", "label": "f", "source_file": "a.py", "_origin": "ast"},
+            {"id": "b_g", "label": "g", "source_file": "b.py", "_origin": "ast"},
+        ],
+        "edges": [],
+        "extracted_sources": ["a.py", "b.py"],
+        "degraded_passes": [],
+    }
+    merged_full = merge_raw_extraction(new_full, graph_path, root=root)
+    assert "degraded_passes" not in merged_full
+
+
 def test_build_annotations_all_resolve():
     # build.py imports every annotated name at module scope -- no TYPE_CHECKING-only
     # names -- so an unresolvable hint here means a missing import, not a lazy one.
