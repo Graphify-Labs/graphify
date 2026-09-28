@@ -82,6 +82,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _JS_PRIMITIVE_TYPES,
     _JS_RESOLVE_EXTS,
     _PACKAGE_IMPORTS_CACHE,
+    _SCAN_ROOT_NAMESPACE_CACHE,
     _TSCONFIG_ALIAS_CACHE,
     _TSCONFIG_BASEURL_CACHE,
     _VUE_SCRIPT_LANG_RE,
@@ -1239,7 +1240,7 @@ _JS_CONFIG = LanguageConfig(
     class_types=frozenset({"class_declaration"}),
     function_types=frozenset({"function_declaration", "generator_function_declaration", "method_definition"}),
     import_types=frozenset({"import_statement", "export_statement"}),
-    call_types=frozenset({"call_expression", "new_expression"}),
+    call_types=frozenset({"call_expression", "new_expression", "jsx_opening_element", "jsx_self_closing_element"}),
     call_function_field="function",
     call_accessor_node_types=frozenset({"member_expression"}),
     call_accessor_field="property",
@@ -1287,7 +1288,8 @@ _TSX_CONFIG = LanguageConfig(
     class_types=_TS_CONFIG.class_types,
     function_types=_TS_CONFIG.function_types,
     import_types=_TS_CONFIG.import_types,
-    call_types=_TS_CONFIG.call_types,
+    # JSX component usage (`<Comp />`) renders Comp; extracted like a call.
+    call_types=_TS_CONFIG.call_types | {"jsx_opening_element", "jsx_self_closing_element"},
     call_function_field=_TS_CONFIG.call_function_field,
     call_accessor_node_types=_TS_CONFIG.call_accessor_node_types,
     call_accessor_field=_TS_CONFIG.call_accessor_field,
@@ -7226,6 +7228,7 @@ def extract(
     _PACKAGE_IMPORTS_CACHE.clear()
     _XAML_CSHARP_CLASS_CACHE.clear()
     _MD_LINK_INDEX_CACHE.clear()
+    _SCAN_ROOT_NAMESPACE_CACHE.clear()
     # Path-resolution memoization (#3500) is keyed by (path, cwd) with no mtime
     # component, so — like the alias caches above — a symlink repoint or a path
     # that starts/stops existing between rebuilds in a long-lived `graphify

@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from graphify.extract import extract
-from graphify.extractors.resolution import _resolve_python_module_path
+from graphify.extractors.resolution import (
+    _SCAN_ROOT_NAMESPACE_CACHE,
+    _infer_scan_root_namespace,
+    _resolve_python_module_path,
+)
 
 
 def _write(path: Path, text: str) -> Path:
@@ -356,3 +360,85 @@ def test_issue_3777_standalone_module_import_unaffected(tmp_path: Path):
 
     assert _has_edge(result, consumer_file, standalone_file, "imports_from")
     assert _has_edge(result, consumer_file, fn_symbol, "imports")
+
+
+def test_nested_scan_root_resolves_full_namespace_import(tmp_path: Path) -> None:
+    _write(tmp_path / "Company" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "__init__.py", "")
+    lib_path = _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "lib" / "delivery.py", "def deliver(): pass")
+    main_path = _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "app" / "main.py", "from Company.Apps.Jobs.Team.lib import delivery")
+
+    root = tmp_path / "Company" / "Apps" / "Jobs" / "Team"
+    resolved = _resolve_python_module_path("Company.Apps.Jobs.Team.lib.delivery", main_path, root, 0)
+    assert resolved == lib_path
+
+    # E2E check
+    result = extract([main_path, lib_path], cache_root=tmp_path, root=root)
+    main_node = _node_id(result, "main.py", "app/main.py")
+    lib_node = _node_id(result, "delivery.py", "lib/delivery.py")
+    assert _has_edge(result, main_node, lib_node, "imports_from")
+
+
+def test_nested_scan_root_does_not_resolve_third_party(tmp_path: Path) -> None:
+    _write(tmp_path / "Company" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "__init__.py", "")
+    main_path = _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "app" / "main.py", "from thirdparty.foo import bar")
+
+    root = tmp_path / "Company" / "Apps" / "Jobs" / "Team"
+    resolved = _resolve_python_module_path("thirdparty.foo", main_path, root, 0)
+    assert resolved is None
+
+
+def test_repo_root_scan_is_unaffected(tmp_path: Path) -> None:
+    _write(tmp_path / "Company" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "__init__.py", "")
+    lib_path = _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "lib" / "delivery.py", "def deliver(): pass")
+    main_path = _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "app" / "main.py", "from Company.Apps.Jobs.Team.lib import delivery")
+
+    root = tmp_path
+    resolved = _resolve_python_module_path("Company.Apps.Jobs.Team.lib.delivery", main_path, root, 0)
+    assert resolved == lib_path
+
+
+def test_non_package_subdirectory_scan_is_unaffected(tmp_path: Path) -> None:
+    _write(tmp_path / "pkg" / "thing.py", "")
+    app_path = _write(tmp_path / "src" / "app.py", "from pkg import thing")
+
+    root = tmp_path / "src"
+    # No __init__.py above src/, so namespace inference should be empty
+    assert _infer_scan_root_namespace(root) == ""
+
+
+def test_partial_namespace_prefix_is_not_stripped(tmp_path: Path) -> None:
+    _write(tmp_path / "Company" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "__init__.py", "")
+    main_path = _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "app" / "main.py", "from Company.AppService.foo import bar")
+
+    root = tmp_path / "Company" / "Apps" / "Jobs" / "Team"
+    resolved = _resolve_python_module_path("Company.AppService.foo", main_path, root, 0)
+    assert resolved is None
+
+
+def test_infer_scan_root_namespace_caching(tmp_path: Path) -> None:
+    _SCAN_ROOT_NAMESPACE_CACHE.clear()
+    _write(tmp_path / "Company" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "__init__.py", "")
+    root = tmp_path / "Company" / "Apps"
+    
+    ns1 = _infer_scan_root_namespace(root)
+    assert ns1 == "Company.Apps"
+    
+    # Second call should be from cache. We can verify cache exists.
+    ns2 = _infer_scan_root_namespace(root)
+    assert ns1 == ns2
+    
+    key = list(_SCAN_ROOT_NAMESPACE_CACHE.keys())[0]
+    assert _SCAN_ROOT_NAMESPACE_CACHE[key] == "Company.Apps"

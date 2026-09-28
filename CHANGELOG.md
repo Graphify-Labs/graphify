@@ -2,6 +2,16 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.70 (2026-09-27)
+
+- Security: the Fortran capital-F cpp step no longer allows an untrusted `.F`/`.F90` source to read arbitrary host files. `-nostdinc -I /dev/null` did not stop cpp from resolving absolute (`#include "/etc/passwd"`) or traversing (`#include "../../../secret"`) includes, which inlined host-file contents into `graph.json`/`GRAPH_REPORT.md` and the LLM context on the default offline path. Every `#include` directive is now stripped before preprocessing and the source is fed to cpp on stdin; macro expansion is preserved (GHSA-pcc4-rvhr-2pr8, CWE-22/73/200).
+- Security: the Aider/Devin monolith `--watch` snippet no longer interpolates the agent-substituted `INPUT_PATH` into a shell command — it now reads the trusted `graphify-out/.graphify_root` written in Step 1, closing the last instance of the shell-injection class from #3642 (#3852, #3844, thanks @hopstreax).
+- Security: Terraform secret redaction now also covers a `value` paired with a secret-named `name` in name/value pair lists (`environment = [{ name = "DB_PASSWORD", value = "…" }]`, ECS `valueFrom` included), where the sensitive signal is the sibling `name` literal rather than a key (#3870, #3787, thanks @breken-ai).
+- Fix: `graphify watch` now serializes concurrent rebuilds on Windows via `msvcrt` byte-range locking instead of a no-op lock, closing a WinError 32 race between overlapping rebuilds; the POSIX `fcntl` path is unchanged (#3883, #3881, thanks @harshaygadekar).
+- Fix: C# type references no longer collect a named tuple's element *names* as type references (`(int Count, string Name)` recorded a bogus ref to `Count`/`Name`); only the element types are referenced (#3877, #3796, thanks @KaiyiQuan).
+- Feature: JSX component usage now produces `calls` edges — `<MyButton/>` and `<_Row/>` link to the component, while lowercase DOM tags (`<div>`) and member tags (`<Nav.Item>`) are conservatively skipped, so React component graphs capture render relationships (#3855, #3854, thanks @sinangumuskabak-sys).
+- Fix: absolute Python imports that spell the scan root's own nested namespace (`from Company.Apps.Team.lib import x` when the scan root is `Team/`) now resolve to the local module by projecting the namespace prefix onto the scan-root layout (#3867, #3843, thanks @nikhilsaxena04).
+
 ## 0.9.69 (2026-09-26)
 
 - Feature: five language extractors gained structural depth — **OCaml** classes now emit their methods (via the `method` relation) and instance variables (#3838, thanks @rajatnagda45); **Elixir** `defprotocol`/`defimpl` are extracted as containers holding their functions, with a same-file `implements` link (#3839, thanks @rajatnagda45); **Fortran** derived-type `contains` blocks link type-bound procedures to the type, resolving the `=> impl` target (#3840, thanks @rajatnagda45); **Julia** macro definitions and `@enum` types are extracted, including valued (`red = 1`) and typed (`Color::UInt8`) enum forms, with members using the `case_of` relation (#3841, thanks @rajatnagda45); **Kotlin** annotations (class/function/property, use-site targets) and `val`/`var` primary-constructor properties now produce edges (#3848, #3842, thanks @nikhilsaxena04).

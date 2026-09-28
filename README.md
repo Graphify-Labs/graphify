@@ -16,7 +16,10 @@
 
 <p align="center">
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
+  <a href="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml"><img src="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml/badge.svg?branch=v8" alt="CI"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
+  <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
   <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -849,6 +852,7 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 
 ## Learn more
 
+- [docs.graphify.com](https://docs.graphify.com) — full documentation: guides, command reference, and integrations
 - [How it works](docs/how-it-works.md) — the extraction pipeline, community detection, confidence scoring, benchmarks
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module breakdown, how to add a language
 - [Optional integrations](docs/docker-mcp-sqlite.md) — Docker MCP Toolkit + SQLite
@@ -866,95 +870,11 @@ Built for people and teams whose work lives across hundreds of conversations and
 
 ---
 
-<details>
-<summary>Contributing</summary>
+## Contributing
 
-### Development setup
+Contributions are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the development setup, the test and CI-parity commands, the git workflow, and what makes a strong contribution (worked examples and extraction bug reports are the most useful). Architecture and how to add a language: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-The project uses [uv](https://docs.astral.sh/uv/) for dev workflow. Install it once, then:
-
-```bash
-git clone https://github.com/Graphify-Labs/graphify.git
-cd graphify
-git checkout v8                        # active development branch
-
-# Create the project venv and install graphify + all extras + the dev group
-# (pytest). uv installs the dev dependency group by default; pass --no-dev to
-# skip it.
-uv sync --all-extras
-```
-
-Verify the editable install:
-```bash
-uv run graphify --version
-uv run python -c "import graphify; print(graphify.__file__)"
-```
-
-### Running tests
-
-```bash
-uv run pytest tests/ -q                # run the full suite
-uv run pytest tests/test_extract.py -q # one module
-uv run pytest tests/ -q -k "python"    # filter by name
-```
-
-### CI parity checks
-
-The authoritative CI commands live in [`.github/workflows/`](.github/workflows/).
-For local CI-style verification, use Python 3.10, 3.12, 3.13, or 3.14 and run:
-
-```bash
-uv sync --all-extras --frozen
-uv run --frozen pytest tests/ -q --tb=short
-uv run --frozen python -m tools.skillgen --check
-uv run --frozen python -m tools.skillgen --audit-coverage
-uv run --frozen python -m tools.skillgen --schema-singleton
-uv run --frozen python -m tools.skillgen --monolith-roundtrip
-uv run --frozen python -m tools.skillgen --always-on-roundtrip
-uv run --frozen graphify --help
-uv run --frozen graphify install
-```
-
-Ruff is useful as an additional local check (`uv run --frozen ruff check .`),
-but is not currently a blocking CI job. Pyright is also local/advisory unless it
-is added to CI later. The Bandit and pip-audit CI steps currently use
-`continue-on-error`, so their findings are advisory rather than blocking.
-
-> macOS note: the test suite includes both `sample.f90` and `sample.F90` fixtures. These collide on case-insensitive HFS+ / APFS file systems. Run on Linux or in a Docker container if you need to test both Fortran variants simultaneously.
-
-> Windows note: the native Windows test suite exercises symbolic links, long
-> paths, POSIX permissions, path separators, and UTF-8 filesystem behavior.
-> Enable Windows Developer Mode to allow unprivileged symbolic-link creation, or
-> run the tests from an elevated shell. Enable the Windows `LongPathsEnabled`
-> policy before relying on long-path tests. Restart affected shells or applications
-> after changing either setting. For exact parity with the blocking GitHub Actions
-> test matrix, run the suite in WSL or Linux; CI currently runs on Ubuntu with
-> Python 3.10, 3.12, 3.13, and 3.14. Pyright is available as a local advisory check, but it is
-> not currently a blocking CI job.
-
-### Git workflow
-
-- Active development happens on the `v8` branch.
-- **Fork → branch → PR to upstream.** Contributors work from a personal
-  fork whose `origin` points at their fork of `Graphify-Labs/graphify`; `v8`
-  is the active-development branch on both. Sync local `v8` to `origin/v8`
-  (which tracks upstream) before cutting a feature branch, then open the PR
-  from `<your-fork>:<feature-branch>` against `Graphify-Labs/graphify:v8`.
-- **One branch, one PR per feature** — carry each milestone as a separate
-  commit inside that branch rather than opening a PR per milestone.
-- Commit style: `fix: <description>` / `feat: <description>` / `docs: <description>`
-- Before opening a PR, run `uv run pytest tests/ -q` and confirm it passes.
-- Add a fixture file to `tests/fixtures/` and tests to `tests/test_languages.py` for any new language extractor.
-
-### What to contribute
-
-**Worked examples** are the most useful contribution. Run `/graphify` on a real corpus, save the output to `worked/{slug}/`, write an honest `review.md` covering what the graph got right and wrong, and open a PR.
-
-**Extraction bugs** — open an issue with the input file, the cache entry (`graphify-out/cache/`), and what was missed or wrong.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for module responsibilities and how to add a language.
-
-</details>
+New here? Say hi on [Discord](https://discord.gg/XDnKVpzdXB) or in [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
 
 ---
 
