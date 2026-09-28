@@ -17,7 +17,7 @@ let control: string;
 let started: string;
 let fixture: string;
 
-type Result = { block?: boolean; reason?: string; content?: { type: string; text: string }[] } | undefined;
+type Result = { block?: boolean; reason?: string; additionalContext?: string } | undefined;
 type Handler = (event: Record<string, unknown>, ctx: object) => Result | Promise<Result>;
 function harness() {
   const handlers = new Map<string, Handler>();
@@ -32,16 +32,6 @@ function harness() {
   };
 }
 
-// Claude Code delivers PreToolUse additionalContext as a system reminder that names the
-// hook, never as tool output. Assert that shape: the guidance leads the result as one
-// labelled reminder block, and the tool's own output follows unchanged.
-function guidanceOf(result: Result, output: { type: string; text: string }[]): string {
-  expect(result?.content).toEqual([expect.objectContaining({ type: "text" }), ...output]);
-  const match = result!.content![0].text.match(/^<system-reminder source="graphify">\n([\s\S]*)\n<\/system-reminder>$/);
-  expect(match).not.toBeNull();
-  return match![1];
-}
-const ok = [{ type: "text", text: "ok" }];
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "graphify-omp-"));
@@ -94,7 +84,7 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-test("real CLI strict denial blocks selector reads; every later call nudges via its tool result and resets", async () => {
+test("real CLI strict denial blocks once; later calls return trusted passive context", async () => {
   process.env.GRAPHIFY_HOOK_STRICT = "1";
   const api = harness();
   await api.emit("before_agent_start");
@@ -103,16 +93,12 @@ test("real CLI strict denial blocks selector reads; every later call nudges via 
   expect(result?.block).toBe(true);
   expect(result?.reason).toContain("graphify");
   expect(existsSync(join(cwd, "graphify-out", "cache", "hook_sessions", "omp-test-session.denied"))).toBe(true);
-  // After the one-time deny, every qualifying call still carries its own guidance.
-  expect(await api.emit("tool_call", { ...event, toolCallId: "call-2" })).toBeUndefined();
-  const second = await api.emit("tool_result", { toolCallId: "call-2", content: ok });
-  expect(guidanceOf(second, ok)).toContain("graphify");
-  expect(await api.emit("tool_call", { ...event, toolCallId: "call-3" })).toBeUndefined();
-  const third = await api.emit("tool_result", { toolCallId: "call-3", content: ok });
-  expect(guidanceOf(third, ok)).toContain("graphify");
-  // Navigation resets pending guidance: a result arriving after the reset is untouched.
+  // After the one-time deny, every qualifying call carries its own guidance.
+  const second = await api.emit("tool_call", { ...event, toolCallId: "call-2" });
+  expect(second?.additionalContext).toContain("graphify");
   await api.emit("before_agent_start");
-  expect(await api.emit("tool_result", { toolCallId: "call-3", content: [{ type: "text", text: "ok" }] })).toBeUndefined();
+  const third = await api.emit("tool_call", { ...event, toolCallId: "call-3" });
+  expect(third?.additionalContext).toContain("graphify");
 });
 
 test("native grep, bash search, and glob expose the installed CLI's actual guidance", async () => {
@@ -125,10 +111,8 @@ test("native grep, bash search, and glob expose the installed CLI's actual guida
     const expected = JSON.parse(execFileSync(realCLI!, ["hook-guard", kind], {
       cwd, input: JSON.stringify({ tool_input: legacyInput }), encoding: "utf8",
     })).hookSpecificOutput.additionalContext;
-    const toolCallId = `${toolName}-1`;
-    expect(await api.emit("tool_call", { toolName, input, toolCallId })).toBeUndefined();
-    const result = await api.emit("tool_result", { toolCallId, content: ok });
-    expect(guidanceOf(result, ok)).toBe(expected);
+    const result = await api.emit("tool_call", { toolName, input, toolCallId: `${toolName}-1` });
+    expect(result?.additionalContext).toBe(expected);
   }
 });
 
@@ -138,63 +122,56 @@ test("multi-target glob calls surface every target's guidance", async () => {
   // mode distinguishes the per-target guard invocations the extension must join.
   writeFileSync(control, JSON.stringify({ mode: "varying" }));
   const api = harness();
-  expect(await api.emit("tool_call", { toolName: "glob", input: { path: "source.py;stale.py" }, toolCallId: "call-1" })).toBeUndefined();
-  const result = await api.emit("tool_result", { toolCallId: "call-1", content: ok });
-  const guidance = guidanceOf(result, ok);
-  expect(guidance).toContain("guidance 1");
-  expect(guidance).toContain("guidance 2");
+  const result = await api.emit("tool_call", { toolName: "glob", input: { path: "source.py;stale.py" }, toolCallId: "call-1" });
+  expect(result?.additionalContext).toContain("guidance 1");
+  expect(result?.additionalContext).toContain("guidance 2");
 });
 
 test("URLs, internal resources, literal selector-like names and false trust do not run project hooks", async () => {
   const api = harness();
   for (const path of ["https://example.com/source.py", "www.example.com/source.py", "skill://graphify", "local:/source.py", "source.py; ssh://host/source.py"]) {
-    await api.emit("tool_call", { toolName: "read", input: { path }, toolCallId: "call-1" });
+    expect(await api.emit("tool_call", { toolName: "read", input: { path }, toolCallId: "call-1" })).toBeUndefined();
     expect(existsSync(started)).toBe(false);
-    expect(await api.emit("tool_result", { toolCallId: "call-1", content: [] })).toBeUndefined();
   }
   api.trust(false);
-  await api.emit("tool_call", { toolName: "read", input: { path: "source.py" }, toolCallId: "call-2" });
+  expect(await api.emit("tool_call", { toolName: "read", input: { path: "source.py" }, toolCallId: "call-2" })).toBeUndefined();
   expect(existsSync(started)).toBe(false);
   api.trust(true);
   writeFileSync(join(cwd, "source.py:12"), "a real filename, not a selector");
-  await api.emit("tool_call", { toolName: "read", input: { path: "source.py:12" }, toolCallId: "call-3" });
-  expect(await api.emit("tool_result", { toolCallId: "call-3", content: [] })).toBeUndefined();
+  expect(await api.emit("tool_call", { toolName: "read", input: { path: "source.py:12" }, toolCallId: "call-3" })).toBeUndefined();
 });
 
 test("a file:// read target resolves to the real local path and still reaches the guard", async () => {
-  // file:// is the one scheme isRemote lets through to resolveReadPathAsync
+  // file:// is the one scheme isRemote lets through to resolveReadPath
   // (which OMP's own path pipeline also resolves down to a local path, not
   // an external URL) -- an in-project file:// target must still nudge...
   const api = harness();
-  await api.emit("tool_call", { toolName: "read", input: { path: `file://${join(cwd, "source.py")}` }, toolCallId: "call-1" });
-  const inProject = await api.emit("tool_result", { toolCallId: "call-1", content: [] });
-  expect(guidanceOf(inProject, [])).toContain("graphify");
+  const inProject = await api.emit("tool_call", { toolName: "read", input: { path: `file://${join(cwd, "source.py")}` }, toolCallId: "call-1" });
+  expect(inProject?.additionalContext).toContain("graphify");
   // ...while one outside the project still resolves (the CLI subprocess
   // runs), but the guard's own containment check stays silent, same as any
   // other out-of-project absolute path.
-  await api.emit("tool_call", { toolName: "read", input: { path: `file://${join(root, "outside.py")}` }, toolCallId: "call-2" });
-  expect(await api.emit("tool_result", { toolCallId: "call-2", content: [] })).toBeUndefined();
+  expect(await api.emit("tool_call", { toolName: "read", input: { path: `file://${join(root, "outside.py")}` }, toolCallId: "call-2" })).toBeUndefined();
 });
 
-test("a file:// read target with a non-local authority never reaches the guard", async () => {
-  // VALID #2: RFC 8089 / Node's url.fileURLToPath (ERR_INVALID_FILE_URL_HOST)
-  // -- only an empty or `localhost` authority names a local file. Any other
-  // authority names a remote host and must not alias an in-project file
-  // merely by sharing its path component.
+test("file:// read targets distinguish remote authorities from localhost", async () => {
   const api = harness();
-  await api.emit("tool_call", { toolName: "read", input: { path: `file://evil.com${join(cwd, "source.py")}` }, toolCallId: "call-1" });
+  expect(await api.emit("tool_call", {
+    toolName: "read",
+    input: { path: `file://evil.com${join(cwd, "source.py")}` },
+    toolCallId: "call-1",
+  })).toBeUndefined();
   expect(existsSync(started)).toBe(false);
-  expect(await api.emit("tool_result", { toolCallId: "call-1", content: [] })).toBeUndefined();
+
+  const local = await api.emit("tool_call", {
+    toolName: "read",
+    input: { path: `file://localhost${join(cwd, "source.py")}` },
+    toolCallId: "call-2",
+  });
+  expect(local?.additionalContext).toContain("graphify");
 });
 
-test("a file:// read target with an explicit localhost authority still reaches the guard", async () => {
-  const api = harness();
-  await api.emit("tool_call", { toolName: "read", input: { path: `file://localhost${join(cwd, "source.py")}` }, toolCallId: "call-1" });
-  const result = await api.emit("tool_result", { toolCallId: "call-1", content: [] });
-  expect(guidanceOf(result, [])).toContain("graphify");
-});
-
-test("navigation cancels in-flight guidance before the next session's tool results", async () => {
+test("navigation cancels in-flight guidance before the next session", async () => {
   for (const navigation of ["session_start", "session_switch", "session_tree", "session_branch", "session_shutdown", "before_agent_start"]) {
     rmSync(started, { force: true });
     writeFileSync(control, JSON.stringify({ mode: "delayed" }));
@@ -205,20 +182,18 @@ test("navigation cancels in-flight guidance before the next session's tool resul
     expect(existsSync(started)).toBe(true);
     await api.emit(navigation);
     expect(await pending).toBeUndefined();
-    expect(await api.emit("tool_result", { toolCallId: "call-1", content: [] })).toBeUndefined();
   }
 });
 
 test("oversized input never spawns, invalid/oversized output fails open, and a hung child is killed", async () => {
   const api = harness();
-  await api.emit("tool_call", { toolName: "bash", input: { command: "x".repeat(256 * 1024) }, toolCallId: "call-1" });
+  expect(await api.emit("tool_call", { toolName: "bash", input: { command: "x".repeat(256 * 1024) }, toolCallId: "call-1" })).toBeUndefined();
   expect(existsSync(started)).toBe(false);
   for (const mode of ["invalid", "overflow", "hung"]) {
     writeFileSync(control, JSON.stringify({ mode }));
     const start = performance.now();
     expect(await api.emit("tool_call", { toolName: "read", input: { path: "source.py" }, toolCallId: "call-2" })).toBeUndefined();
     expect(performance.now() - start).toBeLessThan(3500);
-    expect(await api.emit("tool_result", { toolCallId: "call-2", content: [] })).toBeUndefined();
   }
 }, 10000);
 
