@@ -3971,6 +3971,7 @@ def _resolve_python_member_calls(
             file_aliases = import_alias_by_filenode.get(caller_file, {})
             mods = [t for t in imported_by_filenode.get(caller_file, ())
                     if t in contains_children
+                    and t not in file_of_node
                     and (_module_stem_key(t) == rkey or file_aliases.get(t) == rkey)]
             if len(mods) != 1:  # not an imported module, or ambiguous -> bail
                 continue
