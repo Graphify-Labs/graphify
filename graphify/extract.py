@@ -2817,11 +2817,281 @@ def _normalize_cpp_cli(source: bytes) -> bytes | None:
     return _CPP_CLI_ATTR_RE.sub(_blank_keeping_newlines, out)
 
 
+# ── CUDA normalization (#3911) ───────────────────────────────────────────────
+# tree-sitter-cpp does not understand CUDA kernel/storage qualifiers (__global__,
+# __device__, __host__, __forceinline__, __constant__, __shared__) or execution
+# configuration launch syntax (<<<...>>>). Qualifiers produce syntax errors and
+# leak phantom type nodes; launch syntax degrades into binary expressions and
+# drops call edges.
+#
+# Like C++/CLI normalization (#2876), this rewrite is strictly byte-length
+# and newline preserving — matched tokens and launch configurations are blanked
+# with spaces, never deleted, keeping offsets and line numbers exact.
+_CUDA_MARKER_RE = re.compile(
+    rb"\b(?:__global__|__device__|__host__|__forceinline__|__constant__|__shared__)\b"
+    rb"|<<<"
+)
+
+_CUDA_QUALIFIER_RE = re.compile(
+    rb"\b(?:__global__|__device__|__host__|__forceinline__|__constant__|__shared__)\b"
+)
+
+_CUDA_LAUNCH_RE = re.compile(rb"<<<[\s\S]*?>>>")
+
+
+def _split_macro_args(arg_str: str) -> list[str]:
+    """Split comma-separated macro arguments respecting nested parentheses, brackets, and braces."""
+    args: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in arg_str:
+        if char in "({[":
+            depth += 1
+            current.append(char)
+        elif char in ")}]":
+            depth -= 1
+            current.append(char)
+        elif char == "," and depth == 0:
+            args.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    if current:
+        args.append("".join(current).strip())
+    return args
+
+
+def _extract_kernel_name_template(body: bytes) -> str | None:
+    """Extract the kernel declarator name template from a macro body containing __global__."""
+    if not re.search(rb"\b__global__\b", body):
+        return None
+    cleaned = re.sub(rb"__launch_bounds__\([^)]*\)", b" ", body)
+    m = re.search(rb"\b__global__\b(?:\s*[\w*&]+)*\s+([A-Za-z_][A-Za-z0-9_#]*)\s*\(", cleaned)
+    if m:
+        return m.group(1).decode("ascii", errors="replace")
+    return None
+
+
+def _resolve_cuda_macro_name(template: str, param_map: dict[str, str]) -> str:
+    """Substitute macro arguments into token-pasting templates like NAME##_kernel or NAME##_##TYPE."""
+    tokens = template.split("##")
+    resolved: list[str] = []
+    for t in tokens:
+        t = t.strip()
+        if t in param_map:
+            resolved.append(param_map[t])
+        else:
+            resolved.append(t)
+    return "".join(resolved)
+
+
+# ── CUDA macro recovery & syntax error prevention (#3911) ─────────────────────
+# Tree-sitter does not perform preprocessor macro expansion, so function-like
+# macros that generate CUDA kernel definitions (e.g. DEFINE_KERNEL(name),
+# BINARY_KERNEL(NAME, OP) generating NAME##_kernel, or AFFINE_KERNEL(NAME, TYPE)
+# generating NAME##_##TYPE) leave the kernel bodies trapped inside opaque
+# preproc_arg tokens. Furthermore, invocations of these macros with type arguments
+# (e.g. AFFINE_KERNEL(affine_forward, float)) at file scope cause Tree-sitter
+# to produce multi-line ERROR nodes because primitive types are invalid expression
+# arguments in C++ call statements.
+#
+# To solve this:
+# 1. _find_cuda_kernel_macro_invocations locates kernel-producing macro definitions
+#    and their invocations.
+# 2. _normalize_cuda blanks recognized kernel macro invocations with spaces in the
+#    normalized source passed to Tree-sitter, preventing false-positive syntax
+#    errors while preserving byte length and newline positions.
+# 3. _augment_cuda_macros scans the original source, synthesizing the corresponding
+#    top-level function nodes and `contains` edges at the invocation source line.
+
+_CUDA_MACRO_DEF_RE = re.compile(
+    rb"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\s*\(([^)]*)\)[ \t]*((?:.*?\\[ \t]*(?:\r\n|\r|\n))*[^\r\n]*)",
+    re.MULTILINE,
+)
+
+
+_C_NON_CODE_RE = re.compile(
+    rb'"(?:\\.|[^"\\])*"'
+    rb"|'(?:\\.|[^'\\])*'"
+    rb"|/\*[\s\S]*?\*/"
+    rb"|//[^\r\n]*"
+)
+
+
+def _get_non_code_spans(source: bytes) -> tuple[list[int], list[int]]:
+    """Return sorted start and end byte offsets of string literals and comments."""
+    starts: list[int] = []
+    ends: list[int] = []
+    for m in _C_NON_CODE_RE.finditer(source):
+        starts.append(m.start())
+        ends.append(m.end())
+    return starts, ends
+
+
+def _is_in_spans(starts: list[int], ends: list[int], offset: int) -> bool:
+    """Return True if `offset` falls strictly inside any [start, end) span."""
+    idx = bisect_right(starts, offset) - 1
+    return idx >= 0 and offset < ends[idx]
+
+
+def _find_cuda_kernel_macro_invocations(source: bytes) -> list[tuple[int, int, int, str]]:
+    """Locate invocations of CUDA kernel-generating macros in `source`.
+
+    Returns a list of (start_byte, end_byte, line_number, func_name) tuples
+    sorted by document start offset.
+    """
+    if b"__global__" not in source:
+        return []
+
+    non_code_starts, non_code_ends = _get_non_code_spans(source)
+
+    define_spans: list[tuple[int, int]] = []
+    kernel_macros: dict[str, tuple[list[str], str]] = {}
+
+    for m in _CUDA_MACRO_DEF_RE.finditer(source):
+        if _is_in_spans(non_code_starts, non_code_ends, m.start()):
+            continue
+        m_name = m.group(1).decode("ascii", errors="replace")
+        raw_params = m.group(2)
+        raw_body = m.group(3)
+        define_spans.append((m.start(), m.end()))
+        clean_body = re.sub(rb"\\[\r\n]+", b" ", raw_body)
+        clean_body = re.sub(rb"/\*[\s\S]*?\*/|//[^\r\n]*", b" ", clean_body)
+        tmpl = _extract_kernel_name_template(clean_body)
+        if tmpl:
+            params = [p.decode("ascii", errors="replace").strip() for p in raw_params.split(b",") if p.strip()]
+            kernel_macros[m_name] = (params, tmpl)
+
+    if not kernel_macros:
+        return []
+
+    invocations: list[tuple[int, int, int, str]] = []
+    for macro_name, (params, tmpl) in kernel_macros.items():
+        macro_bytes = macro_name.encode("ascii")
+        inv_pattern = re.compile(rb"\b" + re.escape(macro_bytes) + rb"\s*\(")
+        for inv_m in inv_pattern.finditer(source):
+            if any(start <= inv_m.start() < end for start, end in define_spans):
+                continue
+            if _is_in_spans(non_code_starts, non_code_ends, inv_m.start()):
+                continue
+
+            start_idx = inv_m.end() - 1
+            depth = 0
+            end_idx = None
+            for i in range(start_idx, len(source)):
+                b = source[i:i+1]
+                if b in b"({[":
+                    depth += 1
+                elif b in b")}]":
+                    depth -= 1
+                    if depth == 0:
+                        end_idx = i
+                        break
+            if end_idx is None:
+                continue
+
+            inner = source[start_idx + 1:end_idx].decode("utf-8", errors="replace")
+            args = _split_macro_args(inner)
+            line = source.count(b"\n", 0, inv_m.start()) + 1
+            param_map = {p: args[i] for i, p in enumerate(params) if i < len(args)}
+            func_name = _resolve_cuda_macro_name(tmpl, param_map)
+            if not re.match(r"^[A-Za-z_]\w*$", func_name):
+                continue
+
+            invocations.append((inv_m.start(), end_idx + 1, line, func_name))
+
+    invocations.sort(key=lambda x: x[0])
+    return invocations
+
+
+def _normalize_cuda(source: bytes) -> bytes | None:
+    """Rewrite CUDA constructs into standard C++ syntax, or None if not CUDA.
+
+    Replaces CUDA qualifiers (__global__, __device__, etc.) and kernel launch
+    syntax (<<<...>>>) with equal-length spaces, preserving all newlines so line
+    numbers and byte offsets remain identical to disk (#3911).
+
+    Also blanks recognized CUDA kernel macro invocations (e.g.
+    AFFINE_KERNEL(affine_forward, float)) with equal-length spaces so Tree-sitter
+    does not emit syntax-error warnings for type arguments at file scope (#3911).
+    """
+    if not _CUDA_MARKER_RE.search(source):
+        return None
+    out = _CUDA_QUALIFIER_RE.sub(_blank_keeping_newlines, source)
+    out = _CUDA_LAUNCH_RE.sub(_blank_keeping_newlines, out)
+    invocations = _find_cuda_kernel_macro_invocations(source)
+    if invocations:
+        ba = bytearray(out)
+        for start, end, _line, _name in invocations:
+            for i in range(start, end):
+                if ba[i] not in (10, 13):
+                    ba[i] = 32
+        out = bytes(ba)
+    return out
+
+
+def _augment_cuda_macros(path: Path, result: dict, *, source: bytes | None = None) -> dict:
+    """Synthesize function nodes for CUDA kernels generated by macro invocations (#3911)."""
+    if source is None:
+        try:
+            source = path.read_bytes()
+        except OSError:
+            return result
+    if b"__global__" not in source:
+        return result
+
+    invocations = _find_cuda_kernel_macro_invocations(source)
+    if not invocations:
+        return result
+
+    str_path = str(path)
+    stem = _file_stem(path)
+    file_nid = _make_id(str_path)
+    stem_collapse_id = _make_id(stem)
+    nodes = result.setdefault("nodes", [])
+    edges = result.setdefault("edges", [])
+    seen_ids = {n.get("id") for n in nodes}
+    seen_labels = {n.get("label") for n in nodes}
+
+    for _start, _end, line, func_name in invocations:
+        func_nid = _make_id(stem, func_name)
+        if func_nid == stem_collapse_id:
+            func_nid = _make_id(stem, "kernel", f"L{line}")
+        label = f"{func_name}()"
+        if func_nid in seen_ids or label in seen_labels:
+            continue
+        seen_ids.add(func_nid)
+        seen_labels.add(label)
+
+        nodes.append({
+            "id": func_nid,
+            "label": label,
+            "file_type": "code",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+        })
+        edges.append({
+            "source": file_nid,
+            "target": func_nid,
+            "relation": "contains",
+            "confidence": "EXTRACTED",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+            "weight": 1.0,
+        })
+
+    return result
+
+
 def extract_cpp(path: Path) -> dict:
     """Extract functions, classes, and includes from a .cpp/.cc/.cxx/.hpp file.
 
     C++/CLI sources are normalized to standard C++ first (#2876); see
     :func:`_normalize_cpp_cli`.
+    CUDA sources are normalized to standard C++ (#3911); see
+    :func:`_normalize_cuda`.
+    CUDA macro-defined kernels are recovered (#3911); see
+    :func:`_augment_cuda_macros`.
 
     Recovers doctest/Catch2 ``TEST_CASE("name")`` test cases that tree-sitter-cpp
     drops as ERROR nodes (issue #2594), mirroring the Spock fallback for Groovy.
@@ -2830,11 +3100,18 @@ def extract_cpp(path: Path) -> dict:
         source = path.read_bytes()
     except OSError:
         # Let _extract_generic report the read failure in its usual shape.
-        return _augment_cpp_string_tests(path, _extract_generic(path, _CPP_CONFIG))
+        return _augment_cuda_macros(
+            path,
+            _augment_cpp_string_tests(path, _extract_generic(path, _CPP_CONFIG)),
+            source=b"",
+        )
+    normalized = _normalize_cpp_cli(source) or source
+    normalized = _normalize_cuda(normalized) or normalized
     result = _extract_generic(
-        path, _CPP_CONFIG, source_override=_normalize_cpp_cli(source) or source
+        path, _CPP_CONFIG, source_override=normalized
     )
-    return _augment_cpp_string_tests(path, result)
+    result = _augment_cpp_string_tests(path, result)
+    return _augment_cuda_macros(path, result, source=source)
 
 
 def extract_ruby(path: Path) -> dict:
