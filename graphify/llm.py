@@ -28,6 +28,9 @@ from graphify.file_slice import (
 # `_read_files` truncates each file at this many characters before joining into
 # the user message. Token estimates use the same cap so packing matches reality.
 _FILE_CHAR_CAP = 20_000
+# Warn at most once per run when a file exceeds _FILE_CHAR_CAP, so corpora with
+# multiple oversized files do not spam stderr (#3773).
+_file_truncation_warned = False
 # `_read_files` wraps each file in an `<untrusted_source path=... sha256=...>`
 # delimiter block (see issue #1210); this is roughly the per-file overhead in
 # characters that wrapper adds (open tag + 64-char sha + close tag + newlines).
@@ -630,6 +633,14 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
             continue
         # Whole files are still capped (covers non-splittable large files like
         # code); slices are already bounded to the cap, so the cap is a no-op.
+        if len(content) > _FILE_CHAR_CAP:
+            global _file_truncation_warned
+            if not _file_truncation_warned:
+                _file_truncation_warned = True
+                print(
+                    f"[graphify] WARNING: file {rel} exceeds {_FILE_CHAR_CAP} characters and was truncated",
+                    file=sys.stderr,
+                )
         parts.append(_wrap_untrusted(rel, content[:_FILE_CHAR_CAP]))
     return "\n\n".join(parts)
 
