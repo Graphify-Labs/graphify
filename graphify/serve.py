@@ -253,6 +253,66 @@ def _search_tokens(text: str) -> list[str]:
     return re.findall(r"[^\W_]+", _strip_diacritics(str(text)).lower())
 
 
+_IDENTIFIER_COMPONENT_RE = re.compile(
+    r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|[A-Z]+|\d+"
+)
+_SHORT_IDENTIFIER_TERM_MAX = 3
+
+
+def _identifier_components(text: str) -> tuple[str, ...]:
+    """Return language-neutral snake/camel identifier components.
+
+    Original casing distinguishes a real ``MMI`` component from the accidental
+    lower-cased prefix of ``mMin...``. Unicode chunks retain existing token
+    semantics because ASCII camel-case rules do not define safe boundaries for
+    other scripts.
+    """
+    components: list[str] = []
+    for chunk in re.findall(r"[^\W_]+", _strip_diacritics(str(text))):
+        if not chunk.isascii():
+            components.append(chunk.lower())
+            continue
+        parts = _IDENTIFIER_COMPONENT_RE.findall(chunk)
+        components.extend(part.lower() for part in (parts or [chunk]))
+    return tuple(components)
+
+
+def _label_match_tier(
+    term: str,
+    *,
+    norm_label: str,
+    bare_label: str,
+    label_tokens: str,
+    components: tuple[str, ...],
+) -> str | None:
+    """Classify a term without inventing short acronym matches.
+
+    Exact whole-label behavior is unchanged. Prefix strength also applies at
+    identifier-component boundaries so connected compound symbols can compete
+    with file shells. Short ASCII terms require such a boundary because their
+    arbitrary interior substrings are disproportionately collision-prone.
+    """
+    if term in (norm_label, bare_label, label_tokens):
+        return "exact"
+
+    short_ascii = (
+        len(term) <= _SHORT_IDENTIFIER_TERM_MAX
+        and term.isascii()
+        and term.isalnum()
+    )
+    if any(component.startswith(term) for component in components):
+        return "prefix"
+    if not short_ascii and (
+        norm_label.startswith(term)
+        or bare_label.startswith(term)
+        or label_tokens.startswith(term)
+    ):
+        return "prefix"
+    if not short_ascii and term in norm_label:
+        return "substring"
+    return None
+
+
 def _has_chinese(text: str) -> bool:
     return any("一" <= ch <= "鿿" for ch in text)
 
@@ -410,11 +470,21 @@ def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
     if uncached:
         df: dict[str, int] = {t: 0 for t in uncached}
         for _, data in G.nodes(data=True):
+            raw_label = data.get("label") or ""
             norm_label = (
-                data.get("norm_label") or _strip_diacritics(data.get("label") or "")
+                data.get("norm_label") or _strip_diacritics(raw_label)
             ).lower()
+            bare_label = norm_label.rstrip("()")
+            label_tokens = " ".join(_search_tokens(raw_label))
+            components = _identifier_components(raw_label)
             for t in uncached:
-                if t in norm_label:
+                if _label_match_tier(
+                    t,
+                    norm_label=norm_label,
+                    bare_label=bare_label,
+                    label_tokens=label_tokens,
+                    components=components,
+                ):
                     df[t] += 1
         for t in uncached:
             cache[t] = math.log(1 + N / (1 + df[t]))
@@ -653,14 +723,16 @@ def _score_query(
         {} if collect_per_term_seeds else None
     )
     for nid, data in node_iter:
-        norm_label = data.get("norm_label") or _strip_diacritics(data.get("label") or "").lower()
+        raw_label = data.get("label") or ""
+        norm_label = data.get("norm_label") or _strip_diacritics(raw_label).lower()
         bare_label = norm_label.rstrip("()")
         # Tokenized form of the label (punctuation stripped, same transform as the
         # query). norm_label may still carry punctuation like ':' or '-', which a
         # tokenized query can never equal; comparing token-joined forms on both
         # sides makes "uoce: dehumidifier driver" match query "uoce dehumidifier
         # driver".
-        label_tokens = " ".join(_search_tokens(data.get("label") or ""))
+        label_tokens = " ".join(_search_tokens(raw_label))
+        label_components = _identifier_components(raw_label)
         source = (data.get("source_file") or "").lower()
         rationale = _node_rationale_text(data)
         attr_norm, attr_tokens = _node_attributes_text(data)
@@ -676,13 +748,25 @@ def _score_query(
         # this, no single token equals a multi-word label, the per-token exact
         # tier never fires, and every node sharing the token set ties -> arbitrary
         # node-id sort -> wrong/disconnected endpoint -> false "No path found".
+        joined_tier = None
+        if len(norm_terms) == 1:
+            joined_tier = _label_match_tier(
+                joined,
+                norm_label=norm_label,
+                bare_label=bare_label,
+                label_tokens=label_tokens,
+                components=label_components,
+            )
         if joined:
             if joined in (norm_label, bare_label, label_tokens, nid_lower):
                 score += _EXACT_MATCH_BONUS * 10 * joined_w
-            elif (
-                norm_label.startswith(joined)
-                or bare_label.startswith(joined)
-                or label_tokens.startswith(joined)
+            elif joined_tier == "prefix" or (
+                len(norm_terms) > 1
+                and (
+                    norm_label.startswith(joined)
+                    or bare_label.startswith(joined)
+                    or label_tokens.startswith(joined)
+                )
             ):
                 score += _PREFIX_MATCH_BONUS * 10 * joined_w
         # Term coverage (#1602): scale the per-term exact/prefix tiers by the
@@ -710,13 +794,20 @@ def _score_query(
             tier_value = 0.0
             substr_value = 0.0
             source_value = 0.0
-            if t == norm_label or t == bare_label:
+            label_tier = _label_match_tier(
+                t,
+                norm_label=norm_label,
+                bare_label=bare_label,
+                label_tokens=label_tokens,
+                components=label_components,
+            )
+            if label_tier == "exact":
                 tier_value = _EXACT_MATCH_BONUS * w
                 matched += 1
-            elif norm_label.startswith(t) or bare_label.startswith(t):
+            elif label_tier == "prefix":
                 tier_value = _PREFIX_MATCH_BONUS * w
                 matched += 1
-            elif t in norm_label:
+            elif label_tier == "substring":
                 substr_value = _SUBSTRING_MATCH_BONUS * w
                 score += substr_value
                 matched += 1
@@ -742,13 +833,9 @@ def _score_query(
                 # token tier: it also checks `label_tokens` and `nid_lower`,
                 # matching the legacy single-token `_score_nodes([t])` call
                 # (where `joined == t`).
-                if t in (norm_label, bare_label, label_tokens, nid_lower):
+                if label_tier == "exact" or t == nid_lower:
                     singleton = _EXACT_MATCH_BONUS * 10 * w
-                elif (
-                    norm_label.startswith(t)
-                    or bare_label.startswith(t)
-                    or label_tokens.startswith(t)
-                ):
+                elif label_tier == "prefix":
                     singleton = _PREFIX_MATCH_BONUS * 10 * w
                 else:
                     singleton = 0.0
@@ -824,12 +911,12 @@ def _pick_seeds(
     seeds, so the BFS traversal only ever explores the neighborhood of the one
     unrelated exact match — see #1445.
 
-    When `G` and `best_seed_by_term` are supplied, this guarantees at least one
-    seed per distinct query term that has any match at all, so one term's
-    incidental collision cannot starve out the others. The per-token winners
-    in `best_seed_by_term` are precomputed by `_score_query` (during the same
-    traversal that produced `scored`) so this function no longer rescores the
-    graph per term — see #1445 and the `_score_query` docstring.
+    When `G` and `best_seed_by_term` are supplied, the strongest distinct-term
+    representatives reserve up to `max_k` seats before score-window candidates
+    fill any remainder. This prevents one term's variants from starving another
+    without weakening the global cap. The per-token winners are precomputed by
+    `_score_query` during the same traversal, so this function never rescores
+    the graph per term — see #1445 and the `_score_query` docstring.
 
     Coverage scaling in _score_nodes (#1602) now dampens a lone collision's
     exact tier on multi-term queries, which brings label-matching relevant
@@ -857,6 +944,25 @@ def _pick_seeds(
     top_score = scored[0][0]
     seeds: list[str] = []
     seen_labels: set[str] = set()
+
+    # Reserve bounded seats for distinct query terms before the score window
+    # can fill the budget. Otherwise several unique labels for one term may
+    # exclude another term's strongest connected root. Combined rank keeps the
+    # reservation deterministic and favors whole-query relevance.
+    if G is not None and best_seed_by_term:
+        rank = {nid: index for index, (_score, nid) in enumerate(scored)}
+        diversity_candidates = sorted(
+            set(best_seed_by_term.values()),
+            key=lambda nid: (rank.get(nid, len(scored)), nid),
+        )
+        for best_nid in diversity_candidates:
+            if len(seeds) >= max_k:
+                break
+            key = _seed_label_key(best_nid)
+            if key not in seen_labels:
+                seen_labels.add(key)
+                seeds.append(best_nid)
+
     for score, nid in scored:
         if len(seeds) >= max_k:
             break
@@ -868,27 +974,6 @@ def _pick_seeds(
         seen_labels.add(key)
         seeds.append(nid)
 
-    if G is not None and best_seed_by_term:
-        # Diversity fills only the remaining global seed budget. The previous
-        # per-term loop appended every winner after the capped ranking pass, so
-        # a long natural-language query could turn max_k=3 into dozens of BFS
-        # roots. Rank candidates by the combined scorer rather than term name:
-        # the most query-relevant winners keep their seats when not every term
-        # can be represented.
-        rank = {nid: index for index, (_score, nid) in enumerate(scored)}
-        diversity_candidates = sorted(
-            set(best_seed_by_term.values()),
-            key=lambda nid: (rank.get(nid, len(scored)), nid),
-        )
-        for best_nid in diversity_candidates:
-            if len(seeds) >= max_k:
-                break
-            # Honor the same per-label cap so the per-term guarantee can't
-            # reintroduce a second copy of an already-seeded generic label.
-            key = _seed_label_key(best_nid)
-            if best_nid not in seeds and key not in seen_labels:
-                seen_labels.add(key)
-                seeds.append(best_nid)
     return seeds
 
 

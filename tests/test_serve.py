@@ -214,6 +214,46 @@ def test_score_nodes_coverage_full_coverage_query_is_unchanged():
     assert scored[0][0] == pytest.approx(expected)
 
 
+def test_score_nodes_short_acronym_does_not_cross_camel_boundaries():
+    """A short acronym must not be invented across camel-case components.
+
+    ``mmi`` is a real component in ``MMI Operations``. In ``mMinDiskSpace``
+    and ``mMinorThreshold`` it is only the lower-cased characters spanning the
+    one-letter ``m`` prefix and the next component, so those labels must not
+    become retrieval candidates.
+    """
+    G = nx.Graph()
+    G.add_node("real", label="MMI Operations", source_file="docs/operations.md")
+    G.add_node("disk", label="mMinDiskSpace", source_file="core/logging.h")
+    G.add_node("threshold", label="mMinorThreshold", source_file="core/link.h")
+
+    scored = _score_nodes(G, ["mmi"])
+
+    assert [nid for _, nid in scored] == ["real"]
+
+
+def test_score_query_internal_identifier_component_prefers_connected_symbol():
+    """An internal component prefix should compete with a file-name prefix.
+
+    The class is the useful traversal root and has greater degree, but the
+    legacy scorer only awarded prefix strength at the start of the whole label,
+    leaving the file shell as the per-term winner.
+    """
+    G = nx.DiGraph()
+    source = "modules/ui/controllers/OptionsController.php"
+    G.add_node("file", label="OptionsController.php", source_file=source)
+    G.add_node("controller", label="Admin_OptionsController", source_file=source)
+    G.add_node("service", label="OptionsService", source_file="services/options.php")
+    G.add_node("action", label="getAction()", source_file=source)
+    G.add_edge("file", "controller", relation="contains")
+    G.add_edge("controller", "service", relation="calls")
+    G.add_edge("controller", "action", relation="method")
+
+    scores = _score_query(G, ["options"], collect_per_term_seeds=True)
+
+    assert scores.best_seed_by_term["options"] == "controller"
+
+
 def test_find_node_ignores_trailing_punctuation():
     G = _make_graph()
     assert _find_node(G, "extract?") == ["n1"]
@@ -1576,12 +1616,12 @@ def test_pick_seeds_respects_max_k():
 
 
 def test_pick_seeds_diversity_never_bypasses_max_k():
-    """Per-term diversity may fill free seats but must not exceed the query budget.
+    """Per-term reservations must not exceed the global query budget.
 
     A natural-language question can have many independently matching terms. The
-    diversity pass used to append every term winner after the capped ranking
-    pass, turning ``max_k=3`` into an unbounded seed list and flooding traversal.
-    The strongest combined-ranking candidates must win the remaining seats.
+    old diversity pass appended every term winner after the capped ranking pass,
+    turning ``max_k=3`` into an unbounded seed list and flooding traversal. The
+    strongest combined-ranking representatives must win the reserved seats.
     """
     G = nx.DiGraph()
     for nid in ("a", "b", "c", "d", "e"):
@@ -1592,6 +1632,31 @@ def test_pick_seeds_diversity_never_bypasses_max_k():
     seeds = _pick_seeds(scored, max_k=3, G=G, best_seed_by_term=per_term)
 
     assert seeds == ["a", "b", "c"]
+
+
+def test_pick_seeds_reserves_distinct_term_winners_before_general_fill():
+    """One term's high-scoring variants must not exhaust the global budget."""
+    G = nx.DiGraph()
+    for nid, label in (
+        ("cache_loader", "CacheLoader"),
+        ("cache_store", "CacheStore"),
+        ("cache_index", "CacheIndex"),
+    ):
+        G.add_node(nid, label=label, source_file=f"cache/{nid}.py")
+    G.add_node("billing", label="AsyncBillingWorker", source_file="billing/worker.py")
+    G.add_node("invoice", label="InvoiceWriter", source_file="billing/invoice.py")
+    G.add_edge("billing", "invoice", relation="calls")
+
+    scores = _score_query(G, ["cache", "billing"], collect_per_term_seeds=True)
+    seeds = _pick_seeds(
+        scores.ranked,
+        max_k=3,
+        G=G,
+        best_seed_by_term=scores.best_seed_by_term,
+    )
+
+    assert "billing" in seeds
+    assert len(seeds) == 3
 
 
 def test_pick_seeds_without_diversity_args_is_unchanged():
