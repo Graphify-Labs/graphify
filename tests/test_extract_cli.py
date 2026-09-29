@@ -281,6 +281,92 @@ def test_extract_passes_cached_node_ids_to_fresh_provenance_resolution(
     assert captured["known_node_ids"] == {"cached_entity"}
 
 
+def test_incremental_extract_resolves_foreign_stub_against_unchanged_graph_node(
+    monkeypatch, tmp_path,
+):
+    import graphify.llm as llmmod
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    changed = corpus / "A.md"
+    unchanged = corpus / "B.md"
+    changed.write_text("# A\nInitial content.\n")
+    unchanged.write_text("# B\nAuthoritative target.\n")
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    real_parallel = llmmod.extract_corpus_parallel
+
+    def _initial(paths, **kwargs):
+        result = {
+            "nodes": [
+                {"id": "a", "label": "A", "source_file": "A.md", "file_type": "document"},
+                {"id": "b", "label": "B", "source_file": "B.md", "file_type": "document"},
+            ],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 2, "output_tokens": 2,
+        }
+        kwargs["on_chunk_done"](0, 1, result)
+        return result
+
+    monkeypatch.setattr(llmmod, "extract_corpus_parallel", _initial)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    def _run_extract():
+        monkeypatch.setattr(
+            mainmod.sys, "argv",
+            ["graphify", "extract", str(corpus), "--backend", "claude",
+             "--no-cluster", "--out", str(out_dir)],
+        )
+        try:
+            mainmod.main()
+        except SystemExit as exc:
+            assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    _run_extract()
+    changed.write_text("# A\nChanged content that references B.\n")
+
+    calls = []
+
+    def _persistent_mismatch(_chunk, **_kwargs):
+        calls.append(1)
+        return {
+            "nodes": [
+                {"id": "a", "label": "A changed", "source_file": "A.md", "file_type": "document"},
+                {"id": "b", "label": "stale stub", "source_file": "B.md", "file_type": "document"},
+            ],
+            "edges": [
+                {"source": "a", "target": "b", "source_file": "A.md"},
+            ],
+            "hyperedges": [
+                {"id": "a_b", "nodes": ["a", "b"], "source_file": "A.md"},
+            ],
+            "input_tokens": 1, "output_tokens": 1, "finish_reason": "stop",
+        }
+
+    captured = {}
+
+    def _incremental(paths, **kwargs):
+        captured["known_node_ids"] = set(kwargs["known_node_ids"])
+        result = real_parallel(paths, **kwargs)
+        captured["result"] = result
+        return result
+
+    monkeypatch.setattr(llmmod, "extract_corpus_parallel", _incremental)
+    monkeypatch.setattr(llmmod, "extract_files_direct", _persistent_mismatch)
+    _run_extract()
+
+    assert calls == [1, 1]
+    assert "b" in captured["known_node_ids"]
+    assert [node["id"] for node in captured["result"]["nodes"]] == ["a"]
+    assert [(edge["source"], edge["target"]) for edge in captured["result"]["edges"]] == [
+        ("a", "b"),
+    ]
+    assert [(edge["id"], edge["nodes"]) for edge in captured["result"]["hyperedges"]] == [
+        ("a_b", ["a", "b"]),
+    ]
+    assert str(changed) in captured["result"]["_partial_files"]
+
+
 def test_incremental_partial_run_preserves_untouched_semantic_hash(
     monkeypatch, tmp_path
 ):
