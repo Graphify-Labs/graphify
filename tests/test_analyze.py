@@ -734,3 +734,71 @@ def test_find_import_cycles_no_cycles():
     G.add_node(y_id, **y)
     G.add_edge(x_id, y_id, relation="imports_from", source_file="x.ts", confidence="EXTRACTED")
     assert find_import_cycles(G) == []
+
+
+def test_surprise_score_flat_directory_is_not_cross_directory():
+    """Two files in the same (flat) scan root share a directory.
+
+    _top_level_dir() used to return the whole filename when the path had no
+    "/", so every pair of root-level files looked like it crossed repos and
+    got +2 with the reason "connects across different repos/directories".
+    """
+    G = nx.Graph()
+    G.add_node("a", label="handle", source_file="service.py", file_type="code")
+    G.add_node("b", label="Store", source_file="store.py", file_type="code")
+    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED", weight=1.0, source_file="service.py")
+    nc = {"a": 0, "b": 0}
+    score_flat, reasons_flat = _surprise_score(G, "a", "b", G.edges["a", "b"], nc, "service.py", "store.py")
+    score_nested, reasons_nested = _surprise_score(G, "a", "b", G.edges["a", "b"], nc, "pkg/service.py", "pkg/store.py")
+    assert "connects across different repos/directories" not in reasons_flat
+    assert score_flat == score_nested
+
+
+def test_surprise_score_root_file_vs_subdirectory_still_crosses():
+    """A root-level file and a file under a subdirectory are in different top-level dirs."""
+    G = nx.Graph()
+    G.add_node("a", label="main", source_file="main.py", file_type="code")
+    G.add_node("b", label="Store", source_file="pkg/store.py", file_type="code")
+    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED", weight=1.0, source_file="main.py")
+    nc = {"a": 0, "b": 0}
+    _, reasons = _surprise_score(G, "a", "b", G.edges["a", "b"], nc, "main.py", "pkg/store.py")
+    assert "connects across different repos/directories" in reasons
+
+
+def test_surprise_score_root_file_vs_out_of_root_absolute_path_still_crosses():
+    """_norm_source_file leaves a path outside the scan root absolute; its
+    first component is "". A root-level file must not collapse onto it."""
+    G = nx.Graph()
+    G.add_node("a", label="main", source_file="main.py", file_type="code")
+    G.add_node("b", label="Ext", source_file="/opt/vendor/ext.py", file_type="code")
+    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED", weight=1.0, source_file="main.py")
+    nc = {"a": 0, "b": 0}
+    _, reasons = _surprise_score(G, "a", "b", G.edges["a", "b"], nc, "main.py", "/opt/vendor/ext.py")
+    assert "connects across different repos/directories" in reasons
+
+
+def _cross_reasons(src_u, src_v, repo_u=None, repo_v=None):
+    G = nx.Graph()
+    G.add_node("a", label="A", source_file=src_u, file_type="code", **({"repo": repo_u} if repo_u else {}))
+    G.add_node("b", label="B", source_file=src_v, file_type="code", **({"repo": repo_v} if repo_v else {}))
+    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED", weight=1.0, source_file=src_u)
+    _, reasons = _surprise_score(G, "a", "b", G.edges["a", "b"], {"a": 0, "b": 0}, src_u, src_v)
+    return "connects across different repos/directories" in reasons
+
+
+def test_surprise_score_merged_graph_counts_different_repos_as_crossing():
+    """merge-graphs / global add keep source_file repo-relative and tag each
+    node with `repo`, so two repos can share top-level directory names."""
+    assert _cross_reasons("server.py", "client.py", "svcA", "svcB")
+    assert _cross_reasons("src/x.py", "src/y.py", "svcA", "svcB")
+    assert not _cross_reasons("src/x.py", "src/y.py", "svcA", "svcA")
+
+
+def test_surprise_score_normalizes_backslash_paths():
+    assert _cross_reasons("pkg\\a.py", "lib\\b.py")
+    assert not _cross_reasons("pkg\\a.py", "pkg\\b.py")
+
+
+def test_surprise_score_ignores_leading_dot_slash():
+    assert _cross_reasons("./pkg/a.py", "b.py")
+    assert not _cross_reasons("./a.py", "b.py")
