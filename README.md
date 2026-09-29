@@ -579,6 +579,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_QUERY_LOG` | Enable the query log and write it to this path instead of the default | optional — off unless this or `_ENABLE` is set |
 | `GRAPHIFY_QUERY_LOG_DISABLE` | Set to `1` to force the query log off (wins over the enable vars) | optional |
 | `GRAPHIFY_QUERY_LOG_RESPONSES` | When the log is enabled, also record full subgraph responses (off by default) | optional |
+| `GRAPHIFY_VIZ_NODE_LIMIT` | Node count above which `cluster-only`, `update` and `watch` write an aggregated one-node-per-community `graph.html` (default: 5000; `0` disables graph.html) | optional — not read by `graphify export html`, which takes `--node-limit N` (default: 5000) |
 | `GRAPHIFY_MAX_GRAPH_BYTES` | Override the 512 MiB graph.json size cap — e.g. `700MB`, `2GB`, or plain bytes | optional — useful for very large corpora |
 | `GRAPHIFY_MAX_CONTEXTS` | Maximum number of non-default project graphs retained by one multi-project MCP server | optional — default: `8`; invalid values use `8`, and values below `1` use `1` |
 | `GRAPHIFY_LLM_TEMPERATURE` | Override LLM temperature for semantic extraction — e.g. `0.7`, or `none` to omit | optional — auto-omitted for o1/o3/o4/gpt-5 reasoning models |
@@ -651,7 +652,7 @@ graphify extract . --mode deep --token-budget 4000                # smaller inpu
 With a cloud gateway like OpenRouter, prefer `--backend openai` (set `OPENAI_BASE_URL`) over the Ollama shim — it's a cleaner OpenAI-compatible path. If the model has its own max-output ceiling, lowering `--token-budget` is the reliable lever.
 
 **Graph HTML is too large to open in a browser (>5000 nodes)**
-Skip HTML generation and use the JSON directly:
+Above 5000 nodes, `cluster-only`, `update`, `watch` and `export html` write an aggregated `graph.html` with one node per community instead of the full graph. The limit is `GRAPHIFY_VIZ_NODE_LIMIT` for the first three (`0` disables the HTML) and `--node-limit N` for `export html`, which does not read the environment variable. To skip HTML generation and use the JSON directly:
 ```bash
 graphify cluster-only ./my-project --no-viz
 graphify query "..."
@@ -806,6 +807,8 @@ graphify extract ./src --no-dedup              # skip entity dedup; on an increm
 graphify extract ./docs --global --as myrepo   # extract and register into the cross-project global graph
 GRAPHIFY_MAX_OUTPUT_TOKENS=32768 graphify extract ./docs --backend claude  # raise output cap for dense corpora
 
+graphify export html                                # graphify-out/graph.html (one node per community above 5000 nodes)
+graphify export html --node-limit 20000             # raise the full-detail limit (GRAPHIFY_VIZ_NODE_LIMIT is not read here)
 graphify export callflow-html                       # graphify-out/<project>-callflow.html
 graphify export callflow-html --max-sections 8      # cap generated architecture sections
 graphify export callflow-html --output docs/arch.html
@@ -835,7 +838,7 @@ graphify update ./src --no-cluster  # skip reclustering, write raw AST graph onl
 graphify update ./src --force       # overwrite even if new graph has fewer nodes
 graphify cluster-only ./my-project
 graphify cluster-only ./my-project --graph path/to/graph.json  # custom graph location
-graphify cluster-only ./my-project --max-concurrency 16 --batch-size 200  # parallel community labeling (large graphs)
+graphify cluster-only ./my-project --max-concurrency 16        # parallel community labeling (large graphs)
 graphify cluster-only ./my-project --resolution 1.5            # more, smaller communities
 graphify cluster-only ./my-project --exclude-hubs 99           # exclude p99 degree nodes from partitioning
 graphify cluster-only ./my-project --no-label                  # keep "Community N" placeholders
@@ -843,9 +846,15 @@ graphify cluster-only ./my-project --backend=gemini            # backend for com
 graphify cluster-only ./my-project --backend=gemini --model gemini-2.5-pro  # specific model
 graphify label ./my-project                                    # (re)name communities with the configured backend
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
+graphify label ./my-project --batch-size 40                    # smaller labeling batches for an 8k-context model
+graphify label ./my-project --missing-only                     # only name communities that have no saved name yet
 ```
 
 > **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
+
+> **`--batch-size` vs. the model's context window:** communities are named in batches of `--batch-size` (default 100) per LLM call. Each community adds one prompt line of up to 12 member names (typically 50–150 tokens, more for long symbol names; the largest communities come first), and the call reserves `256 + 48 × batch size` output tokens for the reply. Budget roughly **150 tokens per community**: the default of 100 is sized for a ~16k context window, and an 8k model needs about `--batch-size 40`. A batch that overflows the context window is **not** split and retried (only unparseable or incomplete replies are): it is logged as `[graphify label] batch i/N (... communities) failed` and its communities keep their hub-derived names. If you see those lines, lower `--batch-size` and run `graphify label` again.
+
+> **`--missing-only`** (`graphify label` only) keeps every saved name in `.graphify_labels.json` and sends the LLM only the communities that have no saved name or still read `Community N`. It does not look at the membership signatures in `.graphify_labels.json.sig`: after re-clustering it keeps a saved name even if that community id now covers different nodes, and names that `cluster-only` derived from a hub node count as saved names, so they are not refreshed. To refresh names after the community set changed, run `graphify label` without `--missing-only`.
 
 ---
 
