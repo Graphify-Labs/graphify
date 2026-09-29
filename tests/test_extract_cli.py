@@ -227,6 +227,60 @@ def test_extract_succeeds_when_at_least_one_chunk_completes(
     } == {str(corpus / "README.md")}
 
 
+def test_extract_passes_cached_node_ids_to_fresh_provenance_resolution(
+    monkeypatch, tmp_path,
+):
+    from graphify.cache import save_semantic_cache
+    from graphify.llm import _extraction_system
+
+    corpus = _make_corpus(tmp_path)
+    cached_doc = corpus / "CACHED.md"
+    cached_doc.write_text("# Cached\nAn authoritative cached entity.\n")
+    out_dir = tmp_path / "out"
+    save_semantic_cache(
+        [{
+            "id": "cached_entity",
+            "label": "Cached Entity",
+            "source_file": "CACHED.md",
+            "file_type": "document",
+        }],
+        [], [], root=corpus, cache_root=out_dir,
+        prompt=_extraction_system(),
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    captured = {}
+
+    def _fresh(paths, **kwargs):
+        captured.update(kwargs)
+        result = {
+            "nodes": [{
+                "id": "readme",
+                "label": "README",
+                "source_file": "README.md",
+                "file_type": "document",
+            }],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 1, "output_tokens": 1,
+        }
+        kwargs["on_chunk_done"](0, 1, result)
+        return result
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _fresh)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--backend", "claude", "--out", str(out_dir)],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    assert captured["known_node_ids"] == {"cached_entity"}
+
+
 def test_incremental_partial_run_preserves_untouched_semantic_hash(
     monkeypatch, tmp_path
 ):

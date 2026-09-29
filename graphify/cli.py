@@ -4014,6 +4014,11 @@ def dispatch_command(cmd: str) -> None:
                     "model": model,
                     "root": target,
                     "cache_root": out_root,
+                    "known_node_ids": {
+                        str(node["id"])
+                        for node in cached_nodes
+                        if isinstance(node, dict) and node.get("id") is not None
+                    },
                 }
                 if deep_mode:
                     corpus_kwargs["deep_mode"] = True
