@@ -95,6 +95,17 @@ def test_code_files_are_still_not_sliced(tmp_path):
     assert expand_oversized_files([f], _FILE_CHAR_CAP) == [f]
 
 
+def test_unsliced_oversized_file_warns_when_prompt_builder_truncates(tmp_path, capsys):
+    f = tmp_path / "mod.py"
+    f.write_text("def f():\n    pass\n" * 4000, encoding="utf-8")
+
+    _read_files([f], tmp_path)
+
+    err = capsys.readouterr().err
+    assert "[graphify] warning: truncating mod.py" in err
+    assert "at 20000 characters" in err
+
+
 def test_slices_stay_within_the_cap(tmp_path):
     for start, end in slice_boundaries(BIG, _FILE_CHAR_CAP):
         assert end - start <= _FILE_CHAR_CAP

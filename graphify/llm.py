@@ -35,6 +35,7 @@ _PER_FILE_OVERHEAD_CHARS = 160
 # Coarse fallback used only when `tiktoken` is not installed. 1 token ≈ 4 chars
 # is the standard heuristic for English/code on BPE tokenizers.
 _CHARS_PER_TOKEN = 4
+_TRUNCATION_WARNED: set[str] = set()
 
 
 def _get_tokenizer():
@@ -630,6 +631,13 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
             continue
         # Whole files are still capped (covers non-splittable large files like
         # code); slices are already bounded to the cap, so the cap is a no-op.
+        if not isinstance(u, FileSlice) and len(content) > _FILE_CHAR_CAP and rel not in _TRUNCATION_WARNED:
+            print(
+                f"[graphify] warning: truncating {rel} at {_FILE_CHAR_CAP} characters "
+                f"({len(content)} characters before cap)",
+                file=sys.stderr,
+            )
+            _TRUNCATION_WARNED.add(rel)
         parts.append(_wrap_untrusted(rel, content[:_FILE_CHAR_CAP]))
     return "\n\n".join(parts)
 
