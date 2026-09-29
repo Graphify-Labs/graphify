@@ -1,0 +1,5 @@
+ROUTINE DemoLib
+Calc(n) Public
+{
+    Quit n*2
+}

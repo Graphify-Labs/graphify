@@ -1,0 +1,10 @@
+ROUTINE DemoRtn
+#include DemoMacros
+ Do Init
+Main
+ Do Init
+ Set x = $$Calc^DemoLib(1)
+ Goto Init
+ Quit $$$DEMOOK
+Init
+ Quit
