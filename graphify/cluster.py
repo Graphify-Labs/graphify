@@ -247,8 +247,9 @@ def cluster(
         <1.0 = fewer larger communities. Default 1.0.
     exclude_hubs_percentile: if set (0-100), nodes whose degree exceeds this
         percentile are excluded from partitioning and reattached to their
-        majority-vote neighbour community afterwards. Useful for staging/utility
-        super-hubs that inflate god-node rankings (#919).
+        majority-vote neighbour community afterwards. Nodes whose only
+        neighbours are excluded hubs follow them, by the same vote. Useful for
+        staging/utility super-hubs that inflate god-node rankings (#919).
     """
     if G.number_of_nodes() == 0:
         return {}
@@ -272,6 +273,21 @@ def cluster(
     excluded = hub_nodes
     isolates = [n for n in G.nodes() if G.degree(n) == 0 and n not in excluded]
     connected_nodes = [n for n in G.nodes() if G.degree(n) > 0 and n not in excluded]
+    # A node whose only neighbours are excluded hubs is isolated in the
+    # partitioned subgraph purely because of the exclusion. Hold it out of the
+    # partition and place it with its hub(s) below, instead of letting it come
+    # back as a singleton cut off from the only node it connects to.
+    stranded: list[str] = []
+    if hub_nodes:
+        # A self-loop is not a neighbour: judge a node by its other neighbours.
+        stranded = [
+            n for n in connected_nodes
+            if (nbs := [nb for nb in G.neighbors(n) if nb != n])
+            and all(nb in hub_nodes for nb in nbs)
+        ]
+        if stranded:
+            _stranded = set(stranded)
+            connected_nodes = [n for n in connected_nodes if n not in _stranded]
     connected = G.subgraph(connected_nodes)
 
     raw: dict[int, list[str]] = {}
@@ -303,6 +319,18 @@ def cluster(
                 raw[next_cid] = [hub]
                 node_community[hub] = next_cid
                 next_cid += 1
+        # Every neighbour of a stranded node is a hub, and every hub is placed
+        # by now, so the same majority vote always has a winner.
+        for node in sorted(stranded, key=str):
+            votes = {}
+            for nb in G.neighbors(node):
+                if nb == node:
+                    continue
+                cid = node_community[nb]
+                votes[cid] = votes.get(cid, 0) + 1
+            best = min(votes, key=lambda c: (-votes[c], c))
+            raw[best].append(node)
+            node_community[node] = best
 
     # Split oversized communities
     max_size = max(_MIN_SPLIT_SIZE, int(G.number_of_nodes() * _MAX_COMMUNITY_FRACTION))
