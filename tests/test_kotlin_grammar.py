@@ -657,3 +657,52 @@ def test_kotlin_object_member_call_survives_incremental_rebuild(tmp_path):
     assert _rebuild_code(corpus, changed_paths=[app], no_cluster=True,
                          acquire_lock=False) is True
     assert _resolves(), "call stays resolved after an incremental rebuild"
+
+
+def test_kotlin_annotated_inferred_property_keeps_the_file(tmp_path):
+    """#3884: `@Volatile var counter = 0` has an annotation and no explicit type.
+
+    `line` used to be assigned only when a type node existed, so the annotation
+    loop raised UnboundLocalError and _safe_extract dropped every node in the file.
+    """
+    r = _extract(tmp_path, {
+        "Repro.kt": (
+            "class Repro {\n"
+            "    @Volatile\n"
+            "    var counter = 0\n"
+            "\n"
+            "    fun ping() { }\n"
+            "}\n"
+        ),
+    })
+    assert r["failed_sources"] == [], "the file must not be skipped"
+    repro = _find(r, "Repro")
+    ping = _find(r, ".ping()")
+    volatile = _find(r, "Volatile")
+    attr = [e for e in r["edges"]
+            if e["relation"] == "references"
+            and e["source"] == repro
+            and e["target"] == volatile
+            and e.get("context") == "attribute"]
+    assert attr, "the annotation is a references edge on the class"
+    assert any(e["relation"] == "method" and e["source"] == repro and e["target"] == ping
+               for e in r["edges"]), "a sibling method in the same file must survive"
+
+
+def test_kotlin_annotated_explicit_type_property_still_references(tmp_path):
+    """Control for #3884: an annotation plus an explicit type already worked."""
+    r = _extract(tmp_path, {
+        "Typed.kt": (
+            "class Typed {\n"
+            "    @Volatile\n"
+            "    var counter: Int = 0\n"
+            "}\n"
+        ),
+    })
+    typed = _find(r, "Typed")
+    volatile = _find(r, "Volatile")
+    assert any(e["relation"] == "references"
+               and e["source"] == typed
+               and e["target"] == volatile
+               and e.get("context") == "attribute"
+               for e in r["edges"])

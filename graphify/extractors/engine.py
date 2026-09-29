@@ -4855,9 +4855,13 @@ def _extract_generic(
             # Field-type references stay class-gated: top-level properties keep
             # their pre-#2565 (no-references) behavior unchanged.
             if parent_class_nid:
+                # #3884: the annotation loop below also reads `line`. An annotated
+                # property with an inferred type has no type node, so assigning
+                # `line` only inside that branch raised UnboundLocalError and
+                # _safe_extract dropped the whole file.
+                line = node.start_point[0] + 1
                 type_node = _kotlin_property_type_node(node)
                 if type_node is not None:
-                    line = node.start_point[0] + 1
                     refs: list[tuple[str, str]] = []
                     _kotlin_collect_type_refs(type_node, source, False, refs)
                     for ref_name, role in refs:
