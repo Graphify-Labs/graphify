@@ -6427,8 +6427,8 @@ def _extract_generic(
                         is_member_call = True
                         if receiver.type == "identifier":
                             member_receiver = _read_text(receiver, source)
-                        elif receiver.type == "this":
-                            member_receiver = "this"
+                        elif receiver.type in ("this", "super"):
+                            member_receiver = receiver.type
                         elif receiver.type == "field_access":
                             owner = receiver.child_by_field_name("object")
                             field = receiver.child_by_field_name("field")

@@ -4578,7 +4578,7 @@ def _resolve_java_member_calls(
 ) -> None:
     """Resolve Java member calls against the receiver's declared type.
 
-    Explicit type receivers and ``this`` are exact. Fields declared on the
+    Explicit type receivers, ``this`` and ``super`` are exact. Fields declared on the
     caller's class plus method parameters and explicit locals are inferred from
     the extractor's method-scoped type table. A missing or ambiguous receiver
     type is skipped rather than falling back to a bare method-name match.
@@ -4637,6 +4637,33 @@ def _resolve_java_member_calls(
             queue.extend(inherits_bases.get(cls, []))
         return None
 
+    def _jvm_bases(type_nid: str) -> list[str] | None:
+        bases = inherits_bases.get(type_nid, [])
+        for base in bases:
+            family = _lang_family(node_by_id.get(base, {}).get("source_file"))
+            if base == type_nid or family != "jvm":
+                return None
+        return bases
+
+    def _method_on_type_or_bases(type_nid: str, callee_key: str) -> str | None:
+        hits: set[str] = set()
+        seen: set[str] = set()
+        frontier = [type_nid]
+        while frontier:
+            nid = frontier.pop()
+            if nid in seen:
+                continue
+            seen.add(nid)
+            declared = method_index.get((nid, callee_key))
+            if declared:
+                hits |= declared
+                continue
+            bases = _jvm_bases(nid)
+            if bases is None:
+                return None
+            frontier.extend(bases)
+        return next(iter(hits)) if len(hits) == 1 else None
+
     for result in per_file:
         for raw_call in result.get("raw_calls", []):
             if raw_call.get("lang") != "java" or not raw_call.get("is_member_call"):
@@ -4653,6 +4680,12 @@ def _resolve_java_member_calls(
                 exact = True
                 if not type_nid:
                     continue
+            elif receiver == "super":
+                superclasses = _jvm_bases(enclosing_type.get(caller, ""))
+                if not superclasses or len(superclasses) != 1:
+                    continue
+                type_nid = superclasses[0]
+                exact = True
             else:
                 type_name = raw_call.get("receiver_type")
                 if not type_name and receiver[:1].isupper():
@@ -4680,11 +4713,8 @@ def _resolve_java_member_calls(
                     continue
                 type_nid = type_defs[0]
 
-            method_nids = method_index.get((type_nid, key(callee)), set())
-            if len(method_nids) != 1:
-                continue
-            method_nid = next(iter(method_nids))
-            if method_nid == caller or (caller, method_nid) in existing_pairs:
+            method_nid = _method_on_type_or_bases(type_nid, key(callee))
+            if not method_nid or method_nid == caller or (caller, method_nid) in existing_pairs:
                 continue
             existing_pairs.add((caller, method_nid))
             all_edges.append({
