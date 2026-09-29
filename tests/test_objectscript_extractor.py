@@ -200,8 +200,11 @@ def test_objectscript_class_members_and_inherits():
     assert ("ADAPTER", "Demo.Util") in _edge_labels(result, "references", confidence="INFERRED")
 
     for rc in result.get("raw_calls", []):
-        assert rc["is_member_call"] is True
         assert rc["language"] == "objectscript"
+        # Every raw call names its target scope, so the shared bare-name pass
+        # must skip it; `is_member_call` keeps its ordinary meaning.
+        assert rc["is_qualified_call"] is True
+        assert rc["is_member_call"] is (rc["kind"] in ("class_call", "self_call"))
 
     node_ids = {n["id"] for n in result["nodes"]}
     assert all(e["source"] in node_ids and e["target"] in node_ids for e in result["edges"])
@@ -474,6 +477,32 @@ def test_objectscript_ro_export_include_keeps_packaged_routine_name(tmp_path):
     assert include["metadata"]["kind"] == "include"
     assert include["metadata"]["routine"] == "TSL.Legacy"
     assert "$$$LEGACY" in {n["label"] for n in r["nodes"]}
+
+
+@_needs_objectscript
+def test_objectscript_qualified_calls_never_bind_by_bare_name(tmp_path):
+    # `$$Calc^Missing(1)` names routine `Missing` (absent) and
+    # `##class(Gone.Cls).Helper()` names class `Gone.Cls` (absent). A Python
+    # top-level `Calc()` / `Helper()` in the same corpus must NOT be picked up
+    # by the shared bare-name pass: the calls are qualified, so only the
+    # ObjectScript resolver may bind them, and it has nothing to bind to.
+    (tmp_path / "util.py").write_text(
+        "def Calc():\n    return 1\n\n\ndef Helper():\n    return 2\n", encoding="utf-8"
+    )
+    (tmp_path / "r.mac").write_text(
+        "ROUTINE r\nMain\n Set x = $$Calc^Missing(1)\n Do ##class(Gone.Cls).Helper()\n Quit\n",
+        encoding="utf-8",
+    )
+    result = extract(
+        [tmp_path / "util.py", tmp_path / "r.mac"], cache_root=tmp_path / "cache", root=tmp_path
+    )
+    calls = _edge_labels(result, "calls")
+    assert ("Main()", "Calc()") not in calls
+    assert ("Main()", "Helper()") not in calls
+    assert not [
+        rc for rc in result.get("raw_calls", []) if rc.get("language") == "objectscript"
+        and not rc.get("is_qualified_call")
+    ]
 
 
 def test_is_objectscript_class_detects_minimal_undotted_class(tmp_path):

@@ -8283,6 +8283,12 @@ def extract(
         # and collides with any top-level function named "log" in the corpus.
         if rc.get("is_member_call"):
             continue
+        # Skip qualified calls: `##class(X).M()` / `$$L^R` (ObjectScript) name
+        # their own target scope, so a bare-name match on `M`/`L` would bind to
+        # any same-named symbol in the corpus. Their language resolver binds
+        # them with that evidence (see resolve_objectscript_calls).
+        if rc.get("is_qualified_call"):
+            continue
         # Skip Ruby include/extend/prepend mixin markers: they carry a module
         # name as `callee` but are not calls — the Ruby resolver turns them into
         # `mixes_in` edges. Letting the shared pass emit a `calls` edge here would

@@ -376,8 +376,16 @@ def extract_objectscript(path: Path) -> dict:
         edges.append(edge)
 
     def add_raw_call(**fields: Any) -> None:
+        # Every ObjectScript raw call names its own target scope: a class for
+        # `##class(X).M()` / `..M()`, a routine for `$$L^R`, an include for
+        # `$$$MACRO`. A bare-name match on `M`/`L` would bind to any same-named
+        # symbol in the corpus, so `is_qualified_call` tells the shared
+        # cross-file pass in extract.py to leave them to
+        # resolve_objectscript_calls. `is_member_call` keeps its usual meaning
+        # (a call on a class or on self) and is set only for those kinds.
         fields["language"] = _LANG
-        fields["is_member_call"] = True
+        fields["is_qualified_call"] = True
+        fields["is_member_call"] = fields.get("kind") in ("class_call", "self_call")
         fields.setdefault("source_file", source_file)
         raw_calls.append(fields)
 
