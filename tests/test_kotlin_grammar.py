@@ -729,3 +729,210 @@ def test_kotlin_class_property_annotation_without_explicit_type(tmp_path):
         and e["target"] == volatile
     ]
     assert len(attr_edges) == 1, f"expected Repro->Volatile attribute reference edge, got {attr_edges}"
+
+
+# ── #3835: Kotlin annotations and constructor properties (JPA) ───────────────
+
+def test_kotlin_class_annotations_emit_attribute_edges(tmp_path):
+    """Class-level annotations like @Entity and @Table emit attribute references."""
+    r = _extract(tmp_path, {
+        "Order.kt": (
+            '@Entity\n'
+            '@Table(name = "orders")\n'
+            'class Order\n'
+        ),
+    })
+    order = _find(r, "Order")
+    entity = _find(r, "Entity")
+    table = _find(r, "Table")
+    attrs = {(e["source"], e["target"]) for e in r["edges"]
+             if e["relation"] == "references" and e.get("context") == "attribute"}
+    assert (order, entity) in attrs
+    assert (order, table) in attrs
+
+
+def test_kotlin_constructor_property_annotations(tmp_path):
+    """Primary constructor val/var parameters emit attribute edges for their annotations."""
+    r = _extract(tmp_path, {
+        "Order.kt": "class Order(@Id @GeneratedValue val id: Long)\n",
+    })
+    order = _find(r, "Order")
+    id_node = _find(r, "Id")
+    gen_val = _find(r, "GeneratedValue")
+    attrs = {(e["source"], e["target"]) for e in r["edges"]
+             if e["relation"] == "references" and e.get("context") == "attribute"}
+    assert (order, id_node) in attrs
+    assert (order, gen_val) in attrs
+
+
+def test_kotlin_constructor_property_type(tmp_path):
+    """Primary constructor val/var parameters emit field references to their types."""
+    r = _extract(tmp_path, {
+        "Order.kt": "class Order(val customer: Customer)\nclass Customer\n",
+    })
+    order = _find(r, "Order")
+    customer = _find(r, "Customer")
+    fields = {(e["source"], e["target"]) for e in r["edges"]
+              if e["relation"] == "references" and e.get("context") == "field"}
+    assert (order, customer) in fields
+
+
+def test_kotlin_generic_constructor_property(tmp_path):
+    """Primary constructor generic property emits generic_arg references."""
+    r = _extract(tmp_path, {
+        "Order.kt": "class Order(val lines: List<OrderLine>)\nclass OrderLine\n",
+    })
+    order = _find(r, "Order")
+    order_line = _find(r, "OrderLine")
+    generic_args = {(e["source"], e["target"]) for e in r["edges"]
+                    if e["relation"] == "references" and e.get("context") == "generic_arg"}
+    assert (order, order_line) in generic_args
+
+
+def test_kotlin_plain_constructor_parameter_ignored(tmp_path):
+    """Plain constructor parameter without val/var must NOT emit a field reference edge."""
+    r = _extract(tmp_path, {
+        "Order.kt": "class Order(id: Long)\n",
+    })
+    order = _find(r, "Order")
+    field_edges = [e for e in r["edges"]
+                   if e["source"] == order and e.get("context") == "field"]
+    assert not field_edges, f"plain parameter should not emit field reference, got {field_edges}"
+
+
+def test_kotlin_class_body_generic_property(tmp_path):
+    """Class-body generic property emits field/generic_arg references."""
+    r = _extract(tmp_path, {
+        "Order.kt": (
+            "class Order {\n"
+            "    var lines: MutableList<OrderLine> = mutableListOf()\n"
+            "}\n"
+            "class OrderLine\n"
+        ),
+    })
+    order = _find(r, "Order")
+    order_line = _find(r, "OrderLine")
+    generic_args = {(e["source"], e["target"]) for e in r["edges"]
+                    if e["relation"] == "references" and e.get("context") == "generic_arg"}
+    assert (order, order_line) in generic_args
+
+
+def test_kotlin_property_use_site_annotation(tmp_path):
+    """Property with use-site target @get:Transient emits attribute edge."""
+    r = _extract(tmp_path, {
+        "Order.kt": (
+            "class Order {\n"
+            "    @get:Transient\n"
+            "    val total: Int get() = 0\n"
+            "}\n"
+        ),
+    })
+    order = _find(r, "Order")
+    transient = _find(r, "Transient")
+    attrs = {(e["source"], e["target"]) for e in r["edges"]
+             if e["relation"] == "references" and e.get("context") == "attribute"}
+    assert (order, transient) in attrs
+
+
+def test_kotlin_direct_getter_annotation(tmp_path):
+    """Annotation placed directly on a getter emits attribute edge to the class."""
+    r = _extract(tmp_path, {
+        "Order.kt": (
+            "class Order {\n"
+            "    val total: Int\n"
+            "        @Transient get() = 0\n"
+            "}\n"
+        ),
+    })
+    order = _find(r, "Order")
+    transient = _find(r, "Transient")
+    attrs = {(e["source"], e["target"]) for e in r["edges"]
+             if e["relation"] == "references" and e.get("context") == "attribute"}
+    assert (order, transient) in attrs
+
+
+def test_kotlin_bracketed_use_site_annotations(tmp_path):
+    """Bracketed use-site annotations @get:[Transient VisibleForTesting] emit attribute edges."""
+    r = _extract(tmp_path, {
+        "Order.kt": (
+            "class Order {\n"
+            "    @get:[Transient VisibleForTesting]\n"
+            "    val total: Int = 0\n"
+            "}\n"
+        ),
+    })
+    order = _find(r, "Order")
+    transient = _find(r, "Transient")
+    visible = _find(r, "VisibleForTesting")
+    attrs = {(e["source"], e["target"]) for e in r["edges"]
+             if e["relation"] == "references" and e.get("context") == "attribute"}
+    assert (order, transient) in attrs
+    assert (order, visible) in attrs
+
+
+def test_kotlin_annotation_class_literal(tmp_path):
+    """Annotation argument with Customer::class emits attribute reference to Customer."""
+    r = _extract(tmp_path, {
+        "Order.kt": (
+            "class Order(\n"
+            "    @ManyToOne(targetEntity = Customer::class) val cust: Any\n"
+            ")\n"
+            "class Customer\n"
+        ),
+    })
+    order = _find(r, "Order")
+    customer = _find(r, "Customer")
+    many_to_one = _find(r, "ManyToOne")
+    attrs = {(e["source"], e["target"]) for e in r["edges"]
+             if e["relation"] == "references" and e.get("context") == "attribute"}
+    assert (order, many_to_one) in attrs
+    assert (order, customer) in attrs
+
+
+def test_kotlin_full_jpa_reproduction(tmp_path):
+    """Full reproduction of #3835: JPA entity relationships and annotations."""
+    repro = (
+        "@Entity\n"
+        '@Table(name = "orders")\n'
+        "class Order(\n"
+        "    @Id @GeneratedValue val id: Long? = null,\n"
+        "    @ManyToOne(fetch = FetchType.LAZY) val customer: Customer,\n"
+        "    @Column(nullable = false) var status: String\n"
+        ") {\n"
+        '    @OneToMany(mappedBy = "order")\n'
+        "    var lines: MutableList<OrderLine> = mutableListOf()\n"
+        "\n"
+        "    @get:Transient\n"
+        "    val total: Int get() = 0\n"
+        "}\n"
+        "\n"
+        "@Entity class Customer(@Id val id: Long)\n"
+        "@Entity class OrderLine(@Id val id: Long, @ManyToOne val order: Order)\n"
+    )
+    r = _extract(tmp_path, {"Models.kt": repro})
+    order = _find(r, "Order")
+    customer = _find(r, "Customer")
+    order_line = _find(r, "OrderLine")
+
+    # Semantic relationships
+    fields = {(e["source"], e["target"]) for e in r["edges"]
+              if e["relation"] == "references" and e.get("context") == "field"}
+    generic_args = {(e["source"], e["target"]) for e in r["edges"]
+                    if e["relation"] == "references" and e.get("context") == "generic_arg"}
+    attrs = {(e["source"], e["target"]) for e in r["edges"]
+             if e["relation"] == "references" and e.get("context") == "attribute"}
+
+    assert (order, customer) in fields, "Order -> Customer field edge"
+    assert (order, order_line) in generic_args, "Order -> OrderLine generic_arg edge"
+    assert (order_line, order) in fields, "OrderLine -> Order field edge"
+
+    # Annotations
+    for anno_label in ("Entity", "Table", "Id", "GeneratedValue", "ManyToOne", "Column", "OneToMany", "Transient"):
+        anno_nid = _find(r, anno_label)
+        assert (order, anno_nid) in attrs, f"Order -> {anno_label} attribute edge"
+
+    # Ensure no member nodes like .customer or .id were created
+    node_labels = {n["label"] for n in r["nodes"]}
+    assert ".customer" not in node_labels
+    assert ".id" not in node_labels
+    assert ".lines" not in node_labels

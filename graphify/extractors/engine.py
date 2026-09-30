@@ -747,23 +747,37 @@ def _kotlin_user_type_name(user_type_node, source: bytes) -> str | None:
                     break
     return name
 
-def _kotlin_annotation_names(declaration_node, source: bytes) -> list[tuple[str, str]]:
-    """Collect ``(simple, raw)`` annotation names from a Kotlin declaration's
-    `modifiers` child, safely handling `use_site_target` and parameters."""
-    names: list[tuple[str, str]] = []
-    modifiers = None
+def _kotlin_annotation_nodes(declaration_node) -> list:
+    """Return annotation nodes from a Kotlin declaration or its accessors."""
     if declaration_node is None:
-        return names
+        return []
+    annos = []
     for child in declaration_node.children:
         if child.type == "modifiers":
-            modifiers = child
+            for anno in child.children:
+                if anno.type == "annotation":
+                    annos.append(anno)
             break
-    if modifiers is None:
-        return names
-    for anno in modifiers.children:
-        if anno.type != "annotation":
-            continue
-        # Support bracketed lists: @[Inject VisibleForTesting]
+    # For a property_declaration, accessors (getter/setter) can also declare annotations
+    if declaration_node.type == "property_declaration":
+        for child in declaration_node.children:
+            if child.type in ("getter", "setter"):
+                for sub in child.children:
+                    if sub.type == "modifiers":
+                        for anno in sub.children:
+                            if anno.type == "annotation":
+                                annos.append(anno)
+                        break
+    return annos
+
+
+def _kotlin_annotation_names(declaration_node, source: bytes) -> list[tuple[str, str]]:
+    """Collect ``(simple, raw)`` annotation names from a Kotlin declaration's
+    `modifiers` child (including accessors), safely handling `use_site_target` and parameters."""
+    names: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for anno in _kotlin_annotation_nodes(declaration_node):
+        # Support bracketed lists: @[Inject VisibleForTesting] or @get:[Transient VisibleForTesting]
         for sub in anno.children:
             user_type_node = None
             if sub.type == "user_type":
@@ -775,9 +789,55 @@ def _kotlin_annotation_names(declaration_node, source: bytes) -> list[tuple[str,
                         break
             if user_type_node is not None:
                 name = _kotlin_user_type_name(user_type_node, source)
-                if name:
+                if name and name not in seen:
                     raw = _read_text(user_type_node, source)
                     names.append((name, raw))
+                    seen.add(name)
+    return names
+
+
+def _kotlin_annotation_class_literal_refs(
+    declaration_node,
+    source: bytes,
+) -> list[str]:
+    """Collect Kotlin type names used as class literals in annotation arguments (e.g. ``Customer::class``)."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for anno in _kotlin_annotation_nodes(declaration_node):
+        for sub in anno.children:
+            ci = sub if sub.type == "constructor_invocation" else None
+            if ci is None:
+                continue
+            args_node = None
+            for c in ci.children:
+                if c.type == "value_arguments":
+                    args_node = c
+                    break
+            if args_node is None:
+                continue
+            stack = [args_node]
+            while stack:
+                curr = stack.pop()
+                if curr.type == "navigation_expression":
+                    has_double_colon = False
+                    rhs_is_class = False
+                    lhs_node = None
+                    for ch in curr.children:
+                        ch_text = _read_text(ch, source)
+                        if ch.type == "::" or ch_text == "::":
+                            has_double_colon = True
+                        elif has_double_colon and ch.type in ("identifier", "simple_identifier") and ch_text == "class":
+                            rhs_is_class = True
+                        elif not has_double_colon and ch.is_named:
+                            lhs_node = ch
+                    if has_double_colon and rhs_is_class and lhs_node is not None:
+                        raw = _read_text(lhs_node, source)
+                        text = raw.rsplit(".", 1)[-1]
+                        if text and text not in seen and text not in _KOTLIN_BUILTIN_TYPES and text not in _JAVA_BUILTIN_TYPES:
+                            names.append(text)
+                            seen.add(text)
+                        continue
+                stack.extend(child for child in curr.children if child.is_named)
     return names
 
 def _kotlin_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
@@ -4151,6 +4211,11 @@ def _extract_generic(
                     if target_nid != class_nid and target_nid not in annotation_targets:
                         add_edge(class_nid, target_nid, "references", line, context="attribute")
                         annotation_targets.add(target_nid)
+                for ref_name in _kotlin_annotation_class_literal_refs(node, source):
+                    target_nid = ensure_named_node(ref_name, line)
+                    if target_nid != class_nid and target_nid not in annotation_targets:
+                        add_edge(class_nid, target_nid, "references", line, context="attribute")
+                        annotation_targets.add(target_nid)
 
                 for c in node.children:
                     if c.type == "primary_constructor":
@@ -4166,13 +4231,13 @@ def _extract_generic(
                                             break
                                     if not has_val_var:
                                         continue
+                                    cp_line = cp.start_point[0] + 1
                                     ptype = None
                                     for sub in cp.children:
                                         if sub.type in ("user_type", "nullable_type", "type_reference"):
                                             ptype = sub
                                             break
                                     if ptype is not None:
-                                        cp_line = cp.start_point[0] + 1
                                         refs: list[tuple[str, str]] = []
                                         _kotlin_collect_type_refs(ptype, source, False, refs)
                                         for ref_name, role in refs:
@@ -4181,13 +4246,19 @@ def _extract_generic(
                                             if target_nid != class_nid:
                                                 add_edge(class_nid, target_nid, "references",
                                                          cp_line, context=ctx)
-                                        param_annotation_targets: set[str] = set()
-                                        for anno_name, anno_raw in _kotlin_annotation_names(cp, source):
-                                            target_nid = ensure_named_node(anno_name, cp_line)
-                                            if target_nid != class_nid and target_nid not in param_annotation_targets:
-                                                add_edge(class_nid, target_nid, "references",
-                                                         cp_line, context="attribute")
-                                                param_annotation_targets.add(target_nid)
+                                    param_annotation_targets: set[str] = set()
+                                    for anno_name, anno_raw in _kotlin_annotation_names(cp, source):
+                                        target_nid = ensure_named_node(anno_name, cp_line)
+                                        if target_nid != class_nid and target_nid not in param_annotation_targets:
+                                            add_edge(class_nid, target_nid, "references",
+                                                     cp_line, context="attribute")
+                                            param_annotation_targets.add(target_nid)
+                                    for ref_name in _kotlin_annotation_class_literal_refs(cp, source):
+                                        target_nid = ensure_named_node(ref_name, cp_line)
+                                        if target_nid != class_nid and target_nid not in param_annotation_targets:
+                                            add_edge(class_nid, target_nid, "references",
+                                                     cp_line, context="attribute")
+                                            param_annotation_targets.add(target_nid)
 
             # Ruby: `class Dog < Animal` puts the base class in the `superclass`
             # field (a `<` token followed by a constant or scope_resolution).
@@ -4872,6 +4943,11 @@ def _extract_generic(
                 annotation_targets: set[str] = set()
                 for anno_name, anno_raw in _kotlin_annotation_names(node, source):
                     target_nid = ensure_named_node(anno_name, line)
+                    if target_nid != parent_class_nid and target_nid not in annotation_targets:
+                        add_edge(parent_class_nid, target_nid, "references", line, context="attribute")
+                        annotation_targets.add(target_nid)
+                for ref_name in _kotlin_annotation_class_literal_refs(node, source):
+                    target_nid = ensure_named_node(ref_name, line)
                     if target_nid != parent_class_nid and target_nid not in annotation_targets:
                         add_edge(parent_class_nid, target_nid, "references", line, context="attribute")
                         annotation_targets.add(target_nid)
