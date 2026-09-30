@@ -924,6 +924,71 @@ def test_detect_google_workspace_sidecar_survives_a_gitignored_output_dir(tmp_pa
     assert result["files"]["document"][0].endswith("notes_converted.md")
 
 
+def test_detect_memory_note_survives_a_gitignored_output_dir(tmp_path):
+    """#3637 baseline: memory notes still default to always visible even
+    when graphify-out/ is gitignored per the documented convention, exactly
+    like the converted/ sidecar case above -- a plain .gitignore entry on
+    the tool's own output dir must not silently drop query notes filed back
+    into the graph."""
+    (tmp_path / ".gitignore").write_text("graphify-out/\n", encoding="utf-8")
+    memory_dir = tmp_path / "graphify-out" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "note.md").write_text("# Query Memory\n\nSome saved answer.", encoding="utf-8")
+
+    result = detect(tmp_path)
+    file_list = result["files"]["document"]
+    assert any("note.md" in f for f in file_list)
+
+
+def test_detect_graphifyignore_excludes_specific_memory_note(tmp_path):
+    """#3637: a deliberate .graphifyignore rule targeting a memory note (or
+    subpath) is honored, giving users an actual way to keep a specific note
+    out of the graph -- the hard include only protects the default, it must
+    not make the directory unconditionally immune to explicit exclusion."""
+    (tmp_path / ".graphifyignore").write_text("graphify-out/memory/scratch.md\n", encoding="utf-8")
+    memory_dir = tmp_path / "graphify-out" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "scratch.md").write_text("# Scratch\n\nNot for the graph.", encoding="utf-8")
+    (memory_dir / "keep.md").write_text("# Keep\n\nA real saved answer.", encoding="utf-8")
+
+    result = detect(tmp_path)
+    file_list = result["files"]["document"]
+    assert any("keep.md" in f for f in file_list)
+    assert not any("scratch.md" in f for f in file_list)
+
+
+def test_detect_graphifyignore_excludes_memory_subdirectory(tmp_path):
+    """#3637: an explicit .graphifyignore rule can prune a whole subdirectory
+    of the memory dir, not just single files."""
+    (tmp_path / ".graphifyignore").write_text("graphify-out/memory/drafts/\n", encoding="utf-8")
+    memory_dir = tmp_path / "graphify-out" / "memory"
+    drafts = memory_dir / "drafts"
+    drafts.mkdir(parents=True)
+    (drafts / "wip.md").write_text("# WIP\n\nUnfinished.", encoding="utf-8")
+    (memory_dir / "keep.md").write_text("# Keep\n\nA real saved answer.", encoding="utf-8")
+
+    result = detect(tmp_path)
+    file_list = result["files"]["document"]
+    assert any("keep.md" in f for f in file_list)
+    assert not any("wip.md" in f for f in file_list)
+
+
+def test_detect_memory_note_plain_gitignore_entry_is_not_authoritative(tmp_path):
+    """#3637: a plain .gitignore rule that happens to match a memory note
+    (as opposed to a deliberate .graphifyignore/--exclude rule) must NOT
+    exclude it -- only .graphifyignore/--exclude are treated as a deliberate
+    opt out inside the memory dir; a generic VCS .gitignore entry is not
+    strong enough evidence of intent to drop a query note by itself."""
+    (tmp_path / ".gitignore").write_text("*.md\n", encoding="utf-8")
+    memory_dir = tmp_path / "graphify-out" / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "note.md").write_text("# Query Memory\n\nSome saved answer.", encoding="utf-8")
+
+    result = detect(tmp_path)
+    file_list = result["files"]["document"]
+    assert any("note.md" in f for f in file_list)
+
+
 def test_detect_includes_video_key(tmp_path):
     """detect() result always includes a 'video' key even with no video files."""
     (tmp_path / "main.py").write_text("x = 1")
