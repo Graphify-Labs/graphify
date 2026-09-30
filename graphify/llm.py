@@ -3531,11 +3531,21 @@ def generate_community_labels(
     max_concurrency: int = 4,
     batch_size: int = _LABEL_BATCH_SIZE,
     usage_out: dict | None = None,
+    semantic_labels: bool | None = None,
 ) -> tuple[dict[int, str], str]:
     """CLI entry point: resolve a backend, name communities, and degrade to
     ``Community N`` placeholders on any failure (no backend, API error, malformed
     reply). Returns ``(labels, source)`` where source is ``"llm"`` or
-    ``"placeholder"``. Never raises."""
+    ``"placeholder"``. Never raises.
+
+    ``semantic_labels`` (None | bool) enables a second semantic pass
+    (:mod:`graphify.semantic_judge`): the LLM names are checked against the
+    community member labels ("is this name accurate?") and names the model
+    rejects fall back to the deterministic hub label. None = auto-detect a
+    backend for the check (only runs when one is configured); False = skip; True
+    = force (fails open to the plain LLM names when no backend is available).
+    The env kill-switch ``GRAPHIFY_LABEL_SEMANTIC_REJECT=1`` always wins.
+    """
     if backend is None:
         try:
             backend = detect_backend()
@@ -3572,6 +3582,20 @@ def generate_community_labels(
                 f"communities; {len(communities) - named} kept structural fallback names.",
                 file=sys.stderr,
             )
+        if _semantic_label_pass_enabled(semantic_labels):
+            try:
+                from graphify.semantic_judge import validate_community_labels
+                labels = validate_community_labels(
+                    labels, communities, G, backend=backend, model=model,
+                    usage_out=usage_out,
+                )
+            except Exception as exc:  # noqa: BLE001 - fail-open discipline
+                if not quiet:
+                    print(
+                        f"[graphify label] semantic label validation skipped ({exc}); "
+                        "keeping LLM names.",
+                        file=sys.stderr,
+                    )
         return labels, "llm"
     except Exception as exc:
         if not quiet:
@@ -3581,3 +3605,17 @@ def generate_community_labels(
                 file=sys.stderr,
             )
         return _placeholder_community_labels(communities), "placeholder"
+
+
+def _semantic_label_pass_enabled(semantic_labels: bool | None) -> bool:
+    """Resolve the semantic label-validation switch inside generate_community_labels."""
+    import os
+    if os.environ.get("GRAPHIFY_LABEL_SEMANTIC_REJECT", "").strip().lower() in ("1", "true", "yes"):
+        return False
+    if semantic_labels is not None:
+        return bool(semantic_labels)
+    try:
+        from graphify.semantic_judge import semantic_rejects_enabled
+        return semantic_rejects_enabled()
+    except Exception:
+        return False
