@@ -1440,7 +1440,10 @@ _SCALA_CONFIG = LanguageConfig(
     ts_module="tree_sitter_scala",
     # traits are class-like containers with their own heritage (extends / with),
     # so they need a node and the heritage walk just like classes and objects.
-    class_types=frozenset({"class_definition", "object_definition", "trait_definition"}),
+    # Scala 3 `enum` is a class-like container too: it owns methods and a set of
+    # cases, so it needs a node and a body walk like the others (its cases are
+    # emitted by _scala_extra_walk, the parity of Java #1719 / Kotlin #1738).
+    class_types=frozenset({"class_definition", "object_definition", "trait_definition", "enum_definition"}),
     function_types=frozenset({"function_definition"}),
     import_types=frozenset({"import_declaration"}),
     call_types=frozenset({"call_expression"}),
@@ -1448,7 +1451,9 @@ _SCALA_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"field_expression"}),
     call_accessor_field="field",
     name_fallback_child_types=("identifier",),
-    body_fallback_child_types=("template_body",),
+    # an enum wraps its members in `enum_body` rather than a `template_body`,
+    # so the body walk needs it to reach the enum's methods and cases.
+    body_fallback_child_types=("template_body", "enum_body"),
     function_boundary_types=frozenset({"function_definition"}),
     import_handler=_import_scala,
 )

@@ -2970,6 +2970,46 @@ def _swift_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: s
         return True
     return False
 
+def _scala_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
+                      nodes: list, edges: list, seen_ids: set, function_bodies: list,
+                      parent_class_nid: str | None, add_node_fn, add_edge_fn,
+                      walk_fn) -> bool:
+    """Emit a node per Scala 3 enum case with a case_of edge. Returns True if handled.
+
+    tree-sitter-scala wraps the members of an `enum` in `enum_case_definitions`,
+    whose children are `simple_enum_case` (`case Red`) or `full_enum_case`
+    (`case Add(x: Int, y: Int)`); both carry the case name as an `identifier`
+    child. Without this the enum type is a class-like container whose members
+    were never emitted, leaving the type a leaf. This is the Scala parity of
+    Java #1719 (enum_constant), Kotlin #1738 (enum_entry), and Swift.
+
+    Case constructor parameter types (`Add(x: Int)`) and per-case `extends`
+    arguments are not linked; the case node and its case_of edge are the fix
+    for the dropped members.
+    """
+    if node.type == "enum_case_definitions" and parent_class_nid:
+        for case in node.children:
+            if case.type not in ("simple_enum_case", "full_enum_case"):
+                continue
+            name_node = next(
+                (c for c in case.children if c.type == "identifier"), None
+            )
+            if name_node is None:
+                continue
+            case_name = _read_text(name_node, source)
+            if not case_name:
+                continue
+            line = case.start_point[0] + 1
+            case_nid = _make_id(parent_class_nid, case_name)
+            # Scala is case-sensitive while the id recipe casefolds, so two
+            # members that differ only in case would collide on one id; the
+            # first declaration keeps the node rather than a second edge on it.
+            if case_nid not in seen_ids:
+                add_node_fn(case_nid, case_name, line)
+                add_edge_fn(parent_class_nid, case_nid, "case_of", line)
+        return True
+    return False
+
 def _java_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                      nodes: list, edges: list, seen_ids: set, function_bodies: list,
                      parent_class_nid: str | None, add_node_fn, add_edge_fn,
@@ -5712,6 +5752,14 @@ def _extract_generic(
             if _kotlin_extra_walk(node, source, file_nid, stem, str_path,
                                   nodes, edges, seen_ids, function_bodies,
                                   parent_class_nid, add_node, add_edge, walk):
+                return
+
+        # Scala 3 enum cases (`case Red`, `case Add(x: Int)`) nest under an
+        # `enum_case_definitions` wrapper; emit a node + case_of edge per case.
+        if config.ts_module == "tree_sitter_scala":
+            if _scala_extra_walk(node, source, file_nid, stem, str_path,
+                                 nodes, edges, seen_ids, function_bodies,
+                                 parent_class_nid, add_node, add_edge, walk):
                 return
 
         if config.ts_module == "tree_sitter_ruby":
