@@ -92,6 +92,14 @@ def extract_package_manifest(path: Path) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 — a malformed manifest must not abort extraction
         return {"nodes": [], "edges": [], "error": f"manifest parse error: {exc}"}
     if not info or not info.get("name"):
+        # A virtual workspace root (Cargo `[workspace]`, no `[package]`) is a
+        # legitimate zero-node result, not a failure (#1833): mark it
+        # "skipped" so extract.py's #1666 empty-source detector doesn't print
+        # a persistent "produced zero nodes" warning for a manifest that was
+        # never supposed to emit a package node. A manifest missing a name
+        # for any other reason keeps warning, since that IS unexplained.
+        if info and info.get("workspace_only"):
+            return {"nodes": [], "edges": [], "skipped": True}
         return {"nodes": [], "edges": []}
 
     name = info["name"]
@@ -237,6 +245,8 @@ def _parse_cargo(text: str) -> dict | None:
     # package of its own — emit nothing rather than a fabricated node. ``name`` is
     # never workspace-inheritable in Cargo, but guard on the type anyway.
     if not isinstance(name, str) or not name:
+        if isinstance(data.get("workspace"), dict):
+            return {"name": None, "workspace_only": True, "deps": []}
         return None
     # ``version`` may be workspace-inherited (``version.workspace = true``), which
     # parses to a table; keep only a concrete string version.

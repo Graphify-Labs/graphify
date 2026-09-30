@@ -144,6 +144,21 @@ def test_cargo_virtual_workspace_manifest_emits_no_package(tmp_path):
     assert _pkg_nodes(r) == []
 
 
+def test_cargo_virtual_workspace_manifest_is_marked_skipped(tmp_path):
+    # #1833: a virtual workspace root (no [package]) legitimately emits zero
+    # nodes by design. Without an explicit "skipped" marker, extract.py's
+    # #1666 empty-source detector treats this as an unexplained failure and
+    # prints a persistent "produced zero nodes" warning on every run. A
+    # manifest with no [workspace] table either (i.e. genuinely malformed,
+    # missing a name) must NOT be marked skipped — that would hide a real
+    # problem.
+    ws = _write(tmp_path / "ws" / "Cargo.toml", '[workspace]\nmembers = ["a"]\n')
+    assert extract_package_manifest(ws).get("skipped") is True
+
+    broken = _write(tmp_path / "broken" / "Cargo.toml", '[dependencies]\nserde = "1"\n')
+    assert extract_package_manifest(broken).get("skipped") is not True
+
+
 def test_cargo_target_conditional_deps_are_collected(tmp_path):
     # Platform-gated deps under [target.'cfg(...)'.dependencies] are common in
     # real crates and must not be dropped just because they are conditional.
