@@ -2970,6 +2970,35 @@ def _swift_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: s
         return True
     return False
 
+def _cpp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
+                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
+                    parent_class_nid: str | None, add_node_fn, add_edge_fn) -> bool:
+    """Emit a node per C++ enumerator with a case_of edge. Returns True if handled.
+
+    An `enum` / `enum class` is now a class-like container, so its body
+    (`enumerator_list`) is walked with the enum as parent. Each member is an
+    `enumerator` node (`Red`, `Green = 2`) whose name is its `name` field
+    (an `identifier`). Without this the enum type is a memberless leaf. This is
+    the C++ parity of Java #1719 (enum_constant), Swift, and Scala.
+    """
+    if node.type == "enumerator" and parent_class_nid:
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            name_node = next(
+                (c for c in node.children if c.type == "identifier"), None
+            )
+        if name_node is None:
+            return True
+        member_name = _read_text(name_node, source)
+        if member_name:
+            line = node.start_point[0] + 1
+            member_nid = _make_id(parent_class_nid, member_name)
+            if member_nid not in seen_ids:
+                add_node_fn(member_nid, member_name, line)
+                add_edge_fn(parent_class_nid, member_nid, "case_of", line)
+        return True
+    return False
+
 def _java_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                      nodes: list, edges: list, seen_ids: set, function_bodies: list,
                      parent_class_nid: str | None, add_node_fn, add_edge_fn,
@@ -5712,6 +5741,13 @@ def _extract_generic(
             if _kotlin_extra_walk(node, source, file_nid, stem, str_path,
                                   nodes, edges, seen_ids, function_bodies,
                                   parent_class_nid, add_node, add_edge, walk):
+                return
+
+        # C++ enumerators (`Red`, `Green = 2`) inside an enum / enum class body.
+        if config.ts_module == "tree_sitter_cpp":
+            if _cpp_extra_walk(node, source, file_nid, stem, str_path,
+                               nodes, edges, seen_ids, function_bodies,
+                               parent_class_nid, add_node, add_edge):
                 return
 
         if config.ts_module == "tree_sitter_ruby":

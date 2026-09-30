@@ -12,6 +12,40 @@ def _labels(path: Path) -> list[str]:
     return [n["label"] for n in extract_cpp(path)["nodes"]]
 
 
+def test_cpp_enum_specifier_members_are_extracted(tmp_path):
+    """An `enum` / `enum class` is a class-like container whose members must be
+    nodes. `enum_specifier` was missing from the C++ class_types, so the enum
+    type and all of its enumerators produced no nodes at all — the whole type
+    vanished. Each enumerator must become a node with a `case_of` edge (parity
+    with Java #1719 / Swift / Scala enums).
+    """
+    p = tmp_path / "colors.hpp"
+    p.write_text(
+        "enum class Color { Red, Green = 2, Blue };\n"
+        "enum Old { X, Y };\n"
+        "typedef enum { A, B } Flag;\n"
+    )
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    labels = {n["label"] for n in result["nodes"]}
+    assert {"Color", "Red", "Green", "Blue", "Old", "X", "Y"} <= labels
+    ids = {n["id"]: n["label"] for n in result["nodes"]}
+    case_of = {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "case_of"
+    }
+    assert ("Color", "Red") in case_of
+    assert ("Color", "Green") in case_of
+    assert ("Color", "Blue") in case_of
+    assert ("Old", "X") in case_of
+    assert ("Old", "Y") in case_of
+    # An anonymous enum (`typedef enum { A, B } Flag`) has no type name, so it is
+    # skipped rather than emitting a nameless node; its members do not appear.
+    assert "A" not in labels
+    assert "Flag" not in labels
+
+
 def test_nested_cpp_class_is_extracted(tmp_path):
     # A nested type is a field_declaration whose `type` field IS the
     # class_specifier; the member-variable branch used to consume it and return

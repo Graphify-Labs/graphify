@@ -1349,7 +1349,12 @@ _C_CONFIG = LanguageConfig(
 
 _CPP_CONFIG = LanguageConfig(
     ts_module="tree_sitter_cpp",
-    class_types=frozenset({"class_specifier", "struct_specifier"}),
+    # enum_specifier is a class-like container: an `enum` / `enum class` owns a
+    # set of enumerators. Its name and body sit on the same `name`/`body` fields
+    # as struct_specifier (type_identifier + enumerator_list), so it gets a node
+    # and a body walk; the enumerators are emitted by _cpp_extra_walk (the C++
+    # parity of Java #1719 / Swift / Scala enums).
+    class_types=frozenset({"class_specifier", "struct_specifier", "enum_specifier"}),
     function_types=frozenset({"function_definition"}),
     import_types=frozenset({"preproc_include"}),
     call_types=frozenset({"call_expression"}),
