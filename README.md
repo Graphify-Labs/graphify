@@ -109,7 +109,7 @@ What you get out of the box:
 | Capability | What you get |
 |---|---|
 | **God nodes** | The most-connected concepts, so you see what everything flows through |
-| **Communities** | The graph split into subsystems (Leiden), with LLM-free labels |
+| **Communities** | The graph split into subsystems (Leiden, or networkx Louvain when the optional `leiden` extra isn't installed), with LLM-free labels |
 | **Cross-file links** | `calls` / `imports` / `inherits` / `mixes_in` resolved across ~40 languages via tree-sitter AST |
 | **Query, path, explain** | Ask a question, trace the path between two things, or explain one concept, all against `graph.json` |
 | **Rationale + doc refs** | `# NOTE:` / `# WHY:` comments and ADR/RFC citations become first-class nodes linked to the code |
@@ -260,7 +260,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
 | `falkordb` | FalkorDB push support | `uv tool install "graphifyy[falkordb]"` |
 | `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
-| `leiden` | Leiden community detection (graspologic on Python < 3.13; native backend on 3.13+) | `uv tool install "graphifyy[leiden]"` |
+| `leiden` | Leiden community detection (graspologic on Python < 3.13; native backend on 3.13+). Without it, clustering silently uses networkx Louvain; switching later reshuffles every community (a full `graphify label` re-run is needed for fresh names) | `uv tool install "graphifyy[leiden]"` |
 | `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
 | `openai` | OpenAI / OpenAI-compatible APIs | `uv tool install "graphifyy[openai]"` |
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
@@ -847,6 +847,8 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 ```
 
 > **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
+
+> **Label reuse after re-clustering:** labels persist in `graphify-out/.graphify_labels.json`, next to a membership-signature sidecar (`.graphify_labels.json.sig`). On a later `cluster-only` / `update` run, a saved label is only reused when its community's membership is unchanged; changed or new communities get hub-derived placeholder names until you run `graphify label` again. After the community set changes (e.g. a different `--resolution`, or installing the `leiden` extra), a full `graphify label` run is the only way to refresh every name.
 
 ---
 
