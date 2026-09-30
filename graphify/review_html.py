@@ -97,6 +97,8 @@ def _svg(graph: dict, positions: dict, width: int, height: int, *, title: str,
         status = "REMOVED" if changed and side == "base" else "ADDED" if changed else "CONTEXT"
         if "depth" in node:
             status = "DIRECT SEED" if node["depth"] == 0 else f'DEPENDENT · DEPTH {node["depth"]}'
+        elif node.get("context_bridge"):
+            status = "MEMBER CONTEXT"
         evidence = node.get("evidence_id")
         if evidence:
             output.append(f'<a href="#{_esc(evidence)}" aria-label="{_esc(node["label"])} source">')
@@ -140,8 +142,15 @@ def _story(story: dict, index: int, analysis: dict) -> str:
         f'<div><h3>{"BEFORE" if side == "base" else "AFTER"} DEPENDENCIES</h3>' + _svg(pair[side], positions, width, height, title=f'{side} dependencies for {story["title"]}', other=pair["head" if side == "base" else "base"], side=side, identifier=f'{story["id"]}-{side}') + _relationships(pair[side]) + "</div>" for side in ("base", "head")) + "</div>"
     coverage = story["source"]
     warning = ""
+    if coverage.get("diff_limited"):
+        warning += '<p class="warning">Detailed line matching exceeded its work budget. The changed middle region is shown conservatively; excerpts may be truncated.</p>'
     if "unavailable" in coverage["sides"].values():
-        warning = '<p class="warning">Source coverage is incomplete: an excluded, binary, oversized, or unsupported side is unavailable.</p>'
+        warning += '<p class="warning">Source coverage is incomplete: an excluded, binary, oversized, or unsupported side is unavailable.</p>'
+    change = story["change"]
+    modes = {"000000": "not present", "100644": "regular file", "100755": "executable file",
+             "120000": "symbolic link", "160000": "submodule"}
+    if change.get("base_mode") != change.get("head_mode"):
+        warning += '<p class="caption">File type/mode: ' + _esc(modes.get(change.get("base_mode"), change.get("base_mode"))) + ' → ' + _esc(modes.get(change.get("head_mode"), change.get("head_mode"))) + '</p>'
     if coverage["omitted_hunks"] or any(coverage["sides"][side] == "available" for side in coverage["sides"]) and not story["evidence_ids"]:
         warning += f'<p class="warning">Source excerpts: {len(story["evidence_ids"])}. Omitted hunks: {coverage["omitted_hunks"]}. Empty/unchanged source may have no excerpt.</p>'
     method = {"python_ast_span": "matched to changed Python symbol ranges",
@@ -160,6 +169,7 @@ def _blast(review: dict) -> str:
         if radius["omitted_seeds"]:
             output.append(f'<p class="warning">Only the first {radius["direct_count"] - radius["omitted_seeds"]} seeds were traversed; dependent counts are partial.</p>')
         output.append(_svg(radius["graph"], positions, width, height, title=f'{side} blast radius', identifier=f'impact-{side}'))
+        output.append(_relationships(radius["graph"]))
         output.append(f'<p class="caption">Diagram omits {radius["graph"]["omitted_nodes"]} affected nodes. Detail lists omit {radius["omitted_direct"]} direct / {radius["omitted_indirect"]} indirect nodes.</p>')
         output.append('<details class="subdetail"><summary>Affected communities and dependency details</summary><ul>')
         output.extend(f'<li>{_esc(c["label"])}: {c["affected_nodes"]} represented affected / {c["total_nodes"]} total nodes</li>' for c in radius["communities"])
@@ -175,11 +185,11 @@ def _evidence(review: dict) -> str:
     target = review["target"]
     repository = str(target.get("repository", ""))
     remote = urlsplit(str(target.get("url", "")))
-    host = remote.hostname if remote.scheme == "https" else None
+    authority = remote.netloc if remote.scheme == "https" and remote.hostname and remote.username is None and remote.password is None else None
     for evidence in review["evidence"]:
         link = ""
-        if host and len(repository.split("/")) == 2:
-            url = f'https://{host}/{quote(repository, safe="/")}/blob/{evidence["revision"]}/{quote(evidence["source_file"], safe="/")}#L{evidence["line_start"]}-L{evidence["line_end"]}'
+        if authority and len(repository.split("/")) == 2:
+            url = f'https://{authority}/{quote(repository, safe="/")}/blob/{evidence["revision"]}/{quote(evidence["source_file"], safe="/")}#L{evidence["line_start"]}-L{evidence["line_end"]}'
             link = f' · <a href="{_esc(url)}" target="_blank" rel="noopener noreferrer">Pinned source ↗</a>'
         lines = "\n".join(f'{number:4}  {line}' for number, line in enumerate(evidence["snippet"].split("\n"), evidence["line_start"]))
         output.append(f'<details class="evidence" id="{_esc(evidence["id"])}"><summary><span class="badge">SOURCE · {_esc(evidence["side"].upper())}</span> {_esc(evidence["source_file"])}:L{evidence["line_start"]}–L{evidence["line_end"]}</summary><div class="evidence-body"><p>Revision <code>{_esc(evidence["revision"])}</code>{link}</p><pre><code>{_esc(lines)}</code></pre>')
@@ -209,6 +219,8 @@ def render_review(review: dict) -> str:
     digest = hashlib.sha256(json.dumps(review, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     behavior_count = sum(bool(s["behavior"]) for s in review["stories"])
     warnings = []
+    if review.get("omitted_change_stories"):
+        warnings.append(f'{review["omitted_change_stories"]} of {review["changed_file_count"]} changed-file stories were omitted by the review budget. Blast radius covers the retained stories only.')
     for side, coverage in review["coverage"].items():
         if coverage["omitted_files"] or coverage["failed_sources"]:
             warnings.append(f'{side.upper()} coverage: {len(coverage["omitted_files"])} omitted files; {len(coverage["failed_sources"])} failed extractions. Impact may be incomplete.')
@@ -220,7 +232,7 @@ def render_review(review: dict) -> str:
         warnings.append(f'{analysis["omitted_stories"]} stories were outside the inference context.')
     if analysis.get("illustrative"):
         warnings.append("Demonstration: behavioral pseudocode uses a mocked, authored model response. Structural graphs and blast radius were generated from the committed example source.")
-    stats = ((len(review["stories"]), "Changed-file stories"), (behavior_count, "Behavior explanations"),
+    stats = ((len(review["stories"]), "Retained change stories"), (behavior_count, "Behavior explanations"),
              (review["blast_radius"]["head"]["indirect_count"], "Head upstream dependents"),
              (len(review["blast_radius"]["head"]["communities"]), "Represented head communities"))
     body = f'<div class="eyebrow">Graphify / Human review</div><h1>{_esc(target["title"])}</h1><p>Understand the change, explore its impact, and follow the evidence.</p><p class="revisions">Fixed comparison: <code>{_esc(target["comparison_base"][:12])}</code> → <code>{_esc(target["head"][:12])}</code></p><details class="subdetail"><summary>Revision details</summary><p>Comparison base <code>{_esc(target["comparison_base"])}</code><br>Head <code>{_esc(target["head"])}</code><br>Base tip <code>{_esc(target.get("base_tip", target["comparison_base"]))}</code> · {_esc(target["comparison_kind"])}</p></details><nav aria-label="Review sections"><a href="#changes">Change stories</a><a href="#impact">Blast radius</a><a href="#evidence">Source evidence</a></nav>'

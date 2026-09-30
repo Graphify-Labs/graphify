@@ -454,7 +454,7 @@ PR descriptions are shown as authored context, not extracted intent.
 
 PR reviews require `git`, authenticated `gh`, and a checkout of that repository.
 The requested PR is fetched directly, including closed PRs. Commit objects may
-be fetched from `origin`; the worktree and index are not switched or modified.
+be fetched from the repository's HTTPS URL; the worktree and index are not switched or modified.
 Local comparisons require neither GitHub nor a model. Both compare the merge
 base to the fixed head and retain the base-tip ID separately.
 
@@ -463,7 +463,16 @@ graph-specific ignore, noise and sensitive-file boundaries apply; symlinks,
 gitlinks, binary/non-UTF-8 files and nonportable paths are disclosed as omitted.
 Tracked source remains tracked even when matched by a Git-only ignore rule.
 Limits are 5,000 regular files / 64 MB per snapshot, 1 MB per file, 24 hunks per
-changed file, and 100 lines per excerpt. Focused graphs show up to 12 nodes;
+changed file, and 100 lines per excerpt. Reviews retain at most 500 changed-file
+stories and disclose omissions; impact covers the retained stories. Git metadata
+is capped at 16 MB / 100,000 paths. Ignore rules have a separate 1 MB / 1,024-file
+budget and must be readable; sensitive and ignored paths do not consume admitted-source slots.
+Marker-based generated-directory pruning uses pinned metadata, including binary
+or oversized markers, with a separate 1,024-marker limit. Directory structure
+has a 10,000-directory limit, and directory-only ignore rules apply before admission.
+Expensive line matching uses a bounded linear middle-region fallback, with
+conservative ranges disclosed. Physical LF lines, final-newline/CRLF changes,
+and Git file modes remain visible. Focused graphs show up to 12 nodes;
 blast traversal uses at most 100 seeds and depth 0–6 (default 2), with bounded
 detail lists and visible omissions. Python seeds use actual AST spans where
 available; other cases explicitly use changed-file membership. Dependents are
@@ -475,8 +484,13 @@ and counted in coverage, so path-dependent extractor records cannot masquerade
 as architectural additions/removals. Canonical extraction and IDs are unchanged.
 
 The two outputs are rendered before writing and individually replaced atomically.
-A reported JSON write failure restores the previous HTML. This is not a
+Both are staged privately before replacing either output; symlinked review paths
+are rejected. A reported JSON swap failure restores the previous HTML by rename.
+If restoration also fails, the prior HTML is retained at the reported recovery
+path. This is not a
 multi-file power-loss transaction; the HTML's model digest identifies its JSON.
+Shallow history must contain a provable merge base; otherwise the command asks
+for the required history instead of guessing a comparison.
 
 ---
 

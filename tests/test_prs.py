@@ -38,6 +38,8 @@ def test_review_dispatches_before_open_pr_dashboard(monkeypatch):
 
 @pytest.mark.parametrize("argv", [["--review"], ["42", "--review", "--head", "HEAD"],
                                   ["42", "--review", "--backend", "ollama"],
+                                  ["42", "--review", "--depth", "99"],
+                                  ["0", "--review"],
                                   ["--review", "--head", "HEAD", "--base", "HEAD~1", "--repo", "other/repo"]])
 def test_review_invalid_options_fail_before_retrieval(argv):
     from graphify.review import cmd_review

@@ -6,6 +6,7 @@ import hashlib
 import heapq
 import json
 import re
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -17,9 +18,9 @@ from graphify.build import build_from_json
 from graphify.cluster import cluster
 from graphify.detect import FileType, classify_file
 from graphify.extract import extract
-from graphify.paths import out_path, write_text_atomic
+from graphify.paths import os_replace_with_fallback, out_path, write_text_atomic
 from graphify.review_source import (
-    ReviewError, changed_files, file_evidence, materialize_snapshot, repository_root,
+    ReviewError, changed_files, file_evidence, materialize_snapshot, repository_root, source_lines,
 )
 
 MAX_GRAPH_NODES = 12
@@ -27,6 +28,8 @@ MAX_SEEDS = 100
 MAX_CONTEXT = 200
 MAX_RECORDS = 500
 MAX_INFERENCE_CHARS = 60000
+MAX_CHANGE_STORIES = 500
+MAX_BEHAVIOR_STORIES = 24
 CONFIDENCE = {"EXTRACTED", "INFERRED", "AMBIGUOUS"}
 
 
@@ -71,7 +74,7 @@ def _structural_graph(snapshot: dict, cache: Path) -> tuple[nx.Graph, dict]:
 def _seeds(graph: nx.Graph, file: str | None, source: str | None, ranges: list) -> tuple[list[str], str]:
     candidates = sorted(str(n) for n, d in graph.nodes(data=True)
                         if file and d.get("source_file") == file and d.get("file_type") != "rationale")
-    if source is not None and ranges and all(start > len(source.splitlines()) for start, _ in ranges):
+    if source is not None and ranges and all(start > len(source_lines(source)) for start, _ in ranges):
         return [], "insertion_after_existing_source"
     if source and file and file.endswith(".py"):
         try:
@@ -167,12 +170,12 @@ def _add_graph_evidence(model: dict, graphs: dict, snapshots: dict) -> None:
         file = record.get("source_file")
         line = _location_line(str(record.get("source_location", "")))
         text = snapshots[side]["sources"].get(file)
-        if not line or text is None or not 1 <= line <= len(text.splitlines()):
+        if not line or text is None or not 1 <= line <= len(source_lines(text)):
             return
         key = (side, file, line)
         if key not in index:
             identifier = "source-" + hashlib.sha256(repr(key).encode()).hexdigest()[:16]
-            lines = text.splitlines()
+            lines = source_lines(text)
             stop = min(len(lines), line + 5)
             model["evidence"].append({"id": identifier, "kind": "graph_source", "side": side,
                                       "revision": model["target"]["comparison_base" if side == "base" else "head"],
@@ -188,6 +191,42 @@ def _add_graph_evidence(model: dict, graphs: dict, snapshots: dict) -> None:
     for side in ("base", "head"):
         for record in model["blast_radius"][side]["graph"]["nodes"] + model["blast_radius"][side]["graph"]["edges"]:
             attach(record, side)
+
+
+def _blast_graph(graph: nx.DiGraph, radius: dict) -> dict:
+    """Keep displayed dependents connected, including hidden member bridges."""
+    direct = set(radius["direct_ids"][:6])
+    selected = set(direct)
+    bridges = {str(member): str(seed) for seed in sorted(direct)
+               for _, member, data in graph.out_edges(seed, data=True)
+               if data.get("relation") in ("method", "contains")}
+    indirect = {h["id"]: h for h in radius["indirect"]}
+    for hit in radius["indirect"]:
+        targets = sorted(str(v) for _, v, data in graph.out_edges(hit["id"], data=True)
+                         if data.get("relation") in DEFAULT_AFFECTED_RELATIONS
+                         and (v in selected or v in bridges))
+        if not targets:
+            continue
+        target = min(targets, key=lambda n: (n not in selected, n))
+        additions = {hit["id"], target} - selected
+        if len(selected | additions) <= MAX_GRAPH_NODES:
+            selected.update(additions)
+    nodes = []
+    for node_id in sorted(selected):
+        record = _node(graph, node_id)
+        if node_id in radius["direct_ids"]:
+            record["depth"] = 0
+        elif node_id in indirect:
+            record["depth"] = indirect[node_id]["depth"]
+        else:
+            record["context_bridge"] = True
+        nodes.append(record)
+    return {"nodes": nodes, "edges": [_edge(str(u), str(v), data)
+            for u, v, data in sorted(graph.edges(data=True), key=lambda x: (str(x[0]), str(x[1])))
+            if u in selected and v in selected and (data.get("relation") in DEFAULT_AFFECTED_RELATIONS
+                or u in direct and bridges.get(str(v)) == str(u))],
+            "omitted_nodes": max(0, radius["direct_count"] + radius["indirect_count"]
+                                 - len(selected & (set(radius["direct_ids"]) | set(indirect))))}
 
 
 def build_review(root: Path, target: dict, *, depth: int = 2, infer: bool = False,
@@ -228,7 +267,10 @@ def build_review(root: Path, target: dict, *, depth: int = 2, infer: bool = Fals
                       "Community IDs are local to each snapshot. Dynamic dispatch and unsupported languages limit coverage.",
                   ]}
         seeds = {"base": [], "head": []}
-        for index, change in enumerate(changed_files(root, target["comparison_base"], target["head"])):
+        changes = changed_files(root, target["comparison_base"], target["head"])
+        result["changed_file_count"] = len(changes)
+        result["omitted_change_stories"] = max(0, len(changes) - MAX_CHANGE_STORIES)
+        for index, change in enumerate(changes[:MAX_CHANGE_STORIES]):
             story_id = f"change-{index + 1}"
             evidence, source = file_evidence(change, snapshots, target, story_id)
             local_seeds, seed_methods = {}, {}
@@ -251,12 +293,9 @@ def build_review(root: Path, target: dict, *, depth: int = 2, infer: bool = Fals
                                       "total_nodes": len(members), "affected_nodes": len(set(members) & affected)}
                                      for cid, members in sorted(communities.items()) if set(members) & affected]
             # Show nearest dependents and a few direct seeds, rather than a hairball.
-            order = sorted(set(radius["direct_ids"][:6]) | {h["id"] for h in radius["indirect"][:6]})
-            radius["graph"] = {"nodes": [dict(_node(graph, n), community=membership.get(n),
-                                              depth=next((h["depth"] for h in radius["indirect"] if h["id"] == n), 0)) for n in order],
-                               "edges": [_edge(str(u), str(v), d) for u, v, d in sorted(graph.edges(data=True), key=lambda x: (str(x[0]), str(x[1])))
-                                         if u in order and v in order and d.get("relation") in DEFAULT_AFFECTED_RELATIONS],
-                               "omitted_nodes": max(0, radius["direct_count"] + radius["indirect_count"] - len(order))}
+            radius["graph"] = _blast_graph(graph, radius)
+            for record in radius["graph"]["nodes"]:
+                record["community"] = membership.get(record["id"])
             result["blast_radius"][side] = radius
         _add_graph_evidence(result, graphs, snapshots)
     if infer:
@@ -271,6 +310,9 @@ def infer_behavior(review: dict, *, backend: str | None = None, model: str | Non
 
     analysis = {"status": "unavailable", "usage": {}}
     review["behavior_analysis"] = analysis
+    # A retry describes this invocation, never an earlier provider's result.
+    for story in review["stories"]:
+        story["behavior"] = None
     try:
         selected = backend or detect_backend()
         if not selected:
@@ -282,10 +324,13 @@ def infer_behavior(review: dict, *, backend: str | None = None, model: str | Non
         payload, used = [], 0
         for story in review["stories"]:
             evidence = [e for e in review["evidence"] if e["id"] in story["evidence_ids"]]
+            required_sides = {side for side, state in story["source"]["sides"].items() if state == "available"}
             record = {"story_id": story["id"], "file": story["title"], "sides": story["source"]["sides"],
                       "evidence": evidence, "graphs": story["graphs"]}
             cost = len(json.dumps(record, ensure_ascii=False))
-            if not evidence or used + cost > MAX_INFERENCE_CHARS:
+            if (not evidence or "unavailable" in story["source"]["sides"].values()
+                    or not required_sides <= {e["side"] for e in evidence}
+                    or used + cost > MAX_INFERENCE_CHARS or len(payload) >= MAX_BEHAVIOR_STORIES):
                 continue
             payload.append(record)
             used += cost
@@ -312,7 +357,7 @@ def infer_behavior(review: dict, *, backend: str | None = None, model: str | Non
             raise ReviewError("Behavior response exceeded the review size limit.")
         parsed = json.loads(reply)
         entries = parsed.get("behavior_changes")
-        if not isinstance(entries, list) or len(entries) > 24:
+        if not isinstance(entries, list) or len(entries) > MAX_BEHAVIOR_STORIES:
             raise ReviewError("Behavior response must contain at most 24 change entries.")
         stories = {s["id"]: s for s in review["stories"]}
         supplied = {p["story_id"] for p in payload}
@@ -325,10 +370,10 @@ def infer_behavior(review: dict, *, backend: str | None = None, model: str | Non
             ids = entry.get("evidence_ids")
             fields = ("summary", "before_pseudocode", "after_pseudocode")
             uncertainty = entry.get("uncertainties", [])
-            if (not all(isinstance(entry.get(k), str) and 0 < len(entry[k]) <= 6000 for k in fields)
+            if (not all(_valid_text(entry.get(k), 6000) for k in fields)
                     or not isinstance(ids, list) or not ids or not all(isinstance(i, str) and i in story["evidence_ids"] for i in ids)
                     or not isinstance(uncertainty, list) or len(uncertainty) > 12
-                    or not all(isinstance(u, str) and len(u) <= 2000 for u in uncertainty)):
+                    or not all(_valid_text(u, 2000) for u in uncertainty)):
                 rejected += 1
                 continue
             cited = {e["side"] for e in review["evidence"] if e["id"] in ids}
@@ -336,21 +381,46 @@ def infer_behavior(review: dict, *, backend: str | None = None, model: str | Non
             if not needed <= cited:
                 rejected += 1
                 continue
+            if any(state == "not_present" and entry[f"{'before' if side == 'base' else 'after'}_pseudocode"].strip().casefold() != "not present"
+                   for side, state in story["source"]["sides"].items()):
+                rejected += 1
+                continue
             accepted.append((story, {k: entry[k] for k in (*fields, "evidence_ids")} | {
                 "confidence": "INFERRED", "method": "model_interpretation", "uncertainties": uncertainty}))
             seen.add(story["id"])
         for story, behavior in accepted:
             story["behavior"] = behavior
-        analysis.update(status="partial" if rejected else "complete" if accepted else "abstained",
-                        accepted=len(accepted), rejected=rejected)
+        unexplained = len(stories) - len(accepted)
+        analysis.update(status=("partial" if rejected or unexplained else "complete") if accepted else "failed" if rejected else "abstained",
+                        accepted=len(accepted), rejected=rejected, unexplained_stories=unexplained)
+        if analysis["status"] == "partial":
+            analysis["reason"] = "Some stories did not receive a usable cited behavior interpretation."
+        elif analysis["status"] == "failed":
+            analysis["reason"] = "All model interpretations failed schema or source-citation validation."
     except Exception as exc:
         analysis.update(status="failed", reason=f"Behavior interpretation failed ({type(exc).__name__}). Structural evidence is retained.")
+
+
+def _valid_text(value: object, limit: int) -> bool:
+    if not isinstance(value, str) or not value.strip() or len(value) > limit:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def validate_review(review: dict) -> None:
     """Check citation integrity; this does not prove semantic interpretations."""
     ids = set()
     target = review["target"]
+    if target.get("type") not in ("pull_request", "git_comparison") or any(
+        not isinstance(target.get(key), str) or not re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", target[key])
+        for key in ("comparison_base", "head")):
+        raise ReviewError("Review requires a known target type and fixed commit IDs.")
+    if target["type"] == "pull_request" and (type(target.get("number")) is not int or target["number"] <= 0):
+        raise ReviewError("Review PR number must be a positive integer.")
     for evidence in review["evidence"]:
         if evidence["id"] in ids:
             raise ReviewError("Duplicate review evidence ID.")
@@ -385,18 +455,51 @@ def save_review(review: dict, root: Path) -> tuple[Path, Path]:
     document = render_review(review)
     target = review["target"]
     name = f"pr-{target['number']}" if target["type"] == "pull_request" else f"git-{target['comparison_base'][:12]}-{target['head'][:12]}"
-    directory = root / out_path("reviews", name)
+    directory = root.resolve()
+    output = out_path()
+    if output.is_absolute():
+        directory = output.parent.resolve()
+        components = [output.name]
+    else:
+        components = list(output.parts)
+    for component in [*components, "reviews", name]:
+        directory = directory / component
+        if directory.is_symlink():
+            raise ReviewError("Review output directories must not be symlinks.")
+    directory.mkdir(parents=True, exist_ok=True)
     json_path, html_path = directory / "review.json", directory / "review.html"
-    previous = html_path.read_text(encoding="utf-8") if html_path.exists() else None
-    write_text_atomic(html_path, document)
+    if json_path.is_symlink() or html_path.is_symlink():
+        raise ReviewError("Review output files must not be symlinks.")
+    # Prepare both outputs before touching either old artifact. Final swaps
+    # replace directory entries, so they never follow a destination symlink.
+    stage = Path(tempfile.mkdtemp(prefix=".review-stage-", dir=directory))
+    retain_stage = False
     try:
-        write_text_atomic(json_path, serialized)
-    except BaseException:
-        if previous is not None:
-            write_text_atomic(html_path, previous)
-        else:
-            html_path.unlink(missing_ok=True)
-        raise
+        write_text_atomic(stage / "review.html", document)
+        write_text_atomic(stage / "review.json", serialized)
+        backup = stage / "previous.html"
+        had_html = html_path.exists()
+        if had_html:
+            os_replace_with_fallback(html_path, backup)
+        installed_html = False
+        try:
+            os_replace_with_fallback(stage / "review.html", html_path)
+            installed_html = True
+            os_replace_with_fallback(stage / "review.json", json_path)
+        except BaseException as exc:
+            try:
+                if had_html:
+                    os_replace_with_fallback(backup, html_path)
+                elif installed_html:
+                    html_path.unlink(missing_ok=True)
+            except OSError as restore_error:
+                # Do not delete the prior artifact if its restore also fails.
+                retain_stage = backup.exists()
+                raise ReviewError(f"Review save failed ({exc}); HTML recovery also failed ({restore_error}). Prior HTML: {backup}") from exc
+            raise
+    finally:
+        if not retain_stage:
+            shutil.rmtree(stage, ignore_errors=True)
     return json_path, html_path
 
 
@@ -416,6 +519,10 @@ def cmd_review(argv: list[str]) -> None:
     parser.add_argument("--model")
     parser.add_argument("--depth", type=int, default=2)
     args = parser.parse_args(argv)
+    if not 0 <= args.depth <= 6:
+        parser.error("--depth must be between 0 and 6")
+    if args.number is not None and args.number <= 0:
+        parser.error("PR number must be positive")
     if args.number is None and not (args.base and args.head):
         parser.error("provide a PR number, or both --base and --head for a local comparison")
     if args.number is not None and (args.base or args.head):

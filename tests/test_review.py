@@ -119,6 +119,8 @@ def test_unsubstantiated_or_malformed_behavior_rejected(model, monkeypatch, chan
     review.infer_behavior(model, backend="ollama")
     assert model["stories"][0]["behavior"] is None
     assert model["behavior_analysis"]["rejected"] == 1
+    assert model["behavior_analysis"]["status"] == "failed"
+    assert "validation" in model["behavior_analysis"]["reason"]
 
 
 def test_wrong_side_citations_rejected(model, monkeypatch):
@@ -148,6 +150,37 @@ def test_unavailable_and_abstained_are_explicit(model, monkeypatch):
     monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: '{"behavior_changes":[]}')
     review.infer_behavior(model, backend="ollama")
     assert model["behavior_analysis"]["status"] == "abstained"
+
+
+def test_partial_reply_discloses_unexplained_stories(model, monkeypatch):
+    import graphify.llm as llm
+    second = copy.deepcopy(model["stories"][0])
+    second["id"] = "change-2"
+    model["stories"].append(second)
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: reply_for(model))
+    review.infer_behavior(model, backend="ollama")
+    assert model["behavior_analysis"]["status"] == "partial"
+    assert model["behavior_analysis"]["unexplained_stories"] == 1
+    assert model["stories"][1]["behavior"] is None
+
+
+@pytest.mark.parametrize("result", ["abstained", "failed", "unavailable"])
+def test_inference_retry_removes_previous_interpretations(model, monkeypatch, result):
+    import graphify.llm as llm
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: reply_for(model))
+    review.infer_behavior(model, backend="ollama")
+    assert model["stories"][0]["behavior"] is not None
+    original = copy.deepcopy(model["graph_diff"])
+    if result == "unavailable":
+        monkeypatch.setattr(llm, "detect_backend", lambda: None)
+        review.infer_behavior(model)
+    else:
+        reply = '{"behavior_changes":[]}' if result == "abstained" else 'invalid JSON'
+        monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: reply)
+        review.infer_behavior(model, backend="ollama")
+    assert model["behavior_analysis"]["status"] == result
+    assert model["stories"][0]["behavior"] is None
+    assert model["graph_diff"] == original
 
 
 def test_revision_and_range_validation(model):
@@ -268,3 +301,61 @@ def test_real_extraction_includes_both_methods_added_in_one_hunk(repository):
     assert len(direct) == 2
     assert any("first_added" in node for node in direct)
     assert any("second_added" in node for node in direct)
+
+
+@pytest.mark.parametrize("field", ["summary", "before_pseudocode", "after_pseudocode", "uncertainties"])
+def test_lone_surrogates_are_rejected_without_suppressing_artifacts(model, monkeypatch, tmp_path, field):
+    import graphify.llm as llm
+    value = ["\ud800"] if field == "uncertainties" else "\ud800"
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: reply_for(model, **{field: value}))
+    review.infer_behavior(model, backend="ollama")
+    assert model["behavior_analysis"]["status"] == "failed"
+    assert model["stories"][0]["behavior"] is None
+    json_path, html_path = review.save_review(model, tmp_path)
+    assert json_path.exists() and html_path.exists()
+
+
+def test_absent_side_cannot_receive_invented_behavior(model, monkeypatch):
+    import graphify.llm as llm
+    story = model["stories"][0]
+    story["source"]["sides"]["base"] = "not_present"
+    story["evidence_ids"] = [e["id"] for e in model["evidence"] if e["side"] == "head" and e["id"] in story["evidence_ids"]]
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: reply_for(model))
+    review.infer_behavior(model, backend="ollama")
+    assert story["behavior"] is None
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: reply_for(model, before_pseudocode="Not present"))
+    review.infer_behavior(model, backend="ollama")
+    assert story["behavior"]["before_pseudocode"] == "Not present"
+    story["source"]["sides"]["base"] = "unavailable"
+    monkeypatch.setattr(llm, "_call_llm", lambda *args, **kwargs: pytest.fail("unavailable source interpreted"))
+    review.infer_behavior(model, backend="ollama")
+    assert model["behavior_analysis"]["status"] == "unavailable" and story["behavior"] is None
+
+
+def test_blast_graph_retains_class_member_bridges_without_counting_them():
+    graph = nx.DiGraph()
+    for name in ("Service", "Service.run", "caller"):
+        graph.add_node(name, label=name)
+    graph.add_edge("Service", "Service.run", relation="method", confidence="EXTRACTED")
+    graph.add_edge("caller", "Service.run", relation="calls", confidence="EXTRACTED")
+    radius = review._context(graph, ["Service"], 2)
+    diagram = review._blast_graph(graph, radius)
+    assert radius["direct_count"] == radius["indirect_count"] == 1
+    assert len(diagram["nodes"]) == 3 and len(diagram["edges"]) == 2
+    assert next(n for n in diagram["nodes"] if n["id"] == "Service.run")["context_bridge"]
+    assert diagram["omitted_nodes"] == 0
+
+
+def test_changed_story_cap_discloses_partial_review(repository, monkeypatch):
+    root, base, head = repository
+    original = review.changed_files
+    def many(*args):
+        change = original(*args)[0]
+        return [change, dict(change, head_file="other.py", base_file="other.py")]
+    monkeypatch.setattr(review, "changed_files", many)
+    monkeypatch.setattr(review, "MAX_CHANGE_STORIES", 1)
+    result = review.build_review(root, git_target(root, base, head))
+    assert len(result["stories"]) == 1
+    assert result["changed_file_count"] == 2 and result["omitted_change_stories"] == 1
+    from graphify.review_html import render_review
+    assert "1 of 2 changed-file stories were omitted" in render_review(result)

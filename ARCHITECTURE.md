@@ -82,6 +82,9 @@ pins base-tip, merge base, and head, reads committed blobs, applies existing
 corpus boundaries, and builds equivalent AST-only graphs under temporary roots.
 `graph_diff()` supplies topology changes; side-specific node/edge attributes are
 rehydrated for provenance. Text hunks remain evidence when topology is unchanged.
+Physical LF lines and Git modes/object IDs preserve source identity; invalid
+UTF-8 paths never alias a display-decoded name. Collection and diff-work budgets
+are explicit, unreadable ignore rules fail closed, and omitted stories are counted.
 `affected_nodes()` provides bounded incoming dependency context. Existing
 community clustering supplies side-local groupings; counts never imply defects.
 
@@ -101,6 +104,10 @@ CDN callflow rendering and undirected static SVG export remain compatible.
 All repository/model strings are escaped; no scripts or external assets are
 required. Explanations, graphs, dependency details, source, and raw diffs form
 successive disclosure layers. Coverage gaps remain visible before expansion.
+Blast diagrams retain class-member bridges without inflating affected counts.
+Private output staging rejects symlinked review paths and preserves recovery
+data on a failed restore. Inference retries clear stale results; invalid Unicode,
+unsupported source sides, and invented absent-side behavior are rejected.
 
 ## Adding a new language extractor
 
