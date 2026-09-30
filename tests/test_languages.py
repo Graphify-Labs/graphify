@@ -4606,6 +4606,44 @@ def test_zig_enum_and_union_methods_are_extracted(tmp_path):
     assert (".area()", "helper()") in calls, "call from union method body dropped"
 
 
+@_needs_zig
+def test_zig_enum_members_emit_case_of_nodes(tmp_path):
+    """Each enum member must become a node with a `case_of` edge to its enum.
+
+    The enum body walk only emitted the enum's methods; its members (the
+    `container_field` nodes `red`, `north = 0`) were dropped, leaving the enum a
+    memberless leaf. Every other language with enums (Java #1719, Swift, Scala,
+    Rust) emits a node per member with a `case_of` edge; this brings Zig to
+    parity. Struct fields share the container_field shape and must stay untouched.
+    """
+    src = (
+        "const Color = enum { red, green, blue };\n"
+        "const Dir = enum(u8) { north = 0, south };\n"
+        "const Point = struct { x: i32, y: i32 };\n"
+    )
+    f = tmp_path / "colors.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    labels = set(id_to_label.values())
+    assert {"red", "green", "blue", "north", "south"} <= labels
+    case_of = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "case_of"
+    }
+    assert ("Color", "red") in case_of
+    assert ("Color", "green") in case_of
+    assert ("Color", "blue") in case_of
+    assert ("Dir", "north") in case_of
+    assert ("Dir", "south") in case_of
+    # A struct field is a container_field too, but is not an enum member and must
+    # not be emitted as a node or gain a case_of edge.
+    assert "x" not in labels
+    assert not any(src_lbl == "Point" for src_lbl, _ in case_of)
+
+
 @_needs_commonlisp
 def test_cl_ids_are_path_qualified_across_directories(tmp_path):
     """Two same-named .lisp files in DIFFERENT directories must mint distinct
