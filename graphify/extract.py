@@ -53,6 +53,7 @@ from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F4
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
 from graphify.extractors.markdown import extract_markdown, _MD_LINK_INDEX_CACHE  # noqa: F401
+from graphify.extractors.fsharp import extract_fsharp  # noqa: F401
 from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
@@ -3225,6 +3226,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".php": "php", ".phtml": "php", ".php3": "php", ".php4": "php",
     ".php5": "php", ".php7": "php", ".phps": "php",
     ".cs": "dotnet", ".vb": "dotnet", ".razor": "dotnet", ".cshtml": "dotnet", ".xaml": "dotnet",
+    ".fs": "dotnet", ".fsx": "dotnet",
     ".lua": "lua", ".luau": "lua",
     ".zig": "zig",
     ".ex": "elixir", ".exs": "elixir",
@@ -3320,6 +3322,68 @@ def _is_top_level_function_definition(node: dict) -> bool:
     )
 
 
+def _qualified_stub_scope(stub: dict) -> tuple[str, str, list[str]] | None:
+    """(qualifier, member name, scopes) of a SCOPED stub, else None. The
+    referrer (an F# call it could not resolve locally) named its target
+    either through a module or namespace (`Lib.map`: qualifier "Lib") or
+    unqualified (`map`: qualifier ""). `scopes` are the prefixes the referrer
+    could resolve that name from, NEAREST FIRST: its opens and enclosing
+    namespaces/modules, and "" (the root) for a qualified name."""
+    meta = stub.get("metadata")
+    if not isinstance(meta, dict):
+        return None
+    qualifier, name, scopes = meta.get("qualifier"), meta.get("name"), meta.get("scopes")
+    if (isinstance(qualifier, str) and isinstance(name, str) and name
+            and isinstance(scopes, list) and all(isinstance(s, str) for s in scopes)):
+        return qualifier, name, scopes
+    return None
+
+
+def _exact_definition_name(node: dict) -> str:
+    """A definition's name as written: its label without the `()` function
+    suffix or the leading `.` of a member label."""
+    label = str(node.get("label", "")).strip()
+    if label.endswith("()"):
+        label = label[:-2]
+    return label[1:] if label.startswith(".") else label
+
+
+def _names_by_definition_path(nodes: list[dict]) -> dict[str, set[str]]:
+    """Container path -> exact names of the sourced definitions inside it."""
+    out: dict[str, set[str]] = {}
+    for n in nodes:
+        if n.get("source_file"):
+            path = _definition_path(n)
+            if path:
+                out.setdefault(path, set()).add(_exact_definition_name(n))
+    return out
+
+
+def _definition_path(node: dict) -> str | None:
+    """The container a definition lives in: its container path (F#) or
+    namespace (C#). A C# nested type's namespace is not its owning path, so
+    such a type has none."""
+    meta = node.get("metadata")
+    if not isinstance(meta, dict):
+        return None
+    path = meta.get("container_path")
+    if not path and not meta.get("is_nested_type"):
+        path = meta.get("namespace")
+    return path if isinstance(path, str) and path else None
+
+
+def _defined_under(node: dict, qualifier: str, scope: str) -> bool:
+    """Whether `node` is defined in the container `qualifier` names from
+    `scope`: its path equals `scope.qualifier`, or `qualifier` from the root,
+    or (unqualified, qualifier "") the scope itself."""
+    path = _definition_path(node)
+    if path is None:
+        return False
+    if not qualifier:
+        return bool(scope) and path == scope
+    return path == (f"{scope}.{qualifier}" if scope else qualifier)
+
+
 def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
     """Map unresolved no-source stubs to a unique real definition with the same label."""
     real_by_label: dict[str, list[dict]] = {}       # exact-case type-like (all languages)
@@ -3369,9 +3433,69 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
                     supertype_stub_ids.add(str(nid))
 
     remap: dict[str, str] = {}
+    names_at: dict[str, set[str]] | None = None  # built on first scoped stub
+    defs_by_file_path_name: dict[tuple, list[dict]] | None = None  # built on first fallback
     for stub in stubs:
         stub_id = str(stub.get("id", ""))
         if not stub_id:
+            continue
+        scope = _qualified_stub_scope(stub)
+        if scope is not None:
+            # A scoped stub never binds by its label. It binds only to a
+            # unique same-named definition in the container its qualifier
+            # names from the referrer's scopes, NEAREST SCOPE FIRST: the first
+            # scope with any match decides, as it would for the compiler.
+            # `Lib.map` reaches module Lib's map (One.Lib's under `open One`,
+            # Two.Lib's when `open Two` comes later), `List.map` reaches
+            # nothing in the corpus, and an unqualified `map` only a map in a
+            # module the referrer opened or is inside.
+            qualifier, member, scopes = scope
+            key = _node_label_key({"label": member})
+            fams = stub_families.get(stub_id, set())
+            origin = stub.get("origin_file")
+            pool = [c for c in real_by_label.get(key, []) + func_by_label.get(key, [])
+                    # the label key drops punctuation (`f'` -> `f`): compare the
+                    # exact name, since F# names are exact
+                    if _exact_definition_name(c) == member
+                    and (not fams or _lang_family(c.get("source_file")) in fams)
+                    # the referring file already resolved its own definitions;
+                    # one it did not bind there (not yet declared, not in scope)
+                    # must not be bound here either
+                    and not (origin and c.get("source_file") == origin)]
+            meta = stub.get("metadata") or {}
+            head = qualifier.split(".")[0]
+            decided = False
+            for s in scopes:
+                scoped = [c for c in pool if _defined_under(c, qualifier, s)]
+                if scoped:
+                    if len(scoped) == 1 and isinstance(scoped[0].get("id"), str):
+                        remap[stub_id] = scoped[0]["id"]
+                    decided = True
+                    break
+                if names_at is None:
+                    names_at = _names_by_definition_path(nodes)
+                if qualifier and s and head in names_at.get(s, ()):
+                    # This scope supplies the qualifier's first segment as
+                    # something that does not own the member (a value such as
+                    # `let Lib = C()`, say): the name resolves here, to nothing
+                    # rewireable, and nothing further out may be tried.
+                    decided = True
+                    break
+            fallback = meta.get("fallback")
+            if (not decided and meta.get("exhaustive") and isinstance(fallback, list)
+                    and len(fallback) == 2):
+                # The referrer's own local answer, named by [container path,
+                # exact name] within the referring file.
+                if defs_by_file_path_name is None:
+                    defs_by_file_path_name = {}
+                    for n in nodes:
+                        if n.get("source_file") and _definition_path(n):
+                            defs_by_file_path_name.setdefault(
+                                (n["source_file"], _definition_path(n), _exact_definition_name(n)),
+                                []).append(n)
+                local = defs_by_file_path_name.get((origin, fallback[0], fallback[1]), [])
+                if len(local) == 1 and isinstance(local[0].get("id"), str):
+                    remap[stub_id] = local[0]["id"]
             continue
         candidates = real_by_label.get(_node_label_key(stub), [])
         if len(candidates) != 1:
@@ -6908,6 +7032,8 @@ _DISPATCH: dict[str, Any] = {
     ".svelte": extract_svelte,
     ".astro": extract_astro,
     ".dart": extract_dart,
+    ".fs": extract_fsharp,
+    ".fsx": extract_fsharp,
     ".ml": extract_ocaml,
     ".mli": extract_ocaml,
     ".lisp": extract_commonlisp,
@@ -6975,6 +7101,8 @@ _EXTRA_FOR_EXTENSION = {
     ".hcl": "terraform",
     ".dm": "dm",
     ".dme": "dm",
+    ".fs": "fsharp",
+    ".fsx": "fsharp",
     ".ml": "ocaml",
     ".mli": "ocaml",
     ".lisp": "commonlisp",
@@ -7091,6 +7219,134 @@ def _is_cpp_header(path: Path) -> bool:
     return any(marker in head for marker in _CPP_HEADER_MARKERS)
 
 
+def _blank_fs_comments_and_strings(text: str) -> str:
+    """`text` with comments and string/char literals replaced by spaces,
+    newlines kept, so line-start checks see only code. Covers F# `(* *)`
+    (nested; `(*)` is the multiplication operator, not a comment), `//`,
+    GLSL `/* */`, "..." with escapes, verbatim @"...", triple-quoted
+    \"\"\"...\"\"\" and char literals ('x', '\\n', '"'). A comment or string left
+    open at the end of the window blanks the rest."""
+    out: list[str] = []
+    i, n = 0, len(text)
+
+    def blank(segment: str) -> str:
+        return "".join(ch if ch == "\n" else " " for ch in segment)
+
+    def string_end(j: int) -> int:
+        """End of the string literal starting at j (triple-quoted, verbatim
+        @"..." or regular with backslash escapes); n if it never closes."""
+        if text.startswith('"""', j):
+            k = text.find('"""', j + 3)
+            return n if k < 0 else k + 3
+        verbatim = text.startswith('@"', j)
+        k = j + (2 if verbatim else 1)
+        while k < n:
+            if not verbatim and text[k] == "\\":
+                k += 2
+            elif verbatim and text.startswith('""', k):
+                k += 2
+            elif text[k] == '"':
+                return k + 1
+            else:
+                k += 1
+        return n
+
+    while i < n:
+        ch = text[i]
+        if text.startswith("(*", i) and not text.startswith("(*)", i):
+            # F# lexes strings inside comments: `(* "*)" *)` is one comment.
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text[j] == '"':
+                    j = string_end(j)
+                elif text.startswith("(*", j) and not text.startswith("(*)", j):
+                    depth, j = depth + 1, j + 2
+                elif text.startswith("*)", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+        elif ch == '"' or text.startswith('@"', i):
+            j = string_end(i)
+        elif ch == "'" and i + 2 < n and (text[i + 2] == "'" or text[i + 1] == "\\"):
+            # 'x' or an escape such as '\n'; a lone ' is a type variable or prime
+            close = text.find("'", i + 2)
+            j = n if close < 0 else close + 1
+        else:
+            out.append(ch)
+            i += 1
+            continue
+        out.append(blank(text[i:j]))
+        i = j
+    return "".join(out)
+
+
+# Line starts that only F# source has.
+_FSHARP_DECLARATION_RE = re.compile(
+    r"^(?:(?:let|module|namespace|open|member)\s|#(?:light|load|r)\b|\[<)"
+)
+# A `type` line needs an identifier type name and the `=` or `with` every F#
+# type declaration has: Forth's `type` word starts lines too (`type cr`,
+# `type 1 1 = .`). A line ending in `;` is a GLSL statement (`type t = f();`),
+# not an F# declaration. This is a lexical heuristic, not proof of language.
+_FSHARP_TYPE_DECLARATION_RE = re.compile(
+    r"^type\s+(?:(?:private|internal|public)\s+)?[A-Za-z_`][\w'`]*.*(?:=|\bwith\b)"
+)
+_GLSL_DIRECTIVE_RE = re.compile(r"^#(?:version|extension)\b")
+
+
+def _looks_like_fsharp_source(path: Path) -> bool:
+    """Distinguish F# from the other users of the .fs extension (GLSL fragment
+    shaders, Forth).
+
+    - Comments and string literals are blanked first, so `// type of light` in
+      a shader is not an F# declaration, and `#version` inside an F# comment
+      or embedded shader string does not veto the file.
+    - A GLSL preprocessor directive (`#version`, `#extension`) at a line start
+      rejects the file: F# cannot parse either line.
+    - Otherwise the file is F# only if some line starts with an F#
+      declaration (`module`, `namespace`, `let`, `open`, `type X =`, ...). A
+      compilable F# file always has one; Forth and directive-free shaders do
+      not, so they fall through to the reject default.
+    - The window is 64 KB so a long license header cannot hide the
+      declarations.
+    """
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(65536)  # bounded read — not read_bytes()[:n],
+            # which slurps the whole file before slicing
+    except OSError:
+        return True  # unreadable: let the extractor report the real error
+    # Windows-authored F# commonly leads with a UTF-8 BOM; without stripping it
+    # the first line's marker (usually `module`/`namespace`) never matches.
+    if head.startswith(b"\xef\xbb\xbf"):
+        head = head[3:]
+    code = _blank_fs_comments_and_strings(head.decode("utf-8", errors="replace"))
+
+    # Only shapes the F# grammar cannot parse at a line start may veto an F#
+    # declaration. Word-shaped GLSL markers (`uniform`, `varying`, `layout`,
+    # `gl_`, `in vec3`, `out vec4`, `void main`) are all valid F# line-starts —
+    # `gl_ctx.MakeCurrent ctx`, verbose-syntax `in vec2 x x`, `out`/`void` as
+    # plain identifiers — so any of them as a veto would drop real F# files.
+    saw_glsl_directive = saw_fsharp_declaration = False
+    for line in code.splitlines():
+        line = line.lstrip()
+        if _GLSL_DIRECTIVE_RE.match(line):
+            saw_glsl_directive = True
+        elif _FSHARP_DECLARATION_RE.match(line) or (
+                _FSHARP_TYPE_DECLARATION_RE.match(line) and not line.rstrip().endswith(";")):
+            saw_fsharp_declaration = True
+
+    # A GLSL directive vetoes any F#-looking line: F# cannot contain one, so
+    # the declaration-shaped line is shader text that happens to match.
+    return saw_fsharp_declaration and not saw_glsl_directive
+
+
 def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
     if path.name.lower().endswith(".blade.php"):
@@ -7125,6 +7381,9 @@ def _get_extractor(path: Path) -> Any | None:
     # an extractor (surfaced by the no-AST-extractor warning, #1689) rather than
     # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
     if suffix == ".m" and not _is_objc_source(path):
+        return None
+    # `.fs` is F# OR a GLSL fragment shader (or Forth). Only route plausible F#.
+    if suffix == ".fs" and not _looks_like_fsharp_source(path):
         return None
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.
     # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but
@@ -8337,7 +8596,18 @@ def extract(
     # references edges left on shadow stubs, disambiguating same-named types by the
     # referencing file's `using` directives + enclosing namespace (mirrors Java #1318).
     _DOTNET_TYPE_EXTS = {".cs", ".razor", ".cshtml"}
+    # The imports repoint reads language-agnostic edge metadata (target_fqn /
+    # using_kind) and canonical namespace nodes, so it also runs for a pure-F#
+    # corpus — F# `open` edges carry the same contract. Gated on .cs alone, an
+    # F#-only repo's `open` edges never reached the canonical namespace node
+    # the F# files declare. The TYPE-reference resolver stays gated
+    # on C# sources: its index and metadata contract (metadata.namespace,
+    # scope_chain, ref_token) are C#-shaped, and F# nodes do not provide them
+    # yet — generalizing it is the follow-up that would also resolve
+    # cross-language constructor calls.
+    _DOTNET_IMPORT_EXTS = _DOTNET_TYPE_EXTS | {".fs", ".fsx"}
     cs_paths = [p for p in paths if p.suffix.lower() in _DOTNET_TYPE_EXTS]
+    dotnet_paths = [p for p in paths if p.suffix.lower() in _DOTNET_IMPORT_EXTS]
     if cs_paths:
         cs_results = [r for r, p in zip(per_file, paths) if p.suffix.lower() in _DOTNET_TYPE_EXTS]
         try:
@@ -8345,11 +8615,13 @@ def extract(
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning("C# type-reference resolution failed, skipping: %s", exc)
+    if dotnet_paths:
+        dotnet_results = [r for r, p in zip(per_file, paths) if p.suffix.lower() in _DOTNET_IMPORT_EXTS]
         try:
-            _resolve_cross_file_csharp_imports(cs_results, cs_paths, all_nodes, all_edges)
+            _resolve_cross_file_csharp_imports(dotnet_results, dotnet_paths, all_nodes, all_edges)
         except Exception as exc:
             import logging
-            logging.getLogger(__name__).warning("C# cross-file import resolution failed, skipping: %s", exc)
+            logging.getLogger(__name__).warning(".NET cross-file import resolution failed, skipping: %s", exc)
 
     # Cross-file Bash source-backed call resolution: a call to a function defined
     # in a file this one `source`s is left unresolved by the per-file extractor
