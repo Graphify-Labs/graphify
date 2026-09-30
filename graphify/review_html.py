@@ -222,8 +222,11 @@ def render_review(review: dict) -> str:
     if review.get("omitted_change_stories"):
         warnings.append(f'{review["omitted_change_stories"]} of {review["changed_file_count"]} changed-file stories were omitted by the review budget. Blast radius covers the retained stories only.')
     for side, coverage in review["coverage"].items():
-        if coverage["omitted_files"] or coverage["failed_sources"]:
-            warnings.append(f'{side.upper()} coverage: {len(coverage["omitted_files"])} omitted files; {len(coverage["failed_sources"])} failed extractions. Impact may be incomplete.')
+        unmapped = coverage.get("unmapped_failed_sources", 0)
+        if coverage["omitted_files"] or coverage["failed_sources"] or unmapped:
+            failures = len(coverage["failed_sources"]) + unmapped
+            detail = f" {unmapped} failure diagnostics could not be mapped to snapshot source." if unmapped else ""
+            warnings.append(f'{side.upper()} coverage: {len(coverage["omitted_files"])} omitted files; {failures} failed extractions.{detail} Impact may be incomplete.')
         if coverage.get("path_dependent_nodes"):
             warnings.append(f'{side.upper()} coverage: {coverage["path_dependent_nodes"]} records with snapshot-dependent identities were excluded from comparison.')
     if analysis["status"] != "complete":

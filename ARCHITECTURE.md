@@ -90,7 +90,7 @@ community clustering supplies side-local groupings; counts never imply defects.
 
 The review model connects changed-file stories to source evidence, focused
 base/head graphs, optional behavior explanations, blast radius, and coverage.
-Python source spans come from `ast`; unavailable ranges fall back explicitly to
+Python source spans include decorators and come from `ast`; unavailable ranges fall back explicitly to
 file membership. `--infer` calls the existing backend resolver and `_call_llm`
 with bounded untrusted evidence, validates story/citation IDs and side support,
 and labels every explanation `INFERRED`. Provider failure retains structural
@@ -105,8 +105,10 @@ All repository/model strings are escaped; no scripts or external assets are
 required. Explanations, graphs, dependency details, source, and raw diffs form
 successive disclosure layers. Coverage gaps remain visible before expansion.
 Blast diagrams retain class-member bridges without inflating affected counts.
-Private output staging rejects symlinked review paths and preserves recovery
-data on a failed restore. Inference retries clear stale results; invalid Unicode,
+Private output staging rejects static symlinked review paths and preserves recovery
+data on a failed restore. It assumes a trusted local output tree: path checks do
+not protect against a concurrent process replacing directory ancestors.
+Inference retries clear stale results; invalid Unicode,
 unsupported source sides, and invented absent-side behavior are rejected.
 
 ## Adding a new language extractor

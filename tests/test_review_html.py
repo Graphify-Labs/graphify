@@ -18,7 +18,11 @@ class Document(HTMLParser):
         self.tags = []
         self.ids = set()
         self.links = []
+        self.detail_depth = 0
+        self.visible_text = []
     def handle_starttag(self, tag, attrs):
+        if tag == "details":
+            self.detail_depth += 1
         self.tags.append(tag)
         data = dict(attrs)
         assert not any(key.startswith("on") for key in data)
@@ -27,6 +31,23 @@ class Document(HTMLParser):
             self.ids.add(data["id"])
         if "href" in data:
             self.links.append(data["href"])
+    def handle_endtag(self, tag):
+        if tag == "details":
+            self.detail_depth -= 1
+    def handle_data(self, data):
+        if self.detail_depth == 0:
+            self.visible_text.append(data)
+
+
+def test_unmapped_extraction_failures_are_visible_before_disclosure(model):
+    model["coverage"]["head"]["failed_sources"] = []
+    model["coverage"]["head"]["unmapped_failed_sources"] = 1
+    document = render_review(model)
+    assert "1 failed extractions" in document
+    assert "1 failure diagnostics could not be mapped to snapshot source" in document
+    parser = Document()
+    parser.feed(document)
+    assert any("1 failed extractions" in text for text in parser.visible_text)
 
 
 def test_offline_graphs_disclosures_and_evidence_links(model):

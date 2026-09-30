@@ -238,12 +238,14 @@ def test_insertion_after_existing_file_is_not_all_existing_symbols():
 
 
 def test_cli_local_review_runs_end_to_end(repository, monkeypatch, capsys):
+    from graphify.prs import cmd_prs
+
     root, base, head = repository
     monkeypatch.chdir(root)
     canonical = root / "graphify-out" / "graph.json"
     canonical.parent.mkdir()
     canonical.write_text('"existing graph"', encoding="utf-8")
-    review.cmd_review(["--review", "--base", base, "--head", head])
+    cmd_prs(["--review", "--base", base, "--head", head])
     output = capsys.readouterr().out
     assert "Behavior analysis: not_requested" in output
     assert list((root / "graphify-out" / "reviews").glob("*/review.html"))
@@ -260,6 +262,65 @@ def test_snapshot_dependent_id_is_excluded_with_explicit_coverage(tmp_path, monk
     assert not graph
     assert coverage["path_dependent_nodes"] == 1
     assert coverage["path_dependent_sources"] == ["a.py"]
+
+
+@pytest.mark.parametrize("failure_kind", ["absolute", "relative", "outside", "unknown"])
+def test_failed_extraction_paths_preserve_coverage_without_false_citations(tmp_path, monkeypatch, failure_kind):
+    root = (tmp_path / "snapshot").resolve()
+    root.mkdir()
+    (root / "a.py").write_text("A = 1\n", encoding="utf-8")
+    failures = {"absolute": str(root / "a.py"), "relative": "a.py",
+                "outside": str(tmp_path.resolve() / "outside.py"), "unknown": "unknown.py"}
+    monkeypatch.setattr(review, "extract", lambda *args, **kwargs: {
+        "nodes": [], "edges": [], "failed_sources": [failures[failure_kind]]})
+    _, coverage = review._structural_graph({"root": root, "sources": {"a.py": "A = 1\n"}, "omitted": []}, tmp_path / "cache")
+    mapped = failure_kind in {"absolute", "relative"}
+    assert coverage["failed_sources"] == (["a.py"] if mapped else [])
+    assert coverage["unmapped_failed_sources"] == (0 if mapped else 1)
+
+
+def test_failed_extraction_paths_resolve_snapshot_aliases(tmp_path, monkeypatch, requires_symlinks):
+    root = (tmp_path / "snapshot").resolve()
+    root.mkdir()
+    (root / "a.py").write_text("A = 1\n", encoding="utf-8")
+    alias = tmp_path / "alias"
+    alias.symlink_to(root, target_is_directory=True)
+    monkeypatch.setattr(review, "extract", lambda *args, **kwargs: {
+        "nodes": [], "edges": [], "failed_sources": [str(root / "a.py")]})
+    _, coverage = review._structural_graph({"root": alias, "sources": {"a.py": "A = 1\n"}, "omitted": []}, tmp_path / "cache")
+    assert coverage["failed_sources"] == ["a.py"]
+    assert coverage["unmapped_failed_sources"] == 0
+
+
+@pytest.mark.parametrize("definition", ["def run():", "async def run():", "class run:"])
+def test_real_decorator_only_change_seeds_its_symbol(repository, definition):
+    root, _, _ = repository
+    source = ("def decorate(setting):\n    return lambda symbol: symbol\n\n"
+              "@decorate(\n    'before',\n)\n" + definition + "\n    pass\n\n"
+              "def untouched():\n    return 2\n")
+    (root / "auth.py").write_text(source, encoding="utf-8")
+    git(root, "add", ".")
+    git(root, "commit", "-qm", "decorated symbol")
+    base = git(root, "rev-parse", "HEAD")
+    (root / "auth.py").write_text(source.replace("'before'", "'after'"), encoding="utf-8")
+    git(root, "add", ".")
+    git(root, "commit", "-qm", "change decorator argument")
+    result = review.build_review(root, git_target(root, base, git(root, "rev-parse", "HEAD")))
+    for side in ("base", "head"):
+        assert result["stories"][0]["seed_methods"][side] == "python_ast_span"
+        assert result["blast_radius"][side]["direct_ids"] == ["auth_run"]
+
+
+def test_nested_stacked_decorator_change_seeds_inner_symbol():
+    graph = nx.DiGraph()
+    for name, line in (("outer", 1), ("inner", 5), ("untouched", 9)):
+        graph.add_node(name, label=name + "()", source_file="a.py",
+                       source_location=f"L{line}", file_type="code")
+    source = ("def outer():\n    @first\n    @second(\n        'changed',)\n"
+              "    def inner():\n        pass\n    return inner\n\n"
+              "def untouched():\n    pass\n")
+    seeds, method = review._seeds(graph, "a.py", source, [(2, 4)])
+    assert seeds == ["inner"] and method == "python_ast_span"
 
 
 def test_first_line_definition_does_not_seed_the_whole_file():

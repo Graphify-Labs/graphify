@@ -52,7 +52,7 @@ def _edge(source: str, target: str, data: dict) -> dict:
 
 
 def _structural_graph(snapshot: dict, cache: Path) -> tuple[nx.Graph, dict]:
-    root = snapshot["root"]
+    root = Path(snapshot["root"]).resolve()
     paths = sorted(root / name for name in snapshot["sources"]
                    if classify_file(root / name) == FileType.CODE)
     extraction = extract(paths, root=root, cache_root=cache, parallel=False) if paths else {"nodes": [], "edges": []}
@@ -64,8 +64,22 @@ def _structural_graph(snapshot: dict, cache: Path) -> tuple[nx.Graph, dict]:
     unstable = [n for n in graph if prefix in str(n).casefold()]
     unstable_files = sorted({str(graph.nodes[n].get("source_file") or "unknown") for n in unstable})
     graph.remove_nodes_from(unstable)
+    failed_sources = []
+    unmapped_failures = 0
+    for failure in extraction.get("failed_sources", []):
+        path = Path(failure)
+        try:
+            name = (path if path.is_absolute() else root / path).resolve().relative_to(root).as_posix()
+        except (OSError, ValueError):
+            name = None
+        if name in snapshot["sources"]:
+            failed_sources.append(name)
+        else:
+            # Retain the coverage gap without inventing a snapshot source
+            # citation or exposing an unrelated absolute diagnostic path.
+            unmapped_failures += 1
     return graph, {"source_files": len(snapshot["sources"]), "code_files": len(paths),
-                   "failed_sources": [str(Path(p).resolve().relative_to(root)) for p in extraction.get("failed_sources", [])],
+                   "failed_sources": sorted(set(failed_sources)), "unmapped_failed_sources": unmapped_failures,
                    "path_dependent_nodes": len(unstable), "path_dependent_sources": unstable_files,
                    "omitted_files": snapshot["omitted"], "nodes": len(graph),
                    "edges": graph.number_of_edges()}
@@ -82,7 +96,8 @@ def _seeds(graph: nx.Graph, file: str | None, source: str | None, ranges: list) 
         except (SyntaxError, ValueError, RecursionError):
             tree = None
         if tree is not None:
-            definitions = [n for n in ast.walk(tree)
+            definitions = [(min(n.lineno, *(d.lineno for d in n.decorator_list))
+                            if n.decorator_list else n.lineno, n) for n in ast.walk(tree)
                            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
                            and n.end_lineno is not None]
             touched: dict[int, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef] = {}
@@ -92,11 +107,11 @@ def _seeds(graph: nx.Graph, file: str | None, source: str | None, ranges: list) 
                 # outer logic; choosing one smallest definition loses changes.
                 starts: dict[int, list] = {}
                 boundaries = {start, end + 1}
-                for index, definition in enumerate(definitions):
+                for index, (span_start, definition) in enumerate(definitions):
                     stop = definition.end_lineno or definition.lineno
-                    if definition.lineno <= end and stop >= start:
-                        first, last = max(start, definition.lineno), min(end, stop) + 1
-                        starts.setdefault(first, []).append((stop - definition.lineno, index, definition))
+                    if span_start <= end and stop >= start:
+                        first, last = max(start, span_start), min(end, stop) + 1
+                        starts.setdefault(first, []).append((stop - span_start, index, definition))
                         boundaries.update((first, last))
                 active: list = []
                 for line in sorted(boundaries)[:-1]:
@@ -447,7 +462,11 @@ def validate_review(review: dict) -> None:
 
 
 def save_review(review: dict, root: Path) -> tuple[Path, Path]:
-    """Render before writing; atomic files with rollback on a reported write failure."""
+    """Render before writing; recover reported failures in a trusted local output tree.
+
+    Static symlink paths are rejected. Directory ancestors must not be changed
+    by an adversarial concurrent process; path checks do not pin directories.
+    """
     from graphify.review_html import render_review
 
     validate_review(review)
@@ -471,7 +490,8 @@ def save_review(review: dict, root: Path) -> tuple[Path, Path]:
     if json_path.is_symlink() or html_path.is_symlink():
         raise ReviewError("Review output files must not be symlinks.")
     # Prepare both outputs before touching either old artifact. Final swaps
-    # replace directory entries, so they never follow a destination symlink.
+    # replace final directory entries rather than following file symlinks.
+    # This assumes the directory ancestors remain trusted during the save.
     stage = Path(tempfile.mkdtemp(prefix=".review-stage-", dir=directory))
     retain_stage = False
     try:

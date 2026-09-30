@@ -474,7 +474,7 @@ Expensive line matching uses a bounded linear middle-region fallback, with
 conservative ranges disclosed. Physical LF lines, final-newline/CRLF changes,
 and Git file modes remain visible. Focused graphs show up to 12 nodes;
 blast traversal uses at most 100 seeds and depth 0–6 (default 2), with bounded
-detail lists and visible omissions. Python seeds use actual AST spans where
+detail lists and visible omissions. Python seeds use actual AST spans, including decorators, where
 available; other cases explicitly use changed-file membership. Dependents are
 potential structural impact, not predicted failures or proven execution paths.
 Community IDs are snapshot-local. Existing extractor and relation-collapse
@@ -482,13 +482,17 @@ limitations remain, and dynamic dispatch may be incomplete.
 Records whose IDs embed a temporary snapshot path are excluded from comparison
 and counted in coverage, so path-dependent extractor records cannot masquerade
 as architectural additions/removals. Canonical extraction and IDs are unchanged.
+Extraction failures that cannot be mapped to admitted snapshot source are counted
+separately in coverage, without inventing source citations or aborting the review.
 
 The two outputs are rendered before writing and individually replaced atomically.
 Both are staged privately before replacing either output; symlinked review paths
 are rejected. A reported JSON swap failure restores the previous HTML by rename.
 If restoration also fails, the prior HTML is retained at the reported recovery
-path. This is not a
-multi-file power-loss transaction; the HTML's model digest identifies its JSON.
+path. Output assumes no adversarial local process concurrently changes the checkout
+or output directories; static symlink checks do not pin directory ancestors.
+Do not run with elevated privileges in an attacker-writable directory.
+This is not a multi-file power-loss transaction; the HTML's model digest identifies its JSON.
 Shallow history must contain a provable merge base; otherwise the command asks
 for the required history instead of guessing a comparison.
 
