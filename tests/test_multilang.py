@@ -410,6 +410,24 @@ def test_rust_enum_variant_references():
     assert ("GraphEvent", "DataProcessor") in refs, "struct-variant reference missing"
 
 
+def test_rust_enum_variants_emit_case_of_nodes():
+    """Each enum variant must become a node with a `case_of` edge to its enum.
+
+    The enum handler only walked variants to collect their payload type
+    references; the variants themselves (`NodeAdded`, `Processed`) never became
+    nodes, so the enum was left a memberless leaf. Every other language with
+    enums (Java #1719, Kotlin #1738, Swift, Scala) emits a node per member with
+    a `case_of` edge; this brings Rust to parity.
+    """
+    r = extract_rust(FIXTURES / "sample.rs")
+    labels = {n["label"] for n in r["nodes"]}
+    assert "NodeAdded" in labels
+    assert "Processed" in labels
+    case_of = _edge_labels(r, "case_of")
+    assert ("GraphEvent", "NodeAdded") in case_of
+    assert ("GraphEvent", "Processed") in case_of
+
+
 def test_rust_struct_field_emits_field_context():
     r = extract_rust(FIXTURES / "sample.rs")
     assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")

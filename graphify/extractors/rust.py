@@ -366,6 +366,24 @@ def extract_rust(path: Path) -> dict:
                             if variant.type != "enum_variant":
                                 continue
                             vline = variant.start_point[0] + 1
+                            # Emit a node per variant with a case_of edge back to
+                            # the enum. Only the variants' payload types were
+                            # walked before, so the variants themselves (`Circle`,
+                            # `Square`, `Empty`) never became nodes and the enum
+                            # was left a memberless leaf. This is the Rust parity
+                            # of Java #1719 / Kotlin #1738 / Swift / Scala enums.
+                            # The variant name is the enum_variant's `identifier`.
+                            vname_node = next(
+                                (vc for vc in variant.children
+                                 if vc.type == "identifier"),
+                                None,
+                            )
+                            if vname_node is not None:
+                                vname = _read_text(vname_node, source)
+                                if vname:
+                                    variant_nid = _make_id(item_nid, vname)
+                                    add_node(variant_nid, vname, vline)
+                                    add_edge(item_nid, variant_nid, "case_of", vline)
                             for vc in variant.children:
                                 if vc.type == "ordered_field_declaration_list":
                                     for tc in vc.children:
