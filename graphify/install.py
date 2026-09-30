@@ -423,7 +423,7 @@ def _remove_claude_skill_registration(project_dir: Path) -> None:
         # newline="" so the rest of the file's own line endings are never
         # translated on write (#3668, same CRLF issue as the insert side).
         claude_md.write_text(cleaned + "\n", encoding="utf-8", newline="")
-        print(f"  CLAUDE.md        ->  graphify skill registration removed from {claude_md}")
+        print(f"  CLAUDE.md        ->  graphify skill registration removed from {_shown_path(claude_md)}")
     else:
         claude_md.unlink()
         print(f"  CLAUDE.md        ->  deleted {claude_md}")
@@ -486,6 +486,13 @@ def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") 
         "When the user types `/graphify`, use the installed graphify skill "
         "or instructions before doing anything else.\n"
     )
+def _shown_path(path: Path) -> str:
+    """Name *path* for install/uninstall output, plus the file it points to when it
+    is a symlink. Writing through a symlinked CLAUDE.md edits the target, so
+    printing only the link hid which file was changed (#3805)."""
+    if path.is_symlink():
+        return f"{path} -> {path.resolve()}"
+    return str(path)
 def _register_always_on_block(target: Path, prefix: str, registration: str) -> None:
     """Idempotently add or refresh an always-on registration in *target*, degrading
     instead of raising.
@@ -518,11 +525,11 @@ def _register_always_on_block(target: Path, prefix: str, registration: str) -> N
             print(f"{prefix}already registered (no change)")
         elif existed:
             target.write_text(new_content, encoding="utf-8", newline="")
-            print(f"{prefix}skill registered in {target}")
+            print(f"{prefix}skill registered in {_shown_path(target)}")
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(new_content, encoding="utf-8", newline="")
-            print(f"{prefix}created at {target}")
+            print(f"{prefix}created at {_shown_path(target)}")
     except OSError as exc:
         print(f"{prefix}skipped: {exc.__class__.__name__}: {exc}", file=sys.stderr)
         print(
