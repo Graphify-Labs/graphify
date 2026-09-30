@@ -1,0 +1,33 @@
+logging_rules:
+  java:
+    query: |
+      (method_invocation
+        object: (identifier) @log_obj (#match? @log_obj "{pattern}")
+        name: (identifier) @log_level
+        arguments: (argument_list) @args
+      )
+    pattern: "(?i)^(log|logger|timber)$"
+  kotlin:
+    query: |
+      (call_expression
+        (navigation_expression
+          (identifier) @log_obj (#match? @log_obj "{pattern}")
+          (identifier) @log_level
+        )
+        (value_arguments) @args
+      )
+    pattern: "(?i)^(log|logger|timber)$"
+  c:
+    query: |
+      (call_expression
+        function: (identifier) @log_obj (#match? @log_obj "{pattern}")
+        arguments: (argument_list) @args
+      )
+    pattern: "(?i)^(log_.*)$"
+  cpp:
+    query: |
+      (call_expression
+        function: (identifier) @log_obj (#match? @log_obj "{pattern}")
+        arguments: (argument_list) @args
+      )
+    pattern: "(?i)^(log_.*)$"
