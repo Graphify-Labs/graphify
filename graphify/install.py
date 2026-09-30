@@ -419,7 +419,8 @@ def _remove_claude_skill_registration(project_dir: Path) -> None:
     cleaned = _remove_marker_section(content, _SKILL_REGISTRATION_MARKER, boundary_prefix="# ")
     if cleaned is None:
         return
-    if cleaned:
+    # A symlink stays: writing through it cleans the file it points to.
+    if cleaned or claude_md.is_symlink():
         # newline="" so the rest of the file's own line endings are never
         # translated on write (#3668, same CRLF issue as the insert side).
         claude_md.write_text(cleaned + "\n", encoding="utf-8", newline="")
@@ -1046,7 +1047,8 @@ def gemini_uninstall(project_dir: Path | None = None, *, project: bool = False, 
     if cleaned is None:
         print("graphify section not found in GEMINI.md - nothing to do")
         return
-    if cleaned:
+    # A symlink stays: writing through it cleans the file it points to.
+    if cleaned or target.is_symlink():
         target.write_text(cleaned + "\n", encoding="utf-8")
         print(f"graphify section removed from {target.resolve()}")
     else:
@@ -1145,7 +1147,8 @@ def vscode_uninstall(project_dir: Path | None = None) -> None:
     cleaned = _remove_marker_section(content, _VSCODE_INSTRUCTIONS_MARKER)
     if cleaned is None:
         return
-    if cleaned:
+    # A symlink stays: writing through it cleans the file it points to.
+    if cleaned or instructions.is_symlink():
         instructions.write_text(cleaned + "\n", encoding="utf-8")
         print(f"  graphify section removed from {instructions}")
     else:
@@ -1904,7 +1907,8 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
             _uninstall_kilo_plugin(project_dir or Path("."))
         return
 
-    if cleaned:
+    # A symlink stays: writing through it cleans the file it points to.
+    if cleaned or target.is_symlink():
         target.write_text(cleaned + "\n", encoding="utf-8")
         print(f"graphify section removed from {target.resolve()}")
     else:
@@ -2136,7 +2140,8 @@ def _strip_graphify_md_section(target: Path) -> bool:
     cleaned = _remove_marker_section(content, _CLAUDE_MD_MARKER)
     if cleaned is None:
         return False
-    if cleaned:
+    # A symlink stays: writing through it cleans the file it points to.
+    if cleaned or target.is_symlink():
         target.write_text(cleaned + "\n", encoding="utf-8")
         print(f"graphify section removed from {target.resolve()}")
     else:
@@ -2230,7 +2235,8 @@ def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = Fals
         print("graphify section not found in CODEBUDDY.md - nothing to do")
         return
 
-    if cleaned:
+    # A symlink stays: writing through it cleans the file it points to.
+    if cleaned or target.is_symlink():
         target.write_text(cleaned + "\n", encoding="utf-8")
         print(f"graphify section removed from {target.resolve()}")
     else:
