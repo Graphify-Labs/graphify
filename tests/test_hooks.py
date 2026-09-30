@@ -1533,3 +1533,58 @@ def test_commit_hook_still_rebuilds_for_a_source_change(tmp_path):
     result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {"GRAPHIFY_OUT": "custom-out"})
     assert result.returncode == 0, result.stderr
     assert _LAUNCH_LINE in result.stdout, result.stdout
+
+
+# Launcher flags a hook installed before the #2253 fix still carries on disk.
+_PRE_2253_FLAGS = "0x00000008 | 0x00000200"  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+
+
+def _status_line(result: str, name: str) -> str:
+    return next(line for line in result.splitlines() if line.startswith(f"{name}:"))
+
+
+def test_status_flags_a_hook_block_from_an_older_graphify(tmp_path):
+    """Upgrading the package never rewrites hooks already on disk, so a block
+    written by an older release keeps its old launcher (#3771). `status` must
+    say so and name the command that refreshes it, not report "installed"."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    text = hook.read_text(encoding="utf-8")
+    assert "0x08000000 | 0x00000200" in text
+    hook.write_text(text.replace("0x08000000 | 0x00000200", _PRE_2253_FLAGS), encoding="utf-8")
+
+    res = status(repo)
+    assert "out of date" in _status_line(res, "post-commit")
+    assert "graphify hook install" in _status_line(res, "post-commit")
+    assert "out of date" not in _status_line(res, "post-checkout")
+
+    assert "updated existing post-commit hook" in install(repo)
+    assert "out of date" not in status(repo)
+
+
+def test_status_ignores_the_pinned_interpreter(tmp_path):
+    """`_PINNED` is whichever interpreter ran `hook install`. A hook pinned to a
+    different one is not stale, so it must not be reported as out of date."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    text = hook.read_text(encoding="utf-8")
+    repinned = re.sub(r"(?m)^_PINNED='[^']*'$", "_PINNED='/opt/other/bin/python3'", text)
+    assert repinned != text
+    hook.write_text(repinned, encoding="utf-8")
+
+    assert "out of date" not in status(repo)
+
+
+def test_status_compares_only_the_graphify_block(tmp_path):
+    """User commands around the graphify block are not graphify's to judge."""
+    repo = _make_git_repo(tmp_path)
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "post-commit").write_text("#!/bin/sh\necho 'user before'\n", encoding="utf-8")
+    install(repo)
+    hook = hooks_dir / "post-commit"
+    hook.write_text(hook.read_text(encoding="utf-8") + "echo 'user after'\n", encoding="utf-8")
+
+    assert "out of date" not in status(repo)
