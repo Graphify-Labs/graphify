@@ -800,6 +800,11 @@ def _bash_invokes_search(cmd_str: str) -> bool:
                 # skip the wrapper's own flags (`xargs -0`, `env -i`)
                 while i < len(tokens) and tokens[i].startswith("-"):
                     i += 1
+                # skip positional wrapper arguments (`timeout 10`,
+                # `timeout -k 5 10`, `nice -n 5`): non-flag tokens until the
+                # wrapped command (a search tool, git, a path or VAR=value)
+                while i < len(tokens) and not tokens[i].startswith("-") and tokens[i].lower() not in _SEARCH_COMMANDS and tokens[i].lower() != "git" and not re.search(r"[/=]", tokens[i]):
+                    i += 1
                 continue
             if name in _SEARCH_COMMANDS:
                 return True
