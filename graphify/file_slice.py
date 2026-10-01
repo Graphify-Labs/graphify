@@ -37,7 +37,7 @@ from pathlib import Path
 # addition to DOC_EXTENSIONS fails loudly instead of quietly losing content.
 _SPLITTABLE_TEXT_SUFFIXES = frozenset({
     ".md", ".mdx", ".markdown", ".txt", ".rst",
-    ".qmd", ".skill", ".html", ".yaml", ".yml",
+    ".qmd", ".skill", ".adoc", ".asciidoc", ".html", ".yaml", ".yml",
 })
 
 # Document types whose BYTES are not what the model is shown. `llm._file_to_text`
