@@ -68,7 +68,7 @@ jobs:
       # --frozen installs straight from the committed uv.lock without re-resolving
       # or rewriting it, so CI never churns the lock.
       - name: Install dependencies
-        run: uv sync --all-extras --frozen
+        run: uv sync --dev --all-extras --frozen
 
       - name: Run tests
         run: uv run --frozen pytest tests/ -q --tb=short
