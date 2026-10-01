@@ -780,6 +780,63 @@ def _kotlin_annotation_names(declaration_node, source: bytes) -> list[tuple[str,
                     names.append((name, raw))
     return names
 
+
+def _kotlin_annotation_class_literal_refs(
+    declaration_node,
+    source: bytes,
+) -> list[str]:
+    """Collect Kotlin type names used as class literals in annotation arguments (e.g. ``Customer::class``)."""
+    names: list[str] = []
+    if declaration_node is None:
+        return names
+    modifiers = None
+    for child in declaration_node.children:
+        if child.type == "modifiers":
+            modifiers = child
+            break
+    if modifiers is None:
+        return names
+    seen: set[str] = set()
+    for anno in modifiers.children:
+        if anno.type != "annotation":
+            continue
+        for sub in anno.children:
+            ci = sub if sub.type == "constructor_invocation" else None
+            if ci is None:
+                continue
+            args_node = None
+            for c in ci.children:
+                if c.type == "value_arguments":
+                    args_node = c
+                    break
+            if args_node is None:
+                continue
+            stack = [args_node]
+            while stack:
+                curr = stack.pop()
+                if curr.type == "navigation_expression":
+                    has_double_colon = False
+                    rhs_is_class = False
+                    lhs_node = None
+                    for ch in curr.children:
+                        ch_text = _read_text(ch, source)
+                        if ch.type == "::" or ch_text == "::":
+                            has_double_colon = True
+                        elif has_double_colon and ch.type in ("identifier", "simple_identifier") and ch_text == "class":
+                            rhs_is_class = True
+                        elif not has_double_colon and ch.is_named:
+                            lhs_node = ch
+                    if has_double_colon and rhs_is_class and lhs_node is not None:
+                        raw = _read_text(lhs_node, source)
+                        text = raw.rsplit(".", 1)[-1]
+                        if text and text not in seen and text not in _KOTLIN_BUILTIN_TYPES and text not in _JAVA_BUILTIN_TYPES:
+                            names.append(text)
+                            seen.add(text)
+                        continue
+                stack.extend(child for child in curr.children if child.is_named)
+    return names
+
+
 def _kotlin_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
     """Walk a Kotlin type expression; append (name, role) tuples."""
     if node is None:
@@ -4220,6 +4277,11 @@ def _extract_generic(
                     if target_nid != class_nid and target_nid not in annotation_targets:
                         add_edge(class_nid, target_nid, "references", line, context="attribute")
                         annotation_targets.add(target_nid)
+                for ref_name in _kotlin_annotation_class_literal_refs(node, source):
+                    target_nid = ensure_named_node(ref_name, line)
+                    if target_nid != class_nid and target_nid not in annotation_targets:
+                        add_edge(class_nid, target_nid, "references", line, context="attribute")
+                        annotation_targets.add(target_nid)
 
                 for c in node.children:
                     if c.type == "primary_constructor":
@@ -4253,6 +4315,12 @@ def _extract_generic(
                                         param_annotation_targets: set[str] = set()
                                         for anno_name, anno_raw in _kotlin_annotation_names(cp, source):
                                             target_nid = ensure_named_node(anno_name, cp_line)
+                                            if target_nid != class_nid and target_nid not in param_annotation_targets:
+                                                add_edge(class_nid, target_nid, "references",
+                                                         cp_line, context="attribute")
+                                                param_annotation_targets.add(target_nid)
+                                        for ref_name in _kotlin_annotation_class_literal_refs(cp, source):
+                                            target_nid = ensure_named_node(ref_name, cp_line)
                                             if target_nid != class_nid and target_nid not in param_annotation_targets:
                                                 add_edge(class_nid, target_nid, "references",
                                                          cp_line, context="attribute")
@@ -4941,6 +5009,11 @@ def _extract_generic(
                 annotation_targets: set[str] = set()
                 for anno_name, anno_raw in _kotlin_annotation_names(node, source):
                     target_nid = ensure_named_node(anno_name, line)
+                    if target_nid != parent_class_nid and target_nid not in annotation_targets:
+                        add_edge(parent_class_nid, target_nid, "references", line, context="attribute")
+                        annotation_targets.add(target_nid)
+                for ref_name in _kotlin_annotation_class_literal_refs(node, source):
+                    target_nid = ensure_named_node(ref_name, line)
                     if target_nid != parent_class_nid and target_nid not in annotation_targets:
                         add_edge(parent_class_nid, target_nid, "references", line, context="attribute")
                         annotation_targets.add(target_nid)

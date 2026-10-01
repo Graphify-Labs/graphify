@@ -729,3 +729,27 @@ def test_kotlin_class_property_annotation_without_explicit_type(tmp_path):
         and e["target"] == volatile
     ]
     assert len(attr_edges) == 1, f"expected Repro->Volatile attribute reference edge, got {attr_edges}"
+
+
+def test_kotlin_annotation_class_literal(tmp_path):
+    """Annotation argument with Customer::class emits attribute reference (#3835)."""
+    r = _extract(tmp_path, {
+        "Order.kt": (
+            '@Ann(target = com.example.Customer::class)\n'
+            'class Order(\n'
+            '    @ManyToOne(targetEntity = Customer::class) val cust: Any\n'
+            ') {\n'
+            '    @ManyToOne(targetEntity = OrderLine::class)\n'
+            '    var line: Any = Any()\n'
+            '}\n'
+            'class Customer\n'
+            'class OrderLine\n'
+        ),
+    })
+    order = _find(r, "Order")
+    customer = _find(r, "Customer")
+    order_line = _find(r, "OrderLine")
+    attrs = {(e["source"], e["target"]) for e in r["edges"]
+             if e["relation"] == "references" and e.get("context") == "attribute"}
+    assert (order, customer) in attrs
+    assert (order, order_line) in attrs
