@@ -2318,6 +2318,31 @@ def _strip_partial_markers(result: dict) -> None:
                 item.pop("_partial", None)
 
 
+def _resolve_provenance_path(value: "str | Path", root: Path) -> Path:
+    """Resolve a source claim with the same portable spelling as the cache.
+
+    Prefer an existing literal path so a POSIX filename containing a backslash
+    keeps its identity. Otherwise accept the cache's portable slash spelling.
+    """
+    path = Path(value)
+    if not path.is_absolute():
+        path = root / path
+    try:
+        path = path.resolve()
+    except (OSError, RuntimeError):
+        pass
+    if path.is_file():
+        return path
+    from graphify.cache import _normalize_source_file_value
+    path = Path(_normalize_source_file_value(value, Path(os.path.abspath(root))))
+    if not path.is_absolute():
+        path = root / path
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return path
+
+
 def _chunk_provenance_mismatch(
     result: dict,
     chunk: "list[Path | FileSlice]",
@@ -2335,16 +2360,7 @@ def _chunk_provenance_mismatch(
     if result.get("finish_reason") not in (None, "", "stop"):
         return [], []
 
-    def _resolved(value: "str | Path") -> Path:
-        path = Path(value)
-        if not path.is_absolute():
-            path = root / path
-        try:
-            return path.resolve()
-        except (OSError, RuntimeError):
-            return path
-
-    dispatched = {_resolved(unit_path(unit)) for unit in chunk}
+    dispatched = {_resolve_provenance_path(unit_path(unit), root) for unit in chunk}
     returned_real: set[Path] = set()
     covered_by_nodes: set[Path] = set()
     for bucket in ("nodes", "edges", "hyperedges"):
@@ -2354,7 +2370,7 @@ def _chunk_provenance_mismatch(
             source_file = item.get("source_file")
             if not source_file:
                 continue
-            path = _resolved(source_file)
+            path = _resolve_provenance_path(source_file, root)
             if path.is_file():
                 returned_real.add(path)
                 if bucket == "nodes":
@@ -2377,14 +2393,7 @@ def _drop_outside_chunk_provenance(
         source_file = item.get("source_file")
         if not source_file:
             return False
-        path = Path(source_file)
-        if not path.is_absolute():
-            path = root / path
-        try:
-            path = path.resolve()
-        except (OSError, RuntimeError):
-            pass
-        return path in outside_set
+        return _resolve_provenance_path(source_file, root) in outside_set
 
     dropped_ids = {
         item.get("id")
@@ -2952,13 +2961,7 @@ def extract_corpus_parallel(
     # Runs BEFORE the #1890 covered/uncovered reconciliation so that diff
     # reflects the post-filter graph.
     def _resolve_against_root(value: "str | Path") -> Path:
-        p = Path(value)
-        if not p.is_absolute():
-            p = root / p
-        try:
-            return p.resolve()
-        except (OSError, RuntimeError):
-            return p
+        return _resolve_provenance_path(value, root)
 
     _dispatched_resolved = {_resolve_against_root(p) for p in dispatched}
 

@@ -726,12 +726,14 @@ def test_persistent_provenance_mismatch_is_filtered_and_cached_partial(tmp_path,
     assert "out-of-scope" in err
 
 
-def test_foreign_stub_is_removed_before_later_chunk_merge_and_cache(tmp_path):
+@pytest.mark.parametrize("foreign_source", ["dir/B.md", "dir\\B.md"])
+def test_foreign_stub_is_removed_before_later_chunk_merge_and_cache(tmp_path, foreign_source):
     from graphify.cache import load_cached
     from graphify.llm import _extraction_system, extract_corpus_parallel
 
     first = tmp_path / "A.md"
-    second = tmp_path / "B.md"
+    second = tmp_path / "dir" / "B.md"
+    second.parent.mkdir()
     first.write_text("a")
     second.write_text("b")
     calls = []
@@ -743,7 +745,7 @@ def test_foreign_stub_is_removed_before_later_chunk_merge_and_cache(tmp_path):
             return {
                 "nodes": [
                     {"id": "a", "label": "A", "source_file": "A.md", "file_type": "document"},
-                    {"id": "b", "label": "stale stub", "source_file": "B.md", "file_type": "document"},
+                    {"id": "b", "label": "stale stub", "source_file": foreign_source, "file_type": "document"},
                 ],
                 "edges": [
                     {"source": "a", "target": "b", "source_file": "A.md"},
@@ -753,7 +755,7 @@ def test_foreign_stub_is_removed_before_later_chunk_merge_and_cache(tmp_path):
             }
         return {
             "nodes": [
-                {"id": "b", "label": "authoritative", "source_file": "B.md", "file_type": "document"},
+                {"id": "b", "label": "authoritative", "source_file": "dir/B.md", "file_type": "document"},
             ],
             "edges": [], "hyperedges": [],
             "input_tokens": 1, "output_tokens": 1, "finish_reason": "stop",
@@ -913,17 +915,22 @@ def test_provenance_mismatch_respects_zero_retry_cap(tmp_path):
     assert result["_partial_files"] == [str(dispatched)]
 
 
-def test_provenance_in_another_dispatched_sibling_does_not_retry(tmp_path):
+@pytest.mark.parametrize("sibling_name", ["B.md", "literal\\B.md"])
+def test_provenance_in_another_dispatched_sibling_does_not_retry(tmp_path, sibling_name):
     from graphify.llm import _extract_with_adaptive_retry
+    import os
+
+    if "\\" in sibling_name and os.name == "nt":
+        pytest.skip("Windows does not support literal backslashes in filenames")
 
     first = tmp_path / "A.md"
-    second = tmp_path / "B.md"
+    second = tmp_path / sibling_name
     first.write_text("a")
     second.write_text("b")
 
     with patch(
         "graphify.llm.extract_files_direct",
-        return_value=_provenance_result("B.md", "second"),
+        return_value=_provenance_result(sibling_name, "second"),
     ) as direct:
         result = _extract_with_adaptive_retry(
             [first, second], backend="kimi", api_key=None, model=None,
