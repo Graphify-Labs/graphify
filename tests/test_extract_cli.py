@@ -688,7 +688,7 @@ def _clear_backend_keys(monkeypatch):
     """Clear every env var that detect_backend() or _get_backend_api_key() reads."""
     for key in (
         "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "MOONSHOT_API_KEY",
+        "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "ATLASCLOUD_API_KEY", "MOONSHOT_API_KEY",
         # bedrock: presence of any of these is treated as a valid credential
         "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ACCESS_KEY_ID",
         # ollama: a set OLLAMA_BASE_URL triggers backend detection
