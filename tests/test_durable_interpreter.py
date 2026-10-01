@@ -17,7 +17,13 @@ def posix(path):
 
 def bash():
     if os.name == "nt":
-        return "C:/Program Files/Git/usr/bin/bash.exe"
+        git = shutil.which("git")
+        if git:
+            for parent in Path(git).resolve().parents:
+                candidate = parent / "usr/bin/bash.exe"
+                if candidate.is_file():
+                    return str(candidate)
+        raise RuntimeError("POSIX resolver regressions require Git Bash on Windows")
     return shutil.which("bash") or "/bin/bash"
 
 
