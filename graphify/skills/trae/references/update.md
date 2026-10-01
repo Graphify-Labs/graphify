@@ -65,6 +65,126 @@ If `code_only` is True: print `[graphify update] Code-only changes detected - sk
 
 If `code_only` is False (any changed file is a doc/paper/image/video): **first, if any changed file is in `new_files['video']`, run `references/transcribe.md` (Step 2.5) on those files, then rewrite `.graphify_detect.json` to move the resulting transcript paths into `files['document']` and drop `files['video']`** — otherwise raw `.mp4/.mp3` paths are fed to semantic subagents as unreadable media (#1392). Then run the full Steps 3A–3C pipeline as normal.
 
+### REQUIRED: mandatory-ID gate for re-extracted docs
+
+Semantic re-extraction of an already-graphed doc is non-deterministic: the same file can
+yield 75 nodes on one run and 49 on the next, dropping whole sections with no error. The
+loss lands in `build_merge` and only surfaces later as a question the graph can no longer
+answer. Apply this gate to **every changed doc/paper that already has nodes in
+`graph.json`**. Do not skip it for a small edit — a one-line change re-extracts the whole
+file.
+
+**1 — Snapshot the file's existing node IDs before extracting.** First clear any
+snapshots left behind by an earlier run — **once**, before the first target of this run:
+
+```bash
+rm -f graphify-out/.graphify_must_*.json graphify-out/.graphify_must_ids_*.txt
+```
+
+Then run the snapshot **once per changed doc**. The state files are keyed by target: a
+single fixed path would let the second doc's snapshot overwrite the first's, leaving that
+file silently ungated while the gate still printed PASS.
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json, re
+from pathlib import Path
+TARGET = 'DOC_PATH'   # substitute: the changed doc, VERBATIM as it appears in source_file
+g = json.loads(Path('graphify-out/graph.json').read_text(encoding='utf-8'))
+def norm(p): return str(p).replace(chr(92), '/')   # chr(92) = backslash, unquotable here
+t = norm(TARGET)
+# Match source_file EXACTLY. endswith() is not anchored to a path boundary, so a bare
+# name silently adopts every same-named file deeper in the tree ('README.md' is a
+# suffix of 'workers/README.md'), inflating the baseline with IDs the subagent cannot
+# emit and failing the gate on a perfect extraction.
+exact = [n for n in g['nodes'] if norm(n.get('source_file','')) == t]
+other = sorted({norm(n.get('source_file','')) for n in g['nodes']
+                if norm(n.get('source_file','')).endswith(t) and norm(n.get('source_file','')) != t})
+if not exact and other:
+    print('AMBIGUOUS TARGET - no source_file equals %r. Candidates:' % TARGET)
+    for c in other: print('   ', c)
+    print('Re-run with one of these verbatim; do not suffix-match.')
+    raise SystemExit(1)
+if other:
+    print('NOTE: %d other file(s) end with %r - matched exactly, not by suffix.' % (len(other), TARGET))
+ids = sorted(n['id'] for n in exact)
+SLUG = re.sub(r'[^A-Za-z0-9]+', '_', TARGET).strip('_')
+Path('graphify-out/.graphify_must_ids_%s.txt' % SLUG).write_text('\n'.join(ids), encoding='utf-8')
+Path('graphify-out/.graphify_must_%s.json' % SLUG).write_text(
+    json.dumps({'target': TARGET, 'ids': ids}, ensure_ascii=False), encoding='utf-8')
+print(f'baseline: {len(ids)} existing node(s) for {TARGET}')
+"
+```
+
+A count of 0 means the file is new — skip the gate and extract normally.
+
+**2 — Pass the IDs to the subagent as mandatory.** Append to the prompt from
+`references/extraction-spec.md`:
+
+- the baseline count as an explicit target ("the prior build extracted N nodes from this
+  file; land at approximately N — under 90% of N means you under-extracted, go back and
+  cover the sections you skimmed"),
+- the full ID list verbatim, labelled **MANDATORY — every one of these existed in the
+  prior graph and MUST appear in your output, reusing the ID verbatim**,
+- an instruction to verify every mandatory ID is present *before* writing CHUNK_PATH.
+
+Reusing the IDs also suppresses gratuitous ID churn on re-extraction, which orphans saved
+queries and inflates the merge diff for no semantic gain.
+
+**3 — Hard-gate the merge.** After the chunks land and before `build_merge`, require of
+**every** snapshotted target: node count ≥ 90% of baseline, and zero mandatory IDs missing.
+
+```bash
+$(cat graphify-out/.graphify_python) -c "
+import json, glob
+from pathlib import Path
+# Read EVERY chunk, not just _01. Step 3B splits a delta into chunks of 20-25 files (and
+# each image gets its own), so a changed doc can land in any chunk; reading only _01
+# reports a perfect extraction as a total loss. Then gate every snapshot, so a multi-doc
+# update cannot leave one of its docs unchecked.
+chunks = sorted(glob.glob('graphify-out/.graphify_chunk_*.json'))
+snaps = sorted(glob.glob('graphify-out/.graphify_must_*.json'))
+if not chunks:
+    print('GATE: FAIL - no chunk files on disk'); raise SystemExit(1)
+nodes = []
+for c in chunks:
+    nodes += json.loads(Path(c).read_text(encoding='utf-8')).get('nodes', [])
+ids = {n['id'] for n in nodes}
+def norm(p): return str(p).replace(chr(92), '/')   # chr(92) = backslash, unquotable here
+bases = [json.loads(Path(s).read_text(encoding='utf-8')) for s in snaps]
+targets = [norm(b['target']) for b in bases]
+def owner(sf):
+    # Chunk source_file is the FILE_LIST path (absolute), so anchor on a path boundary --
+    # and when two targets both match, the LONGEST wins, or every 'workers/README.md' node
+    # would also be counted against the root 'README.md'.
+    sf = norm(sf)
+    cand = [x for x in targets if sf == x or sf.endswith('/' + x)]
+    return max(cand, key=len) if cand else None
+allok = True
+for base in bases:
+    t, must = norm(base['target']), base['ids']
+    own = [n for n in nodes if owner(n.get('source_file','')) == t]
+    missing = [m for m in must if m not in ids]
+    shrunk = len(own) < 0.9 * len(must)
+    ok = not (shrunk or missing)
+    allok = allok and ok
+    print('%s: nodes=%d baseline=%d missing=%d -> %s'
+          % (base['target'], len(own), len(must), len(missing), 'PASS' if ok else 'FAIL'))
+    if shrunk: print('  SHRINK: node count below 90% of baseline')
+    if missing: print('  MISSING:', ' '.join(missing[:20]))
+print('GATE:', 'PASS' if allok else 'FAIL')
+"
+```
+
+On **FAIL**, do not merge: re-dispatch the extraction with the same mandatory list and a
+sharper completeness instruction naming the missing IDs. Two consecutive failures — stop
+and report to the user rather than merging a regressed graph.
+
+**The `to_json` shrink guard (#479) stays authoritative.** It is the backstop, not a
+nuisance. Never pass `force=True` to clear it until you have diffed the old and new node
+sets and can name why each removed node is legitimately gone (file deleted, section
+removed, ID renamed with a verified replacement). ID churn on a re-extracted file is a
+legitimate shrink; a missing section is not.
 
 If no new files exist (only deletions), create an empty extraction so the merge step can prune:
 
