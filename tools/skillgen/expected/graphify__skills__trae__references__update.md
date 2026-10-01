@@ -14,6 +14,10 @@ from pathlib import Path
 
 result = detect_incremental(Path('INPUT_PATH'))
 new_total = result.get('new_total', 0)
+from graphify.detect import summarize_incremental_changes
+boundary_summary = summarize_incremental_changes(result)
+if boundary_summary:
+    print('Changed directory boundaries (files and bytes):', json.dumps(boundary_summary, ensure_ascii=False))
 print(json.dumps(result, indent=2, ensure_ascii=False))
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
 deleted = list(result.get('deleted_files', []))
@@ -44,6 +48,8 @@ Path('graphify-out/.graphify_detect.json').write_text(json.dumps({
 }, ensure_ascii=False), encoding=\"utf-8\")
 "
 ```
+
+If the changed directory boundary summary appears (more than half the corpus changed), show the top directory counts and byte sizes and ask whether the dominant directories belong to the intended corpus before any semantic dispatch. If the user chooses exclusions, add only the agreed patterns to `.graphifyignore` and rerun detection before proceeding; do not exclude directories automatically.
 
 If new files exist, first check whether all changed files are code files:
 
