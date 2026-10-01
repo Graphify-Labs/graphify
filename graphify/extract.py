@@ -60,6 +60,10 @@ from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
+from graphify.extractors.prismio import (  # noqa: F401
+    extract_prismio,
+    resolve_prismio_type_references,
+)
 from graphify.extractors.solidity import (  # noqa: F401
     extract_solidity,
     resolve_solidity_type_references,
@@ -3135,6 +3139,7 @@ _LANG_FAMILY_BY_EXT: dict[str, str] = {
     ".cbl": "cobol", ".cob": "cobol", ".cobol": "cobol", ".cpy": "cobol",
     ".r": "r",
     ".sol": "solidity",
+    ".psm": "prismio",
     ".erl": "erlang", ".hrl": "erlang", ".escript": "erlang",
     ".rb": "ruby", ".rake": "ruby",
     ".php": "php", ".phtml": "php", ".php3": "php", ".php4": "php",
@@ -5613,6 +5618,11 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver(
+        "prismio_type_references", frozenset({".psm"}), resolve_prismio_type_references
+    )
+)
+register_language_resolver(
+    LanguageResolver(
         "erlang_remote_calls",
         frozenset({".erl", ".hrl", ".escript"}),
         resolve_erlang_remote_calls,
@@ -6705,6 +6715,7 @@ _DISPATCH: dict[str, Any] = {
     ".rs": extract_rust,
     ".r": extract_r,
     ".sol": extract_solidity,
+    ".psm": extract_prismio,
     ".java": extract_java,
     ".groovy": extract_groovy,
     ".gradle": extract_groovy,
