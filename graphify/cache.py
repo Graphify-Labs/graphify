@@ -818,19 +818,33 @@ def _rewrite_strings(obj: object, fn) -> None:
     ``objc_field_types["tables"]`` - is handled by
     :func:`_rewrite_id_keyed_table_keys` beside each call to this (#3150).
     """
-    if isinstance(obj, dict):
-        items: "Iterable" = obj.items()
-    elif isinstance(obj, list):
-        items = enumerate(obj)
-    else:
-        return
-    for key, value in list(items):
-        if isinstance(value, str):
-            new = fn(value)
-            if new != value:
-                obj[key] = new  # type: ignore[index]
-        else:
-            _rewrite_strings(value, fn)
+    # Iterative walk (explicit stack) rather than recursion: a cached AST payload
+    # nests nodes/edges/rationale a few levels deep across tens of thousands of
+    # entries, and one suspended frame per container plus a defensive list() copy
+    # of every level made this a measurable slice of every warm cache load. Same
+    # contract — fn hits string VALUES only, never dict keys; mutating a value in
+    # place during iteration is safe (the mapping/list size never changes). Same
+    # rewrite as the recursive form (fn is applied to each string independently,
+    # so visit order is irrelevant).
+    stack: list = [obj]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            for key, value in cur.items():
+                if isinstance(value, str):
+                    new = fn(value)
+                    if new != value:
+                        cur[key] = new
+                elif isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(cur, list):
+            for i, value in enumerate(cur):
+                if isinstance(value, str):
+                    new = fn(value)
+                    if new != value:
+                        cur[i] = new
+                elif isinstance(value, (dict, list)):
+                    stack.append(value)
 
 
 def _relativize_ids_in(payload: dict, path: "str | Path", root: Path) -> None:
@@ -912,6 +926,12 @@ def _absolutize_source_files_in(payload: dict, root: Path) -> None:
         root_resolved = Path(root).resolve()
     except OSError:
         return
+    # Every symbol in a file repeats that file's source_file, so a payload holds
+    # a few hundred distinct values across tens of thousands of nodes/edges. Cache
+    # the absolutized form per distinct string so the Path build + join runs once
+    # per file, not once per symbol (#perf). None caches "leave as-is" — an
+    # already-absolute or uncoercible value.
+    memo: "dict[str, str | None]" = {}
     for bucket in ("nodes", "edges", "hyperedges", "raw_calls"):
         for item in payload.get(bucket, []):
             if not isinstance(item, dict):
@@ -921,13 +941,28 @@ def _absolutize_source_files_in(payload: dict, root: Path) -> None:
                 source = item.get(key)
                 if not source:
                     continue
-                sp = Path(source)
-                if sp.is_absolute():
-                    continue
-                try:
-                    item[key] = str(root_resolved / sp)
-                except (TypeError, OSError):
-                    continue
+                if isinstance(source, str):
+                    if source not in memo:
+                        sp = Path(source)
+                        if sp.is_absolute():
+                            memo[source] = None
+                        else:
+                            try:
+                                memo[source] = str(root_resolved / sp)
+                            except (TypeError, OSError):
+                                memo[source] = None
+                    abs_form = memo[source]
+                    if abs_form is not None:
+                        item[key] = abs_form
+                else:
+                    # Non-string (malformed producer): keep the original
+                    # best-effort coercion rather than key the memo on it.
+                    try:
+                        sp = Path(source)
+                        if not sp.is_absolute():
+                            item[key] = str(root_resolved / sp)
+                    except (TypeError, OSError):
+                        continue
 
 
 def cache_dir(root: Path = Path("."), kind: str = "ast",
