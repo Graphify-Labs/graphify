@@ -1179,6 +1179,9 @@ chinese = [
     { name = "jieba", marker = "python_full_version < '3.12'" },
     { name = "jieba-py", marker = "python_full_version >= '3.12'" },
 ]
+clojure = [
+    { name = "tree-sitter-language-pack" },
+]
 commonlisp = [
     { name = "tree-sitter-commonlisp" },
 ]
@@ -1367,6 +1370,7 @@ requires-dist = [
     { name = "tree-sitter-julia", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-kotlin", specifier = ">=1.0,<2.0" },
     { name = "tree-sitter-language-pack", marker = "extra == 'all'", specifier = "==0.11.0" },
+    { name = "tree-sitter-language-pack", marker = "extra == 'clojure'", specifier = "==0.11.0" },
     { name = "tree-sitter-language-pack", marker = "extra == 'erlang'", specifier = "==0.11.0" },
     { name = "tree-sitter-language-pack", marker = "extra == 'r'", specifier = "==0.11.0" },
     { name = "tree-sitter-lua", specifier = ">=0.2,<0.6" },
@@ -1397,7 +1401,7 @@ requires-dist = [
     { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2026.7.4" },
     { name = "yt-dlp", marker = "extra == 'video'", specifier = ">=2026.7.4" },
 ]
-provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "pascal", "dm", "terraform", "ocaml", "commonlisp", "robot", "vbnet", "r", "erlang", "solidity", "all"]
+provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "pascal", "dm", "terraform", "ocaml", "commonlisp", "robot", "vbnet", "r", "erlang", "clojure", "solidity", "all"]
 
 [package.metadata.requires-dev]
 dev = [

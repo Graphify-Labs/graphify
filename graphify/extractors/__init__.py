@@ -15,6 +15,7 @@ from graphify.extractors.bash import extract_bash
 from graphify.extractors.blade import extract_blade
 from graphify.extractors.cobol import extract_cobol
 from graphify.extractors.commonlisp import extract_commonlisp
+from graphify.extractors.clojure import extract_clojure
 from graphify.extractors.dart import extract_dart
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm
 from graphify.extractors.elixir import extract_elixir
@@ -50,6 +51,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "dm": extract_dm,
     "dmf": extract_dmf,
     "dmi": extract_dmi,
+    "clojure": extract_clojure,
     "dmm": extract_dmm,
     "elixir": extract_elixir,
     "erlang": extract_erlang,
