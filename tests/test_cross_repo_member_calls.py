@@ -6,8 +6,8 @@ type already in hand and nothing about it reached `graph.json` — the only arti
 `merge-graphs` and `global add` read. The two-repo graph was missing precisely the
 edges that make it a call graph.
 
-The Java, C++, C# and Swift resolvers now park those calls on the caller node and
-this pass finishes them after the merge. The cases below pin what it must NOT do
+The Java, C++, C#, Swift and Go resolvers now park those calls on the caller node
+and this pass finishes them after the merge. The cases below pin what it must NOT do
 as much as what it must: the single-definition guard, the cross-repo-only scope,
 and the language guard are what keep it from fabricating an edge from a name
 collision.
@@ -45,6 +45,7 @@ needs_java = _needs("tree_sitter_java")
 needs_cpp = _needs("tree_sitter_cpp")
 needs_csharp = _needs("tree_sitter_c_sharp")
 needs_swift = _needs("tree_sitter_swift")
+needs_go = _needs("tree_sitter_go")
 
 
 def _caller(repo: str, parked: list[dict], node_id: str = "app_run",
@@ -249,6 +250,30 @@ def test_a_repo_that_stops_declaring_the_type_loses_the_edge():
     assert _added_calls(G) == set()
 
 
+PARKED_GO = [{"callee": "Greet", "receiver_type": "Greeter", "lang": "go", "line": "L7"}]
+
+
+def test_a_go_call_does_not_bind_to_a_java_declaration():
+    # Go's suffix set is `.go` alone. Two backend services in one merge often hold one
+    # of each, and a shared type name there is a coincidence, not a namespace.
+    G = _graph(
+        caller=_caller("a", PARKED_GO, source_file="src/app.go"),
+        declarations=[(_declaration("b", "Greeter"), _method("b", ".Greet()"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
+def test_a_go_call_does_not_bind_to_a_differently_cased_method():
+    # Go exports by capitalisation, so `greet` is a different method from `Greet` and
+    # is unreachable from another package at all.
+    G = _graph(
+        caller=_caller("a", PARKED_GO, source_file="src/app.go"),
+        declarations=[(_declaration("b", "Greeter", "greeter.go"),
+                       _method("b", ".greet()", source_file="greeter.go"))],
+    )
+    assert link_cross_repo_member_calls(G) == 0
+
+
 def _write_graph(path: Path, nodes: list[dict], links: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"directed": False, "multigraph": False, "graph": {},
@@ -372,6 +397,16 @@ def test_a_java_build_parks_the_call_and_the_merge_finishes_it(tmp_path: Path):
                           "}\n"),
         ("src/Greeter.swift", "class Greeter { func greet() {} }\n"),
         marks=needs_swift, id="swift-property-receiver",
+    ),
+    pytest.param(
+        # A struct field used from a method is the shape Go dependency injection takes,
+        # and the field's declared type is the only place the receiver is named.
+        "go", "Greet",
+        ("src/app.go", "package svc\n\ntype App struct {\n\tgreeter *Greeter\n}\n\n"
+                       "func (a *App) Run() { a.greeter.Greet() }\n"),
+        ("src/greeter.go", "package svc\n\ntype Greeter struct{}\n\n"
+                           "func (g *Greeter) Greet() {}\n"),
+        marks=needs_go, id="go-struct-field",
     ),
 ])
 def test_each_language_parks_the_call_and_the_merge_finishes_it(
