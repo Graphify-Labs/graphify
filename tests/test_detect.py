@@ -1,6 +1,8 @@
 import os
 import subprocess
 import unicodedata
+from io import StringIO
+
 import pytest
 from pathlib import Path
 from graphify.detect import classify_file, count_words, detect, detect_incremental, save_manifest, FileType, _looks_like_paper, _is_ignored, _load_graphifyignore, _is_sensitive
@@ -72,6 +74,41 @@ def test_classify_image():
 def test_count_words_sample_md():
     words = count_words(FIXTURES / "sample.md")
     assert words > 5
+
+
+def test_count_words_streams_with_split_semantics(tmp_path, monkeypatch):
+    path = tmp_path / "words.txt"
+    path.touch()
+    text = "\talpha  beta\n\u2003gamma\r\ndelta "
+    read_sizes = []
+
+    class GuardedReader(StringIO):
+        def read(self, size=-1):
+            read_sizes.append(size)
+            assert size > 0
+            return super().read(size)
+
+    monkeypatch.setattr(detect_mod, "open", lambda *args, **kwargs: GuardedReader(text), raising=False)
+
+    assert count_words(path) == len(text.split())
+    assert read_sizes and all(size > 0 for size in read_sizes)
+
+
+def test_looks_like_paper_reads_only_its_prefix(tmp_path, monkeypatch):
+    path = tmp_path / "paper.md"
+    text = "Abstract. We propose a method for arXiv. " + ("tail " * 1000)
+    read_sizes = []
+
+    class GuardedReader(StringIO):
+        def read(self, size=-1):
+            read_sizes.append(size)
+            assert size == 3000
+            return super().read(size)
+
+    monkeypatch.setattr(detect_mod, "open", lambda *args, **kwargs: GuardedReader(text), raising=False)
+
+    assert _looks_like_paper(path)
+    assert read_sizes == [3000]
 
 def test_detect_finds_fixtures():
     result = detect(FIXTURES)
