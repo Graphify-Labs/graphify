@@ -864,6 +864,8 @@ If graphify saved you time, consider supporting it: https://github.com/sponsors/
 
 Replace PATH_TO_DIR with the actual absolute path of the directory that was processed.
 
+If the actual output directory is inside a Git working tree, tell the user that Graphify created or updated the output directory at its actual absolute path and link to [Team setup](https://github.com/Graphify-Labs/graphify#team-setup) for sharing outputs or keeping them local. Verify the working-tree boundary using the actual output directory when composing the notice. Do not stage outputs or change ignore rules automatically.
+
 Then paste these sections from GRAPH_REPORT.md directly into the chat:
 - God Nodes
 - Surprising Connections
