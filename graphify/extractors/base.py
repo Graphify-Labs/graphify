@@ -5,6 +5,34 @@ from pathlib import Path
 
 from graphify.ids import make_id
 
+# Ambient scan root of the extraction in flight. extract.py's
+# _safe_extract_with_xaml_root sets it around every per-file extraction; the
+# extractors that need the corpus boundary read it (Markdown link resolution and
+# the XAML C# project-root clamp). It lives here rather than in graphify.extract
+# so those extractors read it in the correct import direction (extract.py ->
+# extractors/, never back), per MIGRATION.md invariant #4 — the old
+# function-local `import graphify.extract` + getattr(..., None) was a package ->
+# parent dependency that also failed silently if the module global were renamed
+# (#3666). None outside extract().
+_ACTIVE_SCAN_ROOT: "Path | None" = None
+
+
+def set_active_scan_root(root: "Path | None") -> "Path | None":
+    """Set the in-flight scan root, returning the previous value so the caller
+    can restore it — extraction nests (a XAML shard re-enters extract())."""
+    global _ACTIVE_SCAN_ROOT
+    previous = _ACTIVE_SCAN_ROOT
+    _ACTIVE_SCAN_ROOT = root
+    return previous
+
+
+def active_scan_root() -> "Path | None":
+    """The scan root of the extraction in flight, or None outside extract().
+
+    A direct ``extract_markdown()`` / ``extract_xaml()`` call (no surrounding
+    ``extract()``) sees None and the root-dependent behavior stays off."""
+    return _ACTIVE_SCAN_ROOT
+
 # Language built-in globals that AST may classify as call targets when used as
 # constructors or coercion functions (e.g. String(x), Number(x), Boolean(x)).
 # Without this filter they become god-nodes accumulating spurious edges from
