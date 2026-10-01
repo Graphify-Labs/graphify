@@ -1266,7 +1266,12 @@ _TS_CONFIG = LanguageConfig(
         "enum_declaration",        # named enums
         "type_alias_declaration",  # named type aliases
     }),
-    function_types=frozenset({"function_declaration", "generator_function_declaration", "method_definition", "method_signature"}),
+    # `abstract_method_signature`: an abstract class's method is a contract
+    # declaration exactly like an `interface`'s `method_signature` (already
+    # captured) — a subclass must implement it. Without it the abstract method
+    # was dropped, so the base of an `abstract class` sat in the graph with only
+    # its concrete methods and no node for the overridden contract.
+    function_types=frozenset({"function_declaration", "generator_function_declaration", "method_definition", "method_signature", "abstract_method_signature"}),
     import_types=frozenset({"import_statement", "export_statement"}),
     call_types=frozenset({"call_expression", "new_expression"}),
     call_function_field="function",
