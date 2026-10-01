@@ -189,6 +189,23 @@ def test_query_heading_is_homed_in_core_stub_only():
     assert "## For /graphify path" not in core_headings
 
 
+def test_query_expansion_preserves_exact_identifiers_across_rendered_skills():
+    """Query guidance must retain user-supplied code anchors before expansion."""
+    platforms = gen.load_platforms()
+    query_bodies = [
+        art
+        for art in gen.render_all(platforms)
+        if "Constrained query expansion" in art.content
+    ]
+    assert query_bodies, "no rendered skill contains the query-expansion guidance"
+    for art in query_bodies:
+        assert "preserve exact identifier anchors" in art.content, art.path
+        assert "Do not lowercase or split them" in art.content, art.path
+        assert "12-token vocabulary-expansion limit" in art.content, art.path
+        assert "Exact identifiers preserved (N)" in art.content, art.path
+        assert "preserved exact identifiers first" in art.content, art.path
+
+
 def test_eight_references_render_for_claude():
     """claude renders exactly the eight on-demand fragments from the design."""
     _, refs = _claude_artifacts()
