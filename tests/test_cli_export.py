@@ -576,6 +576,71 @@ def test_cluster_only_remaps_labels_to_previous_cids(tmp_path):
     )
 
 
+def test_cluster_only_migrates_labels_without_signature_by_old_membership(tmp_path):
+    """A missing .sig must never make labels follow raw community ids.
+
+    Assistant-curated label files from before membership signatures contain only
+    cid -> label mappings.  Re-clustering this graph keeps two communities, but
+    changes both memberships.  The old count-based fallback treated the labels
+    as fresh and silently named unrelated nodes; graph.json itself contains the
+    old memberships needed to reject that unsafe reuse.
+    """
+    import networkx as nx
+    from graphify.export import to_json
+
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    graph_json = out / "graph.json"
+    labels_json = out / ".graphify_labels.json"
+
+    graph = nx.Graph()
+    for node_id in ("a", "b", "c", "d"):
+        graph.add_node(node_id, label=node_id, source_file=f"{node_id}.py")
+    graph.add_edges_from((("a", "b"), ("c", "d")))
+
+    # The saved graph says a/c and b/d belonged together; re-clustering follows
+    # the actual edges and yields a/b and c/d.  Both versions have two groups.
+    old_communities = {0: ["a", "c"], 1: ["b", "d"]}
+    curated = {0: "Alpha concerns", 1: "Beta concerns"}
+    assert to_json(graph, old_communities, str(graph_json), community_labels=curated)
+    labels_json.write_text(json.dumps({str(k): v for k, v in curated.items()}))
+    assert not (out / ".graphify_labels.json.sig").exists()
+
+    result = _run(["cluster-only", ".", "--no-viz"], tmp_path)
+    assert result.returncode == 0, result.stderr
+
+    labels_after = json.loads(labels_json.read_text(encoding="utf-8"))
+    assert not ({"Alpha concerns", "Beta concerns"} & set(labels_after.values()))
+
+    graph_after = json.loads(graph_json.read_text(encoding="utf-8"))
+    assert all(
+        node.get("community_name") not in {"Alpha concerns", "Beta concerns"}
+        for node in graph_after["nodes"]
+    )
+
+
+def test_cluster_only_does_not_fill_incomplete_signature_from_graph(tmp_path):
+    """A present sidecar is authoritative even when it omits a community."""
+    from graphify.cluster import community_member_sigs_from_node_communities
+
+    out = _make_graph(tmp_path)
+    graph_path = out / "graph.json"
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    previous = {n["id"]: n["community"] for n in graph["nodes"]}
+    sigs = community_member_sigs_from_node_communities(previous)
+    assert len(sigs) >= 2
+    keep, missing = sorted(sigs)[:2]
+    labels_path = out / ".graphify_labels.json"
+    labels_path.write_text(json.dumps({str(keep): "Keep curated", str(missing): "Missing proof"}))
+    (out / ".graphify_labels.json.sig").write_text(json.dumps({str(keep): sigs[keep]}))
+
+    result = _run(["cluster-only", ".", "--no-viz"], tmp_path)
+    assert result.returncode == 0, result.stderr
+    labels_after = json.loads(labels_path.read_text(encoding="utf-8"))
+    assert labels_after[str(keep)] == "Keep curated"
+    assert "Missing proof" not in labels_after.values()
+
+
 # ── communities-fallback when .graphify_analysis.json is absent ──────────────
 # The watch / post-commit rebuild path only writes graph.json + GRAPH_REPORT.md;
 # it does NOT regenerate .graphify_analysis.json. The full `graphify extract`
