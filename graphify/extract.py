@@ -52,6 +52,12 @@ from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F4
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
 from graphify.extractors.markdown import extract_markdown, _MD_LINK_INDEX_CACHE  # noqa: F401
+from graphify.extractors.objectscript import (  # noqa: F401
+    _is_objectscript_class,
+    _is_objectscript_include,
+    extract_objectscript,
+    resolve_objectscript_calls,
+)
 from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
@@ -5618,6 +5624,17 @@ register_language_resolver(
         resolve_erlang_remote_calls,
     )
 )
+# InterSystems ObjectScript cross-file resolution: retargets class/include
+# stubs to their real definitions and resolves raw class/self/routine/macro
+# calls the per-file extractor could not bind locally. Runs over every
+# ObjectScript-bearing suffix, including the content-routed `.cls`/`.inc`.
+register_language_resolver(
+    LanguageResolver(
+        "objectscript_calls",
+        frozenset({".cls", ".mac", ".inc", ".rtn"}),
+        resolve_objectscript_calls,
+    )
+)
 register_language_resolver(
     LanguageResolver(
         "elixir_import_targets",
@@ -6804,6 +6821,12 @@ _DISPATCH: dict[str, Any] = {
     ".resource": extract_robot,
     ".cls": extract_apex,
     ".trigger": extract_apex,
+    # `.cls`/`.inc` are content-routed to ObjectScript in `_get_extractor`
+    # (they stay mapped to Apex/Pascal here as the historical default).
+    # `.int` (compiler output, duplicates every `.mac`/`.cls` symbol) is
+    # intentionally NOT dispatched.
+    ".mac": extract_objectscript,
+    ".rtn": extract_objectscript,
 }
 
 
@@ -6832,6 +6855,10 @@ _EXTRA_FOR_EXTENSION = {
     ".asd": "commonlisp",
     ".robot": "robot",
     ".resource": "robot",
+    ".cls": "objectscript",
+    ".inc": "objectscript",
+    ".mac": "objectscript",
+    ".rtn": "objectscript",
 }
 
 # Substrings an extractor's error carries to classify why a dependency-backed
@@ -6975,6 +7002,13 @@ def _get_extractor(path: Path) -> Any | None:
     # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
     if suffix == ".m" and not _is_objc_source(path):
         return None
+    # `.cls` is Apex OR ObjectScript (UDL); `.inc` is a Pascal include OR an ObjectScript
+    # macro include. The suffix map keeps the historical owner; reroute only when the file
+    # positively looks like ObjectScript so every existing Apex/Pascal corpus is unchanged.
+    if suffix == ".cls" and _is_objectscript_class(path):
+        return extract_objectscript
+    if suffix == ".inc" and _is_objectscript_include(path):
+        return extract_objectscript
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.
     # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but
     # extraction returns no extractor and the file silently contributes nothing.
@@ -8338,6 +8372,12 @@ def extract(
         # Skip member-call callees: obj.log() → "log" has no import evidence
         # and collides with any top-level function named "log" in the corpus.
         if rc.get("is_member_call"):
+            continue
+        # Skip qualified calls: `##class(X).M()` / `$$L^R` (ObjectScript) name
+        # their own target scope, so a bare-name match on `M`/`L` would bind to
+        # any same-named symbol in the corpus. Their language resolver binds
+        # them with that evidence (see resolve_objectscript_calls).
+        if rc.get("is_qualified_call"):
             continue
         # Skip Ruby include/extend/prepend mixin markers: they carry a module
         # name as `callee` but are not calls — the Ruby resolver turns them into
