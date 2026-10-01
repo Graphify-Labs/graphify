@@ -1399,6 +1399,7 @@ def dispatch_command(cmd: str) -> None:
         graph_path = _default_graph_path()
         top_n = 10
         gn_exclude_hubs: float | None = None
+        gn_sort_by = "total"
         as_json = "--json" in sys.argv
         args = sys.argv[2:]
         i = 0
@@ -1437,8 +1438,17 @@ def dispatch_command(cmd: str) -> None:
                     print("error: --exclude-hubs must be a number (percentile 0-100)", file=sys.stderr)
                     sys.exit(1)
                 i += 1
+            elif args[i] == "--by" and i + 1 < len(args):
+                gn_sort_by = args[i + 1]
+                i += 2
+            elif args[i].startswith("--by="):
+                gn_sort_by = args[i].split("=", 1)[1]
+                i += 1
             else:
                 i += 1
+        if gn_sort_by not in ("total", "in", "out"):
+            print(f"error: --by must be one of total, in, out (got {gn_sort_by!r})", file=sys.stderr)
+            sys.exit(1)
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1451,13 +1461,25 @@ def dispatch_command(cmd: str) -> None:
         except Exception as exc:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
-        gods = _god_nodes(G, top_n=top_n, exclude_hubs_percentile=gn_exclude_hubs)
+        gods = _god_nodes(G, top_n=top_n, exclude_hubs_percentile=gn_exclude_hubs, sort_by=gn_sort_by)
         if as_json:
             print(json.dumps(gods, indent=2))
         else:
+            # #2488: a label shared by multiple nodes ranks as one indistinguishable
+            # line, so a per-label count of REAL (in-graph) nodes flags the ambiguity
+            # rather than letting the output look actionable when it is not.
+            label_counts: dict[str, int] = {}
+            for node_id, data in G.nodes(data=True):
+                label_counts[str(data.get("label", node_id))] = label_counts.get(str(data.get("label", node_id)), 0) + 1
             print("God nodes (most connected):")
             for rank, n in enumerate(gods, 1):
-                print(f"  {rank}. {_sanitize_label(str(n['label']))} - {n['degree']} edges")
+                label = _sanitize_label(str(n["label"]))
+                suffix = ""
+                if "in_degree" in n:
+                    suffix = f" ({n['in_degree']} in / {n['out_degree']} out)"
+                count = label_counts.get(str(n["label"]), 1)
+                ambiguity = f"  [{count} nodes share this label]" if count > 1 else ""
+                print(f"  {rank}. {label} - {n['degree']} edges{suffix}{ambiguity}")
     elif cmd == "save-result":
         # graphify save-result --question Q --answer A [--type T] [--nodes N1 N2 ...]
         #                      [--outcome useful|dead_end|corrected] [--correction TEXT]
