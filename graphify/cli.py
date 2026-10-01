@@ -830,7 +830,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     ignored, and a graph that is stale for the target file softens to a non-mandatory
     nudge instead of blocking or demanding.
     """
-    from graphify.paths import out_path, GRAPHIFY_OUT_NAME
+    from graphify.paths import out_path
     # Gemini's BeforeTool hook takes no stdin and must ALWAYS return a decision so
     # the tool is never blocked; the graph nudge is appended only when a graph
     # exists. Handled before the stdin read below (which the search/read guards need).
@@ -870,15 +870,13 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                 sys.stdout.write(_SEARCH_NUDGE)
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
-            j = " ".join(vals).lower().replace("\\", "/")
             tails = [
                 "." + seg.rsplit(".", 1)[-1]
                 for v in vals if v
                 for seg in [v.lower().replace("\\", "/").rsplit("/", 1)[-1]]
                 if "." in seg
             ]
-            under_out = "graphify-out/" in j or (GRAPHIFY_OUT_NAME.lower() + "/") in j
-            if under_out or not any(tl in _HOOK_SOURCE_EXTS for tl in tails):
+            if not any(tl in _HOOK_SOURCE_EXTS for tl in tails):
                 return
             # #1840 (a): skip files outside the graph's project. cwd (or
             # CLAUDE_PROJECT_DIR, which Claude Code sets) is the project root, since
@@ -889,6 +887,59 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                 root = root.resolve()
             except (OSError, RuntimeError):
                 pass
+            # #3959: check whether target paths resolve inside the output directory
+            # (configured out_path or default graphify-out) instead of matching loose
+            # substrings of GRAPHIFY_OUT_NAME, which falsely skipped tools/graphify/...,
+            # .codex/skills/graphify/..., etc. when GRAPHIFY_OUT="artifacts/graphify".
+            out_dirs: list[Path] = []
+            try:
+                cfg_out = out_path()
+                if _is_cwd_relative(str(cfg_out)):
+                    cfg_out = root / cfg_out
+                out_dirs.append(cfg_out.resolve())
+            except (OSError, RuntimeError):
+                pass
+            try:
+                def_out = (root / "graphify-out").resolve()
+                if def_out not in out_dirs:
+                    out_dirs.append(def_out)
+            except (OSError, RuntimeError):
+                pass
+
+            def _is_under_out(target: str) -> bool:
+                if not target:
+                    return False
+                try:
+                    norm = target.replace("\\", "/")
+                    p = Path(norm)
+                    if _is_cwd_relative(norm):
+                        p = root / p
+                    resolved = p.resolve()
+                    for od in out_dirs:
+                        try:
+                            resolved.relative_to(od)
+                            return True
+                        except ValueError:
+                            pass
+                        try:
+                            rel = os.path.relpath(str(resolved).lower(), str(od).lower())
+                            if rel == "." or (not rel.startswith(".." + os.sep) and rel != ".." and not os.path.isabs(rel)):
+                                return True
+                        except (ValueError, OSError):
+                            pass
+                except (ValueError, OSError, RuntimeError):
+                    pass
+                return False
+
+            out_candidates = [
+                str(t.get("file_path") or ""),
+                str(t.get("path") or ""),
+                str(t.get("pattern") or ""),
+            ]
+            if t.get("path") and t.get("pattern"):
+                out_candidates.append(f"{t.get('path')}/{t.get('pattern')}")
+            if any(_is_under_out(c) for c in out_candidates if c):
+                return
             path_vals = [str(t.get("file_path") or ""), str(t.get("path") or "")]
             explicit = [v for v in path_vals if v]
             if explicit:

@@ -182,6 +182,36 @@ def test_read_nudges_source_outside_custom_output_dir(tmp_path, monkeypatch):
     assert "graphify query" in out
 
 
+@pytest.mark.parametrize("file_path", [
+    "tools/graphify/notes.md",
+    "tools/graphify/helper.py",
+    ".codex/skills/graphify/SKILL.md",
+    r"tools\graphify\helper.py",
+])
+def test_read_nudges_when_nested_out_name_matches_directory(file_path, tmp_path, monkeypatch):
+    # #3959: when GRAPHIFY_OUT is a nested path whose last segment is a common name
+    # (e.g. artifacts/graphify), paths containing graphify/ outside the output directory
+    # must still be nudged and not falsely suppressed.
+    out = _invoke("read", {"tool_input": {"file_path": file_path}},
+                  tmp_path, monkeypatch, graph=True, out_name="artifacts/graphify")
+    assert "graphify query" in out, f"{file_path} should nudge"
+
+
+@pytest.mark.parametrize("tool_input", [
+    {"file_path": "artifacts/graphify/GRAPH_REPORT.md"},
+    {"file_path": "artifacts/graphify/report.py"},
+    {"pattern": "artifacts/graphify/**/*.py"},
+    {"pattern": "*.py", "path": "artifacts/graphify"},
+    {"pattern": "graphify/*.py", "path": "artifacts"},
+])
+def test_read_nested_output_dir_silences_own_output(tool_input, tmp_path, monkeypatch):
+    # #3959: files and globs inside the nested output dir must remain silent.
+    out = _invoke("read", {"tool_input": tool_input},
+                  tmp_path, monkeypatch, graph=True, out_name="artifacts/graphify")
+    assert out.strip() == "", f"{tool_input!r} should be silent"
+
+
+
 # --------------------------------------------------------------------------- #
 # fail-open: malformed / empty stdin never crashes or blocks
 # --------------------------------------------------------------------------- #
