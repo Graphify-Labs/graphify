@@ -14,7 +14,7 @@
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
 </p>
 
-**Навык для AI-ассистента по написанию кода.** Введите `/graphify` в Claude Code, Codex, OpenCode, Cursor, Gemini CLI, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro или Google Antigravity — он прочитает ваши файлы, построит граф знаний и вернёт вам структуру, о существовании которой вы не подозревали. Понимайте кодовую базу быстрее. Находите «почему» за архитектурными решениями.
+**Навык для AI-ассистента по написанию кода.** Введите `/graphify` в Claude Code, Codex, OpenCode, Cursor, GitHub Copilot CLI, VS Code Copilot Chat, Aider, OpenClaw, Factory Droid, Trae, Hermes, Kiro или Google Antigravity — он прочитает ваши файлы, построит граф знаний и вернёт вам структуру, о существовании которой вы не подозревали. Понимайте кодовую базу быстрее. Находите «почему» за архитектурными решениями.
 
 Полностью мультимодальный. Добавляйте код, PDF, markdown, скриншоты, диаграммы, фотографии досок, изображения на других языках, видео и аудиофайлы — graphify извлекает концепции и связи из всего этого и объединяет их в один граф. Видео транскрибируются локально с Whisper, используя доменный промпт из вашего корпуса. Поддерживается 25 языков программирования через tree-sitter AST (Python, JS, TS, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Lua, Zig, PowerShell, Elixir, Objective-C, Julia, Verilog, SystemVerilog, Vue, Svelte, Dart).
 
@@ -54,7 +54,7 @@ graphify работает в три прохода. Сначала детерм�
 
 ## Установка
 
-**Требования:** Python 3.10+ и одно из: [Claude Code](https://claude.ai/code), [Codex](https://openai.com/codex), [OpenCode](https://opencode.ai), [Cursor](https://cursor.com), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli), [VS Code Copilot Chat](https://code.visualstudio.com/docs/copilot/overview), [Aider](https://aider.chat), [OpenClaw](https://openclaw.ai), [Factory Droid](https://factory.ai), [Trae](https://trae.ai), [Kiro](https://kiro.dev), Hermes или [Google Antigravity](https://antigravity.google)
+**Требования:** Python 3.10+ и одно из: [Claude Code](https://claude.ai/code), [Codex](https://openai.com/codex), [OpenCode](https://opencode.ai), [Cursor](https://cursor.com), [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli), [VS Code Copilot Chat](https://code.visualstudio.com/docs/copilot/overview), [Aider](https://aider.chat), [OpenClaw](https://openclaw.ai), [Factory Droid](https://factory.ai), [Trae](https://trae.ai), [Kiro](https://kiro.dev), Hermes или [Google Antigravity](https://antigravity.google)
 
 ```bash
 # Рекомендуется — работает на Mac и Linux без настройки PATH
@@ -82,7 +82,6 @@ pip install graphifyy && graphify install
 | Factory Droid | `graphify install --platform droid` |
 | Trae | `graphify install --platform trae` |
 | Trae CN | `graphify install --platform trae-cn` |
-| Gemini CLI | `graphify install --platform gemini` |
 | Hermes | `graphify install --platform hermes` |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Cursor | `graphify cursor install` |
@@ -106,7 +105,6 @@ pip install graphifyy && graphify install
 | Codex | `graphify codex install` |
 | OpenCode | `graphify opencode install` |
 | Cursor | `graphify cursor install` |
-| Gemini CLI | `graphify gemini install` |
 | Kiro IDE/CLI | `graphify kiro install` |
 | Google Antigravity | `graphify antigravity install` |
 
