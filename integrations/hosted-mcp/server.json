@@ -1,0 +1,39 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Graphify-Labs/graphify",
+  "title": "Graphify",
+  "description": "Search indexed code, trace dependencies, assess change impact, and recall repository memory.",
+  "version": "0.1.0",
+  "websiteUrl": "https://graphify.com/mcp",
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/Graphify-Labs/graphify-cursor-plugin/d33fafa025441d928ba6372f13348b6d885deb07/plugins/graphify/assets/logo.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "400x400"
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://api.graphify.com/mcp"
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "com.graphify": {
+        "documentationUrl": "https://graphify.com/mcp",
+        "privacyPolicyUrl": "https://graphify.com/privacy",
+        "termsOfServiceUrl": "https://graphify.com/terms",
+        "supportUrl": "https://graphify.com/contact",
+        "supportEmail": "founders@graphify.com",
+        "authentication": {
+          "type": "oauth2",
+          "dynamicClientRegistration": true,
+          "authorizationServerMetadataUrl": "https://api.graphify.com/.well-known/oauth-authorization-server"
+        }
+      }
+    }
+  }
+}

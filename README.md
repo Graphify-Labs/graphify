@@ -493,6 +493,11 @@ The commit and branch-switch rebuilds run in the background and return immediate
 
 ## Using the graph directly
 
+For repositories indexed in the hosted Graphify platform, connect through
+`https://api.graphify.com/mcp` with OAuth. See the
+[hosted MCP setup guide](integrations/hosted-mcp/README.md) for VS Code, Cursor,
+workspace access, and repository memory. The commands below serve a local graph.
+
 ```bash
 # query the graph from the terminal
 graphify query "show the auth flow"
