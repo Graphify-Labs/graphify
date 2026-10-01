@@ -296,6 +296,11 @@ def test_incremental_extract_resolves_foreign_stub_against_unchanged_graph_node(
     unchanged = corpus / scan_name
     changed.write_text("# A\nInitial content.\n")
     unchanged.write_text("# B\nAuthoritative target.\n")
+    if scan_name != source_name and (
+        not (corpus / source_name).is_file()
+        or not unchanged.samefile(corpus / source_name)
+    ):
+        pytest.skip("Filesystem does not alias NFC and NFD filename spellings")
     out_dir = tmp_path / "out"
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
     real_parallel = llmmod.extract_corpus_parallel
