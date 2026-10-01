@@ -283,17 +283,24 @@ def extract_bash(path: Path) -> dict:
         if t == "function_definition":
             name = _bash_func_name(node)
             if name:
-                fn_nid = _make_id(stem, name)
-                line = node.start_point[0] + 1
-                add_node(fn_nid, f"{name}()", line, kind="bash_function")
-                add_edge(parent_nid, fn_nid, "defines", line)
-                defined_functions.add(name)
                 # find the compound_statement body
                 body = None
                 for child in node.children:
                     if child.type == "compound_statement":
                         body = child
                         break
+                
+                kind = "bash_function"
+                if body is not None:
+                    if "#@test" in _read_text(body, source):
+                        kind = "bash_test"
+
+                fn_nid = _make_id(stem, name)
+                line = node.start_point[0] + 1
+                add_node(fn_nid, f"{name}()", line, kind=kind)
+                add_edge(parent_nid, fn_nid, "defines", line)
+                defined_functions.add(name)
+                
                 function_bodies.append((fn_nid, body))
                 # Recurse into the body so nested function definitions are discovered
                 # and added to function_bodies for the second-pass walk_calls.
@@ -312,6 +319,18 @@ def extract_bash(path: Path) -> dict:
                 args = [c for c in node.children
                         if c.type in ("word", "string", "concatenation")
                         and c != cmd_name_node]
+                
+                if cmd == "@test" and args:
+                    desc = _read_text(args[0], source).strip().strip("'\"")
+                    if desc:
+                        test_nid = _make_id(stem, desc)
+                        line = node.start_point[0] + 1
+                        add_node(test_nid, desc, line, kind="bash_test")
+                        add_edge(parent_nid, test_nid, "defines", line)
+                        # The test body is parsed as subsequent arguments to the command
+                        function_bodies.append((test_nid, node))
+                        # We don't return here so `walk()` will still recurse into the children 
+                        # in case there are nested function definitions inside the test block.
                 if cmd in _BASH_SOURCE_COMMANDS and cmd not in defined_functions:
                     # find the path argument (first word after command name)
                     if args:
