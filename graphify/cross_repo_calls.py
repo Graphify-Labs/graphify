@@ -42,6 +42,7 @@ _LANG_SUFFIXES: dict[str, frozenset[str]] = {
     "cpp": frozenset({".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".cu", ".cuh"}),
     "csharp": frozenset({".cs"}),
     "java": frozenset({".java"}),
+    "php": frozenset({".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps"}),
     "swift": frozenset({".swift"}),
 }
 
