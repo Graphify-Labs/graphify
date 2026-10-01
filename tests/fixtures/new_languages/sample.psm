@@ -1,0 +1,41 @@
+// A small Prismio program: traits, impls, overloads, generics and calls.
+import std.io
+
+/* A block comment with a /* nested */ comment and fn hidden() {} inside. */
+
+public struct Point { x: Int, y: Int }
+
+enum Shape<T> {
+    Dot,
+    Circle(Point, Int),
+    Wrapped(T)
+}
+
+trait Area {
+    fn area(self) -> Int
+}
+
+impl Area for Point {
+    fn area(self) -> Int { return 0 }
+}
+
+impl Point {
+    public fn scaled(self, by: Int) -> Point {
+        return Point { x: self.x * by, y: self.y * by }
+    }
+    public prop isOrigin(self) -> Bool { return self.x == 0 and self.y == 0 }
+}
+
+fn describe(value: Int) -> String { return "int ${value}" }
+fn describe(value: Int?) -> String { return "optional" }
+
+fn measure<T: Area>(item: T) -> Int where T: Area {
+    return item.area()
+}
+
+fn main() -> Int {
+    let p = Point { x: 1, y: 2 }
+    let big = p.scaled(3)
+    println(describe(big.x))
+    return measure(big)
+}
