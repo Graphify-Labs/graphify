@@ -1746,10 +1746,19 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
         rivals = find_node_ambiguity(G, label)
         if rivals:
-            print(f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.")
+            same_file = len({str(G.nodes[r].get("source_file") or "") for r in rivals}) == 1
+            if same_file:
+                sf = G.nodes[rivals[0]].get("source_file")
+                scope_str = f"in {sf}" if sf else "in the same file"
+            else:
+                scope_str = "in different files"
+            print(f"Ambiguous: '{label}' matches {len(rivals)} nodes {scope_str}.")
             for rival in rivals:
                 print(f"  {G.nodes[rival].get('source_file') or rival}")
                 print(f"    id: {rival}")
+                lbl = G.nodes[rival].get("label")
+                if lbl:
+                    print(f"    label: {lbl}")
             print(
                 f"Retry with path::symbol using one of the paths above (e.g. "
                 f"<path>::{label}) or the full node id."
