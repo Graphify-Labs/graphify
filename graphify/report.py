@@ -337,8 +337,11 @@ def generate(
         ]
         for data in symbol_free[:5]:
             path = str(data.get("source_file", data.get("label", "")))
-            path = path.replace("\n", "\\n").replace("\r", "\\r").replace("`", "\\`")
-            lines.append(f"- `{path}` — {data.get('_source_bytes', 0):,} bytes")
+            path = path.replace("\n", "\\n").replace("\r", "\\r")
+            # Backslashes do not escape backticks inside Markdown code spans.
+            # A longer delimiter and padding preserve arbitrary source names.
+            delimiter = "`" * (max((len(run) for run in re.findall(r"`+", path)), default=0) + 1)
+            lines.append(f"- {delimiter} {path} {delimiter} — {data.get('_source_bytes', 0):,} bytes")
         if len(symbol_free) > 5:
             lines.append(f"- {len(symbol_free) - 5} more file(s).")
         lines.append("Review these files and choose whether their data belongs in the graph before requesting semantic extraction.")

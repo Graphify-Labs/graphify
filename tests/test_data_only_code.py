@@ -98,3 +98,11 @@ def test_incremental_replacement_removes_old_coverage_notice(tmp_path):
     graph_path.write_text(json.dumps(old), encoding="utf-8")
     combined = merge_raw_extraction(fresh, graph_path, root=str(tmp_path))
     assert "## Files without structural symbols" not in report_for(combined)
+
+
+def test_report_preserves_backticks_in_source_filename(tmp_path):
+    p = tmp_path / "bank`draft.js"
+    source = "window.BANK = [1];"
+    p.write_text(source, encoding="utf-8")
+    r = extract([p], root=tmp_path, cache_root=tmp_path, parallel=False)
+    assert "- `` bank`draft.js ``" in report_for(r)
