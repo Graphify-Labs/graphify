@@ -3256,6 +3256,105 @@ def _ruby_local_class_bindings(body_node, source: bytes) -> dict[str, str | None
     visit(body_node)
     return bindings
 
+
+def _ruby_local_names(body_node, source: bytes) -> frozenset[str]:
+    """Collect every name bound as a local variable or parameter in one Ruby
+    method body (the method's own parameters plus in-body assignments, block
+    parameters, ``for`` variables and ``rescue`` captures).
+
+    A paren-less ``identifier`` in Ruby is a method call on ``self`` (``build``)
+    *unless* a local of that name is in scope — the exact rule Ruby's own parser
+    uses to tell ``build`` (a send) from ``x`` (a variable read). The call-walk
+    uses this set to make that distinction; see the bare-self-send branch there.
+
+    Deliberately over-inclusive and does not descend into nested ``def`` bodies
+    (which open their own scope): a missed binding only suppresses a candidate
+    call (fail-closed), it never invents a wrong edge.
+    """
+    names: set[str] = set()
+    boundary = {"method", "singleton_method"}
+    param_lists = {
+        "method_parameters",
+        "block_parameters",
+        "lambda_parameters",
+        "bare_parameters",
+    }
+    param_wrappers = {
+        "optional_parameter",
+        "splat_parameter",
+        "hash_splat_parameter",
+        "keyword_parameter",
+        "block_parameter",
+        "destructured_parameter",
+        "forward_parameter",
+    }
+
+    def _first_identifier(n):
+        if n.type == "identifier":
+            return n
+        for c in n.children:
+            found = _first_identifier(c)
+            if found is not None:
+                return found
+        return None
+
+    def _add_params(param_list) -> None:
+        for child in param_list.children:
+            if child.type == "identifier":
+                names.add(_read_text(child, source))
+            elif child.type in param_wrappers:
+                ident = _first_identifier(child)
+                if ident is not None:
+                    names.add(_read_text(ident, source))
+
+    def _add_targets(n) -> None:
+        # Identifiers reachable as assignment targets (`a, b = …`, destructuring)
+        # without descending into a value expression on the right.
+        if n.type == "identifier":
+            names.add(_read_text(n, source))
+            return
+        for c in n.children:
+            _add_targets(c)
+
+    # Parameters live on the enclosing method/block node, not inside the body.
+    parent = body_node.parent
+    if parent is not None:
+        for child in parent.children:
+            if child.type in param_lists:
+                _add_params(child)
+
+    def visit(n) -> None:
+        for child in n.children:
+            if child.type in boundary:
+                continue  # nested method opens its own local scope
+            if child.type in ("assignment", "operator_assignment"):
+                left = child.child_by_field_name("left")
+                if left is not None:
+                    if left.type == "identifier":
+                        names.add(_read_text(left, source))
+                    else:
+                        # `a, b = …` / `(a, b) = …`; `obj.attr = …` contributes no
+                        # local and _add_targets simply finds no bare target there.
+                        if left.type not in ("call", "element_reference"):
+                            _add_targets(left)
+            elif child.type in param_lists:
+                _add_params(child)
+            elif child.type == "exception_variable":
+                ident = _first_identifier(child)
+                if ident is not None:
+                    names.add(_read_text(ident, source))
+            elif child.type == "for":
+                for sub in child.children:
+                    if sub.type == "identifier":
+                        names.add(_read_text(sub, source))
+                    elif sub.type == "left_assignment_list":
+                        _add_targets(sub)
+            visit(child)
+
+    visit(body_node)
+    return frozenset(names)
+
+
 def _ruby_const_last_name(node, source: bytes) -> str:
     """Last constant of a ``constant`` or ``scope_resolution`` (``A::B::C`` -> ``C``)."""
     if node is None:
@@ -5937,6 +6036,9 @@ def _extract_generic(
     # populated before walk_calls runs. Lets member-call raw_calls carry a
     # receiver_type so the cross-file pass resolves `var.method` by type (#ruby).
     ruby_var_types: dict[str, dict[str, str | None]] = {}
+    # Ruby: per-method set of bound local/parameter names, so the call-walk can
+    # tell a paren-less self-send (`build`) from a plain variable read (`x`).
+    ruby_local_names: dict[str, frozenset[str]] = {}
     # Fields declared on a SUPERCLASS type receivers in a subclass too (#3151):
     # fold each class's table with its ancestors', nearest declaration winning.
     # Local `inherits` edges only - the cross-file half lives in the corpus
@@ -6186,7 +6288,35 @@ def _extract_generic(
                 and node.type in ("lexical_declaration", "variable_declaration")):
             _require_imports_js(node, source, caller_nid, stem, edges, str_path)
 
-        if node.type in config.call_types:
+        # Ruby paren-less self-send: `build` (no args, no parens) parses as a bare
+        # `identifier`, indistinguishable in the grammar from a local read `x`.
+        # It is a method call on `self` unless a local of that name is in scope —
+        # Ruby's own disambiguation rule (see `_ruby_local_names`). Route it
+        # through the normal callee path as a non-member call so it resolves
+        # in-file (EXTRACTED) or becomes a raw_call the Ruby resolver can prove.
+        _ruby_bare_self_send = False
+        if config.ts_module == "tree_sitter_ruby" and node.type == "identifier":
+            _parent = node.parent
+            # The `method`/`receiver` of a `call` node are handled by the call
+            # branch; don't also read them as bare sends here.
+            _call_field = (
+                _parent is not None
+                and _parent.type == "call"
+                and node in (
+                    _parent.child_by_field_name("method"),
+                    _parent.child_by_field_name("receiver"),
+                )
+            )
+            if not _call_field:
+                _bare_name = _read_text(node, source)
+                if (
+                    _bare_name
+                    and _bare_name not in ruby_local_names.get(caller_nid, frozenset())
+                    and _bare_name not in extra_locals
+                ):
+                    _ruby_bare_self_send = True
+
+        if node.type in config.call_types or _ruby_bare_self_send:
             # JS/TS dynamic imports: await import('./foo.js')
             if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript"):
                 if _dynamic_import_js(node, source, caller_nid, str_path,
@@ -6206,7 +6336,11 @@ def _extract_generic(
             csharp_qualified_prefix: str | None = None
 
             # Special handling per language
-            if config.ts_module == "tree_sitter_swift":
+            if _ruby_bare_self_send:
+                # A bare `identifier` has no receiver and no method/argument
+                # fields: the callee is the identifier itself, implicit `self`.
+                callee_name = _read_text(node, source)
+            elif config.ts_module == "tree_sitter_swift":
                 # Swift: first child may be simple_identifier or navigation_expression
                 first = node.children[0] if node.children else None
                 if first:
@@ -7029,6 +7163,7 @@ def _extract_generic(
     if config.ts_module == "tree_sitter_ruby":
         for caller_nid, body_node in function_bodies:
             ruby_var_types[caller_nid] = _ruby_local_class_bindings(body_node, source)
+            ruby_local_names[caller_nid] = _ruby_local_names(body_node, source)
 
     # C++: build the per-file `var -> ClassName` table from local declarations in
     # every function body so the cross-file member-call pass can type a receiver
