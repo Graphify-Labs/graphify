@@ -16,6 +16,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
+from graphify.paths import nfc
 
 from graphify.file_slice import (
     FileSlice,
@@ -2360,9 +2361,13 @@ def _chunk_provenance_mismatch(
     if result.get("finish_reason") not in (None, "", "stop"):
         return [], []
 
-    dispatched = {_resolve_provenance_path(unit_path(unit), root) for unit in chunk}
-    returned_real: set[Path] = set()
-    covered_by_nodes: set[Path] = set()
+    dispatched = {
+        nfc(path.as_posix()): path
+        for unit in chunk
+        for path in [_resolve_provenance_path(unit_path(unit), root)]
+    }
+    returned_real: dict[str, Path] = {}
+    covered_by_nodes: set[str] = set()
     for bucket in ("nodes", "edges", "hyperedges"):
         for item in result.get(bucket, []) or []:
             if not isinstance(item, dict):
@@ -2372,14 +2377,19 @@ def _chunk_provenance_mismatch(
                 continue
             path = _resolve_provenance_path(source_file, root)
             if path.is_file():
-                returned_real.add(path)
+                identity = nfc(path.as_posix())
+                returned_real[identity] = path
                 if bucket == "nodes":
-                    covered_by_nodes.add(path)
+                    covered_by_nodes.add(identity)
 
-    outside = sorted(returned_real - dispatched, key=str)
+    outside = sorted(
+        (returned_real[key] for key in returned_real.keys() - dispatched.keys()), key=str,
+    )
     # Corpus reconciliation treats a file as covered only when a node names it;
     # edge or hyperedge metadata cannot stand in for a missing file node.
-    uncovered = sorted(dispatched - covered_by_nodes, key=str)
+    uncovered = sorted(
+        (dispatched[key] for key in dispatched.keys() - covered_by_nodes), key=str,
+    )
     return outside, uncovered
 
 
@@ -2387,13 +2397,13 @@ def _drop_outside_chunk_provenance(
     result: dict, outside: "list[Path]", root: Path,
 ) -> tuple[int, set[str]]:
     """Remove foreign items, deferring endpoint cleanup until the corpus merge."""
-    outside_set = set(outside)
+    outside_set = {nfc(path.as_posix()) for path in outside}
 
     def _outside(item: dict) -> bool:
         source_file = item.get("source_file")
         if not source_file:
             return False
-        return _resolve_provenance_path(source_file, root) in outside_set
+        return nfc(_resolve_provenance_path(source_file, root).as_posix()) in outside_set
 
     dropped_ids = {
         item.get("id")
@@ -2963,14 +2973,14 @@ def extract_corpus_parallel(
     def _resolve_against_root(value: "str | Path") -> Path:
         return _resolve_provenance_path(value, root)
 
-    _dispatched_resolved = {_resolve_against_root(p) for p in dispatched}
+    _dispatched_resolved = {nfc(_resolve_against_root(p).as_posix()) for p in dispatched}
 
     def _out_of_scope(item: dict) -> bool:
         sf = item.get("source_file")
         if not sf:
             return False
         p = _resolve_against_root(sf)
-        return p.is_file() and p not in _dispatched_resolved
+        return p.is_file() and nfc(p.as_posix()) not in _dispatched_resolved
 
     dropped_ids: set = set()
     dropped_files: set[str] = set()
@@ -3019,15 +3029,14 @@ def extract_corpus_parallel(
             file=sys.stderr,
         )
 
-    covered: set[Path] = set()
+    covered: set[str] = set()
     for n in merged.get("nodes", []):
         sf = n.get("source_file")
         if sf:
-            p = Path(sf)
-            covered.add(p if p.is_absolute() else (root / p))
+            covered.add(nfc(_resolve_against_root(sf).as_posix()))
     uncovered = sorted(
         p for p in dispatched
-        if p.resolve() not in {c.resolve() for c in covered}
+        if nfc(_resolve_against_root(p).as_posix()) not in covered
     )
     merged["uncovered_files"] = [str(p) for p in uncovered]
     if uncovered:

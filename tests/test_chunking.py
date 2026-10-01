@@ -942,6 +942,32 @@ def test_provenance_in_another_dispatched_sibling_does_not_retry(tmp_path, sibli
     assert not result.get("_partial_files")
 
 
+def test_corpus_preserves_equivalent_unicode_source_spelling(tmp_path):
+    from graphify.llm import extract_corpus_parallel
+
+    dispatched = tmp_path / "cafe\u0301.md"
+    dispatched.write_text("authoritative document")
+    source_name = "caf\u00e9.md"
+    if not (tmp_path / source_name).is_file():
+        pytest.skip("Filesystem does not alias NFC and NFD filename spellings")
+
+    with patch(
+        "graphify.llm.extract_files_direct",
+        return_value=_provenance_result(source_name, "authoritative"),
+    ) as direct:
+        result = extract_corpus_parallel(
+            [dispatched], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+            max_retry_depth=3,
+        )
+
+    assert direct.call_count == 1
+    assert [node["id"] for node in result["nodes"]] == ["authoritative"]
+    assert result["out_of_scope_dropped"] == 0
+    assert result["uncovered_files"] == []
+    assert not result.get("_partial_files")
+
+
 def test_non_file_concept_provenance_does_not_retry(tmp_path):
     from graphify.llm import _extract_with_adaptive_retry
 
