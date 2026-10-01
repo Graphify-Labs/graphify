@@ -62,6 +62,7 @@ from graphify.extractors.rust import extract_rust  # noqa: F401
 from graphify.extractors.sln import extract_sln  # noqa: F401
 from graphify.extractors.prismio import (  # noqa: F401
     extract_prismio,
+    resolve_prismio_member_calls,
     resolve_prismio_type_references,
 )
 from graphify.extractors.solidity import (  # noqa: F401
@@ -5620,6 +5621,9 @@ register_language_resolver(
     LanguageResolver(
         "prismio_type_references", frozenset({".psm"}), resolve_prismio_type_references
     )
+)
+register_language_resolver(
+    LanguageResolver("prismio_member_calls", frozenset({".psm"}), resolve_prismio_member_calls)
 )
 register_language_resolver(
     LanguageResolver(

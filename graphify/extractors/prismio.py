@@ -16,18 +16,28 @@ Heuristic boundaries (fail-closed, see CONTRIBUTING.md):
 - A bare call ``f(a, b)`` links to a same-file free function only when exactly
   one has that name *and* arity; overloaded names are left unlinked rather than
   guessed. Otherwise it goes to the shared cross-file resolver.
-- ``recv.f(x)`` has no receiver type here, so it is only linked directly when
-  the receiver is ``self`` and the enclosing impl/trait declares exactly one
-  matching method. A module-qualified call (``io.println``, ``std.io.println``)
-  is treated as a plain call. Every other member call is passed on as
-  ``is_member_call`` and never bound by name alone.
+- ``recv.f(x)`` is bound by ``resolve_prismio_member_calls`` once the receiver's
+  type is known: a parameter, ``self``, an annotated or constructed ``let``
+  (``let p: T`` / ``let p = T {..}`` / ``T(..)``), or a type named in the call
+  (``T.f(x)``). Prismio resolves such a call to a method of that type or to a
+  free function taking it first, so both are searched among the declarations
+  visible to the caller (its own file and its *direct* imports; Prismio imports
+  are not transitive) and bound only when exactly one matches the arity. A name
+  bound to two different types in one function, a call-result receiver and a
+  field receiver are not typed, so those calls stay unbound.
+  Type-qualified calls are ``EXTRACTED``; receiver-typed ones are ``INFERRED``.
+- A module-qualified call (``io.println``, ``std.io.println``) is a plain call.
 - An import resolves to a file by walking up from the importing file to the
   project root (a directory holding ``build.ums`` or ``.git``) and looking for
   ``a/b/c.psm``; an import that names no file on disk produces no edge.
 - ``impl Trait for Type`` becomes an ``impl`` node with an ``implements`` edge
-  to the trait and a ``references`` edge to the type. Both are bound by name
-  within the file or its direct imports and dropped when they do not resolve
-  (built-in types such as ``Int`` have no declaration to bind to).
+  to the trait and a ``references`` edge to the type. Parameter, return and
+  field/payload types, trait bounds and ``Type { .. }`` literals also yield
+  ``references`` edges; generic parameters are never looked up. All are bound by
+  name within the file or its direct imports and dropped when they do not
+  resolve (built-in types such as ``Int`` have no declaration to bind to).
+- Overloads differing only by punctuation (``Int`` vs ``Int?``, ``Vec<A>`` vs
+  ``Vec<B>``) get distinct ids; ``.ums`` build manifests are not extracted.
 """
 from __future__ import annotations
 
@@ -174,6 +184,21 @@ class _Tokens:
         return len(self.text)
 
 
+_SIGNATURE_WORDS = {
+    "?": "opt", "<": "_of_", ">": "_", ",": "_", "[": "arr_", "]": "_", ".": "_",
+    "(": "_fn_", ")": "_", "-": "_", "&": "ref_", "*": "ptr_",
+}
+
+
+def _signature_part(type_text: str) -> str:
+    """A type spelled as words, so ``Int`` and ``Int?`` do not share a node id.
+
+    ``make_id`` drops punctuation, which would merge overloads that differ only
+    by an optional, an array or a generic argument list.
+    """
+    return "".join(_SIGNATURE_WORDS.get(c, c) for c in type_text)
+
+
 def _split_arguments(tokens: _Tokens, start: int, end: int) -> list[tuple[int, int]]:
     """Split the token range ``[start, end)`` at top-level commas."""
     parts: list[tuple[int, int]] = []
@@ -239,6 +264,100 @@ def _resolve_directory(importer: Path, parts: list[str]) -> list[Path]:
         directory = directory.parent
 
 
+def _imported_sources(all_nodes: list[dict], all_edges: list[dict]) -> dict[str, set[str]]:
+    """Source file -> the files it imports directly (Prismio imports are not transitive)."""
+    source_by_file_id = {
+        node["id"]: str(node["source_file"])
+        for node in all_nodes
+        if node.get("source_file")
+        and node.get("label") == Path(str(node["source_file"])).name
+    }
+    imported: dict[str, set[str]] = {}
+    for edge in all_edges:
+        if edge.get("relation") != "imports_from":
+            continue
+        source_file = source_by_file_id.get(edge.get("source"))
+        target_file = source_by_file_id.get(edge.get("target"))
+        if source_file and target_file:
+            imported.setdefault(source_file, set()).add(target_file)
+    return imported
+
+
+def resolve_prismio_member_calls(
+    per_file: list[dict], all_nodes: list[dict], all_edges: list[dict]
+) -> None:
+    """Bind ``recv.f(x)`` and ``Type.f(x)`` once the receiver's type is known.
+
+    The extractor records a ``receiver_type`` only for a parameter, an annotated
+    or constructed ``let``, ``self``, or a type named in the call. Prismio
+    resolves ``recv.f(x)`` to a method of the receiver's type or, failing that,
+    to a free function whose first parameter has that type, so both are looked
+    up among the declarations visible to the caller (its own file and its
+    direct imports) and bound only when exactly one has the call's arity.
+    """
+    imported = _imported_sources(all_nodes, all_edges)
+    methods: dict[tuple[str, str], list[dict]] = {}
+    functions: dict[str, list[dict]] = {}
+    for node in all_nodes:
+        metadata = node.get("metadata")
+        if not isinstance(metadata, dict) or metadata.get("language") != "prismio":
+            continue
+        if not node.get("source_file"):
+            continue
+        kind = metadata.get("kind")
+        if kind == "method":
+            methods.setdefault((metadata.get("owner", ""), metadata.get("name", "")), []).append(node)
+        elif kind in ("function", "extern_function"):
+            functions.setdefault(metadata.get("name", ""), []).append(node)
+
+    existing = {
+        (edge.get("source"), edge.get("target"))
+        for edge in all_edges
+        if edge.get("relation") == "calls"
+    }
+    for result in per_file:
+        for call in result.get("raw_calls", []):
+            if call.get("language") != "prismio" or not call.get("receiver_type"):
+                continue
+            caller = call.get("caller_nid")
+            source_file = str(call.get("source_file", ""))
+            name = str(call.get("callee", ""))
+            arity = call.get("arity")
+            if not caller or not name or not isinstance(arity, int):
+                continue
+            visible = {source_file} | imported.get(source_file, set())
+            receiver_type = str(call["receiver_type"])
+            candidates = [
+                node for node in methods.get((receiver_type, name), [])
+                if node["source_file"] in visible and node["metadata"].get("arity") == arity
+            ]
+            if not candidates:
+                candidates = [
+                    node for node in functions.get(name, [])
+                    if node["source_file"] in visible
+                    and node["metadata"].get("arity") == arity
+                    and node["metadata"].get("first_param") == receiver_type
+                ]
+            if len(candidates) != 1:
+                continue
+            target = candidates[0]["id"]
+            if target == caller or (caller, target) in existing:
+                continue
+            existing.add((caller, target))
+            exact = bool(call.get("type_qualified"))
+            all_edges.append({
+                "source": caller,
+                "target": target,
+                "relation": "calls",
+                "context": "call",
+                "confidence": "EXTRACTED" if exact else "INFERRED",
+                "confidence_score": 1.0 if exact else 0.8,
+                "source_file": source_file,
+                "source_location": call.get("source_location"),
+                "weight": 1.0,
+            })
+
+
 def resolve_prismio_type_references(
     _per_file: list[dict], all_nodes: list[dict], all_edges: list[dict]
 ) -> None:
@@ -249,21 +368,7 @@ def resolve_prismio_type_references(
     removed together with their placeholder node, so no phantom stub is left.
     """
     node_by_id = {node.get("id"): node for node in all_nodes}
-    file_id_by_source = {
-        str(node["source_file"]): node["id"]
-        for node in all_nodes
-        if node.get("source_file")
-        and node.get("label") == Path(str(node["source_file"])).name
-    }
-    source_by_file_id = {nid: source for source, nid in file_id_by_source.items()}
-    imported_sources: dict[str, set[str]] = {}
-    for edge in all_edges:
-        if edge.get("relation") != "imports_from":
-            continue
-        source_file = source_by_file_id.get(edge.get("source"))
-        target_file = source_by_file_id.get(edge.get("target"))
-        if source_file and target_file:
-            imported_sources.setdefault(source_file, set()).add(target_file)
+    imported_sources = _imported_sources(all_nodes, all_edges)
 
     declared: dict[tuple[str, str], list[str]] = {}
     for node in all_nodes:
@@ -339,6 +444,7 @@ def extract_prismio(path: Path) -> dict:
         kind: str,
         source_backed: bool = True,
         callable_node: bool = False,
+        details: dict[str, Any] | None = None,
     ) -> str:
         if nid not in seen_ids:
             seen_ids.add(nid)
@@ -347,7 +453,7 @@ def extract_prismio(path: Path) -> dict:
                 "label": label,
                 "file_type": "code",
                 "source_location": f"L{line}",
-                "metadata": {"language": "prismio", "kind": kind},
+                "metadata": {"language": "prismio", "kind": kind, **(details or {})},
             }
             if source_backed:
                 item["source_file"] = source_file
@@ -472,26 +578,102 @@ def extract_prismio(path: Path) -> dict:
         link(parts, alias)
         return j
 
-    def parse_params(start: int, end: int) -> tuple[list[str], list[str]]:
+    def type_idents(start: int, end: int, generics: set[str]) -> list[tuple[str, int]]:
+        """Capitalised names in ``[start, end)`` that are not generic parameters."""
+        found: list[tuple[str, int]] = []
+        for k in range(start, end):
+            word = tokens.text[k]
+            if (
+                tokens.is_ident(k)
+                and word[0].isupper()
+                and word != "Self"
+                and word not in generics
+                and tokens.at(k - 1) != "."
+            ):
+                found.append((word, tokens.line[k]))
+        return found
+
+    def generic_names(start: int, end: int) -> set[str]:
+        """Parameter names declared by the ``<...>`` group over ``[start, end)``."""
+        names: set[str] = set()
+        depth = 0
+        for k in range(start, end):
+            tok = tokens.text[k]
+            if tok in ("<", "(", "["):
+                depth += 1
+            elif tok in (">", ")", "]"):
+                depth -= 1
+            elif depth == 1 and tokens.is_ident(k) and tokens.at(k - 1) in ("<", ","):
+                names.add(tok)
+        return names
+
+    def parse_params(start: int, end: int, owner: str) -> tuple[list[str], list[str], list[str]]:
+        """Parameter names, spelled types and base type names (``self`` is the owner)."""
         names: list[str] = []
         types: list[str] = []
+        bases: list[str] = []
         for a, b in _split_arguments(tokens, start, end):
             colon = next((k for k in range(a, b) if tokens.text[k] == ":"), None)
             if colon is None:
                 words = [tokens.text[k] for k in range(a, b) if tokens.is_ident(k)]
                 names.append(words[-1] if words else "")
                 types.append("self")
+                bases.append(owner)
             else:
                 names.append(tokens.text[colon - 1] if colon > a else "")
                 types.append("".join(tokens.text[colon + 1:b]))
-        return names, types
+                bases.append(_type_name(tokens, colon + 1, b))
+        return names, types, bases
 
-    def scan_calls(start: int, end: int, caller: str, owner: str) -> None:
+    def local_types_of(
+        start: int, end: int, params: dict[str, str], generics: set[str]
+    ) -> dict[str, str]:
+        """Name -> type for parameters and annotated or constructed ``let`` bindings.
+
+        A name bound to two different types is dropped: the table is flow
+        insensitive, so it must not guess between shadowed bindings.
+        """
+        table: dict[str, str | None] = {}
+
+        def bind(name: str, base: str) -> None:
+            if not name or not base or base in generics:
+                return
+            table[name] = base if table.get(name, base) == base else None
+
+        for name, base in params.items():
+            bind(name, base)
+        for p in range(start, end):
+            if tokens.text[p] != "let":
+                continue
+            q = p + 1
+            if tokens.at(q) == "mut":
+                q += 1
+            if not tokens.is_ident(q):
+                continue
+            if tokens.at(q + 1) == ":":
+                bind(tokens.text[q], _type_name(tokens, q + 2, end))
+            elif (
+                tokens.at(q + 1) == "="
+                and tokens.is_ident(q + 2)
+                and tokens.text[q + 2][0].isupper()
+                and tokens.at(q + 3) in ("(", "{", ".", "<")
+            ):
+                bind(tokens.text[q], tokens.text[q + 2])
+        return {name: base for name, base in table.items() if base}
+
+    def scan_calls(
+        start: int, end: int, caller: str, owner: str, known: dict[str, str], generics: set[str]
+    ) -> None:
         for p in range(start, end):
             if not tokens.is_ident(p) or tokens.text[p] in _NOT_CALLS:
                 continue
             before = tokens.at(p - 1)
             if before in _DECLARING_KEYWORDS:
+                continue
+            name = tokens.text[p]
+            line = tokens.line[p]
+            if name[0].isupper() and name not in generics and tokens.at(p + 1) == "{":
+                pending_type_edges.append((caller, name, "references", line))  # `Type { .. }`
                 continue
             q = p + 1
             if tokens.at(q) == "<":
@@ -502,16 +684,16 @@ def extract_prismio(path: Path) -> dict:
                 continue
             close = tokens.skip_group(q)
             arguments = len(_split_arguments(tokens, q + 1, close - 1))
-            name = tokens.text[p]
-            line = tokens.line[p]
             if before != ".":
                 if name[0].isupper():
                     # `Type(...)` constructs a value; it is not a function call.
-                    pending_type_edges.append((caller, name, "references", line))
+                    if name not in generics:
+                        pending_type_edges.append((caller, name, "references", line))
                     continue
                 pending_calls.append({
                     "caller": caller, "owner": owner, "name": name, "arity": arguments,
-                    "member": False, "receiver": "", "line": line,
+                    "member": False, "receiver": "", "receiver_type": "",
+                    "type_qualified": False, "line": line,
                 })
                 continue
             qualifier: list[str] = []
@@ -521,19 +703,33 @@ def extract_prismio(path: Path) -> dict:
                 k -= 2
             qualifier.reverse()
             dotted = ".".join(qualifier)
-            if qualifier and qualifier[0][:1].isupper():
-                pending_type_edges.append((caller, qualifier[0], "references", line))
+            if name[0].isupper():
+                # `Type.Variant(...)`: a value, not a call.
+                if qualifier and qualifier[0][0].isupper() and qualifier[0] not in generics:
+                    pending_type_edges.append((caller, qualifier[0], "references", line))
                 continue
-            module_qualified = bool(qualifier) and (
-                dotted in imported_names or qualifier[-1] in imported_names
-            )
+            receiver_type = ""
+            type_qualified = False
+            module_qualified = False
+            if len(qualifier) == 1 and qualifier[0] in known:
+                receiver_type = known[qualifier[0]]
+            elif len(qualifier) == 1 and qualifier[0][0].isupper() and qualifier[0] not in generics:
+                receiver_type = qualifier[0]
+                type_qualified = True
+                pending_type_edges.append((caller, receiver_type, "references", line))
+            elif qualifier:
+                module_qualified = dotted in imported_names or qualifier[-1] in imported_names
             pending_calls.append({
                 "caller": caller, "owner": owner, "name": name,
-                "arity": arguments if module_qualified else arguments + 1,
-                "member": not module_qualified, "receiver": dotted, "line": line,
+                "arity": arguments if (module_qualified or type_qualified) else arguments + 1,
+                "member": not module_qualified, "receiver": dotted,
+                "receiver_type": receiver_type, "type_qualified": type_qualified,
+                "line": line,
             })
 
-    def parse_function(i: int, owner: str, trait: str = "") -> tuple[int, str]:
+    def parse_function(
+        i: int, owner: str, trait: str = "", outer_generics: frozenset[str] = frozenset()
+    ) -> tuple[int, str]:
         """Parse ``fn``/``prop`` at *i*; return the next index and the node id."""
         keyword = tokens.text[i]
         extern = i > 0 and tokens.at(i - 1) == "extern"
@@ -541,15 +737,21 @@ def extract_prismio(path: Path) -> dict:
             return i + 1, ""
         name = tokens.text[i + 1]
         line = tokens.line[i]
+        generics = set(outer_generics)
+        references: list[tuple[str, int]] = []
         j = i + 2
         if tokens.at(j) == "<":
-            j = tokens.skip_group(j)
+            group_end = tokens.skip_group(j)
+            generics |= generic_names(j, group_end)
+            references += type_idents(j + 1, group_end - 1, generics)  # trait bounds
+            j = group_end
         if tokens.at(j) != "(":
             return j, ""
         params_end = tokens.skip_group(j)
-        _, types = parse_params(j + 1, params_end - 1)
+        names, types, bases = parse_params(j + 1, params_end - 1, owner)
+        references += type_idents(j + 1, params_end - 1, generics)
         arity = len(types)
-        signature = ",".join(types)
+        signature = ",".join(_signature_part(t) for t in types)
         if extern:
             kind = "extern_function"
         elif keyword == "prop":
@@ -558,10 +760,17 @@ def extract_prismio(path: Path) -> dict:
             kind = "method" if owner else "function"
         nid = _make_id(*(part for part in (stem, owner, trait, kind, name, signature) if part))
         label = f".{name}()" if owner else f"{name}()"
-        add_node(nid, label, line, kind=kind, callable_node=True)
+        add_node(
+            nid, label, line, kind=kind, callable_node=True,
+            details={
+                "name": name, "owner": owner, "trait": trait, "arity": arity,
+                "first_param": bases[0] if bases else "",
+            },
+        )
         j = params_end
         last_line = tokens.line[params_end - 1]
         body: tuple[int, int] | None = None
+        in_signature_tail = False
         while j < n:
             tok = tokens.text[j]
             if tok == "{":
@@ -575,21 +784,38 @@ def extract_prismio(path: Path) -> dict:
                 and tokens.at(j - 1) not in (",", "+", ":", "where", "->")
             ):
                 break
+            if tok in ("->", "where"):
+                in_signature_tail = True
             if tok in ("(", "[", "<"):
-                j = tokens.skip_group(j)
+                group_end = tokens.skip_group(j)
+                if in_signature_tail:
+                    references += type_idents(j + 1, group_end - 1, generics)
+                j = group_end
                 last_line = tokens.line[j - 1]
                 continue
+            if in_signature_tail:
+                references += type_idents(j, j + 1, generics)
             last_line = tokens.line[j]
             j += 1
         if owner:
             methods.setdefault((owner, name, arity), []).append(nid)
         else:
             free_functions.setdefault((name, arity), []).append(nid)
+        for type_name, type_line in references:
+            pending_type_edges.append((nid, type_name, "references", type_line))
         if body is not None:
-            scan_calls(body[0], body[1], nid, owner)
+            params = {
+                param: base
+                for param, base in zip(names, bases)
+                if param and base
+            }
+            known = local_types_of(body[0], body[1], params, generics)
+            scan_calls(body[0], body[1], nid, owner, known, generics)
         return j, nid
 
-    def parse_members(start: int, end: int, parent: str, owner: str, trait: str) -> None:
+    def parse_members(
+        start: int, end: int, parent: str, owner: str, trait: str, generics: frozenset[str]
+    ) -> None:
         """Members of an ``impl`` or ``trait`` body."""
         j = start
         while j < end:
@@ -599,7 +825,7 @@ def extract_prismio(path: Path) -> dict:
                 continue
             if tok in ("fn", "prop") and tokens.is_ident(j + 1):
                 line = tokens.line[j]
-                j, nid = parse_function(j, owner, trait)
+                j, nid = parse_function(j, owner, trait, generics)
                 if nid:
                     add_edge(parent, nid, "method", line)
                 continue
@@ -659,8 +885,13 @@ def extract_prismio(path: Path) -> dict:
             add_edge(file_id, nid, "contains", line)
             local_types[name] = nid
             j = i + 2
+            generics: set[str] = set()
             if tokens.at(j) == "<":
-                j = tokens.skip_group(j)
+                group_end = tokens.skip_group(j)
+                generics = generic_names(j, group_end)
+                for bound, bound_line in type_idents(j + 1, group_end - 1, generics):
+                    pending_type_edges.append((nid, bound, "references", bound_line))
+                j = group_end
             supertraits: list[tuple[str, int]] = []
             if tok == "trait" and tokens.at(j) == ":":
                 j += 1
@@ -694,19 +925,28 @@ def extract_prismio(path: Path) -> dict:
                         add_edge(nid, vid, "contains", tokens.line[k])
                         k += 1
                         if tokens.at(k) == "(":
-                            k = tokens.skip_group(k)
+                            payload_end = tokens.skip_group(k)
+                            for payload, payload_line in type_idents(k + 1, payload_end - 1, generics):
+                                pending_type_edges.append((nid, payload, "references", payload_line))
+                            k = payload_end
                         continue
                     if tokens.at(k) in ("(", "[", "<"):
                         k = tokens.skip_group(k)
                         continue
                     k += 1
-            elif tok == "trait":
-                parse_members(j + 1, close - 1, nid, name, "")
+            elif tok == "struct":
+                for field_type, field_line in type_idents(j + 1, close - 1, generics):
+                    pending_type_edges.append((nid, field_type, "references", field_line))
+            else:
+                parse_members(j + 1, close - 1, nid, name, "", frozenset(generics))
             return close
         if tok == "impl":
             j = i + 1
+            generics = set()
             if tokens.at(j) == "<":
-                j = tokens.skip_group(j)
+                group_end = tokens.skip_group(j)
+                generics = generic_names(j, group_end)
+                j = group_end
             first_start = j
             while j < n and tokens.at(j) not in ("for", "where", "{"):
                 if tokens.at(j) == "<":
@@ -737,7 +977,7 @@ def extract_prismio(path: Path) -> dict:
                 pending_type_edges.append((nid, trait_name, "implements", line))
             pending_type_edges.append((nid, target, "references", line))
             close = tokens.skip_group(j)
-            parse_members(j + 1, close - 1, nid, target, trait_name)
+            parse_members(j + 1, close - 1, nid, target, trait_name, frozenset(generics))
             return close
         return i + 1
 
@@ -784,6 +1024,9 @@ def extract_prismio(path: Path) -> dict:
             "caller_nid": caller,
             "callee": name,
             "receiver": call["receiver"],
+            "receiver_type": call["receiver_type"],
+            "type_qualified": call["type_qualified"],
+            "arity": arity,
             "is_member_call": True,
             "language": "prismio",
             "source_file": source_file,

@@ -23,7 +23,7 @@ def _labels(result: dict) -> dict[str, str]:
     return {node["id"]: node["label"] for node in result["nodes"]}
 
 
-def _edges(result: dict, relation: str) -> set[tuple[str, str]]:
+def _edges(result: dict, relation: str) -> set[tuple[str | None, str | None]]:
     labels = _labels(result)
     return {
         (labels.get(e["source"], e["source"]), labels.get(e["target"], e["target"]))
@@ -183,3 +183,138 @@ fn f(a: String) {}
     ids = [n["id"] for n in first["nodes"] if n["label"] == "f()"]
     assert len(ids) == 2 and len(set(ids)) == 2
     assert first == second
+
+
+def test_overloads_that_differ_only_by_punctuation_get_distinct_nodes(tmp_path):
+    (path,) = _project(tmp_path, {"o.psm": """\
+fn show(value: Int) {}
+fn show(value: Int?) {}
+fn show(value: Vec<Int>) {}
+fn show(value: Vec<String>) {}
+"""})
+    result = extract_prismio(path)
+    ids = [n["id"] for n in result["nodes"] if n["label"] == "show()"]
+    assert len(ids) == 4 and len(set(ids)) == 4
+
+
+def test_signatures_fields_payloads_and_bounds_become_type_references(tmp_path):
+    (path,) = _project(tmp_path, {"t.psm": """\
+struct Point { x: Int }
+struct Line { start: Point, end: Point }
+trait Show { fn show(self) -> String }
+enum Shape<T> { Dot, Wrapped(Point), Boxed(T) }
+fn measure<T: Show>(a: Point, b: Vec<Line>) -> Shape<Point> where T: Show { return Shape.Dot }
+fn make() -> Point { return Point { x: 1 } }
+"""})
+    result = extract([path], cache_root=tmp_path)
+    references = _edges(result, "references")
+    assert ("Line", "Point") in references
+    assert ("Shape", "Point") in references
+    assert ("measure()", "Point") in references
+    assert ("measure()", "Show") in references  # a bound is a reference to the trait
+    assert ("make()", "Point") in references  # `Point { .. }` literal and the return type
+    # `T` is a generic parameter, never a type to look up; `Vec`/`Int` are not declared here.
+    assert not {pair for pair in references if pair[1] in {"T", "Vec", "Int"}}
+    assert all(node.get("source_file") for node in result["nodes"])
+
+
+def test_receiver_typed_method_calls_bind_across_files(tmp_path):
+    paths = _project(tmp_path, {
+        "shapes.psm": """\
+struct Point { x: Int }
+impl Point {
+    fn scaled(self, by: Int) -> Point { return self }
+    fn origin() -> Point { return Point { x: 0 } }
+}
+fn norm(p: Point) -> Int { return p.x }
+""",
+        "use.psm": """\
+import shapes
+
+fn byParameter(p: Point) -> Point { return p.scaled(2) }
+fn byAnnotation() -> Point { let q: Point = Point { x: 1 }
+    return q.scaled(2) }
+fn byConstruction() -> Point { let r = Point { x: 1 }
+    return r.scaled(3) }
+fn ufcs(p: Point) -> Int { return p.norm() }
+fn qualified() -> Point { return Point.origin() }
+fn unknown(items: Vec<Point>) -> Point { return items.first().scaled(2) }
+""",
+    })
+    result = extract(paths, cache_root=tmp_path)
+    calls = _edges(result, "calls")
+    assert ("byParameter()", ".scaled()") in calls
+    assert ("byAnnotation()", ".scaled()") in calls
+    assert ("byConstruction()", ".scaled()") in calls
+    assert ("ufcs()", "norm()") in calls  # recv.f() reaches a free function taking the type first
+    assert ("qualified()", ".origin()") in calls
+    # The receiver of `.scaled()` in `unknown` is a call result, so its type is not guessed.
+    assert not {pair for pair in calls if pair[0] == "unknown()" and pair[1] == ".scaled()"}
+    qualified = next(
+        e for e in result["edges"]
+        if e["relation"] == "calls" and _labels(result)[e["source"]] == "qualified()"
+    )
+    inferred = next(
+        e for e in result["edges"]
+        if e["relation"] == "calls" and _labels(result)[e["source"]] == "byParameter()"
+    )
+    assert qualified["confidence"] == "EXTRACTED" and inferred["confidence"] == "INFERRED"
+
+
+def test_member_calls_are_not_bound_without_visibility_or_with_ambiguity(tmp_path):
+    paths = _project(tmp_path, {
+        "a.psm": "struct Box { n: Int }\nimpl Box { fn open(self) -> Int { return 1 } }\n",
+        "b.psm": "import a\nstruct Crate { n: Int }\n",
+        "c.psm": "import b\nfn run(x: Box) -> Int { return x.open() }\n",  # a.psm is not imported by c
+        "d.psm": """\
+struct Pair { n: Int }
+trait One { fn pick(self) -> Int }
+trait Two { fn pick(self) -> Int }
+impl One for Pair { fn pick(self) -> Int { return 1 } }
+impl Two for Pair { fn pick(self) -> Int { return 2 } }
+fn go(p: Pair) -> Int { return p.pick() }
+""",
+    })
+    result = extract(paths, cache_root=tmp_path)
+    calls = _edges(result, "calls")
+    assert ("run()", ".open()") not in calls  # imports are not transitive
+    assert ("go()", ".pick()") not in calls  # two equally good candidates: no guess
+
+
+def test_sample_fixture_goes_through_the_normal_extract_path():
+    fixture = Path(__file__).parent / "fixtures" / "new_languages" / "sample.psm"
+    result = extract([fixture], cache_root=fixture.parent)
+    labels = {n["label"] for n in result["nodes"]}
+    assert {"Point", "Shape", "Area", "Circle", "describe()", "measure()", ".scaled()",
+            ".isOrigin()", "impl Area for Point", "impl Point"} <= labels
+    assert "hidden()" not in labels
+    assert len([n for n in result["nodes"] if n["label"] == "describe()"]) == 2
+    edges_by_relation = {rel: _edges(result, rel) for rel in ("calls", "implements", "references")}
+    assert ("measure()", ".area()") not in edges_by_relation["calls"]  # `T` is generic: not guessed
+    assert ("main()", "describe()") not in edges_by_relation["calls"]  # overloaded: not guessed
+    assert ("impl Area for Point", "Area") in edges_by_relation["implements"]
+    assert ("main()", "Point") in edges_by_relation["references"]
+    assert ("main()", ".scaled()") in edges_by_relation["calls"]  # p = Point { .. } types the receiver
+
+
+def test_malformed_and_truncated_source_never_raises(tmp_path):
+    fixture = Path(__file__).parent / "fixtures" / "new_languages" / "sample.psm"
+    text = fixture.read_text(encoding="utf-8")
+    path = tmp_path / "broken.psm"
+    for cut in range(0, len(text), 5):
+        for mutated in (text[:cut], text[:cut] + '"', text[:cut] + "/*", text[:cut] + "{(<"):
+            path.write_text(mutated, encoding="utf-8")
+            result = extract_prismio(path)
+            assert isinstance(result["nodes"], list) and "error" not in result
+
+
+def test_a_generic_parameter_shadows_a_declared_type_of_the_same_name(tmp_path):
+    (path,) = _project(tmp_path, {"g.psm": """\
+struct Item { n: Int }
+fn keep<Item>(x: Item) -> Item { return x }
+fn real(x: Item) -> Item { return x }
+"""})
+    result = extract([path], cache_root=tmp_path)
+    references = _edges(result, "references")
+    assert ("keep()", "Item") not in references  # `Item` here is the type parameter
+    assert ("real()", "Item") in references
