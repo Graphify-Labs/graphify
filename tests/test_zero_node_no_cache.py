@@ -52,3 +52,16 @@ def test_no_warning_when_all_files_produce_nodes(tmp_path, capsys):
     ex.extract([f], cache_root=tmp_path / "out", parallel=False)
     err = capsys.readouterr().err
     assert "zero nodes" not in err
+
+
+def test_intentionally_skipped_data_json_does_not_warn(tmp_path, capsys):
+    """Data-shaped JSON is deliberately excluded from the code graph, so its
+    explicit ``skipped`` result must not be reported as a failed extraction that
+    will retry forever."""
+    f = tmp_path / "records.json"
+    f.write_text('[{"id": 1}, {"id": 2}]\n', encoding="utf-8")
+
+    result = ex.extract([f], cache_root=tmp_path / "out", parallel=False)
+
+    assert result["nodes"] == []
+    assert "zero nodes" not in capsys.readouterr().err
