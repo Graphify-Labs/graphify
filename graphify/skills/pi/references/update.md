@@ -144,13 +144,14 @@ print(f'[graphify update] Merged extraction written ({len(merged_out[\"nodes\"])
 # cached files instead of missing every one after a move (#1417).
 #
 # Only stamp semantic files (docs/papers/images) that ACTUALLY produced output
-# THIS run (new_extraction is this run's fresh extraction, read above before the
-# merge overwrote the file): a changed doc whose chunk failed must stay unstamped
-# so the next --update re-queues it, otherwise it is marked done and its content
-# is lost forever (#2015). Mirrors the library extract path
-# (cli._stamped_manifest_files + clear_semantic + scan_corpus).
+# THIS run (.graphify_semantic.json is the semantic-only result from Part B/C,
+# not the AST+semantic merge in new_extraction): a changed doc whose chunk failed
+# must stay unstamped so the next --update re-queues it, otherwise it is marked
+# done and its content is lost forever (#2015, #2844). Mirrors the library extract
+# path (cli._stamped_manifest_files + clear_semantic + scan_corpus).
 from graphify.cli import _stamped_manifest_files
-_manifest_files = _stamped_manifest_files(incremental['files'], new_extraction, Path('INPUT_PATH'))
+_semantic = json.loads(Path('graphify-out/.graphify_semantic.json').read_text(encoding=\"utf-8\"))
+_manifest_files = _stamped_manifest_files(incremental['files'], _semantic, Path('INPUT_PATH'))
 # Changed semantic files dispatched this run but NOT stamped had their chunk fail
 # or be omitted; clear any stale semantic_hash so they are re-queued (#1948).
 _sem_types = ('document', 'paper', 'image')
