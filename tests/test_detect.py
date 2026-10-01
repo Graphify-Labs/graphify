@@ -34,6 +34,32 @@ def test_classify_python():
 def test_classify_typescript():
     assert classify_file(Path("bar.ts")) == FileType.CODE
 
+@pytest.mark.parametrize("suffix", [".vh", ".VH"])
+def test_detect_verilog_headers(tmp_path, suffix):
+    header = tmp_path / f"defs{suffix}"
+    header.write_text("`define WIDTH 8\n", encoding="utf-8")
+
+    assert classify_file(header) == FileType.CODE
+    result = detect(tmp_path)
+    assert header.resolve() in {Path(path).resolve() for path in result["files"]["code"]}
+
+def test_detect_incremental_requeues_changed_verilog_header(tmp_path):
+    header = tmp_path / "defs.vh"
+    header.write_text("`define WIDTH 8\n", encoding="utf-8")
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+
+    full = detect(tmp_path)
+    save_manifest(full["files"], manifest_path, root=tmp_path, kind="ast")
+
+    warm = detect_incremental(tmp_path, manifest_path, kind="ast")
+    assert warm["new_total"] == 0
+
+    header.write_text("`define WIDTH 16\n", encoding="utf-8")
+    changed = detect_incremental(tmp_path, manifest_path, kind="ast")
+    assert header.resolve() in {
+        Path(path).resolve() for path in changed["new_files"]["code"]
+    }
+
 def test_classify_powershell_module():
     # #1315: .psm1 modules were never indexed (CODE_EXTENSIONS gap).
     assert classify_file(Path("Utils.psm1")) == FileType.CODE

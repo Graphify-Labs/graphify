@@ -3875,6 +3875,33 @@ def test_apex_no_dangling_edges():
 
 # -- SystemVerilog -------------------------------------------------------------
 
+@pytest.mark.parametrize("suffix", [".v", ".sv", ".svh", ".vh"])
+def test_verilog_family_dispatch(suffix):
+    from graphify.extract import _get_extractor
+
+    assert _get_extractor(Path(f"defs{suffix}")) is extract_verilog
+
+
+@pytest.mark.parametrize("with_module", [False, True])
+def test_verilog_header_collection_and_extraction(tmp_path, with_module):
+    from graphify.extract import collect_files, extract
+
+    header = tmp_path / "defs.vh"
+    source = "`define WIDTH 8\n"
+    if with_module:
+        source += "module helper(input wire a, output wire b);\nassign b = a;\nendmodule\n"
+    header.write_text(source, encoding="utf-8")
+
+    paths = collect_files(tmp_path)
+    assert header in paths
+    result = extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False)
+    assert header.name in {node["label"] for node in result["nodes"]}
+    if with_module:
+        assert (header.name, "helper") in _edge_labels(result, "defines")
+    else:
+        assert {node["label"] for node in result["nodes"]} == {header.name}
+
+
 def test_systemverilog_no_error():
     r = extract_verilog(FIXTURES / "sample.sv")
     assert "error" not in r
