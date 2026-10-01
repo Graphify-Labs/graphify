@@ -319,7 +319,8 @@ def extract_commonlisp(path: Path) -> dict:
                             syms = [c for c in param.children if c.type == "sym_lit"]
                             if len(syms) >= 2:
                                 specializer_name = _text(syms[1])
-                                spec_nid = _cl_id(stem, specializer_name)
+                                spec_nid = ensure_class_ref(
+                                    specializer_name, param.start_point[0] + 1)
                                 add_edge(func_nid, spec_nid, "specializes",
                                          param.start_point[0] + 1)
                     break
@@ -467,7 +468,11 @@ def extract_commonlisp(path: Path) -> dict:
                     current_package = _text(child)
                     break
             return True
-        if first_lower == "defclass":
+        if first_lower in ("defclass", "define-condition"):
+            # define-condition shares defclass's shape, (NAME (PARENTS) (SLOTS) ...),
+            # so the same handler reads the parent list the generic definer path
+            # never looks at. A condition hierarchy is inheritance and belongs in
+            # the graph as such.
             _handle_defclass(top)
             return True
         if first_lower in ("require", "ql:quickload"):
