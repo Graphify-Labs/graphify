@@ -438,6 +438,39 @@ def test_csharp_finds_methods():
     labels = _labels(r)
     assert any("Process" in l for l in labels)
 
+def test_csharp_constructor_is_extracted_with_body_calls(tmp_path):
+    """A C# constructor must be a method node, and calls in its body must resolve.
+
+    constructor_declaration was missing from the C# function_types, so every
+    constructor was dropped — along with all calls made from its body (DI wiring,
+    field initialization, etc.), a large slice of the call graph.
+    """
+    f = tmp_path / "svc.cs"
+    f.write_text(
+        "namespace Demo {\n"
+        "    public class Service {\n"
+        "        public Service(Repo repo) { Initialize(); }\n"
+        "        public void Initialize() { }\n"
+        "    }\n"
+        "}\n"
+    )
+    r = extract_csharp(f)
+    assert "error" not in r
+
+    service = next((n for n in r["nodes"] if n["label"] == "Service"), None)
+    assert service is not None
+    ctor = next((n for n in r["nodes"] if n["label"] == ".Service()"), None)
+    assert ctor is not None, "constructor node dropped"
+    # it hangs off the class as a method
+    assert any(e["relation"] == "method" and e["source"] == service["id"]
+               and e["target"] == ctor["id"] for e in r["edges"]), "constructor not linked to class"
+    # a call made in the constructor body resolves
+    init = next((n for n in r["nodes"] if n["label"] == ".Initialize()"), None)
+    assert init is not None
+    assert any(e["relation"] == "calls" and e["source"] == ctor["id"]
+               and e["target"] == init["id"] for e in r["edges"]), "call from constructor body dropped"
+
+
 def test_csharp_finds_usings():
     r = extract_csharp(FIXTURES / "sample.cs")
     assert "imports" in _relations(r)
