@@ -12,7 +12,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -2322,31 +2322,55 @@ def _strip_partial_markers(result: dict) -> None:
 def _resolve_provenance_path(value: "str | Path", root: Path) -> Path:
     """Resolve a source claim with the same portable spelling as the cache.
 
-    Prefer an existing literal path so a POSIX filename containing a backslash
-    keeps its identity. Otherwise accept the cache's portable slash spelling.
+    Preserve walked symlink identity and existing literal entries, including
+    POSIX backslash names. Otherwise accept the cache's portable slash spelling.
     """
     path = Path(value)
     if not path.is_absolute():
         path = root / path
-    try:
-        path = path.resolve()
-    except (OSError, RuntimeError):
-        pass
-    if path.is_file():
+    path = Path(os.path.abspath(path))
+    if os.path.lexists(path):
         return path
     from graphify.cache import _normalize_source_file_value
     path = Path(_normalize_source_file_value(value, Path(os.path.abspath(root))))
     if not path.is_absolute():
         path = root / path
-    try:
-        return path.resolve()
-    except (OSError, RuntimeError):
-        return path
+    return Path(os.path.abspath(path))
+
+
+def _provenance_path_identity(path: Path) -> str:
+    """Use actual walked spelling only when the filesystem proves an alias.
+
+    APFS can look up an NFD directory entry through its NFC spelling. Exact
+    entry names win so distinct Unicode files, hardlinks and symlinks remain
+    distinct on filesystems that allow both spellings.
+    """
+    if path.as_posix().isascii():
+        return path.as_posix()
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        if not part.isascii():
+            try:
+                entries = {entry.name: entry for entry in current.iterdir()}
+                if part not in entries:
+                    source = (current / part).lstat()
+                    aliases = []
+                    for name, entry in entries.items():
+                        if nfc(name) == nfc(part):
+                            candidate = entry.lstat()
+                            if (candidate.st_dev, candidate.st_ino) == (source.st_dev, source.st_ino):
+                                aliases.append(name)
+                    if len(aliases) == 1:
+                        part = aliases[0]
+            except (OSError, RuntimeError):
+                pass
+        current = current / part
+    return current.as_posix()
 
 
 def _chunk_provenance_mismatch(
     result: dict,
-    chunk: "list[Path | FileSlice]",
+    chunk: "Sequence[Path | FileSlice]",
     root: Path,
 ) -> tuple[list[Path], list[Path]]:
     """Return real out-of-chunk attributions and uncovered dispatched files.
@@ -2362,7 +2386,7 @@ def _chunk_provenance_mismatch(
         return [], []
 
     dispatched = {
-        nfc(path.as_posix()): path
+        _provenance_path_identity(path): path
         for unit in chunk
         for path in [_resolve_provenance_path(unit_path(unit), root)]
     }
@@ -2377,7 +2401,7 @@ def _chunk_provenance_mismatch(
                 continue
             path = _resolve_provenance_path(source_file, root)
             if path.is_file():
-                identity = nfc(path.as_posix())
+                identity = _provenance_path_identity(path)
                 returned_real[identity] = path
                 if bucket == "nodes":
                     covered_by_nodes.add(identity)
@@ -2397,13 +2421,13 @@ def _drop_outside_chunk_provenance(
     result: dict, outside: "list[Path]", root: Path,
 ) -> tuple[int, set[str]]:
     """Remove foreign items, deferring endpoint cleanup until the corpus merge."""
-    outside_set = {nfc(path.as_posix()) for path in outside}
+    outside_set = {_provenance_path_identity(path) for path in outside}
 
     def _outside(item: dict) -> bool:
         source_file = item.get("source_file")
         if not source_file:
             return False
-        return nfc(_resolve_provenance_path(source_file, root).as_posix()) in outside_set
+        return _provenance_path_identity(_resolve_provenance_path(source_file, root)) in outside_set
 
     dropped_ids = {
         item.get("id")
@@ -2973,14 +2997,14 @@ def extract_corpus_parallel(
     def _resolve_against_root(value: "str | Path") -> Path:
         return _resolve_provenance_path(value, root)
 
-    _dispatched_resolved = {nfc(_resolve_against_root(p).as_posix()) for p in dispatched}
+    _dispatched_resolved = {_provenance_path_identity(_resolve_against_root(p)) for p in dispatched}
 
     def _out_of_scope(item: dict) -> bool:
         sf = item.get("source_file")
         if not sf:
             return False
         p = _resolve_against_root(sf)
-        return p.is_file() and nfc(p.as_posix()) not in _dispatched_resolved
+        return p.is_file() and _provenance_path_identity(p) not in _dispatched_resolved
 
     dropped_ids: set = set()
     dropped_files: set[str] = set()
@@ -3033,10 +3057,10 @@ def extract_corpus_parallel(
     for n in merged.get("nodes", []):
         sf = n.get("source_file")
         if sf:
-            covered.add(nfc(_resolve_against_root(sf).as_posix()))
+            covered.add(_provenance_path_identity(_resolve_against_root(sf)))
     uncovered = sorted(
         p for p in dispatched
-        if nfc(_resolve_against_root(p).as_posix()) not in covered
+        if _provenance_path_identity(_resolve_against_root(p)) not in covered
     )
     merged["uncovered_files"] = [str(p) for p in uncovered]
     if uncovered:

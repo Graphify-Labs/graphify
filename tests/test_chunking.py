@@ -776,6 +776,7 @@ def test_foreign_stub_is_removed_before_later_chunk_merge_and_cache(tmp_path, fo
     assert str(first) in result["_partial_files"]
     assert load_cached(first, tmp_path, kind="semantic", prompt=_extraction_system()) is None
     cached_second = load_cached(second, tmp_path, kind="semantic", prompt=_extraction_system())
+    assert cached_second is not None
     assert [(node["id"], node["label"]) for node in cached_second["nodes"]] == [
         ("b", "authoritative"),
     ]
@@ -966,6 +967,72 @@ def test_corpus_preserves_equivalent_unicode_source_spelling(tmp_path):
     assert result["out_of_scope_dropped"] == 0
     assert result["uncovered_files"] == []
     assert not result.get("_partial_files")
+
+
+@pytest.mark.parametrize("kind", ["separate_files", "hardlink", "parent_hardlink"])
+def test_distinct_unicode_entries_remain_outside_the_dispatched_chunk(tmp_path, kind):
+    import os
+    from graphify.llm import extract_corpus_parallel
+
+    first = tmp_path / "cafe\u0301.md"
+    second = tmp_path / "caf\u00e9.md"
+    if kind == "parent_hardlink":
+        first_dir = tmp_path / "cafe\u0301"
+        second_dir = tmp_path / "caf\u00e9"
+        first_dir.mkdir()
+        if second_dir.exists():
+            pytest.skip("Filesystem aliases NFC and NFD directory names")
+        second_dir.mkdir()
+        first, second = first_dir / "note.md", second_dir / "note.md"
+    first.write_text("dispatched document")
+    if second.exists():
+        pytest.skip("Filesystem aliases NFC and NFD filenames")
+    if kind == "separate_files":
+        second.write_text("foreign sibling")
+    else:
+        try:
+            os.link(first, second)
+        except OSError:
+            pytest.skip("Filesystem does not support hardlinks")
+
+    with patch(
+        "graphify.llm.extract_files_direct",
+        return_value=_provenance_result(second.relative_to(tmp_path).as_posix(), "foreign"),
+    ) as direct:
+        result = extract_corpus_parallel(
+            [first], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+            max_retry_depth=3,
+        )
+
+    assert direct.call_count == 2
+    assert result["nodes"] == []
+    assert result["out_of_scope_dropped"] == 1
+    assert result["_partial_files"] == [str(first)]
+    assert result["uncovered_files"] == [str(first)]
+
+
+def test_symlink_target_attribution_retries_and_stays_partial(tmp_path, requires_symlinks):
+    from graphify.llm import extract_corpus_parallel
+
+    target = tmp_path / "real.md"
+    target.write_text("document")
+    alias = tmp_path / "alias.md"
+    alias.symlink_to(target)
+    with patch(
+        "graphify.llm.extract_files_direct",
+        return_value=_provenance_result("real.md", "foreign"),
+    ) as direct:
+        result = extract_corpus_parallel(
+            [alias], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+            max_retry_depth=3,
+        )
+
+    assert direct.call_count == 2
+    assert result["nodes"] == []
+    assert result["_partial_files"] == [str(alias)]
+    assert result["uncovered_files"] == [str(alias)]
 
 
 def test_non_file_concept_provenance_does_not_retry(tmp_path):

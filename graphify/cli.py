@@ -4037,15 +4037,15 @@ def dispatch_command(cmd: str) -> None:
                             existing_graph_path.read_text(encoding="utf-8")
                         )
                         _sem_ctx_root = Path(os.path.abspath(target))
-                        from graphify.paths import nfc as _sem_ctx_nfc
+                        from graphify.llm import (
+                            _provenance_path_identity as _sem_ctx_key,
+                            _resolve_provenance_path as _sem_ctx_path,
+                        )
 
                         def _sem_ctx_identity(source_file) -> str | None:
                             if not source_file:
                                 return None
-                            path = Path(str(source_file))
-                            if not path.is_absolute():
-                                path = _sem_ctx_root / path
-                            return _sem_ctx_nfc(Path(os.path.abspath(path)).as_posix())
+                            return _sem_ctx_key(_sem_ctx_path(str(source_file), _sem_ctx_root))
 
                         _sem_ctx_live = {
                             _sem_ctx_identity(path)
