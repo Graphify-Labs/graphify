@@ -379,6 +379,12 @@ def test_incremental_extract_resolves_foreign_stub_against_unchanged_graph_node(
         ("a_b", ["a", "b"]),
     ]
     assert str(changed) in captured["result"]["_partial_files"]
+    final_graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert {node["id"] for node in final_graph["nodes"]} == {"a", "b"}
+    assert [(edge["source"], edge["target"]) for edge in final_graph["edges"]] == [("a", "b")]
+    assert [(edge["id"], edge["nodes"]) for edge in final_graph["hyperedges"]] == [
+        ("a_b", ["a", "b"]),
+    ]
 
 
 def test_incremental_partial_run_preserves_untouched_semantic_hash(
