@@ -294,3 +294,14 @@ def test_explain_direction_recovered_from_src_tgt_markers(monkeypatch, tmp_path,
     out = capsys.readouterr().out
     assert "<-- spoke.ts [calls]" in out
     assert "--> spoke.ts" not in out
+
+
+def test_path_help_documents_direction_flags(monkeypatch, capsys):
+    """Verify top-level help documents --directed (default) and --undirected for path command (#3712)."""
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv", ["graphify", "--help"])
+    mainmod.main()
+    out = capsys.readouterr().out
+    assert "--directed              traverse edges as directed (default)" in out
+    assert "--undirected            traverse edges as undirected" in out
+
