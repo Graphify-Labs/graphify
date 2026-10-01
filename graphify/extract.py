@@ -8315,6 +8315,14 @@ def extract(
         nid_to_file_nid[n["id"]] = _file_node_id(sf_rel)
 
     existing_pairs = {(e["source"], e["target"]) for e in all_edges}
+    # nid -> label, so a resolved Rust call target can be told apart from a
+    # constructor: a function/method node is labelled `name()` / `.name()`, a
+    # data definition (struct/enum/trait) carries the bare name. A cross-file
+    # `Foo(x)` onto a bare-name node constructs a value; it is not a function
+    # call and must not count as one.
+    nid_to_label: dict[str, str] = {
+        n["id"]: str(n.get("label", "")) for n in resolution_nodes if n.get("id")
+    }
     # Call-like pairs only, for the indirect_call dedup: an `imports` edge from a
     # file to the symbol it imports is EXPECTED and must not suppress an
     # indirect_call to that same symbol (JS/TS named imports create such an edge).
@@ -8528,11 +8536,17 @@ def extract(
                 # 0.85 rather than 0.8 — the rubric's INFERRED set is discrete
                 # and does not contain 0.8 (#2813).
                 confidence_score = 0.85
+            _tgt_label = nid_to_label.get(tgt, "")
+            is_rust_constructor = bool(
+                str(rc.get("source_file", "")).endswith(".rs")
+                and _tgt_label
+                and not _tgt_label.endswith(")")
+            )
             all_edges.append({
                 "source": caller,
                 "target": tgt,
-                "relation": "calls",
-                "context": "call",
+                "relation": "references" if is_rust_constructor else "calls",
+                "context": "constructor" if is_rust_constructor else "call",
                 "confidence": confidence,
                 "confidence_score": confidence_score,
                 "source_file": rc.get("source_file", ""),

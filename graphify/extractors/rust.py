@@ -3,11 +3,33 @@ from __future__ import annotations
 
 
 from pathlib import Path
-from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
+from graphify.extractors.base import (
+    _LANGUAGE_BUILTIN_GLOBALS,
+    _RUST_BUILTIN_TYPES,
+    _file_stem,
+    _make_id,
+    _read_text,
+)
 
 
-def _rust_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
-    """Walk a Rust type expression; append (name, role) tuples."""
+def _rust_collect_type_refs(
+    node,
+    source: bytes,
+    generic: bool,
+    out: list[tuple[str, str]],
+    local_types: frozenset[str] = frozenset(),
+) -> None:
+    """Walk a Rust type expression; append (name, role) tuples.
+
+    A name in ``_RUST_BUILTIN_TYPES`` is skipped unless ``local_types`` holds it:
+    a file that defines its own ``struct Result<T>`` shadows the prelude, and its
+    references must survive. Filtering the bare name alone would erase a
+    legitimate user type that happens to share a std name.
+    """
+
+    def _keep(text: str) -> bool:
+        return bool(text) and (text not in _RUST_BUILTIN_TYPES or text in local_types)
+
     if node is None:
         return
     t = node.type
@@ -15,12 +37,12 @@ def _rust_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[
         return
     if t == "type_identifier":
         text = _read_text(node, source)
-        if text:
+        if _keep(text):
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "scoped_type_identifier":
         text = _read_text(node, source).rsplit("::", 1)[-1]
-        if text:
+        if _keep(text):
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "generic_type":
@@ -32,23 +54,23 @@ def _rust_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[
                     break
         if name_node is not None:
             text = _read_text(name_node, source).rsplit("::", 1)[-1]
-            if text:
+            if _keep(text):
                 out.append((text, "generic_arg" if generic else "type"))
         for c in node.children:
             if c.type == "type_arguments":
                 for arg in c.children:
                     if arg.is_named:
-                        _rust_collect_type_refs(arg, source, True, out)
+                        _rust_collect_type_refs(arg, source, True, out, local_types)
         return
     if t in ("reference_type", "pointer_type", "array_type", "tuple_type", "slice_type"):
         for c in node.children:
             if c.is_named:
-                _rust_collect_type_refs(c, source, generic, out)
+                _rust_collect_type_refs(c, source, generic, out, local_types)
         return
     if node.is_named:
         for c in node.children:
             if c.is_named:
-                _rust_collect_type_refs(c, source, generic, out)
+                _rust_collect_type_refs(c, source, generic, out, local_types)
 
 
 def _rust_simple_generic_impl_key(node, source: bytes) -> str | None:
@@ -132,6 +154,24 @@ def extract_rust(path: Path) -> dict:
     function_bodies: list[tuple[str, object, str | None, str | None]] = []
     impl_keys: dict[str, str | None] = {}
 
+    # Names this file defines as a type (struct/enum/trait/union/alias) before it
+    # starts referring to them. A local definition shadows the prelude, so its
+    # references must not be dropped by the builtin-name filter further down.
+    local_types: set[str] = set()
+
+    def _scan_local_types(scan_node) -> None:
+        if scan_node.type in ("struct_item", "enum_item", "trait_item", "union_item", "type_item"):
+            name_node = scan_node.child_by_field_name("name")
+            if name_node is not None:
+                name = _read_text(name_node, source)
+                if name:
+                    local_types.add(name)
+        for child in scan_node.children:
+            _scan_local_types(child)
+
+    _scan_local_types(root)
+    local_type_names = frozenset(local_types)
+
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
@@ -194,7 +234,7 @@ def extract_rust(path: Path) -> dict:
                     continue
                 type_node = p.child_by_field_name("type")
                 refs: list[tuple[str, str]] = []
-                _rust_collect_type_refs(type_node, source, False, refs)
+                _rust_collect_type_refs(type_node, source, False, refs, local_type_names)
                 for ref_name, role in refs:
                     ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
                     tgt = ensure_named_node(ref_name, line)
@@ -203,7 +243,7 @@ def extract_rust(path: Path) -> dict:
         return_type = func_node.child_by_field_name("return_type")
         if return_type is not None:
             refs = []
-            _rust_collect_type_refs(return_type, source, False, refs)
+            _rust_collect_type_refs(return_type, source, False, refs, local_type_names)
             for ref_name, role in refs:
                 ctx = "generic_arg" if role == "generic_arg" else "return_type"
                 tgt = ensure_named_node(ref_name, line)
@@ -283,7 +323,7 @@ def extract_rust(path: Path) -> dict:
                             if not sub.is_named:
                                 continue
                             refs: list[tuple[str, str]] = []
-                            _rust_collect_type_refs(sub, source, False, refs)
+                            _rust_collect_type_refs(sub, source, False, refs, local_type_names)
                             for idx, (ref_name, _role) in enumerate(refs):
                                 tgt = ensure_named_node(ref_name, line)
                                 if tgt == item_nid:
@@ -310,7 +350,7 @@ def extract_rust(path: Path) -> dict:
                                         type_node = fc
                                         break
                             refs = []
-                            _rust_collect_type_refs(type_node, source, False, refs)
+                            _rust_collect_type_refs(type_node, source, False, refs, local_type_names)
                             for ref_name, role in refs:
                                 ctx = "generic_arg" if role == "generic_arg" else "field"
                                 tgt = ensure_named_node(ref_name, field.start_point[0] + 1)
@@ -332,7 +372,7 @@ def extract_rust(path: Path) -> dict:
                                                "primitive_type", "tuple_type", "array_type"):
                                 continue
                             refs = []
-                            _rust_collect_type_refs(tc, source, False, refs)
+                            _rust_collect_type_refs(tc, source, False, refs, local_type_names)
                             for ref_name, role in refs:
                                 ctx = "generic_arg" if role == "generic_arg" else "field"
                                 tgt = ensure_named_node(ref_name, fline)
@@ -352,7 +392,7 @@ def extract_rust(path: Path) -> dict:
                         if type_node is None:
                             return
                         refs2: list[tuple[str, str]] = []
-                        _rust_collect_type_refs(type_node, source, False, refs2)
+                        _rust_collect_type_refs(type_node, source, False, refs2, local_type_names)
                         for ref_name, role in refs2:
                             ctx = "generic_arg" if role == "generic_arg" else "field"
                             tgt = ensure_named_node(ref_name, at_line)
@@ -427,7 +467,7 @@ def extract_rust(path: Path) -> dict:
                 type_node = node.child_by_field_name("type")
                 if type_node is not None:
                     refs: list[tuple[str, str]] = []
-                    _rust_collect_type_refs(type_node, source, False, refs)
+                    _rust_collect_type_refs(type_node, source, False, refs, local_type_names)
                     for ref_name, role in refs:
                         tgt = ensure_named_node(ref_name, line)
                         if tgt == item_nid:
@@ -453,7 +493,7 @@ def extract_rust(path: Path) -> dict:
                 impl_type_bare = type_name.split("<")[0].strip()
             if trait_node is not None and impl_nid is not None:
                 refs: list[tuple[str, str]] = []
-                _rust_collect_type_refs(trait_node, source, False, refs)
+                _rust_collect_type_refs(trait_node, source, False, refs, local_type_names)
                 for idx, (ref_name, _role) in enumerate(refs):
                     tgt = ensure_named_node(ref_name, node.start_point[0] + 1)
                     if tgt == impl_nid:
@@ -510,6 +550,13 @@ def extract_rust(path: Path) -> dict:
         normalised = raw.strip("()").lstrip(".")
         label_to_nid[normalised] = n["id"]
 
+    # Nodes whose label has no `()` suffix are data definitions (structs, enums,
+    # traits, statics), not callables. In Rust `Foo(x)` / `Foo { .. }` onto one
+    # of them constructs a value rather than invoking a function, so the edge is
+    # a `references` (context "constructor"), not a `calls`. Without this a
+    # newtype used everywhere (`ClientId(id)`) reads as a top call hub.
+    type_nids: set[str] = {n["id"] for n in nodes if not n["label"].endswith(")")}
+
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
 
@@ -546,18 +593,23 @@ def extract_rust(path: Path) -> dict:
                     name = func_node.child_by_field_name("name")
                     if name:
                         callee_name = _read_text(name, source)
-            if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
+            if (
+                callee_name
+                and callee_name not in _LANGUAGE_BUILTIN_GLOBALS
+                and (callee_name not in _RUST_BUILTIN_TYPES or callee_name in local_types)
+            ):
                 tgt_nid = label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:
                         seen_call_pairs.add(pair)
                         line = node.start_point[0] + 1
+                        is_constructor = tgt_nid in type_nids
                         edges.append({
                             "source": caller_nid,
                             "target": tgt_nid,
-                            "relation": "calls",
-                            "context": "call",
+                            "relation": "references" if is_constructor else "calls",
+                            "context": "constructor" if is_constructor else "call",
                             "confidence": "EXTRACTED",
                             "source_file": str_path,
                             "source_location": f"L{line}",
