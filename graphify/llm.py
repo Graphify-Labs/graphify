@@ -2346,7 +2346,7 @@ def _provenance_path_identity(path: Path) -> str:
     distinct on filesystems that allow both spellings.
     """
     if path.as_posix().isascii():
-        return path.as_posix()
+        return os.path.normcase(path.as_posix())
     current = Path(path.anchor)
     for part in path.parts[1:]:
         if not part.isascii():
@@ -2365,7 +2365,7 @@ def _provenance_path_identity(path: Path) -> str:
             except (OSError, RuntimeError):
                 pass
         current = current / part
-    return current.as_posix()
+    return os.path.normcase(current.as_posix())
 
 
 def _chunk_provenance_mismatch(

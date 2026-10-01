@@ -1035,6 +1035,33 @@ def test_symlink_target_attribution_retries_and_stays_partial(tmp_path, requires
     assert result["uncovered_files"] == [str(alias)]
 
 
+def test_windows_case_spelling_preserves_dispatched_source(tmp_path):
+    import os
+    from graphify.llm import extract_corpus_parallel
+
+    if os.name != "nt":
+        pytest.skip("Windows path equality is case-insensitive")
+    dispatched = tmp_path / "A.md"
+    dispatched.write_text("document")
+    if not (tmp_path / "a.md").is_file():
+        pytest.skip("Filesystem uses case-sensitive directory entries")
+    with patch(
+        "graphify.llm.extract_files_direct",
+        return_value=_provenance_result("a.md", "authoritative"),
+    ) as direct:
+        result = extract_corpus_parallel(
+            [dispatched], backend="kimi", root=tmp_path,
+            token_budget=None, chunk_size=1, max_concurrency=1,
+            max_retry_depth=3,
+        )
+
+    assert direct.call_count == 1
+    assert [node["id"] for node in result["nodes"]] == ["authoritative"]
+    assert result["out_of_scope_dropped"] == 0
+    assert result["uncovered_files"] == []
+    assert not result.get("_partial_files")
+
+
 def test_non_file_concept_provenance_does_not_retry(tmp_path):
     from graphify.llm import _extract_with_adaptive_retry
 
