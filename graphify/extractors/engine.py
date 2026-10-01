@@ -5127,18 +5127,39 @@ def _extract_generic(
                         if target_nid != parent_class_nid:
                             add_edge(parent_class_nid, target_nid, "references",
                                      line, context=ctx)
-            # Emit a node for each data member. Use children_by_field_name so we
+            # Emit a node for each declarator. Use children_by_field_name so we
             # only visit declarator children, not the type node (which would give
             # us the type name, not the field name). Handles int x, y; via
             # multiple declarator fields and static const int MAX = 100; via the
             # init_declarator → field_identifier recursion in _get_cpp_func_name.
+            #
+            # A declarator that is a function_declarator is a member-FUNCTION
+            # declaration — a prototype, a `virtual f();`, or a pure virtual
+            # `virtual f() = 0;` — not a data member. It was being emitted as a
+            # `defines` field (bare label, no `()`), so a pure-virtual interface
+            # class had no method nodes and an override/call had nothing to bind
+            # to. Emit it with the same shape the function_definition branch uses
+            # (a `.name()` label, a `method` edge, callable) so the declaration
+            # and its out-of-line/overriding definition share one node — parity
+            # with the Java/TS/Scala abstract-method contract.
             for decl in decls:
                 name = _get_cpp_func_name(decl, source)
-                if name:
-                    line = decl.start_point[0] + 1
-                    field_nid = _make_id(parent_class_nid, name)
-                    add_node(field_nid, name, line)
-                    add_edge(parent_class_nid, field_nid, "defines", line, context="field")
+                if not name:
+                    continue
+                line = decl.start_point[0] + 1
+                member_nid = _make_id(parent_class_nid, name)
+                decl_is_method = (
+                    decl.type == "function_declarator"
+                    or (decl.type in ("pointer_declarator", "reference_declarator")
+                        and any(c.type == "function_declarator" for c in decl.children))
+                )
+                if decl_is_method:
+                    add_node(member_nid, f".{name}()", line)
+                    add_edge(parent_class_nid, member_nid, "method", line)
+                    callable_def_nids.add(member_nid)
+                else:
+                    add_node(member_nid, name, line)
+                    add_edge(parent_class_nid, member_nid, "defines", line, context="field")
             return
 
         # Ruby's `class << self` contains ordinary `method` nodes. Keep them

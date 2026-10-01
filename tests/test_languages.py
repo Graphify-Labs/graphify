@@ -4033,9 +4033,9 @@ def test_cpp_paired_method_decl_and_def_are_one_node():
         e["target"] for e in r["edges"]
         if e["source"] == foo and e["relation"] in ("method", "defines", "contains")
     }
-    bar_nodes = [n for n in r["nodes"] if n["id"] in method_targets and n["label"] in ("bar", "Foo::bar()")]
+    bar_nodes = [n for n in r["nodes"] if n["id"] in method_targets and n["label"] in (".bar()", "Foo::bar()")]
     # There must be exactly one node representing bar (decl and def merged).
-    bar_ids = {n["id"] for n in r["nodes"] if n["label"] in ("bar", "Foo::bar()")}
+    bar_ids = {n["id"] for n in r["nodes"] if n["label"] in (".bar()", "Foo::bar()")}
     assert len(bar_ids) == 1, f"bar decl/def should be one node, got {bar_ids}"
     assert bar_nodes, "the merged bar node should be a member of Foo"
 
@@ -4045,7 +4045,7 @@ def test_cpp_paired_merged_node_records_definition_site():
     DECLARATION. The survivor must still carry where the symbol is implemented,
     or the definition site is lost with the dropped impl node."""
     r = _corpus("cpp_paired/Foo.h", "cpp_paired/Foo.cpp", "cpp_paired/Main.cpp")
-    bars = [n for n in r["nodes"] if n["label"] in ("bar", "Foo::bar()")]
+    bars = [n for n in r["nodes"] if n["label"] in (".bar()", "Foo::bar()")]
     assert len(bars) == 1, f"bar decl/def should be one node, got {bars}"
     bar = bars[0]
     assert str(bar["source_file"]).endswith("Foo.h"), bar
