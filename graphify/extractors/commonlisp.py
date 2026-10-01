@@ -319,7 +319,8 @@ def extract_commonlisp(path: Path) -> dict:
                             syms = [c for c in param.children if c.type == "sym_lit"]
                             if len(syms) >= 2:
                                 specializer_name = _text(syms[1])
-                                spec_nid = _cl_id(stem, specializer_name)
+                                spec_nid = ensure_class_ref(
+                                    specializer_name, param.start_point[0] + 1)
                                 add_edge(func_nid, spec_nid, "specializes",
                                          param.start_point[0] + 1)
                     break
@@ -467,7 +468,13 @@ def extract_commonlisp(path: Path) -> dict:
                     current_package = _text(child)
                     break
             return True
-        if first_lower == "defclass":
+        if first_lower in ("defclass", "define-condition"):
+            # define-condition shares defclass's shape, (NAME (PARENTS) (SLOTS) ...),
+            # so the same handler gives it the inherits edges its parent types
+            # deserve. Routed here rather than to the generic definer path, which
+            # records the name and never reads the parent list: a condition
+            # hierarchy is inheritance, and a codebase that signals through
+            # conditions had that structure missing from its graph entirely.
             _handle_defclass(top)
             return True
         if first_lower in ("require", "ql:quickload"):
@@ -514,6 +521,14 @@ def extract_commonlisp(path: Path) -> dict:
         label_to_nid[normalised.lower()] = n["id"]
 
     seen_call_pairs: set[tuple[str, str]] = set()
+    # Callees this file cannot see. A Common Lisp system spreads its functions
+    # across files and calls them by bare name, so a per-file pass resolves only
+    # a minority of real calls. Report the rest rather than guessing: the
+    # cross-file resolver matches them against definitions the whole corpus
+    # knows about, which is also what keeps calls into the standard library out
+    # of the graph, since nothing in the corpus defines them.
+    raw_calls: list[dict] = []
+    seen_raw: set[tuple[str, str]] = set()
 
     def walk_calls(node, caller_nid: str) -> None:
         if node.type == "defun":
@@ -528,6 +543,17 @@ def extract_commonlisp(path: Path) -> dict:
                         seen_call_pairs.add(pair)
                         add_edge(caller_nid, tgt_nid, "calls",
                                  node.start_point[0] + 1, confidence="EXTRACTED", weight=1.0)
+                elif not tgt_nid:
+                    raw_pair = (caller_nid, callee.lower())
+                    if raw_pair not in seen_raw:
+                        seen_raw.add(raw_pair)
+                        raw_calls.append({
+                            "caller_nid": caller_nid,
+                            "callee": callee,
+                            "lang": "commonlisp",
+                            "source_file": str_path,
+                            "source_location": f"{node.start_point[0] + 1}",
+                        })
         for child in node.children:
             walk_calls(child, caller_nid)
 
@@ -537,4 +563,4 @@ def extract_commonlisp(path: Path) -> dict:
 
     clean_edges = [e for e in edges if e["source"] in seen_ids and
                    (e["target"] in seen_ids or e["relation"] in ("imports", "imports_from"))]
-    return {"nodes": nodes, "edges": clean_edges}
+    return {"nodes": nodes, "edges": clean_edges, "raw_calls": raw_calls}
