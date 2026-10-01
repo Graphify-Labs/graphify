@@ -175,7 +175,7 @@ Note: Parallelizing AST + semantic saves 5-15s on large corpora. AST is determin
 
 #### Part A - Structural extraction for code files
 
-For any code files detected, run AST extraction in parallel with Part B subagents:
+For any code files detected, run AST extraction in parallel with Part B subagents. Markdown-shaped documents (`.md`/`.mdx`/`.qmd`/`.skill`) get this same structural pass too, alongside their semantic pass in Part B below — `extract()` already parses their heading tree and links deterministically at zero token cost, matching the AST-only `graphify update` CLI path; nothing routed them here before, so a document's structural layer was silently absent everywhere but that one path:
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -184,13 +184,20 @@ from graphify.extract import collect_files, extract
 from pathlib import Path
 import json
 
-code_files = []
+ast_files = []
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
 for f in detect.get('files', {}).get('code', []):
-    code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
+    ast_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
+_markdown_exts = ('.md', '.mdx', '.qmd', '.skill')
+for f in detect.get('files', {}).get('document', []):
+    p = Path(f)
+    if p.is_dir():
+        ast_files.extend(q for q in collect_files(p) if q.suffix.lower() in _markdown_exts)
+    elif p.suffix.lower() in _markdown_exts:
+        ast_files.append(p)
 
-if code_files:
-    result = extract(code_files, cache_root=Path('INPUT_PATH'))
+if ast_files:
+    result = extract(ast_files, cache_root=Path('INPUT_PATH'))
     Path('graphify-out/.graphify_ast.json').write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding=\"utf-8\")
     print(f'AST: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
 else:
