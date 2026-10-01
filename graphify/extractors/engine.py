@@ -6199,6 +6199,7 @@ def _extract_generic(
             callee_name: str | None = None
             is_member_call: bool = False
             is_this_field_call: bool = False
+            is_scoped_call: bool = False
             swift_receiver: str | None = None
             member_receiver: str | None = None
             kotlin_qualified_prefix: str | None = None
@@ -6452,10 +6453,25 @@ def _extract_generic(
                     if func_node:
                         callee_name = _read_text(func_node, source)
                 elif node.type == "scoped_call_expression":
-                    # Static method call: Helper::format() → callee = "Helper"
+                    # Static method call: Helper::format() — the callee is the
+                    # actual method (`format`), not the scope (`Helper`). Using
+                    # the scope as callee_name previously bound every static call
+                    # to whatever node was labeled after the scope text (usually
+                    # the class definition itself), never the called method, and
+                    # skipped member-call handling entirely so the cross-file
+                    # bare-name pass resolved it by class name coincidence
+                    # rather than the real callee (#3872). Capture the scope as
+                    # the receiver instead, like every other language's
+                    # qualified-call branch here, so a dedicated PHP resolver can
+                    # bind it to the actual method on that class.
+                    is_member_call = True
+                    is_scoped_call = True
+                    name_node = node.child_by_field_name("name")
+                    if name_node:
+                        callee_name = _read_text(name_node, source)
                     scope_node = node.child_by_field_name("scope")
                     if scope_node:
-                        callee_name = _read_text(scope_node, source)
+                        member_receiver = _read_text(scope_node, source)
                 else:
                     # member_call_expression: $obj->method()
                     is_member_call = True
@@ -6651,7 +6667,7 @@ def _extract_generic(
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
-                if _python_defer or _java_defer or _builtin_member_call or (
+                if _python_defer or _java_defer or _builtin_member_call or is_scoped_call or (
                     is_member_call
                     and member_receiver
                     and (
