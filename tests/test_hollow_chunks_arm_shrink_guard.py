@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import pytest
 
+from pathlib import Path
+
 import graphify.__main__ as mainmod
 
 
@@ -116,3 +118,54 @@ def test_the_manifest_is_not_stamped_when_the_guard_refuses(monkeypatch, tmp_pat
     code = _run()
     assert code not in (None, 0)
     assert not (out_dir / "graphify-out" / "manifest.json").exists()
+
+
+# --- the omitted files must be recoverable, not just counted (#3574) ---
+
+
+def _uncovered_list(out_dir):
+    from graphify.cli import UNCOVERED_FILES_NAME
+
+    return out_dir / "graphify-out" / UNCOVERED_FILES_NAME
+
+
+def test_the_omitted_files_are_written_where_a_user_can_read_them(monkeypatch, tmp_path, capsys):
+    """The warning names five and counts the rest.
+
+    The full list was computed into ``uncovered_files`` and then read only for
+    its length, so recovering it meant diffing the graph against a filesystem
+    walk.
+    """
+    import json
+
+    _record_force(monkeypatch)
+    out_dir = _arm(monkeypatch, tmp_path, uncovered=("GUIDE.md",))
+    _run()
+
+    listed = json.loads(_uncovered_list(out_dir).read_text(encoding="utf-8"))
+    assert [Path(p).name for p in listed] == ["GUIDE.md"]
+    assert str(_uncovered_list(out_dir)) in capsys.readouterr().err
+
+
+def test_a_covered_run_clears_an_earlier_list(monkeypatch, tmp_path):
+    """A leftover list describes files that are covered now, which is worse than none."""
+    _record_force(monkeypatch)
+    out_dir = _arm(monkeypatch, tmp_path)
+    stale = _uncovered_list(out_dir)
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('["plugin/gone.php"]', encoding="utf-8")
+
+    _run()
+
+    assert not stale.exists()
+
+
+def test_the_list_never_costs_the_extraction(tmp_path, monkeypatch):
+    """A directory that refuses the write loses the diagnostic, not the run."""
+    from graphify.cli import _write_uncovered_files
+
+    def _refuse(self, *args, **kwargs):
+        raise PermissionError(f"read-only: {self}")
+
+    monkeypatch.setattr(Path, "write_text", _refuse)
+    assert _write_uncovered_files(tmp_path, ["a.php"]) is None
