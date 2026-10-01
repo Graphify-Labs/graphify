@@ -9,6 +9,8 @@ and exits non-zero (before writing the manifest) if the guard refuses.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import graphify.__main__ as mainmod
@@ -76,6 +78,15 @@ def test_partial_extraction_refuses_to_shrink_existing_graph(monkeypatch, tmp_pa
     assert "Refusing to overwrite" in err
     # The manifest must not be stamped for a graph we declined to write.
     assert not (out_dir / "graphify-out" / "manifest.json").exists()
+    status = json.loads(
+        (out_dir / "graphify-out" / "last_run.json").read_text(encoding="utf-8")
+    )
+    assert status["schema_version"] == 1
+    assert status["ok"] is False
+    assert status["wrote_graph"] is False
+    assert status["refused_reason"] == "shrink_guard"
+    assert status["chunks_total"] == 3
+    assert status["chunks_failed"] == 2
 
 
 def test_partial_extraction_writes_when_not_shrinking(monkeypatch, tmp_path):
@@ -103,11 +114,37 @@ def test_complete_extraction_keeps_force_write(monkeypatch, tmp_path):
     # All chunks succeeded -> a complete build legitimately keeps force=True so a
     # genuine dedup/deletion shrink still overwrites.
     rec = _seed_to_json_recorder(monkeypatch, returns=True)
-    _arm_extract(monkeypatch, tmp_path, chunk_total=1, chunk_succeeded=1)
+    out_dir = _arm_extract(monkeypatch, tmp_path, chunk_total=1, chunk_succeeded=1)
 
     mainmod.main()
 
     assert rec["called"] and rec["force"] is True
+    status = json.loads(
+        (out_dir / "graphify-out" / "last_run.json").read_text(encoding="utf-8")
+    )
+    assert status["ok"] is True
+    assert status["wrote_graph"] is True
+    assert status["exit_code"] == 0
+    assert status["incomplete"] is False
+
+
+def test_status_snapshots_existing_node_count_before_write(monkeypatch, tmp_path):
+    rec = _seed_to_json_recorder(monkeypatch, returns=True)
+    out_dir = _arm_extract(monkeypatch, tmp_path, chunk_total=1, chunk_succeeded=1)
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    graph_path.parent.mkdir(parents=True, exist_ok=True)
+    graph_path.write_text(
+        json.dumps({"nodes": [{"id": f"old{i}"} for i in range(4)], "links": []}),
+        encoding="utf-8",
+    )
+
+    mainmod.main()
+
+    assert rec["called"]
+    status = json.loads(
+        (out_dir / "graphify-out" / "last_run.json").read_text(encoding="utf-8")
+    )
+    assert status["nodes_existing"] == 4
 
 
 def _seed_existing_graph(gout, n):
