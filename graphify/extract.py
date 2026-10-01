@@ -7468,6 +7468,21 @@ def extract(
             file=sys.stderr, flush=True,
         )
 
+    # #3946: JavaScript data banks can yield only a file node and literal
+    # bindings. Keep this limitation visible in persisted graphs/reports; this
+    # is a structural-coverage signal, not a data classifier or an LLM fallback.
+    _symbol_free_count = sum(
+        1 for result in per_file for node in (result or {}).get("nodes", [])
+        if node.get("_no_structural_symbols")
+    )
+    if _symbol_free_count:
+        print(
+            f"  note: {_symbol_free_count} JavaScript file(s) without functions, classes, imports or calls; "
+            "their contents may contain data not extracted by AST. See the "
+            "Files without structural symbols section in GRAPH_REPORT.md.",
+            file=sys.stderr, flush=True,
+        )
+
     # #2543: collect sources that must NOT be stamped as up-to-date in the
     # incremental manifest. Two cases:
     #   - extractor returned an error (missing optional extra, parse failure, …)
