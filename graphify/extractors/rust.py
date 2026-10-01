@@ -3,13 +3,38 @@ from __future__ import annotations
 
 
 from pathlib import Path
-from graphify.extractors.base import (
-    _LANGUAGE_BUILTIN_GLOBALS,
-    _RUST_BUILTIN_TYPES,
-    _file_stem,
-    _make_id,
-    _read_text,
-)
+from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
+
+
+# Rust prelude / std types. Language-local (like _GO_PREDECLARED_FUNCS and
+# _RUST_TRAIT_METHOD_BLOCKLIST below) rather than added to the shared
+# _LANGUAGE_BUILTIN_GLOBALS: the shared set is consulted with no language gate,
+# and `Path`, `Result`, `Error`, `From`, `Into`, `Iterator`, `Default` and
+# friends are ordinary user type names in the other languages that read it.
+#
+# Without this set a Rust codebase resolves every `Option`/`Vec`/`String`/
+# `Result` annotation to a few canonical nodes, so the language's own primitives
+# become the top god nodes (a ~1,200-file workspace had `String` at #1 with
+# ~1,700 edges). Filtering is definition-aware: see _rust_collect_type_refs.
+_RUST_BUILTIN_TYPES: frozenset[str] = frozenset({
+    # prelude types and aliases
+    "String", "str", "Option", "Result", "Vec", "VecDeque", "Box", "Rc",
+    "Arc", "Weak", "RefCell", "Cell", "Cow", "Pin",
+    # collections
+    "HashMap", "HashSet", "BTreeMap", "BTreeSet", "BinaryHeap",
+    # paths / OS strings
+    "Path", "PathBuf", "OsStr", "OsString", "CStr", "CString",
+    # time / ranges / markers
+    "Duration", "Instant", "SystemTime", "Ordering", "Range", "RangeInclusive",
+    "RangeFrom", "RangeTo", "RangeFull", "PhantomData", "ManuallyDrop",
+    "NonZeroU8", "NonZeroU16", "NonZeroU32", "NonZeroU64", "NonZeroUsize",
+    # variants and core traits
+    "Some", "None", "Ok", "Err", "Self",
+    "Default", "Clone", "Copy", "Debug", "Display", "Error", "From", "Into",
+    "TryFrom", "TryInto", "AsRef", "AsMut", "Iterator", "IntoIterator",
+    "Extend", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash", "Send", "Sync",
+    "Sized", "Drop", "Deref", "DerefMut", "Future", "Fn", "FnMut", "FnOnce",
+})
 
 
 def _rust_collect_type_refs(

@@ -51,33 +51,6 @@ _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
 })
 
 
-# Rust prelude / std types. Kept separate from _LANGUAGE_BUILTIN_GLOBALS so the
-# filter applies to Rust type references only: the same names are ordinary user
-# types elsewhere (Python `pathlib.Path`, a Kotlin `Result`), and folding them
-# into the shared set would suppress those. Without this set a Rust codebase
-# resolves every `Option`/`Vec`/`String`/`Result` annotation to one canonical
-# node, making the language's own primitives the top god nodes.
-_RUST_BUILTIN_TYPES: frozenset[str] = frozenset({
-    # prelude types and aliases
-    "String", "str", "Option", "Result", "Vec", "VecDeque", "Box", "Rc",
-    "Arc", "Weak", "RefCell", "Cell", "Cow", "Pin",
-    # collections
-    "HashMap", "HashSet", "BTreeMap", "BTreeSet", "BinaryHeap",
-    # paths / OS strings
-    "Path", "PathBuf", "OsStr", "OsString", "CStr", "CString",
-    # time / ranges / markers
-    "Duration", "Instant", "SystemTime", "Ordering", "Range", "RangeInclusive",
-    "RangeFrom", "RangeTo", "RangeFull", "PhantomData", "ManuallyDrop",
-    "NonZeroU8", "NonZeroU16", "NonZeroU32", "NonZeroU64", "NonZeroUsize",
-    # variants and core traits
-    "Some", "None", "Ok", "Err", "Self",
-    "Default", "Clone", "Copy", "Debug", "Display", "Error", "From", "Into",
-    "TryFrom", "TryInto", "AsRef", "AsMut", "Iterator", "IntoIterator",
-    "Extend", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash", "Send", "Sync",
-    "Sized", "Drop", "Deref", "DerefMut", "Future", "Fn", "FnMut", "FnOnce",
-})
-
-
 def _make_id(*parts: str) -> str:
     return make_id(*parts)
 
