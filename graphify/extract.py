@@ -1449,7 +1449,13 @@ _SCALA_CONFIG = LanguageConfig(
     # cases, so it needs a node and a body walk like the others (its cases are
     # emitted by _scala_extra_walk, the parity of Java #1719 / Kotlin #1738).
     class_types=frozenset({"class_definition", "object_definition", "trait_definition", "enum_definition"}),
-    function_types=frozenset({"function_definition"}),
+    # `function_declaration` is a bodyless `def area: Double` — a deferred
+    # (abstract) method. In a `trait` or `abstract class` it is the contract a
+    # subclass must implement, exactly like Java/C#/TS abstract methods. Only
+    # `function_definition` (a `def` WITH a body) was a function type, so every
+    # abstract member was dropped: a pure-interface trait had no method nodes at
+    # all, and a concrete method calling a deferred one had no target to link to.
+    function_types=frozenset({"function_definition", "function_declaration"}),
     import_types=frozenset({"import_declaration"}),
     call_types=frozenset({"call_expression"}),
     call_function_field="",
