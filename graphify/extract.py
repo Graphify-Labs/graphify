@@ -6765,6 +6765,7 @@ _DISPATCH: dict[str, Any] = {
     ".lsp": extract_commonlisp,
     ".asd": extract_commonlisp,
     ".v": extract_verilog,
+    ".vh": extract_verilog,
     ".sv": extract_verilog,
     ".svh": extract_verilog,
     ".sql": extract_sql,

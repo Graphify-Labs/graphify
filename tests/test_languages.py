@@ -3875,6 +3875,40 @@ def test_apex_no_dangling_edges():
 
 # -- SystemVerilog -------------------------------------------------------------
 
+@pytest.mark.parametrize("suffix", [".vh", ".VH"])
+def test_verilog_header_detection_and_collection(tmp_path, suffix):
+    """#3749: Verilog headers must reach extraction through every entry point."""
+    from graphify.detect import FileType, classify_file, detect
+    from graphify.extract import collect_files
+    from graphify.watch import _WATCHED_EXTENSIONS
+
+    header = tmp_path / ("sample" + suffix)
+    header.write_text((FIXTURES / "sample.vh").read_text(encoding="utf-8"), encoding="utf-8")
+    assert classify_file(header) == FileType.CODE
+    assert header in collect_files(tmp_path)
+    assert header in collect_files(header)
+    assert str(header) in detect(tmp_path)["files"]["code"]
+    assert suffix.lower() in _WATCHED_EXTENSIONS
+
+
+@pytest.mark.parametrize("suffix", [".vh", ".VH"])
+def test_verilog_header_corpus_extraction(tmp_path, suffix):
+    """Headers use the existing Verilog grammar, retaining symbols and edges."""
+    from graphify.extract import extract
+
+    header = tmp_path / ("sample" + suffix)
+    header.write_text((FIXTURES / "sample.vh").read_text(encoding="utf-8"), encoding="utf-8")
+    result = extract([header], root=tmp_path)
+    assert "error" not in result
+    assert {"header_top", "header_leaf"}.issubset(_labels(result))
+    assert ("header_top", "header_leaf") in _edge_labels(result, "instantiates")
+    node_ids = {n["id"] for n in result["nodes"]}
+    assert all(e["source"] in node_ids and e["target"] in node_ids for e in result["edges"])
+    definitions = [n for n in result["nodes"] if n["label"] in {"header_top", "header_leaf"}]
+    # Windows provenance canonicalizes path casing; it must still name this header.
+    assert all(n["source_file"].casefold() == header.name.casefold() for n in definitions)
+
+
 def test_systemverilog_no_error():
     r = extract_verilog(FIXTURES / "sample.sv")
     assert "error" not in r
