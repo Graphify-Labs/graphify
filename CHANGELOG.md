@@ -2,6 +2,38 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.73 (2026-09-30)
+
+- Feature: enum members are now extracted as nodes with `case_of` edges in four more languages — **Rust** enum variants (#3938), **Zig** enum members (#3940), **C++** `enum`/`enum class` enumerators including nested enums (#3939), and **Scala 3** enum cases plus their methods (#3937) — all thanks @rajatnagda45.
+- Fix: Java calls to inherited methods and `super.method()` now resolve to the declaring ancestor (walking the `inherits` chain, nearest declaration wins), instead of dangling; an unknown/external or ambiguous ancestor fails closed (#3932, thanks @janwaleed09).
+- Fix: semantic extraction warns once when a file exceeds the 20,000-character cap and is truncated, instead of silently dropping the tail (#3923, #3773, thanks @AK-Lmn).
+- Feature: Solidity file-level free functions (Solidity 0.7+, declared outside any contract) and their calls are now extracted (#3906, thanks @rajatnagda45).
+- Fix: VB.NET type/module-qualified calls (`MyModule.DoThing()`, `MyClass.SharedMethod()`) resolve to the target method; value-receiver and `MyBase.` calls fail closed (#3909, thanks @rajatnagda45).
+- Fix: Astro files are parsed correctly — only the frontmatter and `<script>` blocks are fed to the AST pass (the HTML template no longer produces parse errors), with line numbers preserved (#3902, thanks @Bosken85).
+- Fix: the "surprising connections" cross-repo/directory bonus now matches the reason it prints — two files at the scan root no longer falsely score as crossing repos (#3934, thanks @neo1777).
+- Fix: under `--exclude-hubs`, a node whose only neighbours are excluded hubs is kept with its hub's community instead of being severed into a singleton; the default path is unchanged (#3933, thanks @neo1777).
+- Perf: the Neo4j/FalkorDB `--push` path creates a per-label id index before the node upsert loop, fixing the throughput collapse on large graphs (#3957, thanks @Yi-111-a).
+- Fix: community labeling keeps the labels it already named when a nested retry fails to parse, instead of discarding the whole batch (#3956, thanks @Vikram-Lex).
+- Fix: `graphify hook status` reports hooks written by an older release as out of date (run `graphify hook install` to refresh) (#3951, #3771, thanks @bercedev).
+- Fix: a Rust virtual-workspace-root `Cargo.toml` (only `[workspace]`, no `[package]`) is treated as skipped-by-design rather than warned as zero-node (#3930, #3910, thanks @Adityakk9031).
+- Fix: when the instructions file (`CLAUDE.md` etc.) is a symlink, install reports the real target it wrote to, and uninstall keeps the symlink (strips only the graphify section) instead of deleting the link (#3950, #3953, #3805, thanks @bercedev).
+
+## 0.9.72 (2026-09-29)
+
+- Feature: after a package upgrade, `graphify` refreshes stale installed skills automatically (the `SKILL.md` + references sidecar it manages) so the version-mismatch warning no longer requires a manual `graphify install`. It runs on any non-install CLI command when a skill is stale, backs up local edits to `SKILL.md.bak`, never touches your marker-bounded `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` sections, and can be disabled with `GRAPHIFY_NO_AUTO_REFRESH=1` (#3895, #1805, thanks @bercedev).
+- Fix: `graph.html`'s Node Info panel now shows the real Type/Source/Community for each node instead of "Type: unknown / Source: -" (the panel read field names that did not match the emitted node schema); aggregated community nodes show a member count (#3918, #3914, thanks @hopstreax).
+- Fix: a Kotlin class property that is both annotated and has an inferred type (`@Volatile var x = 0`) no longer crashes extraction with an `UnboundLocalError` that dropped the whole file (#3915, thanks @nothariharan; #3899, thanks @harshaygadekar; #3884).
+- Fix: SQL DDL that appears before a PostgreSQL `DO $$ ... $$` block is now extracted — the block node the parser produces for that span is walked instead of skipped (#3900, thanks @bercedev).
+- Fix: Razor extracts C# members from `@functions { }` blocks (classic Razor Pages/MVC), not only Blazor `@code { }` blocks (#3908, thanks @rajatnagda45).
+- Feature: Blade templates now link a view to the layout it `@extends` (#3907, thanks @rajatnagda45).
+- Fix: resolving an imported module name no longer binds to a same-named contained symbol (a class/module member); only genuine top-level module/file nodes are considered (#3898, #3887, thanks @harshaygadekar).
+- Fix: `docx` sidecar conversion now keeps tables in their document position (instead of dumping them after all prose) and reads all text, including tracked insertions, content controls, and text boxes, by walking the document body in order (#3833, thanks @L4XB).
+- Fix: label/signature sidecars are now published atomically and in a safe order (labels before signatures), so an interrupted rebuild can no longer leave stale community labels for a clustering that no longer exists (#3853, thanks @shashank-100).
+- Fix: the markdown wikilink index respects `.graphifyignore`/`.gitignore`/`--exclude` and resolves an article-named `index` without overwriting the generated `index.md` hub — two independent wiki/markdown fixes (#3818, thanks @breken-ai; escaped-alias parsing `[[target\|alias]]` #3772, thanks @zagushka).
+- Fix: the community listing in `GRAPH_REPORT.md` reuses the shared real-node filter, so `rationale`/`concept` nodes no longer inflate a community's node count or leak into the listing (#3836, #3794, thanks @ayushcodes10).
+- Fix: extraction now warns once (not per file) when a PDF is encountered but the `pdf` extra (`pypdf`) is not installed, instead of silently producing no text (#3710, #3702, thanks @shobhitagnihotri69).
+- Chore: `graphify` / `graphify --help` now shows the logo banner and a link to the hosted platform at app.graphify.com.
+
 ## 0.9.71 (2026-09-28)
 
 - Feature: SQL `CREATE TRIGGER` statements are now extracted and linked to their table (`ON <table>`), including `OR REPLACE`/`OR ALTER`, `INSTEAD OF`, and procedural `BEGIN…END` bodies that previously landed in a parser-error node and were dropped (#3863, thanks @rajatnagda45).

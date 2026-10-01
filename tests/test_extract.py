@@ -1598,6 +1598,52 @@ def test_python_module_qualified_call_requires_the_import(tmp_path):
     assert bad == [], f"non-imported receiver must not link cross-file: {bad}"
 
 
+def test_python_module_call_resolves_when_same_file_imports_function_with_nested_def(tmp_path):
+    """When a file imports both a module and a function from that module, and the
+    function contains a nested def, `module.func()` calls must still resolve (#3887).
+
+    Nested functions are tracked as `contains` children of their enclosing function
+    (#3410). The module resolver must not mistake the enclosing function for an
+    imported module node, which would cause an ambiguity bailout and drop the call."""
+    services = tmp_path / "services"
+    services.mkdir()
+    (services / "__init__.py").write_text("")
+    (services / "store.py").write_text(
+        "def sort_todos(todos):\n"
+        "    def key(t):\n"
+        "        return t\n"
+        "    return sorted(todos, key=key)\n\n"
+        "def parse_todo_file(path):\n"
+        "    return path\n"
+    )
+    api = tmp_path / "api"
+    api.mkdir()
+    (api / "__init__.py").write_text("")
+    views = api / "views.py"
+    views.write_text(
+        "from services import store\n"
+        "from services.store import sort_todos\n\n"
+        "def get_archived_panel():\n"
+        "    return store.parse_todo_file(1)\n\n"
+        "def board():\n"
+        "    return sort_todos([])\n"
+    )
+    result = extract(
+        [views, services / "store.py", services / "__init__.py", api / "__init__.py"],
+        cache_root=tmp_path,
+        root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "get_archived_panel" in nodes[e["source"]]["label"]
+        and "parse_todo_file" in nodes[e["target"]]["label"]
+    ]
+    assert len(edges) == 1, f"expected get_archived_panel->parse_todo_file edge, got {edges}"
+    assert edges[0]["confidence"] == "EXTRACTED"
+
+
 def test_python_from_import_alias_module_call_resolves(tmp_path):
     """`from pkg import mod as alias` must resolve `alias.func()` the same way the
     unaliased `from pkg import mod` / `mod.func()` form already does (#2082). The

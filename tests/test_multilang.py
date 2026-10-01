@@ -410,6 +410,24 @@ def test_rust_enum_variant_references():
     assert ("GraphEvent", "DataProcessor") in refs, "struct-variant reference missing"
 
 
+def test_rust_enum_variants_emit_case_of_nodes():
+    """Each enum variant must become a node with a `case_of` edge to its enum.
+
+    The enum handler only walked variants to collect their payload type
+    references; the variants themselves (`NodeAdded`, `Processed`) never became
+    nodes, so the enum was left a memberless leaf. Every other language with
+    enums (Java #1719, Kotlin #1738, Swift, Scala) emits a node per member with
+    a `case_of` edge; this brings Rust to parity.
+    """
+    r = extract_rust(FIXTURES / "sample.rs")
+    labels = {n["label"] for n in r["nodes"]}
+    assert "NodeAdded" in labels
+    assert "Processed" in labels
+    case_of = _edge_labels(r, "case_of")
+    assert ("GraphEvent", "NodeAdded") in case_of
+    assert ("GraphEvent", "Processed") in case_of
+
+
 def test_rust_struct_field_emits_field_context():
     r = extract_rust(FIXTURES / "sample.rs")
     assert ("DataProcessor", "Result") in _edge_labels(r, "references", "field")
@@ -530,6 +548,37 @@ def test_sql_create_table_inside_transaction_block():
         "delta" in node_by_id.get(s, "") and "alfa" in node_by_id.get(t, "")
         for s, t in refs
     )
+
+
+def test_sql_create_table_before_do_block_in_transaction(tmp_path):
+    """#3886: with a bare `BEGIN;`, a later `DO $$ ... END $$;` makes the parser
+    read the transaction as a block ending at the DO body's END. Tables inside
+    that block were dropped because the top-level loop skipped block nodes.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "BEGIN;\n"
+        "\n"
+        "CREATE TABLE users (\n"
+        "    id BIGSERIAL PRIMARY KEY\n"
+        ");\n"
+        "\n"
+        "DO $$\n"
+        "BEGIN\n"
+        "    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 't') THEN\n"
+        "        CREATE TRIGGER t BEFORE UPDATE ON users\n"
+        "        FOR EACH ROW EXECUTE FUNCTION touch();\n"
+        "    END IF;\n"
+        "END $$;\n"
+        "\n"
+        "COMMIT;\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    labels = [n["label"] for n in r["nodes"]]
+    assert "users" in labels
+
 
 def test_sql_finds_view():
     r = _extract_sql_or_skip()

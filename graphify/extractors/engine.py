@@ -2970,6 +2970,75 @@ def _swift_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: s
         return True
     return False
 
+def _scala_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
+                      nodes: list, edges: list, seen_ids: set, function_bodies: list,
+                      parent_class_nid: str | None, add_node_fn, add_edge_fn,
+                      walk_fn) -> bool:
+    """Emit a node per Scala 3 enum case with a case_of edge. Returns True if handled.
+
+    tree-sitter-scala wraps the members of an `enum` in `enum_case_definitions`,
+    whose children are `simple_enum_case` (`case Red`) or `full_enum_case`
+    (`case Add(x: Int, y: Int)`); both carry the case name as an `identifier`
+    child. Without this the enum type is a class-like container whose members
+    were never emitted, leaving the type a leaf. This is the Scala parity of
+    Java #1719 (enum_constant), Kotlin #1738 (enum_entry), and Swift.
+
+    Case constructor parameter types (`Add(x: Int)`) and per-case `extends`
+    arguments are not linked; the case node and its case_of edge are the fix
+    for the dropped members.
+    """
+    if node.type == "enum_case_definitions" and parent_class_nid:
+        for case in node.children:
+            if case.type not in ("simple_enum_case", "full_enum_case"):
+                continue
+            name_node = next(
+                (c for c in case.children if c.type == "identifier"), None
+            )
+            if name_node is None:
+                continue
+            case_name = _read_text(name_node, source)
+            if not case_name:
+                continue
+            line = case.start_point[0] + 1
+            case_nid = _make_id(parent_class_nid, case_name)
+            # Scala is case-sensitive while the id recipe casefolds, so two
+            # members that differ only in case would collide on one id; the
+            # first declaration keeps the node rather than a second edge on it.
+            if case_nid not in seen_ids:
+                add_node_fn(case_nid, case_name, line)
+                add_edge_fn(parent_class_nid, case_nid, "case_of", line)
+        return True
+    return False
+
+def _cpp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
+                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
+                    parent_class_nid: str | None, add_node_fn, add_edge_fn) -> bool:
+    """Emit a node per C++ enumerator with a case_of edge. Returns True if handled.
+
+    An `enum` / `enum class` is now a class-like container, so its body
+    (`enumerator_list`) is walked with the enum as parent. Each member is an
+    `enumerator` node (`Red`, `Green = 2`) whose name is its `name` field
+    (an `identifier`). Without this the enum type is a memberless leaf. This is
+    the C++ parity of Java #1719 (enum_constant), Swift, and Scala.
+    """
+    if node.type == "enumerator" and parent_class_nid:
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            name_node = next(
+                (c for c in node.children if c.type == "identifier"), None
+            )
+        if name_node is None:
+            return True
+        member_name = _read_text(name_node, source)
+        if member_name:
+            line = node.start_point[0] + 1
+            member_nid = _make_id(parent_class_nid, member_name)
+            if member_nid not in seen_ids:
+                add_node_fn(member_nid, member_name, line)
+                add_edge_fn(parent_class_nid, member_nid, "case_of", line)
+        return True
+    return False
+
 def _java_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                      nodes: list, edges: list, seen_ids: set, function_bodies: list,
                      parent_class_nid: str | None, add_node_fn, add_edge_fn,
@@ -4855,9 +4924,13 @@ def _extract_generic(
             # Field-type references stay class-gated: top-level properties keep
             # their pre-#2565 (no-references) behavior unchanged.
             if parent_class_nid:
+                # #3884: the annotation loop below also reads `line`. An annotated
+                # property with an inferred type has no type node, so assigning
+                # `line` only inside that branch raised UnboundLocalError and
+                # _safe_extract dropped the whole file.
+                line = node.start_point[0] + 1
                 type_node = _kotlin_property_type_node(node)
                 if type_node is not None:
-                    line = node.start_point[0] + 1
                     refs: list[tuple[str, str]] = []
                     _kotlin_collect_type_refs(type_node, source, False, refs)
                     for ref_name, role in refs:
@@ -5031,11 +5104,11 @@ def _extract_generic(
             # it a `contains` edge from the enclosing type. The declarator loop
             # below still runs, since `class Inner { } inst;` declares a member
             # alongside the type.
-            # Only class/struct nested types are recovered here: `enum_specifier`
-            # is deliberately not in C++'s `class_types`, so a nested `enum` and
-            # its enumerators are still not emitted. That is outside #2876's scope
-            # (which is about nested class/struct and C++/CLI) and is left as a
-            # known gap rather than widened here.
+            # `enum_specifier` is now in C++'s `class_types` (#3939), so a nested
+            # `enum` / `enum class` inside a class or namespace body is recovered
+            # the same way: it gets a `contains` edge from the enclosing type and
+            # its enumerators get `case_of` edges via `_cpp_extra_walk`. Nested
+            # class/struct types (#2876) are recovered through the same branch.
             is_nested_type = (
                 type_node is not None
                 and type_node.type in config.class_types
@@ -5708,6 +5781,21 @@ def _extract_generic(
             if _kotlin_extra_walk(node, source, file_nid, stem, str_path,
                                   nodes, edges, seen_ids, function_bodies,
                                   parent_class_nid, add_node, add_edge, walk):
+                return
+
+        # Scala 3 enum cases (`case Red`, `case Add(x: Int)`) nest under an
+        # `enum_case_definitions` wrapper; emit a node + case_of edge per case.
+        if config.ts_module == "tree_sitter_scala":
+            if _scala_extra_walk(node, source, file_nid, stem, str_path,
+                                 nodes, edges, seen_ids, function_bodies,
+                                 parent_class_nid, add_node, add_edge, walk):
+                return
+
+        # C++ enumerators (`Red`, `Green = 2`) inside an enum / enum class body.
+        if config.ts_module == "tree_sitter_cpp":
+            if _cpp_extra_walk(node, source, file_nid, stem, str_path,
+                               nodes, edges, seen_ids, function_bodies,
+                               parent_class_nid, add_node, add_edge):
                 return
 
         if config.ts_module == "tree_sitter_ruby":
@@ -6423,8 +6511,8 @@ def _extract_generic(
                         is_member_call = True
                         if receiver.type == "identifier":
                             member_receiver = _read_text(receiver, source)
-                        elif receiver.type == "this":
-                            member_receiver = "this"
+                        elif receiver.type in ("this", "super"):
+                            member_receiver = receiver.type
                         elif receiver.type == "field_access":
                             owner = receiver.child_by_field_name("object")
                             field = receiver.child_by_field_name("field")

@@ -2341,14 +2341,18 @@ def dispatch_command(cmd: str) -> None:
         # sidecar absent lets a later run generate real labels instead of reading
         # back "Community N" as authoritative (#2073).
         if not placeholder_only:
-            from graphify.paths import write_json_atomic as _wja
+            from graphify.paths import write_json_atomic as _wja, write_text_atomic as _wta
             _wja(labels_path, {str(k): v for k, v in labels.items()}, ensure_ascii=False)
             # Membership signatures beside the labels so a later cluster-only can
             # detect which communities changed and avoid reusing a stale label
-            # (see reuse above).
+            # (see reuse above). Written atomically and AFTER the labels, matching
+            # _rebuild_code: a torn sidecar would be unparseable, and a sidecar
+            # that ran ahead of its labels would describe the new clustering
+            # beside old names, which the reuse guard reads as "nothing changed".
             from graphify.cluster import community_member_sigs as _cms
-            (labels_path.parent / (labels_path.name + ".sig")).write_text(
-                json.dumps({str(k): v for k, v in _cms(communities).items()}), encoding="utf-8")
+            _wta(
+                labels_path.parent / (labels_path.name + ".sig"),
+                json.dumps({str(k): v for k, v in _cms(communities).items()}))
 
         # Mirror watch.py pattern: gate to_html so core outputs (graph.json +
         # GRAPH_REPORT.md) always land. Honor --no-viz explicitly; otherwise

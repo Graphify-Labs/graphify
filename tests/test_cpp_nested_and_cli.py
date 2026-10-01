@@ -12,6 +12,78 @@ def _labels(path: Path) -> list[str]:
     return [n["label"] for n in extract_cpp(path)["nodes"]]
 
 
+def test_cpp_enum_specifier_members_are_extracted(tmp_path):
+    """An `enum` / `enum class` is a class-like container whose members must be
+    nodes. `enum_specifier` was missing from the C++ class_types, so the enum
+    type and all of its enumerators produced no nodes at all — the whole type
+    vanished. Each enumerator must become a node with a `case_of` edge (parity
+    with Java #1719 / Swift / Scala enums).
+    """
+    p = tmp_path / "colors.hpp"
+    p.write_text(
+        "enum class Color { Red, Green = 2, Blue };\n"
+        "enum Old { X, Y };\n"
+        "typedef enum { A, B } Flag;\n"
+    )
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    labels = {n["label"] for n in result["nodes"]}
+    assert {"Color", "Red", "Green", "Blue", "Old", "X", "Y"} <= labels
+    ids = {n["id"]: n["label"] for n in result["nodes"]}
+    case_of = {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "case_of"
+    }
+    assert ("Color", "Red") in case_of
+    assert ("Color", "Green") in case_of
+    assert ("Color", "Blue") in case_of
+    assert ("Old", "X") in case_of
+    assert ("Old", "Y") in case_of
+    # An anonymous enum (`typedef enum { A, B } Flag`) has no type name, so it is
+    # skipped rather than emitting a nameless node; its members do not appear.
+    assert "A" not in labels
+    assert "Flag" not in labels
+
+
+def test_cpp_enum_nested_in_class_and_namespace_is_extracted(tmp_path):
+    """Putting `enum_specifier` in class_types also recovers a nested enum inside
+    a class or namespace body: the enum is `contains`-ed by its enclosing type
+    and its enumerators get `case_of` edges (the branch that used to skip them)."""
+    p = tmp_path / "nested_enum.hpp"
+    p.write_text(
+        "class Widget {\n"
+        "public:\n"
+        "    enum class State { Idle, Active };\n"
+        "};\n"
+        "namespace net {\n"
+        "    enum Proto { Tcp, Udp };\n"
+        "}\n"
+    )
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    ids = {n["id"]: n["label"] for n in result["nodes"]}
+    labels = set(ids.values())
+    assert {"Widget", "State", "Idle", "Active", "Proto", "Tcp", "Udp"} <= labels
+    contains = {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "contains"
+    }
+    case_of = {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "case_of"
+    }
+    # the class-nested enum is contained by its class, members hang off the enum
+    assert ("Widget", "State") in contains
+    assert ("State", "Idle") in case_of
+    assert ("State", "Active") in case_of
+    # the namespace-nested enum's members resolve too
+    assert ("Proto", "Tcp") in case_of
+    assert ("Proto", "Udp") in case_of
+
+
 def test_nested_cpp_class_is_extracted(tmp_path):
     # A nested type is a field_declaration whose `type` field IS the
     # class_specifier; the member-variable branch used to consume it and return

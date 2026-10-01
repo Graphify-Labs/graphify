@@ -57,6 +57,25 @@ def test_solidity_contract_members_and_calls_are_extracted(tmp_path):
     assert ("increment()", "record()") in _edge_labels(result, "calls")
 
 
+def test_solidity_free_functions_and_their_calls_are_extracted(tmp_path):
+    # File-level (free) functions — legal since Solidity 0.7 — live outside any
+    # contract. Before the fix the extractor only descended into named type
+    # declarations, so both free functions and the call between them vanished.
+    source = tmp_path / "Utils.sol"
+    source.write_text(
+        "pragma solidity ^0.8.0;\n"
+        "function halve(uint x) pure returns (uint) { return x / 2; }\n"
+        "function quarter(uint x) pure returns (uint) { return halve(halve(x)); }\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"halve()", "quarter()"} <= labels
+    assert ("quarter()", "halve()") in _edge_labels(result, "calls")
+
+
 def test_solidity_types_imports_inheritance_overloads_and_modifiers(tmp_path):
     (tmp_path / "Base.sol").write_text(
         "contract Base { function baseRun() internal {} }\n", encoding="utf-8"

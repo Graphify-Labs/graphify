@@ -141,3 +141,59 @@ import Hero from '@components/Hero.astro';
     result = extract_astro(page)
     targets = _import_targets(result, relation="imports_from")
     assert _make_id(str(hero)) in targets
+
+
+def _labels(result: dict) -> dict[str, str]:
+    """Label -> source_location for every node except the file node."""
+    return {
+        str(n.get("label")): str(n.get("source_location"))
+        for n in result.get("nodes", [])
+        if n.get("id") != result.get("nodes", [{}])[0].get("id")
+    }
+
+
+def test_extract_astro_template_is_not_a_parse_error(tmp_path):
+    """The template is not TS; only frontmatter and <script> bodies are parsed (#2788).
+
+    Parsing the whole file as JS reported every page as a syntax error, and
+    symbols the parser could not recover past the template were dropped.
+    """
+    page = _write(
+        tmp_path / "src/pages/results.astro",
+        """---
+import Layout from '../layouts/Layout.astro';
+interface Props { year: number }
+const { year } = Astro.props;
+function rank(scores: number[]): number[] {
+  return [...scores].sort((a, b) => b - a);
+}
+---
+
+<Layout title={`Results ${year}`}>
+  <ol>{rank([3, 1, 2]).map((s) => <li class="score">{s}</li>)}</ol>
+</Layout>
+<script type="application/ld+json">{ "@type": "Event", "name": "x" }</script>
+<script>
+  function toggle(el: HTMLElement) { el.classList.toggle('open'); }
+  document.querySelectorAll('ol').forEach((el) => toggle(el));
+</script>
+""",
+    )
+    result = extract_astro(page)
+    assert result.get("parse_errors") is None
+    labels = _labels(result)
+    assert "rank()" in labels and "toggle()" in labels
+    # Masking keeps offsets, so locations still point at the original lines.
+    assert labels["rank()"] == "L5"
+    assert labels["toggle()"] == "L15"
+
+
+def test_extract_astro_scripts_on_one_line_do_not_merge(tmp_path):
+    """Two script bodies on one line must not parse as a single statement."""
+    page = _write(
+        tmp_path / "src/pages/inline.astro",
+        "<script>const a = 1</script><script>function b() {}</script>\n",
+    )
+    result = extract_astro(page)
+    assert result.get("parse_errors") is None
+    assert "b()" in _labels(result)

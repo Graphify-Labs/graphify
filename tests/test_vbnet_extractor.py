@@ -59,6 +59,54 @@ def test_vbnet_class_methods_and_case_insensitive_calls(tmp_path):
     assert ("Run()", "Helper()") in _edge_labels(result, "calls")
 
 
+def test_vbnet_module_qualified_call_resolves_to_the_module_method(tmp_path):
+    # A call qualified by a type/module name (Helpers.Log()) — the idiomatic way
+    # to reach a shared Module Sub — was dropped entirely: the invocation
+    # resolver only fired for self/unqualified receivers, so the caller had no
+    # edge to the module method it invoked.
+    source = tmp_path / "App.vb"
+    source.write_text(
+        "Namespace Demo\n"
+        " Public Module Helpers\n"
+        "  Public Sub Log()\n"
+        "  End Sub\n"
+        " End Module\n"
+        " Public Class Service\n"
+        "  Public Sub Run()\n"
+        "   Helpers.Log()\n"
+        "  End Sub\n"
+        " End Class\n"
+        "End Namespace\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    assert ("Run()", "Log()") in _edge_labels(result, "calls")
+
+
+def test_vbnet_call_through_a_value_receiver_stays_unresolved(tmp_path):
+    # A call through a value receiver (a local variable) has no statically known
+    # owner, so it must NOT be guessed into a false edge (fail-closed).
+    source = tmp_path / "App.vb"
+    source.write_text(
+        "Public Class Other\n"
+        " Public Sub Save()\n"
+        " End Sub\n"
+        "End Class\n"
+        "Public Class Service\n"
+        " Public Sub Run()\n"
+        "  obj.Save()\n"
+        " End Sub\n"
+        "End Class\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    assert ("Run()", "Save()") not in _edge_labels(result, "calls")
+
+
 def test_vbnet_types_members_relationships_and_partial_calls(tmp_path):
     first = tmp_path / "Counter.vb"
     first.write_text(

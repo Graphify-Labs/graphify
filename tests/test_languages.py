@@ -1154,6 +1154,39 @@ def test_scala_val_definition_field_context():
     assert ("HttpClient", "Config") in _edge_labels(r, "references", "field")
 
 
+def test_scala_enum_definition_cases_and_methods(tmp_path):
+    """A Scala 3 `enum` is a class-like container that owns cases and methods.
+    `enum_definition` was missing from the Scala class_types, so the enum type,
+    all of its cases (`case Red`, `case Add(...)`), and its methods produced no
+    nodes at all — the type vanished from the graph. The cases must each become
+    a node with a `case_of` edge (parity with Java #1719 / Kotlin #1738 / Swift).
+    """
+    f = tmp_path / "color.scala"
+    f.write_text(
+        "enum Color { case Red, Green, Blue }\n"
+        "enum Op[A] {\n"
+        "  case Add(x: Int, y: Int)\n"
+        "  case Noop\n"
+        "  def run: A = ???\n"
+        "}\n"
+    )
+    r = extract_scala(f)
+    labels = _labels(r)
+    # The enum types themselves are contained by the file.
+    contains = _edge_labels(r, "contains")
+    assert ("color.scala", "Color") in contains
+    assert ("color.scala", "Op") in contains
+    # Every case is emitted with a case_of edge back to its enum.
+    case_of = _edge_labels(r, "case_of")
+    assert ("Color", "Red") in case_of
+    assert ("Color", "Green") in case_of
+    assert ("Color", "Blue") in case_of
+    assert ("Op", "Add") in case_of
+    assert ("Op", "Noop") in case_of
+    # A method declared in the enum body is still captured.
+    assert any(_normalize_symbol_label(l) == "run" for l in labels)
+
+
 def test_scala_var_definition_field_context():
     r = extract_scala(FIXTURES / "sample.scala")
     assert ("HttpClient", "BaseClient") in _edge_labels(r, "references", "field")
@@ -3217,6 +3250,18 @@ def test_markdown_wikilink_vault_fallback(tmp_path):
         assert e["target"] in node_ids, f"link target is a ghost node: {e}"
 
 
+@pytest.mark.parametrize("separator", ["|", "\\|"])
+def test_markdown_wikilink_alias_separator(tmp_path, separator):
+    r"""Obsidian table aliases escape the pipe as ``\|``."""
+    target = tmp_path / "target.md"
+    source = tmp_path / "source.md"
+    target.write_text("# Target\n")
+    source.write_text(f"| Link |\n| --- |\n| [[target{separator}Alias]] |\n")
+    refs = [e for e in extract_markdown(source)["edges"]
+            if e["relation"] == "references"]
+    assert [e.get("target_file") for e in refs] == [str(target)]
+
+
 def test_markdown_wikilink_fallback_path_qualified(tmp_path):
     """[[folder/name]] from a subfolder matches on the full segment suffix."""
     vault = tmp_path / "vault"
@@ -3718,6 +3763,23 @@ def test_razor_finds_code_block_methods():
     labels = _labels(r)
     assert any("IncrementCount" in l for l in labels)
     assert any("LoadData" in l for l in labels)
+
+def test_razor_finds_functions_block_methods(tmp_path):
+    # @functions is the Razor Pages / MVC (.cshtml) spelling of the Blazor
+    # @code block. Both compile to class members and this extractor serves both
+    # file types, but only @code was recognised, so .cshtml methods vanished.
+    page = tmp_path / "Page.cshtml"
+    page.write_text(
+        "@functions {\n"
+        "    public int Square(int x) { return x * x; }\n"
+        "    public string Greet() { return \"hi\"; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    r = extract_razor(page)
+    labels = _labels(r)
+    assert "Square" in labels
+    assert "Greet" in labels
 
 def test_razor_no_dangling_edges():
     r = extract_razor(FIXTURES / "sample.razor")
@@ -4575,6 +4637,44 @@ def test_zig_enum_and_union_methods_are_extracted(tmp_path):
         for e in r["edges"] if e["relation"] == "calls"
     }
     assert (".area()", "helper()") in calls, "call from union method body dropped"
+
+
+@_needs_zig
+def test_zig_enum_members_emit_case_of_nodes(tmp_path):
+    """Each enum member must become a node with a `case_of` edge to its enum.
+
+    The enum body walk only emitted the enum's methods; its members (the
+    `container_field` nodes `red`, `north = 0`) were dropped, leaving the enum a
+    memberless leaf. Every other language with enums (Java #1719, Swift, Scala,
+    Rust) emits a node per member with a `case_of` edge; this brings Zig to
+    parity. Struct fields share the container_field shape and must stay untouched.
+    """
+    src = (
+        "const Color = enum { red, green, blue };\n"
+        "const Dir = enum(u8) { north = 0, south };\n"
+        "const Point = struct { x: i32, y: i32 };\n"
+    )
+    f = tmp_path / "colors.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    labels = set(id_to_label.values())
+    assert {"red", "green", "blue", "north", "south"} <= labels
+    case_of = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "case_of"
+    }
+    assert ("Color", "red") in case_of
+    assert ("Color", "green") in case_of
+    assert ("Color", "blue") in case_of
+    assert ("Dir", "north") in case_of
+    assert ("Dir", "south") in case_of
+    # A struct field is a container_field too, but is not an enum member and must
+    # not be emitted as a node or gain a case_of edge.
+    assert "x" not in labels
+    assert not any(src_lbl == "Point" for src_lbl, _ in case_of)
 
 
 @_needs_commonlisp

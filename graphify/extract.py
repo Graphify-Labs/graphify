@@ -1349,7 +1349,12 @@ _C_CONFIG = LanguageConfig(
 
 _CPP_CONFIG = LanguageConfig(
     ts_module="tree_sitter_cpp",
-    class_types=frozenset({"class_specifier", "struct_specifier"}),
+    # enum_specifier is a class-like container: an `enum` / `enum class` owns a
+    # set of enumerators. Its name and body sit on the same `name`/`body` fields
+    # as struct_specifier (type_identifier + enumerator_list), so it gets a node
+    # and a body walk; the enumerators are emitted by _cpp_extra_walk (the C++
+    # parity of Java #1719 / Swift / Scala enums).
+    class_types=frozenset({"class_specifier", "struct_specifier", "enum_specifier"}),
     function_types=frozenset({"function_definition"}),
     import_types=frozenset({"preproc_include"}),
     call_types=frozenset({"call_expression"}),
@@ -1440,7 +1445,10 @@ _SCALA_CONFIG = LanguageConfig(
     ts_module="tree_sitter_scala",
     # traits are class-like containers with their own heritage (extends / with),
     # so they need a node and the heritage walk just like classes and objects.
-    class_types=frozenset({"class_definition", "object_definition", "trait_definition"}),
+    # Scala 3 `enum` is a class-like container too: it owns methods and a set of
+    # cases, so it needs a node and a body walk like the others (its cases are
+    # emitted by _scala_extra_walk, the parity of Java #1719 / Kotlin #1738).
+    class_types=frozenset({"class_definition", "object_definition", "trait_definition", "enum_definition"}),
     function_types=frozenset({"function_definition"}),
     import_types=frozenset({"import_declaration"}),
     call_types=frozenset({"call_expression"}),
@@ -1448,7 +1456,9 @@ _SCALA_CONFIG = LanguageConfig(
     call_accessor_node_types=frozenset({"field_expression"}),
     call_accessor_field="field",
     name_fallback_child_types=("identifier",),
-    body_fallback_child_types=("template_body",),
+    # an enum wraps its members in `enum_body` rather than a `template_body`,
+    # so the body walk needs it to reach the enum's methods and cases.
+    body_fallback_child_types=("template_body", "enum_body"),
     function_boundary_types=frozenset({"function_definition"}),
     import_handler=_import_scala,
 )
@@ -2405,6 +2415,42 @@ def extract_svelte(path: Path) -> dict:
     return result
 
 
+_ASTRO_FRONTMATTER_RE = re.compile(r"\A\s*---[^\S\r\n]*\r?\n([\s\S]*?)\r?\n---")
+_ASTRO_SCRIPT_RE = re.compile(
+    r"<script\b((?:\"[^\"]*\"|'[^']*'|[^>\"'])*)>([\s\S]*?)</script\s*>",
+    re.IGNORECASE,
+)
+_ASTRO_NON_JS_TYPE_RE = re.compile(
+    r"""\btype\s*=\s*["']?(?!module\b|text/javascript\b|application/javascript\b)""",
+    re.IGNORECASE,
+)
+
+
+def _astro_mask_non_script(src: str) -> str:
+    """Blank everything in a ``.astro`` file except frontmatter and JS ``<script>`` bodies.
+
+    Every character outside those regions becomes a space (``\\r``/``\\n`` are kept),
+    so AST locations match the original file. Scripts with a non-JS ``type``
+    (``application/ld+json`` and the like) are blanked too: their bodies are not
+    statements and would only add parse errors.
+    """
+    keep: list[tuple[int, int]] = []
+    fm = _ASTRO_FRONTMATTER_RE.match(src)
+    if fm:
+        keep.append((fm.start(1), fm.end(1)))
+    for m in _ASTRO_SCRIPT_RE.finditer(src, fm.end() if fm else 0):
+        if not _ASTRO_NON_JS_TYPE_RE.search(m.group(1)):
+            keep.append((m.start(2), m.end(2)))
+    chars = [c if c in "\r\n" else " " for c in src]
+    for start, end in keep:
+        chars[start:end] = src[start:end]
+        # Terminate the region in place of the following `<`, so two scripts on
+        # one line don't run together into a single statement.
+        if end < len(chars) and chars[end] == " ":
+            chars[end] = ";"
+    return "".join(chars)
+
+
 def extract_astro(path: Path) -> dict:
     """Extract imports from .astro files: frontmatter (TS) + template regex fallback.
 
@@ -2417,8 +2463,19 @@ def extract_astro(path: Path) -> dict:
     silently dropped (#850). Mirrors :func:`extract_svelte` — same regex-rescue
     approach, scanning the frontmatter block and any client-side ``<script>`` blocks
     for static and dynamic imports.
+
+    The AST pass parses only the frontmatter and JS ``<script>`` bodies with the TS
+    grammar (Astro's default), blanking everything else so line numbers still
+    line up — the same masking as :func:`_vue_mask_non_script`. Parsing the whole
+    file flagged every template as a syntax error and dropped frontmatter symbols.
     """
-    result = _extract_generic(path, _JS_CONFIG)
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"nodes": [], "edges": []}
+    masked = _astro_mask_non_script(src).encode("utf-8")
+    masked = _normalize_ts_import_types(masked) or masked
+    result = _extract_generic(path, _TS_CONFIG, source_override=masked)
     try:
         import re as _re
         src = path.read_text(encoding="utf-8", errors="replace")
@@ -3976,6 +4033,7 @@ def _resolve_python_member_calls(
             file_aliases = import_alias_by_filenode.get(caller_file, {})
             mods = [t for t in imported_by_filenode.get(caller_file, ())
                     if t in contains_children
+                    and t not in file_of_node
                     and (_module_stem_key(t) == rkey or file_aliases.get(t) == rkey)]
             if len(mods) != 1:  # not an imported module, or ambiguous -> bail
                 continue
@@ -4577,7 +4635,7 @@ def _resolve_java_member_calls(
 ) -> None:
     """Resolve Java member calls against the receiver's declared type.
 
-    Explicit type receivers and ``this`` are exact. Fields declared on the
+    Explicit type receivers, ``this`` and ``super`` are exact. Fields declared on the
     caller's class plus method parameters and explicit locals are inferred from
     the extractor's method-scoped type table. A missing or ambiguous receiver
     type is skipped rather than falling back to a bare method-name match.
@@ -4636,6 +4694,33 @@ def _resolve_java_member_calls(
             queue.extend(inherits_bases.get(cls, []))
         return None
 
+    def _jvm_bases(type_nid: str) -> list[str] | None:
+        bases = inherits_bases.get(type_nid, [])
+        for base in bases:
+            family = _lang_family(node_by_id.get(base, {}).get("source_file"))
+            if base == type_nid or family != "jvm":
+                return None
+        return bases
+
+    def _method_on_type_or_bases(type_nid: str, callee_key: str) -> str | None:
+        hits: set[str] = set()
+        seen: set[str] = set()
+        frontier = [type_nid]
+        while frontier:
+            nid = frontier.pop()
+            if nid in seen:
+                continue
+            seen.add(nid)
+            declared = method_index.get((nid, callee_key))
+            if declared:
+                hits |= declared
+                continue
+            bases = _jvm_bases(nid)
+            if bases is None:
+                return None
+            frontier.extend(bases)
+        return next(iter(hits)) if len(hits) == 1 else None
+
     for result in per_file:
         for raw_call in result.get("raw_calls", []):
             if raw_call.get("lang") != "java" or not raw_call.get("is_member_call"):
@@ -4652,6 +4737,12 @@ def _resolve_java_member_calls(
                 exact = True
                 if not type_nid:
                     continue
+            elif receiver == "super":
+                superclasses = _jvm_bases(enclosing_type.get(caller, ""))
+                if not superclasses or len(superclasses) != 1:
+                    continue
+                type_nid = superclasses[0]
+                exact = True
             else:
                 type_name = raw_call.get("receiver_type")
                 if not type_name and receiver[:1].isupper():
@@ -4679,11 +4770,8 @@ def _resolve_java_member_calls(
                     continue
                 type_nid = type_defs[0]
 
-            method_nids = method_index.get((type_nid, key(callee)), set())
-            if len(method_nids) != 1:
-                continue
-            method_nid = next(iter(method_nids))
-            if method_nid == caller or (caller, method_nid) in existing_pairs:
+            method_nid = _method_on_type_or_bases(type_nid, key(callee))
+            if not method_nid or method_nid == caller or (caller, method_nid) in existing_pairs:
                 continue
             existing_pairs.add((caller, method_nid))
             all_edges.append({
@@ -6950,7 +7038,9 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     # (e.g. a transient batch/parallel hiccup). Caching it makes the empty
     # byte-stable across runs and silently blinds affected/explain to and
     # through the file (#1666); skipping the write lets a rerun self-heal.
-    if not bypass_cache and "error" not in result and result.get("nodes"):
+    # An intentional decline or virtual workspace root (result.get("skipped"))
+    # is cached so repeat runs do not re-extract and re-report it (#3910).
+    if not bypass_cache and "error" not in result and (result.get("nodes") or result.get("skipped")):
         save_cached(path, result, root, cache_root=cache_location)
     return idx, result
 
@@ -7152,8 +7242,9 @@ def _extract_sequential(
         bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
         # XAML boundary anchors on `root` (the corpus), not the cache location.
         result = _safe_extract_with_xaml_root(extractor, path, root)
-        # See _extract_single_file: don't cache an anomalous zero-node result (#1666).
-        if not bypass_cache and "error" not in result and result.get("nodes"):
+        # See _extract_single_file: don't cache an anomalous zero-node result (#1666),
+        # but cache intentional declines/virtual manifests carrying `skipped` (#3910).
+        if not bypass_cache and "error" not in result and (result.get("nodes") or result.get("skipped")):
             save_cached(path, result, root, cache_root=cache_location)
         per_file[idx] = result
     if total_files >= _PROGRESS_INTERVAL:

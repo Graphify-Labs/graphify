@@ -77,6 +77,31 @@ def extract_zig(path: Path) -> dict:
     def walk(node, parent_struct_nid: str | None = None) -> None:
         t = node.type
 
+        # An enum's members are `container_field` nodes (`red`, `north = 0`)
+        # directly under the enum_declaration. The recurse into the enum body
+        # only emitted its methods, so the members were dropped and the enum was
+        # left a memberless leaf. Emit a node plus a `case_of` edge per member,
+        # the Zig parity of Java #1719 / Swift / Scala enums. The gate on the
+        # enum_declaration parent keeps struct/union fields (which share the
+        # container_field shape) untouched.
+        if (t == "container_field"
+                and parent_struct_nid
+                and node.parent is not None
+                and node.parent.type == "enum_declaration"):
+            name_node = node.child_by_field_name("name")
+            if name_node is None:
+                name_node = next(
+                    (c for c in node.children if c.type == "identifier"), None
+                )
+            if name_node is not None:
+                member_name = _read_text(name_node, source)
+                if member_name:
+                    line = node.start_point[0] + 1
+                    member_nid = _make_id(parent_struct_nid, member_name)
+                    add_node(member_nid, member_name, line)
+                    add_edge(parent_struct_nid, member_nid, "case_of", line)
+            return
+
         if t == "function_declaration":
             name_node = node.child_by_field_name("name")
             if name_node:

@@ -1,8 +1,10 @@
 """graphify CLI - `graphify install` sets up the Claude Code skill."""
 
 from __future__ import annotations
+import contextlib
 import errno
 import functools
+import io
 import json
 import os
 import platform
@@ -85,6 +87,7 @@ from graphify.install import (  # noqa: E402,F401
     _uninstall_gemini_hook,
     _uninstall_kilo_plugin,
     _uninstall_opencode_plugin,
+    _vscode_skill_destination,
     claude_install,
     claude_uninstall,
     codebuddy_install,
@@ -116,6 +119,7 @@ from graphify.install import (  # noqa: E402,F401
     _OPENCODE_PLUGIN_PATH,
     _OPENCODE_CONFIG_PATH,
     _PLATFORM_CONFIG,
+    _skill_lock,
 )
 from graphify.cli import (  # noqa: E402,F401
     dispatch_command,
@@ -175,7 +179,7 @@ def _check_skill_version(skill_dst: Path, platform_names: "list[str] | None" = N
     if platform_names is None:
         try:
             platform_names = [
-                name for name in _PLATFORM_CONFIG
+                name for name in _skill_platforms()
                 if _platform_skill_destination(name) == skill_dst
             ]
         except Exception:
@@ -251,6 +255,129 @@ def _version_tuple(version: str) -> tuple[int, ...]:
                 break
         parts.append(int(digits) if digits else 0)
     return tuple(parts)
+
+
+def _refresh_stale_skills() -> None:
+    """Refresh user-scope skills left behind by a package upgrade (#1805).
+
+    Upgrading the package (``uv tool upgrade graphifyy``, ``pip install -U``)
+    does not touch the installed skill copies, and a plain ``graphify install``
+    refreshes only the detected platform, so every other platform (codex,
+    opencode, gemini, ...) kept running the old skill instructions until each
+    was reinstalled by hand. On the first CLI run after an upgrade, re-copy
+    every user-scope skill whose ``.graphify_version`` stamp is older than the
+    running package - exactly the copies the stale-skill warning would tell the
+    user to reinstall.
+
+    Only copies graphify installed are touched (a stamp and SKILL.md exist);
+    nothing is installed that was not there before. Left alone, so the
+    warning still fires for them:
+
+    * a stamp NEWER than the package - installing would downgrade it (#1568);
+    * a directory written by more than one installer (gemini + agents on
+      Windows, copilot + ``graphify vscode install``) - the stamp does not
+      record which variant is there, and guessing would swap it.
+
+    Directories are grouped by their resolved path, so two platforms sharing
+    one directory through a symlink count as shared too.
+
+    A locally edited SKILL.md is kept as ``SKILL.md.bak`` by _copy_skill_file
+    (#3144). Output goes to stderr so piped stdout (``--json``, the MCP stdio
+    server) stays clean. Set ``GRAPHIFY_NO_AUTO_REFRESH=1`` to opt out, e.g.
+    for pinned or centrally managed skill directories.
+    """
+    if os.environ.get("GRAPHIFY_NO_AUTO_REFRESH", "").strip().lower() in ("1", "true", "yes"):
+        return
+    if __version__ == "unknown":
+        return
+    # 'claude'/'windows' and 'antigravity'/'antigravity-windows' write one
+    # directory and differ only in the host shell; keep the variant a plain
+    # `graphify install` picks on this OS rather than calling the pair ambiguous.
+    if platform.system() == "Windows":
+        other_os = {"claude", "antigravity"}
+    else:
+        other_os = {"windows", "antigravity-windows"}
+    candidates = [("vscode", _vscode_skill_destination)]
+    candidates += [
+        (name, functools.partial(_platform_skill_destination, name))
+        for name in _skill_platforms() if name not in other_os
+    ]
+    writers: dict[Path, list[tuple[str, Path]]] = {}
+    for name, destination in candidates:
+        try:
+            skill_dst = destination()
+        except Exception:
+            continue  # one unresolvable platform must not cancel the others
+        try:
+            real = skill_dst.resolve()
+        except (OSError, RuntimeError):  # symlink loop: the is_file checks skip it
+            real = skill_dst
+        writers.setdefault(real, []).append((name, skill_dst))
+    for entries in writers.values():
+        if len(entries) != 1 or entries[0][0] == "vscode":
+            continue
+        name, skill_dst = entries[0]
+        if _stale_stamp(skill_dst) is None:
+            continue
+        # Without waiting: when another process holds the directory (a refresh,
+        # an install, an uninstall) this one skips it and leaves it to them.
+        with _skill_lock(skill_dst.parent, wait=False) as owned:
+            # Read the stamp again under the lock: a process that refreshed
+            # this directory in the meantime has already brought it current,
+            # and one that uninstalled it has left nothing to refresh.
+            installed = _stale_stamp(skill_dst) if owned else None
+            if installed is not None:
+                _refresh_one_skill(name, skill_dst, installed)
+
+
+def _stale_stamp(skill_dst: Path) -> str | None:
+    """The version stamped beside ``skill_dst`` if it is older than the package."""
+    version_file = skill_dst.parent / ".graphify_version"
+    try:
+        if not (version_file.is_file() and skill_dst.is_file()):
+            return None
+        installed = version_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if installed == __version__ or _version_tuple(installed) > _version_tuple(__version__):
+        return None
+    return installed
+
+
+# gemini installs through gemini_install, not _PLATFORM_CONFIG, but
+# _platform_skill_destination and _copy_skill_file both handle it.
+def _skill_platforms() -> list[str]:
+    """Every platform with a user-scope skill directory, gemini included."""
+    return list(dict.fromkeys([*_PLATFORM_CONFIG, "gemini"]))
+
+
+def _refresh_one_skill(name: str, skill_dst: Path, installed: str) -> None:
+    """Re-copy one platform's skill and report it in one line on stderr."""
+    backup = skill_dst.with_suffix(skill_dst.suffix + ".bak")
+    captured = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(captured):
+            _copy_skill_file(name)
+    except (Exception, SystemExit) as exc:
+        # _copy_skill_file exits on a broken package (after printing why);
+        # a refresh must never take the user's actual command down with it.
+        # The stamp stays old, so the version warning names the manual fix.
+        detail = "" if isinstance(exc, SystemExit) else f": {exc}"
+        print(
+            f"graphify: could not refresh skill at {skill_dst.parent} "
+            f"({installed} -> {__version__}){detail}",
+            file=sys.stderr,
+        )
+        return
+    print(
+        f"graphify: refreshed skill at {skill_dst.parent} ({installed} -> {__version__}); "
+        f"set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
+        file=sys.stderr,
+    )
+    # Of _copy_skill_file's per-file lines, only the backup notice matters here.
+    for line in captured.getvalue().splitlines():
+        if str(backup) in line:
+            print(line, file=sys.stderr)
 
 
 
@@ -593,10 +720,14 @@ def _run_cli() -> None:
     # Deduplicate paths so platforms sharing the same install dir don't warn twice.
     _silent_cmds = {"install", "uninstall", "hook-check", "hook-guard"}
     if not any(arg in _silent_cmds for arg in sys.argv):
+        # A package upgrade leaves every installed skill at the old version;
+        # refresh them first, so the check below only fires for copies the
+        # refresh could not or must not touch (#1805).
+        _refresh_stale_skills()
         # Resolve each platform's real user-scope destination so per-platform
         # overrides (gemini, opencode, devin, antigravity, amp) check the dir
         # they actually install into, not the bare cfg['skill_dst'].
-        for skill_dst in {_platform_skill_destination(name) for name in _PLATFORM_CONFIG}:
+        for skill_dst in {_platform_skill_destination(name) for name in _skill_platforms()}:
             _check_skill_version(skill_dst)
 
     if len(sys.argv) >= 2 and sys.argv[1] in ("-v", "--version", "version"):
@@ -604,6 +735,7 @@ def _run_cli() -> None:
         return
 
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "-?"):
+        _print_banner()
         print("Usage: graphify <command>")
         print()
         print("Commands:")
@@ -805,6 +937,9 @@ def _run_cli() -> None:
         print("  pi uninstall            remove skill from ~/.pi/agent/skills/graphify/")
         print("  devin install           write skill to ~/.config/devin/skills/graphify/ (Devin CLI)")
         print("  devin uninstall         remove skill from ~/.config/devin/skills/graphify/")
+        print()
+        print("Prefer a hosted version? Try the graphify platform free for 14 days:")
+        print("https://app.graphify.com")
         print()
         return
 
