@@ -2429,13 +2429,14 @@ def _drop_outside_chunk_provenance(
             return False
         return _provenance_path_identity(_resolve_provenance_path(source_file, root)) in outside_set
 
+    nodes = result.get("nodes", []) or []
     dropped_ids = {
         item.get("id")
-        for item in result.get("nodes", []) or []
+        for item in nodes
         if isinstance(item, dict) and _outside(item) and item.get("id") is not None
     }
     result["nodes"] = [
-        item for item in result.get("nodes", []) or []
+        item for item in nodes
         if not isinstance(item, dict) or not _outside(item)
     ]
     result["edges"] = [
@@ -2446,7 +2447,7 @@ def _drop_outside_chunk_provenance(
         item for item in result.get("hyperedges", []) or []
         if not isinstance(item, dict) or not _outside(item)
     ]
-    return len(dropped_ids), {str(node_id) for node_id in dropped_ids}
+    return len(nodes) - len(result["nodes"]), {str(node_id) for node_id in dropped_ids}
 
 
 def _extract_with_adaptive_retry(

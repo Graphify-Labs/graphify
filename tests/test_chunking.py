@@ -746,6 +746,8 @@ def test_foreign_stub_is_removed_before_later_chunk_merge_and_cache(tmp_path, fo
                 "nodes": [
                     {"id": "a", "label": "A", "source_file": "A.md", "file_type": "document"},
                     {"id": "b", "label": "stale stub", "source_file": foreign_source, "file_type": "document"},
+                    {"id": "b", "label": "duplicate stub", "source_file": foreign_source, "file_type": "document"},
+                    {"label": "stub without ID", "source_file": foreign_source, "file_type": "document"},
                 ],
                 "edges": [
                     {"source": "a", "target": "b", "source_file": "A.md"},
@@ -769,6 +771,7 @@ def test_foreign_stub_is_removed_before_later_chunk_merge_and_cache(tmp_path, fo
         )
 
     assert calls == ["A.md", "A.md", "B.md"]
+    assert result["out_of_scope_dropped"] == 3
     assert [(node["id"], node["label"]) for node in result["nodes"]] == [
         ("a", "A"), ("b", "authoritative"),
     ]
