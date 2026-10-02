@@ -2663,20 +2663,44 @@ def dispatch_command(cmd: str) -> None:
         args = sys.argv[2:]
         graph_paths: list[Path] = []
         out_path = Path(_GRAPHIFY_OUT) / "merged-graph.json"
+        previous_path: "Path | None" = None
         i = 0
         while i < len(args):
             if args[i] == "--out" and i + 1 < len(args):
                 out_path = Path(args[i + 1])
+                i += 2
+            elif args[i] == "--previous" and i + 1 < len(args):
+                previous_path = Path(args[i + 1])
                 i += 2
             else:
                 graph_paths.append(Path(args[i]))
                 i += 1
         if len(graph_paths) < 2:
             print(
-                "Usage: graphify merge-graphs <graph1.json> <graph2.json> [...] [--out merged.json]",
+                "Usage: graphify merge-graphs <graph1.json> <graph2.json> [...] "
+                "[--out merged.json] [--previous previous-merged-graph.json]",
                 file=sys.stderr,
             )
             sys.exit(1)
+        # Each input numbers its own communities from 0, so the merged output
+        # carries per-source ids (offset since #3014) that have no relation to
+        # the previous MERGED clustering .graphify_labels.json was written
+        # against. cluster-only's label-reuse remap reads this file's
+        # `community` field as "the previous clustering" and silently mismatches
+        # almost every community when it is actually per-source ids (#3858).
+        # --previous restores the real previous merged `community` onto each
+        # node that survives the merge (by id), so a subsequent cluster-only
+        # run remaps against the clustering its labels were actually built
+        # from. Per-source ids stay available in `local_community` regardless.
+        previous_community: dict[str, int] = {}
+        if previous_path is not None:
+            if not previous_path.exists():
+                print(f"error: --previous file not found: {previous_path}", file=sys.stderr)
+                sys.exit(1)
+            _prev_raw = json.loads(previous_path.read_text(encoding="utf-8"))
+            for _n in _prev_raw.get("nodes", []):
+                if isinstance(_n, dict) and isinstance(_n.get("community"), int) and _n.get("id"):
+                    previous_community[_n["id"]] = _n["community"]
         import networkx as _nx
         from networkx.readwrite import json_graph as _jg
         from graphify.build import prefix_graph_for_global as _prefix, distinct_repo_tags as _repo_tags
@@ -2781,6 +2805,18 @@ def dispatch_command(cmd: str) -> None:
         call_links = _link_calls(merged)
         if call_links:
             print(f"  resolved {call_links} member call(s) across repos")
+        if previous_path is not None:
+            _restored = 0
+            for _nid, _data in merged.nodes(data=True):
+                if _nid in previous_community:
+                    _data["community"] = previous_community[_nid]
+                    _restored += 1
+                else:
+                    _data.pop("community", None)
+            print(
+                f"  restored the previous merged community on {_restored} node(s) "
+                f"from {previous_path}"
+            )
         # Drop whatever compose left behind (the last input's list, possibly
         # with internal duplicates) so attach_hyperedges dedups the full
         # collection by id from a clean slate.
