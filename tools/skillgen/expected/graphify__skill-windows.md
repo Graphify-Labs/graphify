@@ -367,6 +367,8 @@ from pathlib import Path
 cached = json.loads(Path('graphify-out/.graphify_cached.json').read_text(encoding="utf-8")) if Path('graphify-out/.graphify_cached.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
 new = json.loads(Path('graphify-out/.graphify_semantic_new.json').read_text(encoding="utf-8")) if Path('graphify-out/.graphify_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
 
+from graphify.semantic_similarity import reconcile_semantic_similarity
+
 all_nodes = cached['nodes'] + new.get('nodes', [])
 all_edges = cached['edges'] + new.get('edges', [])
 all_hyperedges = cached.get('hyperedges', []) + new.get('hyperedges', [])
@@ -376,6 +378,8 @@ for n in all_nodes:
     if n['id'] not in seen:
         seen.add(n['id'])
         deduped.append(n)
+
+all_edges = reconcile_semantic_similarity(deduped, all_edges)
 
 merged = {
     'nodes': deduped,

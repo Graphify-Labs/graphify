@@ -29,7 +29,7 @@ Image files: use vision to understand what the image IS - do not just OCR.
 DEEP_MODE (if --mode deep was given): be aggressive with INFERRED edges - indirect deps,
   shared assumptions, latent couplings. Mark uncertain ones AMBIGUOUS instead of omitting.
 
-Semantic similarity: if two concepts in this chunk solve the same problem or represent the same idea without any structural link (no import, no call, no citation), add a `semantically_similar_to` edge marked INFERRED with a confidence_score reflecting how similar they are (0.6-0.95). Examples:
+Semantic similarity: if two concepts in this chunk solve the same problem or represent the same idea without any structural link (no import, no call, no citation), add a `semantically_similar_to` edge marked INFERRED with a confidence_score reflecting how similar they are (0.6-0.95). Only emit for concepts within this chunk; cross-chunk and cross-file similarity across the broader corpus is reconciled globally after collection. Examples:
 - Two functions that both validate user input but never call each other
 - A class in code and a concept in a paper that describe the same algorithm
 - Two error types that handle the same failure mode differently
