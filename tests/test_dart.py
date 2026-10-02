@@ -270,12 +270,12 @@ class TestDart(unittest.TestCase):
         code_content = textwrap.dedent("""
         import 'package:riverpod/riverpod.dart';
 
-        # 1. Combined Modifiers & Mixin Class
+        // 1. Combined Modifiers & Mixin Class
         abstract base class MyBaseClass {}
         abstract interface class MyInterface {}
         mixin class MyMixinClass {}
 
-        # 2. Riverpod Functional & Class Providers with Codegen
+        // 2. Riverpod Functional & Class Providers with Codegen
         @riverpod
         class MyNotifier extends _$MyNotifier {
           @override
@@ -290,18 +290,18 @@ class TestDart(unittest.TestCase):
           return "world";
         }
 
-        # 3. Late & Non-Initialized Final Fields
+        // 3. Late & Non-Initialized Final Fields
         class MyModel {
           late final String lateField;
           final int noInitField;
           final String initField = "init";
         }
 
-        # 4. Records & Pattern Matching in variables
+        // 4. Records & Pattern Matching in variables
         final (int, String) typedRecord = (1, "one");
         var (recA, recB) = (10, 20);
 
-        # 5. Records in method returns & switch expressions
+        // 5. Records in method returns & switch expressions
         (double, double) getCoordinates() {
             var localVal = switch (typedRecord) {
               (int a, String b) => (1.0, 2.0),
@@ -310,7 +310,7 @@ class TestDart(unittest.TestCase):
             return localVal;
         }
 
-        # 6. Bloc constructor event registration & emission
+        // 6. Bloc constructor event registration & emission
         class AuthBloc extends Bloc<AuthEvent, AuthState> {
           AuthBloc() : super(AuthInitial()) {
             on<AuthLogin>((event, emit) {
@@ -322,7 +322,7 @@ class TestDart(unittest.TestCase):
           }
         }
 
-        # 7. Widget Bloc trigger & bindings
+        // 7. Widget Bloc trigger & bindings
         class HomeWidget {
           void triggerLogin(BuildContext context) {
             context.read<AuthBloc>().add(AuthLogin());
@@ -694,6 +694,65 @@ class TestDart(unittest.TestCase):
         result = extract_dart(path)
         inherits = next(e for e in result["edges"] if e["relation"] == "inherits")
         self.assertEqual(inherits["source_location"], "L3")
+
+    def test_tree_sitter_class_scopes_methods(self):
+        """Methods are defined by their containing class, not only the file."""
+        fixtures = Path(__file__).resolve().parent / "fixtures" / "sample.dart"
+        result = extract_dart(fixtures)
+        self.assertNotIn("error", result)
+
+        greeter = next(n for n in result["nodes"] if n["label"] == "Greeter")
+        greet = next(n for n in result["nodes"] if n["label"] == "greet")
+        class_defines = next(
+            (
+                e
+                for e in result["edges"]
+                if e["source"] == greeter["id"]
+                and e["target"] == greet["id"]
+                and e["relation"] == "defines"
+            ),
+            None,
+        )
+        self.assertIsNotNone(class_defines)
+
+    def test_tree_sitter_emits_in_file_calls(self):
+        """Call-graph second pass links same-file callees."""
+        fixtures = Path(__file__).resolve().parent / "fixtures" / "sample.dart"
+        result = extract_dart(fixtures)
+        call_edges = [
+            e for e in result["edges"] if e["relation"] == "calls" and e.get("context") == "call"
+        ]
+        self.assertTrue(call_edges, "expected at least one EXTRACTED call edge")
+        # greet() calls helper()
+        greet = next(n for n in result["nodes"] if n["label"] == "greet")
+        helper = next(n for n in result["nodes"] if n["label"] == "helper")
+        self.assertTrue(
+            any(e["source"] == greet["id"] and e["target"] == helper["id"] for e in call_edges)
+        )
+
+    def test_missing_grammar_reports_error(self):
+        """Match other tree-sitter extractors when the grammar package is absent."""
+        import graphify.extractors.dart as dart_mod
+
+        real_import = __import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "tree_sitter_dart" or name.startswith("tree_sitter_dart"):
+                raise ImportError("blocked for test")
+            return real_import(name, *args, **kwargs)
+
+        path = self.temp_path / "x.dart"
+        path.write_text("class A {}", encoding="utf-8")
+        # Patch via builtins so the extractor's import fails
+        import builtins
+
+        original = builtins.__import__
+        builtins.__import__ = fake_import
+        try:
+            result = dart_mod.extract_dart(path)
+        finally:
+            builtins.__import__ = original
+        self.assertEqual(result.get("error"), "tree-sitter-dart not installed")
 
 
 if __name__ == "__main__":
