@@ -227,6 +227,171 @@ def test_extract_succeeds_when_at_least_one_chunk_completes(
     } == {str(corpus / "README.md")}
 
 
+def test_extract_passes_cached_node_ids_to_fresh_provenance_resolution(
+    monkeypatch, tmp_path,
+):
+    from graphify.cache import save_semantic_cache
+    from graphify.llm import _extraction_system
+
+    corpus = _make_corpus(tmp_path)
+    cached_doc = corpus / "CACHED.md"
+    cached_doc.write_text("# Cached\nAn authoritative cached entity.\n")
+    out_dir = tmp_path / "out"
+    save_semantic_cache(
+        [{
+            "id": "cached_entity",
+            "label": "Cached Entity",
+            "source_file": "CACHED.md",
+            "file_type": "document",
+        }],
+        [], [], root=corpus, cache_root=out_dir,
+        prompt=_extraction_system(),
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    captured = {}
+
+    def _fresh(paths, **kwargs):
+        captured.update(kwargs)
+        result = {
+            "nodes": [{
+                "id": "readme",
+                "label": "README",
+                "source_file": "README.md",
+                "file_type": "document",
+            }],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 1, "output_tokens": 1,
+        }
+        kwargs["on_chunk_done"](0, 1, result)
+        return result
+
+    monkeypatch.setattr("graphify.llm.extract_corpus_parallel", _fresh)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(
+        mainmod.sys,
+        "argv",
+        ["graphify", "extract", str(corpus), "--backend", "claude", "--out", str(out_dir)],
+    )
+
+    try:
+        mainmod.main()
+    except SystemExit as exc:
+        assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    assert captured["known_node_ids"] == {"cached_entity"}
+
+
+@pytest.mark.parametrize("scan_name, source_name", [
+    ("B.md", "B.md"),
+    ("cafe\u0301.md", "caf\u00e9.md"),
+])
+def test_incremental_extract_resolves_foreign_stub_against_unchanged_graph_node(
+    monkeypatch, tmp_path, scan_name, source_name,
+):
+    import graphify.llm as llmmod
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    changed = corpus / "A.md"
+    unchanged = corpus / scan_name
+    changed.write_text("# A\nInitial content.\n")
+    unchanged.write_text("# B\nAuthoritative target.\n")
+    if scan_name != source_name and (
+        not (corpus / source_name).is_file()
+        or not unchanged.samefile(corpus / source_name)
+    ):
+        pytest.skip("Filesystem does not alias NFC and NFD filename spellings")
+    out_dir = tmp_path / "out"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake-key")
+    real_parallel = llmmod.extract_corpus_parallel
+
+    def _initial(paths, **kwargs):
+        result = {
+            "nodes": [
+                {"id": "a", "label": "A", "source_file": "A.md", "file_type": "document"},
+                {"id": "b", "label": "B", "source_file": scan_name, "file_type": "document"},
+            ],
+            "edges": [], "hyperedges": [],
+            "input_tokens": 2, "output_tokens": 2,
+        }
+        kwargs["on_chunk_done"](0, 1, result)
+        return result
+
+    monkeypatch.setattr(llmmod, "extract_corpus_parallel", _initial)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+
+    def _run_extract():
+        monkeypatch.setattr(
+            mainmod.sys, "argv",
+            ["graphify", "extract", str(corpus), "--backend", "claude",
+             "--no-cluster", "--out", str(out_dir)],
+        )
+        try:
+            mainmod.main()
+        except SystemExit as exc:
+            assert exc.code in (None, 0), f"unexpected exit code {exc.code}"
+
+    _run_extract()
+    # A valid persisted graph may use NFC while the filesystem scan returns
+    # NFD, especially on macOS (#2210/#2221). Keep that unchanged source as
+    # authority when the fresh response's same-ID foreign stub is removed.
+    import json
+    graph_path = out_dir / "graphify-out" / "graph.json"
+    initial_graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    for node in initial_graph["nodes"]:
+        if node["id"] == "b":
+            node["source_file"] = source_name
+    graph_path.write_text(json.dumps(initial_graph), encoding="utf-8")
+    changed.write_text("# A\nChanged content that references B.\n")
+
+    calls = []
+
+    def _persistent_mismatch(_chunk, **_kwargs):
+        calls.append(1)
+        return {
+            "nodes": [
+                {"id": "a", "label": "A changed", "source_file": "A.md", "file_type": "document"},
+                {"id": "b", "label": "stale stub", "source_file": source_name, "file_type": "document"},
+            ],
+            "edges": [
+                {"source": "a", "target": "b", "source_file": "A.md"},
+            ],
+            "hyperedges": [
+                {"id": "a_b", "nodes": ["a", "b"], "source_file": "A.md"},
+            ],
+            "input_tokens": 1, "output_tokens": 1, "finish_reason": "stop",
+        }
+
+    captured = {}
+
+    def _incremental(paths, **kwargs):
+        captured["known_node_ids"] = set(kwargs["known_node_ids"])
+        result = real_parallel(paths, **kwargs)
+        captured["result"] = result
+        return result
+
+    monkeypatch.setattr(llmmod, "extract_corpus_parallel", _incremental)
+    monkeypatch.setattr(llmmod, "extract_files_direct", _persistent_mismatch)
+    _run_extract()
+
+    assert calls == [1, 1]
+    assert "b" in captured["known_node_ids"]
+    assert [node["id"] for node in captured["result"]["nodes"]] == ["a"]
+    assert [(edge["source"], edge["target"]) for edge in captured["result"]["edges"]] == [
+        ("a", "b"),
+    ]
+    assert [(edge["id"], edge["nodes"]) for edge in captured["result"]["hyperedges"]] == [
+        ("a_b", ["a", "b"]),
+    ]
+    assert str(changed) in captured["result"]["_partial_files"]
+    final_graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert {node["id"] for node in final_graph["nodes"]} == {"a", "b"}
+    assert [(edge["source"], edge["target"]) for edge in final_graph["edges"]] == [("a", "b")]
+    assert [(edge["id"], edge["nodes"]) for edge in final_graph["hyperedges"]] == [
+        ("a_b", ["a", "b"]),
+    ]
+
+
 def test_incremental_partial_run_preserves_untouched_semantic_hash(
     monkeypatch, tmp_path
 ):

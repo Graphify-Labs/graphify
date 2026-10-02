@@ -4064,11 +4064,64 @@ def dispatch_command(cmd: str) -> None:
 
             if uncached_paths:
                 print(f"[graphify extract] semantic extraction on {len(uncached_paths)} files via {backend}...")
+                known_node_ids = {
+                    str(node["id"])
+                    for node in cached_nodes
+                    if isinstance(node, dict) and node.get("id") is not None
+                }
+                # A standard incremental pass checks the semantic cache only for
+                # changed files, so ``cached_nodes`` does not include unchanged
+                # live documents.  Keep their persisted node IDs as read-only
+                # resolution context: a changed file may legitimately reference
+                # one after a foreign same-ID stub is removed (#3377).  Scope the
+                # context to live unchanged semantic sources, and exclude every
+                # file being re-extracted so stale definitions cannot validate
+                # themselves.  Deep mode already widens ``semantic_files`` to the
+                # full live corpus and obtains the same IDs through cache hits.
+                if incremental_mode and not deep_mode and existing_graph_path.exists():
+                    try:
+                        from graphify.security import (
+                            check_graph_file_size_cap as _sem_ctx_size_cap,
+                        )
+                        _sem_ctx_size_cap(existing_graph_path)
+                        _sem_ctx_graph = json.loads(
+                            existing_graph_path.read_text(encoding="utf-8")
+                        )
+                        _sem_ctx_root = Path(os.path.abspath(target))
+                        from graphify.llm import (
+                            _provenance_path_identity as _sem_ctx_key,
+                            _resolve_provenance_path as _sem_ctx_path,
+                        )
+
+                        def _sem_ctx_identity(source_file) -> str | None:
+                            if not source_file:
+                                return None
+                            return _sem_ctx_key(_sem_ctx_path(str(source_file), _sem_ctx_root))
+
+                        _sem_ctx_live = {
+                            _sem_ctx_identity(path)
+                            for kind in ("document", "paper", "image")
+                            for path in detection.get("unchanged_files", {}).get(kind, [])
+                        }
+                        _sem_ctx_live.discard(None)
+                        _sem_ctx_live.difference_update(
+                            _sem_ctx_identity(path) for path in uncached_paths
+                        )
+                        known_node_ids.update(
+                            str(node["id"])
+                            for node in _sem_ctx_graph.get("nodes", [])
+                            if isinstance(node, dict)
+                            and node.get("id") is not None
+                            and _sem_ctx_identity(node.get("source_file")) in _sem_ctx_live
+                        )
+                    except Exception:
+                        pass
                 corpus_kwargs: dict = {
                     "backend": backend,
                     "model": model,
                     "root": target,
                     "cache_root": out_root,
+                    "known_node_ids": known_node_ids,
                 }
                 if deep_mode:
                     corpus_kwargs["deep_mode"] = True
