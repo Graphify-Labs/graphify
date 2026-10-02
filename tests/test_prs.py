@@ -26,6 +26,27 @@ from graphify.prs import (
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def test_review_dispatches_before_open_pr_dashboard(monkeypatch):
+    import graphify.prs as prs
+    import graphify.review as review
+    calls = []
+    monkeypatch.setattr(review, "cmd_review", lambda argv: calls.append(argv))
+    monkeypatch.setattr(prs, "fetch_prs", lambda **kwargs: pytest.fail("dashboard fetched"))
+    prs.cmd_prs(["999", "--review", "--infer"])
+    assert calls == [["999", "--review", "--infer"]]
+
+
+@pytest.mark.parametrize("argv", [["--review"], ["42", "--review", "--head", "HEAD"],
+                                  ["42", "--review", "--backend", "ollama"],
+                                  ["42", "--review", "--depth", "99"],
+                                  ["0", "--review"],
+                                  ["--review", "--head", "HEAD", "--base", "HEAD~1", "--repo", "other/repo"]])
+def test_review_invalid_options_fail_before_retrieval(argv):
+    from graphify.review import cmd_review
+    with pytest.raises(SystemExit) as exc:
+        cmd_review(argv)
+    assert exc.value.code == 2
+
 def make_pr(
     number: int = 1,
     title: str = "Test PR",
