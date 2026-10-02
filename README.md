@@ -338,6 +338,13 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 - **Suggested questions** — 4–5 questions the graph is uniquely positioned to answer.
 - **Confidence tags** — every inferred relationship is marked `EXTRACTED`, `INFERRED`, or `AMBIGUOUS`. You always know what was found vs guessed.
 
+JavaScript files that yield only file nodes or simple bindings are listed under
+**Files without structural symbols** in `GRAPH_REPORT.md`, with byte sizes and
+a bounded list of the largest files. This flags possible data banks that AST
+structure cannot describe; it does not automatically run semantic extraction.
+Files with functions, classes, imports, calls, or parser errors are excluded
+from this coverage notice.
+
 ---
 
 ## What files it handles

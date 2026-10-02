@@ -323,6 +323,29 @@ def generate(
                 f"  {d.get('source_file', '')} · relation: {d.get('relation', 'unknown')}",
             ]
 
+    # File nodes are intentionally omitted from Knowledge Gaps. Report the
+    # AST coverage limitation separately, using persisted metadata so report
+    # regeneration never needs to reopen the original corpus (#3946).
+    symbol_free = [d for _, d in G.nodes(data=True) if d.get("_no_structural_symbols")]
+    if symbol_free:
+        symbol_free.sort(key=lambda d: (-d.get("_source_bytes", 0), d.get("source_file", "")))
+        lines += [
+            "", "## Files without structural symbols",
+            f"{len(symbol_free)} JavaScript file(s) yielded no functions, classes, imports or calls. "
+            "They may contain data whose contents are not extracted by AST; "
+            "file nodes and simple bindings do not imply complete coverage.",
+        ]
+        for data in symbol_free[:5]:
+            path = str(data.get("source_file", data.get("label", "")))
+            path = path.replace("\n", "\\n").replace("\r", "\\r")
+            # Backslashes do not escape backticks inside Markdown code spans.
+            # A longer delimiter and padding preserve arbitrary source names.
+            delimiter = "`" * (max((len(run) for run in re.findall(r"`+", path)), default=0) + 1)
+            lines.append(f"- {delimiter} {path} {delimiter} — {data.get('_source_bytes', 0):,} bytes")
+        if len(symbol_free) > 5:
+            lines.append(f"- {len(symbol_free) - 5} more file(s).")
+        lines.append("Review these files and choose whether their data belongs in the graph before requesting semantic extraction.")
+
     # --- Gaps section ---
     isolated = [n for n in G.nodes() if G.degree(n) <= 1 and _real_node(n)]
     # Same threshold the Summary and Communities headers used (#3148): this
