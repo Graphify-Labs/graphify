@@ -1180,6 +1180,13 @@ def _is_watch_injection_fix_line(line: str) -> bool:
     )
 
 
+_OUTPUT_NOTICE_LINE = 'If the actual output directory is inside a Git working tree, tell the user that Graphify created or updated the output directory at its actual absolute path and link to [Team setup](https://github.com/Graphify-Labs/graphify#team-setup) for sharing outputs or keeping them local. Verify the working-tree boundary using the actual output directory when composing the notice. Do not stage outputs or change ignore rules automatically.'
+
+def _is_output_notice_line(line: str) -> bool:
+    """Allow only the output-directory notice added for #3941."""
+    return line.strip() == _OUTPUT_NOTICE_LINE
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1203,6 +1210,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_community_label_export_fix_line,
     _is_step1_root_marker_fix_line,
     _is_watch_injection_fix_line,
+    _is_output_notice_line,
 )
 
 

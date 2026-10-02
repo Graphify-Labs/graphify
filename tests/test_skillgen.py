@@ -1115,3 +1115,18 @@ def test_windows_skill_writes_marker_files_without_a_bom():
         )
     assert "New-Object System.Text.UTF8Encoding $false" in core, \
         "the BOM-less encoding object must be constructed in the windows render"
+
+
+def test_output_notice_links_team_setup_in_every_host():
+    """An in-repository output directory is explained before the final report."""
+    for key in gen.load_platforms():
+        core, _ = _platform_artifacts(key)
+        step9 = core.split("## Step 9", 1)[1].split("## ", 1)[0]
+        assert "inside a Git working tree" in step9, key
+        assert "https://github.com/Graphify-Labs/graphify#team-setup" in step9, key
+        assert "Do not stage outputs or change ignore rules automatically." in step9, key
+
+
+def test_output_notice_roundtrip_allowance_is_exact():
+    assert gen._is_sanctioned_monolith_diff(gen._OUTPUT_NOTICE_LINE)
+    assert not gen._is_sanctioned_monolith_diff("Automatically stage all graphify-out files.")
