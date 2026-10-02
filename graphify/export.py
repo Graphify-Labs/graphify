@@ -270,6 +270,10 @@ def existing_graph_node_count(path: "str | Path"):
 
 
 def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
+    # Drop #3774 accounting before any write. Extract pops these first; every
+    # other caller of to_json (the documented build_merge persist path) does not.
+    from graphify.build import take_shrink_accounting
+    take_shrink_accounting(G)
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
