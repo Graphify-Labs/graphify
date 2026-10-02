@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from graphify.extract import extract
+from graphify.extract import _merge_csharp_partial_class_nodes, extract
 
 
 def _extract(tmp_path, files: dict[str, str]):
@@ -256,3 +256,91 @@ def test_assembly_probe_without_scanned_csproj(tmp_path):
     widgets = _nodes_labeled(r, "Widget")
     assert len(widgets) == 2, \
         f"on-disk (unscanned) project files must still split assemblies: {widgets}"
+
+
+# ---------------------------------------------------------------------------
+# The merge rewrites every edge in the corpus, not only C# ones. It must drop
+# only the self-loops it creates itself (two distinct halves collapsing into
+# one node) and leave every edge it does not remap exactly as it was — the
+# same rules as the Swift extension merge (#2538) and deduplicate_entities
+# (#3809). Before this, one partial class anywhere in a repo erased every
+# recursive call, in every language.
+# ---------------------------------------------------------------------------
+
+def _self_calls(r):
+    """Names (without the `()` suffix some extractors add) of functions with a
+    recursive `calls` self-loop."""
+    label = {n["id"]: n["label"] for n in r["nodes"]}
+    return {label[e["source"]].removesuffix("()") for e in r["edges"]
+            if e["relation"] == "calls" and e["source"] == e["target"]}
+
+
+def test_partial_class_keeps_recursive_calls_in_other_languages(tmp_path):
+    calls, r = _extract(tmp_path, {
+        **_HALVES,
+        "tree.py": "def walk(node):\n    for child in node.children:\n        walk(child)\n",
+        "tree.ts": "export function visit(n: any): void {\n  for (const c of n.children) visit(c);\n}\n",
+    })
+    assert len(_nodes_labeled(r, "Foo")) == 1, "the partial halves still merge"
+    assert {"walk", "visit"} <= _self_calls(r), \
+        f"recursive calls outside C# must survive the partial merge, got {_self_calls(r)}"
+
+
+def test_partial_class_keeps_recursive_call_inside_a_half(tmp_path):
+    calls, r = _extract(tmp_path, {
+        "FooPartA.cs": (
+            "namespace App {\n"
+            "    public partial class Foo {\n"
+            "        public int Depth(int n) { return n <= 0 ? 0 : 1 + Depth(n - 1); }\n"
+            "    }\n"
+            "}\n"
+        ),
+        "FooPartB.cs": _HALVES["FooPartB.cs"],
+    })
+    assert ".Depth" in _self_calls(r), \
+        f"a recursive method inside a partial half must keep its self-call, got {_self_calls(r)}"
+
+
+def _merge(tmp_path, nodes, edges):
+    _merge_csharp_partial_class_nodes([], nodes, edges, [], tmp_path)
+    return {(e["source"], e["target"], e["relation"], e.get("confidence")) for e in edges}
+
+
+def _partial_half(nid, source_file):
+    return {"id": nid, "label": "Foo", "source_file": source_file, "file_type": "code",
+            "metadata": {"is_partial": True, "namespace": "App"}}
+
+
+def test_merge_drops_only_the_self_loops_it_creates(tmp_path):
+    nodes = [
+        _partial_half("a_app_foo", "A.cs"),  # sorts first: the canonical half
+        _partial_half("b_app_foo", "B.cs"),
+        {"id": "tree_walk", "label": "walk()", "source_file": "tree.py", "file_type": "code"},
+    ]
+    edges = [
+        # pre-existing self-loop on a node the merge never touches
+        {"source": "tree_walk", "target": "tree_walk", "relation": "calls"},
+        # pre-existing self-loop on the merged-away half: rewired, not dropped
+        {"source": "b_app_foo", "target": "b_app_foo", "relation": "references"},
+        # two distinct halves collapse into one node: a merge artifact
+        {"source": "b_app_foo", "target": "a_app_foo", "relation": "references",
+         "source_file": "B.cs", "source_location": "L3"},
+    ]
+    got = _merge(tmp_path, nodes, edges)
+    assert ("tree_walk", "tree_walk", "calls", None) in got
+    assert ("a_app_foo", "a_app_foo", "references", None) in got
+    assert len(got) == 2, f"only the collapsed b->a edge may be dropped, got {got}"
+
+
+def test_merge_does_not_dedup_edges_it_never_rewrote(tmp_path):
+    nodes = [_partial_half("a_app_foo", "A.cs"), _partial_half("b_app_foo", "B.cs")]
+    # Two parallel edges at one call site that differ only in confidence —
+    # unrelated to the merge, so both must come out unchanged.
+    edges = [
+        {"source": "x", "target": "y", "relation": "calls", "confidence": "EXTRACTED",
+         "source_file": "x.py", "source_location": "L1"},
+        {"source": "x", "target": "y", "relation": "calls", "confidence": "INFERRED",
+         "source_file": "x.py", "source_location": "L1"},
+    ]
+    got = _merge(tmp_path, nodes, edges)
+    assert got == {("x", "y", "calls", "EXTRACTED"), ("x", "y", "calls", "INFERRED")}

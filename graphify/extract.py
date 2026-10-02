@@ -3665,17 +3665,34 @@ def _merge_csharp_partial_class_nodes(
     # Each half's file keeps a `contains` edge to the canonical type — multiple
     # files containing one node is the intended shape (same as the Swift
     # extension merge): the type owns the members, the files own their slice.
-    # Self-loops are dropped, exact duplicates dedup.
+    # Only self-loops the merge itself creates are dropped, and only edges the
+    # merge rewrote are deduped.
+    def _key_of(e: dict, src: str | None, tgt: str | None) -> tuple:
+        return (src, tgt, e.get("relation"), e.get("source_file"), e.get("source_location"))
+
     rewritten: list[dict] = []
     seen_keys: set[tuple] = set()
     for e in all_edges:
-        src = remap.get(e.get("source"), e.get("source"))
-        tgt = remap.get(e.get("target"), e.get("target"))
-        if src == tgt:
+        src0, tgt0 = e.get("source"), e.get("target")
+        src = remap.get(src0, src0)
+        tgt = remap.get(tgt0, tgt0)
+        if src == src0 and tgt == tgt0:
+            # Untouched by the merge — keep verbatim. Dropping every self-loop
+            # here erased recursive calls in every language of a repo holding
+            # one partial class, and the dedup key below ignores confidence/
+            # context, so it must not prune edges this pass never rewrote
+            # (same rule as the Swift extension merge, #2538).
+            seen_keys.add(_key_of(e, src0, tgt0))
+            rewritten.append(e)
+            continue
+        if src == tgt and src0 != tgt0:
+            # Two distinct halves collapsed into one node: a merge artifact.
+            # A self-loop that existed before the merge is kept, rewired onto
+            # the canonical node (same rule as deduplicate_entities, #3809).
             continue
         e["source"] = src
         e["target"] = tgt
-        key = (src, tgt, e.get("relation"), e.get("source_file"), e.get("source_location"))
+        key = _key_of(e, src, tgt)
         if key in seen_keys:
             continue
         seen_keys.add(key)
