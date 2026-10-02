@@ -696,5 +696,46 @@ class TestDart(unittest.TestCase):
         self.assertEqual(inherits["source_location"], "L3")
 
 
+    def test_conditional_uris_emit_every_branch(self):
+        """A configurable export/import must link every platform branch, not only
+        the default URI; a string literal inside the condition is not a URI."""
+        code = textwrap.dedent("""\
+        import 'conn_stub.dart'
+            if (dart.library.io) 'conn_io.dart'
+            if (dart.library.js_interop) 'conn_web.dart';
+        import 'flags.dart' if (app.flavor == 'prod') 'flags_prod.dart';
+        export 'service_stub.dart' if (dart.library.io) "service_io.dart";
+        """)
+        path = self.temp_path / "facade.dart"
+        path.write_text(code, encoding="utf-8")
+        result = extract_dart(path)
+        file_nid = _make_id(str(path))
+
+        def targets(relation, context):
+            return {
+                e["target"]
+                for e in result["edges"]
+                if e["source"] == file_nid
+                and e["relation"] == relation
+                and e.get("context") == context
+            }
+
+        self.assertEqual(targets("imports", None), {_make_id("conn_stub.dart"), _make_id("flags.dart")})
+        self.assertEqual(
+            targets("imports", "conditional_uri"),
+            {_make_id("conn_io.dart"), _make_id("conn_web.dart"), _make_id("flags_prod.dart")},
+        )
+        self.assertEqual(targets("exports", None), {_make_id("service_stub.dart")})
+        self.assertEqual(targets("exports", "conditional_uri"), {_make_id("service_io.dart")})
+        labels = {n["label"] for n in result["nodes"]}
+        self.assertNotIn("prod", labels)
+        loc = {
+            e["target"]: e["source_location"]
+            for e in result["edges"]
+            if e["relation"] in ("imports", "exports")
+        }
+        self.assertEqual(loc[_make_id("conn_web.dart")], "L3")
+        self.assertEqual(loc[_make_id("service_io.dart")], "L5")
+
 if __name__ == "__main__":
     unittest.main()
