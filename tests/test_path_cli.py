@@ -269,6 +269,38 @@ def test_path_canonical_marker_graph_still_forward(monkeypatch, tmp_path, capsys
     assert "Beta <--calls [EXTRACTED]-- Alpha" in out
 
 
+# ── #3878: a `contains` edge has no reverse hop back out to its file ────────
+
+def _file_to_symbol_only_graph(tmp_path):
+    """`a.py` imports `helper()`, which `b.py` contains — but no edge runs
+    file-to-file directly, and `contains` only runs b.py -> helper()."""
+    data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "a", "label": "a.py", "source_file": "a.py"},
+            {"id": "b", "label": "b.py", "source_file": "b.py"},
+            {"id": "helper", "label": "helper()", "source_file": "b.py"},
+        ],
+        "links": [
+            {"source": "a", "target": "helper", "relation": "imports", "confidence": "EXTRACTED"},
+            {"source": "b", "target": "helper", "relation": "contains", "confidence": "EXTRACTED"},
+        ],
+    }
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps(data))
+    return p
+
+
+def test_path_routes_through_a_contains_edge_to_reach_the_file(monkeypatch, tmp_path, capsys):
+    """A file-to-file dependency that only closes through a contained symbol
+    must still resolve, not report no path despite both halves existing."""
+    p = _file_to_symbol_only_graph(tmp_path)
+    out = _run(monkeypatch, p, "a.py", "b.py", capsys)
+    assert "Shortest path (2 hops):" in out
+    assert "a.py --imports [EXTRACTED]--> helper() <--contains [EXTRACTED]-- b.py" in out
+    assert "No directed path found" not in out
+
+
 def test_explain_direction_recovered_from_src_tgt_markers(monkeypatch, tmp_path, capsys):
     """#2309: explain's in/out classification must honor _src markers — an
     edge persisted as hub->spoke but truly spoke->hub is an IN edge of hub."""
