@@ -255,6 +255,89 @@ def affected_nodes(
     return hits
 
 
+def stale_from_changed_files(
+    graph: nx.Graph,
+    changed_files: Iterable[str],
+    *,
+    relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
+    depth: int = 1,
+    root: Path | None = None,
+) -> dict[str, list[AffectedHit]]:
+    """For files that changed since the last extraction, find nodes elsewhere
+    in the graph whose stored relation to a node in that file may now be
+    stale.
+
+    `graphify update`/`extract --update` only re-extracts nodes and edges
+    FROM a changed file (file-level manifest hashing in detect.py). A node in
+    an unchanged file that calls/imports/references/inherits-from a node
+    defined in the changed file keeps whatever was true about that
+    relationship at the time IT was extracted — the update never revisits it,
+    so a claim like "handles retries via BaseHandler.retry()" can go stale
+    silently if BaseHandler.retry() changed shape and nothing re-reads the
+    caller.
+
+    This does not verify whether those nodes' extracted descriptions are
+    actually wrong — like `graphify affected`, it only narrows "everything in
+    the graph" down to "nodes with a structural reason to double-check".
+    Confirming or fixing the claim still needs a human or an LLM re-read of
+    the current source, the same way `graphify affected` narrows a manual
+    blast-radius query without answering it.
+
+    Returns a dict keyed by changed file (repo-relative, matching the graph's
+    stored `source_file`), each value the deduplicated AffectedHit list for
+    every node graphify extracted from that file. A changed file with no
+    nodes in the graph yet (brand new file, nothing points at it yet) or no
+    dependents is omitted — only files worth a second look are reported.
+    """
+    relation_list = tuple(relations)
+    result: dict[str, list[AffectedHit]] = {}
+    for raw_path in changed_files:
+        rel = _as_repo_relative(raw_path, root)
+        seeds = [
+            n for n, d in graph.nodes(data=True)
+            if str(d.get("source_file") or "") == rel
+        ]
+        if not seeds:
+            continue
+        seen_ids: set[str] = set()
+        hits: list[AffectedHit] = []
+        for seed in seeds:
+            for hit in affected_nodes(graph, seed, relations=relation_list, depth=depth):
+                if hit.node_id in seen_ids or hit.node_id in seeds:
+                    continue
+                seen_ids.add(hit.node_id)
+                hits.append(hit)
+        if hits:
+            result[rel] = hits
+    return result
+
+
+def format_stale(
+    graph: nx.Graph,
+    changed_files: Iterable[str],
+    *,
+    relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
+    depth: int = 1,
+    root: Path | None = None,
+) -> str:
+    by_file = stale_from_changed_files(graph, changed_files, relations=relations, depth=depth, root=root)
+    if not by_file:
+        return "No nodes outside the changed files reference them — nothing flagged."
+
+    lines: list[str] = []
+    for changed_file, hits in sorted(by_file.items()):
+        lines.append(f"# {changed_file} changed — {len(hits)} node(s) elsewhere may be stale")
+        for hit in hits:
+            data = graph.nodes[hit.node_id]
+            if hit.via_location:
+                location = f"{hit.via_file or data.get('source_file') or '-'}:{hit.via_location}"
+            else:
+                location = _format_location(data)
+            lines.append(f"  - {_node_label(graph, hit.node_id)} [{hit.via_relation}] {location}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 def format_affected(
     graph: nx.Graph,
     query: str,
