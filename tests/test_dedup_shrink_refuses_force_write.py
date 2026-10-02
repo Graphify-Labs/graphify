@@ -159,3 +159,48 @@ def test_a_deleted_file_still_writes(monkeypatch, tmp_path):
     assert code in (None, 0)
     assert "gone_notes" not in ids
     assert "readme_overview" in ids
+
+
+def test_to_json_does_not_store_shrink_accounting(tmp_path):
+    """build() records the counters on the graph object. to_json must not
+    write them. Callers other than extract follow that path (#3774)."""
+    from graphify.build import build
+    from graphify.export import to_json
+
+    G = build([{"nodes": _notes(tmp_path), "edges": [], "hyperedges": []}])
+    assert G.graph.get("_dedup_collapsed") == 1
+    out = tmp_path / "graph.json"
+    assert to_json(G, {}, str(out), force=True) is True
+    raw = out.read_text(encoding="utf-8")
+    assert "_dedup_collapsed" not in raw
+    assert "_pruned_node_count" not in raw
+
+
+def test_pruned_node_count_ignores_a_stub_created_this_run(tmp_path):
+    """A source-less stub minted this run and then orphaned by the prune is
+    not a saved node. It must not excuse a dedup shrink."""
+    from graphify.build import build_merge
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    kept = "README.md"
+    gone = "gone.md"
+    disk = [
+        {"id": "kept", "label": "Overview", "file_type": "document", "source_file": kept},
+        {"id": "gone", "label": "Gone", "file_type": "document", "source_file": gone},
+    ]
+    graph_path = root / "graphify-out" / "graph.json"
+    _write_graph(graph_path, disk)
+    stub_edge = {"source": "gone", "target": "fresh_stub", "source_file": gone}
+    chunk = {
+        "nodes": [
+            {"id": "kept", "label": "Overview", "file_type": "document", "source_file": kept},
+            {"id": "fresh_stub", "label": "Path", "file_type": "code"},
+        ],
+        "edges": [stub_edge],
+        "hyperedges": [],
+    }
+    G = build_merge([chunk], graph_path, prune_sources=[gone], dedup=False, root=root)
+    assert "gone" not in G
+    assert "fresh_stub" not in G
+    assert G.graph.get("_pruned_node_count") == 1

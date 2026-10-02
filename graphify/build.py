@@ -1604,6 +1604,21 @@ def build(
     return G
 
 
+def take_shrink_accounting(G) -> tuple[int, int]:
+    """Read and remove the #3774 counters.
+
+    ``build`` / ``build_merge`` stash these on ``G.graph`` for the extract
+    CLI. ``to_json`` also removes them so any other writer cannot persist
+    them into graph.json.
+    """
+    attrs = getattr(G, "graph", None)
+    if not isinstance(attrs, dict):
+        return 0, 0
+    collapsed = int(attrs.pop("_dedup_collapsed", 0) or 0)
+    pruned = int(attrs.pop("_pruned_node_count", 0) or 0)
+    return collapsed, pruned
+
+
 def _norm_label(label: str | None) -> str:
     """Canonical dedup key — Unicode-aware, preserves CJK/word characters."""
     if not isinstance(label, str):
@@ -2257,9 +2272,17 @@ def build_merge(
         if orphaned:
             G.remove_nodes_from(orphaned)
             n_nodes += len(orphaned)
-        # CLI uses this to excuse a smaller graph when the loss is a deletion (#3774).
-        # Popped before to_json so it is not stored in graph.json.
-        G.graph["_pruned_node_count"] = n_nodes
+        # Excuse only saved nodes this prune removed (#3774). A stub minted
+        # in this run and then orphaned was never in graph.json, so counting
+        # it would hide a dedup shrink. The print below still uses n_nodes,
+        # which includes that stub.
+        _disk_ids = {
+            n.get("id") for n in _disk_nodes
+            if isinstance(n, dict) and n.get("id") is not None
+        }
+        G.graph["_pruned_node_count"] = sum(
+            1 for nid in (*to_remove, *orphaned) if nid in _disk_ids
+        )
 
         # Report only the prune entries that ACTUALLY matched something — not
         # len(prune_sources), which counted every entry as pruned-from even

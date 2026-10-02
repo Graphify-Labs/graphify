@@ -4622,9 +4622,8 @@ def dispatch_command(cmd: str) -> None:
         # failure can therefore be refused here — recoverable by re-running or
         # passing --allow-partial (the good graph is preserved and the manifest
         # is not stamped, so the retry re-extracts).
-        _gattrs = G.graph if hasattr(G, "graph") else {}
-        _dedup_collapsed = int(_gattrs.pop("_dedup_collapsed", 0) or 0)
-        _pruned_nodes = int(_gattrs.pop("_pruned_node_count", 0) or 0)
+        from graphify.build import take_shrink_accounting as _take_shrink_accounting
+        _dedup_collapsed, _pruned_nodes = _take_shrink_accounting(G)
         _force_write = cli_allow_partial or not _extraction_incomplete
         _dedup_shrink_counts: tuple[int, int] | None = None
         if (
