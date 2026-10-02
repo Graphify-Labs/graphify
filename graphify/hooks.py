@@ -28,7 +28,15 @@ _PYTHON_DETECT = """\
 # detached launch even started. find_spec locates the package without executing
 # it, so each probe costs interpreter startup only. The detached rebuild still
 # fails loudly in the log if the package is broken under that interpreter.
-_GFY_PROBE="import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('graphify') else 1)"
+# The probe MUST stay multi-line, because the rebuild body it stands in for is
+# multi-line. On Windows a pyenv-win `python3` is a .bat shim: it accepts a
+# single-line -c and mangles a multi-line one, leaking its own `|| goto :error`
+# into the Python source. A single-line probe therefore passes on that shim, the
+# hook selects it, and every rebuild afterwards dies with IndentationError in the
+# log where nobody looks. Probing with the shape actually used rejects the shim
+# and falls through to the next candidate.
+_GFY_PROBE="import importlib.util, sys
+sys.exit(0 if importlib.util.find_spec('graphify') else 1)"
 GRAPHIFY_PYTHON=""
 _PINNED='__PINNED_PYTHON__'
 if [ -n "$_PINNED" ] && [ -x "$_PINNED" ] && "$_PINNED" -c "$_GFY_PROBE" 2>/dev/null; then
