@@ -581,6 +581,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_QUERY_LOG_RESPONSES` | When the log is enabled, also record full subgraph responses (off by default) | optional |
 | `GRAPHIFY_NO_AUTO_REFRESH` | Set to `1` to stop the CLI from refreshing installed skills that are older than the package after an upgrade | optional — refresh is on by default |
 | `GRAPHIFY_MAX_GRAPH_BYTES` | Override the 512 MiB graph.json size cap — e.g. `700MB`, `2GB`, or plain bytes | optional — useful for very large corpora |
+| `GRAPHIFY_VIZ_NODE_LIMIT` | Node limit used when graphify generates an HTML visualization during extraction or `cluster-only` | optional — defaults to `5000`; set `0` to skip the visualization. `graphify export html` does not read this variable; pass its `--node-limit` flag instead. |
 | `GRAPHIFY_MAX_CONTEXTS` | Maximum number of non-default project graphs retained by one multi-project MCP server | optional — default: `8`; invalid values use `8`, and values below `1` use `1` |
 | `GRAPHIFY_LLM_TEMPERATURE` | Override LLM temperature for semantic extraction — e.g. `0.7`, or `none` to omit | optional — auto-omitted for o1/o3/o4/gpt-5 reasoning models |
 
@@ -836,7 +837,7 @@ graphify update ./src --no-cluster  # skip reclustering, write raw AST graph onl
 graphify update ./src --force       # overwrite even if new graph has fewer nodes
 graphify cluster-only ./my-project
 graphify cluster-only ./my-project --graph path/to/graph.json  # custom graph location
-graphify cluster-only ./my-project --max-concurrency 16 --batch-size 200  # parallel community labeling (large graphs)
+graphify cluster-only ./my-project --max-concurrency 16 --batch-size 40   # parallel labeling for an 8k-context model
 graphify cluster-only ./my-project --resolution 1.5            # more, smaller communities
 graphify cluster-only ./my-project --exclude-hubs 99           # exclude p99 degree nodes from partitioning
 graphify cluster-only ./my-project --no-label                  # keep "Community N" placeholders
@@ -844,9 +845,17 @@ graphify cluster-only ./my-project --backend=gemini            # backend for com
 graphify cluster-only ./my-project --backend=gemini --model gemini-2.5-pro  # specific model
 graphify label ./my-project                                    # (re)name communities with the configured backend
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
+graphify label ./my-project --missing-only                     # name only missing or placeholder labels
+graphify export html --node-limit 10000                        # raise the standalone HTML export limit
 ```
 
 > **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
+
+> **Labeling batch size and context windows:** `--batch-size` is communities per LLM request, not a concurrency setting. The default is 100 and is sized for roughly 16k-token context windows. Prompts average about 150 input tokens per community, so start with `--batch-size 40` for an 8k-token model and reduce it for longer member names. A context-window error is not automatically split and retried; rerun with a smaller batch size.
+
+> **Keeping or refreshing labels:** `graphify label --missing-only` keeps every existing non-placeholder label by its current community ID; it does not compare community membership. Use `graphify label` without `--missing-only` after a re-cluster when names must be refreshed. Graphify writes `.graphify_labels.json.sig` beside `.graphify_labels.json`; it records a membership fingerprint for each saved label. On a later `cluster-only`, a changed fingerprint prevents reuse of that label and substitutes a deterministic hub name. Run the full `graphify label` command to replace those hub names with fresh LLM names.
+
+> **Standalone HTML exports:** `graphify export html` has its own default node limit of 5,000. It does not honor `GRAPHIFY_VIZ_NODE_LIMIT`; use `--node-limit N` (or `--no-viz`) explicitly.
 
 ---
 
