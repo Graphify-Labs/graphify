@@ -6,9 +6,11 @@ module. The path-redirect (`graphify <path>` -> extract) re-enters via a lazy
 import of main to avoid a cli<->__main__ import cycle.
 """
 from __future__ import annotations
+from dataclasses import dataclass
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
@@ -741,74 +743,492 @@ def _mark_session_denied(session_id: str) -> bool:
 _SEARCH_COMMANDS = frozenset({
     "grep", "egrep", "fgrep", "zgrep", "rg", "ripgrep", "find", "fd", "ack", "ag",
 })
-# Prefix words that wrap another command; the real executable follows them.
 _COMMAND_WRAPPERS = frozenset({
     "sudo", "command", "exec", "nohup", "time", "nice", "ionice", "env",
     "xargs", "timeout", "stdbuf", "doas",
 })
 _HEREDOC_OPEN_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 
+_GREP_OPTS_WITH_ARG = frozenset({
+    "-e", "--regexp", "-f", "--file", "-m", "--max-count", "-A", "--after-context",
+    "-B", "--before-context", "-C", "--context", "-d", "-D", "--exclude", "--include",
+    "--exclude-dir", "--include-dir", "--exclude-from", "--include-from",
+})
+_RG_OPTS_WITH_ARG = frozenset({
+    "-e", "--regexp", "-f", "--file", "-g", "--glob", "-t", "--type", "-T", "--type-not",
+    "-m", "--max-count", "-A", "-B", "-C", "--context", "-r", "--replace",
+    "--max-depth", "--encoding",
+})
+_FD_OPTS_WITH_ARG = frozenset({
+    "-e", "--extension", "-t", "--type", "-d", "--max-depth", "-E", "--exclude",
+    "--base-directory", "--search-path",
+})
 
-def _bash_invokes_search(cmd_str: str) -> bool:
-    """Whether a Bash command actually RUNS a search tool (#3121).
 
-    The old test was a plain substring scan over the whole command string,
-    including quoted arguments and heredoc bodies - so `git commit -m "add
-    flag support"` fired ("flag " contains "ag "), prose containing "find "
-    fired, and a design doc written via heredoc fired if its body mentioned
-    grep. Every false positive injects a nudge where graphify has nothing to
-    contribute and trains the agent to skim the line.
+@dataclass
+class ParsedCommand:
+    bin_name: str
+    argv: list[str]
+    is_search: bool
+    is_xargs: bool
+    assignments: list[tuple[str, str]]
+    input_redirect: str | None
+    has_subshell: bool
 
-    Decide on the command's executed tokens instead: drop heredoc bodies and
-    quoted spans, split on shell operators, and match the executable at each
-    command position (wrappers like sudo/xargs/env skipped; `git grep` and
-    `VAR=x grep ...` still count; a search-tool name inside prose does not).
-    """
-    text = cmd_str
-    # Drop heredoc bodies: from the line after `<<WORD` through the line that
-    # is exactly WORD. An unterminated heredoc drops to the end of the string.
+
+@dataclass
+class ParsedScript:
+    pipelines: list[list[ParsedCommand]]
+    has_heredoc: bool
+    has_syntax_error: bool
+
+
+def _strip_heredocs(text: str) -> tuple[str, bool]:
+    """Drops heredoc bodies so prose inside them is ignored (#3121). Returns (cleaned, had_heredoc)."""
+    has_heredoc = False
     m = _HEREDOC_OPEN_RE.search(text)
     while m:
+        has_heredoc = True
         nl_idx = text.find("\n", m.end())
         if nl_idx == -1:
             break
         term = re.compile(r"^\s*" + re.escape(m.group(2)) + r"\s*$", re.MULTILINE)
         t = term.search(text, nl_idx + 1)
         if t is None:
-            # Unterminated heredoc: everything after the opener line is body.
             text = text[: nl_idx + 1]
             break
         text = text[: nl_idx + 1] + text[t.end():]
         m = _HEREDOC_OPEN_RE.search(text, nl_idx + 1)
-    # Drop quoted spans (backslash escapes inside double quotes are irrelevant
-    # here - anything quoted is an argument, never the executable).
-    text = re.sub(r"'[^']*'", " ", text)
-    text = re.sub(r'"[^"]*"', " ", text)
-    # Split into command segments at shell operators / substitution boundaries.
-    for segment in re.split(r"[|;&\n]|\$\(|`|\(|\)|\{|\}", text):
-        tokens = segment.split()
-        i = 0
-        while i < len(tokens):
-            tok = tokens[i]
-            if "=" in tok.split("/")[-1] and not tok.startswith(("-", "/")):
-                i += 1  # VAR=value prefix
+    if "<<" in text:
+        has_heredoc = True
+    return text, has_heredoc
+
+
+def _parse_stage(tokens: list[str], in_subshell: bool = False) -> ParsedCommand:
+    """Parses a pipeline stage's tokens into a ParsedCommand."""
+    has_subshell = in_subshell or any("$(" in t or "`" in t for t in tokens)
+    assignments: list[tuple[str, str]] = []
+    idx = 0
+    while idx < len(tokens):
+        tok = tokens[idx]
+        if "=" in tok.split("/")[-1] and not tok.startswith(("-", "/")):
+            k, v = tok.split("=", 1)
+            assignments.append((k, v))
+            idx += 1
+        elif tok == "export" and idx + 1 < len(tokens) and "=" in tokens[idx + 1]:
+            idx += 1
+            k, v = tokens[idx].split("=", 1)
+            assignments.append((k, v))
+            idx += 1
+        else:
+            break
+
+    is_xargs = False
+    while idx < len(tokens):
+        w_tok = tokens[idx]
+        w_name = w_tok.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        w_name = w_name[:-4] if w_name.endswith(".exe") else w_name
+        if w_name == "xargs":
+            is_xargs = True
+            idx += 1
+            while idx < len(tokens) and tokens[idx].startswith("-"):
+                idx += 1
+            continue
+        if w_name in _COMMAND_WRAPPERS:
+            idx += 1
+            while idx < len(tokens) and tokens[idx].startswith("-"):
+                idx += 1
+            continue
+        break
+
+    if idx >= len(tokens):
+        return ParsedCommand(
+            bin_name="", argv=[], is_search=False, is_xargs=is_xargs,
+            assignments=assignments, input_redirect=None, has_subshell=has_subshell
+        )
+
+    bin_tok = tokens[idx]
+    bin_name = bin_tok.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    bin_name = bin_name[:-4] if bin_name.endswith(".exe") else bin_name
+    raw_argv = tokens[idx + 1:]
+
+    is_search = False
+    if bin_name in _SEARCH_COMMANDS:
+        is_search = True
+    elif bin_name == "git" and any(t == "grep" for t in raw_argv[:3] if not t.startswith("-")):
+        is_search = True
+
+    argv: list[str] = []
+    input_redirect: str | None = None
+    a_idx = 0
+    while a_idx < len(raw_argv):
+        a_tok = raw_argv[a_idx]
+        if a_tok == "<":
+            a_idx += 1
+            if a_idx < len(raw_argv):
+                input_redirect = raw_argv[a_idx]
+            a_idx += 1
+            continue
+        if a_tok.startswith("<"):
+            input_redirect = a_tok[1:]
+            a_idx += 1
+            continue
+        if a_tok.isdigit() and a_idx + 1 < len(raw_argv) and raw_argv[a_idx + 1].startswith(">"):
+            a_idx += 2
+            if a_idx < len(raw_argv) and not raw_argv[a_idx].startswith(">"):
+                a_idx += 1
+            continue
+        if a_tok in (">", ">>", ">&", "&>"):
+            a_idx += 1
+            if a_idx < len(raw_argv) and not raw_argv[a_idx].startswith(">"):
+                a_idx += 1
+            continue
+        if re.match(r"^\d*(?:>>|>|>&|2>&1|1>&2)$", a_tok):
+            a_idx += 1
+            if a_tok not in ("2>&1", "1>&2") and a_idx < len(raw_argv) and not raw_argv[a_idx].startswith(">"):
+                a_idx += 1
+            continue
+        argv.append(a_tok)
+        a_idx += 1
+
+    return ParsedCommand(
+        bin_name=bin_name,
+        argv=argv,
+        is_search=is_search,
+        is_xargs=is_xargs,
+        assignments=assignments,
+        input_redirect=input_redirect,
+        has_subshell=has_subshell,
+    )
+
+
+def _parse_bash(cmd_str: str) -> ParsedScript:
+    """Single shared tokenizer and AST parser for Bash commands (#3121, #3882)."""
+    if not cmd_str or not cmd_str.strip():
+        return ParsedScript(pipelines=[], has_heredoc=False, has_syntax_error=False)
+
+    text, has_heredoc = _strip_heredocs(cmd_str)
+
+    try:
+        s = shlex.shlex(text, punctuation_chars=';|&<>')
+        s.whitespace = ' \t\r'
+        s.wordchars += ':.-/\\$~*?+%=@'
+        tokens = list(s)
+    except Exception:
+        return ParsedScript(pipelines=[], has_heredoc=has_heredoc, has_syntax_error=True)
+
+    pipelines: list[list[ParsedCommand]] = []
+    curr_pipeline: list[ParsedCommand] = []
+    curr_stage: list[str] = []
+    subshell_depth = 0
+    stage_has_subshell = False
+
+    def flush_stage():
+        nonlocal curr_stage, stage_has_subshell
+        if curr_stage:
+            curr_pipeline.append(_parse_stage(curr_stage, in_subshell=stage_has_subshell))
+            curr_stage = []
+            stage_has_subshell = (subshell_depth > 0)
+
+    def flush_pipeline():
+        nonlocal curr_pipeline
+        flush_stage()
+        if curr_pipeline:
+            pipelines.append(curr_pipeline)
+            curr_pipeline = []
+
+    for tok in tokens:
+        if tok == "(":
+            subshell_depth += 1
+            stage_has_subshell = True
+            flush_pipeline()
+        elif tok == ")":
+            flush_pipeline()
+            subshell_depth = max(0, subshell_depth - 1)
+            stage_has_subshell = (subshell_depth > 0)
+        elif tok in (";", "\n", "&&", "||", "`"):
+            flush_pipeline()
+        elif tok in ("|", "|&"):
+            flush_stage()
+        else:
+            curr_stage.append(tok)
+    flush_pipeline()
+
+    return ParsedScript(pipelines=pipelines, has_heredoc=has_heredoc, has_syntax_error=False)
+
+
+def _bash_invokes_search(cmd_str: str) -> bool:
+    """Whether a Bash command actually RUNS a search tool (#3121)."""
+    script = _parse_bash(cmd_str)
+    return any(cmd.is_search for pl in script.pipelines for cmd in pl)
+
+
+def _is_cwd_relative(value: str) -> bool:
+    r"""Whether *value* is anchored at the current working directory (#1840)."""
+    pure = PureWindowsPath(value) if os.name == "nt" else PurePosixPath(value)
+    return not pure.root and not pure.drive
+
+
+def _classify_path(path_str: str, root: Path, effective_cwd: Path) -> str:
+    """Classify path_str relative to root into 'INSIDE', 'OUTSIDE', or 'UNCERTAIN'."""
+    path_str = path_str.strip("'\"")
+    if not path_str:
+        return "UNCERTAIN"
+    pure = PureWindowsPath(path_str) if os.name == "nt" else PurePosixPath(path_str)
+    if pure.drive and not pure.root:
+        return "UNCERTAIN"
+    try:
+        if _is_cwd_relative(path_str):
+            resolved = (effective_cwd / path_str).resolve()
+        else:
+            resolved = Path(path_str).resolve()
+        resolved.relative_to(root)
+        return "INSIDE"
+    except ValueError:
+        return "OUTSIDE"
+    except (OSError, RuntimeError):
+        return "UNCERTAIN"
+
+
+def _resolve_token(token: str, env_vars: dict[str, str]) -> tuple[str, bool]:
+    """Resolves variable expansions. Returns (resolved_str, is_uncertain)."""
+    if token.startswith("'") and token.endswith("'"):
+        return token, False
+    if "$" not in token:
+        return token, False
+    if "$(" in token or "`" in token:
+        return token, True
+
+    var_re = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+    has_unresolved = False
+
+    def _sub(m: re.Match) -> str:
+        nonlocal has_unresolved
+        name = m.group(1) or m.group(2)
+        if name in env_vars:
+            return env_vars[name]
+        has_unresolved = True
+        return m.group(0)
+
+    result = var_re.sub(_sub, token)
+    if has_unresolved or "$" in result:
+        return token, True
+    return result, False
+
+
+def _extract_search_targets(
+    cmd: ParsedCommand,
+    effective_cwd: Path,
+    upstream_paths: list[str] | None,
+    env_vars: dict[str, str],
+    is_pipe_stage: bool,
+) -> tuple[list[str], bool]:
+    """Extracts target paths for a search command. Returns (targets, is_uncertain)."""
+    resolved_argv: list[str] = []
+    for arg in cmd.argv:
+        res, unres = _resolve_token(arg, env_vars)
+        if unres:
+            return [], True
+        resolved_argv.append(res)
+
+    targets: list[str] = []
+    if cmd.input_redirect:
+        res_in, unres = _resolve_token(cmd.input_redirect, env_vars)
+        if unres:
+            return [], True
+        targets.append(res_in)
+
+    bin_name = cmd.bin_name
+
+    if bin_name == "git":
+        c_dir = None
+        g_idx = 0
+        while g_idx < len(resolved_argv):
+            if resolved_argv[g_idx] == "-C" and g_idx + 1 < len(resolved_argv):
+                c_dir = resolved_argv[g_idx + 1]
+                g_idx += 2
                 continue
-            name = tok.replace("\\", "/").rsplit("/", 1)[-1].lower()
-            name = name[:-4] if name.endswith(".exe") else name
-            if name in _COMMAND_WRAPPERS:
-                i += 1
-                # skip the wrapper's own flags (`xargs -0`, `env -i`)
-                while i < len(tokens) and tokens[i].startswith("-"):
-                    i += 1
+            if resolved_argv[g_idx] == "grep":
+                g_idx += 1
+                break
+            g_idx += 1
+
+        effective_git_cwd = effective_cwd
+        if c_dir:
+            try:
+                if _is_cwd_relative(c_dir):
+                    effective_git_cwd = (effective_cwd / c_dir).resolve()
+                else:
+                    effective_git_cwd = Path(c_dir).resolve()
+            except Exception:
+                return [], True
+
+        rem = resolved_argv[g_idx:]
+        if "--" in rem:
+            dash_idx = rem.index("--")
+            targets.extend(rem[dash_idx + 1:])
+        else:
+            non_opts = [t for t in rem if not t.startswith("-")]
+            if len(non_opts) > 1:
+                targets.extend(non_opts[1:])
+            elif not targets:
+                targets.append(str(effective_git_cwd))
+
+    elif bin_name == "find":
+        found_paths: list[str] = []
+        for tok in resolved_argv:
+            if tok.startswith("-") or tok in ("(", "!", ")"):
+                break
+            found_paths.append(tok)
+        if found_paths:
+            targets.extend(found_paths)
+        elif not targets:
+            targets.append(str(effective_cwd))
+
+    elif bin_name == "fd":
+        base_dir = None
+        non_opts = []
+        skip_next = False
+        for i, tok in enumerate(resolved_argv):
+            if skip_next:
+                skip_next = False
                 continue
-            if name in _SEARCH_COMMANDS:
-                return True
-            if name == "git" and any(
-                t2 == "grep" for t2 in tokens[i + 1:i + 4] if not t2.startswith("-")
-            ):
-                return True
-            break  # first real token decides this segment
-    return False
+            if tok in ("--base-directory", "--search-path") and i + 1 < len(resolved_argv):
+                base_dir = resolved_argv[i + 1]
+                skip_next = True
+                continue
+            if tok in _FD_OPTS_WITH_ARG:
+                skip_next = True
+                continue
+            if tok.startswith("-"):
+                continue
+            non_opts.append(tok)
+        if base_dir:
+            targets.append(base_dir)
+        if len(non_opts) >= 2:
+            targets.extend(non_opts[1:])
+        elif not targets:
+            targets.append(str(effective_cwd))
+
+    else:
+        opts_with_arg = _RG_OPTS_WITH_ARG if bin_name in ("rg", "ripgrep") else _GREP_OPTS_WITH_ARG
+        non_opts = []
+        has_explicit_pattern = False
+        skip_next = False
+        for i, tok in enumerate(resolved_argv):
+            if skip_next:
+                skip_next = False
+                continue
+            if tok in ("-e", "--regexp", "-f", "--file"):
+                has_explicit_pattern = True
+                skip_next = True
+                continue
+            if tok.startswith(("-e", "--regexp=", "-f", "--file=")):
+                has_explicit_pattern = True
+                continue
+            if tok in opts_with_arg:
+                skip_next = True
+                continue
+            if tok.startswith("-"):
+                continue
+            non_opts.append(tok)
+
+        if has_explicit_pattern:
+            targets.extend(non_opts)
+        else:
+            if len(non_opts) > 1:
+                targets.extend(non_opts[1:])
+            elif not targets:
+                if is_pipe_stage:
+                    if upstream_paths is not None:
+                        targets.extend(upstream_paths)
+                    else:
+                        return [], True
+                else:
+                    targets.append(str(effective_cwd))
+
+    return targets, False
+
+
+def _is_search_outside_project(script: ParsedScript, root: Path) -> bool:
+    """Returns True if every executed search in script provably targets OUTSIDE root (#3882)."""
+    if script.has_heredoc or script.has_syntax_error:
+        return False
+
+    effective_cwd = root
+    env_vars: dict[str, str] = {}
+    cwd_uncertain = False
+    searches_found = 0
+
+    for pipeline in script.pipelines:
+        upstream_paths: list[str] | None = None
+
+        for stage_idx, cmd in enumerate(pipeline):
+            if not cmd.has_subshell:
+                for k, v in cmd.assignments:
+                    res_v, unres = _resolve_token(v, env_vars)
+                    if not unres:
+                        env_vars[k] = res_v.strip("'\"")
+
+            if cmd.bin_name == "cd":
+                if cmd.has_subshell:
+                    continue
+                if cwd_uncertain:
+                    pass
+                elif not cmd.argv or cmd.argv[0] == "-":
+                    cwd_uncertain = True
+                else:
+                    target_dir, unres = _resolve_token(cmd.argv[0], env_vars)
+                    if unres:
+                        cwd_uncertain = True
+                    else:
+                        target_dir = target_dir.strip("'\"")
+                        try:
+                            if _is_cwd_relative(target_dir):
+                                effective_cwd = (effective_cwd / target_dir).resolve()
+                            else:
+                                effective_cwd = Path(target_dir).resolve()
+                        except Exception:
+                            cwd_uncertain = True
+                continue
+
+            if cmd.is_search:
+                searches_found += 1
+                if cwd_uncertain or cmd.is_xargs or cmd.has_subshell:
+                    return False
+
+                targets, uncertain = _extract_search_targets(
+                    cmd, effective_cwd, upstream_paths, env_vars, is_pipe_stage=(stage_idx > 0)
+                )
+                if uncertain or not targets:
+                    return False
+
+                for tp in targets:
+                    cls = _classify_path(tp, root, effective_cwd)
+                    if cls != "OUTSIDE":
+                        return False
+
+                if cmd.bin_name == "find":
+                    upstream_paths = targets
+                else:
+                    upstream_paths = None
+            else:
+                if cmd.bin_name in ("cat", "head", "tail"):
+                    paths = [t for t in cmd.argv if not t.startswith("-")]
+                    upstream_paths = paths if paths else None
+                elif cmd.bin_name in ("ls", "find"):
+                    paths = []
+                    for t in cmd.argv:
+                        if t.startswith("-") or t in ("(", "!", ")"):
+                            break
+                        paths.append(t)
+                    upstream_paths = paths if paths else [str(effective_cwd)]
+                elif cmd.bin_name in ("sort", "uniq", "awk", "sed", "tr", "cut", "tee"):
+                    pass
+                else:
+                    upstream_paths = None
+
+    return searches_found > 0
 
 
 def _run_hook_guard(kind: str, strict: bool = False) -> None:
@@ -826,9 +1246,9 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     (permissionDecision), then downgrades to the soft nudge — it fires at most once
     per session and can never strand the agent. Search (Bash) and Glob stay
     nudge-only: a compound shell command has no single parseable target and blocking
-    file listing would strand navigation. #1840: reads of out-of-project files are
-    ignored, and a graph that is stale for the target file softens to a non-mandatory
-    nudge instead of blocking or demanding.
+    file listing would strand navigation. #1840 / #3882: reads and searches of
+    out-of-project files are ignored, and a graph that is stale for the target file
+    softens to a non-mandatory nudge instead of blocking or demanding.
     """
     from graphify.paths import out_path
     # Gemini's BeforeTool hook takes no stdin and must ALWAYS return a decision so
@@ -855,18 +1275,27 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     try:
         if kind == "search":
             cmd_str = str(t.get("command", "") or "")
-            # Two input shapes reach this guard (matcher "Bash|Grep", #1986):
-            # the Bash tool carries `command`, while Claude Code's dedicated
-            # Grep tool carries `pattern` (plus optional path/glob) and no
-            # command — a Grep call IS a content search by definition, so it
-            # nudges whenever a graph exists. For Bash, decide on the
-            # command's EXECUTED tokens (#3121): the old whole-string
-            # substring scan fired on quoted prose ('add flag support'
-            # contains "ag ") and on heredoc bodies that merely mention
-            # grep. Nudge-only, even in strict mode — see the docstring.
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
-            is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
-            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
+            script = _parse_bash(cmd_str) if cmd_str else None
+            is_bash_search = script is not None and any(
+                cmd.is_search for pl in script.pipelines for cmd in pl
+            )
+            if not (is_grep_tool or is_bash_search):
+                return
+            # #3882: suppress search nudge when every executed search provably
+            # targets paths outside the current project root.
+            root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+            try:
+                root = root.resolve()
+            except (OSError, RuntimeError):
+                pass
+            if is_grep_tool:
+                path_val = str(t.get("path") or "").strip()
+                if path_val and _classify_path(path_val, root, root) == "OUTSIDE":
+                    return
+            elif script and _is_search_outside_project(script, root):
+                return
+            if out_path("graph.json").is_file():
                 sys.stdout.write(_SEARCH_NUDGE)
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
@@ -991,33 +1420,6 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             sys.stdout.write(_READ_NUDGE)
     except Exception:
         pass
-
-
-def _is_cwd_relative(value: str) -> bool:
-    r"""Whether *value* is anchored at the current working directory.
-
-    The hook's out-of-project guard needs "is this path resolved against cwd?",
-    and ``Path.is_absolute()`` is the wrong question for it on Windows. A
-    driveless rooted path like ``/tmp/x.py`` — the form POSIX-shaped hosts, WSL
-    and Git Bash send — is NOT absolute there (no drive letter), but it is not
-    cwd-relative either: Windows anchors it at the current DRIVE root, so
-    ``Path("/somewhere/else/x.py").resolve()`` is ``C:\somewhere\else\x.py``,
-    which is outside the project unless the project sits at ``C:\``. Reading it
-    as cwd-relative made the guard declare it in-project and emit the read nudge
-    (and, in strict mode, the once-per-session deny) for files the graph has
-    nothing to say about.
-
-    ``C:x.py`` is the same trap from the other side: drive-relative, anchored at
-    that drive's current directory rather than cwd.
-
-    So the test is "no root and no drive", not "not absolute". These stay the
-    host's own rules — the path is about to be resolved against this filesystem,
-    so ``paths.is_absolute_any_platform`` (for stored, portable paths) is
-    deliberately not used. On POSIX ``root`` is set exactly when the path is
-    absolute and ``drive`` is always empty, so this is unchanged there.
-    """
-    pure = PureWindowsPath(value) if os.name == "nt" else PurePosixPath(value)
-    return not pure.root and not pure.drive
 
 
 def _target_is_indexed(file_path: str, root: "Path") -> bool:
