@@ -5911,12 +5911,20 @@ def _extract_generic(
     # lives in another file (defer to the cross-file resolver). JS/TS named imports
     # surface the imported symbol's REAL node into this file's label map.
     nid_to_sf: dict[str, str] = {}
+    # Lua: method nid -> the table it is attached to (`Animal` for `Animal:speak`),
+    # so a `self:other()` call in its body can be rewritten to the sibling method's
+    # table-qualified label and resolved (#3991).
+    lua_self_table: dict[str, str] = {}
     for n in nodes:
         nid_to_sf[n["id"]] = str(n.get("source_file") or "")
         if n.get("type") == "namespace":
             continue
         raw = n["label"]
         normalised = raw.strip("()").lstrip(".")
+        if config.ts_module == "tree_sitter_lua":
+            sep = ":" if ":" in normalised else ("." if "." in normalised else None)
+            if sep:
+                lua_self_table[n["id"]] = normalised.rsplit(sep, 1)[0]
         # For languages with lexical nesting (Python), nested functions should not overwrite
         # module-level definitions in the module/file-level label_to_nid map (#3405).
         if n["id"] not in scope_parents:
@@ -6204,6 +6212,7 @@ def _extract_generic(
             kotlin_qualified_prefix: str | None = None
             kotlin_object_receiver: str | None = None
             csharp_qualified_prefix: str | None = None
+            lua_self_qualified: bool = False  # Lua self:m() rewritten to Table:m
 
             # Special handling per language
             if config.ts_module == "tree_sitter_swift":
@@ -6607,6 +6616,29 @@ def _extract_generic(
                         # Try reading the node directly (e.g. Java name field is the callee)
                         callee_name = _read_text(func_node, source)
 
+            # Lua: a `self:other()` call in a method body is sugar for a call to a
+            # sibling method on the same table. The receiver `self` carries no type
+            # of its own, but the enclosing method's table name is known, so rewrite
+            # the bare method name to its table-qualified label (`Animal:other`) so
+            # it resolves like any other colon-method definition. Only the literal
+            # `self` receiver is rewritten; an arbitrary receiver (`other:m()`) has
+            # an unknown type and is left unqualified so the fail-closed guard below
+            # keeps it from binding to an unrelated same-named bare function (#3991).
+            if (config.ts_module == "tree_sitter_lua"
+                    and is_member_call
+                    and member_receiver == "self"
+                    and callee_name):
+                _self_table = lua_self_table.get(caller_nid)
+                if _self_table:
+                    _dot = f"{_self_table}.{callee_name}"
+                    callee_name = f"{_self_table}:{callee_name}"
+                    # A sibling defined with dot syntax (`function Animal.other()`)
+                    # is the same method; prefer it when the colon label is absent.
+                    if callee_name not in label_to_nid and _dot in label_to_nid:
+                        callee_name = _dot
+                    member_receiver = None
+                    lua_self_qualified = True
+
             # _LANGUAGE_BUILTIN_GLOBALS is one union across every language, right for
             # a BARE call (String(x) really would become a god node) but wrong for a
             # MEMBER call: `open` is a Python builtin and `Set` a JavaScript one, so
@@ -6651,7 +6683,16 @@ def _extract_generic(
                 _java_defer = (
                     config.ts_module == "tree_sitter_java" and is_member_call
                 )
-                if _python_defer or _java_defer or _builtin_member_call or (
+                # Lua: a colon call that was NOT rewritten to a table-qualified name
+                # above (`obj:m()` on an unknown receiver) must not fall back to the
+                # bare-name map, or `m` would bind to any unrelated top-level
+                # function named `m`. Defer it to stay fail-closed (#3991).
+                _lua_member_defer = (
+                    config.ts_module == "tree_sitter_lua"
+                    and is_member_call
+                    and not lua_self_qualified
+                )
+                if _python_defer or _java_defer or _builtin_member_call or _lua_member_defer or (
                     is_member_call
                     and member_receiver
                     and (

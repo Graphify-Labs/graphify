@@ -1529,7 +1529,11 @@ _LUA_CONFIG = LanguageConfig(
     call_types=frozenset({"function_call"}),
     call_function_field="name",
     call_accessor_node_types=frozenset({"method_index_expression"}),
-    call_accessor_field="name",
+    # A colon call `obj:method()` parses as a method_index_expression whose callee
+    # lives in the `method` field and whose receiver lives in the `table` field —
+    # not the `name`/`object` fields the dot-access languages use (#3991).
+    call_accessor_field="method",
+    call_accessor_object_field="table",
     name_fallback_child_types=("identifier", "method_index_expression"),
     body_fallback_child_types=("block",),
     function_boundary_types=frozenset({"function_declaration"}),
