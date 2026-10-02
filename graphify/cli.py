@@ -2358,7 +2358,8 @@ def dispatch_command(cmd: str) -> None:
         # a report and labels describing a clustering graph.json does not contain
         # are worse than no run at all (#2436).
         if not to_json(G, communities, str(out / "graph.json"),
-                       community_labels=labels, built_at_commit=_commit):
+                       community_labels=labels, built_at_commit=_commit,
+                       original_links=_raw.get("links") or _raw.get("edges") or []):
             if not stale_marker_preexisted:
                 _clear_html_stale_marker()
             print(
