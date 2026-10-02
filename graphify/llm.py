@@ -2952,8 +2952,12 @@ def _call_llm(
         elif shutil.which("claude") is None:
             raise RuntimeError("Claude Code CLI not found on $PATH")
         cli_args = [claude_cmd, "-p", "--output-format", "json", "--no-session-persistence"]
-        if model is not None:
-            cli_args.extend(["--model", mdl])
+        cli_model = (
+            mdl if model is not None
+            else os.environ.get("GRAPHIFY_CLAUDE_CLI_MODEL", "").strip()
+        )
+        if cli_model:
+            cli_args.extend(["--model", cli_model])
         proc = subprocess.run(
             cli_args,
             input=prompt,
