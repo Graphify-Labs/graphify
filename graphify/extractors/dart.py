@@ -535,17 +535,28 @@ def extract_dart(path: Path) -> dict:
                           line=_line_at(brace_pos + om.start(1)))
 
     # 6. Imports and Exports
-    for m in re.finditer(r"""^\s*import\s+['"]([^'"]+)['"]""", src_clean, re.MULTILINE):
-        pkg = m.group(1)
-        tgt_nid = _make_id(pkg)
-        add_node(tgt_nid, pkg, source_file=None)
-        add_edge(file_nid, tgt_nid, "imports", line=_line_at(m.start(1)))
-
-    for m in re.finditer(r"""^\s*export\s+['"]([^'"]+)['"]""", src_clean, re.MULTILINE):
-        pkg = m.group(1)
-        tgt_nid = _make_id(pkg)
-        add_node(tgt_nid, pkg, source_file=None)
-        add_edge(file_nid, tgt_nid, "exports", line=_line_at(m.start(1)))
+    # A directive may carry configurable URIs that pick a platform-specific
+    # library: `export 'x_stub.dart' if (dart.library.io) 'x_io.dart';`. The
+    # default URI keeps its plain edge; every `if (...)` alternative is emitted
+    # too, tagged context="conditional_uri", because the real implementation
+    # usually lives there. A string literal inside the condition itself
+    # (`if (dart.library.io == 'true')`) is part of the test, not a URI.
+    quoted = r"""(?:'[^']*'|"[^"]*")"""
+    condition = rf"""if\s*\(\s*[\w.]+\s*(?:==\s*{quoted}\s*)?\)\s*"""
+    branch_re = re.compile(rf"""{condition}(['"])(?P<uri>[^'"]+)\1""")
+    for kind, relation in (("import", "imports"), ("export", "exports")):
+        directive_re = re.compile(
+            rf"""^\s*{kind}\s+(['"])(?P<uri>[^'"]+)\1(?P<branches>(?:\s*{condition}{quoted})*)""",
+            re.MULTILINE,
+        )
+        for m in directive_re.finditer(src_clean):
+            uris: list[tuple[str, int, str | None]] = [(m.group("uri"), m.start("uri"), None)]
+            for bm in branch_re.finditer(m.group("branches")):
+                uris.append((bm.group("uri"), m.start("branches") + bm.start("uri"), "conditional_uri"))
+            for pkg, offset, context in uris:
+                tgt_nid = _make_id(pkg)
+                add_node(tgt_nid, pkg, source_file=None)
+                add_edge(file_nid, tgt_nid, relation, context=context, line=_line_at(offset))
 
     # 7. Generic Invocations / Type Lookups (Universal Dependency Lookup)
     # Matches any method call with type parameters: methodName<Type>() or object.methodName<Type>()
