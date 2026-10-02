@@ -1356,6 +1356,49 @@ def _python_collect_assignment_targets(node, source: bytes, out: set[str]) -> No
         for c in node.children:
             _python_collect_assignment_targets(c, source, out)
 
+def _python_self_call_target(
+    caller_nid: str,
+    callee: str,
+    receiver: str,
+    label_to_nid: dict[str, str],
+    scope_parents: dict[str, str],
+    method_owner: dict[str, str],
+    methods_by_owner: dict[tuple[str, str], str],
+    class_bases: dict[str, list[str]],
+) -> str | None:
+    """In-file target of `self.m()`, `cls.m()` or `super().m()`, else None.
+
+    The receiver is the caller's own instance, so the lookup starts at the
+    enclosing class (skipped for `super`) and walks its in-file bases one level
+    at a time, nearest first, the order the ObjC resolver already uses for
+    `self`. Two hits on one level are a multiple-inheritance tie this pass
+    cannot order, so neither is bound. A method of a class outside that chain is
+    never the target: the file-wide name map used to hand `self.save()` in one
+    class to whichever class declared save() last. A file-wide hit that is not
+    a method (a module-level callable stored on the instance) still binds, as
+    before.
+    """
+    scope: str | None = caller_nid
+    while scope and scope not in method_owner:
+        scope = scope_parents.get(scope)
+    fallback = label_to_nid.get(callee)
+    if not scope:
+        return fallback
+    level = [method_owner[scope]]
+    seen: set[str] = set()
+    skip_own = receiver == "super"
+    while level:
+        seen.update(level)
+        if not skip_own:
+            hits = {methods_by_owner[(c, callee)] for c in level if (c, callee) in methods_by_owner}
+            if hits:
+                return hits.pop() if len(hits) == 1 else None
+        skip_own = False
+        level = list(dict.fromkeys(
+            base for c in level for base in class_bases.get(c, ()) if base not in seen
+        ))
+    return None if fallback in method_owner else fallback
+
 def _python_local_bound_names(func_def_node, source: bytes) -> set[str]:
     """Names bound LOCALLY inside a Python function: parameters plus assignment,
     `for`, `with ... as`, and comprehension targets.
@@ -6172,6 +6215,17 @@ def _extract_generic(
         if _e.get("relation") == "inherits":
             _local_bases.setdefault(_e["source"], []).append(_e["target"])
 
+    # Class membership for Python self-calls (see _python_self_call_target).
+    method_owner: dict[str, str] = {}
+    methods_by_owner: dict[tuple[str, str], str] = {}
+    if config.ts_module == "tree_sitter_python":
+        label_by_nid = {n["id"]: n["label"] for n in nodes}
+        for e in edges:
+            if e["relation"] == "method":
+                method_owner[e["target"]] = e["source"]
+                name = label_by_nid.get(e["target"], "").strip("()").lstrip(".")
+                methods_by_owner.setdefault((e["source"], name), e["target"])
+
     def _fields_up_chain(tables: dict, class_nid) -> dict:
         if not class_nid:
             return {}
@@ -6963,6 +7017,15 @@ def _extract_generic(
                             curr_scope = scope_parents.get(curr_scope)
                         if not tgt_nid:
                             tgt_nid = label_to_nid.get(callee_name)
+                    elif (
+                        config.ts_module == "tree_sitter_python"
+                        and is_member_call
+                        and member_receiver in ("self", "cls", "super")
+                    ):
+                        tgt_nid = _python_self_call_target(
+                            caller_nid, callee_name, member_receiver, label_to_nid,
+                            scope_parents, method_owner, methods_by_owner, _local_bases,
+                        )
                     else:
                         tgt_nid = label_to_nid.get(callee_name)
                     # A qualified `new A.B.Foo()` whose bare name matches only a
