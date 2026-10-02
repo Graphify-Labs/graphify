@@ -1,0 +1,19 @@
+universal_uninstall_scopes: [user]
+scopes:
+  user:
+    effects:
+      - kind: skill
+        root: home
+        path: .aider/graphify/SKILL.md
+        source: graphify/skill-aider.md
+  project:
+    effects:
+      - kind: skill
+        root: project
+        path: .aider/graphify/SKILL.md
+        source: graphify/skill-aider.md
+      - kind: section
+        root: project
+        path: AGENTS.md
+        marker: "## graphify"
+        source: graphify/always_on/agents-md.md
