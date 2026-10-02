@@ -107,7 +107,7 @@ def test_monolith_watch_uses_trusted_graphify_root(skill_file: str):
         f"{skill_file} --watch command does not reference graphify-out/.graphify_python"
     )
     assert block == (
-        '$(cat graphify-out/.graphify_python) -m graphify.watch '
+        '"$(cat graphify-out/.graphify_python)" -m graphify.watch '
         '"$(cat graphify-out/.graphify_root)" --debounce 3'
     )
 

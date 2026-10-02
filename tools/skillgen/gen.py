@@ -381,7 +381,7 @@ def _render_frontmatter(platform: Platform) -> str:
 # untranslated bash to the Windows variant. ``_POWERSHELL_BANNED_TOKENS`` is the
 # belt-and-braces post-check on the final body.
 
-_PY_INVOKE_POSIX = '$(cat graphify-out/.graphify_python) -c "'
+_PY_INVOKE_POSIX = '"$(cat graphify-out/.graphify_python)" -c "'
 _PY_INVOKE_PS_OPEN = "@'"
 _PY_INVOKE_PS_CLOSE = "'@ | & (Get-Content graphify-out\\.graphify_python) -"
 _MKDIR_POSIX = "mkdir -p graphify-out"
@@ -439,7 +439,7 @@ def _translate_bash_block(lines: list[str]) -> list[str]:
                 in_py = False
             else:
                 out.append(_unescape_bash_dq(line))
-        elif line == _PY_INVOKE_POSIX:
+        elif line in (_PY_INVOKE_POSIX, '$(cat graphify-out/.graphify_python) -c "'):
             out.append(_PY_INVOKE_PS_OPEN)
             in_py = True
         elif line == _MKDIR_POSIX:
@@ -523,8 +523,9 @@ def _render_core(platform: Platform) -> str:
     if platform.dispatch is None:
         raise ValueError(f"split platform '{platform.key}' is missing a dispatch variant")
 
-    install = _read_fragment(f"shell/{platform.shell}.md").rstrip("\n")
-    interp_guard = _read_fragment(f"shell/interpreter-guard-{platform.shell}.md").rstrip("\n")
+    resolver = _read_fragment("shell/python-resolver-posix.md").rstrip("\n")
+    install = _read_fragment(f"shell/{platform.shell}.md").rstrip("\n").replace("{{python_resolver}}", resolver)
+    interp_guard = _read_fragment(f"shell/interpreter-guard-{platform.shell}.md").rstrip("\n").replace("{{python_resolver}}", resolver)
     dispatch = _read_fragment(f"dispatch/{platform.dispatch}.md").rstrip("\n")
     query_stub = _read_fragment(_QUERY_STUB).rstrip("\n")
 
@@ -1180,6 +1181,111 @@ def _is_watch_injection_fix_line(line: str) -> bool:
     )
 
 
+_DURABLE_INTERPRETER_LINES = frozenset((
+    '"$(cat graphify-out/.graphify_python)" -c "',
+    '"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME',
+    '"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "ORIGINAL_QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2',
+    '"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B',
+    '"$(cat graphify-out/.graphify_python)" -m graphify save-result --question "QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2',
+    '"$(cat graphify-out/.graphify_python)" -m graphify.serve graphify-out/graph.json',
+    '"$(cat graphify-out/.graphify_python)" -m graphify.watch "$(cat graphify-out/.graphify_root)" --debounce 3',
+    '$(cat graphify-out/.graphify_python) -c "',
+    '$(cat graphify-out/.graphify_python) -m graphify save-result --question "Explain NODE_NAME" --answer "ANSWER" --type explain --nodes NODE_NAME',
+    '$(cat graphify-out/.graphify_python) -m graphify save-result --question "ORIGINAL_QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2',
+    '$(cat graphify-out/.graphify_python) -m graphify save-result --question "Path from NODE_A to NODE_B" --answer "ANSWER" --type path_query --nodes NODE_A NODE_B',
+    '$(cat graphify-out/.graphify_python) -m graphify save-result --question "QUESTION" --answer "ANSWER" --type query --nodes NODE1 NODE2',
+    '$(cat graphify-out/.graphify_python) -m graphify.serve graphify-out/graph.json',
+    '$(cat graphify-out/.graphify_python) -m graphify.watch "$(cat graphify-out/.graphify_root)" --debounce 3',
+    '**In every subsequent bash block, replace `python3` with `"$(cat graphify-out/.graphify_python)"` to use the correct interpreter.**',
+    '**In every subsequent bash block, replace `python3` with `$(cat graphify-out/.graphify_python)` to use the correct interpreter.**',
+
+    '"$PYTHON" -c "import graphify, sys; open(\'graphify-out/.graphify_python\', \'w\', encoding=\'utf-8\').write(sys.executable)" || exit 1',
+    '"$PYTHON" -c "import sys; open(\'graphify-out/.graphify_python\', \'w\').write(sys.executable)"',
+    '"$PYTHON" -c "import sys; open(\'graphify-out/.graphify_python\', \'w\', encoding=\'utf-8\').write(sys.executable)"',
+    '"$PYTHON" -m pip install graphifyy -q 2>/dev/null \\',
+    '"$_GRAPHIFY_INSTALL_PY" -m pip install graphifyy -q || { echo \'Graphify installation failed.\' >&2; exit 1; }',
+    '# 1. uv tool installs — most reliable on modern Mac/Linux',
+    '# 2. Read shebang from graphify binary (pipx and direct pip installs)',
+    '# 3. Fall back to python3',
+    '# Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs)',
+    '# Force UTF-8 I/O on Windows (prevents garbled CJK/non-ASCII output)',
+    '# Never read a PE executable as a shebang or evaluate launcher contents.',
+    '# Only text launchers with a literal, single-path shebang are candidates.',
+    '# Resolve a persistent interpreter and verify graphify before saving it.',
+    '# Save only the interpreter that passed the persistent-path and import checks.',
+    '# Validate an existing sidecar too: old releases may have saved an ephemeral path.',
+    '# Write interpreter path for all subsequent steps (persists across invocations)',
+    '# uv tool dir identifies the persistent tool environment, including Windows.',
+    "''|*[!a-zA-Z0-9/_.@-]*) ;;",
+    '*)',
+    '*) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;',
+    '*) graphify_accept_python "$_GRAPHIFY_SHEBANG" && return 0 ;;',
+    '*.exe|*.EXE) ;;',
+    '*[!a-zA-Z0-9/_.@-]*) ;;',
+    ';;',
+    'GRAPHIFY_BIN=$(which graphify 2>/dev/null)',
+    'IFS= read -r _GRAPHIFY_FIRST < "$_GRAPHIFY_BIN"',
+    'PYTHON=""',
+    'PYTHON="$_GRAPHIFY_RESOLVED"',
+    'PYTHON="python3"',
+    'PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d \'#!\')',
+    '[ -n "$1" ] || return 1',
+    '[ -n "$_GRAPHIFY_INSTALL_PY" ] || { echo \'Install Python or uv first.\' >&2; exit 1; }',
+    '[ -n "$_GRAPHIFY_RESOLVED" ] || return 1',
+    '_GRAPHIFY_BIN=$(command -v graphify 2>/dev/null)',
+    '_GRAPHIFY_CANDIDATE=$(command -v "$_GRAPHIFY_COMMAND" 2>/dev/null)',
+    '_GRAPHIFY_INSTALL_PY=$(command -v python3 2>/dev/null || command -v python 2>/dev/null)',
+    '_GRAPHIFY_RESOLVED=$("$1" -c "import graphify, sys; from pathlib import Path; assert not any(part.startswith(\'archive-v\') for p in (Path(sys.executable), Path(sys.executable).resolve()) for part in p.parts), \'ephemeral uv interpreter\'; print(sys.executable)" 2>/dev/null) || return 1',
+    '_GRAPHIFY_SAVED=$(cat graphify-out/.graphify_python 2>/dev/null)',
+    '_GRAPHIFY_SHEBANG=${_GRAPHIFY_FIRST#\\#!}',
+    '_GRAPHIFY_TOOLS=$(pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null)',
+    '_GRAPHIFY_TOOLS=$(uv tool dir 2>/dev/null)',
+    '_SHEBANG=$(head -1 "$GRAPHIFY_BIN" | tr -d \'#!\')',
+    '_UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)',
+    '```',
+    '```bash',
+    'case "$PYTHON" in *[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; esac',
+    'case "$_GRAPHIFY_BIN" in',
+    'case "$_GRAPHIFY_SHEBANG" in',
+    'case "$_SHEBANG" in',
+    'done',
+    'else',
+    'esac',
+    'export PYTHONUTF8=1',
+    'fi',
+    'for _GRAPHIFY_CANDIDATE in "$_GRAPHIFY_TOOLS/graphifyy/bin/python" "$_GRAPHIFY_TOOLS/graphifyy/Scripts/python.exe"; do',
+    'for _GRAPHIFY_COMMAND in python3 python; do',
+    'graphify_accept_python "$_GRAPHIFY_CANDIDATE" && return 0',
+    'graphify_accept_python() {',
+    "graphify_find_python || { echo 'No persistent Python interpreter can import graphify. Re-run Step 1.' >&2; exit 1; }",
+    "graphify_find_python || { echo 'No persistent Python interpreter can import graphify.' >&2; exit 1; }",
+    'graphify_find_python() {',
+    'if ! "$PYTHON" -c "import graphify" 2>/dev/null; then',
+    'if ! graphify_accept_python "$_GRAPHIFY_SAVED"; then',
+    'if ! graphify_find_python; then',
+    'if [ ! -f graphify-out/.graphify_python ]; then',
+    'if [ -f "$_GRAPHIFY_BIN" ] && [ "$(head -c 2 "$_GRAPHIFY_BIN" 2>/dev/null)" = \'#!\' ]; then',
+    'if [ -n "$GRAPHIFY_BIN" ]; then',
+    'if [ -n "$_GRAPHIFY_TOOLS" ]; then',
+    'if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi',
+    'if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then',
+    'if [ -z "$PYTHON" ] && command -v uv >/dev/null 2>&1; then',
+    'if [ -z "$PYTHON" ]; then PYTHON="python3"; fi',
+    'if command -v pipx >/dev/null 2>&1; then',
+    'if command -v uv >/dev/null 2>&1; then',
+    'mkdir -p graphify-out',
+    'return 1',
+    'uv tool install --upgrade graphifyy -q 2>&1 | tail -3',
+    "uv tool install --upgrade graphifyy -q || { echo 'Graphify installation failed.' >&2; exit 1; }",
+    '|| "$PYTHON" -m pip install graphifyy -q --break-system-packages 2>&1 | tail -3',
+    '}',
+))
+
+def _is_durable_interpreter_line(line: str) -> bool:
+    """Exact old/new resolver lines sanctioned for #3943; no arbitrary shell drift."""
+    return line.strip() in _DURABLE_INTERPRETER_LINES
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1203,6 +1309,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_community_label_export_fix_line,
     _is_step1_root_marker_fix_line,
     _is_watch_injection_fix_line,
+    _is_durable_interpreter_line,
 )
 
 
