@@ -3283,7 +3283,8 @@ def dispatch_command(cmd: str) -> None:
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
                 "[--no-gitignore] [--code-only] [--no-dedup] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
-                "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
+                "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] "
+                "[--allow-dedup-shrink] [--timing]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -3305,6 +3306,9 @@ def dispatch_command(cmd: str) -> None:
         cli_postgres_dsn: str | None = None
         cli_cargo: bool = False
         cli_allow_partial: bool = False
+        # --allow-dedup-shrink: write a graph that is smaller because dedup
+        # merged nodes. A deleted file does not need this flag (#3774).
+        cli_allow_dedup_shrink: bool = False
         no_cluster = False
         dedup_llm = False
         # --no-dedup: skip entity deduplication entirely. On an incremental
@@ -3433,6 +3437,8 @@ def dispatch_command(cmd: str) -> None:
                 force = True; i += 1
             elif a == "--allow-partial":
                 cli_allow_partial = True; i += 1
+            elif a == "--allow-dedup-shrink":
+                cli_allow_dedup_shrink = True; i += 1
             elif a == "--timing":
                 cli_timing = True; i += 1
             else:
@@ -4598,15 +4604,17 @@ def dispatch_command(cmd: str) -> None:
         _backup(graphify_out)
         _invalidate_file_manifest_for_db_graph()
         # force=True bypasses the #479 shrink guard entirely. A full build
-        # legitimately shrinks (fuzzy dedup collapse, deleted code) so it keeps
-        # force=True — EXCEPT when this run's extraction was incomplete (an
-        # extractor pass crashed or some semantic chunks failed). Then a partial
-        # graph could silently overwrite a good complete one, so fall back to the
-        # shrink guard (force=False) unless the user opts in with --allow-partial.
+        # legitimately shrinks when files were deleted, so a complete run keeps
+        # force=True — EXCEPT:
+        #   * extraction was incomplete (a pass crashed or a chunk came back
+        #     empty). Fall back to the shrink guard unless --allow-partial.
+        #   * dedup merged nodes and the saved graph would shrink by more than
+        #     this run's deletions (#3774). Refuse the write before to_json unless
+        #     --allow-dedup-shrink. --allow-partial does not accept that shrink.
         #
-        # Both write paths are guarded: the clustered path here via to_json's
-        # #479 check, and the `--no-cluster` raw-dump path above via the same
-        # shrink check against the existing file (existing_graph_node_count).
+        # Both write paths are guarded for an incomplete extraction: the clustered
+        # path here via to_json's #479 check, and the `--no-cluster` raw-dump path
+        # above via the same shrink check against the existing file.
         #
         # Trade-off: this reuses to_json's coarse node-count guard, not the
         # source-aware _check_shrink that watch/update use. On an incremental run
@@ -4614,7 +4622,34 @@ def dispatch_command(cmd: str) -> None:
         # failure can therefore be refused here — recoverable by re-running or
         # passing --allow-partial (the good graph is preserved and the manifest
         # is not stamped, so the retry re-extracts).
+        _gattrs = G.graph if hasattr(G, "graph") else {}
+        _dedup_collapsed = int(_gattrs.pop("_dedup_collapsed", 0) or 0)
+        _pruned_nodes = int(_gattrs.pop("_pruned_node_count", 0) or 0)
         _force_write = cli_allow_partial or not _extraction_incomplete
+        _dedup_shrink_counts: tuple[int, int] | None = None
+        if (
+            not _extraction_incomplete
+            and not no_dedup
+            and not cli_allow_dedup_shrink
+            and _dedup_collapsed > 0
+        ):
+            from graphify.export import existing_graph_node_count as _existing_graph_node_count
+            _existing_n = _existing_graph_node_count(graph_json_path)
+            _new_n = G.number_of_nodes()
+            if isinstance(_existing_n, int) and _new_n < _existing_n - _pruned_nodes:
+                _dedup_shrink_counts = (_existing_n, _new_n)
+        if _dedup_shrink_counts is not None:
+            # Refuse before to_json. to_json's own refusal tells the caller to
+            # pass force=True, which is not this flag (#3774).
+            _old_n, _new_n = _dedup_shrink_counts
+            print(
+                "[graphify extract] error: dedup reduced the graph from "
+                f"{_old_n} nodes to {_new_n} nodes. Refusing to overwrite "
+                f"{graph_json_path}. Pass --allow-dedup-shrink to write "
+                "the smaller graph.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         # Stamp provenance from the ANALYSED repo, not the shell's cwd: without
         # this, to_json's fallback asks `git rev-parse HEAD` in whatever repo the
         # command was invoked from, so `graphify extract <target>` run from
