@@ -625,30 +625,50 @@ def _hooks_dir(root: Path) -> Path:
     return d
 
 
+def _validated_hook_content(
+    hooks_dir: Path,
+    name: str,
+    marker: str,
+    marker_end: str,
+) -> str | None:
+    """Read a hook and reject malformed managed-section markers."""
+    hook_path = hooks_dir / name
+    if not hook_path.exists():
+        return None
+    with hook_path.open("r", encoding="utf-8", newline="") as stream:
+        content = stream.read()
+    if marker in content or marker_end in content:
+        valid_markers = (
+            content.count(marker) == 1
+            and content.count(marker_end) == 1
+            and content.index(marker) < content.index(marker_end)
+        )
+        if not valid_markers:
+            raise RuntimeError(f"malformed Graphify section in {hook_path}")
+    return content
+
+
 def _install_hook(
     hooks_dir: Path,
     name: str,
     script: str,
     marker: str,
-    marker_end: str = "",
+    marker_end: str,
 ) -> str:
-    """Install a single git hook, appending if an existing hook is present, or updating
-    an existing graphify block in-place."""
+    """Install or update one managed Graphify section in a git hook."""
     hook_path = hooks_dir / name
-    if hook_path.exists():
-        content = hook_path.read_text(encoding="utf-8")
+    content = _validated_hook_content(hooks_dir, name, marker, marker_end)
+    if content is not None:
         if marker in content:
-            if marker_end and marker_end in content:
-                start_idx = content.find(marker)
-                end_idx = content.find(marker_end)
-                if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
-                    end_idx += len(marker_end)
-                    new_content = content[:start_idx] + script.rstrip() + content[end_idx:]
-                    if new_content == content:
-                        return f"already installed at {hook_path}"
-                    hook_path.write_text(new_content, encoding="utf-8", newline="\n")
-                    return f"updated existing {name} hook at {hook_path}"
-            return f"already installed at {hook_path}"
+            start = content.index(marker)
+            end = content.index(marker_end, start) + len(marker_end)
+            updated = content[:start] + script.rstrip("\r\n") + content[end:]
+            if updated == content:
+                return f"already installed at {hook_path}"
+            with hook_path.open("w", encoding="utf-8", newline="") as stream:
+                stream.write(updated)
+            hook_path.chmod(0o755)
+            return f"updated existing {name} hook at {hook_path}"
         hook_path.write_text(content.rstrip() + "\n\n" + script, encoding="utf-8", newline="\n")
         return f"appended to existing {name} hook at {hook_path}"
     hook_path.write_text("#!/bin/sh\n" + script, encoding="utf-8", newline="\n")
@@ -884,8 +904,29 @@ def install(path: Path = Path(".")) -> str:
     hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
     checkout = _CHECKOUT_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
 
-    commit_msg = _install_hook(hooks_dir, "post-commit", hook, _HOOK_MARKER, _HOOK_MARKER_END)
-    checkout_msg = _install_hook(hooks_dir, "post-checkout", checkout, _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
+    # Validate both managed sections before writing either hook.
+    _validated_hook_content(hooks_dir, "post-commit", _HOOK_MARKER, _HOOK_MARKER_END)
+    _validated_hook_content(
+        hooks_dir,
+        "post-checkout",
+        _CHECKOUT_MARKER,
+        _CHECKOUT_MARKER_END,
+    )
+
+    commit_msg = _install_hook(
+        hooks_dir,
+        "post-commit",
+        hook,
+        _HOOK_MARKER,
+        _HOOK_MARKER_END,
+    )
+    checkout_msg = _install_hook(
+        hooks_dir,
+        "post-checkout",
+        checkout,
+        _CHECKOUT_MARKER,
+        _CHECKOUT_MARKER_END,
+    )
     merge_msg = _register_merge_driver(root)
 
     return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
