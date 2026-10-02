@@ -8357,6 +8357,16 @@ def extract(
     _member_nids = {
         e.get("target") for e in all_edges if e.get("relation") in ("case_of", "defines")
     }
+    # Top-level Elixir module names per file, for scoping unqualified Elixir
+    # calls below. Read from `resolution_nodes` so an unchanged file's modules
+    # stay visible on an incremental rebuild (`_elixir_module` is carried by the
+    # resolution-context allow-list).
+    _elixir_modules_by_file: dict[str, set[str]] = {}
+    for n in resolution_nodes:
+        if n.get("_elixir_module") and n.get("source_file"):
+            _elixir_modules_by_file.setdefault(str(n["source_file"]), set()).add(
+                str(n.get("label", ""))
+            )
     _csharp_stub_resolver: CsharpNameResolver | None = None  # built on first use
     for rc in all_raw_calls:
         if rc.get("_ambiguous_python_import"):
@@ -8459,6 +8469,21 @@ def extract(
             if not candidates:
                 continue
             go_exact_import = True
+        # An unqualified Elixir call can only reach the caller's own module
+        # (resolved in-file by the extractor), Kernel, or a module the file
+        # `import`s or `use`s. A same-named def in any other module is out of
+        # scope: binding to it by name landed every migration's `table(:users)`
+        # (Ecto.Migration, pulled in by `use`) on an unrelated Phoenix
+        # component's `table/1` and made it the top god node (#4001).
+        elixir_call_scope = rc.get("elixir_call_scope")
+        if elixir_call_scope is not None:
+            scope = set(elixir_call_scope)
+            candidates = [
+                candidate for candidate in candidates
+                if _elixir_modules_by_file.get(nid_to_source_file.get(candidate, ""), set()) & scope
+            ]
+            if not candidates:
+                continue
         caller = rc["caller_nid"]
         # Resolve the caller's file via the raw_call's own source_file string,
         # which is stable regardless of any caller_nid remap. An indirect
