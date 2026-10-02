@@ -2958,6 +2958,102 @@ def test_extract_bash_attributes_variable_built_invocation_to_function(tmp_path)
     assert invocation["source"] == deploy["id"]
 
 
+@pytest.mark.parametrize("command", ["python3 stage.py --client \"$C\"", "python stage.py"])
+def test_extract_bash_emits_invokes_for_a_non_shell_interpreter(tmp_path, command):
+    """#3802: a script run through python/python3/node is a real dependency the
+    orchestrator has on that script, same as the existing bash-runner case."""
+    stage = tmp_path / "stage.py"
+    stage.write_text("print('stage')\n", encoding="utf-8")
+    script = tmp_path / "runner.sh"
+    script.write_text(f"#!/bin/bash\n{command}\n", encoding="utf-8")
+
+    result = extract_bash(script)
+    invocation = [
+        edge for edge in result["edges"]
+        if edge.get("relation") == "invokes" and edge.get("context") == "script_invocation"
+    ]
+
+    assert invocation == [{
+        "source": _make_id(str(script)) + "__entry",
+        "target": _make_id(str(stage.resolve())),
+        "relation": "invokes",
+        "confidence": "INFERRED",
+        "source_file": str(script),
+        "source_location": "L2",
+        "weight": 1.0,
+        "context": "script_invocation",
+        "target_file": str(stage.resolve()),
+    }]
+
+
+def test_extract_bash_emits_invokes_for_a_bare_interpreter_variable(tmp_path):
+    """#3802: "$PYTHON" scripts/stage_two.py — the command word is itself an
+    unresolvable expansion, so only the file argument identifies the target."""
+    stage = tmp_path / "stage_two.py"
+    stage.write_text("print('stage two')\n", encoding="utf-8")
+    script = tmp_path / "runner.sh"
+    script.write_text(
+        '#!/bin/bash\nPYTHON="python3"\n"$PYTHON" stage_two.py\n', encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+    invocation = [
+        edge for edge in result["edges"]
+        if edge.get("relation") == "invokes" and edge.get("context") == "script_invocation"
+    ]
+
+    assert invocation == [{
+        "source": _make_id(str(script)) + "__entry",
+        "target": _make_id(str(stage.resolve())),
+        "relation": "invokes",
+        "confidence": "INFERRED",
+        "source_file": str(script),
+        "source_location": "L3",
+        "weight": 1.0,
+        "context": "script_invocation",
+        "target_file": str(stage.resolve()),
+    }]
+
+
+def test_extract_bash_invokes_targets_a_bash_entrypoint_when_the_target_is_sh(tmp_path):
+    """A non-shell interpreter running a .sh file (unusual but not impossible)
+    must still land on the target's __entry node like the native .sh path."""
+    helper = tmp_path / "helper.sh"
+    helper.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "runner.sh"
+    script.write_text('#!/bin/bash\nnode ./helper.sh\n', encoding="utf-8")
+
+    result = extract_bash(script)
+    invocation = next(
+        edge for edge in result["edges"]
+        if edge.get("relation") == "invokes" and edge.get("context") == "script_invocation"
+    )
+    assert invocation["target"] == _make_id(str(helper.resolve())) + "__entry"
+
+
+def test_extract_bash_skips_invokes_for_a_non_interpreter_command(tmp_path):
+    """A plain command that happens to take a .py argument (cp, a custom
+    tool, ...) must not be mistaken for an interpreter invocation (#3802)."""
+    stage = tmp_path / "stage.py"
+    stage.write_text("print('stage')\n", encoding="utf-8")
+    script = tmp_path / "runner.sh"
+    script.write_text(
+        "#!/bin/bash\ncp stage.py /tmp/backup.py\nsome_custom_tool stage.py\n",
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+    assert not any(edge.get("relation") == "invokes" for edge in result["edges"])
+
+
+def test_extract_bash_skips_invokes_for_a_missing_script(tmp_path):
+    script = tmp_path / "runner.sh"
+    script.write_text("#!/bin/bash\npython3 does_not_exist.py\n", encoding="utf-8")
+
+    result = extract_bash(script)
+    assert not any(edge.get("relation") == "invokes" for edge in result["edges"])
+
+
 def test_extract_bash_no_self_loops():
     result = extract_bash(FIXTURES / "sample.sh")
     for e in result["edges"]:
