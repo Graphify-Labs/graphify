@@ -7626,6 +7626,39 @@ def extract(
             file=sys.stderr, flush=True,
         )
 
+    # #3946: a code file that parses CLEANLY (no parse_errors — distinct from
+    # the #2551/#2599 case just above, where _syntax_error_files already
+    # explains the loss) but still yields only its own bare file node is
+    # usually a plain data literal the AST extractor has nothing to model
+    # (`const BANK = [...]`), not a code file with no symbols. Nothing
+    # reported this before; the file silently entered the graph as a bare,
+    # zero-edge node, indistinguishable from a legitimately symbol-free file.
+    _symbolless_files: list[tuple[str, int]] = []
+    for i, _p in enumerate(paths):
+        _res = per_file[i] or {}
+        if _res.get("parse_errors") or _res.get("error"):
+            continue
+        if len(_res.get("nodes", [])) <= 1:
+            try:
+                _size = _p.stat().st_size
+            except OSError:
+                _size = 0
+            _symbolless_files.append((os.path.relpath(str(_p), str(root)).replace("\\", "/"), _size))
+    if _symbolless_files:
+        _total_bytes = sum(size for _, size in _symbolless_files)
+        _total_mb = _total_bytes / (1024 * 1024)
+        _shown_sl = ", ".join(rel for rel, _ in _symbolless_files[:5])
+        _more_sl = (
+            f" (+{len(_symbolless_files) - 5} more)"
+            if len(_symbolless_files) > 5 else ""
+        )
+        print(
+            f"  warning: {len(_symbolless_files)} code file(s) yielded no symbols "
+            f"({_total_mb:.2f} MB); they may be data rather than code: "
+            f"{_shown_sl}{_more_sl}",
+            file=sys.stderr, flush=True,
+        )
+
     for path, result in zip(paths, per_file):
         if path.suffix in (".tf", ".tfvars", ".hcl"):
             prepare_terraform(result, path, root)
