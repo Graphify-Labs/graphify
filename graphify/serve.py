@@ -1047,7 +1047,9 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
             # is the starting node should still be explored).
             if n not in seed_set and G.degree(n) >= hub_threshold:
                 continue
-            for neighbor in G.neighbors(n):
+            # sorted() so traversal order depends only on graph topology,
+            # not edge-insertion order (graph.json load vs AGE row-scan differ).
+            for neighbor in sorted(G.neighbors(n)):
                 if neighbor not in visited:
                     next_frontier.add(neighbor)
                     edges_seen.append((n, neighbor))
@@ -1076,7 +1078,9 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
         visited.add(node)
         if node not in seed_set and G.degree(node) >= hub_threshold:
             continue
-        for neighbor in G.neighbors(node):
+        # sorted(reverse) so stack.pop() visits neighbours in canonical
+        # order regardless of edge-insertion order (backend parity).
+        for neighbor in sorted(G.neighbors(node), reverse=True):
             if neighbor not in visited:
                 stack.append((neighbor, d + 1))
                 edges_seen.append((node, neighbor))
@@ -1105,10 +1109,10 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     # insertion-ordered and the sort key ends in str(n) (no hash-order).
     def _adj(n):
         if G.is_directed():
-            yield from G.successors(n)
-            yield from G.predecessors(n)
+            yield from sorted(G.successors(n))
+            yield from sorted(G.predecessors(n))
         else:
-            yield from G.neighbors(n)
+            yield from sorted(G.neighbors(n))
     dist: dict[str, int] = {n: 0 for n in seed_hits}
     frontier, hop = seed_hits, 0
     while frontier:
@@ -1173,7 +1177,11 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             f"{attrs_suffix}]"
         )
         lines.append(line)
-    for u, v in edges:
+    # Canonical edge order: discovery order (edges_seen) depends on set-iteration
+    # of the BFS/DFS frontier, so it differs between the graph.json and AGE
+    # backends even for identical topology. Sort by endpoint id so the rendered
+    # EDGE block — and which trailing edges a budget cut drops — is stable.
+    for u, v in sorted(set(edges), key=lambda uv: (str(uv[0]), str(uv[1]))):
         if u in nodes and v in nodes:
             raw = G[u][v]
             d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw

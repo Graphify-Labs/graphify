@@ -259,6 +259,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `mcp` | MCP stdio server | `uv tool install "graphifyy[mcp]"` |
 | `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
 | `falkordb` | FalkorDB push support | `uv tool install "graphifyy[falkordb]"` |
+| `age` | Apache AGE (Postgres) push support | `uv tool install "graphifyy[age]"` |
 | `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
 | `leiden` | Leiden community detection (graspologic on Python < 3.13; native backend on 3.13+) | `uv tool install "graphifyy[leiden]"` |
 | `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |

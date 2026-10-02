@@ -1134,6 +1134,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+age = [
+    { name = "psycopg", extra = ["binary"] },
+]
 all = [
     { name = "anthropic" },
     { name = "boto3" },
@@ -1330,6 +1333,7 @@ requires-dist = [
     { name = "openpyxl", marker = "extra == 'office'" },
     { name = "pillow", marker = "extra == 'all'", specifier = ">=12.3.0" },
     { name = "pillow", marker = "extra == 'svg'", specifier = ">=12.3.0" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'age'" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'all'" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'" },
     { name = "pypdf", marker = "extra == 'all'", specifier = ">=6.16.1" },
@@ -1397,7 +1401,7 @@ requires-dist = [
     { name = "yt-dlp", marker = "extra == 'all'", specifier = ">=2026.7.4" },
     { name = "yt-dlp", marker = "extra == 'video'", specifier = ">=2026.7.4" },
 ]
-provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "pascal", "dm", "terraform", "ocaml", "commonlisp", "robot", "vbnet", "r", "erlang", "solidity", "all"]
+provides-extras = ["mcp", "neo4j", "falkordb", "pdf", "watch", "svg", "leiden", "office", "google", "postgres", "age", "video", "kimi", "ollama", "bedrock", "anthropic", "gemini", "openai", "chinese", "sql", "pascal", "dm", "terraform", "ocaml", "commonlisp", "robot", "vbnet", "r", "erlang", "solidity", "all"]
 
 [package.metadata.requires-dev]
 dev = [

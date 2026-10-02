@@ -1252,7 +1252,8 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] "
+                  "[--graph path] [--age postgresql://... --graph-name NAME]", file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -1263,6 +1264,8 @@ def dispatch_command(cmd: str) -> None:
         use_dfs = "--dfs" in sys.argv
         budget = 2000
         graph_path = _default_graph_path()
+        age_conninfo = None
+        age_graph_name = "graphify"
         context_filters: list[str] = []
         args = sys.argv[3:]
         i = 0
@@ -1290,66 +1293,89 @@ def dispatch_command(cmd: str) -> None:
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
                 i += 2
+            elif args[i] == "--age" and i + 1 < len(args):
+                age_conninfo = args[i + 1]
+                i += 2
+            elif args[i] == "--graph-name" and i + 1 < len(args):
+                age_graph_name = args[i + 1]
+                i += 2
             else:
                 i += 1
-        gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        if not gp.suffix == ".json":
-            print(f"error: graph file must be a .json file", file=sys.stderr)
-            sys.exit(1)
-        _enforce_graph_size_cap_or_exit(gp)
-        try:
-            import json as _json
-            import networkx as _nx
 
-            _raw = _json.loads(gp.read_text(encoding="utf-8"))
-            if "links" not in _raw and "edges" in _raw:
-                _raw = dict(_raw, links=_raw["edges"])
-            # `query` deliberately keeps the graph undirected (unlike `path` /
-            # `explain`, which force directed=True): BFS/DFS here must explore
-            # both callers and callees of the seed node to build useful
-            # context, and forcing a DiGraph would make G.neighbors() return
-            # successors only, silently dropping every caller-side result for
-            # a seed with no outgoing edges. Direction is instead preserved
-            # per-edge below (mirrors graphify/build.py's _src/_tgt pattern)
-            # so the *rendering* stays correct without narrowing traversal.
-            # Keep in-file markers when present (#2309): unconditionally
-            # overwriting them with source/target would clobber the true
-            # direction of a link persisted in flipped endpoint order.
-            _raw = dict(
-                _raw,
-                links=[
-                    {
-                        **link,
-                        "_src": link.get("_src", link.get("source")),
-                        "_tgt": link.get("_tgt", link.get("target")),
-                    }
-                    for link in _raw.get("links", [])
-                ],
-            )
+        # docs/AGE_PLAN.md Phase 6: fetch-then-NetworkX-score, not a
+        # separate query path -- everything after this branch (scoring,
+        # formatting) is identical to the file backend. No local file, no
+        # size cap, no query stamp (there's no cache/ dir to write next to).
+        if age_conninfo is not None:
+            from graphify.age_backend import fetch_graph_from_age
+            import networkx as _nx
             try:
-                G = json_graph.node_link_graph(_raw, edges="links")
-            except TypeError:
-                G = json_graph.node_link_graph(_raw)
+                G = _nx.Graph(fetch_graph_from_age(age_conninfo, age_graph_name))
+            except Exception as exc:
+                print(f"error: could not fetch graph '{age_graph_name}' from AGE: {exc}", file=sys.stderr)
+                sys.exit(1)
+            gp = None
+        else:
+            gp = Path(graph_path).resolve()
+            if not gp.exists():
+                print(f"error: graph file not found: {gp}", file=sys.stderr)
+                sys.exit(1)
+            if not gp.suffix == ".json":
+                print(f"error: graph file must be a .json file", file=sys.stderr)
+                sys.exit(1)
+            _enforce_graph_size_cap_or_exit(gp)
+        if gp is not None:
             try:
-                from graphify.build import graph_has_legacy_ids as _legacy
-                if _legacy(_raw.get("nodes", [])):
-                    print(
-                        "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
-                        "rebuild with `graphify extract --force` to get path-qualified IDs "
-                        "(fixes same-name-file collisions).",
-                        file=sys.stderr,
-                    )
-            except Exception:
-                pass
-        except Exception as exc:
-            print(f"error: could not load graph: {exc}", file=sys.stderr)
-            sys.exit(1)
+                import json as _json
+                import networkx as _nx
+
+                _raw = _json.loads(gp.read_text(encoding="utf-8"))
+                if "links" not in _raw and "edges" in _raw:
+                    _raw = dict(_raw, links=_raw["edges"])
+                # `query` deliberately keeps the graph undirected (unlike `path` /
+                # `explain`, which force directed=True): BFS/DFS here must explore
+                # both callers and callees of the seed node to build useful
+                # context, and forcing a DiGraph would make G.neighbors() return
+                # successors only, silently dropping every caller-side result for
+                # a seed with no outgoing edges. Direction is instead preserved
+                # per-edge below (mirrors graphify/build.py's _src/_tgt pattern)
+                # so the *rendering* stays correct without narrowing traversal.
+                # Keep in-file markers when present (#2309): unconditionally
+                # overwriting them with source/target would clobber the true
+                # direction of a link persisted in flipped endpoint order.
+                _raw = dict(
+                    _raw,
+                    links=[
+                        {
+                            **link,
+                            "_src": link.get("_src", link.get("source")),
+                            "_tgt": link.get("_tgt", link.get("target")),
+                        }
+                        for link in _raw.get("links", [])
+                    ],
+                )
+                try:
+                    G = json_graph.node_link_graph(_raw, edges="links")
+                except TypeError:
+                    G = json_graph.node_link_graph(_raw)
+                try:
+                    from graphify.build import graph_has_legacy_ids as _legacy
+                    if _legacy(_raw.get("nodes", [])):
+                        print(
+                            "[graphify] note: this graph uses the pre-#1504 node-ID scheme; "
+                            "rebuild with `graphify extract --force` to get path-qualified IDs "
+                            "(fixes same-name-file collisions).",
+                            file=sys.stderr,
+                        )
+                except Exception:
+                    pass
+            except Exception as exc:
+                print(f"error: could not load graph: {exc}", file=sys.stderr)
+                sys.exit(1)
         import time as _time
         _t0 = _time.perf_counter()
         _mode = "dfs" if use_dfs else "bfs"
+        _corpus = str(gp) if gp is not None else f"age://{age_graph_name}"
         _result = _query_graph_text(
             G,
             question,
@@ -1357,19 +1383,20 @@ def dispatch_command(cmd: str) -> None:
             depth=2,
             token_budget=budget,
             context_filters=context_filters,
-            graph_path=str(gp),
+            graph_path=_corpus,
         )
         querylog.log_query(
             kind="query",
             question=question,
-            corpus=str(gp),
+            corpus=_corpus,
             result=_result,
             mode=_mode,
             depth=2,
             token_budget=budget,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
         )
-        _touch_query_stamp(gp)
+        if gp is not None:
+            _touch_query_stamp(gp)
         print(_result)
     elif cmd == "affected":
         if len(sys.argv) < 3:
@@ -1601,7 +1628,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 4:
             print(
                 'Usage: graphify path "<source>" "<target>" [--graph path] '
-                "[--directed|--undirected]",
+                "[--directed|--undirected] [--age postgresql://... --graph-name NAME]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -1612,11 +1639,17 @@ def dispatch_command(cmd: str) -> None:
         source_label = sys.argv[2]
         target_label = sys.argv[3]
         graph_path = _default_graph_path()
+        age_conninfo = None
+        age_graph_name = "graphify"
         args = sys.argv[4:]
         direction_flag = None
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+            elif a == "--age" and i + 1 < len(args):
+                age_conninfo = args[i + 1]
+            elif a == "--graph-name" and i + 1 < len(args):
+                age_graph_name = args[i + 1]
             elif a == "--directed":
                 if direction_flag == "undirected":
                     print(
@@ -1637,25 +1670,41 @@ def dispatch_command(cmd: str) -> None:
         # graph.json (arc order on post-#563 files, _src/_tgt markers on legacy
         # canonicalized files), so respect it unless the caller opts out.
         undirected = direction_flag == "undirected"
-        gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        _enforce_graph_size_cap_or_exit(gp)
-        _raw = json.loads(gp.read_text(encoding="utf-8"))
-        if "links" not in _raw and "edges" in _raw:
-            _raw = dict(_raw, links=_raw["edges"])
-        # Force directed so the renderer can recover stored caller→callee
-        # direction, and multigraph so exact-pair parallel links (e.g. a
-        # `references` and a `calls` edge between the same two nodes) survive load
-        # instead of being silently collapsed last-writer-wins — otherwise the
-        # printed relation could be one the traversed pair doesn't actually
-        # carry (#2074). Local to this read; serve's shared graph is untouched.
-        _raw = {**_raw, "directed": True, "multigraph": True}
-        try:
-            G = json_graph.node_link_graph(_raw, edges="links")
-        except TypeError:
-            G = json_graph.node_link_graph(_raw)
+
+        # docs/AGE_PLAN.md Phase 6: fetch-then-NetworkX-score. fetch_graph_from_age()
+        # already returns a MultiGraph with _src/_tgt stamped on every edge, which is
+        # exactly what the file-backend load below produces (multigraph=True,
+        # directed=True forced) - everything downstream (has_edge/edge_datas already
+        # tolerate MultiGraph; direction is re-derived from _src/_tgt either way) works
+        # unchanged, so no further conversion is needed here.
+        gp = None
+        if age_conninfo is not None:
+            from graphify.age_backend import fetch_graph_from_age
+            try:
+                G = fetch_graph_from_age(age_conninfo, age_graph_name)
+            except Exception as exc:
+                print(f"error: could not fetch graph '{age_graph_name}' from AGE: {exc}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            gp = Path(graph_path).resolve()
+            if not gp.exists():
+                print(f"error: graph file not found: {gp}", file=sys.stderr)
+                sys.exit(1)
+            _enforce_graph_size_cap_or_exit(gp)
+            _raw = json.loads(gp.read_text(encoding="utf-8"))
+            if "links" not in _raw and "edges" in _raw:
+                _raw = dict(_raw, links=_raw["edges"])
+            # Force directed so the renderer can recover stored caller→callee
+            # direction, and multigraph so exact-pair parallel links (e.g. a
+            # `references` and a `calls` edge between the same two nodes) survive load
+            # instead of being silently collapsed last-writer-wins — otherwise the
+            # printed relation could be one the traversed pair doesn't actually
+            # carry (#2074). Local to this read; serve's shared graph is untouched.
+            _raw = {**_raw, "directed": True, "multigraph": True}
+            try:
+                G = json_graph.node_link_graph(_raw, edges="links")
+            except TypeError:
+                G = json_graph.node_link_graph(_raw)
         src_scored = _score_nodes(G, [t.lower() for t in source_label.split()])
         tgt_scored = _score_nodes(G, [t.lower() for t in target_label.split()])
         if not src_scored:
@@ -1756,41 +1805,75 @@ def dispatch_command(cmd: str) -> None:
                 segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
         print(f"Shortest path ({hops} hops):\n  " + " ".join(segments))
         from graphify import querylog
+        _corpus = str(gp) if gp is not None else f"age://{age_graph_name}"
         querylog.log_query(
             kind="path",
             question=f"{sys.argv[2]} -> {sys.argv[3]}",
-            corpus=str(gp),
+            corpus=_corpus,
             nodes_returned=hops,
         )
-        _touch_query_stamp(gp)
+        if gp is not None:
+            _touch_query_stamp(gp)
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
-            print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
+            print('Usage: graphify explain "<node>" [--graph path] '
+                  '[--age postgresql://... --graph-name NAME]', file=sys.stderr)
             sys.exit(1)
         from graphify.serve import _find_node, find_node_ambiguity
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
         graph_path = _default_graph_path()
+        age_conninfo = None
+        age_graph_name = "graphify"
         args = sys.argv[3:]
         for i, a in enumerate(args):
             if a == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
-        gp = Path(graph_path).resolve()
-        if not gp.exists():
-            print(f"error: graph file not found: {gp}", file=sys.stderr)
-            sys.exit(1)
-        _enforce_graph_size_cap_or_exit(gp)
-        _raw = json.loads(gp.read_text(encoding="utf-8"))
-        if "links" not in _raw and "edges" in _raw:
-            _raw = dict(_raw, links=_raw["edges"])
-        # Force directed so the renderer can recover stored caller→callee direction.
-        _raw = {**_raw, "directed": True}
-        try:
-            G = json_graph.node_link_graph(_raw, edges="links")
-        except TypeError:
-            G = json_graph.node_link_graph(_raw)
+            elif a == "--age" and i + 1 < len(args):
+                age_conninfo = args[i + 1]
+            elif a == "--graph-name" and i + 1 < len(args):
+                age_graph_name = args[i + 1]
+        gp = None
+        if age_conninfo is not None:
+            # docs/AGE_PLAN.md Phase 6: fetch-then-NetworkX-score. explain
+            # needs G.successors()/predecessors(), which only a directed
+            # graph has -- fetch_graph_from_age() returns an undirected
+            # MultiGraph (matching build()'s own output shape), so derive
+            # the directed view from each edge's _src/_tgt the same way
+            # `path`'s file-backend block already does.
+            from graphify.age_backend import fetch_graph_from_age
+            import networkx as _nx
+            try:
+                _undirected = fetch_graph_from_age(age_conninfo, age_graph_name)
+            except Exception as exc:
+                print(f"error: could not fetch graph '{age_graph_name}' from AGE: {exc}", file=sys.stderr)
+                sys.exit(1)
+            # DiGraph, not MultiDiGraph: the file backend below loads
+            # graph.json with directed=True but NOT multigraph, so same-pair
+            # parallel edges collapse there. Match that or the neighbour lists
+            # (and the truncated "N connections" tallies) diverge between the
+            # two backends. (#dogfood-age-direction)
+            G = _nx.DiGraph()
+            G.add_nodes_from(_undirected.nodes(data=True))
+            for u, v, data in _undirected.edges(data=True):
+                G.add_edge(data.get("_src", u), data.get("_tgt", v), **data)
+        else:
+            gp = Path(graph_path).resolve()
+            if not gp.exists():
+                print(f"error: graph file not found: {gp}", file=sys.stderr)
+                sys.exit(1)
+            _enforce_graph_size_cap_or_exit(gp)
+            _raw = json.loads(gp.read_text(encoding="utf-8"))
+            if "links" not in _raw and "edges" in _raw:
+                _raw = dict(_raw, links=_raw["edges"])
+            # Force directed so the renderer can recover stored caller→callee direction.
+            _raw = {**_raw, "directed": True}
+            try:
+                G = json_graph.node_link_graph(_raw, edges="links")
+            except TypeError:
+                G = json_graph.node_link_graph(_raw)
         matches = _find_node(G, label)
         if not matches:
             print(f"No node matching '{label}' found.")
@@ -1821,7 +1904,7 @@ def dispatch_command(cmd: str) -> None:
         try:
             from graphify.reflect import load_learning_overlay as _llo
             from graphify.security import sanitize_label as _sl
-            _overlay = _llo(gp)
+            _overlay = _llo(gp) if gp is not None else {}
             _entry = _overlay.get(str(nid))
             if _entry:
                 _status = _sl(str(_entry.get("status", "")))
@@ -1858,7 +1941,12 @@ def dispatch_command(cmd: str) -> None:
             )
         if connections:
             print(f"\nConnections ({len(connections)}):")
-            connections.sort(key=lambda c: G.degree(c[1]), reverse=True)
+            # Tie-break by neighbour id so the order -- and thus which
+            # connections fall past the top-20 cut -- is byte-stable for a
+            # given graph regardless of edge-insertion order (graph.json load
+            # order vs. AGE row-scan order would otherwise diverge). Same
+            # reasoning as the `by_file` grouping's stable sort below.
+            connections.sort(key=lambda c: (-G.degree(c[1]), str(c[1])))
             for direction, nb, edata in connections[:20]:
                 rel = edata.get("relation", "")
                 conf = edata.get("confidence", "")
@@ -1893,13 +1981,15 @@ def dispatch_command(cmd: str) -> None:
                 if len(grouped) > 20:
                     print(f"    ... and {len(grouped) - 20} more files")
         from graphify import querylog
+        _corpus = str(gp) if gp is not None else f"age://{age_graph_name}"
         querylog.log_query(
             kind="explain",
             question=sys.argv[2],
-            corpus=str(gp),
+            corpus=_corpus,
             nodes_returned=len(connections),
         )
-        _touch_query_stamp(gp)
+        if gp is not None:
+            _touch_query_stamp(gp)
 
     elif cmd == "diagnose":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -2836,7 +2926,7 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "export":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
-        if subcmd not in ("html", "callflow-html", "obsidian", "wiki", "svg", "graphml", "neo4j", "falkordb"):
+        if subcmd not in ("html", "callflow-html", "obsidian", "wiki", "svg", "graphml", "neo4j", "falkordb", "age"):
             print("Usage: graphify export <format>", file=sys.stderr)
             print("  html      [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]", file=sys.stderr)
             print("  callflow-html [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]", file=sys.stderr)
@@ -2849,6 +2939,14 @@ def dispatch_command(cmd: str) -> None:
             print("            (or set NEO4J_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
             print("  falkordb  [--graph PATH] [--push URI] [--user U] [--password P]", file=sys.stderr)
             print("            (or set FALKORDB_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
+            print("  age       [--graph PATH] --push postgresql://user:pass@host/db [--graph-name NAME] [--full-props]", file=sys.stderr)
+            print("            [--owner OWNER] [--repo-tag TAG] [--remote-url URL] [--no-register]", file=sys.stderr)
+            print("            [--default-branch NAME]  (required on an unregistered repo's first push unless", file=sys.stderr)
+            print("             refs/remotes/origin/HEAD is set -- refuses to guess, since a first push's", file=sys.stderr)
+            print("             default-branch is a persistent decision)", file=sys.stderr)
+            print("            [--extraction-config HASH]  (or set GRAPHIFY_EXTRACTION_CONFIG_HASH; folded into", file=sys.stderr)
+            print("             the compatibility check alongside --full-props)", file=sys.stderr)
+            print("            (or set AGE_PASSWORD / PGPASSWORD instead of embedding the password in --push)", file=sys.stderr)
             sys.exit(1)
 
         # Parse shared args
@@ -2880,8 +2978,18 @@ def dispatch_command(cmd: str) -> None:
         # NEO4J_PASSWORD otherwise.
         push_password: str | None = (
             os.environ.get("FALKORDB_PASSWORD") if subcmd == "falkordb"
+            else (os.environ.get("AGE_PASSWORD") or os.environ.get("PGPASSWORD")) if subcmd == "age"
             else os.environ.get("NEO4J_PASSWORD")
         ) or None
+        age_graph_name = "graphify"
+        age_graph_name_explicit = False
+        age_full_props = False
+        age_owner: str | None = None
+        age_repo_tag: str | None = None
+        age_remote_url: str | None = None
+        age_no_register = False
+        age_default_branch_flag: str | None = None
+        age_extraction_config_flag: str | None = os.environ.get("GRAPHIFY_EXTRACTION_CONFIG_HASH")
         i = 0
         while i < len(args):
             a = args[i]
@@ -2937,6 +3045,22 @@ def dispatch_command(cmd: str) -> None:
                 push_user = args[i + 1]; i += 2
             elif a == "--password" and i + 1 < len(args):
                 push_password = args[i + 1]; i += 2
+            elif a == "--graph-name" and i + 1 < len(args):
+                age_graph_name = args[i + 1]; age_graph_name_explicit = True; i += 2
+            elif a == "--full-props":
+                age_full_props = True; i += 1
+            elif a == "--owner" and i + 1 < len(args):
+                age_owner = args[i + 1]; i += 2
+            elif a == "--repo-tag" and i + 1 < len(args):
+                age_repo_tag = args[i + 1]; i += 2
+            elif a == "--remote-url" and i + 1 < len(args):
+                age_remote_url = args[i + 1]; i += 2
+            elif a == "--no-register":
+                age_no_register = True; i += 1
+            elif a == "--default-branch" and i + 1 < len(args):
+                age_default_branch_flag = args[i + 1]; i += 2
+            elif a == "--extraction-config" and i + 1 < len(args):
+                age_extraction_config_flag = args[i + 1]; i += 2
             elif subcmd == "callflow-html" and not a.startswith("-") and not graph_path_explicit:
                 candidate = Path(a)
                 if candidate.name == "graph.json" or candidate.suffix.lower() == ".json":
@@ -3011,6 +3135,15 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(graph_path.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
+        # Graph-database sinks must preserve the extracted caller->callee arc
+        # direction. Modern graph.json is written `directed: false` and stores
+        # true direction only in the `source`/`target` arc order (no `_src`/`_tgt`
+        # markers) -- loading it undirected canonicalizes endpoint order and
+        # silently reverses any edge whose target node was inserted first, so the
+        # pushed graph disagrees with `graphify path`/`explain` (which force this
+        # same directed+multigraph load). Match them here. (#dogfood-age-direction)
+        if subcmd in ("neo4j", "falkordb", "age"):
+            _raw = {**_raw, "directed": True, "multigraph": True}
         try:
             G = _jg.node_link_graph(_raw, edges="links")
         except TypeError:
@@ -3186,6 +3319,284 @@ def dispatch_command(cmd: str) -> None:
                       f"FalkorDB's GRAPH.QUERY runs one statement at a time (no bulk script "
                       f"import), so load a graph with: graphify export falkordb --push "
                       f"falkordb://localhost:6379")
+
+        elif subcmd == "age":
+            if not push_uri:
+                print("error: --push postgresql://user:pass@host/db is required for "
+                      "'graphify export age' (there is no offline cypher.txt fallback - "
+                      "AGE's cypher() requires a live connection to build against)",
+                      file=sys.stderr)
+                sys.exit(1)
+            from graphify.export import push_to_age as _push
+            conninfo = push_uri
+            if push_password and "password=" not in conninfo:
+                # libpq accepts a query-param password on a postgresql://
+                # URI, so AGE_PASSWORD/PGPASSWORD/--password work even when
+                # --push doesn't embed credentials in the URI itself.
+                sep = "&" if "?" in conninfo else "?"
+                conninfo = f"{conninfo}{sep}password={push_password}"
+
+            # Resolve identity *before* pushing (not after, as registration
+            # alone did in Phase 2): a known repository_id lets us look up
+            # the last-recorded snapshot and push only the diff against it
+            # (docs/AGE_PLAN.md Phase 3), instead of always doing a full
+            # read-existing-AGE-state reconcile. It also tells us whether
+            # the current branch is the default branch or a feature branch
+            # (Phase 4), which take entirely different push paths.
+            remote_url = None
+            repository_id = None
+            commit_sha = None
+            diff = None
+            current_branch = None
+            default_branch = None
+            if not age_no_register:
+                from graphify import age_registry as _reg
+                remote_url = age_remote_url or _reg.git_remote_url()
+                if remote_url is None:
+                    print("note: no git remote found (not a git repo, or no 'origin') - "
+                          "skipping registry registration and incremental/branch sync. Pass "
+                          "--remote-url to enable them, or --no-register to silence this.",
+                          file=sys.stderr)
+                else:
+                    repository_id = _reg.repository_id_for(remote_url)
+                    commit_sha = _reg.current_commit_sha()
+                    current_branch = _reg.current_branch()
+                    existing_repo = _reg.get_repository(conninfo, remote_url)
+                    if existing_repo is not None and existing_repo.get("default_branch"):
+                        default_branch = existing_repo["default_branch"]
+                    else:
+                        # Unregistered repo (or registered without a
+                        # recorded default branch yet): resolve it
+                        # explicitly rather than silently trusting whatever
+                        # branch happens to be checked out. A first push
+                        # from a feature branch used to register *that*
+                        # branch as the durable default-branch graph, with
+                        # no diff chain recorded at all (found via review).
+                        #
+                        # A warn-and-assume fallback was tried here first,
+                        # but a second review pass correctly called it out
+                        # as preserving exactly that bad outcome (just with
+                        # a warning first) for a decision that's persistent
+                        # and hard to undo (the durable default-branch graph
+                        # this repository gets forever after). This is a
+                        # hard error instead: unlike everything else in this
+                        # command, there is no safe default to fall back to
+                        # here, so refuse rather than guess.
+                        default_branch = age_default_branch_flag or _reg.resolve_default_branch_ref()
+                        if default_branch is None:
+                            print(
+                                "error: could not confirm this repository's default "
+                                "branch (no --default-branch given, and "
+                                "refs/remotes/origin/HEAD isn't set), and this repository "
+                                "isn't registered yet - refusing to guess, since treating "
+                                f"the wrong branch ('{current_branch}'?) as the default "
+                                "would durably register it as the graph every later "
+                                "default-branch push reconciles into. Re-run with "
+                                "--default-branch <name>, or set refs/remotes/origin/HEAD "
+                                "(git remote set-head origin -a), or pass --no-register if "
+                                "you don't need multi-branch/registry sync.",
+                                file=sys.stderr,
+                            )
+                            sys.exit(1)
+                    if not age_graph_name_explicit:
+                        # Without --graph-name, every repository used to
+                        # default to the literal graph "graphify" -- two
+                        # repos pushed that way shared one AGE graph, and
+                        # the second push's deletion-safe reconcile deleted
+                        # the first repo's nodes/edges (found via review).
+                        # Prefer this repo's already-registered graph name
+                        # (so an existing repo's graph doesn't move under
+                        # it), else derive a name unique to repository_id.
+                        age_graph_name = (
+                            (existing_repo or {}).get("age_graph_name")
+                            or _reg.default_age_graph_name(repository_id)
+                        )
+
+                    # Register (upsert graphify_repos) *before* dispatching
+                    # to either push path, not only after a default-branch
+                    # push: graphify_snapshots/graphify_branches/
+                    # graphify_branch_diff all foreign-key onto
+                    # graphify_repos, so an unregistered repo's first push
+                    # from a feature branch used to fail outright
+                    # (ForeignKeyViolation) the moment push_branch() tried
+                    # to record anything (found live while testing the
+                    # --default-branch fix above).
+                    owner = _reg.resolve_owner(
+                        explicit=age_owner, remote_url=remote_url,
+                        git_email=_reg.git_user_email(),
+                    )
+                    try:
+                        registered_row = _reg.register_repository(
+                            conninfo, remote_url,
+                            repo_tag=age_repo_tag, owner_id=owner,
+                            default_branch=default_branch, age_graph_name=age_graph_name,
+                        )
+                        print(f"Registered repository {registered_row['repository_id']} "
+                              f"({registered_row['remote_url']}) in the AGE registry"
+                              + (f", owner '{owner}'" if owner else ""))
+                    except Exception as e:
+                        registered_row = None
+                        print(f"warning: registry registration failed, continuing "
+                              f"without incremental/branch sync: {e}", file=sys.stderr)
+                        repository_id = None
+
+            # docs/AGE_PLAN.md's compatibility requirement (found unenforced
+            # via review): a real value here needs `_reg` (only imported
+            # inside the `if not age_no_register` block above), so this is
+            # None whenever registration is skipped -- consistent with
+            # every other registry-only field in this block.
+            age_extraction_config_hash_value = (
+                _reg.extraction_config_hash(full_props=age_full_props, extra=age_extraction_config_flag)
+                if repository_id is not None else None
+            )
+
+            is_feature_branch_push = (
+                repository_id is not None
+                and current_branch is not None
+                and current_branch != default_branch
+            )
+
+            if is_feature_branch_push:
+                from graphify import age_branches as _branches
+                branch_result = _branches.push_branch(
+                    conninfo, repository_id, current_branch, G,
+                    default_branch=default_branch,
+                    graphify_version=_reg.graphify_package_version(),
+                    schema_version=_reg.SCHEMA_VERSION,
+                    extraction_config_hash=age_extraction_config_hash_value,
+                )
+                print(f"Pushed branch '{current_branch}' ({branch_result['kind']}, "
+                      f"generation {branch_result['generation']}): "
+                      f"{branch_result['rows']} diff row(s) recorded against base "
+                      f"{branch_result['base_commit_sha']}. No AGE graph created yet - "
+                      f"it materializes lazily on first query "
+                      f"(see 'graphify age materialize').")
+            else:
+                if not age_no_register and remote_url is not None and repository_id is not None:
+                    from graphify import age_snapshots as _snap
+                    from graphify.analyze import graph_diff as _graph_diff
+                    try:
+                        old_graph, _old_commit = _snap.latest_snapshot_graph(
+                            conninfo, repository_id, schema_version=_reg.SCHEMA_VERSION,
+                            extraction_config_hash=age_extraction_config_hash_value,
+                        )
+                    except Exception as e:
+                        old_graph = None
+                        print(f"note: could not look up prior AGE snapshot, falling back "
+                              f"to a full push: {e}", file=sys.stderr)
+                    if old_graph is not None:
+                        diff = _graph_diff(old_graph, G)
+
+                result = _push(G, conninfo=conninfo, graph_name=age_graph_name,
+                                communities=communities, full_props=age_full_props, diff=diff)
+                sync_kind = "incremental" if diff is not None else "full"
+                print(f"Pushed to Apache AGE (graph '{age_graph_name}', {sync_kind} sync): "
+                      f"{result['nodes']} nodes, {result['edges']} edges")
+
+                if not age_no_register and remote_url is not None and repository_id is not None:
+                    if commit_sha is not None:
+                        try:
+                            _snap.record_snapshot(
+                                conninfo, repository_id, commit_sha, G,
+                                graphify_version=_reg.graphify_package_version(),
+                                schema_version=_reg.SCHEMA_VERSION,
+                                extraction_config_hash=age_extraction_config_hash_value,
+                            )
+                        except Exception as e:
+                            print(f"warning: push succeeded but recording the logical "
+                                  f"snapshot failed: {e}", file=sys.stderr)
+
+    elif cmd == "age":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd not in ("materialize", "reap"):
+            print("Usage: graphify age [materialize|reap] --push postgresql://user:pass@host/db "
+                  "[--branch NAME] [--graph-name NAME] [--remote-url URL]", file=sys.stderr)
+            sys.exit(1)
+
+        args = sys.argv[3:]
+        age_conninfo = None
+        age_branch_name = None
+        age_cli_graph_name = "graphify"
+        age_cli_graph_name_explicit = False
+        age_cli_remote_url = None
+        age_min_idle_seconds = 7 * 24 * 3600
+        i = 0
+        while i < len(args):
+            if args[i] == "--push" and i + 1 < len(args):
+                age_conninfo = args[i + 1]; i += 2
+            elif args[i] == "--branch" and i + 1 < len(args):
+                age_branch_name = args[i + 1]; i += 2
+            elif args[i] == "--graph-name" and i + 1 < len(args):
+                age_cli_graph_name = args[i + 1]; age_cli_graph_name_explicit = True; i += 2
+            elif args[i] == "--remote-url" and i + 1 < len(args):
+                age_cli_remote_url = args[i + 1]; i += 2
+            elif args[i] == "--min-idle-seconds" and i + 1 < len(args):
+                age_min_idle_seconds = int(args[i + 1]); i += 2
+            else:
+                i += 1
+
+        if not age_conninfo:
+            print("error: --push postgresql://user:pass@host/db is required", file=sys.stderr)
+            sys.exit(1)
+
+        cli_push_password = os.environ.get("AGE_PASSWORD") or os.environ.get("PGPASSWORD")
+        if cli_push_password and "password=" not in age_conninfo:
+            sep = "&" if "?" in age_conninfo else "?"
+            age_conninfo = f"{age_conninfo}{sep}password={cli_push_password}"
+
+        from graphify import age_registry as _reg
+        cli_remote_url = age_cli_remote_url or _reg.git_remote_url()
+        if cli_remote_url is None:
+            print("error: no git remote found (not a git repo, or no 'origin') - "
+                  "pass --remote-url", file=sys.stderr)
+            sys.exit(1)
+        cli_repository_id = _reg.repository_id_for(cli_remote_url)
+        cli_branch = age_branch_name or _reg.current_branch()
+        if not cli_branch:
+            print("error: could not resolve the current git branch - pass --branch", file=sys.stderr)
+            sys.exit(1)
+        if not age_cli_graph_name_explicit:
+            # Resolve the *registered* default-branch graph name rather than
+            # independently defaulting to the literal "graphify" (found via
+            # review) -- materializing a feature branch derives its own
+            # graph name from this via sanitize_branch_graph_name(), so an
+            # unregistered/never-pushed repo falling back to a fresh
+            # per-repository-id default is still collision-free, it just
+            # won't match a name chosen by a completely separate tool.
+            cli_existing_repo = _reg.get_repository(age_conninfo, cli_remote_url)
+            age_cli_graph_name = (
+                (cli_existing_repo or {}).get("age_graph_name")
+                or _reg.default_age_graph_name(cli_repository_id)
+            )
+
+        if subcmd == "materialize":
+            from graphify import age_branches as _branches
+            try:
+                result = _branches.materialize_branch(
+                    age_conninfo, cli_repository_id, cli_branch,
+                    default_graph_name=age_cli_graph_name,
+                )
+            except ValueError as e:
+                print(f"error: {e}", file=sys.stderr)
+                sys.exit(1)
+            if result["already_materialized"]:
+                print(f"Branch '{cli_branch}' is already materialized as "
+                      f"'{result['age_graph_name']}'.")
+            else:
+                print(f"Materialized branch '{cli_branch}' as '{result['age_graph_name']}': "
+                      f"{result['nodes']} nodes, {result['edges']} edges.")
+        else:  # reap
+            from graphify import age_branches as _branches
+            result = _branches.reap_branch(
+                age_conninfo, cli_repository_id, cli_branch,
+                min_idle_seconds=age_min_idle_seconds,
+            )
+            if result["reaped"]:
+                print(f"Reaped branch '{cli_branch}': dropped AGE graph "
+                      f"'{result['age_graph_name']}'. Diff rows and snapshots are retained; "
+                      f"the branch re-materializes on the next query.")
+            else:
+                print(f"Did not reap branch '{cli_branch}': {result['reason']}.")
 
     elif cmd == "benchmark":
         from graphify.benchmark import run_benchmark, print_benchmark

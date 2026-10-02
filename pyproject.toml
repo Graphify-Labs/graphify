@@ -73,6 +73,12 @@ google = ["openpyxl"]
 # tree-sitter-sql grammar; without it introspection silently returns 0 nodes,
 # so the postgres extra must carry the grammar too.
 postgres = ["psycopg[binary]", "tree-sitter-sql"]
+# push_to_age() only needs the psycopg client (no SQL-DDL parsing, since it
+# writes NetworkX -> Cypher, not the reverse), so `age` repeats the
+# psycopg[binary] pin independently rather than depending on `postgres` -
+# picking up tree-sitter-sql for an export sink would be an unrelated,
+# unnecessary dependency.
+age = ["psycopg[binary]"]
 video = ["faster-whisper; python_version >= '3.11'", "yt-dlp>=2026.7.4"]
 kimi = ["openai", "tiktoken"]
 ollama = ["openai"]

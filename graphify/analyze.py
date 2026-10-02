@@ -586,15 +586,36 @@ def suggest_questions(
     return questions[:top_n]
 
 
+def _diff_scalar_props(data: dict) -> dict:
+    """Scalar (agtype/JSON-safe) attributes only -- the same filter
+    push_to_age()'s schema pin uses, so a stored diff stays reconstructable
+    without leaking non-serializable NetworkX internals."""
+    return {
+        k: v for k, v in data.items()
+        if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
+    }
+
+
 def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
     """Compare two graph snapshots and return what changed.
 
+    Reversible and complete (docs/AGE_PLAN.md Phase 3): additions and
+    removals carry the node/edge's full scalar property set under
+    "properties", and nodes/edges present in both graphs with differing
+    scalar properties are reported in "changed_nodes"/"changed_edges" with
+    both "old" and "new" values -- enough to replay this diff against a
+    snapshot payload in either direction.
+
     Returns:
         {
-          "new_nodes": [{"id": ..., "label": ...}],
-          "removed_nodes": [{"id": ..., "label": ...}],
-          "new_edges": [{"source": ..., "target": ..., "relation": ..., "confidence": ...}],
+          "new_nodes": [{"id": ..., "label": ..., "properties": {...}}],
+          "removed_nodes": [{"id": ..., "label": ..., "properties": {...}}],
+          "changed_nodes": [{"id": ..., "old": {...}, "new": {...}}],
+          "new_edges": [{"source": ..., "target": ..., "relation": ...,
+                         "confidence": ..., "properties": {...}}],
           "removed_edges": [...],
+          "changed_edges": [{"source": ..., "target": ..., "relation": ...,
+                              "old": {...}, "new": {...}}],
           "summary": "3 new nodes, 5 new edges, 1 node removed"
         }
     """
@@ -603,15 +624,30 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
 
     added_node_ids = new_nodes - old_nodes
     removed_node_ids = old_nodes - new_nodes
+    common_node_ids = old_nodes & new_nodes
 
     new_nodes_list = [
-        {"id": n, "label": G_new.nodes[n].get("label", n)}
+        {
+            "id": n,
+            "label": G_new.nodes[n].get("label", n),
+            "properties": _diff_scalar_props(G_new.nodes[n]),
+        }
         for n in added_node_ids
     ]
     removed_nodes_list = [
-        {"id": n, "label": G_old.nodes[n].get("label", n)}
+        {
+            "id": n,
+            "label": G_old.nodes[n].get("label", n),
+            "properties": _diff_scalar_props(G_old.nodes[n]),
+        }
         for n in removed_node_ids
     ]
+    changed_nodes_list = []
+    for n in common_node_ids:
+        old_props = _diff_scalar_props(G_old.nodes[n])
+        new_props = _diff_scalar_props(G_new.nodes[n])
+        if old_props != new_props:
+            changed_nodes_list.append({"id": n, "old": old_props, "new": new_props})
 
     def edge_key(G: nx.Graph, u: str, v: str, data: dict) -> tuple:
         if G.is_directed():
@@ -629,25 +665,78 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
 
     added_edge_keys = new_edge_keys - old_edge_keys
     removed_edge_keys = old_edge_keys - new_edge_keys
+    common_edge_keys = old_edge_keys & new_edge_keys
 
+    # d.get("_src", u) / d.get("_tgt", v): an undirected nx.Graph's own
+    # (u, v) tuple order reflects node insertion order, not which side was
+    # the extracted "source" - build.py stamps _src/_tgt precisely to
+    # recover that (see the same idiom in exporters/graphdb.py,
+    # serve.py, exporters/html.py). Without this, a diff's reported
+    # "source"/"target" can be silently backwards.
     new_edges_list = []
     for u, v, d in G_new.edges(data=True):
         if edge_key(G_new, u, v, d) in added_edge_keys:
             new_edges_list.append({
-                "source": u,
-                "target": v,
+                "source": d.get("_src", u),
+                "target": d.get("_tgt", v),
                 "relation": d.get("relation", ""),
                 "confidence": d.get("confidence", ""),
+                "properties": _diff_scalar_props(d),
             })
 
     removed_edges_list = []
     for u, v, d in G_old.edges(data=True):
         if edge_key(G_old, u, v, d) in removed_edge_keys:
             removed_edges_list.append({
-                "source": u,
-                "target": v,
+                "source": d.get("_src", u),
+                "target": d.get("_tgt", v),
                 "relation": d.get("relation", ""),
                 "confidence": d.get("confidence", ""),
+                "properties": _diff_scalar_props(d),
+            })
+
+    old_edge_data_by_key = {
+        edge_key(G_old, u, v, d): (u, v, d) for u, v, d in G_old.edges(data=True)
+    }
+    new_edge_data_by_key = {
+        edge_key(G_new, u, v, d): (u, v, d) for u, v, d in G_new.edges(data=True)
+    }
+    changed_edges_list = []
+    for key in common_edge_keys:
+        old_u, old_v, old_d = old_edge_data_by_key[key]
+        new_u, new_v, new_d = new_edge_data_by_key[key]
+        old_props = _diff_scalar_props(old_d)
+        new_props = _diff_scalar_props(new_d)
+        old_src, old_tgt = old_d.get("_src", old_u), old_d.get("_tgt", old_v)
+        new_src, new_tgt = new_d.get("_src", new_u), new_d.get("_tgt", new_v)
+        relation = old_d.get("relation", "")
+        # _src/_tgt is excluded from _diff_scalar_props (it's internal, not
+        # a pushed property), so a same-pair edge that reversed direction
+        # with everything else unchanged would otherwise compare equal and
+        # produce no diff. edge_key() is keyed on sorted endpoints, so a
+        # reversal never shows up as add/remove either -- report it as an
+        # explicit remove-old-direction + add-new-direction pair instead of
+        # a "changed" edge, since consumers (push_to_age's incremental
+        # sync, age_snapshots' payload diff) key stored/pushed edges by
+        # exact (source, target) direction and would otherwise leave the
+        # stale directed edge in place next to a newly MERGEd one (found
+        # via review).
+        if (old_src, old_tgt) != (new_src, new_tgt):
+            removed_edges_list.append({
+                "source": old_src, "target": old_tgt, "relation": relation,
+                "confidence": old_d.get("confidence", ""), "properties": old_props,
+            })
+            new_edges_list.append({
+                "source": new_src, "target": new_tgt, "relation": relation,
+                "confidence": new_d.get("confidence", ""), "properties": new_props,
+            })
+        elif old_props != new_props:
+            changed_edges_list.append({
+                "source": new_src,
+                "target": new_tgt,
+                "relation": relation,
+                "old": old_props,
+                "new": new_props,
             })
 
     parts = []
@@ -659,13 +748,19 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
         parts.append(f"{len(removed_nodes_list)} node{'s' if len(removed_nodes_list) != 1 else ''} removed")
     if removed_edges_list:
         parts.append(f"{len(removed_edges_list)} edge{'s' if len(removed_edges_list) != 1 else ''} removed")
+    if changed_nodes_list:
+        parts.append(f"{len(changed_nodes_list)} node{'s' if len(changed_nodes_list) != 1 else ''} changed")
+    if changed_edges_list:
+        parts.append(f"{len(changed_edges_list)} edge{'s' if len(changed_edges_list) != 1 else ''} changed")
     summary = ", ".join(parts) if parts else "no changes"
 
     return {
         "new_nodes": new_nodes_list,
         "removed_nodes": removed_nodes_list,
+        "changed_nodes": changed_nodes_list,
         "new_edges": new_edges_list,
         "removed_edges": removed_edges_list,
+        "changed_edges": changed_edges_list,
         "summary": summary,
     }
 

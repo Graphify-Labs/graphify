@@ -24,7 +24,7 @@ from graphify.paths import (
     write_text_atomic_if_changed,
 )
 
-from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
+from graphify.exporters.graphdb import push_to_age, push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
 
 # Artifacts worth preserving across rebuilds (non-regenerable without LLM or curation).
