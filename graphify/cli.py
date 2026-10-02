@@ -707,6 +707,73 @@ def _query_stamp_fresh() -> bool:
         return False
 
 
+def _nudge_allowed(payload: dict) -> bool:
+    """Whether to emit a soft read/search nudge for this tool call (#3435).
+
+    The nudge is advisory context that used to be re-injected on EVERY qualifying
+    Read/Glob/Grep/Bash call — thousands of times per session, far more tokens
+    than the graph queries it asks for. Budgets are per agent: the session id,
+    plus the ``agent_id`` Claude Code sends for subagents (which share the
+    parent's session id but start with an empty context). Per agent:
+
+    * the first nudge always fires. The query stamp is project-wide and cannot
+      say which agent queried, so it must not silence a fresh subagent or session;
+    * after that, a fresh query stamp (query/explain/path within
+      GRAPHIFY_HOOK_STRICT_TTL) means someone oriented recently, so no nudge;
+    * at most GRAPHIFY_HOOK_NUDGE_CAP nudges (default 5; 0 or a non-number
+      disables the cap), counted in a marker next to the strict-mode ones.
+
+    Calls without a session id cannot be counted: only the stamp applies.
+    Fail-open: on a marker error, only the stamp applies.
+    """
+    from graphify.paths import out_path, write_text_atomic
+    import hashlib
+    stamp = _query_stamp_fresh()
+    try:
+        cap = int(os.environ.get("GRAPHIFY_HOOK_NUDGE_CAP", "5"))
+    except ValueError:
+        cap = 0
+    key = re.sub(r"[^A-Za-z0-9_-]", "_", str(payload.get("session_id") or ""))[:64]
+    if not key:
+        return not stamp
+    agent = str(payload.get("agent_id") or "")
+    if agent:
+        # Hashed so long ids cannot truncate two agents into one key.
+        key += "-" + hashlib.sha256(agent.encode("utf-8")).hexdigest()[:16]
+    try:
+        d = out_path("cache", "hook_sessions")
+        d.mkdir(parents=True, exist_ok=True)
+        marker = d / f"{key}.nudges"
+        try:
+            count = int(marker.read_text(encoding="utf-8").strip() or "0")
+        except (OSError, ValueError):
+            count = 0
+        if count and stamp:
+            return False
+        if 0 < cap <= count:
+            return False
+        write_text_atomic(marker, str(count + 1))
+        if count == 0:
+            _gc_hook_session_markers(d)
+        return True
+    except Exception:
+        return not stamp
+
+
+def _gc_hook_session_markers(d: "Path") -> None:
+    """Best-effort removal of per-session hook markers older than 24h."""
+    try:
+        cutoff = time.time() - 86400
+        for entry in os.scandir(d):
+            try:
+                if entry.stat().st_mtime < cutoff:
+                    os.unlink(entry.path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def _mark_session_denied(session_id: str) -> bool:
     """Atomically claim a one-time strict block for this session. Returns True only
     on the FIRST call for a given session id (O_EXCL create wins once); every later
@@ -721,16 +788,7 @@ def _mark_session_denied(session_id: str) -> bool:
         d.mkdir(parents=True, exist_ok=True)
         fd = os.open(str(d / f"{sid}.denied"), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         os.close(fd)
-        try:
-            cutoff = time.time() - 86400
-            for entry in os.scandir(d):
-                try:
-                    if entry.stat().st_mtime < cutoff:
-                        os.unlink(entry.path)
-                except OSError:
-                    pass
-        except OSError:
-            pass
+        _gc_hook_session_markers(d)
         return True
     except FileExistsError:
         return False
@@ -866,7 +924,8 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # grep. Nudge-only, even in strict mode — see the docstring.
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
             is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
-            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
+            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file() \
+                    and _nudge_allowed(d):
                 sys.stdout.write(_SEARCH_NUDGE)
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
@@ -977,7 +1036,8 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             except Exception:
                 pass
             if stale:
-                sys.stdout.write(_READ_NUDGE_STALE)
+                if _nudge_allowed(d):
+                    sys.stdout.write(_READ_NUDGE_STALE)
                 return
             # Strict block: Read tool only, first time per session, not recently
             # oriented, and the file is demonstrably indexed.
@@ -988,7 +1048,8 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     and _mark_session_denied(str(d.get("session_id") or "")):
                 sys.stdout.write(_READ_DENY)
                 return
-            sys.stdout.write(_READ_NUDGE)
+            if _nudge_allowed(d):
+                sys.stdout.write(_READ_NUDGE)
     except Exception:
         pass
 
