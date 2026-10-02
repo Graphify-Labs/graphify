@@ -1,6 +1,11 @@
 """Markdown extractor. Moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
+from graphify.document_index import (
+    build_document_index,
+    iter_markdown_content_lines,
+    parse_atx_heading,
+)
 import re
 import os
 import unicodedata
@@ -465,20 +470,13 @@ def extract_markdown(path: Path) -> dict:
 
     # Track heading stack for nesting: [(level, nid), ...]
     heading_stack: list[tuple[int, str]] = []
-    in_code_block = False
-
-    for line_num_0, line_text in enumerate(lines):
-        line_num = line_num_0 + 1
-
-        # Skip over fenced code blocks so their contents are not parsed as
-        # headings, but do not emit nodes/edges for them (#1077).
-        stripped = line_text.strip()
-        if stripped.startswith("```"):
-            in_code_block = not in_code_block
-            continue
-
-        if in_code_block:
-            continue
+    # Retain document-order heading boundaries so the graph can route to a
+    # section and fetch its source lazily without embedding prose in every node.
+    heading_records: list[tuple[int, int, str]] = []
+    # Share one fence parser with lazy document indexing so the graph cannot
+    # publish a heading that has no corresponding retrievable section.
+    for line_num, line_text in iter_markdown_content_lines(lines):
+        line_num_0 = line_num - 1
 
         # Markdown links -> document references (#1376). Scanned on every
         # non-fenced line (including heading lines, which the heading branch
@@ -498,16 +496,17 @@ def extract_markdown(path: Path) -> dict:
         if line_num_0 < body_start:
             continue
 
-        # Detect headings: # Heading, ## Heading, etc.
-        heading_match = re.match(r'^(#{1,6})\s+(.+)', line_text)
-        if heading_match:
-            level = len(heading_match.group(1))
-            title = heading_match.group(2).strip()
+        # Heading syntax is centralized with the lazy section index so both
+        # consumers publish identical titles and source boundaries.
+        heading = parse_atx_heading(line_text)
+        if heading is not None:
+            level, title = heading
             h_nid = _make_id(stem, title)
             # Avoid duplicate heading IDs by appending line number
             if h_nid in seen_ids:
                 h_nid = _make_id(stem, title, str(line_num))
             add_node(h_nid, title, line_num)
+            heading_records.append((level, line_num, h_nid))
 
             # Pop headings at same or deeper level
             while heading_stack and heading_stack[-1][0] >= level:
@@ -528,6 +527,26 @@ def extract_markdown(path: Path) -> dict:
         owner = heading_stack[-1][1] if heading_stack else file_nid
         for m in _MD_CODE_SPAN_RE.finditer(line_text):
             add_mention(owner, m.group(2), line_num)
+
+    # One document index owns hierarchy, stable section identity, line ranges,
+    # and hashes. Reusing it here prevents extraction and lazy retrieval from
+    # drifting into subtly different section-boundary rules.
+    document_index = build_document_index(str(path), source)
+    section_by_start = {section.start_line: section for section in document_index.sections}
+    node_by_id = {node["id"]: node for node in nodes}
+    for _level, start_line, node_id in heading_records:
+        section = section_by_start.get(start_line)
+        if section is None:
+            continue
+        node_by_id[node_id].update({
+            "section_index_id": section.section_id,
+            "section_path": section.path,
+            "heading_level": section.level,
+            "parent_section_index_id": section.parent_id,
+            "content_start_line": section.start_line,
+            "content_end_line": section.end_line,
+            "content_ref": section.content_ref,
+        })
 
     return {"nodes": nodes, "edges": edges, "raw_calls": raw_calls,
             "input_tokens": 0, "output_tokens": 0}

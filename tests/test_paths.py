@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
+from networkx.readwrite import json_graph
 import pytest
 
 from graphify.paths import (
     _is_test_path,
     disambiguate_ambiguous_candidates,
+    load_node_link_graph,
 )
 
 
@@ -99,6 +103,21 @@ def test_disambiguate_path_proximity_same_dir() -> None:
     assert winner == "near"
 
 
+def test_load_node_link_graph_does_not_inject_private_metadata(tmp_path) -> None:
+    """Loading and serializing a graph must preserve its public graph metadata."""
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(json.dumps({
+        "directed": False,
+        "multigraph": False,
+        "graph": {"name": "fixture"},
+        "nodes": [{"id": "service", "label": "Service"}],
+        "links": [],
+    }), encoding="utf-8")
+
+    loaded = load_node_link_graph(graph_path)
+    serialized = json_graph.node_link_data(loaded, edges="links")
+
+    assert serialized["graph"] == {"name": "fixture"}
 # --- cross-platform absoluteness for STORED paths ---------------------------
 # Path.is_absolute()/os.path.isabs() answer for the host OS, which is the wrong
 # question for a path read out of graph.json: graphs are built in Docker/CI and

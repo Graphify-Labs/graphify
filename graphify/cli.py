@@ -1252,7 +1252,11 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print(
+                "Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] "
+                "[--max-nodes N] [--format text|evidence-json] [--graph path]",
+                file=sys.stderr,
+            )
             sys.exit(1)
         from graphify.serve import _query_graph_text
         from graphify.security import sanitize_label
@@ -1262,6 +1266,8 @@ def dispatch_command(cmd: str) -> None:
         question = sys.argv[2]
         use_dfs = "--dfs" in sys.argv
         budget = 2000
+        max_nodes = 80
+        response_format = "text"
         graph_path = _default_graph_path()
         context_filters: list[str] = []
         args = sys.argv[3:]
@@ -1281,6 +1287,26 @@ def dispatch_command(cmd: str) -> None:
                     print(f"error: --budget must be an integer", file=sys.stderr)
                     sys.exit(1)
                 i += 1
+            elif args[i] == "--max-nodes" and i + 1 < len(args):
+                try:
+                    max_nodes = max(1, min(int(args[i + 1]), 200))
+                except ValueError:
+                    print("error: --max-nodes must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 2
+            elif args[i].startswith("--max-nodes="):
+                try:
+                    max_nodes = max(1, min(int(args[i].split("=", 1)[1]), 200))
+                except ValueError:
+                    print("error: --max-nodes must be an integer", file=sys.stderr)
+                    sys.exit(1)
+                i += 1
+            elif args[i] == "--format" and i + 1 < len(args):
+                response_format = args[i + 1].replace("-", "_")
+                i += 2
+            elif args[i].startswith("--format="):
+                response_format = args[i].split("=", 1)[1].replace("-", "_")
+                i += 1
             elif args[i] == "--context" and i + 1 < len(args):
                 context_filters.append(args[i + 1])
                 i += 2
@@ -1292,6 +1318,9 @@ def dispatch_command(cmd: str) -> None:
                 i += 2
             else:
                 i += 1
+        if response_format not in {"text", "evidence_json"}:
+            print("error: --format must be text or evidence-json", file=sys.stderr)
+            sys.exit(1)
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1358,6 +1387,8 @@ def dispatch_command(cmd: str) -> None:
             token_budget=budget,
             context_filters=context_filters,
             graph_path=str(gp),
+            max_nodes=max_nodes,
+            response_format=response_format,
         )
         querylog.log_query(
             kind="query",
@@ -2663,10 +2694,14 @@ def dispatch_command(cmd: str) -> None:
         args = sys.argv[2:]
         graph_paths: list[Path] = []
         out_path = Path(_GRAPHIFY_OUT) / "merged-graph.json"
+        source_root: Path | None = None
         i = 0
         while i < len(args):
             if args[i] == "--out" and i + 1 < len(args):
                 out_path = Path(args[i + 1])
+                i += 2
+            elif args[i] == "--source-root" and i + 1 < len(args):
+                source_root = Path(args[i + 1]).resolve()
                 i += 2
             else:
                 graph_paths.append(Path(args[i]))
@@ -2676,6 +2711,9 @@ def dispatch_command(cmd: str) -> None:
                 "Usage: graphify merge-graphs <graph1.json> <graph2.json> [...] [--out merged.json]",
                 file=sys.stderr,
             )
+            sys.exit(1)
+        if source_root is not None and not source_root.is_dir():
+            print(f"error: source root is not a directory: {source_root}", file=sys.stderr)
             sys.exit(1)
         import networkx as _nx
         from networkx.readwrite import json_graph as _jg
@@ -2804,6 +2842,34 @@ def dispatch_command(cmd: str) -> None:
         # solely in the slot historic readers ignored (#2485). Mirror to_json's
         # dual-slot shape so every writer agrees.
         out_data["hyperedges"] = merged.graph.get("hyperedges", [])
+        # Partition extraction cannot ask Clang about declarations in another
+        # leaf. Once composition has restored those targets, an explicit source
+        # root lets the compiler strengthen only uniquely grounded call edges.
+        if source_root is not None:
+            import shutil as _shutil
+
+            _clang = _shutil.which("clang++") or _shutil.which("clang")
+            if _clang:
+                from graphify.clang_enrichment import (
+                    ClangSemanticEnricher as _ClangSemanticEnricher,
+                    run_clang_command as _run_clang_command,
+                )
+
+                out_data = _ClangSemanticEnricher(
+                    source_root,
+                    executable=_clang,
+                    runner=_run_clang_command,
+                ).enrich_node_link(out_data)
+                _clang_report = out_data.get("semantic_enrichment", {}).get("clang", {})
+                _confirmed = int(_clang_report.get("resolved_calls", 0))
+                _upgraded = int(_clang_report.get("upgraded_calls", 0))
+                if _confirmed or _upgraded:
+                    print(
+                        "  clang confirmed "
+                        f"{_confirmed} new and {_upgraded} inferred member call(s)"
+                    )
+            else:
+                print("  note: --source-root supplied but Clang is unavailable")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from graphify.paths import write_json_atomic as _wja
         _wja(out_path, out_data, indent=2)
@@ -3282,6 +3348,7 @@ def dispatch_command(cmd: str) -> None:
                 "Usage: graphify extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
                 "[--no-gitignore] [--code-only] [--no-dedup] "
+                "[--semantic-analyzers ID,...|none] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
                 "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
                 file=sys.stderr,
@@ -3329,6 +3396,7 @@ def dispatch_command(cmd: str) -> None:
         cli_exclude_hubs: float | None = None
         cli_excludes: list[str] = []
         cli_timing: bool = False
+        cli_semantic_adapters: tuple[str, ...] | None = None
         # --force parity with `graphify update`: the flag or GRAPHIFY_FORCE=1
         # disables the incremental gate and skips semantic-cache reads (#1894).
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
@@ -3435,6 +3503,37 @@ def dispatch_command(cmd: str) -> None:
                 cli_allow_partial = True; i += 1
             elif a == "--timing":
                 cli_timing = True; i += 1
+            elif a == "--semantic-analyzers":
+                if i + 1 >= len(args):
+                    print("error: --semantic-analyzers requires a value", file=sys.stderr)
+                    sys.exit(2)
+                from graphify.semantic_tool_adapters import validate_adapter_selection
+
+                raw_selection = args[i + 1]
+                try:
+                    cli_semantic_adapters = (
+                        ()
+                        if raw_selection.strip().lower() == "none"
+                        else validate_adapter_selection(raw_selection.split(","))
+                    )
+                except ValueError as exc:
+                    print(f"error: {exc}", file=sys.stderr)
+                    sys.exit(2)
+                i += 2
+            elif a.startswith("--semantic-analyzers="):
+                from graphify.semantic_tool_adapters import validate_adapter_selection
+
+                raw_selection = a.split("=", 1)[1]
+                try:
+                    cli_semantic_adapters = (
+                        ()
+                        if raw_selection.strip().lower() == "none"
+                        else validate_adapter_selection(raw_selection.split(","))
+                    )
+                except ValueError as exc:
+                    print(f"error: {exc}", file=sys.stderr)
+                    sys.exit(2)
+                i += 1
             else:
                 i += 1
 
@@ -4012,6 +4111,35 @@ def dispatch_command(cmd: str) -> None:
                     sys.exit(1)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
                 _extraction_incomplete = True  # the whole AST pass was lost
+        # Optional compiler/language-server integrations publish local SCIP
+        # artifacts. Merge them into the same universal graph before document
+        # semantics, while treating malformed optional outputs as diagnostics
+        # rather than a reason to discard the deterministic AST pass.
+        from graphify.semantic_adapters import SemanticEnrichmentService
+        ast_result = SemanticEnrichmentService(
+            target,
+            enabled_adapters=cli_semantic_adapters,
+        ).enrich(ast_result)
+        _enrichment = ast_result.get("semantic_enrichment", {})
+        if _enrichment.get("artifacts_loaded"):
+            print(
+                f"[graphify extract] semantic adapters: "
+                f"{_enrichment['artifacts_loaded']} artifact(s) loaded"
+            )
+        for _diagnostic in _enrichment.get("diagnostics", []):
+            print(
+                f"[graphify extract] semantic adapter warning: {_diagnostic}",
+                file=sys.stderr,
+            )
+        if cli_semantic_adapters is not None:
+            for _adapter_id, _status in sorted(_enrichment.get("adapters", {}).items()):
+                _state = _status.get("state", "unavailable")
+                _detail = _status.get("detail", "no detail")
+                _stream = sys.stdout if _state in {"executed", "artifact_loaded"} else sys.stderr
+                print(
+                    f"[graphify extract] semantic adapter {_adapter_id}: {_state} ({_detail})",
+                    file=_stream,
+                )
         stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.
@@ -4340,7 +4468,11 @@ def dispatch_command(cmd: str) -> None:
             # clustered path (whose DiGraph collapses both) and stays deterministic
             # across modes (#1317; node dedup also collapses shared Swift module
             # anchors emitted per importing file, #1327).
-            from graphify.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
+            from graphify.build import (
+                dedupe_edges as _dedupe_edges,
+                dedupe_nodes as _dedupe_nodes,
+                mint_external_stubs_in_data as _mint_external_stubs_in_data,
+            )
             from graphify.export import (
                 backup_if_protected as _backup,
                 existing_graph_node_count as _existing_graph_node_count,
@@ -4431,6 +4563,10 @@ def dispatch_command(cmd: str) -> None:
             # gets this), so apply it directly on the merged node list.
             from graphify.build import disambiguate_file_labels_in_nodes as _disamb_labels
             _disamb_labels(merged["nodes"])
+            # Fresh --no-cluster extraction bypasses build_from_json, so close
+            # external import endpoints before graph.json is persisted. This
+            # keeps the raw writer consistent with update --no-cluster.
+            _mint_external_stubs_in_data(merged)
             # Backfill source_file from endpoint nodes — this raw path bypasses
             # build_from_json's backfill, and semantic edges sometimes omit it (#1279).
             _node_sf = {n.get("id"): n.get("source_file") for n in merged["nodes"]}
