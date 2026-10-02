@@ -3753,6 +3753,23 @@ def _lua_is_require_call(node, source: bytes) -> bool:
 
 _PHP_ROUTING_VERBS = frozenset({"get", "post", "put", "patch", "delete", "options", "any", "match", "map"})
 
+# PHP language constructs that are written like functions. `empty($x)`,
+# `isset($a)`, `eval($s)` and `die($m)` parse as an ordinary
+# function_call_expression, so the bare-name lookup bound them to any method
+# that shares the name: since PHP 7 a reserved word is a legal method name
+# (`public function empty()`), while no function can ever be declared under
+# one. Every `empty($x)` in a corpus became an edge into that method, EXTRACTED
+# in the same file and INFERRED across files through the case-insensitive fold
+# (#3830).
+#
+# Same policy as _GO_PREDECLARED_FUNCS: language-local, bare calls only
+# (`$bag->empty()` is a member call and still resolves), and the manual's whole
+# list of call-shaped keywords rather than the subset the pinned grammar emits
+# as calls today (`unset`, `exit`, `list` and `array` get their own node types).
+_PHP_LANGUAGE_CONSTRUCTS = frozenset({
+    "array", "die", "empty", "eval", "exit", "isset", "list", "unset",
+})
+
 def _php_get_route_name(closure_node, src: bytes) -> str | None:
     """Walk up the AST to extract grouped routing prefixes (#3409)."""
     prefixes = []
@@ -6710,6 +6727,11 @@ def _extract_generic(
                     func_node = node.child_by_field_name("function")
                     if func_node:
                         callee_name = _read_text(func_node, source)
+                        # PHP names are case-insensitive, so `EMPTY($x)` is the
+                        # same construct. Dropping the name here skips the
+                        # in-file bind and keeps it out of raw_calls.
+                        if callee_name.lower() in _PHP_LANGUAGE_CONSTRUCTS:
+                            callee_name = None
                 elif node.type == "scoped_call_expression":
                     # Static method call: Helper::format() → callee = "Helper"
                     scope_node = node.child_by_field_name("scope")
