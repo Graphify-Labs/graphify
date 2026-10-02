@@ -80,3 +80,45 @@ def test_the_citation_is_gone_from_the_source_not_just_one_path():
     assert "may be partially extracted: {_shown}{_more} (#2551)" not in text
     assert "no symbols extracted" in text
     assert "symbol(s) extracted" in text
+
+
+# ── #3946: a clean-parse file that yields nothing but its own file node ─────
+
+def _data_only_fixture(tmp_path):
+    """A plain data literal with no functions, classes or imports — the AST
+    extractor has nothing to model, but the file parses with zero errors, so
+    the syntax-error warning above must stay silent for it."""
+    f = tmp_path / "data.js"
+    f.write_text("module.exports = [{a: 1}, {b: 2}];\n", encoding="utf-8")
+    return f
+
+
+def test_symbolless_warning_names_the_file_and_marks_it_data(tmp_path, capsys):
+    err = _run(tmp_path, [_data_only_fixture(tmp_path)], capsys)
+    assert "yielded no symbols" in err, err
+    assert "data.js" in err
+    assert "may be data rather than code" in err
+
+
+def test_symbolless_warning_does_not_fire_for_a_real_function(tmp_path, capsys):
+    f = tmp_path / "real.js"
+    f.write_text("function run() { return 1; }\n", encoding="utf-8")
+    err = _run(tmp_path, [f], capsys)
+    assert "yielded no symbols" not in err
+
+
+def test_symbolless_warning_does_not_overlap_the_syntax_error_warning(tmp_path, capsys):
+    """A file already explained by the partial-extraction warning (a genuine
+    parse error) must not ALSO be counted as a clean-parse data file."""
+    err = _run(tmp_path, [_partial_parse_fixture(tmp_path)], capsys)
+    assert "yielded no symbols" not in err
+
+
+def test_symbolless_warning_counts_total_size(tmp_path, capsys):
+    a = tmp_path / "a.js"
+    a.write_text("module.exports = [1, 2, 3];\n", encoding="utf-8")
+    b = tmp_path / "b.js"
+    b.write_text("export default [4, 5, 6];\n", encoding="utf-8")
+    err = _run(tmp_path, [a, b], capsys)
+    assert "2 code file(s) yielded no symbols" in err
+    assert "a.js" in err and "b.js" in err
