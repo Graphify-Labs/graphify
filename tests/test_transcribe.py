@@ -62,6 +62,59 @@ def test_build_whisper_prompt_nodes_without_labels():
 
 
 # ---------------------------------------------------------------------------
+# download_audio — resource/SSRF hardening
+# ---------------------------------------------------------------------------
+
+class _FakeYDL:
+    """Context-manager stand-in for yt_dlp.YoutubeDL that captures its opts."""
+    captured: dict = {}
+
+    def __init__(self, opts):
+        type(self).captured = opts
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def extract_info(self, url, download):
+        return {"ext": "m4a"}
+
+
+def _patch_ytdlp(monkeypatch):
+    fake_mod = MagicMock()
+    fake_mod.YoutubeDL = _FakeYDL
+    monkeypatch.setattr("graphify.transcribe._get_yt_dlp", lambda: fake_mod)
+    # validate_url is imported inside download_audio from graphify.security
+    monkeypatch.setattr("graphify.security.validate_url", lambda url: None)
+
+
+def test_download_audio_caps_file_size(tmp_path, monkeypatch):
+    """download_audio must pass a positive max_filesize cap to yt-dlp.
+
+    Without a cap, a malicious or oversized media URL can exhaust disk/bandwidth
+    even though validate_url() rejects private-IP/bad-scheme initial URLs.
+    """
+    from graphify.transcribe import download_audio
+    _patch_ytdlp(monkeypatch)
+    download_audio("https://example.com/video", tmp_path)
+    opts = _FakeYDL.captured
+    assert "max_filesize" in opts, "ydl_opts must set max_filesize"
+    assert isinstance(opts["max_filesize"], int) and opts["max_filesize"] > 0
+    assert opts.get("noplaylist") is True
+
+
+def test_download_audio_max_filesize_env_override(tmp_path, monkeypatch):
+    """GRAPHIFY_YTDLP_MAX_FILESIZE overrides the default cap."""
+    from graphify.transcribe import download_audio
+    _patch_ytdlp(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_YTDLP_MAX_FILESIZE", "12345")
+    download_audio("https://example.com/video", tmp_path)
+    assert _FakeYDL.captured["max_filesize"] == 12345
+
+
+# ---------------------------------------------------------------------------
 # transcribe
 # ---------------------------------------------------------------------------
 
