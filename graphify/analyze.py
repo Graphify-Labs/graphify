@@ -468,6 +468,9 @@ def suggest_questions(
     Generate questions the graph is uniquely positioned to answer.
     Based on: AMBIGUOUS edges, bridge nodes, underexplored god nodes, isolated nodes.
     Each question has a 'type', 'question', and 'why' field.
+    Interleave question types before applying top_n so an abundant early type
+    cannot crowd out later signals. Preserve the existing order within each type
+    and category generation order when the limit is smaller than the type count.
     """
     if community_labels:
         community_labels = {int(k) if isinstance(k, str) else k: v for k, v in community_labels.items()}
@@ -583,7 +586,16 @@ def suggest_questions(
             ),
         }]
 
-    return questions[:top_n]
+    from itertools import zip_longest
+
+    by_type: dict[str, list[dict]] = {}
+    for question in questions:
+        by_type.setdefault(question["type"], []).append(question)
+    diversified = [
+        question for row in zip_longest(*by_type.values())
+        for question in row if question is not None
+    ]
+    return diversified[:top_n]
 
 
 def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
