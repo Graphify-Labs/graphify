@@ -45,6 +45,7 @@ def extract_dart(path: Path) -> dict:
     # Check if this is a part-of file and redirect to parent
     part_of_match = re.search(r"^\s*part\s+of\s+['\"]([^'\"]+)['\"]", src_clean, re.MULTILINE)
     is_part = False
+    part_of_line = None
     if part_of_match:
         parent_ref = part_of_match.group(1)
         if parent_ref.endswith(".dart"):
@@ -54,13 +55,16 @@ def extract_dart(path: Path) -> dict:
                     stem = _file_stem(parent_path)
                     file_nid = _make_id(str(parent_path))
                     is_part = True
+                    part_of_line = _line_at(part_of_match.start(1))
             except Exception:
                 pass
 
-    nodes = []
-    if not is_part:
-        nodes.append({"id": file_nid, "label": path.name, "file_type": "code",
-                      "source_file": str(path), "source_location": None})
+    # Every scanned file keeps its own file node. For a part file the symbols
+    # still belong to the library (file_nid above); the part's node is linked
+    # from the library and to its symbols at the end of extraction.
+    own_nid = _make_id(str(path))
+    nodes = [{"id": own_nid, "label": path.name, "file_type": "code",
+              "source_file": str(path), "source_location": None}]
     edges = []
     defined: set[str] = set()
 
@@ -560,5 +564,15 @@ def extract_dart(path: Path) -> dict:
             add_node(target_nid, clean_name, source_file=None)
             add_edge(file_nid, target_nid, "references", context="type_lookup",
                       line=_line_at(m.start(1)))
+
+    if is_part:
+        # The library includes this part; the part physically contains the
+        # declarations the library defines from it. Ids stay in the library's
+        # namespace, so the library is not split in two.
+        part_edges = [{**e, "source": own_nid, "relation": "contains"}
+                      for e in edges
+                      if e["source"] == file_nid and e["relation"] == "defines"]
+        add_edge(file_nid, own_nid, "includes", line=part_of_line)
+        edges.extend(part_edges)
 
     return {"nodes": nodes, "edges": edges}
