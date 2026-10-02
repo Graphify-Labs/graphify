@@ -2602,6 +2602,67 @@ def test_powershell_finds_class_and_method():
     assert any("Transform" in l for l in labels)
 
 
+def test_powershell_this_method_call_resolves(tmp_path):
+    """`$this.Square(3)` inside a class method is a call to a sibling method and
+    must link the two. The invocation parses as an `invokation_expression`, but
+    only the bare-command form was walked, so every method call was dropped from
+    the call graph (#3992)."""
+    f = tmp_path / "calc.ps1"
+    f.write_text(
+        "class Calc {\n"
+        "    [int] Square([int]$x) { return $x * $x }\n"
+        "    [int] Run() { return $this.Square(3) }\n"
+        "}\n"
+    )
+    r = extract_powershell(f)
+    assert "error" not in r
+    assert ("Run", "Square") in _edge_labels(r, "calls")
+
+
+def test_powershell_static_method_call_resolves(tmp_path):
+    """The static `[Calc]::Make()` form is also an `invokation_expression` and
+    must resolve to the method (#3992)."""
+    f = tmp_path / "calc.ps1"
+    f.write_text(
+        "class Calc {\n"
+        "    static [Calc] Make() { return [Calc]::new() }\n"
+        "    [Calc] Run() { return [Calc]::Make() }\n"
+        "}\n"
+    )
+    r = extract_powershell(f)
+    assert ("Run", "Make") in _edge_labels(r, "calls")
+
+
+def test_powershell_member_call_does_not_bind_to_free_function(tmp_path):
+    """Fail-closed: a method call on an unknown receiver (`$obj.Process()`) must
+    NOT bind to a free function that merely shares the name — member calls
+    resolve only to methods (#3992)."""
+    f = tmp_path / "calc.ps1"
+    f.write_text(
+        "function Process { return 1 }\n"
+        "class Calc {\n"
+        "    [int] Run() {\n"
+        "        $obj = Get-Thing\n"
+        "        return $obj.Process()\n"
+        "    }\n"
+        "}\n"
+    )
+    r = extract_powershell(f)
+    assert ("Run", "Process") not in _edge_labels(r, "calls")
+
+
+def test_powershell_command_call_still_resolves(tmp_path):
+    """Positive control: the bare-command call path that already worked must
+    keep working (#3992)."""
+    f = tmp_path / "mod.ps1"
+    f.write_text(
+        "function Helper { return 1 }\n"
+        "function Run { Helper }\n"
+    )
+    r = extract_powershell(f)
+    assert ("Run", "Helper") in _edge_labels(r, "calls")
+
+
 def test_powershell_class_base_type_emits_inherits_edge():
     # `class Circle : Shape` — the base type after ':' was previously dropped
     # because the handler only read the first simple_name (the class name).
