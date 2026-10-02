@@ -1115,3 +1115,174 @@ def test_windows_skill_writes_marker_files_without_a_bom():
         )
     assert "New-Object System.Text.UTF8Encoding $false" in core, \
         "the BOM-less encoding object must be constructed in the windows render"
+
+
+# --- #2225: a partly-read file must never be a permanent, silent loss ----------
+#
+# The skill path hands files to subagents, and the Read tool caps a single call at
+# 2000 lines WITHOUT reporting truncation. A subagent that reads only the head of
+# a long file still writes a well-formed chunk, so "chunk exists and parses" said
+# nothing about coverage. Because build_merge replaces a re-extracted file's
+# nodes, the unread tail was not merely missed: it was deleted, the run reported
+# success, and the manifest recorded the file as done so no later run retried it.
+#
+# These tests execute the emitted python rather than matching its source, per the
+# #2126/#2641 convention that static assertions gave this class of bug no coverage.
+
+
+def _python_step_bodies(core: str) -> list[str]:
+    """Every inline python body in a rendered core, unescaped from the bash fence."""
+    bodies: list[str] = []
+    current: list[str] | None = None
+    for line in core.split("\n"):
+        if line == gen._PY_INVOKE_POSIX:
+            current = []
+        elif current is not None and line == '"':
+            bodies.append("\n".join(gen._unescape_bash_dq(x) for x in current))
+            current = None
+        elif current is not None:
+            current.append(line)
+    return bodies
+
+
+def _step_body(core: str, marker: str) -> str:
+    """The one inline python body containing `marker`."""
+    hits = [b for b in _python_step_bodies(core) if marker in b]
+    assert len(hits) == 1, f"expected exactly one step body containing {marker!r}, got {len(hits)}"
+    return hits[0]
+
+
+def _substituted(body: str, root: Path) -> str:
+    """Apply the substitutions the skill tells the agent to make (INPUT_PATH/SPEC_PATH)."""
+    spec = root / "extraction-spec.md"
+    spec.write_text("extraction prompt fixture\n", encoding="utf-8")
+    return body.replace("'INPUT_PATH'", repr(str(root))).replace("'SPEC_PATH'", repr(str(spec)))
+
+
+def _write_chunk(out_dir: Path, payload: dict) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / ".graphify_chunk_01.json").write_text(
+        __import__("json").dumps(payload), encoding="utf-8"
+    )
+
+
+def test_extraction_specs_demand_complete_reads_and_report_coverage():
+    """Every host's subagent prompt states the Read cap and asks for coverage.
+
+    Both spec variants must carry it: the compact prompt ships to codex/claw/
+    kiro/pi, the verbose one everywhere else, so fixing only one leaves hosts
+    silently half-reading files.
+    """
+    platforms = gen.load_platforms()
+    seen_variants = set()
+    for key, platform in sorted(platforms.items()):
+        if platform.bucket != "split":
+            continue
+        spec = _platform_artifacts(key)[1]["extraction-spec.md"]
+        seen_variants.add(platform.extraction)
+        assert "COMPLETELY" in spec, f"[{key}] the prompt never asks for a complete read"
+        assert "2000 lines" in spec, f"[{key}] the prompt never states the Read tool's cap"
+        assert "coverage" in spec, f"[{key}] the prompt never asks for a coverage report"
+        # The contract must be in the schema the subagent emits, not only the prose.
+        assert '"coverage":{' in spec, f"[{key}] the emitted schema carries no coverage field"
+    assert seen_variants == {"verbose", "compact"}, (
+        "this test must cover both spec variants, not just one"
+    )
+
+
+def test_core_bounds_semantic_chunks_by_lines_as_well_as_file_count():
+    """Step B1 caps a chunk by total lines, and long files get a chunk to themselves.
+
+    File-count-only chunking is half the bug: a 25-file chunk also dilutes
+    attention, which is how a 590-line plan came back with zero nodes.
+    """
+    core, _ = _platform_artifacts("claude")
+    b1 = core.split("**Step B1 - Split into chunks**")[1].split("**Step B2")[0]
+    assert "20-25 files" in b1, "the file-count bound was dropped from Step B1"
+    assert "6000 total lines" in b1, "Step B1 lost the total-lines bound"
+    assert "2000 lines gets a chunk to itself" in b1, (
+        "a file past the Read cap must be dispatched alone"
+    )
+
+
+def test_coverage_check_flags_a_partly_read_file_and_clears_a_complete_one(
+    tmp_path, capsys, monkeypatch
+):
+    """Run the Step B3.5 coverage script: a short read is named, a full read is not."""
+    monkeypatch.chdir(tmp_path)  # the emitted bodies address graphify-out/ relatively
+    core, _ = _platform_artifacts("claude")
+    body = _substituted(_step_body(core, "covered[src] = max("), tmp_path)
+    out = tmp_path / "graphify-out"
+
+    doc = tmp_path / "big.md"
+    doc.write_text("\n".join(f"line {i}" for i in range(1, 51)), encoding="utf-8")
+    whole = tmp_path / "small.md"
+    whole.write_text("\n".join(f"line {i}" for i in range(1, 11)), encoding="utf-8")
+
+    # big.md was only read to line 10 of 50; small.md was read to its end.
+    _write_chunk(out, {"coverage": {str(doc): 10, str(whole): 10}, "nodes": []})
+    exec(compile(body, "step-b35", "exec"), {"__name__": "__main__"})
+    printed = capsys.readouterr().out
+    assert "WARNING" in printed and "partly read" in printed, printed
+    assert "read 10 of 50 lines" in printed, printed
+    flagged = (out / ".graphify_partial.txt").read_text(encoding="utf-8").splitlines()
+    assert flagged == [str(doc)], f"only the partly-read file may be flagged, got {flagged}"
+
+    # Now report the full length for big.md: nothing is flagged and the warning clears.
+    _write_chunk(out, {"coverage": {str(doc): 50, str(whole): 10}, "nodes": []})
+    exec(compile(body, "step-b35", "exec"), {"__name__": "__main__"})
+    printed = capsys.readouterr().out
+    assert "Coverage OK" in printed, printed
+    assert (out / ".graphify_partial.txt").read_text(encoding="utf-8") == ""
+
+
+def test_a_partly_read_file_is_cached_as_a_miss_so_the_next_update_retries_it(
+    tmp_path, capsys, monkeypatch
+):
+    """The whole point: a flagged file must come BACK as uncached on the next run.
+
+    Asserting the partial list is not enough - the loss was permanent because the
+    file was served from cache forever. Drive the real cache: save with the flagged
+    file named partial, then read it back the way Step B0 does and require it to be
+    re-dispatched, while the fully-read file still hits.
+    """
+    import json as _json
+
+    from graphify.cache import check_semantic_cache
+
+    monkeypatch.chdir(tmp_path)  # the emitted bodies address graphify-out/ relatively
+    core, _ = _platform_artifacts("claude")
+    body = _substituted(_step_body(core, "partial_source_files=partial"), tmp_path)
+    out = tmp_path / "graphify-out"
+    out.mkdir(parents=True, exist_ok=True)
+
+    short, whole = tmp_path / "short.md", tmp_path / "whole.md"
+    short.write_text("a\n" * 50, encoding="utf-8")
+    whole.write_text("b\n" * 10, encoding="utf-8")
+    (out / ".graphify_uncached.txt").write_text(f"{short}\n{whole}\n", encoding="utf-8")
+    (out / ".graphify_partial.txt").write_text(f"{short}\n", encoding="utf-8")
+    (out / ".graphify_semantic_new.json").write_text(
+        _json.dumps({
+            "nodes": [
+                {"id": "short_head", "label": "Head", "file_type": "document",
+                 "source_file": str(short)},
+                {"id": "whole_all", "label": "Whole", "file_type": "document",
+                 "source_file": str(whole)},
+            ],
+            "edges": [], "hyperedges": [],
+        }),
+        encoding="utf-8",
+    )
+
+    exec(compile(body, "step-b3-cache", "exec"), {"__name__": "__main__"})
+    assert "1 left partial for retry" in capsys.readouterr().out, (
+        "the cache write must report that a file was left partial"
+    )
+
+    spec = tmp_path / "extraction-spec.md"
+    _, _, _, uncached = check_semantic_cache(
+        [str(short), str(whole)], root=tmp_path, prompt_file=spec
+    )
+    assert [Path(u).name for u in uncached] == ["short.md"], (
+        f"the partly-read file must be re-dispatched, uncached={uncached}"
+    )
