@@ -1638,13 +1638,14 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
 def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | None]:
     """Shared node resolution for the get_node / get_neighbors tools.
 
-    Returns ``(node_id, None)`` when *label* resolves to a single winner via the
-    tiered `_find_node` ranking, or ``(None, message)`` when there is no match or
-    the winning tier spans several source files. Routing both tools through this
-    keeps get_node from silently returning a `G.nodes()` iteration-order match for
-    a hub name while get_neighbors reports the same lookup as ambiguous (#ADR-0001).
+    Returns ``(node_id, None)`` only for an exact source-file, label, or ID match,
+    or ``(None, message)`` when there is no exact match or the winning exact tier
+    spans several source files. ``find_node_ambiguity`` preserves same-file
+    precedence for a file node and one of its members. Routing both tools through
+    this keeps fuzzy lookup from silently choosing an arbitrary node (#ADR-0001).
     """
-    matches = _find_node(G, label)
+    source_exact, exact, _prefix, _substring = _find_node_tiers(G, label)
+    matches = source_exact or exact
     if not matches:
         return None, f"No node matching '{label}' found."
     rivals = find_node_ambiguity(G, label)
@@ -1899,7 +1900,7 @@ def _build_server(graph_path: str):
             ),
             types.Tool(
                 name="get_node",
-                description="Get full details for a specific node by label or ID.",
+                description="Get full details for a node by exact label or ID. Reports ambiguity or misses as text; does not guess fuzzy matches.",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -2064,8 +2065,6 @@ def _build_server(graph_path: str):
 
     def _tool_get_node(arguments: dict) -> str:
         raw = _node_arg(arguments)
-        if not raw:
-            return "Provide a node label or id (accepted keys: label, node_id, id)."
         label = raw.lower()
         nid, err = _resolve_single_node(G, label)
         if err:
@@ -2184,8 +2183,8 @@ def _build_server(graph_path: str):
     def _tool_list_prs(arguments: dict) -> str:
         from graphify.prs import fetch_prs, fetch_worktrees, format_prs_text, _detect_default_branch
         repo = arguments.get("repo") or None
-        base = arguments.get("base") or _detect_default_branch(repo)
         try:
+            base = arguments.get("base") or _detect_default_branch(repo)
             prs = fetch_prs(repo=repo, base=base)
         except RuntimeError as e:
             raise ToolError(f"Error: {e}") from e

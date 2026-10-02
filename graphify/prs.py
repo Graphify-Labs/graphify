@@ -157,6 +157,7 @@ def _gh(*args: str) -> list | dict | None:
 
 def _detect_default_branch(repo: str | None = None) -> str:
     """Auto-detect the repo's default branch via gh, then git, then fall back to 'main'."""
+    _require_repo_context(repo)
     # Try gh first — works for any repo, not just the current directory
     args = ["repo", "view"]
     if repo:
@@ -182,6 +183,19 @@ def _detect_default_branch(repo: str | None = None) -> str:
     return "main"
 
 
+def _require_repo_context(repo: str | None) -> None:
+    if repo is not None:
+        return
+    directory = Path.cwd()
+    while True:
+        if (directory / ".git").exists():
+            return
+        parent = directory.parent
+        if parent == directory:
+            raise RuntimeError("could not detect repository; pass repo=")
+        directory = parent
+
+
 _CI_FAILURE_CONCLUSIONS = frozenset({"FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"})
 
 
@@ -200,6 +214,7 @@ def _parse_ci(rollup: list) -> str:
 
 
 def fetch_prs(repo: str | None = None, base: str | None = None, limit: int = 50) -> list[PRInfo]:
+    _require_repo_context(repo)
     resolved_base = base or _detect_default_branch(repo)
     args = [
         "pr", "list", "--state", "open", "--limit", str(limit),
