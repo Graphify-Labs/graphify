@@ -6,7 +6,7 @@ increment, not claims that new tests exist or have passed. Actual baseline resul
 are recorded in [VALIDATION.md](VALIDATION.md) and `tests/TRACEABILITY.md`.
 
 This plan extends Graphify's existing Python pipeline and contribution workflow.
-It does not propose a Qt application rewrite. Read [REQUIREMENTS.md](REQUIREMENTS.md),
+It does not propose a Qt application rewrite. Read [REQUIREMENTS.md](../REQUIREMENTS.md),
 [ARCHITECTURE.md](ARCHITECTURE.md), [DESIGN.md](DESIGN.md), [AUDIT.md](AUDIT.md),
 and the upstream [contribution guide](../../CONTRIBUTING.md) before
 implementation. The approved baseline is the imported upstream `v8` state recorded

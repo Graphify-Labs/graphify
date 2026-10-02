@@ -141,7 +141,7 @@ interfaces. Fixture output must be hand-checked against source facts, not genera
 from the implementation under test. Compare normalized output across cold/warm,
 full/incremental, relative/absolute, and Windows/POSIX cases.
 
-Each feature increment updates [requirements](REQUIREMENTS.md),
+Each feature increment updates [requirements](../REQUIREMENTS.md),
 [traceability](../../tests/TRACEABILITY.md), support documentation, and any changed
 design decisions in the same PR. Dynamic object creation, arbitrary plugin code,
 full preprocessing, and arbitrary build-script evaluation remain explicit limits.

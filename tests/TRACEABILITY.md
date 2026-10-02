@@ -4,7 +4,7 @@ Status: planning. There are no Qt/QML-specific automated tests in this change.
 Baseline generic-language tests are evidence about existing behavior only.
 
 The requirement definitions are authoritative in
-[REQUIREMENTS.md](../docs/qt-qml/REQUIREMENTS.md). The
+[REQUIREMENTS.md](../docs/REQUIREMENTS.md). The
 [increment plan](../docs/qt-qml/PLAN.md) supplies acceptance scenarios and exit gates.
 Test filenames below are proposed; revise them to the actual production boundaries
 when implementing each increment, and replace gaps with exact test node IDs/results.

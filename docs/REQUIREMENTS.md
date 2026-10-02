@@ -1,4 +1,8 @@
-# Qt/QML requirements
+# Graphify requirements
+
+This is the canonical product requirements document. Current entries cover the
+Qt/QML support extension. Add or update product requirements here with the
+behavioural change, preserving established identifiers and acceptance traceability.
 
 All requirements are **Planned**. Existing generic C++ and JavaScript behavior is
 baseline capability, not verification of the Qt/QML requirements below.
@@ -28,7 +32,7 @@ Increment references identify delivery stages, not completion evidence.
 
 Each criterion belongs to the requirement named in its ID. All criteria are
 **Not executed** for the proposed Qt/QML implementation. Verification owners
-and coverage gaps are assigned in [tests/TRACEABILITY.md](../../tests/TRACEABILITY.md).
+and coverage gaps are assigned in [tests/TRACEABILITY.md](../tests/TRACEABILITY.md).
 Fixture/test names remain proposed until their increment implements them.
 
 The agreed initial profile is Qt 6 with both CMake and qmake. QML-00 records the
@@ -164,6 +168,6 @@ and [meta-object invocation](https://doc.qt.io/qt-6.8/qmetaobject.html#invokeMet
 These are acceptance contracts for source analysis, not claims that static
 relationships prove a particular runtime connection executes.
 
-The [plan](PLAN.md) defines acceptance examples and exit gates. Update statuses
+The [plan](qt-qml/PLAN.md) defines acceptance examples and exit gates. Update statuses
 only when implementation and cited evidence justify them; parser selection or a
 passing generic C++ test does not change a Qt/QML requirement to Verified.

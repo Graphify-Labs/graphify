@@ -4,7 +4,7 @@ Audited on 2026-10-03. The objective is to extend Graphify's source analysis of 
 
 The initial support profile is Qt 6 with both CMake and qmake projects. Qt 5.15 compatibility is a separate future profile that needs its own fixtures and acceptance gates.
 
-The required analysis includes Qt C++ signals, slots, signal emission and connection semantics, plus bidirectional C++/QML interaction. C++ access to QML-created objects and their properties, methods and signals is part of the scope alongside QML access to exposed C++ objects. These additions are tracked as `QML-016` and `QML-017` in [REQUIREMENTS.md](REQUIREMENTS.md).
+The required analysis includes Qt C++ signals, slots, signal emission and connection semantics, plus bidirectional C++/QML interaction. C++ access to QML-created objects and their properties, methods and signals is part of the scope alongside QML access to exposed C++ objects. These additions are tracked as `QML-016` and `QML-017` in [REQUIREMENTS.md](../REQUIREMENTS.md).
 
 ## Baseline and evidence
 

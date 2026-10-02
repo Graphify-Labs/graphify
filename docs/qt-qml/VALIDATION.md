@@ -100,3 +100,22 @@ QML parser installation/API compatibility, representative Qt version profiles,
 grammar error recovery, PR implementation tests, full-suite/all-extras CI, macOS
 and Linux extraction, performance, and Qt-specific incremental parity remain
 unverified. QML-00 in [PLAN.md](PLAN.md) owns the next investigation.
+
+## Development-standard review — 2026-10-03
+
+Strengthened [AGENTS.md](../../AGENTS.md) across the twelve requested discipline
+areas, adapted pipeline rules to GitHub, and retained the specialized upstream
+extractor-migration constraints. Protected proof rules remain future policy;
+no workflow protection or runtime language support was introduced.
+
+Moved the canonical requirements to [docs/REQUIREMENTS.md](../REQUIREMENTS.md)
+and updated the index, audit, design, plan, code reference, and traceability links.
+A one-off Python document check passed across eleven public foundation files:
+all requested headings exist, local links resolve, the old requirements path is
+absent, and private-reference/credential-pattern checks pass. All seventeen
+requirement IDs and sixty-eight acceptance criteria retain their numbering;
+criterion text/order is unchanged and each criterion still has one traceability
+assignment. `git diff --check` passed.
+
+This was a documentation-only review. Runtime tests were not rerun; the baseline
+results and outstanding implementation gates above remain unchanged.

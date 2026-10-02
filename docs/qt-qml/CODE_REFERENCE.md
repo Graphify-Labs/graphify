@@ -32,7 +32,7 @@ connect/disconnect syntax, loader/access sites and literal context/initial-prope
 facts. The proposed resolver owns scoped module/resource joins and
 engine/component/view-to-QML-object provenance. It must support native C++ events
 without requiring QML parsing. QML-008, QML-016 and QML-017 in
-[REQUIREMENTS.md](REQUIREMENTS.md) define the separate exposure, event and reverse
+[REQUIREMENTS.md](../REQUIREMENTS.md) define the separate exposure, event and reverse
 object-access acceptance contracts; none is implemented by the imported generic
 C++ extractor alone. [DESIGN.md](DESIGN.md) records proposed relation contexts and
 source ownership, including private-slot meta-object endpoints and compatible

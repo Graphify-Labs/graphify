@@ -18,7 +18,7 @@ audited again before carrying these conclusions forward.
 | [Audit](AUDIT.md) | Observed extension points, gaps, and risks in the baseline |
 | [Architecture](ARCHITECTURE.md) | Proposed boundaries, parser decision, support matrix, and ADRs |
 | [Design](DESIGN.md) | Proposed interface contracts and implementation rules |
-| [Requirements](REQUIREMENTS.md) | Observable acceptance criteria and status |
+| [Requirements](../REQUIREMENTS.md) | Observable acceptance criteria and status |
 | [Increment plan](PLAN.md) | Ordered, independently reviewable feature increments |
 | [Development](DEVELOPMENT.md) | Environment, GitHub workflow, verification, and upstream delivery |
 | [Code reference](CODE_REFERENCE.md) | Existing owners and proposed extension files |
