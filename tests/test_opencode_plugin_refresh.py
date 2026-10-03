@@ -230,6 +230,42 @@ def test_a_failed_rewrite_never_breaks_the_command(tmp_path, monkeypatch, capsys
     assert "graphify: refreshed" not in err
 
 
+def test_an_interrupted_rewrite_leaves_the_old_plugin_whole(tmp_path, monkeypatch, capsys):
+    """OpenCode watches the plugin file, so it must go from the old content to
+    the new one in a single rename, never through a half-written file."""
+    import graphify.paths as pathsmod
+
+    plugin, _config = _old_install(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    def killed(_tmp, _dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pathsmod, "os_replace_with_fallback", killed)
+
+    mainmod._refresh_v1_opencode_plugins()
+
+    assert plugin.read_text(encoding="utf-8") == V1_PLUGIN
+    assert [p.name for p in plugin.parent.iterdir()] == ["graphify.js"], "no temp file left behind"
+    assert "graphify: could not refresh" in capsys.readouterr().err
+
+
+def test_a_symlinked_plugin_is_rewritten_through_the_link(tmp_path, monkeypatch, requires_symlinks):
+    shared = tmp_path / "dotfiles" / "graphify.js"
+    shared.parent.mkdir()
+    shared.write_text(V1_PLUGIN, encoding="utf-8")
+    project = tmp_path / "project"
+    plugin = project / ".opencode" / "plugins" / "graphify.js"
+    plugin.parent.mkdir(parents=True)
+    plugin.symlink_to(shared)
+    monkeypatch.chdir(project)
+
+    mainmod._refresh_v1_opencode_plugins()
+
+    assert plugin.is_symlink()
+    assert shared.read_text(encoding="utf-8") == _OPENCODE_PLUGIN_JS
+
+
 def test_the_first_cli_run_after_an_upgrade_rewrites_it(tmp_path, monkeypatch, capsys):
     plugin, _config = _old_install(tmp_path)
     monkeypatch.chdir(tmp_path)

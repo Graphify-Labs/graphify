@@ -43,6 +43,7 @@ except Exception:
 
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
+from graphify.paths import write_text_atomic as _write_text_atomic
 
 
 def _skill_lock_path(skill_dir: Path) -> Path:
@@ -1667,15 +1668,16 @@ def _drop_opencode_config_entry(project_dir: Path) -> bool:
             changed = True
     if changed:
         # ensure_ascii=False: keep the user's non-ASCII values readable.
-        config_file.write_text(
-            json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        _write_text_atomic(config_file, json.dumps(config, indent=2, ensure_ascii=False))
     return changed
 def _install_opencode_plugin(project_dir: Path) -> None:
-    """Write graphify.js into .opencode/plugins/, where OpenCode discovers it."""
+    """Write graphify.js into .opencode/plugins/, where OpenCode discovers it.
+
+    Both files are replaced atomically. The CLI refresh can run this while
+    OpenCode is watching them, and it must never see half a plugin.
+    """
     plugin_file = project_dir / _OPENCODE_PLUGIN_PATH
-    plugin_file.parent.mkdir(parents=True, exist_ok=True)
-    plugin_file.write_text(_OPENCODE_PLUGIN_JS, encoding="utf-8")
+    _write_text_atomic(plugin_file, _OPENCODE_PLUGIN_JS)
     print(f"  {_OPENCODE_PLUGIN_PATH}  ->  tool.execute.before hook written")
 
     if _drop_opencode_config_entry(project_dir):
