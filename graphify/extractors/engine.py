@@ -8,6 +8,7 @@ from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _mak
 from graphify.ids import normalize_id
 from graphify.extractors.models import LanguageConfig
 from graphify.extractors.resolution import _resolve_js_import_target
+from graphify.extractors.luau_facts import LUAU_FACTS_KEY, luau_module_facts
 from graphify.security import sanitize_metadata
 from pathlib import Path
 
@@ -15,6 +16,11 @@ from pathlib import Path
 def _csharp_namespace_id(dotted_name: str) -> str:
     digest = hashlib.sha1(dotted_name.encode("utf-8")).hexdigest()[:16]
     return f"csharp_namespace:{digest}"
+
+# Grammars of the Lua family. Luau (Roblox) is a Lua superset with its own
+# grammar, so the Lua-only paths below (bare `require` statements, `self:`
+# calls and the colon-call guard) test membership here, not one grammar (#2520).
+_LUA_FAMILY = frozenset({"tree_sitter_lua", "tree_sitter_luau"})
 
 # JSX tags that render a component (the closing tag repeats the name; not counted).
 _JSX_ELEMENT_TYPES = frozenset({"jsx_opening_element", "jsx_self_closing_element"})
@@ -4085,7 +4091,7 @@ def _extract_generic(
         # declared inside. So this only fires for a call that IS require,
         # checked ahead of (and independently from) the import_types dispatch
         # below (#3320).
-        if (config.ts_module == "tree_sitter_lua" and t == "function_call"
+        if (config.ts_module in _LUA_FAMILY and t == "function_call"
                 and config.import_handler and _lua_is_require_call(node, source)):
             config.import_handler(node, source, file_nid, stem, edges, str_path, scope_stack)
             return
@@ -6136,7 +6142,7 @@ def _extract_generic(
             continue
         raw = n["label"]
         normalised = raw.strip("()").lstrip(".")
-        if config.ts_module == "tree_sitter_lua":
+        if config.ts_module in _LUA_FAMILY:
             sep = ":" if ":" in normalised else ("." if "." in normalised else None)
             if sep:
                 lua_self_table[n["id"]] = normalised.rsplit(sep, 1)[0]
@@ -6874,7 +6880,7 @@ def _extract_generic(
             # `self` receiver is rewritten; an arbitrary receiver (`other:m()`) has
             # an unknown type and is left unqualified so the fail-closed guard below
             # keeps it from binding to an unrelated same-named bare function (#3991).
-            if (config.ts_module == "tree_sitter_lua"
+            if (config.ts_module in _LUA_FAMILY
                     and is_member_call
                     and member_receiver == "self"
                     and callee_name):
@@ -6938,7 +6944,7 @@ def _extract_generic(
                 # bare-name map, or `m` would bind to any unrelated top-level
                 # function named `m`. Defer it to stay fail-closed (#3991).
                 _lua_member_defer = (
-                    config.ts_module == "tree_sitter_lua"
+                    config.ts_module in _LUA_FAMILY
                     and is_member_call
                     and not lua_self_qualified
                 )
@@ -7513,6 +7519,12 @@ def _extract_generic(
         _pkg = _kotlin_package_name(root, source)
         if _pkg:
             result["kotlin_package"] = _pkg
+    # Luau (#2520): require arguments, local bindings and the returned table,
+    # reduced to instance-path chains for the Rojo require resolver. Present,
+    # possibly empty, on every Luau result: the resolver only rebuilds the
+    # edges of a result that carries it.
+    if config.ts_module == "tree_sitter_luau":
+        result[LUAU_FACTS_KEY] = luau_module_facts(root, source)
     if callable_def_nids:
         # Mark function / method / class defs with a `_callable` attribute so the
         # cross-file indirect_call pass can resolve a by-name callback only to a real

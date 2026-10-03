@@ -1,4 +1,4 @@
-"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML, Robot Framework."""
+"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, Luau, .NET project files, XAML, Robot Framework."""
 from __future__ import annotations
 from pathlib import Path
 import pytest
@@ -1455,6 +1455,61 @@ def test_php_js_name_collision_drops_the_dropped_js_nodes_edges(tmp_path):
 
 
 # ── Swift ────────────────────────────────────────────────────────────────────
+
+# ── Luau (Roblox) ─────────────────────────────────────────────────────────────
+# `.luau` must dispatch to the Luau grammar: the plain Lua grammar stops at the
+# first Luau-only construct and silently drops every symbol after it (#2520).
+
+def _extract_luau_fixture():
+    from graphify.extract import _DISPATCH
+    return _DISPATCH[".luau"](FIXTURES / "sample.luau")
+
+def test_luau_no_parse_errors():
+    r = _extract_luau_fixture()
+    assert "error" not in r
+    assert "parse_errors" not in r
+
+def test_luau_finds_functions_after_luau_only_syntax():
+    labels = _labels(_extract_luau_fixture())
+    for name in ("Server.new", "Server:start", "Server:on", "Server:stop", "countReady", "main"):
+        assert any(name in l for l in labels), name
+
+def test_luau_finds_require_import():
+    r = _extract_luau_fixture()
+    assert any(e["relation"] == "imports" for e in r["edges"])
+
+def test_luau_finds_calls():
+    r = _extract_luau_fixture()
+    assert any(e["relation"] == "calls" for e in r["edges"])
+
+def test_luau_and_lua_use_distinct_grammars():
+    from graphify.extract import _DISPATCH, extract_lua, extract_luau
+    assert _DISPATCH[".luau"] is extract_luau
+    assert _DISPATCH[".lua"] is extract_lua
+    assert _DISPATCH[".toc"] is extract_lua
+
+# The engine's Lua-only paths cover Luau too: the bare `require` statement
+# (#3320) and the `self:` / colon-call resolution with its fail-closed guard
+# (#3991) are keyed on the grammar, and Luau has its own.
+
+def _extract_luau_methods_fixture():
+    from graphify.extract import _DISPATCH
+    return _DISPATCH[".luau"](FIXTURES / "sample_methods.luau")
+
+def test_luau_bare_require_statement_is_an_import():
+    r = _extract_luau_methods_fixture()
+    targets = {e["target"] for e in _edges_with_relation(r, "imports")}
+    assert "script_parent_bootstrap" in targets
+
+def test_luau_self_colon_call_binds_to_the_table_method():
+    calls = _calls(_extract_luau_methods_fixture())
+    assert ("Server:restart()", "Server:stop()") in calls
+    assert ("Server:restart()", "stop()") not in calls
+
+def test_luau_colon_call_on_unknown_receiver_is_fail_closed():
+    calls = _calls(_extract_luau_methods_fixture())
+    assert ("Server:relay()", "stop()") not in calls
+
 
 def test_swift_no_error():
     r = extract_swift(FIXTURES / "sample.swift")

@@ -1,0 +1,21 @@
+{
+	"name": "RojoFixture",
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"$className": "ReplicatedStorage",
+			"Shared": {
+				"$path": "src/shared"
+			},
+			"Packages": {
+				"$path": "vendor/Packages"
+			}
+		},
+		"ServerScriptService": {
+			"$className": "ServerScriptService",
+			"Server": {
+				"$path": "src/server"
+			}
+		}
+	}
+}
