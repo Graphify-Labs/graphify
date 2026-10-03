@@ -1299,6 +1299,47 @@ def _scala_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple
         for c in node.children:
             if c.is_named:
                 _scala_collect_type_refs(c, source, generic, out)
+    # A `match type` (`type Elem[X] = X match { case String => Char }`) names a
+    # real type in every case clause -- both the type it discriminates on and
+    # the type it yields. Without these two the walker returned nothing for a
+    # match type even when correctly dispatched (#2049). Recursing over named
+    # children matches how `compound_type` is already handled above.
+    if t in ("match_type", "type_case_clause"):
+        for c in node.children:
+            if c.is_named:
+                _scala_collect_type_refs(c, source, generic, out)
+
+
+def _scala_collect_context_bounds(
+    tp_node, source: bytes, out: list[tuple[str, str]]
+) -> None:
+    """Collect the types named by a ``type_parameters`` node's context bounds.
+
+    ``def sort[A: Ordering]`` desugars to an implicit ``Ordering[A]``, so the
+    bound is a real dependency the function has on that typeclass -- but
+    ``context_bound`` was not referenced anywhere in the extractor, so the
+    dependency was invisible wherever it appeared (#2046).
+
+    A ``context_bound`` is a direct child of ``type_parameters``, one per bound.
+    A higher-kinded parameter nests a further ``type_parameters`` for its own
+    arity brackets (``def program[F[_]: Async: Temporal]``), so this recurses
+    rather than reading direct children only -- otherwise both bounds on
+    ``program`` are missed.
+
+    ``upper_bound`` (``[T <: Comparable[T]]``) is a distinct node type and is
+    deliberately not matched here: a subtype constraint is not a dependency, so
+    emitting an edge for it would assert something the source does not say.
+    """
+    if tp_node is None:
+        return
+    for c in tp_node.children:
+        if c.type == "type_parameters":
+            _scala_collect_context_bounds(c, source, out)
+        elif c.type == "context_bound":
+            bound_type = c.child_by_field_name("type")
+            if bound_type is not None:
+                _scala_collect_type_refs(bound_type, source, False, out)
+
 
 def _python_collect_param_refs(params_node, source: bytes) -> list[tuple[str, str]]:
     """Collect type refs from each typed parameter under a `parameters` node."""
@@ -5237,8 +5278,27 @@ def _extract_generic(
             return
 
         if (config.ts_module == "tree_sitter_scala"
-                and t in ("val_definition", "var_definition")
-                and parent_class_nid):
+                and t in ("val_definition", "var_definition", "type_definition")):
+            # Scala 3 drops the boilerplate wrapper: `val`/`var` can be written
+            # directly at file scope with no enclosing object/class/trait. Gating
+            # on `parent_class_nid` therefore dropped every type reference a
+            # file-scope binding makes -- the parsed shape is identical to the
+            # in-class case (both carry a `type` field), so the missing container
+            # was the only difference, and the binding vanished from the graph
+            # entirely rather than degrading (#2054). This is the Scala instance
+            # of the same generic defect already fixed for Python (#1050): a
+            # position that legitimately has no container must fall back to the
+            # file node rather than be skipped. Reuses the owner idiom from the
+            # property branch above.
+            #
+            # `type_definition` joins the tuple for the same reason (#2049): a
+            # type alias, an `opaque type` and a `match type` all declare a
+            # dependency on the types they name, and all three carry the RHS
+            # under the same `type` field, so the existing walk applies verbatim.
+            # Only the *edges* are in scope here -- the alias still gets no node
+            # of its own, which is a separate accepted tradeoff shared with
+            # `val`/`given` bindings.
+            owner_nid = parent_class_nid or file_nid
             type_node = node.child_by_field_name("type")
             if type_node is not None:
                 line = node.start_point[0] + 1
@@ -5247,8 +5307,8 @@ def _extract_generic(
                 for ref_name, role in refs:
                     ctx = "generic_arg" if role == "generic_arg" else "field"
                     target_nid = ensure_named_node(ref_name, line)
-                    if target_nid != parent_class_nid:
-                        add_edge(parent_class_nid, target_nid, "references",
+                    if target_nid != owner_nid:
+                        add_edge(owner_nid, target_nid, "references",
                                  line, context=ctx)
             # fall through so any call expressions in the initializer get walked
 
@@ -5817,6 +5877,26 @@ def _extract_generic(
                     _scala_collect_type_refs(return_node, source, False, refs)
                     for ref_name, role in refs:
                         ctx = "generic_arg" if role == "generic_arg" else "return_type"
+                        target_nid = ensure_named_node(ref_name, line)
+                        if target_nid != func_nid:
+                            add_edge(func_nid, target_nid, "references",
+                                     line, context=ctx)
+                # Context bounds (`def sort[A: Ordering]`) are the sugar for
+                # typeclass-parameter wiring and name a real dependency, so they
+                # get their own `type_bound` context rather than being folded
+                # into `parameter_type` (#2046). Found by node type, never by
+                # field name: `type_parameters` and `parameters` share the field
+                # name "parameters" on function_definition, so a field lookup
+                # here would return the type parameters and read the function's
+                # real parameters as if they were bounds.
+                for c in node.children:
+                    if c.type != "type_parameters":
+                        continue
+                    bound_refs: list[tuple[str, str]] = []
+                    _scala_collect_context_bounds(c, source, bound_refs)
+                    for ref_name, role in bound_refs:
+                        ctx = ("generic_arg" if role == "generic_arg"
+                               else "type_bound")
                         target_nid = ensure_named_node(ref_name, line)
                         if target_nid != func_nid:
                             add_edge(func_nid, target_nid, "references",
