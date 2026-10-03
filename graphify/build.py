@@ -1384,7 +1384,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         _edge_rel = attrs.get("relation")
         if _edge_rel in ("calls", "imports", "imports_from", "references"):
             from graphify.qml_projection import allows_qml_script_edge
-            qml_script_edge = allows_qml_script_edge(G.nodes[src], G.nodes[tgt], attrs)
+            qml_script_edge = allows_qml_script_edge(G.nodes[src], G.nodes[tgt], attrs, target_id=tgt)
             src_ext = Path(G.nodes[src].get("source_file") or "").suffix.lower()
             tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
             src_fam = _EDGE_LANG_FAMILY.get(src_ext)

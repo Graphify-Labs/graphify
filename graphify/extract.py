@@ -7470,6 +7470,11 @@ def extract(
                 "error": "internal: no extraction result produced",
             }
 
+    # Overlay only already-admitted JavaScript resources referenced by QML.
+    # Its facts are separate from the generic JS graph and never execute source.
+    from graphify.extractors.qml_scripts import collect_qml_scripts
+    collect_qml_scripts(paths, per_file, root=root)
+
     # #1666: surface any source file an extractor accepted but that produced zero
     # nodes (not even a file node). Such a file is silently absent from the graph,
     # so affected/explain are blind to and through it with no other signal.
@@ -8251,6 +8256,11 @@ def extract(
     for n in resolution_nodes:
         if n.get("file_type") == "rationale" or n.get("type") == "namespace":
             continue
+        # Dedicated QML scopes resolve these facts; shared label guessing must
+        # not bind generic language calls to QML declarations or source sites.
+        _qml_metadata = n.get("metadata", {}).get("qml", {})
+        if _qml_metadata.get("contract_version") == 1:
+            continue
         raw = n.get("label", "")
         normalised = raw.strip("()").lstrip(".")
         if normalised:
@@ -8678,6 +8688,8 @@ def extract(
         node_count, edge_count = len(joined_nodes), len(joined_edges)
         try:
             resolve_qml_project(dict(zip(paths, per_file)), joined_nodes, joined_edges, root=root)
+            from graphify.qml_relationships import resolve_qml_relationships
+            resolve_qml_relationships(dict(zip(paths, per_file)), joined_nodes, joined_edges, root=root)
         except Exception:
             # A broken join must not pass the normal warning-and-continue path.
             for path, result in zip(paths, per_file):

@@ -1,9 +1,9 @@
 # Qt and QML feature increment plan
 
-Status: planning only. No increment below implements Qt/QML support in this
-foundation change. Test commands are proposals for execution during the named
-increment, not claims that new tests exist or have passed. Actual baseline results
-are recorded in [VALIDATION.md](VALIDATION.md) and `tests/TRACEABILITY.md`.
+Status: QML-00 through QML-03 complete for the declared optional Windows static
+profile. QML-04 through QML-07 remain planned. Executed checks are recorded in
+[VALIDATION.md](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md).
+Commands marked proposed are future verification suggestions, not pass claims.
 
 This plan extends Graphify's existing Python pipeline and contribution workflow.
 It does not propose a Qt application rewrite. Read [REQUIREMENTS.md](../REQUIREMENTS.md),
@@ -458,6 +458,30 @@ small enough for C++ and project metadata enrichment without a generic resolver
 rewrite. No global same-name fallback or implicit Qt SDK scan.
 
 ## QML-03 — Bindings, aliases, JavaScript and signals
+
+**Status: complete for the documented static profile.** QML-001-AC02 and all
+QML-006/007 criteria pass production fixtures. Actual tests are in
+test_qml_syntax_profile.py, test_qml_expressions.py, test_qml_handlers.py,
+test_qml_scripts.py, test_qml_adversarial.py and the graph/persistence suites.
+See [implementation evidence](IMPLEMENTATION.md); proposed names below describe
+the initial planning contract and are superseded by those actual owners.
+
+Review added **QML-03a** held-object/array/template declarations, **QML-03b**
+lexical expressions/aliases/handlers and **QML-03c** accepted-script overlays,
+generic-JS isolation, typed cross-family proof and durable edge direction. All
+three work packages are delivered. Regression discoveries include lexical-list
+truncation, duplicate anonymous Connections, inherited signal parameters,
+mixed Connections handler styles, alias cycles, module export roles and missing
+script-file endpoint proof. Separate source sites retain repeated relationships.
+
+No new top-level increment is needed. Add **QML-06a** source/metadata/script/C++
+mutation parity and **QML-06b** bounded parser/config/import-root cache contracts;
+add **QML-07a** direction/evidence across every advertised consumer and **QML-07b**
+hosted installation/profile evidence and upstream review. These refine existing
+increments, preserving QML-00 through QML-07 and QML-04a/04b/04c numbering.
+Runtime contexts, framework members, reexports and name-based template barriers
+remain documented conservative limits. Native C++ work advances in QML-04 next;
+build/resource/type-description enrichment remains QML-05.
 
 **Scope and code paths.** Extend focused QML extraction/resolution modules, reusing
 existing JavaScript AST helpers only through a narrow adapter that preserves QML

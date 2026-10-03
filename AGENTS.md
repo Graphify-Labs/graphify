@@ -487,6 +487,13 @@ Use the smallest faithful reproduction and explain disagreement between sources.
 A successful build, green dashboard, parser success, or aggregate coverage does
 not prove correct resolution, persisted output, or feature acceptance.
 
+Verify source spans against the original bytes read from disk, including BOM,
+CRLF and Unicode. Text decoding or newline normalization must not silently shift
+fact locations. Carry authoritative lexical/scope decisions separately from
+bounded display lists so sanitation cannot turn a hidden name into a resolved
+target. Cross-language exceptions need accepted endpoint role/identity evidence.
+Check direction through the actual serialized graph and each relevant consumer.
+
 Bind evidence to source/configuration revision, parser/dependency versions, fixture
 state, platform, and actual stage under investigation. Compare cold/warm and
 full/incremental results when relevant. Inspect prior persisted results, partial

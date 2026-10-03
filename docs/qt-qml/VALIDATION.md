@@ -1,4 +1,67 @@
-# Foundation validation record
+# Qt/QML validation record
+
+## Executed QML-00 through QML-03 — 2026-10-03
+
+The imported baseline remains `0b60d47e6cd9338c51143f39f35b6c45c8453385`.
+QML-00 commit `2f0fdce`, QML-01 commits `4f587f6`/`63075e8`, and QML-02
+commit `df432a7` separate the executed stages. QML-03 is on
+`codex/qml-03-relationships`; its source and final evidence are committed together.
+The upstream API was rechecked: v8 still points at the imported baseline. Proposal
+#1748 remains unmerged; no proposal code was copied into these modules/fixtures.
+
+| Executed check | Result |
+| --- | --- |
+| QML-00 candidate probes, each Windows Python 3.10/3.12/3.13/3.14 | 40 passed, no skips per lane |
+| All 21 actual QML test files with reviewed QML-03 wheel, each Windows Python lane | 239 passed, two symlink-permission skips per lane before final eight BOM/CRLF reader regressions |
+| Final qmldir reader and production syntax profile | 33 passed, no skips, including original BOM/CRLF/Unicode bytes and bounded binary reads |
+| QML-03 optional wheel installs, neutral cwd, isolated `-I` production entry point | Passed Python 3.10.21/3.12.14/3.13.15/3.14.7; bindings, imported scripts and subscriptions exercised with Python network/process audit denial |
+| Fresh core-only wheel, Python 3.12.14 | Passed with pack actually absent; Python extraction still works, QML reports parser unavailable |
+| Built-artifact tests with GRAPHIFY_QML_TEST_WHEEL supplied | Three passed; artifact imports and core/parser boundary executed |
+| New CI helper executed locally, Python 3.12 | Clean extra/core installs and both isolated smoke checks passed; three artifact tests passed |
+| Minimal CI environment QML source suite | 239 passed, two symlink skips; pytest 9.1.1, NetworkX 3.7, Python 3.12.14 |
+| Relevant existing shared-boundary ten-file suite | 1337 passed, 53 skipped, the same two baseline Windows deleted-cwd failures |
+| Whole-repository Ruff | Passed |
+| All seventeen QML runtime modules and two install/CI helpers, targeted Pyright | Zero errors, zero warnings |
+| skillgen check/audit-coverage/schema-singleton/monolith/always-on round trips | All passed; 134 generated artifacts match |
+| uv lock --check | Passed; 210 packages, no unrelated lock churn |
+
+The shared-boundary command was `python -X utf8 -m pytest` with test_detect,
+test_languages, test_extract, test_build, test_cache, test_watch, test_paths,
+test_query_mcp_direction, test_extractors_registry and test_validate. The two
+collector failures first encountered were stale extension-only expectations:
+the corrected tests retain the full legacy suffix oracle and independently require
+the exact qmldir fixture. No unsupported extensionless input is newly admitted.
+
+The two unchanged deleted-cwd failures below still raise WinError 32 before the
+tested behavior. The full suite/all-extras hosted CI is not represented by these
+focused results. Windows cannot create the symlinks needed by two QML corpus
+tests; no skip counts as passing containment evidence. Python 3.10 uses NetworkX
+3.4.2 and emits two future warnings; the other fresh lanes use NetworkX 3.7.
+Whole-baseline Pyright still has the recorded 634 errors/four warnings.
+
+CI now has a separate read-only optional-wheel matrix for Ubuntu, Windows and
+macOS on all four Python lanes. The existing Ubuntu all-extras job owns source
+regressions; its extra QML job runs wheel/core evidence only. Windows/macOS add the
+focused QML suite. PR events own validation; no duplicate manual full run was
+dispatched. Hosted conclusions remain pending, and Linux/macOS are unverified.
+Python-level analysis guards do not constitute an operating-system network sandbox.
+
+The eight new original-byte regressions invalidate the earlier wheel's qmldir
+provenance evidence. Final source-snapshot wheel rebuilding/reverification is
+recorded below before published completion; earlier counts remain historical.
+
+Final QML-03 revalidation: source archive built from the reviewed Git index,
+excluding concurrent next-increment modules; optional wheel SHA256
+`b6d98399ad534f9a86a99c8d4f35d18027c7143ee90b1ec72e7e2aaab03bf881`.
+All four isolated Windows lanes run the updated installed production smoke,
+including BOM/CRLF qmldir bytes, and the complete source/artifact suite:
+**247 passed, two symlink-permission skips per lane**. A fresh core-only Python
+3.12 wheel also passes the updated smoke. The earlier wheel is superseded.
+Repository graph refresh passes: 19,115 nodes, 38,416 edges, 1,070 communities;
+existing unavailable optional-language warnings remain explicit in the local log.
+Public document links/privacy and all 68 distinct criterion assignments pass.
+
+## Historical foundation evidence
 
 Validation date: 2026-10-03. Baseline:
 `0b60d47e6cd9338c51143f39f35b6c45c8453385`, upstream `v8`, Graphify `0.9.74`.

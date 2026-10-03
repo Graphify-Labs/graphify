@@ -44,7 +44,7 @@ def parse_qmldir(text: str, *, relative_file: str = "qmldir") -> dict:
         nodes.append(node)
         parent = module_node or file_node
         edges.append(fact_edge(parent["id"], node["id"], "contains", node,
-                               "qml_metadata_declaration"))
+                               "qml_metadata_declaration", span=line_spans[line]))
         return node
 
     def fail(line, reason):
@@ -59,13 +59,17 @@ def parse_qmldir(text: str, *, relative_file: str = "qmldir") -> dict:
     source_lines = text.splitlines(keepends=True)
     for line, raw in enumerate(source_lines, 1):
         body = raw.rstrip("\r\n")
+        prefix_bytes = 3 if line == 1 and body.startswith("\ufeff") else 0
         end = offset + len(body.encode("utf-8"))
-        line_spans[line] = {"start_byte": offset, "end_byte": end,
+        line_spans[line] = {"start_byte": offset + prefix_bytes, "end_byte": end,
                             "start_row": line - 1, "end_row": line - 1,
-                            "start_column": 0, "end_column": len(body.encode("utf-8"))}
+                            "start_column": prefix_bytes,
+                            "end_column": len(body.encode("utf-8"))}
         offset += len(raw.encode("utf-8"))
     meaningful = 0
     for line, raw in enumerate(text.splitlines(), 1):
+        if line == 1:
+            raw = raw.removeprefix("\ufeff")
         value = raw.strip()
         if not value or value.startswith("#"):
             continue
@@ -151,7 +155,12 @@ def extract_qmldir(path: Path, *, root: Path | None = None) -> dict:
         relative = path.resolve().relative_to(anchor).as_posix()
         if path.stat().st_size > MAX_METADATA_BYTES:
             return _read_failure(relative, "metadata_size_limit")
-        text = path.read_text(encoding="utf-8-sig")
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_METADATA_BYTES + 1)
+        if len(raw) > MAX_METADATA_BYTES:
+            return _read_failure(relative, "metadata_size_limit")
+        # Keep BOM and CRLF bytes in provenance; only tokenization skips a BOM.
+        text = raw.decode("utf-8")
     except (OSError, UnicodeError, ValueError):
         return _read_failure(relative, "metadata_unreadable_or_outside_root")
     return parse_qmldir(text, relative_file=relative)

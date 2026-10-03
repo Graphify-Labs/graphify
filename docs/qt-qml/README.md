@@ -1,8 +1,12 @@
 # Qt and QML support foundation
 
-QML-00 and QML-01 declarations/safety are implemented locally. See
-[executed increments](IMPLEMENTATION.md) for acceptance gates still in progress.
-Later metadata, C++ bridges and full release validation remain planned.
+QML-00 through QML-03 now have local implementation: optional QML parsing,
+declarations, literal `qmldir` imports/exports, scoped resolution, static expression
+sites, aliases, handlers and accepted JavaScript resource overlays. See
+[executed increments](IMPLEMENTATION.md) and [validation](VALIDATION.md) for the
+individual acceptance gates and executed Windows evidence. The C++ bridges,
+native Qt events, CMake/qmake/resource/type-description metadata, optimized
+invalidation and full release validation remain planned.
 
 The goal is to add reliable, local analysis of Qt/QML projects to Graphify and
 contribute that support upstream in small pull requests. Graphify keeps its
@@ -18,32 +22,34 @@ audited again before carrying these conclusions forward.
 | Document | Purpose |
 | --- | --- |
 | [Audit](AUDIT.md) | Observed extension points, gaps, and risks in the baseline |
-| [Architecture](ARCHITECTURE.md) | Proposed boundaries, parser decision, support matrix, and ADRs |
-| [Design](DESIGN.md) | Proposed interface contracts and implementation rules |
+| [Architecture](ARCHITECTURE.md) | Implemented boundaries, future design, support matrix, and ADRs |
+| [Design](DESIGN.md) | Source-fact/resolver contracts and explicitly planned Qt interfaces |
 | [Requirements](../REQUIREMENTS.md) | Observable acceptance criteria and status |
 | [Increment plan](PLAN.md) | Ordered, independently reviewable feature increments |
 | [Development](DEVELOPMENT.md) | Environment, GitHub workflow, verification, and upstream delivery |
-| [Code reference](CODE_REFERENCE.md) | Existing owners and proposed extension files |
+| [Code reference](CODE_REFERENCE.md) | Implemented owners/APIs and proposed extension files |
+| [Diagnostics](ERRORS.md) | Source, coverage, transport and publication failure contracts |
 | [Validation](VALIDATION.md) | Commands actually run and their results |
-| [Test traceability](../../tests/TRACEABILITY.md) | Planned test ownership and current coverage gaps |
+| [Test traceability](../../tests/TRACEABILITY.md) | Individual acceptance evidence, ownership and remaining gaps |
 
 Repository development rules are in [AGENTS.md](../../AGENTS.md), together with
 the existing [contribution policy](../../CONTRIBUTING.md). The root
 [ARCHITECTURE.md](../../ARCHITECTURE.md) remains the upstream system description;
-this directory records the proposed Qt/QML extension.
+this directory records the local Qt/QML extension and its remaining design.
 
 The agreed first target is **Qt 6 with both CMake and qmake metadata support**.
-Qt 6.5 and 6.8 are proposed fixture profiles; the exact application/SDK versions
-can refine those profiles during QML-00. Qt 5.15 is later, separately verified work.
+Qt 6.5 and 6.8 are source fixture profiles, not claims of installed SDK/runtime
+equivalence. Executed host evidence is Windows x64/Python 3.10/3.12/3.13/3.14; Linux/macOS lanes
+remain unexecuted. Qt 5.15 is later, separately verified work.
 
 Qt signals, slots, emissions and `QObject::connect` are explicit requirements,
 as is bidirectional QML/C++ integration: C++ APIs supplied to QML and C++ access
 to QML-created objects, signals, properties and methods. Each of the 17 requirements
 has four assigned acceptance criteria, with individual traceability entries.
 
-Start with **QML-00**, the baseline and parser compatibility spike. Its exit gate
-selects a parser and records a supported-syntax matrix before implementation
-begins. A file-extension change alone is not QML support.
+The [QML-00 decision](PARSER_DECISION.md) selects the optional, pinned language-pack
+adapter. The source analysis requires no Qt runtime, compiler or JavaScript
+execution. Scope and unresolved-coverage limits are in [architecture](ARCHITECTURE.md).
 
 The plan retains QML-00 through QML-07, with QML-04a/04b/04c separating exposure,
 native events and reverse object access. Native C++ event work can follow QML-00

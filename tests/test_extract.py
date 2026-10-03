@@ -380,7 +380,7 @@ def test_collect_files_from_dir():
     from graphify.extract import _DISPATCH
     files = collect_files(FIXTURES)
     supported = set(_DISPATCH.keys())
-    assert all(f.suffix in supported for f in files)
+    assert all(f.suffix in supported or f.name == "qmldir" for f in files)
     assert len(files) > 0
 
 
@@ -457,7 +457,11 @@ def _legacy_collect_files(target, *, root=None):
 
 
 def test_collect_files_parity_with_legacy_on_fixtures():
-    assert collect_files(FIXTURES) == _legacy_collect_files(FIXTURES)
+    files = collect_files(FIXTURES)
+    # The extension-only legacy oracle predates exact-name QML metadata.
+    assert [path for path in files if path.name != "qmldir"] == _legacy_collect_files(FIXTURES)
+    assert [path for path in files if path.name == "qmldir"] == [
+        FIXTURES / "qml" / "parser_probe" / "qmldir"]
 
 
 def test_collect_files_parity_with_legacy_synthetic(tmp_path):

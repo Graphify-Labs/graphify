@@ -6,7 +6,7 @@ import json
 import pytest
 
 from graphify.extractors.qml import extract_qml
-from tests.qml_test_helpers import assert_contains, by_kind, canonical, one, qml, write_qml
+from tests.qml_test_helpers import DECLARATION_KINDS, assert_contains, by_kind, canonical, one, qml, write_qml
 
 
 def test_qml003_ac04_relocated_root_and_cwd_preserve_all_facts(tmp_path, monkeypatch):
@@ -32,7 +32,10 @@ def test_qml003_ac04_comment_insert_changes_spans_but_not_named_identity(tmp_pat
     before = extract_qml(path, root=tmp_path)
     write_qml(tmp_path, source="// Added line only\n" + source)
     after = extract_qml(path, root=tmp_path)
-    assert {node["id"] for node in before["nodes"]} == {node["id"] for node in after["nodes"]}
+    # Named declarations use semantic identity; expression occurrences retain
+    # their documented spans and may change identity when source offsets move.
+    assert {node["id"] for node in before["nodes"] if qml(node)["kind"] in DECLARATION_KINDS} == {
+        node["id"] for node in after["nodes"] if qml(node)["kind"] in DECLARATION_KINDS}
     for kind, name in (("property", "count"), ("function", "bump")):
         old, new = one(before, kind, name), one(after, kind, name)
         assert old["id"] == new["id"]

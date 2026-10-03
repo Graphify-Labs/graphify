@@ -95,6 +95,10 @@ def resolve_qml_project(per_file, all_nodes: list[dict], all_edges: list[dict], 
         owner = {"source_file": file, "source_location": node.get("source_location", f"L{line}")}
         append_edge(fact_edge(node_id, site["id"], "contains", owner, "qml_resolution_site", span=span))
         if result.target_id is not None:
+            target_proof = {}
+            if kind == "import" and md.get("import_kind") == "script":
+                target_proof = {"target_role": "script_file", "target_file_id": result.target_id,
+                                "target_file": index.paths[result.target_id]}
             append_edge(fact_edge(site["id"], result.target_id, relation, owner,
                                   "qml_import_resolution" if kind == "import" else "qml_type_resolution",
-                                  confidence="INFERRED", span=span, evidence=list(result.evidence[:50])))
+                                  confidence="INFERRED", span=span, evidence=list(result.evidence[:50]), **target_proof))

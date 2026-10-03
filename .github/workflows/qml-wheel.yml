@@ -1,0 +1,32 @@
+name: QML optional wheel
+
+on:
+  pull_request:
+    branches: [v8, main, 'codex/qml-*']
+  push:
+    branches: [v8, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qml-wheel-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  qml-wheel:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['3.10', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: ${{ matrix.python }}
+      # Existing Ubuntu all-extras CI owns source regressions. These lanes prove
+      # isolated optional/core wheel installs; Windows/macOS add QML source tests.
+      - name: Verify installed wheels and platform contracts
+        run: uv run --no-project --python ${{ matrix.python }} python tests/qml_ci.py ${{ runner.os == 'Linux' && '--artifact-only' || '' }}

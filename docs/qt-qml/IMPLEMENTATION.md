@@ -24,7 +24,7 @@ installation and remaining parser-failure cases are being verified.
 | Criterion | Status | Evidence / remaining gate |
 | --- | --- | --- |
 | QML-001-AC01 | Verified for Windows x64 | Wheel from committed source installs and runs in isolated Python 3.10/3.12/3.13/3.14 environments; tests/qml_installed_smoke.py |
-| QML-001-AC02 | In progress | Offline probes pass; production syntax closes QML-03 |
+| QML-001-AC02 | Verified in QML-03 | Hand-checked production syntax and original spans; fresh offline process; test_qml_syntax_profile.py |
 | QML-001-AC03 | Verified | Actual optional import rejection, incompatible binding/native parse failures, safe cache bypass |
 | QML-001-AC04 | Verified | Empty, malformed and grammar-recognized unsupported fixtures have distinct diagnostics |
 | QML-003-AC01 | Verified | Exact declarations/ownership/types in test_qml_declarations.py |
@@ -92,3 +92,62 @@ All new production modules pass Ruff/Pyright. QML-02 is complete for this profil
 Review retains QML-03's lexical/script/handler gates and QML-06 cache optimization.
 No additional top-level increment is required. QML-02c covers the newly found
 ignore/provenance/direction defects. QML-04/05 retain C++ and project metadata work.
+
+## QML-03
+
+Complete for the declared Windows x64 static profile, including Qt 6.5/6.8 source
+fixtures. QML-03a adds objects held in properties/bindings/arrays and conservative
+template scope barriers. QML-03b adds source-owned binding, read, alias, call and
+handler facts with lexical shadowing and explicit unresolved/dynamic reasons.
+QML-03c adds accepted `.js`/`.mjs` overlays, classic Qt directives, explicit callable
+ESM exports and script dependencies without changing the generic JavaScript graph.
+
+Subscriptions use references, emissions use uses, and proven callable invocations
+use calls. Each occurrence owns its original span and a separate identity, retaining
+repeated dependencies through the simple graph. Named declaration identity remains
+stable after inserted comments; derived occurrence identities intentionally include
+their source span. Extracted syntax and inferred endpoints remain separate.
+
+All four QML-006 and QML-007 criteria pass the exact tests listed individually in
+[traceability](../../tests/TRACEABILITY.md). QML-001-AC02 closes against the shipping
+adapter and the hand-checked syntax corpus. Explicit runtime target/context lookup,
+ESM reexports, imported value exports and unavailable framework signals remain
+unresolved. Name-based Component/delegate/sourceComponent barriers conservatively
+prevent leakage; they do not prove Qt runtime creation context or framework types.
+
+Review caught malformed literal transport, capped lexical display lists, duplicate
+held Connections, ignored mixed handler styles, inherited signal binders, generic-JS
+name pollution and script import endpoints omitted by generic cross-family guards.
+All have production regressions. Default-undirected export/reload now restores QML
+edge direction from serialized endpoints. A final reader review corrected BOM and
+CRLF normalization of qmldir byte offsets using bounded original binary reads.
+
+Windows source suite before the eight final reader regressions: 239 passed and two
+host symlink-permission skips in each Python 3.10/3.12/3.13/3.14 lane. Clean optional
+wheels run bindings/script/subscription production smoke; actual core-only install
+retains Python extraction and emits missing-parser diagnostics. Final reader/wheel
+reverification is recorded in VALIDATION.md. Linux/macOS remain pending hosted CI.
+
+Plan review adds QML-06a/06b for mutation/config/cache contracts and QML-07a/07b for
+consumer direction and hosted installation/upstream evidence. Existing QML-00..07
+and QML-04a/04b/04c identities remain unchanged. The user has authorized continuing
+through QML-04, QML-05 and QML-06; their implementation evidence follows separately.
+
+## QML-03 measured modularity exceptions
+
+All new handwritten production and test modules stay below the 300-line default.
+The integration owner permits only focused hooks in oversized upstream files:
+
+| Legacy file | Upstream lines | QML-03 measured ceiling | Reason |
+| --- | --- | --- | --- |
+| graphify/extract.py | 8943 | 8997 | Admission/worker and scoped-overlay dispatch |
+| graphify/detect.py | 2793 | 2797 | QML and exact named metadata admission |
+| graphify/build.py | 2462 | 2466 | Narrow proof-based script projection |
+| graphify/cli.py | 4915 | 4936 | Publication safety and conservative refresh |
+| graphify/watch.py | 2488 | 2506 | Same safety/root/admission contracts |
+| graphify/paths.py | 523 | 536 | Retain QML orientation on undirected reload |
+| tests/test_extract.py | 4823 | 4827 | Preserve extension-only oracle plus exact metadata admission |
+
+Owner: Qt/QML integration maintainer. Exit: upstream coordinated facade/writer
+splitting; domain analysis remains in focused modules. Later hooks must remeasure
+these ceilings and retain this rationale rather than quietly extending them.

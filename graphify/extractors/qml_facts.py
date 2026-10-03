@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 from graphify.ids import make_id
@@ -46,8 +47,18 @@ def qml_metadata(node: dict) -> dict:
     preserve semantic punctuation without trusting HTML as a lookup encoding.
     """
     meta = dict(node.get("metadata", {}).get("qml", {}))
-    for key, value in meta.get("raw_values", {}).items():
-        meta[key] = base64.b64decode(value, validate=True).decode("utf-8")
+    raw = meta.get("raw_values", {})
+    if not isinstance(raw, Mapping) or len(raw) > 50:
+        raise ValueError("QML_METADATA: invalid literal transport mapping")
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, str) or not isinstance(meta.get(key), str):
+            raise ValueError("QML_METADATA: invalid literal transport field")
+        if len(value) > 512:
+            raise ValueError("QML_LIMIT: literal transport exceeds its encoded bound")
+        try:
+            meta[key] = base64.b64decode(value, validate=True).decode("utf-8")
+        except (ValueError, UnicodeError) as exc:
+            raise ValueError("QML_METADATA: invalid literal transport encoding") from exc
     return meta
 
 
@@ -76,10 +87,18 @@ class FactBuilder:
             raise ValueError("QML_ROOT: source is outside the explicit scan root") from exc
         self.nodes: list[dict] = []
         self.edges: list[dict] = []
+        self.occurrences: dict[str, int] = {}
 
     def add(self, kind: str, name: str, syntax_node, owner=None, **values) -> dict:
         key = values.pop("semantic_key", name)
         identity = make_qml_id(self.relative_file, kind, key)
+        occurrence = self.occurrences.get(identity, 0)
+        self.occurrences[identity] = occurrence + 1
+        if occurrence:
+            # Conflicting declarations retain separate evidence for ambiguity;
+            # valid named declarations keep identities independent of line spans.
+            identity = make_qml_id(self.relative_file, kind, f"{key}:duplicate:{occurrence}")
+            values["duplicate_declaration"] = True
         meta = encode_metadata({"kind": kind, "raw_name": name,
                                 "raw_type": "", "span": span(syntax_node), **values})
         node = {"id": identity, "label": name or kind, "file_type": "code", "_origin": "ast",

@@ -4,17 +4,18 @@ This is the canonical product requirements document. Current entries cover the
 Qt/QML support extension. Add or update product requirements here with the
 behavioural change, preserving established identifiers and acceptance traceability.
 
-QML-003/004/005 are **Verified** for the documented static profile. QML-001 and
-QML-002/010/011/012/013/014/015 are **Partially implemented**. Others are **Planned**.
-See criterion evidence in [IMPLEMENTATION.md](qt-qml/IMPLEMENTATION.md).
-Generic C++ and JavaScript behavior remains baseline capability.
-Increment references identify delivery stages, not completion evidence.
+QML-001/003/004/005/006/007 are **Verified** for the documented Windows x64
+static profile. QML-002/009/010/011/012/013/014/015 are **Partially implemented**;
+QML-009 currently covers literal qmldir only. QML-008/016/017 are **Planned**.
+See individual criterion evidence in [tests/TRACEABILITY.md](../tests/TRACEABILITY.md)
+and [IMPLEMENTATION.md](qt-qml/IMPLEMENTATION.md). Generic C++ and JavaScript remain
+baseline capabilities. Increment references identify delivery stages, not completion evidence.
 
 | ID | Required behavior (summary) | Increments |
 | --- | --- | --- |
 | QML-001 | The declared parser backend installs on supported Python/OS targets, parses the supported syntax without network access at analysis time, and reports unavailable or incompatible parser support explicitly. Unsupported syntax is distinguished from an empty valid file. | 00, 01, 03 |
 | QML-002 | Full detection and update agree on inclusion of `.qml`, `.ui.qml`, and supported named metadata. Existing ignore, root, symlink, and size boundaries apply. `qmldir` is detected by exact filename. Unrelated extensionless files remain excluded. | 01, 02, 05, 06 |
-| QML-003 | Components, object instances, properties, signals, and functions produce source-backed nodes with correct locations and deterministic identities. Duplicate `id` values in different component scopes do not merge. Comments, strings, and grouped properties do not create false object declarations. | 01 |
+| QML-003 | Components, object instances, properties, signals, and functions produce source-backed nodes with correct locations and deterministic identities. Duplicate `id` values in different component scopes do not merge. Comments, strings, and grouped properties do not create false object declarations. | 01, 03 object/template coverage |
 | QML-004 | Directory and URI imports, aliases, versions, and `qmldir` declarations resolve only within documented import paths and module visibility. Duplicate type names in different modules cannot bind by a global name guess. Unknown, ambiguous, or unavailable modules remain unresolved. | 02 |
 | QML-005 | Component-local `id` scope, inline components, singleton declarations, inherited members, and external types retain their documented boundaries. Same-name members in separate scopes remain distinct. Only supported, source-backed visibility permits a resolved link. | 02 |
 | QML-006 | Supported property bindings and property aliases produce directional dependency links to visible targets with expression evidence. Evaluation, getters, and side effects never run during analysis. Dynamic or unsupported expressions retain an explicit unresolved status. | 03 |
@@ -35,7 +36,7 @@ Increment references identify delivery stages, not completion evidence.
 Each criterion belongs to the requirement named in its ID. Criteria without
 executed evidence in IMPLEMENTATION.md remain **Not executed**. Verification owners
 and coverage gaps are assigned in [tests/TRACEABILITY.md](../tests/TRACEABILITY.md).
-Fixture/test names remain proposed until their increment implements them.
+Traceability labels actual executed tests and retains explicit cases for later increments.
 
 Each acceptance ID has a planned completion increment in
 [tests/TRACEABILITY.md](../tests/TRACEABILITY.md), with dependencies and reviewable

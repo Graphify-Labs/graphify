@@ -518,6 +518,19 @@ def load_node_link_graph(path_or_data):
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     try:
-        return json_graph.node_link_graph(data, edges="links")
+        graph = json_graph.node_link_graph(data, edges="links")
     except TypeError:  # networkx too old for the edges kwarg; default is "links"
-        return json_graph.node_link_graph(data)
+        graph = json_graph.node_link_graph(data)
+    if not graph.is_directed():
+        # Export stores the producer's orientation in serialized endpoints.
+        # NetworkX's undirected iteration order cannot recover that contract.
+        for link in data.get("links", []):
+            metadata = link.get("metadata", {})
+            qml = metadata.get("qml", {}) if isinstance(metadata, dict) else {}
+            if not isinstance(qml, dict) or qml.get("contract_version") != 1:
+                continue
+            source, target = link["source"], link["target"]
+            attributes = (graph.edges[source, target, link.get("key", 0)]
+                          if graph.is_multigraph() else graph.edges[source, target])
+            attributes["_src"], attributes["_tgt"] = source, target
+    return graph

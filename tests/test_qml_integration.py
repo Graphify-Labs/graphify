@@ -9,6 +9,7 @@ import pytest
 import graphify.extract as ex
 from graphify.build import build_from_json
 from graphify.detect import FileType, classify_file
+from graphify.export import to_json
 from graphify.extractors.qml_facts import qml_metadata
 from graphify.extractors.qml_metadata import extract_qmldir
 from graphify.paths import load_node_link_graph
@@ -43,7 +44,7 @@ def portable_graph(graph):
     return nodes, edges
 
 
-def test_qml002_ac01_named_qmldir_dispatch_directory_and_single_file_root(tmp_path):
+def test_qml002_ac02_named_qmldir_dispatch_directory_and_single_file_root(tmp_path):
     """Extensionless metadata reaches the actual adapter with the same explicit root."""
     metadata = project(tmp_path)
     assert classify_file(metadata) == FileType.CODE
@@ -156,3 +157,55 @@ def test_qml011_ac02_qmldir_only_update_refreshes_unchanged_caller_and_matches_c
     assert next(node for node in updated["nodes"] if node["id"] == after_target)["source_file"] == "Public/Tools/New.qml"
     clean = real_extract(ex.collect_files(tmp_path, root=tmp_path), root=tmp_path, cache_root=tmp_path / "clean-cache", parallel=False)
     assert portable_graph(load_node_link_graph(updated)) == portable_graph(build_from_json(clean, root=tmp_path))
+
+
+def test_qml010_ac02_default_undirected_export_reload_keeps_qml_direction(tmp_path):
+    """Default graph consumers retain each QML relationship's actual source and target."""
+    project(tmp_path)
+    result = ex.extract(ex.collect_files(tmp_path, root=tmp_path), root=tmp_path,
+                        cache_root=tmp_path / "cache", parallel=False)
+    graph = build_from_json(result, root=tmp_path)
+    assert not graph.is_directed()
+    target = tmp_path / "default-graph.json"
+    assert to_json(graph, {}, str(target))
+    serialized = json.loads(target.read_text(encoding="utf-8"))
+    # The JSON source/target direction and the reloaded consumer direction are
+    # independent boundaries: an undirected adjacency iteration is insufficient.
+    expected = {(edge["source"], edge["target"], edge["relation"], edge.get("context")) for edge in result["edges"]}
+    assert {(edge["source"], edge["target"], edge["relation"], edge.get("context")) for edge in serialized["links"]} == expected
+    restored = load_node_link_graph(serialized)
+    assert not restored.is_directed()
+    assert portable_graph(restored) == portable_graph(graph)
+
+
+@pytest.mark.parametrize("extension", ["js", "mjs"])
+@pytest.mark.parametrize("same_stem", [False, True])
+def test_qml010_ac02_literal_script_import_keeps_generic_file_endpoint_after_build_reload(tmp_path, extension, same_stem):
+    """A resolved QML import must survive the cross-language graph projection guard."""
+    filename = f"helpers.{extension}"
+    source = "function help() { return 1; }\n" if extension == "js" else "export function help() { return 1; }\n"
+    helper = write_qml(tmp_path, filename, source)
+    caller = write_qml(tmp_path, source=f'import "{filename}" as Helpers\nQtObject {{ property int value: Helpers.help() }}\n')
+    paths = [caller, helper]
+    if same_stem:
+        other_extension = "mjs" if extension == "js" else "js"
+        paths.append(write_qml(tmp_path, f"helpers.{other_extension}", "function help() { return 2; }\n"))
+    result = ex.extract(paths, root=tmp_path, cache_root=tmp_path / "cache", parallel=False)
+    targets = [node for node in result["nodes"] if node["source_file"] == filename and node["label"] == filename]
+    sites = [node for node in result["nodes"] if node["source_file"] == "Main.qml" and qml_metadata(node).get("kind") == "import_resolution"]
+    assert len(targets) == len(sites) == 1
+    assert qml_metadata(sites[0])["status"] == "resolved"
+    expected = [edge for edge in result["edges"] if edge["source"] == sites[0]["id"] and edge["target"] == targets[0]["id"]]
+    assert len(expected) == 1 and expected[0]["relation"] == "imports"
+    graph = build_from_json(result, directed=True, root=tmp_path)
+    assert graph.has_edge(sites[0]["id"], targets[0]["id"])
+    target = tmp_path / "roundtrip.json"
+    assert to_json(graph, {}, str(target))
+    restored = load_node_link_graph(json.loads(target.read_text(encoding="utf-8")))
+    # Directed JSON deliberately carries direction in its source/target fields;
+    # its writer need not retain the auxiliary undirected loader markers.
+    assert restored.is_directed()
+    edge = restored.edges[sites[0]["id"], targets[0]["id"]]
+    assert (edge["relation"], edge["confidence"]) == ("imports", "INFERRED")
+    assert edge.get("_src", sites[0]["id"]) == sites[0]["id"]
+    assert edge.get("_tgt", targets[0]["id"]) == targets[0]["id"]

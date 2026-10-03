@@ -6,6 +6,7 @@ from pathlib import Path
 from graphify.extractors.qml_ast import QmlInputError, failure, parse_source
 from graphify.extractors.qml_declarations import Declarations
 from graphify.extractors.qml_facts import FactBuilder
+from graphify.extractors.qml_expressions import collect_relationships
 
 
 def extract_qml(path: Path, *, root: Path | None = None) -> dict:
@@ -17,7 +18,9 @@ def extract_qml(path: Path, *, root: Path | None = None) -> dict:
                 raise QmlInputError("QML_ROOT", "QML source is outside the explicit scan root") from exc
         source, program, empty = parse_source(path)
         facts = FactBuilder(path, root, source)
-        Declarations(facts).extract(program)
+        declarations = Declarations(facts)
+        declarations.extract(program)
+        collect_relationships(declarations)
         result = {"nodes": facts.nodes, "edges": facts.edges, "diagnostics": []}
         if empty:
             result["diagnostics"].append({"code": "QML_EMPTY", "severity": "info",
@@ -27,3 +30,5 @@ def extract_qml(path: Path, *, root: Path | None = None) -> dict:
         return result
     except (QmlInputError, ValueError) as exc:
         return failure(path, root, exc)
+    except Exception:
+        return failure(path, root, QmlInputError("QML_ANALYSIS_FAILED", "QML source analysis failed; correct the analyzer and retry"))

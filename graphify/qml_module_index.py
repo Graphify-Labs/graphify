@@ -184,6 +184,20 @@ class QmlModuleIndex:
         """Script namespace exports have a separate lookup role from object types."""
         return self.module_type(uri, major, minor, name, importer=importer, _export_kind="script")
 
+    def directory_script(self, directory: str | None, name: str, *, importer: str) -> Resolution:
+        """Only observed qmldir script exports enter a directory import namespace."""
+        matches = [nid for nid in self.exports.get(directory, [])
+                   if qml_metadata(self.nodes[nid]).get("export_kind") == "script"
+                   and qml_metadata(self.nodes[nid]).get("raw_name") == name]
+        versioned = [(qml_metadata(self.nodes[nid]).get("major"),
+                      qml_metadata(self.nodes[nid]).get("minor")) for nid in matches
+                     if qml_metadata(self.nodes[nid]).get("major") is not None]
+        if versioned:
+            latest = max(versioned)
+            matches = [nid for nid in matches if (qml_metadata(self.nodes[nid]).get("major"),
+                                                  qml_metadata(self.nodes[nid]).get("minor")) == latest]
+        return combine([self._target(nid, importer=importer) for nid in matches], reason="script_namespace_unavailable")
+
 
 def combine(results, *, reason="type_unavailable") -> Resolution:
     """Preserve ambiguity even when a competing result also has a unique endpoint."""

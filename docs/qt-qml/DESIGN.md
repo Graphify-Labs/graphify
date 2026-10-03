@@ -1,8 +1,11 @@
-# Proposed implementation contracts
+# Qt/QML implementation contracts
 
-Status: proposed. These interfaces are design constraints for the increments;
-they are not existing Graphify APIs or claims of implemented behavior.
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the system design and ADRs.
+Status: QML-00 through QML-03 have local implementation. The source-fact, module,
+scope and expression contracts below describe that implementation; Qt C++ events,
+bidirectional bridges, build/resource/type-description metadata and optimized
+caching remain proposed. See [ARCHITECTURE.md](ARCHITECTURE.md) for ADRs and
+[traceability](../../tests/TRACEABILITY.md) for individual evidence. Executed
+host validation is Windows; other platform lanes are unexecuted.
 
 ## Ownership and dependency direction
 
@@ -15,6 +18,13 @@ The graph builder and persistence pipeline remain authoritative for output.
 New responsibilities should normally live under `graphify/extractors/` or focused
 resolver modules, with thin registration calls in existing large modules. Avoid
 moving unrelated language code as part of a feature PR.
+
+Current mutable ownership is explicit: `FactBuilder` owns one source's facts;
+module/scope indexes own lookup tables for one run and borrow declarations
+read-only; the relationship pass updates fresh source-owned expression sites;
+the writer owns durable publication. Unchanged context dictionaries are never
+updated by a join. The index API has a read-only lookup contract, without ambient
+project state or filesystem discovery.
 
 ## Source-local extraction contract
 
@@ -38,6 +48,22 @@ signal declaration, a string/comment as syntax, or a partial parse as an empty
 successful extraction. Bindings retain a bounded expression span and references;
 analysis never evaluates them.
 
+Implemented fields live in `metadata.qml` with `contract_version=1`. Each import,
+declaration, expression occurrence and metadata record is an independent node,
+so the 50-item metadata list cap cannot discard required per-file records.
+Names and literal paths are case-sensitive lookup values. IDs use the complete
+root-relative filename and an exact-identity digest before normalizing with
+Graphify's ID utility; component/object scope keys are fixed-width hashes.
+Named declaration IDs survive line insertions, while expression-site IDs include
+their source occurrence and can change when text moves.
+
+`qml_facts.encode_metadata` adds bounded base64 `raw_values` companions for string
+fields. `qml_facts.qml_metadata` returns decoded lookup values after HTML sanitation
+or JSON reload; callers do not parse escaped display text. It rejects nonmapping,
+over-50-field, nonstring, invalid base64/UTF-8 or over-512-encoded-byte transport.
+The display metadata is not a second resolver owner. Malformed transport becomes
+analysis failure/publication rejection; it cannot silently select a different name.
+
 ## Resolution contract
 
 Build indexes from explicit module/type declarations, supported project metadata,
@@ -54,6 +80,58 @@ Optional SDK import paths or generated `.qmltypes` need an explicit configuratio
 provenance, root/ignore policy, and version. Do not scan the machine's Qt installation
 implicitly or infer exposure solely from C++ inheritance or `Q_OBJECT`.
 
+Implemented entry points:
+
+| Interface | Input/output and owner |
+| --- | --- |
+| `extract_qml(path, *, root=None)` | One accepted QML source to declarations/expression facts, edges and diagnostics; no cross-file lookup |
+| `extract_qmldir(path, *, root=None)` | One accepted literal manifest to independently owned module/export/import/dependency records |
+| `build_qml_index(nodes, edges, *, root, import_roots=None)` | Per-run `QmlProjectIndex`; source paths and declaration/provider tables only |
+| `resolve_type(file, component_key, name)` | Qualified/document-local type lookup; `Resolution(status, target_id, reason, evidence, candidates)` |
+| `resolve_member(file, component_key, object_scope_key, name, *, lexical_names=())` | Component IDs, own/root/known inherited members and typed continuations; no global labels |
+| `follow_member(target_id, parts)` | Continue a proven object or typed-property target; alias chasing belongs to `RelationshipLookup` |
+| `module_script(...)`, `directory_script(...)` | Script namespaces use a separate role from object types |
+| `resolve_qml_project(per_file, all_nodes, all_edges, *, root, import_roots=None)` | Append fresh source-owned import/type sites and resolved edges; do not modify borrowed context |
+| `collect_qml_scripts(paths, per_file, *, root)` | Add QML-owned overlays only for admitted, referenced scripts and admitted literal dependencies |
+| `resolve_qml_relationships(per_file, all_nodes, all_edges, *, root)` | Update fresh read/call/alias/handler status, append compatible inferred target edges |
+
+Import roots default to the explicit scan root. Ordered root-relative roots are
+accepted at the index API; ambient SDK/environment paths and remote imports are
+excluded. Current layouts include unversioned providers and explicitly requested
+`.major`/`.major.minor` directories. An observed available manifest version precedes
+selection of the latest compatible type export. URI aliases stay document-local;
+`qmldir import` adds visibility while `depends` does not. Internal/singleton checks,
+missing versions and duplicate eligible targets retain explicit reasons. `prefer`
+resource redirection waits for the resource index.
+
+`qmldir` is capped at 1 MiB/10,000 meaningful records. Lookup caps include 32 module,
+inheritance or alias depth, 32 parts per member-continuation API call, 256-character
+collected reference paths, 1,024 module-query steps and 50 candidate/evidence
+entries. Truncated candidate lists are display summaries, never permission to
+choose a winner.
+
+Expression resolution respects parameters, block/catch/loop locals and hoisted
+`var`; a per-use shadow flag remains authoritative if lexical display names are
+capped. Reassigned local callables and computed targets remain dynamic. Pure
+assignment destinations are not reads, but computing receiver/index addresses
+and augmented assignment retains dependencies. Alias chains/cycles use bounded
+lookup and never evaluate property getters. Current `this` denotes the source
+owner; `parent` requires explicit static-parent evidence.
+
+Name-based `Component`, `delegate` and `sourceComponent` barriers conservatively
+separate body IDs. They do not prove a Qt runtime creation context or model roles,
+and custom names can therefore be conservatively unresolved. Attached handlers
+and runtime-selected `Connections.target` remain unresolved. For supported
+`Connections`, mixed legacy/function styles mark function-style handlers ignored;
+property change handlers get distinct inferred notify-signal facts.
+
+Classic JS directive masking preserves byte positions. Supported `.mjs` exports
+control importer visibility; unsupported re-exports do not expose matching local
+functions accidentally. QML-owned script overlays have distinct identities from
+generic JS declarations, and shared scripts gain no arbitrary QML importer's ID
+namespace. Overlay parsing is bounded at 5 MB/100,000 AST nodes/depth 256 and 256
+enriched files. No build tool, script, getter or Qt engine is executed.
+
 ## Graph projection and compatibility
 
 Project accepted facts into existing node/file types and relation/context fields
@@ -65,6 +143,24 @@ The baseline builder uses simple graphs. Before bindings and signals share
 endpoints, establish a nonlossy representation for distinct facts and confirm
 JSON/export/query round trips. A global migration to a multigraph is a separate
 architecture decision; it must not be smuggled into a language-parser PR.
+
+The implemented projection uses one source-owned node per occurrence. Declaration
+containment is `EXTRACTED`; resolved site-to-target edges are `INFERRED`. Actual
+contexts are `qml_import_resolution`, `qml_type_resolution`, `qml_binding_read`,
+`qml_alias_target`, `qml_signal_subscription`, `qml_property_notify_signal`,
+`qml_signal_emit`, `qml_js_call` and `qml_script_call`. Reads use `uses`, aliases
+and subscriptions use `references`, and proven function calls use `calls`.
+Signal emission uses a dependency to its declaration and does not invent a
+synchronous call to handlers. Status/reason/evidence on unresolved sites remains
+queryable without a guessed endpoint.
+
+`qml_projection.allows_qml_script_edge` admits only the dedicated typed QML script
+exception through the existing cross-language guard: import proof names the exact
+accepted script file/path/role, and calls target QML script-function overlays.
+Generic JS callers and unrelated C++ edges keep their existing rules. On reload
+of an undirected graph, `load_node_link_graph` restores QML edge `_src`/`_tgt`
+from serialized endpoints; consumer direction uses these values, not iteration
+order. Build/JSON preservation does not establish all QML-07 presentation support.
 
 Any new fields need compatible defaults, serialization tests, and a cache/version
 decision. Remapping IDs must also remap resolver-fact keys, references, and provider
@@ -122,6 +218,20 @@ directions and native event facts must survive simple graph projection and
 consumer output; changed QML APIs must invalidate unchanged C++ consumers.
 
 ## Incremental lifecycle and failures
+
+Current QML/qmldir extraction bypasses AST cache reads and writes. QML/metadata edits,
+and JS edits where the corpus contains QML, refresh accepted code conservatively
+before update/watch joins. Generic JS extraction remains independently cached;
+QML overlays are constructed for the current analysis. Dependency-aware Qt cache
+identity/invalidation is planned for QML-06.
+
+`require_complete_qml` rejects failed, partial or omitted source contributions and
+script/join failure markers before graph reconciliation and publication, including
+force/partial-output requests. Prior graph/manifest/report output bytes remain
+intact. Unsupported subfolder scoped-ID rebasing is rejected separately. Earlier
+scan/stat bookkeeping is outside the durable-output guard. See [ERRORS.md](ERRORS.md)
+for diagnostic ownership and recovery, rather than treating unresolved coverage
+as parser/write failure.
 
 File-content hashes alone cannot validate links dependent on module manifests,
 C++ registrations, resource aliases, import configuration, or parser upgrades.

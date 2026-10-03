@@ -1,8 +1,8 @@
 # Qt and QML analysis architecture
 
-Status: proposed implementation, reviewed against Graphify 0.9.74 at upstream commit `0b60d47e6cd9338c51143f39f35b6c45c8453385` on 3 October 2026. This document defines intended behavior. The imported baseline does not yet implement QML extraction. Delivery and acceptance gates are in [PLAN.md](PLAN.md); current implementation findings are in [AUDIT.md](AUDIT.md).
+Status: local QML-00 through QML-03 implementation, with later Qt integration explicitly planned. The historical audit describes Graphify 0.9.74 at upstream commit `0b60d47e6cd9338c51143f39f35b6c45c8453385` on 3 October 2026; that imported revision lacked QML extraction. This checkout now has dedicated QML extraction, `qmldir`/scope resolution and static QML/JavaScript relationships. [IMPLEMENTATION.md](IMPLEMENTATION.md), [VALIDATION.md](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md) own current acceptance evidence; [AUDIT.md](AUDIT.md) remains the baseline record.
 
-Upstream already has [feature request #1716](https://github.com/Graphify-Labs/graphify/issues/1716) and an open [implementation proposal #1748](https://github.com/Graphify-Labs/graphify/pull/1748), covering a QML extractor and Qt/C++ bridging. Review that proposal at a recorded head revision before starting overlapping work. Reuse or extend sound parts and fixtures when practical. Its public summary and historical parser-install instructions are claims to verify against the latest diff and current packages; an open PR is not a shipped capability. This design supplies the wider module/scope, metadata, incremental and consumer contracts needed for complete support.
+The baseline/reuse review includes [feature request #1716](https://github.com/Graphify-Labs/graphify/issues/1716) and [implementation proposal #1748](https://github.com/Graphify-Labs/graphify/pull/1748), covering QML and Qt/C++ bridging. The recorded proposal review and parser decision informed the local implementation. Refresh the proposal's head before upstream delivery; its historical installation instructions and an open PR do not establish shipped support. This design retains the wider metadata, bidirectional bridge, incremental and consumer contracts needed for complete support.
 
 ## Objective and boundaries
 
@@ -22,11 +22,13 @@ Non-goals for the first release:
 
 ## Declared compatibility targets
 
-The agreed initial source-analysis target is ordinary Qt 6 QML and Qt Quick projects, with both CMake and qmake metadata support. The acceptance corpus should distinguish proposed Qt 6.5 and Qt 6.8 syntax/metadata profiles, including CMake modules using `qt_add_qml_module` and literal qmake module declarations. The exact application/SDK versions can refine these profiles during QML-00; they are not an assertion that the current checkout supports those releases. Qt 6.8 module layout policy differences must be fixtures. Additional Qt 6 versions earn a support claim only when their relevant constructs pass the same corpus; unknown syntax produces coverage diagnostics.
+The agreed first-release target is ordinary Qt 6 QML and Qt Quick projects, with both CMake and qmake metadata support. Current source fixtures distinguish Qt 6.5 and Qt 6.8 syntax profiles; CMake modules using `qt_add_qml_module` and literal qmake declarations remain QML-05 work. These are fixture targets, not a claim of complete support for either SDK release. Qt 6.8 module-layout policy differences need their own fixtures. Additional Qt 6 versions earn a support claim only when relevant constructs pass the corpus; unknown syntax produces coverage diagnostics.
 
 Qt 5.15 semantic compatibility forms a separate legacy profile. Versioned imports, manual `qmldir`, qmake, and literal procedural registration are also supported forms to test in Qt 6; they are not deferred solely because older Qt projects use them. Common syntax can parse earlier, but passing Qt 6 fixtures does not establish Qt 5 semantic support. Qt module import versions are not Qt library release numbers and must be stored separately.
 
 Host packaging targets are Graphify's Python 3.10+ baseline on Windows x64, Linux x64/ARM64, and macOS x64/ARM64, subject to the parser spike and upstream CI matrix. Windows ARM64, Linux musl, PyPy, and new Python releases remain unverified until installation and extraction are tested. Source analysis is independent of the application's deployment platform.
+
+Executed local validation is Windows x64/Python 3.12. A published wheel for another host is packaging evidence, not a passed extraction or semantic test lane. Qt 6.5/6.8 fixture profiles do not assert QML-engine equivalence or an installed Qt SDK.
 
 ## Existing integration contracts
 
@@ -64,20 +66,26 @@ flowchart TD
     K[Unchanged incremental context] --> D
 ```
 
-Proposed seams, subject to the first implementation spike:
+The pipeline shows the target system, including future resource/Qt bridge and
+versioned-cache stages. The table below distinguishes implemented seams.
+
+Implemented seams and later proposed owners:
 
 | Module | Responsibility |
 | --- | --- |
-| `extractors/qml.py` | Parse `.qml` and `.ui.qml`; emit declarations, lexical scopes, raw bindings/uses/calls, imports, and diagnostics. |
-| `extractors/qml_metadata.py` | Parse `qmldir` and `.qmltypes` as declarative metadata; emit exports, versions, flags, declared members, and dependency facts. |
+| `extractors/qml.py`, `qml_ast.py`, `qml_declarations.py`, `qml_facts.py` | Implemented: lazy parser, bounded source input, portable declaration/scope IDs and lossless literal metadata. `.qml`/`.ui.qml` use the same parser. |
+| `extractors/qml_metadata.py` | Implemented: literal `qmldir` records, versions, singleton/internal/script exports and import/dependency facts. `.qmltypes` remains planned. |
+| `qml_module_index.py`, `qml_scope.py`, `qml_resolution.py` | Implemented: per-run read-only lookup contract over accepted facts; document-local aliases, observed module versions, component/member scopes and source-owned resolution sites. |
+| `extractors/qml_expressions.py`, `qml_js_scopes.py`, `qml_scripts.py`, `qml_script_syntax.py` | Implemented: static bindings/read/call/alias/handler facts and bounded QML-owned overlays of admitted JS resources. |
+| `qml_relationship_lookup.py`, `qml_relationships.py`, `qml_projection.py`, `qml_safety.py` | Implemented: alias/script lookup, relationship projection, narrow script cross-language proof and publication guards. |
 | `extractors/qt_cpp.py` | Collect meta-object, exposure, signal emission, connect/disconnect, loader, context and object-access facts from C++ syntax and source ranges; decorate or refer to existing C++ declaration IDs rather than creating duplicate C++ classes. |
 | `extractors/qt_project.py` | Collect literal CMake/qmake declarations and `.qrc` mappings. Recognize unsupported expressions without evaluating them. |
-| `qml_resolution.py` | Build per-run module/resource/type and scoped engine/component-provenance indexes; resolve QML facts and both integration directions with explicit scope and exposure evidence. Native C++ connections remain usable without a QML parser. |
+| Future Qt bridge/resource resolvers | Planned: project/resource and engine/component provenance, native C++ events and both QML/C++ integration directions. They must preserve existing C++ identities and work independently where QML parsing is unnecessary. |
 | Existing facade and registry | Dispatch/re-export extractors, forward the scan root, and invoke the resolver; retain current callers. |
 
 Per-file extraction is independent of filesystem-wide lookup and safe in worker processes. The coordinator supplies the scan root explicitly to the QML/Qt entry points; extending `_safe_extract` and worker forwarding for that purpose is a small required integration change. Do not emulate the existing XAML ambient root with new global Qt state. Indexes are scoped to one extraction run and invalidated between watch/MCP runs.
 
-The initial resolver can rebuild a bounded project index each run. Optimize after correctness and incremental parity are established. Its output order and tie handling must be deterministic across process count, operating system, traversal order, and cache state.
+The implemented resolver rebuilds bounded project indexes each run. It owns lookup tables and borrows accepted declarations read-only; fresh expression sites receive resolution status, while borrowed incremental context is never mutated. Optimize after correctness and incremental parity are established. Deterministic tie handling is required; Windows tests do not establish cross-platform parity.
 
 ## Parser decision and packaging gate
 
@@ -92,15 +100,15 @@ Verified candidate evidence as of 3 October 2026:
 | Candidate | Verified facts | Decision |
 | --- | --- | --- |
 | Standalone `tree-sitter-qmljs==0.3.1` | [PyPI release](https://pypi.org/project/tree-sitter-qmljs/0.3.1/) lists one source distribution and no wheels. [Grammar license](https://github.com/yuja/tree-sitter-qmljs/blob/master/LICENSE) is MIT. [Python metadata](https://github.com/yuja/tree-sitter-qmljs/blob/master/pyproject.toml) declares optional `core` dependency `tree-sitter~=0.21`; [binding source](https://github.com/yuja/tree-sitter-qmljs/blob/master/bindings/python/tree_sitter_qmljs/binding.c) returns an integer language pointer. | Do not add as a mandatory dependency or assume compatibility with Graphify's `tree-sitter>=0.23,<0.26`. Test a maintained binding/package path before selection. |
-| `tree-sitter-language-pack==0.11.0` | Already used by Graphify's optional R/Erlang extras. [Release page](https://pypi.org/project/tree-sitter-language-pack/0.11.0/) lists `qmljs`/`qmldir`, MIT/Apache licensing, and wheels for Windows x64, Linux x64/ARM64, macOS x64/ARM64. [Versioned metadata](https://github.com/Goldziher/tree-sitter-language-pack/blob/v0.11.0/pyproject.toml) requires `tree-sitter>=0.25.2`. [Grammar manifest](https://github.com/Goldziher/tree-sitter-language-pack/blob/v0.11.0/sources/language_definitions.json) pins QML grammar revision `0bec4359a7eb2f6c9220cd57372d87d236f66d59`. | First spike candidate. Dependency ranges intersect at `>=0.25.2,<0.26`; that is a packaging observation, not proof that parsing works. Verify the installed release and pinned grammar, not the latest repository branch. |
+| `tree-sitter-language-pack==0.11.0` | Already used by Graphify's optional R/Erlang extras. [Release page](https://pypi.org/project/tree-sitter-language-pack/0.11.0/) lists `qmljs`/`qmldir`, MIT/Apache licensing, and wheels for Windows x64, Linux x64/ARM64, macOS x64/ARM64. [Versioned metadata](https://github.com/Goldziher/tree-sitter-language-pack/blob/v0.11.0/pyproject.toml) requires `tree-sitter>=0.25.2`. [Grammar manifest](https://github.com/Goldziher/tree-sitter-language-pack/blob/v0.11.0/sources/language_definitions.json) pins QML grammar revision `0bec4359a7eb2f6c9220cd57372d87d236f66d59`. | Selected optional adapter, with installed Windows API/parser evidence in the decision record. Dependency intersection is `>=0.25.2,<0.26`; published wheels do not establish unexecuted platform lanes. |
 | Dedicated maintained QML Python wheels | A smaller optional dependency could avoid a many-language pack. It would require compatible bindings, generated grammar, platform build/release maintenance, and preserved notices. | Alternative if the pack fails coverage/size criteria; do not silently create a permanent vendored parser. |
 | Qt tooling | [qmllint](https://doc.qt.io/qt-6.8/qtqml-tooling-qmllint.html) and [qmltyperegistrar](https://doc.qt.io/qt-6.8/qtqml-tooling-qmltyperegistrar.html) provide Qt-aware tooling. | Optional test oracle or future explicit metadata adapter. Avoid embedding Qt private parser APIs or requiring a Qt installation. |
 
 The [QML grammar](https://github.com/yuja/tree-sitter-qmljs/blob/master/grammar.js) defines import/version/alias, property, signal, inline component, and enum constructs using a TypeScript-derived grammar. Its [README](https://github.com/yuja/tree-sitter-qmljs#pitfalls) explicitly documents that grouped property notation parses as an object definition. These facts identify spike cases; they do not prove semantic correctness or coverage of modern Qt.
 
-QML-00 must first assess proposal #1748, then install the candidate in an isolated environment, test it through Graphify's actual Tree-sitter API, record the parser/grammar version and license notices, and parse representative fixtures on the target CI hosts. Fixtures must cover grouped and attached properties, aliases, required/default/readonly properties, inline components, typed functions/signals, enums, pragmas, Unicode, comments, strings containing braces, JavaScript blocks, syntax errors, and `.qmltypes`. Measure package footprint and first/warm extraction on a fixed public corpus.
+QML-00 recorded proposal #1748 reuse findings, installed API/ABI, grammar/licensing and Windows parser evidence in [PARSER_DECISION.md](PARSER_DECISION.md). Remaining CI hosts and later `.qmltypes` semantics still need their own evidence. The optional adapter is selected; the broader release gates below remain applicable.
 
-Prefer an optional `qml` extra initially. Metadata parsers that use the standard library remain available without the extra. Without a usable QML parser, classify the source and preserve a file node with a clear unavailable-parser diagnostic; do not silently emit an empty successful extraction. A bounded lexical fallback may report imports/declarations only if it records `parser_mode`, source spans, and reduced coverage. Fallback output must not claim reliable bindings, calls, or C++ resolution and must not be cached as a complete AST result.
+The optional `qml` extra uses the pinned language-pack adapter; the standard-library `qmldir` reader does not require it. Parser absence/load/syntax failure emits no authoritative QML nodes or edges and a diagnostic; CLI/watch reject incomplete publication and retain the prior graph. No lexical fallback is implemented. Any future fallback needs a separate reduced-coverage contract and must not masquerade as a complete AST result.
 
 ## Source facts, identity, and graph projection
 
@@ -116,7 +124,7 @@ Module/type lookup keys are separate from display IDs: `(project/target, module 
 
 Retain `file_type="code"` for source/metadata nodes. Use existing optional `type` values where appropriate (`file`, `class`, `function`, `property`) and a namespaced `metadata.qml` or `metadata.qt` object for precise kinds. Do not add new required top-level fields or confidence labels. The namespace has its own `contract_version` so future extractors can reject stale fact shapes while old consumers ignore optional metadata.
 
-Suggested QML metadata carries `kind`, `scope_id`, `raw_name`, `raw_type`, `module_uri`, exported name/version, modifiers, and `parser_mode`. Resolver facts carry their owner ID and a source span. Member-level IDs and evidence paths must participate in Graphify's canonical remapping, incremental deletion, and cache portability; arbitrary absolute paths inside nested metadata are unacceptable.
+Implemented QML metadata has `contract_version=1`, `kind`, exact literal names/types, `component_key`, `object_scope_key`, parent/enclosing scope keys, imports/versions, modifiers and UTF-8 spans as appropriate to each fact. Fixed-width scope hashes avoid multiplying parent-ID length. Occurrence sites carry their owner and exact expression span. `raw_values` holds bounded base64 companions for literal strings so HTML sanitation does not alter semantic lookup; the getter validates map/field types, base64/UTF-8 and the 512-encoded-byte bound. Consumers use `qml_facts.qml_metadata` rather than interpreting escaped display strings. Corrupt transport rejects analysis rather than changing a target silently.
 
 Keep facts necessary for future resolution on their owning nodes in bounded metadata: imports, type exports, member signatures, raw reference paths, and resolution status. Per-file transient `qml_facts` may aid coordination, but unchanged-file resolution cannot depend on transient data discarded by graph serialization. Keep fact ownership explicit so changing/deleting a source removes its facts and derived edges. Avoid storing whole files, credentials, SDK paths, or machine-specific configuration in graph output.
 
@@ -124,14 +132,14 @@ The graph is a conservative projection of these facts:
 
 | Fact | Compatible projection | Context/evidence |
 | --- | --- | --- |
-| Component/object/member declaration | Owner `contains` declaration | `qml_declaration`, exact source span |
-| Module/directory/JS import | File `imports` module or source file | URI/path, version, alias, import kind |
-| QML component root/base | Component `inherits` known base type | `qml_base_type`, export/provider evidence |
-| Object creation/type use | Object `uses` resolved component/type | `qml_instance_type` |
-| Property alias | Alias member `references` target member/object | `qml_alias`, validated component scope |
-| Property binding | Owner property `contains` binding node; binding `uses` read properties | `qml_binding_read`; dependencies are possible reads, not runtime evaluation order |
-| Handler | Object `contains` handler; handler `references` signal | `qml_handler`; signal registration is separate from ordinary function calls |
-| Direct function call | Function/binding/handler `calls` resolved function | `qml_js_call`, lexical/type evidence |
+| Component/object/member declaration | Owner `contains` declaration | `metadata.qml.kind=declaration`, exact source span |
+| Module/directory/JS import | Import declaration `contains` resolution site; site `imports` provider/namespace/file | `qml_import_resolution`; URI/path, version, alias, import kind |
+| QML component root/base | Type/member lookup follows a known source component | Explicit `inherits` projection remains planned |
+| Object creation/type use | Object `contains` type-use site; site `uses` resolved component | `qml_type_resolution`, provider evidence |
+| Property alias | Alias member `contains` alias site; site `references` resolved target | `qml_alias_target`, bounded alias-chain evidence |
+| Property binding | Owner `contains` binding; binding `contains` per-occurrence read; read `uses` target | `qml_binding_read`; possible reads, no evaluation order |
+| Handler | Object `contains` handler; handler `references` signal | `qml_signal_subscription`; declaration and subscription remain separate |
+| Direct function call | Owner `contains` call site; site `calls` resolved function | `qml_js_call` or `qml_script_call`, lexical/type/import evidence |
 | Signal emission | Caller `contains` emission site; site `uses` declared signal | `qml_signal_emit` or `qt_signal_emit`; do not label event propagation as an ordinary direct call |
 | Qt connection | Caller `contains` connection site; site `references` signal and `uses` receiver callable/signal | `qt_connect_signal`, `qt_connect_receiver`; sender/receiver/context, signature, declared connection flags and condition evidence |
 | Qt disconnect | Caller `contains` disconnect site; site `references` resolved connection or explicit endpoints | `qt_disconnect`; no assumed removal of every possible runtime connection |
@@ -147,6 +155,8 @@ Binding/handler/registration/resource and Qt event/access site nodes distinguish
 
 Do not globally put QML, JavaScript, and C++ into one language family. The baseline deliberately prevents inferred calls crossing unrelated language families. A direct QML-to-C++ `calls` edge requires a narrow, validated Qt bridge marker checked by the builder and tests; until that contract exists, expose member dependencies through `uses`. Changing an edge to `EXTRACTED` merely to bypass the cross-language guard is invalid.
 
+The implemented builder exception covers only dedicated QML script import/call sites. Import edges prove the accepted script-file ID/path/role; call targets are dedicated QML script-function overlays. A context string or same label alone cannot enable a bridge. On undirected JSON reload, `paths.load_node_link_graph` restores `_src`/`_tgt` for contract-versioned QML edges from serialized endpoints. Consumers must use that retained orientation rather than NetworkX iteration order. This restores producer direction without converting the graph or promising that every consumer already exposes every mechanism.
+
 ### Evidence and confidence
 
 Every edge has a source file and relation-site location. Resolved edges also carry bounded namespaced evidence: method, source span, relevant import/export/registration IDs, candidate count, selected provider/target, and assumptions. Store repository-relative evidence paths and preserve `source_location="L<number>"` for current consumers; optional end/column/byte fields can provide precise spans.
@@ -155,7 +165,7 @@ Every edge has a source file and relation-site location. Resolved edges also car
 - `INFERRED`: a unique target derived through declared imports, type/member data, or a narrowly proven C++ bridge. Explain that chain. Static exposure does not prove the code executes.
 - `AMBIGUOUS`: competing providers or a dependency requiring unresolved context. Prefer a diagnostic or scoped unresolved reference node over edges claiming that every candidate is used.
 
-Unknown is distinct from external. A known missing external Qt module/type can be represented as a typed leaf concept with URI/type/version identity; it does not pretend that SDK source is present. An unresolved local member remains owned by the source scope with its reason. Do not create global nodes for every unresolved `width`, `model`, or `submit`. Confidence scores, if emitted, express policy rather than a calibrated probability and do not override the categorical/evidence contract.
+Unknown is distinct from external. Current missing providers/members remain source-owned unresolved sites; external SDK leaf stubs are not emitted. A future typed external leaf would need URI/type/version identity and could not pretend SDK source is present. Do not create global nodes for every unresolved `width`, `model`, or `submit`. Confidence scores, if emitted, express policy rather than a calibrated probability and do not override the categorical/evidence contract.
 
 ## Resolution semantics
 
@@ -169,6 +179,10 @@ Keep requested versions, exported versions, and C++ member revisions independent
 
 `.qmltypes` is declarative tooling metadata, not executable QML or a replacement for runtime registration. Parse its module/components, prototypes, exports/revisions, properties, methods, signals, enums, singleton/creatability and known flags with a supported format profile. Unknown fields are retained as coverage diagnostics. Imported metadata is evidence for an API surface; it is not proof that a matching plugin is built or loaded. Source/generated metadata disagreements are reported, with both origins preserved.
 
+Current module lookup defaults to the explicit scan root, with ordered root-relative import roots available at the index API. It accepts unversioned provider directories and explicitly requested `.major`/`.major.minor` layouts. Requested versions need observed `qmldir` export-version evidence; type introduction selects the latest compatible export only after module availability is established. Versionless/major-only selection uses observed versions in an eligible provider. Script exports have a separate lookup role from object types. Missing roots/versions, internal exports, conflicting eligible targets and resource `prefer` paths retain reasons. `.qmltypes`, CMake/qmake registrations, resource redirects and runtime plugin availability are not implemented by this reader.
+
+Bounds are 1 MiB/10,000 meaningful `qmldir` records, 50 diagnostics/evidence/candidate entries, 32 module/inheritance/alias depth and 1,024 module-query steps. The member-continuation API accepts at most 32 parts; collected qualified source paths are capped at 256 characters. Limits produce explicit rejection/coverage reasons; truncating lookup identity is prohibited.
+
 ### Components, properties, and JavaScript
 
 Resolution follows a supported subset of QML's actual scopes: JavaScript lexical locals/parameters first, component IDs, the binding's scope-object members, component root members, and imported types/JS. Inheritance lookup requires a known type. Keep named inline components, `Component` bodies, delegates, and outer instance-context lookups explicit; do not treat all descendants as sharing one unrestricted property namespace. [Qt scope documentation](https://doc.qt.io/qt-6.8/qtqml-documents-scope.html) explains component scope and runtime instance hierarchy; context-dependent outer lookups stay conditional.
@@ -179,9 +193,18 @@ Embedded JavaScript uses the QML parser's subtrees or a byte-preserving JS adapt
 
 Recognize local `signal` declarations, `onSignal` handlers, property change handlers, attached handlers, and `Connections` with a statically resolved `target`. A handler-to-signal dependency and calls in its body are separate facts. Derive `on<Property>Changed` from the exposed property, including C++ NOTIFY information; do not derive it solely from the C++ notifier's spelling. Dynamic `Connections.target`, `signal.connect()` callback replacement, disconnection, and lifetime behavior are recorded without simulating execution. See [Qt signals and handlers](https://doc.qt.io/qt-6.8/qtqml-syntax-signals.html).
 
+Current expressions resolve component-local reads, typed-property continuations, bounded alias chains, local functions and source-visible signals. JS parameters, block/loop/catch bindings and function-scoped `var` shadow QML names; reassigned local callables stay dynamic. A per-use shadow flag survives bounded lexical-name display lists. Pure assignment targets are writes; receiver/index evaluation and augmented assignments retain their reads. No getter/expression is invoked. `Connections` needs a static supported target; mixed legacy/function handler styles retain the ignored-function reason. Property change handlers use a separate inferred notify-signal node. Attached providers, dynamic targets and full signal lifetime behavior remain unresolved.
+
+`Component`, `delegate` and `sourceComponent` name-based barriers conservatively separate template-body IDs from their enclosing document. These are scope safeguards, not type-proven Qt runtime context: a custom type/property using those spellings can be conservatively unresolved. Creation/outer context, arbitrary model roles and implicit runtime ancestry remain unproven. `this` uses the source owner; `parent` needs an explicit `static_parent_scope_key`, not lexical containment alone.
+
+Accepted `.js`/`.mjs` imports get distinct QML-owned file/function/use overlays; generic JS declarations and callers keep their original graph. Classic `.pragma library`/literal `.import` directives are masked without changing byte offsets, while supported ESM exports control `.mjs` visibility. Script bodies do not inherit an arbitrary importing QML document's IDs or context. Computed dispatch, unsupported re-exports and full dynamic JS dataflow are coverage gaps. Overlays read only admitted script paths, with a 5 MB/100,000-node/depth-256 input limit and at most 256 enriched script files.
+
 `.ui.qml` uses the same QML extraction pipeline and preserves its compound suffix identity. Its companion `.qml` implementation can reference exported aliases using normal module/type rules. Qt Creator [documents a restricted UI-file subset](https://doc.qt.io/qtcreator/creator-quick-ui-forms.html); Graphify analyzes files as written and may report restrictions, but does not rewrite them or claim to enforce every Designer rule.
 
 ### C++ and Qt meta-object exposure
+
+This subsection and the following native-event, reverse-access and build/resource
+contracts are planned QML-04/QML-05 behavior, not QML-03 capabilities.
 
 Overlay Qt facts on the existing C++ extractor. Collect explicit `Q_OBJECT`, `Q_GADGET`, `Q_NAMESPACE`, `Q_PROPERTY` attributes, `Q_INVOKABLE`, signal/slot sections and macros, `Q_ENUM`/`Q_FLAG`, and class/member source ranges. Record READ/WRITE/MEMBER/NOTIFY/BINDABLE/REVISION/CONSTANT flags without requiring `moc`. A public C++ method is not automatically callable from QML. Supported member exposure must come from meta-object declarations or supplied `.qmltypes`. See [Qt C++ attributes exposed to QML](https://doc.qt.io/qt-6.8/qtqml-cppintegration-exposecppattributes.html).
 
@@ -227,6 +250,8 @@ Resolve literal `Loader.source`, `Qt.createComponent`, `QQmlApplicationEngine::l
 
 ## Incremental behavior and consumers
 
+Current safety bypasses AST cache reads/writes for QML and `qmldir` facts. QML/metadata edits, and JS edits in a corpus containing QML, conservatively re-extract accepted code before update/watch reconciliation. Failed/partial/omitted contributions and script/join failures reject publication even under force; prior graph, manifest and report outputs remain intact. Unsupported subfolder scoped-ID rebases reject with `QML_ROOT_MISMATCH`. Earlier scan/stat bookkeeping lies outside this publication boundary. Dependency-directed caching remains QML-06 work.
+
 Separate the cacheable source-fact layer from project-context resolution. Existing AST cache versioning must invalidate incompatible Qt fact shapes; include parser/grammar and Qt contract versions in the selected cache identity. A warm cache cannot reuse a decision whose `qmldir`, `.qmltypes`, C++ exposure, import root or resource mapping has changed.
 
 The first correct implementation may conservatively recompute all Qt/QML-derived resolution edges within the affected project target after metadata/exposure changes. Implement and test this fallback before enabling its update/watch path; otherwise reject the unsupported operation before graph/cache writes. A warning cannot make a known stale-output path acceptable. Reuse unchanged source facts from persisted node metadata. Later, use a dependency fingerprint/index for narrower invalidation. Track reverse dependencies on module providers, exports, member surfaces, resource maps and scoped loader/context/object provenance. Changes to QML members or literal object names must also re-resolve unchanged C++ consumers; changes to C++ signals/connect sites must update native event facts without needing modified QML. Deletion, rename, changed version, duplicate provider, and removed registration must remove obsolete edges and diagnostics.
@@ -239,29 +264,29 @@ Consumer acceptance must cover `query`, node detail, `explain`, `affected`, MCP 
 
 ## Support matrix and release gates
 
-All statuses below describe planned increments. None is a current QML capability claim.
+The first column distinguishes implemented source-analysis scope from planned Qt work. Individual acceptance evidence and unexecuted lanes remain in [traceability](../../tests/TRACEABILITY.md); this matrix does not claim engine/runtime or cross-platform equivalence.
 
 | Area | First accepted scope | Later/deferred scope |
 | --- | --- | --- |
 | `.qml` | File/root type, objects, IDs, members, source ranges, imports, parser diagnostics | Unknown future syntax, annotations beyond the tested parser profile |
 | `.ui.qml` | Normal QML declarations and aliases; distinct compound filename | Complete Designer validation and editing |
 | `qmldir` | Module URI, literal exports/versions, singleton/internal, JS/typeinfo, imports/dependencies | Runtime plugin availability, remote modules |
-| `.qmltypes` | Tested declarative metadata profile, exports/prototypes/members/revisions | Unknown schema variants and semantic equivalence to a loaded plugin |
+| `.qmltypes` | Planned tested metadata profile, exports/prototypes/members/revisions | Unknown schema variants and semantic equivalence to a loaded plugin |
 | Imports | Repository-local modules/directories/JS, explicit roots, version/alias handling | Ambient SDK search, package installation, runtime engine path changes |
 | Scope | Local lexical scope, component IDs, known members, named inline components | Full runtime instance hierarchy, arbitrary delegates/model-role typing |
 | Bindings | Scoped alias targets, statically identified property reads, explicit conditional reads | Precise runtime dependency sets, evaluation order, cycles requiring execution |
-| QML signals | Local declarations/handlers, typed `Connections` target, scoped C++-exposed signals | Dynamic target/connect/disconnect lifetime modeling |
-| JavaScript | Embedded JS and supported QML `.js` directives; preserve locations | Arbitrary computed dispatch, evaluating scripts or QML strings |
-| Qt C++ | Explicit meta-object members plus module/literal registration evidence | Arbitrary macro wrappers, compiler-level templates/overloads, full context dataflow |
-| Qt C++ events | Signal/slot declarations, emissions, typed/signature connect, lambdas/overload selectors and source-backed disconnect facts | Proving registration success, runtime delivery order, thread affinity/lifetimes, arbitrary callback wrappers |
-| C++ consumes QML | Engine/component/view literal loaders, scoped roots/objectName lookup, declared properties/functions/signals and meta-object access | Dynamic URLs/names, arbitrary pointer/dataflow, duplicate runtime object selection, custom loaders and QQuickWidget |
-| Context and initial properties | Literal named properties, typed context objects and initial-property maps tied to a known context/component | Arbitrary interprocedural providers, runtime replacements and full context hierarchy reconstruction |
-| CMake/qmake | Documented literal metadata subset and supplied generated files | Full configure/build evaluation and toolchain/platform conditional resolution |
-| Resources | `.qrc` prefixes/aliases and static CMake mappings, literal URL references | Binary `.rcc`, runtime registration, locale/file-selector selection |
-| Qt 6 | Qt 6.5 and 6.8 fixture profiles, source-only workflow | Additional release profiles only after fixtures and tooling checks |
-| Qt 5.15 | Separate legacy fixtures for manual/qmake/literal registration | Full historical Qt QML behavior and unsupported old syntax |
-| Incremental | Full/warm/update/watch equivalence after metadata and exposure changes | Fine-grained index optimization after parity is established |
-| Consumers | Compatible relations, bounded metadata/evidence, query/export regression corpus | Graph-wide multigraph migration or new specialized public query API |
+| QML signals | Implemented local declarations/handlers, static supported `Connections`, property-change signals | Attached/C++-exposed providers, dynamic target/connect/disconnect lifetime modeling |
+| JavaScript | Implemented embedded sites, accepted classic/ESM resource overlays and original locations | Arbitrary computed dispatch, re-export evaluation, scripts/QML strings execution |
+| Qt C++ | Planned explicit meta-object members plus module/literal registration evidence | Arbitrary macro wrappers, compiler-level templates/overloads, full context dataflow |
+| Qt C++ events | Planned signal/slot, emission, typed/signature connect, lambda/overload and disconnect profiles | Proving registration success, runtime delivery order, thread affinity/lifetimes, arbitrary callback wrappers |
+| C++ consumes QML | Planned engine/component/view loaders, roots/objectName lookup and declared member access | Dynamic URLs/names, arbitrary pointer/dataflow, duplicate runtime object selection, custom loaders and QQuickWidget |
+| Context and initial properties | Planned literal properties, typed context objects and scoped initial-property maps | Arbitrary interprocedural providers, runtime replacements and full context hierarchy reconstruction |
+| CMake/qmake | Planned literal metadata subset and supplied generated files | Full configure/build evaluation and toolchain/platform conditional resolution |
+| Resources | Planned `.qrc` prefixes/aliases, static CMake mappings and literal URL references | Binary `.rcc`, runtime registration, locale/file-selector selection |
+| Qt 6 | Current Qt 6.5/6.8 source fixtures; broader bridge/metadata acceptance pending | Additional release profiles only after fixtures and tooling checks |
+| Qt 5.15 | Planned separate legacy fixtures for manual/qmake/literal registration | Full historical Qt QML behavior and unsupported old syntax |
+| Incremental | Implemented conservative QML/qmldir/JS refresh and fail-before-publication guards | Cache/dependency optimization and C++/resource invalidation parity |
+| Consumers | Implemented site-preserving build/JSON reload and bounded metadata/evidence | Full QML-07 query/MCP/report/wiki/HTML/export mechanism acceptance |
 
 Before advertising the first Qt/QML release, require:
 
@@ -277,8 +302,8 @@ Before advertising the first Qt/QML release, require:
 ## Decisions and alternatives
 
 - **D1: Extend the existing pipeline.** New extractor/metadata/resolver modules preserve upstream reviewability. A separate Qt-only Graphify rewrite would duplicate orchestration and fragment consumers.
-- **D2: Parser choice follows evidence.** Start with the already-used optional language pack in a spike; consider a small maintained binding if coverage or package footprint fails. No unconditional new native dependency before validation.
-- **D3: Source facts precede resolution.** Cache declarations with ownership and resolve using a per-run project index. Avoid hidden filesystem lookups inside worker extractors and stale context-dependent per-file edges.
+- **D2: Parser choice follows evidence.** The optional language-pack adapter is accepted from the recorded Windows spike. Other host lanes remain unexecuted; a smaller maintained binding is an alternative if coverage or package footprint later fails. Preserve optional core installation.
+- **D3: Source facts precede resolution.** Resolve owned declarations using a per-run project index. Current QML caching is bypassed; future caching needs parser/fact invalidation. Avoid hidden filesystem lookups inside workers and stale context-dependent per-file edges.
 - **D4: Precision requires scope and exposure evidence.** Do not resolve by global short-name matching or combine all language families. Qt bridging is a narrow extension with independent evidence and consumer tests.
 - **D5: Preserve the stable public schema.** Namespaced optional metadata and compatible relations land first. Any new relation or graph storage mode requires a separate consumer/migration design.
 - **D6: Ambiguity is a result.** Store a reason/candidate summary and avoid inventing runtime behavior. Optional Qt validation can strengthen the test corpus without becoming an execution dependency.

@@ -30,6 +30,35 @@ def test_qmldir_literal_records_and_utf8_offsets():
         qml_metadata(node).get("raw_name") for node in result["nodes"]]
 
 
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"])
+@pytest.mark.parametrize("newline", [b"\n", b"\r\n"])
+@pytest.mark.parametrize("leading_comment", [False, True])
+def test_qmldir_reader_preserves_original_byte_spans(tmp_path, bom, newline, leading_comment):
+    """Production reads preserve UTF-8 BOM, Unicode and CRLF in every span."""
+    lines = ["module Public.Tools", "Widget 1.0 Écran.qml", "# β", "typeinfo types.qmltypes"]
+    if leading_comment:
+        lines.insert(0, "# α")
+    raw = bom + newline.join(line.encode("utf-8") for line in lines) + newline
+    path = tmp_path / "qmldir"
+    path.write_bytes(raw)
+    result = extract_qmldir(path, root=tmp_path)
+    direct = parse_qmldir(raw.decode("utf-8"))
+    assert not result.get("error")
+    assert result == direct
+    spans = [qml_metadata(item)["span"] for item in result["nodes"] + result["edges"]]
+    file_span = qml_metadata(result["nodes"][0])["span"]
+    assert (file_span["start_byte"], file_span["end_byte"]) == (0, len(raw))
+    for span in spans:
+        for end in ("start", "end"):
+            prefix = raw[:span[f"{end}_byte"]]
+            assert span[f"{end}_row"] == prefix.count(b"\n")
+            assert span[f"{end}_column"] == len(prefix) - prefix.rfind(b"\n") - 1
+    expected = [line.encode("utf-8") for line in lines if not line.startswith("#")]
+    assert [raw[span["start_byte"]:span["end_byte"]] for span in spans[1:len(result["nodes"])]] == expected
+    plain = parse_qmldir(newline.join(line.encode("utf-8") for line in lines).decode("utf-8"))
+    assert [node["id"] for node in result["nodes"]] == [node["id"] for node in plain["nodes"]]
+
+
 @pytest.mark.parametrize("source,reason", [
     ("Widget 1.0 Widget.qml\nmodule Bad.Order", "invalid_module_declaration"),
     ("module Public.Tools\nmodule Public.Tools", "invalid_module_declaration"),
