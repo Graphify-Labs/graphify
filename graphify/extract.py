@@ -336,6 +336,8 @@ def _suppress_ambiguous_python_imports(
         module_name = edge.pop("_python_import_module", None)
         bindings = edge.pop("_python_import_bindings", [])
         is_module_binding = edge.pop("_python_import_module_binding", False)
+        if is_module_binding is True:
+            edge["_python_plain_import"] = True
         marker_only = edge.pop("_python_import_marker_only", False)
         if not module_name:
             if not marker_only:
@@ -3983,10 +3985,6 @@ def _resolve_python_member_calls(
     # to the module in the importing file. Keyed by (importing file, target module)
     # so two files aliasing the same module differently each match their own.
     import_alias_by_filenode: dict[str, dict[str, str]] = {}
-    from_targets = {(e.get("source"), e.get("target")) for e in all_edges
-                    if e.get("relation") == "imports_from"}
-    from_import_sites = {(e.get("source"), e.get("source_file"), e.get("source_location"))
-                         for e in all_edges if e.get("relation") == "imports_from"}
     external_plain_imports: dict[str, dict[str, list[str]]] = {}
     for e in all_edges:
         if e.get("relation") in ("imports", "imports_from"):
@@ -3994,11 +3992,9 @@ def _resolve_python_member_calls(
             alias = e.get("local_alias")
             if alias:
                 import_alias_by_filenode.setdefault(e.get("source"), {})[e.get("target")] = _key(alias)
-        if e.get("relation") == "imports":
+        if e.get("relation") == "imports" and e.get("_python_plain_import") is True:
             src, target = e.get("source"), e.get("target")
-            if ((src, target) in from_targets
-                    or (src, e.get("source_file"), e.get("source_location")) in from_import_sites
-                    or not isinstance(target, str)):
+            if not isinstance(src, str) or not isinstance(target, str):
                 continue
             if target in node_by_id or target in contains_children or target in file_of_node:
                 continue
@@ -4050,7 +4046,8 @@ def _resolve_python_member_calls(
         # older cached facts, from-imports, and ambiguous bindings fail closed.
         if rc.get("_python_receiver_shadowed") is False:
             caller_file = file_of_node.get(caller)
-            targets = external_plain_imports.get(caller_file, {}).get(receiver, [])
+            targets = (external_plain_imports.get(caller_file, {}).get(receiver, [])
+                       if caller_file is not None else [])
             if len(targets) == 1:
                 _emit_call(caller, targets[0], rc)
                 continue
@@ -8838,6 +8835,7 @@ def extract(
     # so it cannot be popped at that earlier point without breaking the fix.
     for e in all_edges:
         e.pop("local_alias", None)
+        e.pop("_python_plain_import", None)
 
     # Tag AST provenance so the incremental watch rebuild can distinguish
     # AST-extracted nodes from semantic/LLM nodes. On a full re-extraction

@@ -665,6 +665,7 @@ def test_python_receiver_shadow_schema_retires_same_version_raw_calls(
     assert any(rc.get("_python_receiver_shadowed") is False
                for rc in fresh.get("raw_calls", []))
     warm = extract([target], cache_root=tmp_path, root=tmp_path)
+    assert len([e for e in cold["edges"] if e["relation"] == "calls"]) == 1
     assert [e for e in cold["edges"] if e["relation"] == "calls"] == [
         e for e in warm["edges"] if e["relation"] == "calls"
     ]

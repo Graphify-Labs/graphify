@@ -41,6 +41,10 @@ def _has_edge(result: dict, source: str, target: str, relation: str) -> bool:
     ("import requests", "requests", "requests"),
     ("import requests as rq", "rq", "requests"),
     ("import requests as Requests", "Requests", "requests"),
+    ("import requests\nfrom requests import Session", "requests", "requests"),
+    ("from requests import Session; import requests", "requests", "requests"),
+    ("from other import value; import requests as rq", "rq", "requests"),
+    ("import requests as Requests\nfrom requests import Session", "Requests", "requests"),
     ("import os", "os", "os"),
     ("import pkg.sub as sub", "sub", "pkg_sub"),
 ])
@@ -61,7 +65,7 @@ def test_external_plain_import_member_call_targets_module(
     assert calls[0]["source"] == caller
     assert calls[0]["source_file"] == "caller.py"
     assert (calls[0]["confidence"], calls[0]["confidence_score"], calls[0]["context"],
-            calls[0]["source_location"], calls[0]["weight"]) == ("EXTRACTED", 1.0, "call", "L4", 1.0)
+            calls[0]["source_location"], calls[0]["weight"]) == ("EXTRACTED", 1.0, "call", f"L{len(import_line.splitlines()) + 3}", 1.0)
     assert not any(n.get("label") == "get()" for n in result["nodes"])
     assert not any("_python_receiver_shadowed" in item for item in result["nodes"] + result["edges"])
 
@@ -89,6 +93,14 @@ def test_external_plain_import_member_call_targets_module(
     "def fetch():\n    return (lambda *, requests=None: requests.get())()\n",
     "def fetch():\n    return (lambda **requests: requests.get())()\n",
     "requests = object()\ndef fetch():\n    return requests.get()\n",
+    "type requests = object\ndef fetch():\n    return requests.get()\n",
+    "def fetch():\n    type requests[T] = list[T]\n    return requests.get()\n",
+    "def fetch[requests]():\n    return requests.get()\n",
+    "import builtins\nbuiltins.exec('requests = object()')\ndef fetch():\n    return requests.get()\n",
+    "import builtins as bi\nbi.eval('globals().update(requests=object())')\ndef fetch():\n    return requests.get()\n",
+    "from builtins import exec as run\nrun('requests = object()')\ndef fetch():\n    return requests.get()\n",
+    "import builtins\nrun = builtins.exec\nrun('requests = object()')\ndef fetch():\n    return requests.get()\n",
+    "run = exec\nrun('requests = object()')\ndef fetch():\n    return requests.get()\n",
     "def outer():\n    requests = object()\n    def fetch():\n        return requests.get()\n",
     "if flag:\n    import requests\ndef fetch():\n    return requests.get()\n",
     "from elsewhere import *\ndef fetch():\n    return requests.get()\n",
@@ -106,6 +118,17 @@ def test_external_module_fallback_rejects_receiver_shadow(tmp_path: Path, body: 
     source = _write(tmp_path / "caller.py", "import requests\n" + body)
     result = extract([source], cache_root=tmp_path)
     assert not any(e["relation"] == "calls" and e["target"] == "requests" for e in result["edges"])
+
+
+@pytest.mark.parametrize("declaration", [
+    "from requests import Session",
+    "from other import value as requests",
+])
+def test_external_module_fallback_rejects_from_only_import(tmp_path: Path, declaration: str):
+    source = _write(tmp_path / "caller.py", f"{declaration}\ndef fetch():\n    return requests.get()\n")
+    result = extract([source], cache_root=tmp_path)
+    assert not any(e["relation"] == "calls" and e["target"] in {"requests", "other"}
+                   for e in result["edges"])
 
 
 def test_overdeep_relative_import_is_unresolved_not_fatal(tmp_path: Path):

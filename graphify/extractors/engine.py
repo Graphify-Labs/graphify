@@ -1445,20 +1445,17 @@ def _python_receiver_shadow_checker(root, source: bytes):
     # A nested function can mutate module/captured bindings later. Dynamic
     # namespace operations can also replace an import without an assignment AST.
     dynamic_binding = False
+    dynamic_names = {"exec", "eval", "globals", "locals", "vars", "setattr", "delattr"}
     pending = [root]
     while pending:
         candidate = pending.pop()
-        if candidate.type in {"global_statement", "nonlocal_statement"}:
+        # Namespace mutators can be called directly, qualified, or saved under
+        # an alias. Reject references as well as calls, including imported aliases.
+        if (candidate.type in {"global_statement", "nonlocal_statement"}
+                or (candidate.type == "identifier"
+                    and _read_text(candidate, source) in dynamic_names)):
             dynamic_binding = True
             break
-        if candidate.type == "call":
-            function = candidate.child_by_field_name("function")
-            if (function is not None and function.type == "identifier"
-                    and _read_text(function, source) in {
-                        "exec", "eval", "globals", "locals", "vars", "setattr", "delattr",
-                    }):
-                dynamic_binding = True
-                break
         pending.extend(candidate.named_children)
 
     def target_names(node, names: set[str]) -> bool:
@@ -1476,7 +1473,13 @@ def _python_receiver_shadow_checker(root, source: bytes):
 
     def import_names(node) -> list[str] | None:
         names: list[str] = []
-        for item in node.named_children:
+        past_import = False
+        for item in node.children:
+            if item.type == "import":
+                past_import = True
+                continue
+            if not past_import:
+                continue
             if item.type == "aliased_import":
                 alias = item.child_by_field_name("alias")
                 if alias is None:
@@ -1494,7 +1497,8 @@ def _python_receiver_shadow_checker(root, source: bytes):
             return scopes[key]
         bound: set[str] = set()
         plain_imports: dict[str, int] = {}
-        unsafe = bool(scope.has_error or (scope.type == "module" and dynamic_binding))
+        unsafe = bool(scope.has_error or scope.child_by_field_name("type_parameters")
+                      or (scope.type == "module" and dynamic_binding))
         if scope.type in {"function_definition", "lambda"}:
             bound.update(_python_param_names(scope.child_by_field_name("parameters"), source))
 
@@ -1526,6 +1530,13 @@ def _python_receiver_shadow_checker(root, source: bytes):
                     continue
                 if kind in {"assignment", "augmented_assignment", "for_statement", "for_in_clause"}:
                     if not target_names(child.child_by_field_name("left"), bound):
+                        unsafe = True
+                elif kind == "type_alias_statement":
+                    left = child.child_by_field_name("left")
+                    name = _read_text(left, source).split("[", 1)[0].strip() if left is not None else ""
+                    if name.isidentifier():
+                        bound.add(name)
+                    else:
                         unsafe = True
                 elif kind == "named_expression":
                     if not target_names(child.child_by_field_name("name"), bound):

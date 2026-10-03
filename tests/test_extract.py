@@ -1936,21 +1936,24 @@ def test_python_external_resolver_requires_explicit_false_shadow_fact(hint):
     nodes = [{"id": "caller", "label": "caller.py", "source_file": "caller.py"},
              {"id": "caller_fetch", "label": "fetch()", "source_file": "caller.py"}]
     edges = [{"source": "caller", "target": "caller_fetch", "relation": "contains"},
-             {"source": "caller", "target": "requests", "relation": "imports"}]
+             {"source": "caller", "target": "requests", "relation": "imports",
+              "_python_plain_import": True}]
     _resolve_python_member_calls([{"raw_calls": [raw]}], nodes, edges)
     assert not any(e["relation"] == "calls" for e in edges)
 
 
-@pytest.mark.parametrize(("receiver", "imports", "extra_edges"), [
-    ("Requests", [("requests", "requests")], []),
-    ("Request", [("requests", None)], []),
-    ("requests", [], []),
-    ("requests", [("requests", None), ("other", "requests")], []),
-    ("requests", [("requests", None)], [("imports_from", "requests")]),
-    ("requests", [("requests", None)], [("imports_from", "other")]),
+@pytest.mark.parametrize(("receiver", "imports", "producer_hint"), [
+    ("Requests", [("requests", "requests")], True),
+    ("Request", [("requests", None)], True),
+    ("requests", [], True),
+    ("requests", [("requests", None), ("other", "requests")], True),
+    ("requests", [("requests", None)], None),
+    ("requests", [("requests", None)], False),
+    ("requests", [("requests", None)], 1),
+    ("requests", [("requests", None)], "true"),
 ])
 def test_python_external_resolver_requires_unique_exact_plain_import(
-    receiver, imports, extra_edges,
+    receiver, imports, producer_hint,
 ):
     from graphify.extract import _resolve_python_member_calls
 
@@ -1962,10 +1965,8 @@ def test_python_external_resolver_requires_unique_exact_plain_import(
     edges = [{"source": "caller", "target": "caller_fetch", "relation": "contains"}]
     edges.extend({"source": "caller", "target": target, "relation": "imports",
                   "source_file": "caller.py", "source_location": "L1",
+                  **({"_python_plain_import": producer_hint} if producer_hint is not None else {}),
                   **({"local_alias": alias} if alias else {})} for target, alias in imports)
-    edges.extend({"source": "caller", "target": target, "relation": relation,
-                  "source_file": "caller.py", "source_location": "L1"}
-                 for relation, target in extra_edges)
     _resolve_python_member_calls([{"raw_calls": [raw]}], nodes, edges)
     assert not any(e["relation"] == "calls" for e in edges)
 
@@ -1981,7 +1982,8 @@ def test_python_parsed_module_never_falls_back_to_coarse_call(member_count):
              {"id": "caller_fetch", "label": "fetch()", "source_file": "caller.py"},
              {"id": "helper", "label": "helper.py", "source_file": "helper.py"}]
     edges = [{"source": "caller", "target": "caller_fetch", "relation": "contains"},
-             {"source": "caller", "target": "helper", "relation": "imports"}]
+             {"source": "caller", "target": "helper", "relation": "imports",
+              "_python_plain_import": True}]
     for number in range(member_count):
         nid = f"helper_get_{number}"
         nodes.append({"id": nid, "label": "get()", "source_file": "helper.py"})
@@ -1990,21 +1992,15 @@ def test_python_parsed_module_never_falls_back_to_coarse_call(member_count):
     assert not any(e["relation"] == "calls" for e in edges)
 
 
-def test_python_external_module_call_survives_cache_and_context(tmp_path):
+def test_python_external_module_call_survives_cache(tmp_path):
     source = tmp_path / "caller.py"
     source.write_text("import requests\n\ndef fetch():\n    return requests.get('/data')\n")
     cold = extract([source], cache_root=tmp_path, root=tmp_path)
     warm = extract([source], cache_root=tmp_path, root=tmp_path)
-    context = extract(
-        [source], cache_root=tmp_path, root=tmp_path,
-        resolution_context_nodes=[{"id": "unrelated", "label": "unrelated.py",
-                                   "source_file": "unrelated.py"}],
-        resolution_context_edges=[],
-    )
     def calls(result):
         return [e for e in result["edges"] if e["relation"] == "calls" and e["target"] == "requests"]
-    assert len(calls(cold)) == len(calls(warm)) == len(calls(context)) == 1
-    assert calls(cold) == calls(warm) == calls(context)
+    assert len(calls(cold)) == len(calls(warm)) == 1
+    assert calls(cold) == calls(warm)
     graph = build_from_json(cold)
     assert graph.nodes["requests"]["external"] is True
     assert graph.get_edge_data("caller_fetch", "requests")["relation"] == "calls"
@@ -4909,3 +4905,41 @@ def test_3252_metadata_preservation(tmp_path):
     assert param_ref["source_location"] == "L2"
     assert node_by_id[param_ref["target"]]["label"] == "User"
     assert node_by_id[param_ref["target"]]["source_file"] == "models.py"
+
+
+def test_python_external_calls_survive_real_incremental_context(tmp_path):
+    """A changed caller shares an external stub with an unchanged caller."""
+    import subprocess
+
+    (tmp_path / "ext_a.py").write_text("import requests\n\ndef fetch_a():\n    return requests.get('/a')\n")
+    (tmp_path / "ext_b.py").write_text("import requests as rq\n\ndef fetch_b():\n    return rq.post('/b')\n")
+    (tmp_path / "helper.py").write_text("def other():\n    return 1\n")
+    (tmp_path / "local_caller.py").write_text("import helper\n\ndef fetch_local():\n    return helper.get()\n")
+    env = {k: v for k, v in os.environ.items()
+           if k in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE"}}
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+
+    def run():
+        result = subprocess.run(
+            [sys.executable, "-m", "graphify", "extract", str(tmp_path), "--code-only"],
+            cwd=tmp_path, env=env, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        graph = json.loads((tmp_path / "graphify-out" / "graph.json").read_text())
+        calls = [e for e in graph["links"] if e.get("relation") == "calls"]
+        assert not any(e["source"] == "local_caller_fetch_local" for e in calls)
+        stub = next(n for n in graph["nodes"] if n["id"] == "requests")
+        assert stub["external"] is True and stub["source_file"] == ""
+        assert "_python_receiver_shadowed" not in json.dumps(graph)
+        assert "_python_plain_import" not in json.dumps(graph)
+        return result.stdout, sorted((e["source"], e["target"], e["source_location"]) for e in calls)
+
+    full_stdout, full_calls = run()
+    assert "AST extraction on 4 code files" in full_stdout
+    assert full_calls == [("ext_a_fetch_a", "requests", "L4"), ("ext_b_fetch_b", "requests", "L4")]
+    (tmp_path / "ext_a.py").write_text("import requests\n\ndef fetch_a():\n    # changed caller\n    return requests.get('/a')\n")
+    (tmp_path / "local_caller.py").write_text("import helper\n\ndef fetch_local():\n    # changed local consumer\n    return helper.get()\n")
+    incremental_stdout, incremental_calls = run()
+    assert "incremental scan" in incremental_stdout
+    assert "AST extraction on 2 code files" in incremental_stdout
+    assert incremental_calls == [("ext_a_fetch_a", "requests", "L5"), ("ext_b_fetch_b", "requests", "L4")]
