@@ -3,7 +3,9 @@
 QML-00 evidence: `test_qml_parser_probe.py` has 40 passing probes without skips
 on Windows x64 Python 3.10, 3.12, 3.13 and 3.14. See
 [PARSER_DECISION.md](../docs/qt-qml/PARSER_DECISION.md). Production criteria below
-remain open; baseline generic-language tests prove existing behavior only.
+have executed statuses in [IMPLEMENTATION.md](../docs/qt-qml/IMPLEMENTATION.md).
+QML-003 AC01–AC04 and QML-001 AC01/AC03/AC04 pass for the declared Windows profile;
+other completion gates remain open. Baseline tests prove existing behavior only.
 
 The requirement definitions are authoritative in
 [REQUIREMENTS.md](../docs/REQUIREMENTS.md). The

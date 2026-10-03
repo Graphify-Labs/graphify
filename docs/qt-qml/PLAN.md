@@ -355,7 +355,7 @@ an optional extra or defer instead of silently adding a compiler requirement.
 
 ## QML-01 — Discovery and minimal declarations
 
-**Execution: QML-01a/01b implemented; installation gates being verified.** See
+**Status: QML-01a/01b complete for the declared Windows optional profile.** See
 [implementation evidence](IMPLEMENTATION.md). Review retains QML-02/03 semantic
 validation, immutable context and independent use sites. No new top-level
 increment is needed; QML-06 still owns cache optimization.

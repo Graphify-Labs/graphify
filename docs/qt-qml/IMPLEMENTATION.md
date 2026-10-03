@@ -23,7 +23,7 @@ installation and remaining parser-failure cases are being verified.
 
 | Criterion | Status | Evidence / remaining gate |
 | --- | --- | --- |
-| QML-001-AC01 | In progress | Clean wheel installations pending |
+| QML-001-AC01 | Verified for Windows x64 | Wheel from committed source installs and runs in isolated Python 3.10/3.12/3.13/3.14 environments; tests/qml_installed_smoke.py |
 | QML-001-AC02 | In progress | Offline probes pass; production syntax closes QML-03 |
 | QML-001-AC03 | Verified | Actual optional import rejection, incompatible binding/native parse failures, safe cache bypass |
 | QML-001-AC04 | Verified | Empty, malformed and grammar-recognized unsupported fixtures have distinct diagnostics |
@@ -47,3 +47,9 @@ build.py, cli.py and watch.py. New responsibilities remain in modules below 300
 lines. Exception: integration hooks only in these existing files. Exit: upstream
 coordinated facade/writer splitting, outside this increment. Final validation
 records measured sizes/deltas before handoff.
+
+QML-01 completion review: clean built-wheel checks pass in all four declared
+Windows lanes with Python-level network/process denial and no Qt SDK. Parser
+absence/ABI/native-error and unsupported-source regressions also pass. Production
+parser corpus AC02 remains assigned to QML-03. Linux/macOS stay unverified.
+QML-01 is complete for this declared optional profile; advance to QML-02.

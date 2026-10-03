@@ -5,11 +5,11 @@ from concurrent.futures import ProcessPoolExecutor
 import json
 import multiprocessing
 
-import networkx as nx
-
 from graphify.build import build_from_json
+from graphify.export import to_json
 from graphify.extract import _extract_single_file, extract
 from graphify.extractors.qml import extract_qml
+from graphify.paths import load_node_link_graph
 from graphify.validate import validate_extraction
 from tests.qml_test_helpers import by_kind, canonical, qml, write_qml
 
@@ -22,11 +22,13 @@ def test_qml010_ac02_directed_build_and_reload_keep_all_ownership_and_qml_metada
     assert set(graph) == {node["id"] for node in extraction["nodes"]}
     expected = {(edge["source"], edge["target"], edge["relation"]) for edge in extraction["edges"]}
     assert {(source, target, data["relation"]) for source, target, data in graph.edges(data=True)} == expected
-    serialized = json.loads(json.dumps(nx.node_link_data(graph, edges="edges"), ensure_ascii=False))
-    restored = nx.node_link_graph(serialized, edges="edges")
+    target = tmp_path / "graph.json"
+    assert to_json(graph, {}, str(target)) is True
+    serialized = json.loads(target.read_text(encoding="utf-8"))
+    restored = load_node_link_graph(serialized)
     assert set(restored) == set(graph)
     assert all(restored.nodes[node["id"]]["metadata"]["qml"] == node["metadata"]["qml"] for node in extraction["nodes"])
-    assert all(restored.edges[source, target]["confidence"] == "EXTRACTED" for source, target in restored.edges)
+    assert all(restored.edges[source, target]["confidence"] == edge["confidence"] for edge in extraction["edges"] for source, target in [(edge["source"], edge["target"])])
 
 
 def test_qml003_ac02_same_stem_cpp_js_and_qml_do_not_merge(tmp_path):
