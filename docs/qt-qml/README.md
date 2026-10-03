@@ -1,12 +1,12 @@
 # Qt and QML support foundation
 
-QML-00 through QML-06 implement optional QML declarations/imports, scoped
+QML-00 through QML-07 implement optional QML declarations/imports, scoped
 bindings/aliases/JavaScript/handlers, native Qt C++ signals/connections/slots,
 registered C++ APIs and literal QML object access. See [implemented scope](IMPLEMENTATION.md)
 and [validation](VALIDATION.md) for individual gates and revision-specific evidence.
 Literal CMake/qmake/resource/type-description admission and configuration/update
-parity are implemented. QML-07 adds local consumer/export/assistant support;
-hosted proof for its final revision remains pending.
+parity are implemented. QML-07 completes consumer/export/assistant support and the declared hosted
+source/artifact matrix; see the exact revision evidence in VALIDATION.md.
 
 The goal is to add reliable, local analysis of Qt/QML projects to Graphify and
 contribute that support upstream in small pull requests. Graphify keeps its
@@ -42,8 +42,8 @@ this directory records the local Qt/QML extension and its remaining design.
 The agreed first target is **Qt 6 with both CMake and qmake metadata support**.
 Qt 6.5 and 6.8 are source fixture profiles, not claims of installed SDK/runtime
 equivalence. The [platform matrix](PLATFORM_MATRIX.md) records successful QML-03
-through QML-06 hosted Linux/Windows/macOS lanes at their respective heads.
-QML-07 has local evidence; its final reviewed-head hosted proof remains open.
+through QML-07 hosted Linux/Windows/macOS lanes at their respective heads.
+QML-07 has local and reviewed-head hosted evidence for that declared matrix.
 Qt 5.15 is later, separately verified work.
 
 Qt signals, slots, emissions and `QObject::connect` are explicit requirements,

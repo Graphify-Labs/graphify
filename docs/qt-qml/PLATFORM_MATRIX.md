@@ -17,18 +17,18 @@ They therefore cannot prove runtime dispatch, plugin availability or build succe
 
 | OS runner | Python | QML-03 optional/core wheel result | QML-04/05/06 optional/core result | Final QML-07 result |
 |---|---|---|---|---|
-| ubuntu-latest | 3.10 | Passed | Passed at recorded heads | Pending reviewed-head proof |
-| ubuntu-latest | 3.12 | Passed | Passed at recorded heads | Pending reviewed-head proof |
-| ubuntu-latest | 3.13 | Passed | Passed at recorded heads | Pending reviewed-head proof |
-| ubuntu-latest | 3.14 | Passed | Passed at recorded heads | Pending reviewed-head proof |
-| windows-latest | 3.10 | Passed | Passed at recorded heads | Pending reviewed-head proof |
-| windows-latest | 3.12 | Passed | Passed at recorded heads | Pending reviewed-head proof |
-| windows-latest | 3.13 | Passed | Passed at recorded heads | Pending reviewed-head proof |
-| windows-latest | 3.14 | Passed | Passed at recorded heads | Pending reviewed-head proof |
-| macos-latest | 3.10 | Passed | Passed at recorded heads | Pending reviewed-head proof |
-| macos-latest | 3.12 | Passed | Passed at recorded heads | Pending reviewed-head proof |
-| macos-latest | 3.13 | Passed | Passed at recorded heads | Pending reviewed-head proof |
-| macos-latest | 3.14 | Passed | Passed at recorded heads | Pending reviewed-head proof |
+| ubuntu-latest | 3.10 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
+| ubuntu-latest | 3.12 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
+| ubuntu-latest | 3.13 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
+| ubuntu-latest | 3.14 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
+| windows-latest | 3.10 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
+| windows-latest | 3.12 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
+| windows-latest | 3.13 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
+| windows-latest | 3.14 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
+| macos-latest | 3.10 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
+| macos-latest | 3.12 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
+| macos-latest | 3.13 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
+| macos-latest | 3.14 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
 
 The QML-03 snapshot is recorded in [VALIDATION.md](VALIDATION.md): reviewed head
 `92f31658beceb5d36f570ae8e3820698b39381fb`, base
@@ -57,9 +57,9 @@ not inherit them.
 
 Local QML-07 consumer/export/assistant checks have executed; their commands,
 skips and current-head limitations belong to [VALIDATION.md](VALIDATION.md).
-Each final-head hosted cell above remains pending until the affected source and
-artifact jobs complete. A source-head association does not claim that the CI
-checkout is the raw head rather than its recorded synthetic merge.
+All twelve implementation-head hosted cells pass. A source-head association does
+not claim that the CI checkout is the raw head rather than its recorded synthetic
+merge; exact checkout evidence is recorded in VALIDATION.md.
 
 ## Current acceptance procedure
 
@@ -125,3 +125,20 @@ python -m tools.skillgen --schema-singleton
 python -m tools.skillgen --monolith-roundtrip
 python -m tools.skillgen --always-on-roundtrip
 ```
+
+
+## QML-07 completed implementation-head proof
+
+Reviewed source head `235987b9a72e0353cbc9e8cf2c53c7ccd07fceed`, base `9fd9cd0d13e601b8e716816020a761484db29b19`, PR5 synthetic merge candidate
+`bcd4d7b4bf9ac1ce91f9e25957d6599fda75f87d`. [Main CI 37094308786](https://github.com/SlinkyRamey/graphify/actions/runs/37094308786)
+and [optional/core wheel matrix 37094308526](https://github.com/SlinkyRamey/graphify/actions/runs/37094308526)
+completed successfully for the pull_request event. All twelve OS/Python wheel
+lanes and four full Ubuntu source lanes pass. Installed smoke uses neutral
+directories, isolated interpreters and an offline audit boundary; native Qt
+CMake/QRC exposure/load proof is included. The initial shallow-history wheel run
+is a documented failure, not a passing cell.
+
+This record covers the implementation plus corrected workflow. Documentation-only
+follow-up commits are rechecked by the same PR workflows; the
+[live PR checks](https://github.com/SlinkyRamey/graphify/pull/5/checks) identify the
+current reviewed head. Earlier heads are not substituted for changed source.

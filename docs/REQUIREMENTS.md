@@ -7,8 +7,9 @@ behavioural change, preserving established identifiers and acceptance traceabili
 QML-001 through QML-017 are implemented for the documented bounded Qt 6/QML
 static source profile. Source, update, consumer and artifact acceptance evidence is
 assigned individually in [tests/TRACEABILITY.md](../tests/TRACEABILITY.md).
-Final QML-07 platform and delivery verification remains pending its reviewed-head
-PR workflows; completion is not inferred from earlier CI or a skipped test.
+All seventeen requirements are Verified within that bounded profile. Final
+QML-07 source and installed-artifact proof passes all declared PR workflow lanes;
+completion is not inferred from earlier CI or a skipped test.
 See [IMPLEMENTATION.md](qt-qml/IMPLEMENTATION.md),
 [EXPORT_MATRIX.md](qt-qml/EXPORT_MATRIX.md) and
 [PLATFORM_MATRIX.md](qt-qml/PLATFORM_MATRIX.md) for concrete limits. Generic C++

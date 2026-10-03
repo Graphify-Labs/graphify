@@ -359,3 +359,44 @@ frozen pre-split baseline could not be read. The wheel workflow now fetches full
 history, matching the existing main CI source-policy job. Tests and frozen guards
 are retained. This failed/obsolete run is not counted as final platform proof;
 the corrected reviewed revision requires its own complete matrix.
+
+
+## QML-07 corrected hosted completion
+
+Reviewed implementation/workflow head `235987b9a72e0353cbc9e8cf2c53c7ccd07fceed`; stack base `9fd9cd0d13e601b8e716816020a761484db29b19`;
+synthetic merge candidate `bcd4d7b4bf9ac1ce91f9e25957d6599fda75f87d`.
+[CI 37094308786](https://github.com/SlinkyRamey/graphify/actions/runs/37094308786) and
+[wheel 37094308526](https://github.com/SlinkyRamey/graphify/actions/runs/37094308526)
+are pull_request runs with successful conclusions. All four full Ubuntu Python
+source jobs and all twelve Windows/Linux/macOS Python3.10/3.12/3.13/3.14 optional/
+core wheel jobs succeed. The exact job test/skip and checkout evidence is recorded
+below after reading logs; an overall security job with continue-on-error steps
+does not establish absence of baseline findings.
+
+Final review preserves17requirements/68criteria, correct public support limits,
+privacy, local links and focused module ceilings. QML-00..07 are complete within
+the declared static profile. Documentation-only follow-up changes trigger fresh
+PR checks, whose current head is available from
+[PR5 checks](https://github.com/SlinkyRamey/graphify/pull/5/checks).
+The fork PRs remain draft/unmerged; upstream acceptance and package release have
+not happened. No additional increment is required for the agreed initial scope.
+
+Direct inspection of all16 test job logs confirms actual checkout
+`bcd4d7b4bf9ac1ce91f9e25957d6599fda75f87d`, distinct from the source head.
+Full Ubuntu suites: Python3.10 has6919passed/16skipped/24warnings;
+Python3.12 has6918passed/17skipped/19warnings; Python3.13 and3.14 each have
+6918passed/17skipped/10warnings. Each Ubuntu wheel job has3artifact tests passed
+without skips. Each Windows/macOS wheel job has622passed/3skipped: two optional
+MCP module omissions in the wheel extra, and the absent optional SVG renderer.
+Actual HTTP/stdio MCP cases execute in the full all-extras Linux source jobs and
+the isolated local SDK proof. All12 wheel jobs include installed optional/core
+offline smoke; no skip is counted as a pass.
+
+The security job's two nonblocking commands exit1. pip-audit reports15 known
+vulnerabilities in pip26.1.1, urllib3 2.7.0 and virtualenv21.3.3; all three exact
+versions already occur in the imported upstream lock. Bandit reports4HIGH SHA1
+and8MEDIUM findings; the reported statements are present verbatim in the imported
+upstream revision. No new production HIGH statement is identified. These are
+recorded existing findings, not a clean security scan and not a Qt parser issue.
+They remain upstream dependency/security debt rather than being silently fixed,
+hidden or treated as a passing scanner result in this feature change.

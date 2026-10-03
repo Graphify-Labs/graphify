@@ -1,7 +1,7 @@
 # Qt and QML feature increment plan
 
-Status: QML-00 through QML-06 complete for their documented static source profiles.
-QML-07 implementation is delivered locally; final parity, installed-artifact and reviewed-head hosted gates remain open. Executed checks are recorded in
+Status: QML-00 through QML-07 complete for the documented bounded Qt 6/QML static
+source profile. All final source, consumer, update and declared hosted artifact gates pass. Executed checks are recorded in
 [VALIDATION.md](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md).
 Commands marked proposed are future verification suggestions, not pass claims.
 
@@ -874,9 +874,9 @@ upstream semantic layer. A feature is ready for wider rollout when its advertise
 matrix has evidence; remaining unsupported runtime behavior is part of the public
 contract, not a reason to fabricate relationships.
 
-The next execution checkpoint is QML-07 final acceptance and reviewed-head hosted
-proof. QML-00 through QML-06 are complete; their evidence is recorded in
-IMPLEMENTATION.md and VALIDATION.md.
+QML-00 through QML-07 are complete within the accepted static profile.
+Implementation and validation evidence are recorded in IMPLEMENTATION.md and
+VALIDATION.md. Upstream submission/maintainer acceptance is a separate action.
 
 
 ## QML-04 review and continuation
@@ -950,3 +950,21 @@ framework/plugin internals, arbitrary build execution, legacy Qt profiles and
 additional platform architectures would require separate agreed increments.
 Completion here prepares reviewable fork PRs; upstream maintainer acceptance and
 an actual upstream merge remain separate delivery actions.
+
+
+## Final QML-07 acceptance review
+
+All68 existing acceptance criteria have executed evidence for the declared bounded
+profile. Real manual/watch edits cover native event changes/removal and reverse
+QML member/objectName changes used by unchanged C++; no-change updates retain
+accepted facts. Clean installed optional/core wheel smoke and the twelve hosted
+OS/Python artifact lanes pass, alongside four full Ubuntu source lanes. Source
+policy checks retain their frozen Git history and all generated guidance guards.
+
+No additional increment is required for the agreed initial Qt6/QML scope.
+QML-07 completes the fork implementation and reviewable delivery preparation.
+Runtime-generated registrations/objects, computed targets, arbitrary build/plugin
+execution, additional Qt/platform profiles and live database systems remain
+explicit limits or separately agreed future work. Upstream Graphify acquires this
+implementation when its maintainers accept and merge the change; no upstream
+merge, package publication or Qt application execution is claimed here.

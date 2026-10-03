@@ -1,6 +1,6 @@
 # Qt and QML analysis architecture
 
-Status: QML-00 through QML-06 are implemented for the bounded static source profile; QML-07 consumer/export/assistant work is implemented locally, with final hosted-head proof pending. The historical audit describes Graphify 0.9.74 at upstream commit `0b60d47e6cd9338c51143f39f35b6c45c8453385` on 3 October 2026; that imported revision lacked QML extraction. This checkout has QML/JavaScript scopes, native Qt events and bidirectional bridges, literal project/resource/type-description metadata, and conservative configuration-aware refresh. [IMPLEMENTATION.md](IMPLEMENTATION.md), [VALIDATION.md](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md) own current acceptance evidence; [AUDIT.md](AUDIT.md) remains the baseline record.
+Status: QML-00 through QML-07 are implemented and verified for the bounded static source profile, with final declared hosted source/artifact evidence recorded. The historical audit describes Graphify 0.9.74 at upstream commit `0b60d47e6cd9338c51143f39f35b6c45c8453385` on 3 October 2026; that imported revision lacked QML extraction. This checkout has QML/JavaScript scopes, native Qt events and bidirectional bridges, literal project/resource/type-description metadata, and conservative configuration-aware refresh. [IMPLEMENTATION.md](IMPLEMENTATION.md), [VALIDATION.md](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md) own current acceptance evidence; [AUDIT.md](AUDIT.md) remains the baseline record.
 
 The baseline/reuse review includes [feature request #1716](https://github.com/Graphify-Labs/graphify/issues/1716) and [implementation proposal #1748](https://github.com/Graphify-Labs/graphify/pull/1748), covering QML and Qt/C++ bridging. The recorded proposal review and parser decision informed the local implementation. Refresh the proposal's head before upstream delivery; its historical installation instructions and an open PR do not establish shipped support. This design retains the wider metadata, bidirectional bridge, incremental and consumer contracts needed for complete support.
 
@@ -28,7 +28,7 @@ Qt 5.15 semantic compatibility forms a separate legacy profile. Versioned import
 
 The declared hosted matrix is Ubuntu, Windows and macOS runners with Python 3.10/3.12/3.13/3.14, as recorded in [PLATFORM_MATRIX.md](PLATFORM_MATRIX.md). Graphify's package baseline is Python 3.10+; published grammar wheels alone do not extend that tested matrix to other architectures, Python 3.11, musl or PyPy. Source analysis is independent of the application's deployment platform.
 
-Local development validation is Windows. QML-03 through QML-06 have revision-specific hosted source/artifact evidence in the platform matrix; QML-07 requires proof for its final head. Qt 6.5/6.8 fixture profiles do not assert QML-engine equivalence, runtime dispatch or an installed Qt SDK.
+Local development validation is Windows. QML-03 through QML-06 have revision-specific hosted source/artifact evidence in the platform matrix; QML-07 proof applies to the reviewed source head recorded in VALIDATION.md. Qt 6.5/6.8 fixture profiles do not assert QML-engine equivalence, runtime dispatch or an installed Qt SDK.
 
 ## Existing integration contracts
 
@@ -305,7 +305,7 @@ Before advertising the first Qt/QML release, require:
 ## Decisions and alternatives
 
 - **D1: Extend the existing pipeline.** New extractor/metadata/resolver modules preserve upstream reviewability. A separate Qt-only Graphify rewrite would duplicate orchestration and fragment consumers.
-- **D2: Parser choice follows evidence.** The optional language-pack adapter is accepted from the recorded spike and revision-specific hosted lanes through QML-06. Final QML-07 proof remains pending. A smaller maintained binding is an alternative if coverage or package footprint later fails. Preserve optional core installation.
+- **D2: Parser choice follows evidence.** The optional language-pack adapter is accepted from the recorded spike and revision-specific hosted lanes through QML-07. Final implementation-head proof is recorded in VALIDATION.md. A smaller maintained binding is an alternative if coverage or package footprint later fails. Preserve optional core installation.
 - **D3: Source facts precede resolution.** Resolve owned declarations using a per-run project index. Qt syntax cache bypass plus the analysis compatibility checkpoint provides the current safe policy. Future source caching must preserve parser/fact/config invalidation, explicit worker inputs and fresh project joins.
 - **D4: Precision requires scope and exposure evidence.** Do not resolve by global short-name matching or combine all language families. Qt bridging is a narrow extension with independent evidence and consumer tests.
 - **D5: Preserve the stable public schema.** Namespaced optional metadata and compatible relations land first. Any new relation or graph storage mode requires a separate consumer/migration design.
