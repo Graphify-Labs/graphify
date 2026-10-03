@@ -1441,15 +1441,18 @@ def test_hermes_skill_destination_posix_uses_home():
 def _cli_dispatched_commands() -> set[str]:
     """Subcommand names the CLI actually dispatches.
 
-    `graphify`'s dispatcher is an `elif cmd == "..."` chain rather than a declarative
-    table, so the set is read back out of the source. Used to prove a hook command
-    written by an installer is not a stale/renamed subcommand (#2165).
+    Migrated commands come from the `graphify.commands` registry; the rest are
+    still an `elif cmd == "..."` chain, so those are read back out of the source.
+    Used to prove a hook command written by an installer is not a stale/renamed
+    subcommand (#2165).
     """
     import re
     from graphify import cli
+    from graphify.commands.registry import COMMANDS
 
     source = Path(cli.__file__).read_text(encoding="utf-8")
-    names = set(re.findall(r'cmd\s*==\s*"([a-z0-9][a-z0-9-]*)"', source))
+    names = set(COMMANDS)
+    names |= set(re.findall(r'cmd\s*==\s*"([a-z0-9][a-z0-9-]*)"', source))
     names |= {
         m
         for group in re.findall(r'cmd\s+in\s+\(([^)]*)\)', source)

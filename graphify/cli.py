@@ -1113,6 +1113,12 @@ def _reenter_main() -> None:
 
 
 def dispatch_command(cmd: str) -> None:
+    from graphify.commands.registry import lookup
+
+    handler = lookup(cmd)
+    if handler is not None:
+        handler()
+        return
     if cmd == "provider":
         from graphify.llm import _custom_providers_path, BACKENDS
         import json as _json
@@ -1230,26 +1236,6 @@ def dispatch_command(cmd: str) -> None:
             print("Usage: graphify provider [add|list|show|remove]", file=sys.stderr)
             if subcmd:
                 sys.exit(1)
-    elif cmd == "prs":
-        from graphify.prs import cmd_prs
-        cmd_prs(sys.argv[2:])
-    elif cmd == "hook":
-        from graphify.hooks import (
-            install as hook_install,
-            uninstall as hook_uninstall,
-            status as hook_status,
-        )
-
-        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
-        if subcmd == "install":
-            print(hook_install(Path(".")))
-        elif subcmd == "uninstall":
-            print(hook_uninstall(Path(".")))
-        elif subcmd == "status":
-            print(hook_status(Path(".")))
-        else:
-            print("Usage: graphify hook [install|uninstall|status]", file=sys.stderr)
-            sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
             print("Usage: graphify query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
@@ -2030,19 +2016,6 @@ def dispatch_command(cmd: str) -> None:
             print(f"error: {exc}", file=sys.stderr)
             sys.exit(1)
 
-    elif cmd == "watch":
-        watch_path = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(".")
-        if not watch_path.exists():
-            print(f"error: path not found: {watch_path}", file=sys.stderr)
-            sys.exit(1)
-        from graphify.watch import watch as _watch
-
-        try:
-            _watch(watch_path)
-        except ImportError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            sys.exit(1)
-
     elif cmd in ("cluster-only", "label"):
         # `label` is `cluster-only` that always (re)generates community names with
         # the configured backend, even when a .graphify_labels.json already exists.
@@ -2515,31 +2488,6 @@ def dispatch_command(cmd: str) -> None:
             )
             sys.exit(1)
 
-    elif cmd == "hook-check":
-        # Codex Desktop rejects hookSpecificOutput.additionalContext on PreToolUse.
-        # Keep this as a cross-platform no-op so installed hooks never break Bash
-        # tool calls. Graph guidance reaches the agent via AGENTS.md / skill instead.
-        sys.exit(0)
-    elif cmd == "hook-guard":
-        # Shell-agnostic Claude/Codebuddy PreToolUse guard (#522). Replaces the old
-        # inline-bash hooks that failed on Windows. Prints an additionalContext nudge
-        # toward graphify when a fresh in-project graph exists; always exits 0. In
-        # strict mode (opt-in, `hook-guard read --strict`) it blocks the first raw
-        # read per session via the JSON permissionDecision payload — never via exit
-        # code — and downgrades to the nudge thereafter.
-        _run_hook_guard(
-            sys.argv[2] if len(sys.argv) > 2 else "",
-            strict="--strict" in sys.argv[3:],
-        )
-        sys.exit(0)
-    elif cmd == "check-update":
-        if len(sys.argv) < 3:
-            print("Usage: graphify check-update <path>", file=sys.stderr)
-            sys.exit(1)
-        from graphify.watch import check_update
-
-        check_update(Path(sys.argv[2]).resolve())
-        sys.exit(0)
     elif cmd == "tree":
         # Emit a D3 v7 collapsible-tree HTML view of graph.json:
         # expand-all / collapse-all / reset-view buttons, multi-line
@@ -2809,30 +2757,6 @@ def dispatch_command(cmd: str) -> None:
         _wja(out_path, out_data, indent=2)
         print(f"Merged {len(graphs)} graphs -> {merged.number_of_nodes()} nodes, {merged.number_of_edges()} edges")
         print(f"Written to: {out_path}")
-
-    elif cmd == "clone":
-        if len(sys.argv) < 3:
-            print(
-                "Usage: graphify clone <github-url> [--branch <branch>] [--out <dir>]",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        url = sys.argv[2]
-        branch: str | None = None
-        out_dir: Path | None = None
-        args = sys.argv[3:]
-        i = 0
-        while i < len(args):
-            if args[i] == "--branch" and i + 1 < len(args):
-                branch = args[i + 1]
-                i += 2
-            elif args[i] == "--out" and i + 1 < len(args):
-                out_dir = Path(args[i + 1])
-                i += 2
-            else:
-                i += 1
-        local_path = _clone_repo(url, branch=branch, out_dir=out_dir)
-        print(local_path)
 
     elif cmd == "export":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -3186,23 +3110,6 @@ def dispatch_command(cmd: str) -> None:
                       f"FalkorDB's GRAPH.QUERY runs one statement at a time (no bulk script "
                       f"import), so load a graph with: graphify export falkordb --push "
                       f"falkordb://localhost:6379")
-
-    elif cmd == "benchmark":
-        from graphify.benchmark import run_benchmark, print_benchmark
-
-        graph_path = sys.argv[2] if len(sys.argv) > 2 else _default_graph_path()
-        _enforce_graph_size_cap_or_exit(Path(graph_path))
-        # Try to load corpus_words from detect output
-        corpus_words = None
-        detect_path = Path(".graphify_detect.json")
-        if detect_path.exists():
-            try:
-                detect_data = json.loads(detect_path.read_text(encoding="utf-8"))
-                corpus_words = detect_data.get("total_words")
-            except Exception:
-                pass
-        result = run_benchmark(graph_path, corpus_words=corpus_words)
-        print_benchmark(result)
 
     elif cmd == "global":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
