@@ -275,6 +275,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `pascal` | Pascal / Delphi `.pas`/`.dpr`/`.dpk`/`.inc` AST extraction (more accurate `calls`/`inherits` edges; falls back to a regex extractor when absent) | `uv tool install "graphifyy[pascal]"` |
 | `ocaml` | OCaml `.ml`/`.mli` AST extraction | `uv tool install "graphifyy[ocaml]"` |
 | `commonlisp` | Common Lisp `.lisp`/`.cl`/`.lsp`/`.asd` AST extraction | `uv tool install "graphifyy[commonlisp]"` |
+| `fsharp` | F# `.fs`/`.fsx` AST extraction | `uv tool install "graphifyy[fsharp]"` |
 | `robot` | Robot Framework `.robot`/`.resource` extraction (suites, test cases, keywords, keyword-call and resource/library import edges) | `uv tool install "graphifyy[robot]"` |
 | `chinese` | Chinese query segmentation (jieba) | `uv tool install "graphifyy[chinese]"` |
 | `all` | Everything above | `uv tool install "graphifyy[all]"` |
@@ -345,11 +346,12 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 
 | Type | Extensions |
 |------|-----------|
-| Code (37 tree-sitter grammars) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .ml .mli .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .vh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`, `.ml`/`.mli` requires `uv tool install graphifyy[ocaml]`; `.mts`/`.cts` reuse the TypeScript grammar, `.cc`/`.cxx` and CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
+| Code (37 tree-sitter grammars) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .ml .mli .fs .fsx .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .vh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`, `.ml`/`.mli` requires `uv tool install graphifyy[ocaml]`, `.fs`/`.fsx` requires `uv tool install graphifyy[fsharp]`; `.mts`/`.cts` reuse the TypeScript grammar, `.cc`/`.cxx` and CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
 | Salesforce Apex | `.cls .trigger` (regex-based; classes, interfaces, enums, methods, triggers, SOQL/DML edges) |
 | Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install graphifyy[terraform]`) |
 | OCaml | `.ml .mli` (requires `uv tool install graphifyy[ocaml]`) |
 | Common Lisp | `.lisp .cl .lsp .asd` (requires `uv tool install graphifyy[commonlisp]`) |
+| F# | `.fs .fsx` (requires `uv tool install graphifyy[fsharp]`; `.fsi` signature files and `#r`/`#load` script directives are not followed, calls to static members of C# classes are not resolved, and a C# constructor call resolves only when its type is reached through the caller's `open`s (never a nested type). `.fs` is also used by GLSL fragment shaders and Forth, so a `.fs` file is extracted only when, outside comments and strings, it has an F# declaration line and no GLSL `#version`/`#extension` directive) |
 | Robot Framework | `.robot .resource` (via the official `robot.api` parser, requires `uv tool install graphifyy[robot]`; suites, test cases, user keywords, keyword-call and Resource/Library/Variables import edges) |
 | MCP configs | `.mcp.json` `mcp.json` `mcp_servers.json` `claude_desktop_config.json` — extracts server nodes, package refs, env var requirements |
 | Package manifests | `apm.yml` `pyproject.toml` `go.mod` `pom.xml` — one canonical package node per package (by name) plus `depends_on` edges, so a package referenced from many manifests is a single hub |
