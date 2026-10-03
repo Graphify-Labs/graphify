@@ -1299,6 +1299,15 @@ def _scala_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple
         for c in node.children:
             if c.is_named:
                 _scala_collect_type_refs(c, source, generic, out)
+    # A `match type` (`type Elem[X] = X match { case String => Char }`) names a
+    # real type in every case clause -- both the type it discriminates on and
+    # the type it yields. Without these two the walker returned nothing for a
+    # match type even when correctly dispatched (#2049). Recursing over named
+    # children matches how `compound_type` is already handled above.
+    if t in ("match_type", "type_case_clause"):
+        for c in node.children:
+            if c.is_named:
+                _scala_collect_type_refs(c, source, generic, out)
 
 def _python_collect_param_refs(params_node, source: bytes) -> list[tuple[str, str]]:
     """Collect type refs from each typed parameter under a `parameters` node."""
@@ -5237,7 +5246,7 @@ def _extract_generic(
             return
 
         if (config.ts_module == "tree_sitter_scala"
-                and t in ("val_definition", "var_definition")):
+                and t in ("val_definition", "var_definition", "type_definition")):
             # Scala 3 drops the boilerplate wrapper: `val`/`var` can be written
             # directly at file scope with no enclosing object/class/trait. Gating
             # on `parent_class_nid` therefore dropped every type reference a
@@ -5249,6 +5258,14 @@ def _extract_generic(
             # position that legitimately has no container must fall back to the
             # file node rather than be skipped. Reuses the owner idiom from the
             # property branch above.
+            #
+            # `type_definition` joins the tuple for the same reason (#2049): a
+            # type alias, an `opaque type` and a `match type` all declare a
+            # dependency on the types they name, and all three carry the RHS
+            # under the same `type` field, so the existing walk applies verbatim.
+            # Only the *edges* are in scope here -- the alias still gets no node
+            # of its own, which is a separate accepted tradeoff shared with
+            # `val`/`given` bindings.
             owner_nid = parent_class_nid or file_nid
             type_node = node.child_by_field_name("type")
             if type_node is not None:
