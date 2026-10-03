@@ -986,21 +986,22 @@ def test_opencode_agents_install_writes_plugin(tmp_path):
 def test_opencode_plugin_reminder_has_no_backticks(tmp_path):
     """The bash reminder string must not contain backticks or $(...) (regression test for #1413).
 
-    The plugin prepends `echo "<reminder>" && <cmd>` to the user's bash command.
-    Backticks or $() inside the reminder trigger bash command substitution
+    The plugin prepends `echo "<reminder>" ; <cmd>` to the user's shell command.
+    Backticks or $() inside the reminder trigger command substitution
     when the echo runs, which both corrupts tool output and silently executes
     the very graphify command we are only suggesting.
     """
     _agents_install(tmp_path, "opencode")
     plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
     body = plugin.read_text()
-    # Extract the echoed reminder string literal between the double-quotes
-    # of the `output.args.command = 'echo "..." && ' +` line.
+    # Extract the echoed reminder between the double-quotes of the REMINDER
+    # string literal (the leading quote keeps the header comment out of it).
     import re
 
-    m = re.search(r'echo "([^"]*)"', body)
+    m = re.search(r"'echo \"([^\"]*)\"", body)
     assert m, "echo reminder not found in plugin body"
     reminder = m.group(1)
+    assert reminder.startswith("[graphify]")
     assert "`" not in reminder, f"backtick in reminder would trigger command substitution: {reminder!r}"
     assert "$(" not in reminder, f"$() in reminder would trigger command substitution: {reminder!r}"
 
@@ -1012,47 +1013,205 @@ def test_opencode_plugin_uses_semicolon_not_ampersand(tmp_path):
     in PowerShell 5.1, Bash, and POSIX shells."""
     _agents_install(tmp_path, "opencode")
     body = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
-    # The prepend line ends with the separator before `' +`.
-    assert '" ; \' +' in body or '." ; \' +' in body, "reminder should join with ';'"
-    assert '" && \' +' not in body, "'&&' breaks PowerShell 5.1 (#1646)"
+    # The REMINDER literal ends with the separator.
+    assert '." ; \';' in body, "reminder should join with ';'"
+    assert '" && ' not in body, "'&&' breaks PowerShell 5.1 (#1646)"
 
 
-def test_opencode_agents_install_registers_plugin_in_config(tmp_path):
-    """opencode install registers the plugin in .opencode/opencode.json."""
+def test_opencode_plugin_default_export_serves_both_runtimes(tmp_path):
+    """OpenCode 2 rejects a plugin without a default export that has `id` and
+    `setup()` (#3554). OpenCode 1 reads `server()` from that same export and
+    throws when an export with an `id` lacks it. A plain file in
+    .opencode/plugins/ cannot resolve an opencode package either."""
     _agents_install(tmp_path, "opencode")
-    config_file = tmp_path / ".opencode" / "opencode.json"
-    assert config_file.exists()
+    body = (tmp_path / ".opencode" / "plugins" / "graphify.js").read_text()
+    assert "export default {" in body
+    assert 'id: "graphify"' in body
+    assert "async setup(ctx)" in body
+    assert "async server(" in body
+    assert '"@opencode' not in body, "no import from an opencode package"
+
+
+def test_opencode_plugin_prepends_the_reminder_on_both_runtimes(tmp_path):
+    """Drive the installed plugin the way each runtime does: OpenCode 2 through
+    `setup(ctx)` and the "shell" tool, once per session; OpenCode 1 through
+    `server()` and the "bash" tool, once per process."""
     import json as _json
+    import shutil
+    import subprocess
 
-    config = _json.loads(config_file.read_text())
-    assert any("graphify.js" in p for p in config.get("plugin", []))
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+
+    _agents_install(tmp_path, "opencode")
+    (tmp_path / "graphify-out").mkdir()
+    (tmp_path / "graphify-out" / "graph.json").write_text("{}")
+    (tmp_path / "empty").mkdir()
+    # .mjs so node treats the copy as an ES module whatever its version.
+    module = tmp_path / "graphify.mjs"
+    module.write_text((tmp_path / ".opencode" / "plugins" / "graphify.js").read_text())
+    harness = tmp_path / "harness.mjs"
+    harness.write_text(
+        f"""
+import * as mod from {_json.dumps(module.as_uri())};
+const plugin = mod.default;
+
+const v2 = async (directory) => {{
+  let hook;
+  const registered = [];
+  await plugin.setup({{
+    location: {{ directory }},
+    tool: {{ hook: async (name, fn) => {{ registered.push(name); hook = fn; }} }},
+  }});
+  const run = (tool, sessionID, command) => {{
+    const event = {{ tool, sessionID, input: {{ command }} }};
+    hook(event);
+    return event.input.command;
+  }};
+  return {{ registered, run }};
+}};
+const v1 = async (directory) => {{
+  const hooks = await plugin.server({{ directory }});
+  return async (tool, command) => {{
+    const output = {{ args: {{ command }} }};
+    await hooks["tool.execute.before"]({{ tool }}, output);
+    return output.args.command;
+  }};
+}};
+
+const graph = {_json.dumps(str(tmp_path))};
+const empty = {_json.dumps(str(tmp_path / "empty"))};
+const two = await v2(graph);
+const one = await v1(graph);
+const bare = {{ args: {{}} }};
+await (await plugin.server({{ directory: graph }}))["tool.execute.before"]({{ tool: "bash" }}, bare);
+console.log(JSON.stringify({{
+  v1_no_command: "command" in bare.args,
+  v2_no_command: two.run("shell", "no-command") ?? null,
+  exports: Object.keys(mod),
+  id: plugin.id,
+  registered: two.registered,
+  v2: [
+    two.run("read", "a", "ls"),
+    two.run("shell", "a", "ls"),
+    two.run("shell", "a", "ls"),
+    two.run("shell", "b", "ls"),
+  ],
+  v2_no_graph: (await v2(empty)).run("shell", "a", "ls"),
+  v1: [await one("read", "ls"), await one("bash", "ls"), await one("bash", "ls")],
+  v1_no_graph: await (await v1(empty))("bash", "ls"),
+}}));
+"""
+    )
+    result = subprocess.run([node, str(harness)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    seen = _json.loads(result.stdout)
+
+    def reminded(command):
+        return command.startswith('echo "[graphify] ') and command.endswith('" ; ls')
+
+    assert seen["exports"] == ["default"]
+    assert seen["v1_no_command"] is False and seen["v2_no_command"] is None
+    assert seen["id"] == "graphify"
+    assert seen["registered"] == ["execute.before"]
+    untouched, first, again, other_session = seen["v2"]
+    assert untouched == "ls" and again == "ls"
+    assert reminded(first) and reminded(other_session)
+    assert seen["v2_no_graph"] == "ls"
+    untouched, first, again = seen["v1"]
+    assert untouched == "ls" and again == "ls"
+    assert reminded(first)
+    assert seen["v1_no_graph"] == "ls"
 
 
-def test_opencode_agents_install_merges_existing_config(tmp_path):
-    """opencode install preserves existing .opencode/opencode.json keys."""
+def test_opencode_agents_install_does_not_register_plugin_in_config(tmp_path):
+    """opencode install leaves opencode.json alone. OpenCode loads every file in
+    .opencode/plugins/ on its own, and OpenCode 2 reads the bare path older
+    releases registered as an npm package name and fails to install it (#3732)."""
+    _agents_install(tmp_path, "opencode")
+    assert not (tmp_path / ".opencode" / "opencode.json").exists()
+
+
+def test_opencode_agents_install_keeps_existing_config(tmp_path):
+    """opencode install preserves an existing .opencode/opencode.json."""
     import json as _json
 
     config_file = tmp_path / ".opencode" / "opencode.json"
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text(_json.dumps({"model": "claude-opus-4-5", "plugin": []}))
     _agents_install(tmp_path, "opencode")
-    config = _json.loads(config_file.read_text())
-    assert config["model"] == "claude-opus-4-5"
-    assert any("graphify.js" in p for p in config["plugin"])
+    assert _json.loads(config_file.read_text()) == {"model": "claude-opus-4-5", "plugin": []}
+
+
+@pytest.mark.parametrize("key", ["plugin", "plugins"])
+def test_opencode_agents_install_drops_the_entry_an_older_release_wrote(tmp_path, key):
+    """The bare-path entry goes, under the OpenCode 1 key or the OpenCode 2 one;
+    other plugins and other keys stay."""
+    import json as _json
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(_json.dumps({
+        "model": "claude-opus-4-5",
+        key: [".opencode/plugins/graphify.js", "opencode-other-plugin"],
+    }))
+    _agents_install(tmp_path, "opencode")
+    assert _json.loads(config_file.read_text()) == {
+        "model": "claude-opus-4-5",
+        key: ["opencode-other-plugin"],
+    }
+
+
+def test_opencode_agents_install_leaves_unreadable_config_alone(tmp_path, capsys):
+    """A config that is not plain JSON (OpenCode accepts comments) is not
+    rewritten, which would drop the comments. The user is told what to remove."""
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text('{ // my settings\n  "plugin": [".opencode/plugins/graphify.js"]\n}')
+    before = config_file.read_text()
+    _agents_install(tmp_path, "opencode")
+    assert config_file.read_text() == before
+    out = capsys.readouterr().out
+    assert 'remove ".opencode/plugins/graphify.js" from its plugin list by hand' in out
+
+
+@pytest.mark.parametrize("body", ['[".opencode/plugins/graphify.js"]', '{"plugin": ".opencode/plugins/graphify.js"}'])
+def test_opencode_agents_install_leaves_an_unexpected_config_shape_alone(tmp_path, body):
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(body)
+    _agents_install(tmp_path, "opencode")
+    assert config_file.read_text() == body
+
+
+def test_opencode_config_rewrite_keeps_non_ascii_values_readable(tmp_path):
+    import json as _json
+
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(
+        _json.dumps({"username": "Zoë", "plugin": [".opencode/plugins/graphify.js"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _agents_install(tmp_path, "opencode")
+    text = config_file.read_text(encoding="utf-8")
+    assert _json.loads(text) == {"username": "Zoë"}
+    assert "Zoë" in text
 
 
 def test_opencode_agents_uninstall_removes_plugin(tmp_path):
-    """opencode uninstall removes the plugin file and deregisters from opencode.json."""
+    """opencode uninstall removes the plugin file and the opencode.json entry
+    an older release registered it with."""
     import json as _json
 
     _agents_install(tmp_path, "opencode")
+    config_file = tmp_path / ".opencode" / "opencode.json"
+    config_file.write_text(_json.dumps({"plugin": [".opencode/plugins/graphify.js"]}))
     _agents_uninstall(tmp_path, platform="opencode")
     plugin = tmp_path / ".opencode" / "plugins" / "graphify.js"
     assert not plugin.exists()
-    config_file = tmp_path / ".opencode" / "opencode.json"
-    if config_file.exists():
-        config = _json.loads(config_file.read_text())
-        assert not any("graphify.js" in p for p in config.get("plugin", []))
+    assert _json.loads(config_file.read_text()) == {}
 
 
 def test_kilo_agents_install_writes_agents_md(tmp_path):

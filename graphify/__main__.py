@@ -118,6 +118,9 @@ from graphify.install import (  # noqa: E402,F401
     _OPENCODE_PLUGIN_JS,
     _OPENCODE_PLUGIN_PATH,
     _OPENCODE_CONFIG_PATH,
+    _OPENCODE_PLUGIN_HEADER,
+    _drop_opencode_config_entry,
+    _opencode_plugin_is_v1_only,
     _PLATFORM_CONFIG,
     _skill_lock,
 )
@@ -257,6 +260,10 @@ def _version_tuple(version: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
+def _auto_refresh_disabled() -> bool:
+    return os.environ.get("GRAPHIFY_NO_AUTO_REFRESH", "").strip().lower() in ("1", "true", "yes")
+
+
 def _refresh_stale_skills() -> None:
     """Refresh user-scope skills left behind by a package upgrade (#1805).
 
@@ -286,7 +293,7 @@ def _refresh_stale_skills() -> None:
     server) stays clean. Set ``GRAPHIFY_NO_AUTO_REFRESH=1`` to opt out, e.g.
     for pinned or centrally managed skill directories.
     """
-    if os.environ.get("GRAPHIFY_NO_AUTO_REFRESH", "").strip().lower() in ("1", "true", "yes"):
+    if _auto_refresh_disabled():
         return
     if __version__ == "unknown":
         return
@@ -378,6 +385,70 @@ def _refresh_one_skill(name: str, skill_dst: Path, installed: str) -> None:
     for line in captured.getvalue().splitlines():
         if str(backup) in line:
             print(line, file=sys.stderr)
+
+
+def _refresh_v1_opencode_plugins() -> None:
+    """Rewrite OpenCode plugins an older release left behind (#3554, #3732).
+
+    Releases up to 0.9.74 wrote a plugin only OpenCode 1 can load, and an
+    opencode.json entry OpenCode 2 fails on. Upgrading OpenCode to 2 turns both
+    into a load error on every start, and upgrading graphify touches neither.
+    So on a CLI run, replace such a plugin with the current one and drop the
+    entry.
+
+    Two directories are checked: the working directory, where the install
+    writes the plugin, and the home directory, where it lands when the install
+    was run from there (OpenCode then loads it for every project below home).
+    Only a plugin graphify wrote is touched. The entry is dropped beside a
+    current plugin too: a checkout or a failed write can bring it back alone.
+
+    The current plugin needs OpenCode 1.3.4 or later, or OpenCode 2. Someone on
+    an older OpenCode 1 keeps the old plugin with ``GRAPHIFY_NO_AUTO_REFRESH=1``,
+    the same switch that turns off the skill refresh.
+    """
+    if _auto_refresh_disabled():
+        return
+    try:
+        directories = dict.fromkeys(d.resolve() for d in (Path.cwd(), Path.home()))
+    except (OSError, RuntimeError):
+        return
+    for directory in directories:
+        plugin_file = directory / _OPENCODE_PLUGIN_PATH
+        try:
+            body = plugin_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue  # no plugin here
+        if not body.startswith(_OPENCODE_PLUGIN_HEADER):
+            continue  # not graphify's
+        stale = _opencode_plugin_is_v1_only(body)
+        captured = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(captured):
+                if stale:
+                    _install_opencode_plugin(directory)
+                    dropped = False
+                else:
+                    dropped = _drop_opencode_config_entry(directory)
+        except Exception as exc:
+            # A refresh must never take the user's actual command down with it.
+            print(f"graphify: could not refresh {plugin_file}: {exc}", file=sys.stderr)
+            continue
+        if stale:
+            print(
+                f"graphify: refreshed {plugin_file} so OpenCode 2 can load it; "
+                f"set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
+                file=sys.stderr,
+            )
+            # Of the install's own lines, only the one asking for a manual edit matters here.
+            for line in captured.getvalue().splitlines():
+                if "by hand" in line:
+                    print(line, file=sys.stderr)
+        elif dropped:
+            print(
+                f"graphify: removed the stale graphify entry from "
+                f"{directory / _OPENCODE_CONFIG_PATH}; set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
+                file=sys.stderr,
+            )
 
 
 
@@ -724,6 +795,7 @@ def _run_cli() -> None:
         # refresh them first, so the check below only fires for copies the
         # refresh could not or must not touch (#1805).
         _refresh_stale_skills()
+        _refresh_v1_opencode_plugins()
         # Resolve each platform's real user-scope destination so per-platform
         # overrides (gemini, opencode, devin, antigravity, amp) check the dir
         # they actually install into, not the bare cfg['skill_dst'].
