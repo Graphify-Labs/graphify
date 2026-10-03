@@ -153,6 +153,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _ts_collect_type_refs,
     _ts_heritage_clause_entries,
     _ts_walk_class_members,
+    _VUE_SCRIPT_LANG_RE as _SCRIPT_LANG_RE,
     _vue_mask_non_script,
     _walk_js_tree,
     _walk_python_tree,
@@ -2374,17 +2375,82 @@ def _emit_rescued_import(
     existing_ids.add(node_id)
 
 
-def extract_svelte(path: Path) -> dict:
-    """Extract imports from .svelte files: script-block via JS AST + template regex fallback.
+_HTML_SCRIPT_TAG_RE = re.compile(
+    r"<script\b((?:\"[^\"]*\"|'[^']*'|[^>\"'])*)>([\s\S]*?)</script\s*>",
+    re.IGNORECASE,
+)
+_NON_JS_SCRIPT_TYPE_RE = re.compile(
+    r"""\btype\s*=\s*["']?(?!module\b|text/javascript\b|application/javascript\b)""",
+    re.IGNORECASE,
+)
 
-    Tree-sitter only sees the <script> block. Svelte template syntax like
-    {#await import('./X.svelte')} lives in the markup layer and is invisible
-    to the JS parser, so a regex pass covers those dynamic imports.
+
+def _svelte_mask_non_script(src: str) -> tuple[str, str | None]:
+    """Blank everything in a ``.svelte`` file except JS ``<script>`` bodies.
+
+    Every character outside those bodies becomes a space (``\\r``/``\\n`` are
+    kept), so AST locations match the original file. Scripts with a non-JS
+    ``type`` (``application/ld+json`` and the like) are blanked too: their
+    bodies are not statements and would only add parse errors. Returns
+    ``(masked_source, lang)``; ``lang`` is the first JS block's declared
+    ``lang``. Mirrors :func:`_astro_mask_non_script`.
     """
-    result = _extract_generic(path, _JS_CONFIG)
+    chars = [c if c in "\r\n" else " " for c in src]
+    lang: str | None = None
+    for m in _HTML_SCRIPT_TAG_RE.finditer(src):
+        if _NON_JS_SCRIPT_TYPE_RE.search(m.group(1)):
+            continue
+        start, end = m.start(2), m.end(2)
+        chars[start:end] = src[start:end]
+        # Terminate the region in place of the closing `</script`, so two scripts
+        # on one line don't run together. U+2028 is a JS line terminator, so it
+        # ends a trailing `//` comment that would otherwise swallow the next
+        # block; the `;` after it then ends the statement (inside the comment it
+        # would be inert). U+2028 is not a newline, so line numbers hold, and its
+        # 3 UTF-8 bytes replace 3 ASCII ones, so byte offsets do too.
+        chars[end:end + 4] = ["\u2028", ";", "", ""]
+        if lang is None:
+            lang_m = _SCRIPT_LANG_RE.search(m.group(1))
+            if lang_m:
+                lang = lang_m.group(1).lower()
+    return "".join(chars), lang
+
+
+def extract_svelte(path: Path) -> dict:
+    """Extract imports and symbols from .svelte files: script-block AST + template regex fallback.
+
+    The AST pass parses only the ``<script>`` bodies, blanking the markup and
+    style regions so line numbers still line up — the same masking
+    :func:`extract_vue` and :func:`extract_astro` use. Feeding the whole file to
+    the JS grammar made the template a top-level ERROR at line 1, so every
+    ``.svelte`` file was flagged as a syntax error and no symbol inside
+    ``<script>`` (functions, classes, runes) was ever reached; only imports
+    survived, via the regex rescue below (#3928).
+
+    The grammar follows the first block's declared ``lang`` (``js``/``jsx``→JS,
+    ``ts`` or unset→TS, a superset of JS), matching Svelte's own default. Both
+    ``<script>`` and ``<script module>`` / ``<script context="module">`` blocks
+    are parsed. A ``<script>`` carrying a non-JS ``type`` (``application/ld+json``
+    and the like) is masked out rather than parsed as code.
+
+    Svelte template syntax like {#await import('./X.svelte')} lives in the markup
+    layer and is invisible to the JS parser, so a regex pass covers those
+    dynamic imports.
+    """
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        return {"nodes": [], "edges": [], "error": str(e)}
+
+    masked, lang = _svelte_mask_non_script(src)
+    config = _JS_CONFIG if lang in ("js", "jsx") else _TS_CONFIG
+    masked_bytes = masked.encode("utf-8")
+    if config is _TS_CONFIG:
+        masked_bytes = _normalize_ts_import_types(masked_bytes) or masked_bytes
+
+    result = _extract_generic(path, config, source_override=masked_bytes)
     try:
         import re as _re
-        src = path.read_text(encoding="utf-8", errors="replace")
         existing_ids = {n["id"] for n in result.get("nodes", [])}
         # Source file node ID must match the one _extract_generic creates:
         # _make_id(str(path)) - single arg, no stem prefix. Otherwise the source
@@ -2404,11 +2470,11 @@ def extract_svelte(path: Path) -> dict:
                 result, existing_ids, file_node_id, path, raw,
                 "dynamic_import", aliases, base_url,
             )
-        # Static imports inside <script> blocks. The JS tree-sitter parser fed
-        # the full .svelte file produces a top-level ERROR node (HTML markup
-        # is not valid JS), so import_statement nodes are never reached and
-        # static imports are silently dropped (#713). Regex over each script
-        # body recovers them.
+        # Static imports inside <script> blocks (#713). The masked AST pass now
+        # reaches these import_statement nodes itself, so this is a fallback for
+        # a script body the grammar still cannot parse. An import both passes
+        # resolve yields the same (source, target, relation) edge twice, which
+        # build.dedupe_edges collapses — same as the Astro path (#3902).
         script_re = _re.compile(
             r"<script\b[^>]*>([\s\S]*?)</script\s*>", _re.IGNORECASE
         )
@@ -2431,14 +2497,8 @@ def extract_svelte(path: Path) -> dict:
 
 
 _ASTRO_FRONTMATTER_RE = re.compile(r"\A\s*---[^\S\r\n]*\r?\n([\s\S]*?)\r?\n---")
-_ASTRO_SCRIPT_RE = re.compile(
-    r"<script\b((?:\"[^\"]*\"|'[^']*'|[^>\"'])*)>([\s\S]*?)</script\s*>",
-    re.IGNORECASE,
-)
-_ASTRO_NON_JS_TYPE_RE = re.compile(
-    r"""\btype\s*=\s*["']?(?!module\b|text/javascript\b|application/javascript\b)""",
-    re.IGNORECASE,
-)
+_ASTRO_SCRIPT_RE = _HTML_SCRIPT_TAG_RE
+_ASTRO_NON_JS_TYPE_RE = _NON_JS_SCRIPT_TYPE_RE
 
 
 def _astro_mask_non_script(src: str) -> str:
