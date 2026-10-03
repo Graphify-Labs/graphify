@@ -263,11 +263,11 @@ Refresh activation uses exact filenames, accepted inputs and persisted Qt contex
 
 Discovery, code-only mode, direct single-file extraction, CLI update, watch batching and ignore/symlink containment use the same filename classification policy: `.qml`, `.qmltypes`, `.qrc`, `.pro`, `.pri`, `.cmake` and exact `qmldir`/`CMakeLists.txt`; `.ui.qml` preserves its compound identity. Metadata references cannot escape accepted root/corpus boundaries or fetch an HTTP import. External paths retain bounded reasons without publishing absolute machine paths.
 
-Local INC-QML-07 consumers cover query/node detail/explain/path/affected, installed MCP, coverage/report/HTML views and selected semantic exports. Source names, roles, locations, direction and confidence remain visible; event/meta-object/reactive mechanisms remain distinct from direct calls. Wiki and presentation formats have explicit omissions in [EXPORT_MATRIX.md](EXPORT_MATRIX.md). Assistant changes originate in authoritative fragments and are regenerated with frozen baseline checks. Final release acceptance still requires reviewed-head hosted evidence.
+INC-QML-07 consumers cover query/node detail/explain/path/affected, installed MCP, coverage/report/HTML views and selected semantic exports. Source names, roles, locations, direction and confidence remain visible; event/meta-object/reactive mechanisms remain distinct from direct calls. Wiki and presentation formats have explicit omissions in [EXPORT_MATRIX.md](EXPORT_MATRIX.md). Assistant changes originate in authoritative fragments and are regenerated with frozen baseline checks. Revision-specific hosted evidence is recorded in [VALIDATION.md](VALIDATION.md); later HTML changes retain separate local and unexecuted platform/browser evidence.
 
 ## Support matrix and release gates
 
-The first column lists implemented bounded source-analysis scope. Individual acceptance evidence and pending final-head lanes remain in [traceability](../../tests/TRACEABILITY.md); this matrix does not claim Qt engine/runtime equivalence. Export-specific preservation and omissions are in [EXPORT_MATRIX.md](EXPORT_MATRIX.md).
+The first column lists implemented bounded source-analysis scope. Individual acceptance evidence and revision-specific platform limits remain in [traceability](../../tests/TRACEABILITY.md); this matrix does not claim Qt engine/runtime equivalence. Export-specific preservation and omissions are in [EXPORT_MATRIX.md](EXPORT_MATRIX.md).
 
 | Area | First accepted scope | Later/deferred scope |
 | --- | --- | --- |
@@ -385,8 +385,14 @@ artifacts. Deriving presentation membership avoids requiring a model or a source
 rescan merely to inspect an accepted graph. A failed or unhelpful bounded view
 retains previous HTML and reports its actual result.
 
-The opening architecture overview selects a bounded set of major structural
-communities and loads other view data on demand. Initial selection is explicit
-presentation policy rather than saved personal view state. Structural clustering
-supports navigation; versioned architecture/design documents describe intentional
-ownership. Remaining parser/provider adoption contracts retain their scope.
+Initial selection activates all exported view nodes and edges, with Select All
+checked. Large graphs retain complete labeled community aggregation and its
+supported cap rather than forcing raw full-source rendering. An optional
+Overview selects the ten largest structural communities by member count with
+stable community-ID ordering and leaves Select All unchecked. Initial selection
+is explicit presentation policy rather than saved personal view state.
+Structural clustering supports navigation; versioned architecture/design
+documents describe intentional ownership. Checked-default AC04 has local
+exporter/CLI, emitted-script and reviewed installed-artifact proof; browser visual,
+other-platform and new hosted checks remain unexecuted. Remaining parser/provider
+adoption contracts retain their scope.

@@ -1,9 +1,11 @@
 # Qt/QML implementation contracts
 
-Status: INC-QML-00 through INC-QML-06 are implemented for the bounded static profile.
-Local INC-QML-07 adds consumer, export and assistant contracts; its final hosted-head
-proof remains pending. [PLATFORM_MATRIX.md](PLATFORM_MATRIX.md) records historical
-hosted runs through INC-QML-06. [ARCHITECTURE.md](ARCHITECTURE.md) owns ADRs and
+Status: INC-QML-00 through INC-QML-07 are implemented and verified for the bounded
+static profile, with revision-specific hosted source/artifact proof. Current
+INC-QML-09 HTML selection is locally verified at exporter/CLI and emitted-script
+boundaries; browser, other-platform and new hosted proof remain unexecuted.
+[PLATFORM_MATRIX.md](PLATFORM_MATRIX.md) records declared installation lanes.
+[ARCHITECTURE.md](ARCHITECTURE.md) owns ADRs and
 [traceability](../../tests/TRACEABILITY.md) owns individual acceptance evidence.
 Dependency-directed cache optimization and Qt runtime equivalence remain deferred.
 
@@ -376,11 +378,17 @@ Neither grouping recovery nor HTML export changes canonical source facts,
 analysis sidecars or graph JSON. The atomic writer retains the previous HTML
 until successful replacement; CLI status reflects actual publication.
 
-The HTML viewer opens an architecture overview of the ten largest available
-source communities, with deterministic membership-count/ID ordering. Only the
-selected nodes and their edges enter the network datasets before layout.
-Community controls, search and Select All expose additional data on demand;
-Overview restores the initial selection. Full semantic payloads remain in the
-artifact. Community names describe structural hubs; canonical architecture and
-design documents retain intentional component ownership. View selections,
-camera and search are temporary browser state, with no saved-view persistence.
+The HTML viewer starts with Select All checked and all exported view nodes and
+edges active in its datasets before layout. Large graphs keep their complete
+labeled community aggregate and supported cap; startup selection does not
+replace that view with raw full-source rendering. Overview optionally selects
+the ten largest available source communities using deterministic member-count/ID
+ordering and leaves Select All unchecked. Community filters, search, Select All
+and Select None keep their existing selection roles. Full exported semantic
+payloads remain in the artifact. Community names describe structural hubs;
+canonical architecture and design documents retain intentional component
+ownership. View selections, camera and search are temporary browser state, with
+no saved-view persistence. Checked-default AC04 is locally verified through the
+production emitted scripts and reviewed installed artifact. Exact evidence is in
+[VALIDATION.md](VALIDATION.md#inc-qml-09-current-selection-policy); browser visual
+inspection and other-platform/hosted checks remain separate unexecuted evidence.

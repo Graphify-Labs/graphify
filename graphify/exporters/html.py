@@ -151,15 +151,15 @@ function esc(s) {{
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }}
 
-// The overview is presentation state, not a claim about architectural modules.
-// Deferred communities stay searchable without entering vis physics at startup.
+// Start with all exported communities; large graphs are already aggregated.
+// Overview remains an optional subset, not a claim about architectural modules.
 const overviewCommunities = new Set(LEGEND.slice()
   .sort((a, b) => (b.count - a.count) || (a.cid - b.cid))
   .slice(0, 10).map(c => c.cid));
 const knownCommunities = new Set(LEGEND.map(c => c.cid));
-let selectedCommunities = new Set(overviewCommunities);
-let overviewMode = true;
-let showUngrouped = !LEGEND.length;
+let selectedCommunities = new Set(knownCommunities);
+let overviewMode = false;
+let showUngrouped = true;
 const legendControls = new Map();
 
 const VIEW_NODES = RAW_NODES.map((n, i) => ({{
@@ -358,7 +358,7 @@ const selectAllCb = document.getElementById('select-all-cb');
 function updateSelectAllState() {{
   const total = LEGEND.length;
   const selected = selectedCommunities.size;
-  // Select All expresses an explicit full-view request, never initial overview.
+  // Select All reflects the full view; an explicit Overview keeps it unchecked.
   selectAllCb.checked = !overviewMode && (total ? selected === total : showUngrouped);
   selectAllCb.indeterminate = !overviewMode && selected > 0 && selected < total;
   legendControls.forEach(({{ item, cb }}, cid) => {{
@@ -746,10 +746,10 @@ def to_html(
   <div id="legend-wrap">
     <h3>Communities</h3>
     <div id="legend-controls">
-      <label><input type="checkbox" id="select-all-cb" onchange="toggleAllCommunities(!this.checked)">Select All</label>
+      <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
       <button type="button" id="overview-reset" onclick="resetOverview()">Overview</button>
     </div>
-    <div id="view-caption">Architecture overview: largest source communities. Expand with filters or search.</div>
+    <div id="view-caption">Source communities: all available groups. Filter or choose Overview to focus.</div>
     <div id="legend"></div>
   </div>
   <div id="stats">{stats}</div>

@@ -1,4 +1,4 @@
-"""Execute the written viewer's initial selection and deferred dataset lifecycle."""
+"""Execute default Select All and the explicitly requested overview lifecycle."""
 from __future__ import annotations
 
 import copy
@@ -105,31 +105,49 @@ def write_view(tmp_path: Path, *, counts=None, reverse=False) -> tuple[str, nx.G
     return path.read_text(encoding="utf-8"), graph
 
 
-def test_initial_overview_constructs_only_ten_largest_groups_before_network(tmp_path):
-    """REQ-QML-019-AC04: initial physics sees only selected groups, never hidden full data."""
+def test_default_select_all_constructs_every_exported_node_and_edge_before_network(tmp_path):
+    """REQ-QML-019-AC04: the exported view starts fully selected with exact endpoint facts."""
     content, _ = write_view(tmp_path)
     result = execute(content)
-    assert set(result["constructed"]["nodes"]) == {f"n{i}" for i in range(2, 12)}
-    assert len(result["constructed"]["edges"]) == 9
-    assert result["initial"]["checkedGroups"] == list(range(2, 12))
-    assert not result["initial"]["checked"] and not result["initial"]["indeterminate"]
-    assert "Architecture overview: 10 of 12 source communities" in result["initial"]["caption"]
-    assert 'id="select-all-cb" checked' not in content
+    assert set(result["constructed"]["nodes"]) == {n["id"] for n in result["rawNodes"]}
+    assert len(result["constructed"]["edges"]) == 11
+    assert {(e["from"], e["to"]) for e in result["constructed"]["edges"]} == {
+        (e["from"], e["to"]) for e in result["rawEdges"]
+    }
+    assert result["initial"]["checkedGroups"] == list(range(12))
+    assert result["initial"]["checked"] and not result["initial"]["indeterminate"]
+    assert "Source communities: 12 of 12 source communities" in result["initial"]["caption"]
+    assert 'id="select-all-cb" checked' in content
     assert len(result["rawNodes"]) == 12 and len(result["rawEdges"]) == 11
 
 
-def test_initial_overview_ties_use_numeric_community_ids_independent_of_insertion(tmp_path):
-    """Equal-sized groups select stable numeric IDs rather than graph insertion order."""
+def test_optional_overview_selects_only_ten_largest_source_communities(tmp_path):
+    """Overview is an explicit presentation choice; it removes deferred nodes from physics."""
+    content, _ = write_view(tmp_path)
+    result = execute(content, "resetOverview();")
+    assert len(result["constructed"]["nodes"]) == 12
+    assert set(result["final"]["nodes"]) == {f"n{i}" for i in range(2, 12)}
+    assert len(result["final"]["edges"]) == 9
+    assert result["final"]["checkedGroups"] == list(range(2, 12))
+    assert not result["final"]["checked"] and not result["final"]["indeterminate"]
+    assert "Architecture overview: 10 of 12 source communities" in result["final"]["caption"]
+
+
+def test_optional_overview_ties_use_numeric_community_ids_independent_of_insertion(tmp_path):
+    """An explicit overview selects stable numeric IDs when member counts tie."""
     content, _ = write_view(tmp_path, counts={i: 2 for i in range(12)}, reverse=True)
-    result = execute(content)
-    assert set(result["constructed"]["nodes"]) == {f"n{i}" for i in range(10)}
-    assert not result["initial"]["checked"]
+    result = execute(content, "resetOverview();")
+    assert len(result["constructed"]["nodes"]) == 12
+    assert set(result["final"]["nodes"]) == {f"n{i}" for i in range(10)}
+    assert not result["final"]["checked"] and not result["final"]["indeterminate"]
 
 
-def test_filters_add_and_remove_real_datasets_and_reset_explicit_full_selection(tmp_path):
-    """Filters defer nodes and endpoint-safe edges; reset restores an unchecked overview."""
+def test_optional_overview_filters_all_none_and_reset_update_real_datasets(tmp_path):
+    """After choosing Overview, filters change data and preserve endpoint-safe relationships."""
     content, _ = write_view(tmp_path)
     actions = """
+resetOverview();
+const overview = JSON.stringify(state());
 const control = legendControls.get(0).cb;
 control.checked = true; control.handlers.change({stopPropagation() {}});
 if (!nodesDS.get('n0')) throw Error('checked deferred group was not loaded');
@@ -141,17 +159,21 @@ toggleAllCommunities(true);
 if (nodesDS.map.size || edgesDS.map.size) throw Error('deselection left active data');
 if (!state().caption.includes('No communities selected')) throw Error('empty selection lacks guidance');
 resetOverview();
+if (JSON.stringify(state()) !== overview) throw Error('optional overview was not restored');
 """
     result = execute(content, actions)
-    assert result["final"] == result["initial"]
+    assert result["initial"]["checked"] and not result["final"]["checked"]
+    assert set(result["final"]["nodes"]) == {f"n{i}" for i in range(2, 12)}
     assert all(e["from"] in result["final"]["nodes"] and e["to"] in result["final"]["nodes"]
                for e in result["final"]["edges"])
 
 
-def test_search_reveals_deferred_group_before_focus_with_exact_source_metadata(tmp_path):
-    """Hidden Qt facts remain searchable; selecting a result restores evidence before focus."""
+def test_optional_overview_search_reveals_deferred_group_with_exact_source_metadata(tmp_path):
+    """A hidden overview result restores its source evidence before the real focus call."""
     content, _ = write_view(tmp_path)
     result = execute(content, """
+resetOverview();
+if (nodesDS.get('n0')) throw Error('optional overview did not defer the search target');
 searchInput.value = '<Widget>'; searchInput.handlers.input();
 if (searchResults.children.length !== 1) throw Error('deferred search result unavailable');
 searchResults.children[0].onclick();
@@ -171,21 +193,24 @@ if (nodesDS.get('n0').qt_qml.qml.raw_name !== 'deferred') throw Error('public Qt
 
 
 @pytest.mark.parametrize("grouped", [False, True])
-def test_small_view_stays_usable_with_select_all_unchecked(tmp_path, grouped):
-    """An overview may contain every small group without implying explicit Select All."""
+def test_small_grouped_and_ungrouped_views_default_to_select_all(tmp_path, grouped):
+    """Every small view starts selected; choosing Overview then leaves Select All unchecked."""
     graph = nx.Graph()
     graph.add_node("a", label="A")
     graph.add_node("b", label="B")
+    graph.add_edge("a", "b", relation="uses")
     path = tmp_path / "small.html"
     assert to_html(graph, {0: ["a", "b"]} if grouped else {}, str(path), learning_overlay={})
-    result = execute(path.read_text(encoding="utf-8"))
+    result = execute(path.read_text(encoding="utf-8"), "resetOverview();")
     assert set(result["constructed"]["nodes"]) == {"a", "b"}
-    assert not result["initial"]["checked"] and not result["initial"]["indeterminate"]
-    assert ("Architecture overview" if grouped else "Source graph") in result["initial"]["caption"]
+    assert len(result["constructed"]["edges"]) == 1
+    assert result["initial"]["checked"] and not result["initial"]["indeterminate"]
+    assert not result["final"]["checked"] and not result["final"]["indeterminate"]
+    assert ("Architecture overview" if grouped else "Source graph") in result["final"]["caption"]
 
 
-def test_partial_small_membership_keeps_ungrouped_facts_recoverable(tmp_path):
-    """Explicit selection and search must not strand a node absent from the legend."""
+def test_partial_small_membership_starts_selected_and_overview_search_recovers_ungrouped_facts(tmp_path):
+    """Missing legend membership cannot drop initial data or strand optional overview results."""
     graph = nx.Graph()
     graph.add_node("a", label="Grouped")
     graph.add_node("b", label="Ungrouped")
@@ -194,12 +219,16 @@ def test_partial_small_membership_keeps_ungrouped_facts_recoverable(tmp_path):
     assert to_html(graph, {1: ["a"]}, str(path), learning_overlay={})
     content = path.read_text(encoding="utf-8")
     result = execute(content, """
+resetOverview();
+if (nodesDS.get('b')) throw Error('optional overview did not defer the ungrouped target');
 focusNode('b');
 if (!nodesDS.get('b') || edgesDS.map.size !== 1) throw Error('ungrouped result was stranded');
 resetOverview();
 toggleAllCommunities(false);
 """)
-    assert result["constructed"]["nodes"] == ["a"]
+    assert result["constructed"]["nodes"] == ["a", "b"]
+    assert len(result["constructed"]["edges"]) == 1
+    assert result["initial"]["checked"] and not result["initial"]["indeterminate"]
     assert result["final"]["nodes"] == ["a", "b"]
     assert result["final"]["checked"]
     assert result["focusChecks"] == [{"id": "b", "present": True}]

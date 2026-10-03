@@ -484,6 +484,11 @@ qmake, provider/service, combined adoption and safety criteria remain open in
 
 ## INC-QML-09 HTML export and overview proof
 
+This section records the prior initial-selection revision: startup used the
+ten-largest overview with Select All unchecked. Its test counts, source tree and
+artifact digest remain evidence for that revision, not proof of current AC04.
+Grouping/publication evidence for AC01–AC03 remains separately applicable.
+
 The executed broad selection comprises every `test_qml_*.py`, `test_qt_*.py`,
 `test_cpp_*.py`, `test_html_*.py` and `test_export*.py` file plus test_cli_export.py.
 The clean reviewed artifact is selected by GRAPHIFY_QML_TEST_WHEEL.
@@ -510,9 +515,51 @@ Those are the Graphify repository's counts, not a private analyzed application.
 Reviewed production tree: `b43624a4b933ca012e9430d90772cb72c0bc14d3`.
 Clean installed-wheel SHA256:
 `7dc82ac66a2d50880e537901f5f26e7ab7077b49cf6e9e1422ab3288fc5debc2`.
-The installed production CLI exports an accepted large unclustered graph into
-complete labeled communities, without changing its JSON. Its default datasets
-contain only the bounded overview; prior full source data remains available.
+The installed production CLI at that reviewed revision exports an accepted large
+unclustered graph into complete labeled communities, without changing its JSON.
+Its default datasets contain only the bounded overview; prior full source data
+remains available.
 Private artifacts are retained outside this public repository. Source/fixture,
 CLI, artifact and emitted-script evidence are distinct from browser visual,
 other platform or hosted PR validation, which is not claimed for this revision.
+
+## INC-QML-09 current selection policy
+
+Current REQ-QML-019-AC04 requires Select All checked at startup and every exported
+view node/edge active before layout. Large source graphs retain complete labeled
+community aggregation and its supported cap. Overview is an optional ten-largest
+subset with Select All unchecked; filters, search and all/none controls remain.
+No saved camera/filter persistence or canonical graph mutation is introduced.
+This checked-default criterion is **locally verified at the exporter/CLI and
+emitted-script boundaries**, including the reviewed installed artifact. The prior
+921-pass run and wheel digest above remain historical rather than establishing
+the changed startup behavior.
+
+The focused production command was:
+
+```powershell
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_html_initial_view.py tests/test_html_community_recovery.py tests/test_export.py tests/test_cli_export.py tests/test_qt_graph_html_payload.py --tb=short -rs
+```
+
+Result: **157 passed**, no skips, 43.03 seconds. The new expectations first failed
+with seven failed/one passed in 1.95 seconds; all eight initial-view cases pass
+after correction within this selection. The emitted production scripts exercise
+checked Select All, complete exported-view datasets before layout, optional
+Overview and selection controls while isolating the external vis network.
+
+With `GRAPHIFY_QML_TEST_WHEEL` selecting the reviewed artifact,
+`tests/test_qml_wheel_artifact.py` passes **three cases**, no skips, 4.85 seconds.
+Clean `uv build` and installation succeed. All 152 packaged Python payloads match
+the reviewed source and installed artifact byte for byte. The actual installed
+export has checked startup/all exported-view data verified through its emitted
+script harness, preserving canonical graph JSON. Ruff passes the two changed
+files, and targeted Pyright reports zero errors/warnings for the initial-view
+tests.
+
+Reviewed production tree: `bdbc86f2da6e199157c9504ee9fc5cdc86f3f186`.
+Installed-wheel SHA256:
+`bde373cac5c37657283df6cf2070c23d89703b77785e2d6f3041a75b0df9f964`.
+The HTML owner remains 763 physical lines and the initial-view test owner is 234;
+other recorded owner sizes are unchanged. Browser visual, other-platform and
+hosted proof remain separate unexecuted evidence for this revision. This result
+does not establish closure of separately investigated source or display cases.

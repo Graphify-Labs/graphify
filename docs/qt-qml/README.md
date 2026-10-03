@@ -73,11 +73,15 @@ service checks remain unexecuted.
 ## Community navigation
 
 HTML export recovers missing large-graph communities locally and fills names
-from structural hubs. The initial architecture overview shows the ten largest
-source communities; Select All is unchecked. Community controls and search load
-additional view data on demand, and Overview resets the opening selection.
-The full source graph remains available for scoped queries. Aggregated HTML
-states its source-detail omissions; camera/filter state is temporary.
+from structural hubs. Select All starts checked and displays all exported view
+data. Large source graphs still use the complete labeled community aggregate
+within the display cap. Overview optionally selects the ten largest source
+communities and unchecks Select All; filters, search, Select All and Select None
+remain available. The full source graph remains available for scoped queries.
+Aggregated HTML states its source-detail omissions; camera/filter state is
+temporary. Checked-default startup is locally verified through exporter/CLI,
+emitted-script and reviewed installed-artifact checks. Browser visual inspection,
+other-platform and hosted checks are not claimed for this revision.
 See [REQ-QML-019](../REQUIREMENTS.md#req-qml-019--readable-large-graph-html-export)
 and [INC-QML-09](PLAN.md#inc-qml-09--readable-large-graph-html-export) for acceptance
 and the exact local evidence boundaries.

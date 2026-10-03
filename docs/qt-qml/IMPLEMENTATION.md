@@ -356,14 +356,20 @@ local labels; stale partition names do not migrate to newly computed groups.
 Failed or skipped publication retains prior output and reports its true CLI
 outcome. The atomic writer and canonical graph owners remain unchanged.
 
-The viewer admits only the ten largest source communities before network
-construction. Deferred controls/search load data explicitly; Overview resets
-the selection, and Select All starts unchecked. All raw semantic metadata remains
-available. No saved-view state, model request or analyzed-project execution is
-introduced. Local Python/CLI and emitted-script tests are recorded in VALIDATION.
+The current viewer contract starts with Select All checked and admits all
+exported view nodes and edges before network construction. Large graphs retain
+their complete labeled aggregate and supported cap. Overview optionally selects
+the ten largest source communities with stable member-count/ID ordering and
+unchecks Select All. Filters, search and all/none controls retain their roles.
+All exported raw semantic metadata remains available. No saved-view state,
+model request or analyzed-project execution is introduced. AC01–AC04 have local
+exporter/CLI and emitted-script proof, with the reviewed installed artifact
+checked. The focused selection passes 157 cases without skips; built-artifact
+checks pass three cases. Prior selection-policy tests remain historical evidence
+in VALIDATION. Browser visual, other-platform and new hosted checks are unexecuted.
 
-New handwritten owners are html_communities.py (79 physical lines),
-test_html_community_recovery.py (293) and test_html_initial_view.py (205).
+Current handwritten owners measure html_communities.py (79 physical lines),
+test_html_community_recovery.py (293) and test_html_initial_view.py (234).
 Touched legacy ceilings are exporters/html.py (763) and cli.py (4966).
 Owner: presentation maintainer, coordinating CLI/export upstream ownership.
 The HTML module keeps one inline viewer state across layout, filtering, search
