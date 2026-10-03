@@ -205,6 +205,11 @@ def generate(
         f"- Token cost: {token_cost.get('input', 0):,} input · {token_cost.get('output', 0):,} output",
     ]
 
+    # Accepted source facts expose static resolution gaps independently of the
+    # edge-confidence summary; a valid graph cannot certify Qt runtime behavior.
+    from graphify.qt_coverage import coverage_lines
+    lines.extend(coverage_lines(G))
+
     if built_at_commit:
         lines += [
             "",

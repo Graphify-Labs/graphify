@@ -2,18 +2,19 @@
 
 The first table records baseline owners, with their current extension seams.
 [AUDIT.md](AUDIT.md) retains historical line evidence. The second table lists
-implemented QML-00 through QML-03 owners; later Qt owners remain explicitly planned.
+implemented QML/Qt owners through QML-06 and local QML-07 consumer hooks.
+Revision-specific verification remains in [VALIDATION.md](VALIDATION.md).
 
 | Existing owner | Role and extension considerations |
 | --- | --- |
-| `graphify/detect.py` | `classify_file`, `detect`, `detect_incremental`, code extensions and corpus boundaries; add exact metadata names consistently |
+| `graphify/detect.py` | `classify_file`, `detect`, `detect_incremental`, code extensions and corpus boundaries; exact Qt metadata names/suffixes use shared admission |
 | `graphify/extract.py` | Dispatch, language-family handling, `extract_cpp`, aggregate `extract`, ID/path normalization and resolution passes |
 | `graphify/extractors/` | Focused language extractors; preferred home for source-local QML and Qt metadata responsibilities |
 | `graphify/extractors/engine.py` | Shared AST traversal and generic C++ configuration; preserve normal C++ signatures, calls and macro normalization while a separate Qt overlay refers to these declaration IDs |
 | `graphify/resolver_registry.py` | Post-extraction cross-file resolver activation; Qt context and exact metadata filenames must activate resolution after QML-only, C++-only or metadata-only changes |
-| `graphify/cache.py` | Persistent generic per-file cache; QML/qmldir reads/writes are bypassed until fact/parser invalidation is implemented |
+| `graphify/cache.py` | Persistent generic per-file cache; Qt source/metadata and native syntax in an explicit Qt context bypass reads/writes under `qt_incremental` policy |
 | `graphify/watch.py` | Manual update/watch rebuild, watched-file admission, incremental extraction and persistence guards |
-| `graphify/build.py` | Graph merge/provenance and simple graph construction; relation loss must be addressed before rich Qt projection |
+| `graphify/build.py` | Graph merge/provenance and simple graph construction; independent source sites/endpoint-role facts retain distinct Qt mechanisms |
 | `graphify/paths.py` | `load_node_link_graph` restores contract-versioned QML edge orientation from serialized endpoints on undirected reload |
 | `graphify/__main__.py`, `graphify/cli.py` | CLI dispatch/facade and query/explain/path/affected implementation entry points |
 | `graphify/serve.py` | Optional MCP query and graph consumer contracts |
@@ -47,18 +48,14 @@ join failures for publication rejection. Generic JS/C++ owners are preserved;
 no extractor child imports the facade. [DESIGN.md](DESIGN.md) defines the current
 interfaces and [ERRORS.md](ERRORS.md) owns their diagnostic contracts.
 
-Qt C++ adapters, resource/build readers and `.qmltypes` parsing remain planned.
-Choose final names at the owning increment and update packaging/this reference
-when they become real. Existing generic C++ support does not implement those APIs.
-
-The proposed Qt C++ overlay owns source-local meta-object declarations, emissions,
+The Qt C++ overlay owns source-local meta-object declarations, emissions,
 connect/disconnect syntax, loader/access sites and literal context/initial-property
-facts. The proposed resolver owns scoped module/resource joins and
+facts. Its resolver owns scoped module/resource joins and
 engine/component/view-to-QML-object provenance. It must support native C++ events
 without requiring QML parsing. QML-008, QML-016 and QML-017 in
 [REQUIREMENTS.md](../REQUIREMENTS.md) define the separate exposure, event and reverse
 object-access acceptance contracts; none is implemented by the imported generic
-C++ extractor alone. [DESIGN.md](DESIGN.md) records proposed relation contexts and
+C++ extractor alone. [DESIGN.md](DESIGN.md) records implemented relation contexts and
 source ownership, including private-slot meta-object endpoints and compatible
 ordinary member-pointer receivers.
 
@@ -78,8 +75,17 @@ ordinary member-pointer receivers.
 | Post-canonical scratch orchestration | graphify/qt_qml_pipeline.py |
 | Cross-family endpoint proof guard | graphify/qt_qml_projection.py |
 
-Metadata reader/index modules ship as an internal dependency foundation. Their
-public discovery and production dispatch activation is recorded with QML-05.
+Metadata readers are publicly discovered/dispatched with QML-05. Their index
+consumes accepted facts without executing a build or expanding the corpus.
+
+| Metadata boundary | Implemented owner |
+| --- | --- |
+| Bounded original-byte source facts | `graphify/extractors/qml_project_read.py` |
+| Literal Qt module/source declarations | `graphify/extractors/qml_cmake.py`, `qml_cmake_syntax.py`, `qml_qmake.py` |
+| Generated tooling descriptions | `graphify/extractors/qml_types.py` |
+| Entity-safe resource declarations | `graphify/extractors/qml_resources.py` |
+| Exact project/member/resource lookup | `graphify/qt_project_index.py`, `qt_resource_index.py` |
+| Source/generated conflict evidence | `graphify/qt_generated_conflicts.py` |
 
 
 QML-05 public seams: detect.classify_file exact CMakeLists.txt and Qt suffixes;
@@ -94,3 +100,20 @@ ordered lookup roots and native cache policy to a per-run Qt pipeline. Worker
 three/four-tuples remain compatible; a fifth bool carries context policy.
 qt_analysis_state.inspect_qt_analysis and commit_qt_analysis separate inspection
 from successful publication. qt_incremental.plan_qt_refresh never expands corpus.
+
+QML-07 consumers use `qt_qml_search.search_attributes` for bounded public semantic
+fields; raw transport and opaque scope keys stay outside search text.
+`qt_affected.owned_ancestors` promotes current source-owned dependency sites to
+their enclosing members/components. `qt_relationship_views` and `qt_html` retain
+distinct event/access evidence in HTML; `qt_coverage` reports unresolved source
+sites separately from edge confidence. `qt_export` supplies lossless nested JSON
+properties and logical endpoints for Qt graph-database payloads. Existing CLI,
+MCP, report, HTML and export owners call these focused helpers.
+See [EXPORT_MATRIX.md](EXPORT_MATRIX.md) for exact reload/omission contracts.
+
+The generated assistant AST stage calls `inspect_qt_analysis` read-only, passes
+its ordered `import_roots` and `has_qt` to `extract`, then gates AST publication.
+It does not commit `.qt_analysis.json`; CLI/watch retain checkpoint ownership
+after successful graph/manifest publication. The generator's exact sanctioned
+line policy retains frozen baseline checks; its current 1,450-line legacy
+exception and extraction exit are in [PLATFORM_MATRIX.md](PLATFORM_MATRIX.md).

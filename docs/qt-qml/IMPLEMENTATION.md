@@ -230,3 +230,66 @@ version, last Qt deletion, unchanged reruns and forced malformed-input rejection
 Focused worker/native cache and root-boundary evidence is recorded in validation.
 
 QML-06 legacy ceilings: extract.py 9009, cli.py 4949, watch.py 2527. Owner Qt integration maintainer; focused policy/root/publication hooks only. Exit coordinated upstream facade/writer extraction. New handwritten modules/tests remain below300 lines.
+
+## QML-07
+
+Implemented the bounded static profile through real query/explain/path/affected,
+ordinary graph HTML, call-flow HTML, source coverage reports and optional HTTP/
+stdio MCP consumers. Exact graph IDs remain opaque endpoint identities. Search
+indexes curated decoded names/types/roles/module URIs and source mechanisms,
+preserving user attributes and rejecting malformed transport before decoding.
+CLI and MCP render identical selected source facts and path provenance.
+
+Affected propagation follows proven source ownership for versioned Qt/QML
+dependency occurrences. Canonical header declarations can own implementation
+sites only with their accepted definition file, callable identity and exact
+extracted endpoint/span evidence. Signal delivery stays separate from calls.
+Call-flow HTML preserves resolved and unresolved event/access evidence, and
+ordinary HTML preserves semantic payloads and safely renders literal values.
+Community aggregation states its omission of individual source facts.
+
+Canonical JSON retains both graph orientations; directed GraphML retains nested
+metadata in JSON properties. Qt Cypher and actual Neo4j/FalkorDB SDK boundaries
+preserve source direction, complete metadata and distinct relationship keys.
+Reserved transport-property collisions fail before file publication or SDK
+connection. Live database engine execution is unverified and is outside this
+static profile. Presentation-format omissions are documented in EXPORT_MATRIX.md.
+Report source-site status counts expose unresolved/error coverage independently
+of graph edge confidence; source analysis never claims runtime verification.
+
+Six authoritative assistant fragments and all 134 generated artifacts/expected
+outputs were updated together. Rendered AST examples use the trusted root,
+ordered import paths and native refresh policy, and gate before publication.
+The installed-artifact smoke now includes native QML_ELEMENT, literal CMake
+membership and QRC loader resolution without executing corpus or a Qt SDK.
+
+QML-07 review retains the seventeen requirements and sixty-eight acceptance IDs.
+Explicit real normal-QML-edit/update/watch and no-change parity closes an evidence
+gap in the existing QML-011 criteria. No additional top-level increment is needed
+for the agreed profile; computed/runtime/framework/plugin behavior remains an
+explicit unsupported boundary. Final hosted verification is recorded in
+VALIDATION.md and the delivery PR, not inferred from local tests or earlier runs.
+
+### QML-07 measured modularity exceptions
+
+Thin consumer hooks stay in their existing upstream owners; domain policy lives
+in focused qt_qml_search, qt_affected, qt_relationship_views, qt_html, qt_coverage,
+qt_export and path_provenance modules. New handwritten modules/tests are below
+300 physical lines. Current ceilings for modified legacy owners are:
+
+| Owner | Physical line ceiling | Reason |
+| --- | --- | --- |
+| graphify/affected.py | 329 | Source-owned occurrence dependency hook |
+| graphify/callflow_html.py | 2058 | Typed event table and call-list exclusion hooks |
+| graphify/cli.py | 4955 | Exact endpoint and shared path provenance hooks |
+| graphify/serve.py | 2725 | Shared search, deterministic facts and MCP path hooks |
+| graphify/export.py | 1369 | Atomic Qt-aware Cypher dispatch |
+| graphify/exporters/html.py | 690 | Qt payload/detail and aggregation omission hooks |
+| graphify/report.py | 397 | Source coverage view hook |
+| tools/skillgen/gen.py | 1450 | Exact sanctioned source predicates under existing frozen validators |
+
+Owner: Qt integration maintainer, coordinating generic consumer, presentation,
+export and generator boundaries with their upstream maintainers. Exit: an
+upstream-coordinated extraction of shared consumer/writer/validator interfaces,
+retaining existing regression characterization and frozen guidance contracts.
+This exception does not authorize arbitrary growth or mechanical file slicing.

@@ -4,6 +4,7 @@ from __future__ import annotations
 from graphify.analyze import _node_community_map
 import networkx as nx
 import re
+from graphify.qt_export import edge_properties, export_properties, has_qt_qml, logical_endpoints, preflight_qt_payload
 
 
 def _distinct_node_labels(G: nx.Graph) -> list[str]:
@@ -41,6 +42,9 @@ def push_to_neo4j(
         ) from e
 
     node_community = _node_community_map(communities) if communities else {}
+    qt_payload = has_qt_qml(G)
+    if qt_payload:
+        preflight_qt_payload(G)
 
     def _safe_rel(relation: str) -> str:
         return re.sub(r"[^A-Z0-9_]", "_", relation.upper().replace(" ", "_").replace("-", "_")) or "RELATED_TO"
@@ -66,10 +70,7 @@ def push_to_neo4j(
                 pass
 
         for node_id, data in G.nodes(data=True):
-            props = {
-                k: v for k, v in data.items()
-                if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
-            }
+            props = export_properties(data, preserve_metadata=qt_payload)
             props["id"] = node_id
             cid = node_community.get(node_id)
             if cid is not None:
@@ -84,16 +85,17 @@ def push_to_neo4j(
 
         for u, v, data in G.edges(data=True):
             rel = _safe_rel(data.get("relation", "RELATED_TO"))
-            props = {
-                k: v for k, v in data.items()
-                if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
-            }
+            src, tgt = logical_endpoints(u, v, data) if qt_payload else (u, v)
+            props = edge_properties(src, tgt, data, preserve_metadata=qt_payload)
+            identity = " {graphify_fact_key: $fact_key}" if qt_payload else ""
+            key_args = {"fact_key": props["graphify_fact_key"]} if qt_payload else {}
             session.run(
                 f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
-                f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
-                src=u,
-                tgt=v,
+                f"MERGE (a)-[r:{rel}{identity}]->(b) SET r += $props",
+                src=src,
+                tgt=tgt,
                 props=props,
+                **key_args,
             )
             edges_pushed += 1
 
@@ -138,6 +140,9 @@ def push_to_falkordb(
     from urllib.parse import urlparse
 
     node_community = _node_community_map(communities) if communities else {}
+    qt_payload = has_qt_qml(G)
+    if qt_payload:
+        preflight_qt_payload(G)
 
     def _safe_rel(relation: str) -> str:
         return re.sub(r"[^A-Z0-9_]", "_", relation.upper().replace(" ", "_").replace("-", "_")) or "RELATED_TO"
@@ -179,10 +184,7 @@ def push_to_falkordb(
             pass
 
     for node_id, data in G.nodes(data=True):
-        props = {
-            k: v for k, v in data.items()
-            if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
-        }
+        props = export_properties(data, preserve_metadata=qt_payload)
         props["id"] = node_id
         cid = node_community.get(node_id)
         if cid is not None:
@@ -196,14 +198,14 @@ def push_to_falkordb(
 
     for u, v, data in G.edges(data=True):
         rel = _safe_rel(data.get("relation", "RELATED_TO"))
-        props = {
-            k: v for k, v in data.items()
-            if isinstance(v, (str, int, float, bool)) and not k.startswith("_")
-        }
+        src, tgt = logical_endpoints(u, v, data) if qt_payload else (u, v)
+        props = edge_properties(src, tgt, data, preserve_metadata=qt_payload)
+        identity = " {graphify_fact_key: $fact_key}" if qt_payload else ""
+        key_args = {"fact_key": props["graphify_fact_key"]} if qt_payload else {}
         graph.query(
             f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
-            f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
-            {"src": u, "tgt": v, "props": props},
+            f"MERGE (a)-[r:{rel}{identity}]->(b) SET r += $props",
+            {"src": src, "tgt": tgt, "props": props, **key_args},
         )
         edges_pushed += 1
 

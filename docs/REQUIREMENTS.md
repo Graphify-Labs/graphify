@@ -4,14 +4,15 @@ This is the canonical product requirements document. Current entries cover the
 Qt/QML support extension. Add or update product requirements here with the
 behavioural change, preserving established identifiers and acceptance traceability.
 
-QML-001/003/004/005/006/007 are **Verified** for the documented Windows x64
-static profile. QML-010/012/013/014/015 are **Partially implemented**;
-QML-002/008/009/011 are Verified for the bounded literal source profile. QML-016/017 are now
-**Partially implemented** with native source exposure/events and literal object
-access and build-derived module/resource joins; final incremental and consumer gates remain open.
-See individual criterion evidence in [tests/TRACEABILITY.md](../tests/TRACEABILITY.md)
-and [IMPLEMENTATION.md](qt-qml/IMPLEMENTATION.md). Generic C++ and JavaScript remain
-baseline capabilities. Increment references identify delivery stages, not completion evidence.
+QML-001 through QML-017 are implemented for the documented bounded Qt 6/QML
+static source profile. Source, update, consumer and artifact acceptance evidence is
+assigned individually in [tests/TRACEABILITY.md](../tests/TRACEABILITY.md).
+Final QML-07 platform and delivery verification remains pending its reviewed-head
+PR workflows; completion is not inferred from earlier CI or a skipped test.
+See [IMPLEMENTATION.md](qt-qml/IMPLEMENTATION.md),
+[EXPORT_MATRIX.md](qt-qml/EXPORT_MATRIX.md) and
+[PLATFORM_MATRIX.md](qt-qml/PLATFORM_MATRIX.md) for concrete limits. Generic C++
+and JavaScript remain baseline capabilities. Increment numbers are delivery stages.
 
 | ID | Required behavior (summary) | Increments |
 | --- | --- | --- |

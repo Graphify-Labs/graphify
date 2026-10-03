@@ -1656,8 +1656,8 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
-        src_scored = _score_nodes(G, [t.lower() for t in source_label.split()])
-        tgt_scored = _score_nodes(G, [t.lower() for t in target_label.split()])
+        src_scored = [(1.0, source_label)] if source_label in G else _score_nodes(G, [t.lower() for t in source_label.split()])
+        tgt_scored = [(1.0, target_label)] if target_label in G else _score_nodes(G, [t.lower() for t in target_label.split()])
         if not src_scored:
             print(f"No node matching '{source_label}' found.", file=sys.stderr)
             sys.exit(1)
@@ -1724,6 +1724,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
         hops = len(path_nodes) - 1
         segments = []
+        path_edges = []
         from graphify.build import edge_datas
         for i in range(len(path_nodes) - 1):
             u, v = path_nodes[i], path_nodes[i + 1]
@@ -1743,6 +1744,7 @@ def dispatch_command(cmd: str) -> None:
                     for d in edge_datas(G, a, b):
                         (fwd if d.get("_src", a) == u else bwd).append(d)
             datas = fwd or bwd
+            path_edges.extend(datas)
             forward = bool(fwd)
             rels = sorted({d.get("relation") for d in datas if d.get("relation")})
             rel = "/".join(rels) if rels else "related"
@@ -1755,6 +1757,10 @@ def dispatch_command(cmd: str) -> None:
             else:
                 segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
         print(f"Shortest path ({hops} hops):\n  " + " ".join(segments))
+        from graphify.path_provenance import path_provenance
+        evidence = path_provenance([G.nodes[nid] for nid in path_nodes], path_edges)
+        if evidence:
+            print(evidence.lstrip("\n"))
         from graphify import querylog
         querylog.log_query(
             kind="path",

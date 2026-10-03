@@ -1,11 +1,12 @@
 # Qt and QML support foundation
 
-QML-00 through QML-04 now implement optional QML declarations/imports, scoped
+QML-00 through QML-06 implement optional QML declarations/imports, scoped
 bindings/aliases/JavaScript/handlers, native Qt C++ signals/connections/slots,
 registered C++ APIs and literal QML object access. See [implemented scope](IMPLEMENTATION.md)
 and [validation](VALIDATION.md) for individual gates and revision-specific evidence.
-CMake/qmake/resource/type-description public admission, configuration/update parity
-and final consumer/release evidence continue in QML-05, QML-06 and QML-07.
+Literal CMake/qmake/resource/type-description admission and configuration/update
+parity are implemented. QML-07 adds local consumer/export/assistant support;
+hosted proof for its final revision remains pending.
 
 The goal is to add reliable, local analysis of Qt/QML projects to Graphify and
 contribute that support upstream in small pull requests. Graphify keeps its
@@ -22,11 +23,13 @@ audited again before carrying these conclusions forward.
 | --- | --- |
 | [Audit](AUDIT.md) | Observed extension points, gaps, and risks in the baseline |
 | [Architecture](ARCHITECTURE.md) | Implemented boundaries, future design, support matrix, and ADRs |
-| [Design](DESIGN.md) | Source-fact/resolver contracts and explicitly planned Qt interfaces |
+| [Design](DESIGN.md) | Implemented source-fact, resolver, Qt and publication contracts |
 | [Requirements](../REQUIREMENTS.md) | Observable acceptance criteria and status |
 | [Increment plan](PLAN.md) | Ordered, independently reviewable feature increments |
 | [Development](DEVELOPMENT.md) | Environment, GitHub workflow, verification, and upstream delivery |
-| [Code reference](CODE_REFERENCE.md) | Implemented owners/APIs and proposed extension files |
+| [Code reference](CODE_REFERENCE.md) | Implemented owners/APIs and compatibility boundaries |
+| [Platform matrix](PLATFORM_MATRIX.md) | Revision-specific install and hosted evidence |
+| [Export matrix](EXPORT_MATRIX.md) | Semantic transports, presentation views and explicit omissions |
 | [Diagnostics](ERRORS.md) | Source, coverage, transport and publication failure contracts |
 | [Validation](VALIDATION.md) | Commands actually run and their results |
 | [Test traceability](../../tests/TRACEABILITY.md) | Individual acceptance evidence, ownership and remaining gaps |
@@ -38,8 +41,9 @@ this directory records the local Qt/QML extension and its remaining design.
 
 The agreed first target is **Qt 6 with both CMake and qmake metadata support**.
 Qt 6.5 and 6.8 are source fixture profiles, not claims of installed SDK/runtime
-equivalence. Executed host evidence is Windows x64/Python 3.10/3.12/3.13/3.14; Linux/macOS lanes
-pass for QML-03 on hosted CI. Newer Qt revisions need their own hosted proof.
+equivalence. The [platform matrix](PLATFORM_MATRIX.md) records successful QML-03
+through QML-06 hosted Linux/Windows/macOS lanes at their respective heads.
+QML-07 has local evidence; its final reviewed-head hosted proof remains open.
 Qt 5.15 is later, separately verified work.
 
 Qt signals, slots, emissions and `QObject::connect` are explicit requirements,
@@ -58,12 +62,10 @@ has a planned completion increment in traceability. Early graph/persistence/upda
 safety is required when a capability is enabled, before later optimization.
 
 
-QML-05 public metadata admission and module/resource bridge joins are implemented
-and locally verified. QML-06 refresh parity and QML-07 consumer/release proof
-remain open. Static literal metadata never invokes a build or runtime engine.
-
-
-QML-06 update/configuration parity is implemented. Use project-root updates for
-Qt scoped facts. GRAPHIFY_QML_IMPORT_ROOTS accepts an ordered relative JSON list
-for CLI/watch lookup within the accepted corpus. QML-07 consumer/release proof
-remains open; hosted evidence must match its final revision.
+Use project-root updates for Qt scoped facts. `GRAPHIFY_QML_IMPORT_ROOTS` accepts
+an ordered project-relative JSON list for lookup within the accepted corpus.
+CLI/watch and the generated assistant AST stage inspect this configuration;
+only the graph publication owner commits the analysis checkpoint. Static literal
+metadata never invokes a build or runtime engine. The [export matrix](EXPORT_MATRIX.md)
+states which consumers retain complete facts, which omit them, and which live
+service checks remain unexecuted.

@@ -251,6 +251,17 @@ def affected_nodes(
             )
             hits.append(hit)
             queue.append((source, current_depth + 1))
+            # Versioned source occurrences carry the dependency; their actual
+            # extracted owners are affected at the same dependency distance.
+            from graphify.qt_affected import owned_ancestors
+            for owner, ownership in owned_ancestors(graph, source):
+                if owner in seen:
+                    continue
+                seen.add(owner)
+                hits.append(AffectedHit(owner, current_depth + 1, relation,
+                    via_file=str(data.get("source_file") or "") or None,
+                    via_location=str(data.get("source_location") or "") or None))
+                queue.append((owner, current_depth + 1))
 
     return hits
 

@@ -1,11 +1,11 @@
 # Qt/QML implementation contracts
 
-Status: QML-00 through QML-03 have local implementation. The source-fact, module,
-scope and expression contracts below describe that implementation; Qt C++ events,
-bidirectional bridges, build/resource/type-description metadata and optimized
-caching remain proposed. See [ARCHITECTURE.md](ARCHITECTURE.md) for ADRs and
-[traceability](../../tests/TRACEABILITY.md) for individual evidence. Executed
-host validation is Windows; other platform lanes are unexecuted.
+Status: QML-00 through QML-06 are implemented for the bounded static profile.
+Local QML-07 adds consumer, export and assistant contracts; its final hosted-head
+proof remains pending. [PLATFORM_MATRIX.md](PLATFORM_MATRIX.md) records historical
+hosted runs through QML-06. [ARCHITECTURE.md](ARCHITECTURE.md) owns ADRs and
+[traceability](../../tests/TRACEABILITY.md) owns individual acceptance evidence.
+Dependency-directed cache optimization and Qt runtime equivalence remain deferred.
 
 ## Ownership and dependency direction
 
@@ -86,23 +86,26 @@ Implemented entry points:
 | --- | --- |
 | `extract_qml(path, *, root=None)` | One accepted QML source to declarations/expression facts, edges and diagnostics; no cross-file lookup |
 | `extract_qmldir(path, *, root=None)` | One accepted literal manifest to independently owned module/export/import/dependency records |
-| `build_qml_index(nodes, edges, *, root, import_roots=None)` | Per-run `QmlProjectIndex`; source paths and declaration/provider tables only |
+| `build_qml_index(nodes, edges, *, root, import_roots=None, native_index=None, project_index=None)` | Per-run `QmlProjectIndex`; accepted source paths and declaration/provider tables only |
 | `resolve_type(file, component_key, name)` | Qualified/document-local type lookup; `Resolution(status, target_id, reason, evidence, candidates)` |
 | `resolve_member(file, component_key, object_scope_key, name, *, lexical_names=())` | Component IDs, own/root/known inherited members and typed continuations; no global labels |
 | `follow_member(target_id, parts)` | Continue a proven object or typed-property target; alias chasing belongs to `RelationshipLookup` |
 | `module_script(...)`, `directory_script(...)` | Script namespaces use a separate role from object types |
-| `resolve_qml_project(per_file, all_nodes, all_edges, *, root, import_roots=None)` | Append fresh source-owned import/type sites and resolved edges; do not modify borrowed context |
+| `resolve_qml_project(per_file, all_nodes, all_edges, *, root, import_roots=None, native_index=None, project_index=None)` | Append fresh source-owned import/type sites and resolved edges; do not modify borrowed context |
 | `collect_qml_scripts(paths, per_file, *, root)` | Add QML-owned overlays only for admitted, referenced scripts and admitted literal dependencies |
-| `resolve_qml_relationships(per_file, all_nodes, all_edges, *, root)` | Update fresh read/call/alias/handler status, append compatible inferred target edges |
+| `resolve_qml_relationships(per_file, all_nodes, all_edges, *, root, import_roots=None, native_index=None, project_index=None)` | Update fresh read/call/alias/handler status, append compatible inferred target edges |
 
-Import roots default to the explicit scan root. Ordered root-relative roots are
-accepted at the index API; ambient SDK/environment paths and remote imports are
-excluded. Current layouts include unversioned providers and explicitly requested
+Import roots default to the explicit scan root. CLI/watch and generated assistant
+AST guidance inspect the ordered project-relative `GRAPHIFY_QML_IMPORT_ROOTS`
+JSON list and pass it explicitly through `extract` to the index. Direct API callers
+pass `qml_import_roots`; they do not inherit that environment setting implicitly.
+Ambient SDK paths and remote imports are excluded. Current layouts include unversioned providers and explicitly requested
 `.major`/`.major.minor` directories. An observed available manifest version precedes
 selection of the latest compatible type export. URI aliases stay document-local;
 `qmldir import` adds visibility while `depends` does not. Internal/singleton checks,
 missing versions and duplicate eligible targets retain explicit reasons. `prefer`
-resource redirection waits for the resource index.
+resource redirection remains unsupported by the `qmldir` resolver. The separate
+Qt resource index resolves accepted literal QRC/CMake URL mappings.
 
 `qmldir` is capped at 1 MiB/10,000 meaningful records. Lookup caps include 32 module,
 inheritance or alias depth, 32 parts per member-continuation API call, 256-character
@@ -171,16 +174,17 @@ indexes, not just node IDs and edge endpoints.
 QML-008 supplies the registered C++ surface to QML. QML-016 adds native C++
 signal/slot semantics independently of the QML parser. QML-017 follows C++
 consumers of QML objects and literal context/initial-property providers back to
-their scoped declarations. These are proposed contracts, not existing support.
+their scoped declarations. These are implemented bounded source contracts,
+with acceptance evidence and remaining consumer/release gates in traceability.
 
 Retain source-owned emission, connection, disconnect, load, lookup and member
 access sites. Existing `contains`, `uses` and `references` relations project
 their endpoints; `metadata.qt` retains endpoint roles, signatures, conditions,
-declared connection flags, source spans and `bridge_direction`. Proposed context
-names include `qt_signal_emit`, `qt_connect_signal`, `qt_connect_receiver`,
-`qt_disconnect`, `qt_cpp_qml_load`, `qt_cpp_qml_find_child`,
-`qt_cpp_qml_property_read`, `qt_cpp_qml_property_write`, `qt_cpp_qml_invoke`,
-`qt_context_exposure` and `qt_initial_property`.
+declared connection flags, source spans and `bridge_direction`. The implemented
+collectors/resolvers retain their exact per-role contexts; `qt_signal_emit`,
+`qt_connect_signal` and `qt_cpp_qml_invoke` are examples. Source-owned sites and
+endpoint-role nodes distinguish connect, disconnect, load, lookup, property
+read/write and provider exposure through the existing simple graph.
 
 An emission refers to a declared signal. A connection refers to its sender signal
 and receiver callable/signal, with a separate context object for functors when
@@ -219,11 +223,12 @@ consumer output; changed QML APIs must invalidate unchanged C++ consumers.
 
 ## Incremental lifecycle and failures
 
-Current QML/qmldir extraction bypasses AST cache reads and writes. QML/metadata edits,
-and JS edits where the corpus contains QML, refresh accepted code conservatively
-before update/watch joins. Generic JS extraction remains independently cached;
-QML overlays are constructed for the current analysis. Dependency-aware Qt cache
-identity/invalidation is planned for QML-06.
+QML and Qt metadata extraction bypass AST cache reads and writes. A Qt analysis
+context also bypasses native syntax cache; plain C++ retains portable syntax
+caching. Generic JS retains its existing cache-bypass rules, and QML overlays are
+constructed for the current run. QML-06 refreshes the accepted code corpus after
+provider/script/source changes and parser/import/admission-configuration changes.
+Dependency-directed reuse is a later optimization, not a completion prerequisite.
 
 `require_complete_qml` rejects failed, partial or omitted source contributions and
 script/join failure markers before graph reconciliation and publication, including
@@ -235,17 +240,17 @@ as parser/write failure.
 
 File-content hashes alone cannot validate links dependent on module manifests,
 C++ registrations, resource aliases, import configuration, or parser upgrades.
-Track provider/consumer dependencies and invalidate affected resolution when
-providers change, including changes with no modified QML file.
+The analysis checkpoint covers installed parser/package versions, Qt fact/policy
+versions, ordered roots, accepted paths, ignore files and caller exclusions.
+Changed providers/configuration trigger fresh resolution even without a QML edit.
 
-Until dependency-aware updates are verified, a conservative Qt project resolution
-rebuild is acceptable if bounded and documented. Never cache an empty result from
-an unavailable parser as successful analysis. Implement and test the conservative
-fallback before enabling its update/watch path; otherwise reject that unsupported
-operation before writing graph/cache state. A warning does not make stale output
-acceptable. Preserve prior valid persisted state when extraction fails under the
-existing write guards, and distinguish deletion from failure before using an
-intentional destructive-update path.
+The implemented fallback rebuilds already accepted inputs and removes stale
+derived facts after deletion, rename, duplicate-provider or ignore changes.
+It never rereads deleted/ignored inputs or expands configured lookup roots.
+An unavailable parser cannot create a successful empty cache entry. The checkpoint
+is committed only after graph/manifest publication; failed analysis preserves
+prior graph/manifest/checkpoint bytes. Unsupported scoped subfolder rebases reject
+before publication. Dependency-directed optimization must preserve these contracts.
 
 ## Verification boundaries
 
@@ -298,3 +303,31 @@ frozen checkpoint. CLI/watch own successful publication and checkpoint commit.
 Each parallel worker receives native-cache bypass explicitly; no mutable global
 root or policy is introduced. Borrowed context facts remain read-only. Native Qt
 scoped facts reject subfolder path-only rebasing; callers update the project root.
+
+## QML-07 consumer and assistant contracts
+
+Search projects bounded decoded semantic fields under `graphify_qt_qml` rather
+than assuming nested metadata is searchable. Query/explain/path and installed MCP
+consume the same source-scoped persisted facts; logical endpoint direction survives
+default undirected JSON reload. Affected traversal promotes source-owned sites
+through current source-owned containment, respecting the selected dependency
+relation. Normally owner, site and containment fact share a source file. A
+canonical C++ header declaration may own an implementation site only when its
+accepted `definition_file` matches that site's file, the declaration is callable,
+and extracted Qt containment proves the exact owner ID, child endpoint and
+original span. A foreign file or unproven definition cannot establish ownership.
+Emission/connection evidence remains distinct from ordinary direct calls.
+
+HTML exposes source/event/access evidence and uncertainty; coverage counts
+unresolved sites separately from resolved-edge confidence. JSON is the canonical
+semantic backup. Other formats have individual retention/omission contracts in
+[EXPORT_MATRIX.md](EXPORT_MATRIX.md), including undirected GraphML direction loss
+and presentation-only Canvas/Obsidian/SVG limits. Driver payload tests do not prove
+live database insertion/readback or stale-record cleanup.
+
+Generated assistant extraction reads the trusted root and inspects configuration
+without writing state. It passes `qml_import_roots` and `refresh_native` explicitly,
+then calls the production integrity gate before AST JSON publication. CLI/watch
+alone own the final analysis checkpoint. Authoritative fragments and frozen
+generator guards are validated together; artifacts are regenerated rather than
+edited independently. Hosted proof must be rerun for the final QML-07 head.

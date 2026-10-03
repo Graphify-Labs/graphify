@@ -341,7 +341,8 @@ def _flatten_attr_text(val, parts: list[str]) -> None:
 
 def _node_attributes_text(data: dict) -> tuple[str, str]:
     """The node's `attributes` key-value pairs normalized and tokenized for search."""
-    attrs = data.get("attributes")
+    from graphify.qt_qml_search import search_attributes
+    attrs = search_attributes(data)
     if not isinstance(attrs, dict) or not attrs:
         return "", ""
     parts: list[str] = []
@@ -749,6 +750,9 @@ def _pick_scored_endpoint(G: nx.Graph, scored: list[tuple[float, str]], query: s
 
     `scored` must be non-empty (both callers return early on no match).
     """
+    # A public node ID is an explicit identity request, not a fuzzy label query.
+    if query in G:
+        return query
     qtokens = set(_search_tokens(query))
     if not qtokens:
         return scored[0][1]
@@ -1173,6 +1177,7 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             f"{attrs_suffix}]"
         )
         lines.append(line)
+    render_edges = []
     for u, v in edges:
         if u in nodes and v in nodes:
             raw = G[u][v]
@@ -1191,23 +1196,30 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             # would KeyError on an unknown id (#2080 review).
             if {src, tgt} != {u, v}:
                 src, tgt = u, v
-            context = d.get("context")
-            context_suffix = f" context={sanitize_label(str(context))}" if context else ""
-            # The relation SITE (call/import/reference line in the source's
-            # file), not a def line — so "who calls X" cites a clickable call
-            # location, not the caller's def (#BUG1).
-            _loc = str(d.get("source_location") or "")
-            at_suffix = (
-                f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
-                if _loc else ""
-            )
-            line = (
-                f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
-                f"--{sanitize_label(str(d.get('relation', '')))} "
-                f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
-                f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
-            )
-            lines.append(line)
+            render_edges.append((src, tgt, d))
+    # Traversal completion walks a set of visited nodes. Render source facts in
+    # stable semantic order so CLI and an independent MCP process agree.
+    render_edges.sort(key=lambda item: tuple(str(value or "") for value in (
+        item[0], item[1], *(item[2].get(key) for key in (
+            "relation", "context", "confidence", "source_file", "source_location")))))
+    for src, tgt, d in render_edges:
+        context = d.get("context")
+        context_suffix = f" context={sanitize_label(str(context))}" if context else ""
+        # The relation SITE (call/import/reference line in the source's
+        # file), not a def line — so "who calls X" cites a clickable call
+        # location, not the caller's def (#BUG1).
+        _loc = str(d.get("source_location") or "")
+        at_suffix = (
+            f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
+            if _loc else ""
+        )
+        line = (
+            f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
+            f"--{sanitize_label(str(d.get('relation', '')))} "
+            f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
+            f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
+        )
+        lines.append(line)
     output = "\n".join(lines)
     if len(output) > char_budget:
         cut_at = output[:char_budget].rfind("\n")
@@ -1734,6 +1746,7 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     if hops > max_hops:
         return f"Path exceeds max_hops={max_hops} ({hops} hops found)."
     segments = []
+    path_edges = []
     for i in range(len(path_nodes) - 1):
         u, v = path_nodes[i], path_nodes[i + 1]
         # Report the actual stored relation(s), never a fabricated `calls`;
@@ -1747,6 +1760,7 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
                 for d in edge_datas(G, a, b):
                     (fwd if d.get("_src", a) == u else bwd).append(d)
         datas = fwd or bwd
+        path_edges.extend(datas)
         forward = bool(fwd)
         rels = sorted({d.get("relation") for d in datas if d.get("relation")})
         rel = "/".join(rels) if rels else "related"
@@ -1759,7 +1773,9 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
         else:
             segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
     prefix = ("\n".join(warnings) + "\n") if warnings else ""
-    return prefix + f"Shortest path ({hops} hops):\n  " + " ".join(segments)
+    from graphify.path_provenance import path_provenance
+    sources = path_provenance([G.nodes[node_id] for node_id in path_nodes], path_edges)
+    return prefix + f"Shortest path ({hops} hops):\n  " + " ".join(segments) + sources
 
 
 def _filter_blank_stdin() -> None:

@@ -21,7 +21,11 @@ def _role(site, target, role, result, additions, edges):
                                            "span": metadata["span"], "target_id": target,
                                            "status": result.status, "bridge_direction": "cpp_to_cpp"})}}
     additions.append(node)
-    edges.append(qt_edge(site, node["id"], "contains", "qt_connection_endpoint", role=role))
+    # Endpoint role ownership follows the observed connection syntax. The
+    # independently resolved declaration edge below remains inferred.
+    ownership = qt_edge(site, node["id"], "contains", "qt_connection_endpoint", role=role)
+    ownership["confidence"] = "EXTRACTED"
+    edges.append(ownership)
     edges.append(qt_edge(node, target, "references", "qt_" + site.get("metadata", {}).get("qt", {}).get("kind", "connect") + "_" + role,
                          role=role, bridge_direction="cpp_to_cpp"))
 

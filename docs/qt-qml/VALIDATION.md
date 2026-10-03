@@ -285,3 +285,50 @@ Qt policy/state/project/resolver typing reports0errors0warnings; whole Ruff pass
 The last broad regression1001 passed28skipped, with corrected helper invocation
 and the two established Windows deleted-current-directory failures. Their hosted
 Linux proof remains required; no test or assertion was skipped to mask them.
+
+## QML-07 local final source proof
+
+Windows Python 3.12.14, actual optional QML/MCP environment: all Qt/QML source
+contracts **613 passed, 6 skipped** in 48.69s before the final explicit normal-edit
+parity additions. Skips: two host symlink-permission cases, three artifact cases
+without GRAPHIFY_QML_TEST_WHEEL in that source command, and one absent optional
+SVG renderer. The actual HTTP and separate-process stdio protocol cases ran;
+they are not direct tool-function substitutions. The artifact cases run separately
+against the reviewed wheel. A Starlette/httpx deprecation warning remains visible.
+
+Final affected/header-definition/HTML/report/query/HTTP/stdio consumer subset:
+27 passed without skips. Export and SDK boundary regressions:83 passed with one
+absent optional SVG skip. Search/query/serve regressions:187 passed with one
+optional jieba skip. Generic affected/CLI path/query/explain/call-flow regressions:
+63 passed. Generic extraction CLI/extraction/cache hooks:336 passed with16
+documented baseline optional-language skips. Whole Ruff and lockcheck (210
+packages) pass; focused new helper/test typing has zero errors and warnings.
+Whole-repository baseline Pyright remains634 errors/4warnings; it is not claimed
+green. The established Windows deleted-current-directory baseline defects remain
+in the historical broad run; no assertion or skip was changed to conceal them.
+
+Skill/guidance/platform tests:91 passed. Each generator validator ran separately:
+--check (134 artifacts), --audit-coverage, --schema-singleton,
+--monolith-roundtrip and --always-on-roundtrip all pass. New handwritten Python
+files are below300 lines; measured legacy hooks are recorded in IMPLEMENTATION.md.
+All exact traceability test references resolve; the seventeen requirement IDs
+and sixty-eight acceptance IDs are retained. Public documentation/local-link,
+private marker and credential-shaped text review is part of final delivery.
+
+Final normal-edit parity, reviewed-source wheel digest, clean isolated optional/
+core smoke, graph refresh and exact-head hosted CI remain separately recorded
+gates. Earlier QML-03/04/05/06 passes do not verify the QML-07 revision.
+
+The final real incremental parity additions pass all6 cases without skips. Both
+actual manual update CLI and locked watch driver compare normal QML edits and
+no-change updates with cold/warm clean extraction/build/JSON. Accepted named IDs
+and unrelated Python facts survive. QML member/objectName changes leave C++ bytes
+unchanged while removing4 obsolete property/invoke/lookup links and acquiring4
+correct source-backed links; local shadowing removes context exposure. Complete
+public facts and logical endpoint direction match clean output. Only derived
+indexing/scoring fields are normalized; metadata, spans and confidence remain.
+
+The source graph refresh succeeded:19890 nodes,41131 edges,1069 communities.
+It is navigation data, not acceptance proof. Generated graphs/caches/reports and
+local coverage artifacts are excluded from the public change. Final privacy/link/
+stable-ID and new Python footprint review passes.

@@ -1,7 +1,7 @@
 # Qt and QML feature increment plan
 
 Status: QML-00 through QML-06 complete for their documented static source profiles.
-QML-07 remains open; their remaining gates are recorded below. Executed checks are recorded in
+QML-07 implementation is delivered locally; final parity, installed-artifact and reviewed-head hosted gates remain open. Executed checks are recorded in
 [VALIDATION.md](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md).
 Commands marked proposed are future verification suggestions, not pass claims.
 
@@ -776,8 +776,11 @@ Qt/QML behavior: `graphify/cli.py`, `graphify/affected.py`, `graphify/analyze.py
 `graphify/export.py`, `graphify/exporters/`, `graphify/callflow_html.py`,
 `graphify/serve.py`, and `graphify/report.py`. Use source fragments under
 `tools/skillgen/fragments/` for generated assistant guidance; never hand-edit the
-generated skill bodies. Add `tests/test_qml_consumers.py` and
-`tests/test_qml_end_to_end.py`; expand existing format, query and MCP tests.
+generated skill bodies. Delivered consumer tests are the focused
+`tests/test_qt_*consumers.py`, `test_qt_graph_html_payload.py`,
+`test_qt_export_matrix.py`, `test_qt_source_coverage_report.py` and
+`test_qt_qml_search.py` suites, with actual HTTP/stdio MCP tests and real
+incremental regression fixtures. Their exact assignments are in TRACEABILITY.md.
 
 **Acceptance cases.** A public mixed Qt/C++/QML/JavaScript fixture can be indexed,
 queried, traversed by affected/path tools, exported and served via the offline MCP
@@ -871,9 +874,9 @@ upstream semantic layer. A feature is ready for wider rollout when its advertise
 matrix has evidence; remaining unsupported runtime behavior is part of the public
 contract, not a reason to fabricate relationships.
 
-The next execution checkpoint is QML-05 public metadata admission and bridge
-integration, followed by QML-06 parity and QML-07 consumer/release evidence.
-QML-00 through QML-04 evidence is recorded in IMPLEMENTATION.md and VALIDATION.md.
+The next execution checkpoint is QML-07 final acceptance and reviewed-head hosted
+proof. QML-00 through QML-06 are complete; their evidence is recorded in
+IMPLEMENTATION.md and VALIDATION.md.
 
 
 ## QML-04 review and continuation
@@ -923,3 +926,27 @@ All remaining consumer/export/MCP, guidance and fresh hosted proof obligations
 fit QML-07a/07b. No additional top-level increment is currently required. A bounded
 static analysis profile is the completion claim; runtime-generated behavior stays
 explicitly unsupported rather than acquiring guessed links.
+
+
+## QML-07 implementation review
+
+Real consumer review required three corrections within QML-07a: propagate affected
+Qt occurrence dependencies to their proven owners (including canonical C++ header/
+implementation pairs), retain source/event evidence in HTML and path output, and
+make decoded semantic search bounded and identical through CLI and optional MCP.
+Database transports retain exact metadata and logical endpoints; reserved field
+collisions reject before file publication or driver creation. Export omissions
+and report source-coverage limits are explicit in EXPORT_MATRIX.md.
+
+QML-07b updates the authoritative assistant fragments and all generated artifacts,
+executes real rendered publication safety/configuration examples, and adds installed
+native CMake/resource bridge smoke. The final regression review adds explicit real
+normal-QML-edit/manual/watch parity and no-change preservation evidence for the
+existing QML-011 criteria. All work fits the existing QML-07a/07b packages.
+
+No QML-08 is needed for the agreed initial static profile. QML-07 closes only after
+the remaining gates pass. Runtime-created registrations/objects, computed lookup,
+framework/plugin internals, arbitrary build execution, legacy Qt profiles and
+additional platform architectures would require separate agreed increments.
+Completion here prepares reviewable fork PRs; upstream maintainer acceptance and
+an actual upstream merge remain separate delivery actions.

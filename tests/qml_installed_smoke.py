@@ -17,6 +17,54 @@ def offline_guard(event, _args):
         raise RuntimeError("Analysis attempted a network/process operation")
 
 
+def native_module_smoke(root):
+    """Installed facade joins accepted build membership and literal resources."""
+    from graphify.build import build_from_json
+    from graphify.extract import extract
+    from graphify.extractors.qml_facts import qml_metadata
+    from graphify.extractors.qt_cpp_facts import qt_metadata
+
+    root.mkdir()
+    files = {
+        "backend.h": 'class Backend : public QObject { Q_OBJECT QML_ELEMENT '
+                     'Q_PROPERTY(int count READ count) public: int count() { return 1; } '
+                     'Q_INVOKABLE int next(int value) { return value; } };',
+        "Main.qml": 'import Installed.Tools 1.0\nBackend { property int copied: count; '
+                    'function run() { next(1) } }',
+        "loader.cpp": 'void load(){ QQmlApplicationEngine engine; '
+                      'engine.load(QUrl("qrc:/ui/Main.qml")); }',
+        "CMakeLists.txt": 'qt_add_qml_module(installed URI Installed.Tools VERSION 1.0 '
+                          'QML_FILES Main.qml SOURCES backend.h loader.cpp)',
+        "resources.qrc": '<RCC><qresource prefix="/ui"><file alias="Main.qml">'
+                         'Main.qml</file></qresource></RCC>',
+    }
+    paths = []
+    for name, source in files.items():
+        path = root / name
+        path.write_text(source, encoding="utf-8")
+        paths.append(path)
+    result = extract(paths, root=root, cache_root=root, parallel=False)
+    assert not result["failed_sources"] and not result["qml_failures"]
+    graph = build_from_json(result, root=root, directed=True)
+    call = next(edge for edge in result["edges"] if edge.get("context") == "qml_js_call")
+    proof = qt_metadata(call)["native_endpoint"]
+    assert proof["canonical_target_id"] == call["target"]
+    assert graph.nodes[call["target"]]["source_file"] == "backend.h"
+    assert graph.nodes[call["target"]]["label"].endswith(".next()")
+    assert graph.has_edge(call["source"], call["target"])
+    assert qt_metadata(graph.nodes[proof["provider_id"]])["kind"] == "registration"
+    modules = [graph.nodes[item] for item in proof["evidence"]
+               if qml_metadata(graph.nodes[item]).get("kind") == "qt_module"]
+    assert len(modules) == 1 and modules[0]["source_file"] == "CMakeLists.txt"
+    assert qml_metadata(modules[0])["uri"] == "Installed.Tools"
+    loader = next(node for node in result["nodes"] if qt_metadata(node).get("kind") == "qml_load")
+    component = next(node for node in result["nodes"] if qml_metadata(node).get("kind") == "component")
+    assert qt_metadata(loader)["status"] == "resolved"
+    assert qt_metadata(loader)["target_id"] == component["id"]
+    edge = graph.edges[loader["id"], component["id"]]
+    assert edge["context"] == "qt_cpp_qml_load" and edge["source_file"] == "loader.cpp"
+
+
 def main():
     sys.addaudithook(offline_guard)
     from graphify.extract import extract, extract_python
@@ -69,6 +117,7 @@ def main():
             assert graph.number_of_nodes() == len(batch["nodes"])
             assert {"qml_binding_read", "qml_script_call", "qml_signal_subscription"} <= {
                 edge.get("context") for edge in batch["edges"]}
+            native_module_smoke(root / "native-profile")
     print(json.dumps({"python": sys.version.split()[0], "graphify": importlib.metadata.version("graphifyy"),
                       "tree_sitter": importlib.metadata.version("tree-sitter"),
                       "mode": "core-only" if "--core-only" in sys.argv else "qml", "status": "passed"}))
