@@ -10,6 +10,7 @@ import os
 import platform
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -118,6 +119,10 @@ from graphify.install import (  # noqa: E402,F401
     _OPENCODE_PLUGIN_JS,
     _OPENCODE_PLUGIN_PATH,
     _OPENCODE_CONFIG_PATH,
+    _OPENCODE_PLUGIN_HEADER,
+    _drop_opencode_config_entry,
+    _opencode_config_names_plugin,
+    _opencode_plugin_is_v1_only,
     _PLATFORM_CONFIG,
     _skill_lock,
 )
@@ -378,6 +383,113 @@ def _refresh_one_skill(name: str, skill_dst: Path, installed: str) -> None:
     for line in captured.getvalue().splitlines():
         if str(backup) in line:
             print(line, file=sys.stderr)
+
+
+def _opencode_loads_current_plugin() -> bool:
+    """True when the ``opencode`` on PATH can load the plugin graphify writes now.
+
+    That plugin is a default export, which OpenCode reads from 1.3.4 on. Older
+    OpenCode 1 releases call every export as a function and fail on it, while
+    the plugin they already have keeps working, so it must be left alone.
+    Unknown (no ``opencode`` on PATH, no version in its output) counts as no:
+    the refresh is a convenience, ``graphify opencode install`` still rewrites.
+    """
+    exe = shutil.which("opencode")
+    if exe is None:
+        return False
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    found = re.search(r"(\d+)\.(\d+)\.(\d+)", out)
+    return found is not None and tuple(int(part) for part in found.groups()) >= (1, 3, 4)
+
+
+def _refresh_v1_opencode_plugins() -> None:
+    """Rewrite OpenCode plugins an older release left behind (#3554, #3732).
+
+    Releases up to 0.9.74 wrote a plugin only OpenCode 1 can load, and an
+    opencode.json entry OpenCode 2 fails on. Upgrading OpenCode to 2 turns both
+    into a load error on every start, and upgrading graphify touches neither.
+    So on a CLI run, replace such a plugin with the current one and drop the
+    entry.
+
+    Two directories are checked: the working directory, where the install
+    writes the plugin, and the home directory, where it lands when the install
+    was run from there (OpenCode then loads it for every project below home).
+    Only a plugin graphify wrote is touched. The entry is dropped beside a
+    current plugin too: a checkout or a failed write can bring it back alone.
+
+    An old plugin is replaced only when the installed OpenCode can load the new
+    one (see _opencode_loads_current_plugin), and under the directory's lock,
+    without waiting: when another graphify process is already at it, this one
+    leaves it to them. ``GRAPHIFY_NO_AUTO_REFRESH=1`` opts out, as it does for
+    skills.
+    """
+    if os.environ.get("GRAPHIFY_NO_AUTO_REFRESH", "").strip().lower() in ("1", "true", "yes"):
+        return
+    try:
+        directories = dict.fromkeys(d.resolve() for d in (Path.cwd(), Path.home()))
+    except (OSError, RuntimeError):
+        return
+    loadable: "bool | None" = None  # asked once, and only when an old plugin is found
+    for directory in directories:
+        plugin_file = directory / _OPENCODE_PLUGIN_PATH
+
+        def pending() -> "bool | None":
+            """True for an old plugin, False for a stale entry only, None for neither."""
+            try:
+                body = plugin_file.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                return None  # no plugin here
+            if not body.startswith(_OPENCODE_PLUGIN_HEADER):
+                return None  # not graphify's
+            if _opencode_plugin_is_v1_only(body):
+                return True
+            return False if _opencode_config_names_plugin(directory) else None
+
+        stale = pending()
+        if stale is None:
+            continue
+        if stale:
+            if loadable is None:
+                loadable = _opencode_loads_current_plugin()
+            if not loadable:
+                continue
+        with _skill_lock(plugin_file.parent, wait=False) as owned:
+            # Look again under the lock: a process that held it may have finished the job.
+            stale = pending() if owned else None
+            if stale is None:
+                continue
+            captured = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(captured):
+                    if stale:
+                        _install_opencode_plugin(directory)
+                        dropped = False
+                    else:
+                        dropped = _drop_opencode_config_entry(directory)
+            except Exception as exc:
+                # A refresh must never take the user's actual command down with it.
+                print(f"graphify: could not refresh {plugin_file}: {exc}", file=sys.stderr)
+                continue
+        if stale:
+            print(
+                f"graphify: refreshed {plugin_file} so OpenCode 2 can load it; "
+                f"set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
+                file=sys.stderr,
+            )
+            # Of the install's own lines, only the one asking for a manual edit matters here.
+            for line in captured.getvalue().splitlines():
+                if "by hand" in line:
+                    print(line, file=sys.stderr)
+        elif dropped:
+            print(
+                f"graphify: removed the stale graphify entry from "
+                f"{directory / _OPENCODE_CONFIG_PATH}; set GRAPHIFY_NO_AUTO_REFRESH=1 to disable",
+                file=sys.stderr,
+            )
+
 
 
 
@@ -724,6 +836,7 @@ def _run_cli() -> None:
         # refresh them first, so the check below only fires for copies the
         # refresh could not or must not touch (#1805).
         _refresh_stale_skills()
+        _refresh_v1_opencode_plugins()
         # Resolve each platform's real user-scope destination so per-platform
         # overrides (gemini, opencode, devin, antigravity, amp) check the dir
         # they actually install into, not the bare cfg['skill_dst'].
