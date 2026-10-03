@@ -30,6 +30,7 @@ from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazaru
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest
 from graphify.extractors.r import extract_r
 from graphify.extractors.qml import extract_qml
+from graphify.extractors.qml_metadata import extract_qmldir
 from graphify.extractors.razor import extract_razor
 from graphify.extractors.rust import extract_rust
 from graphify.extractors.sln import extract_sln
@@ -42,6 +43,7 @@ from graphify.extractors.zig import extract_zig
 
 LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "qml": extract_qml,
+    "qmldir": extract_qmldir,
     "apex": extract_apex,
     "bash": extract_bash,
     "blade": extract_blade,

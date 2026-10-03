@@ -4,7 +4,7 @@ This is the canonical product requirements document. Current entries cover the
 Qt/QML support extension. Add or update product requirements here with the
 behavioural change, preserving established identifiers and acceptance traceability.
 
-QML-003 is **Verified** for the documented declaration subset. QML-001 and
+QML-003/004/005 are **Verified** for the documented static profile. QML-001 and
 QML-002/010/011/012/013/014/015 are **Partially implemented**. Others are **Planned**.
 See criterion evidence in [IMPLEMENTATION.md](qt-qml/IMPLEMENTATION.md).
 Generic C++ and JavaScript behavior remains baseline capability.

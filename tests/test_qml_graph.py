@@ -11,7 +11,7 @@ from graphify.extract import _extract_single_file, extract
 from graphify.extractors.qml import extract_qml
 from graphify.paths import load_node_link_graph
 from graphify.validate import validate_extraction
-from tests.qml_test_helpers import by_kind, canonical, qml, write_qml
+from tests.qml_test_helpers import DECLARATION_KINDS, by_kind, canonical, qml, write_qml
 
 
 def test_qml010_ac02_directed_build_and_reload_keep_all_ownership_and_qml_metadata(tmp_path):
@@ -39,9 +39,10 @@ def test_qml003_ac02_same_stem_cpp_js_and_qml_do_not_merge(tmp_path):
     js_path.write_text("export function run() { return 2; }\n", encoding="utf-8")
     direct = extract_qml(qml_path, root=tmp_path)
     batch = extract([qml_path, cpp_path, js_path], cache_root=tmp_path / "cache", root=tmp_path, parallel=False)
-    qml_nodes = [node for node in batch["nodes"] if node.get("metadata", {}).get("qml")]
-    assert len(qml_nodes) == len(direct["nodes"])
-    assert {node["id"] for node in qml_nodes} == {node["id"] for node in direct["nodes"]}
+    qml_nodes = [node for node in batch["nodes"] if node.get("metadata", {}).get("qml", {}).get("kind") in DECLARATION_KINDS]
+    direct_nodes = [node for node in direct["nodes"] if qml(node)["kind"] in DECLARATION_KINDS]
+    assert len(qml_nodes) == len(direct_nodes)
+    assert {node["id"]: qml(node) for node in qml_nodes} == {node["id"]: qml(node) for node in direct_nodes}
     assert {node["source_file"] for node in batch["nodes"]} >= {"Panel.qml", "Panel.cpp", "Panel.js"}
     assert validate_extraction(batch) == []
 

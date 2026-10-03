@@ -23,7 +23,10 @@ def load_parser():
 
 def parse_source(path: Path):
     try:
-        source = path.read_bytes()
+        if path.stat().st_size > 5_000_000:
+            raise QmlInputError("QML_LIMIT", "QML input exceeds 5 MB")
+        with path.open("rb") as stream:
+            source = stream.read(5_000_001)
         source.decode("utf-8")
     except (OSError, UnicodeError) as exc:
         raise QmlInputError("QML_READ", "Cannot read UTF-8 QML source") from exc

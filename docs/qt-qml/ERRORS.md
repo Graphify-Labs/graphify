@@ -15,6 +15,10 @@ relative/bounded; messages omit source content and dependency exception details.
 | QML_GRAPH_PRESERVED | error | Failed/omitted/partial QML | Correct failure and retry; force cannot bypass |
 | QML_ROOT_MISMATCH | error | Unsafe scoped-ID subfolder rebase | Update absolute project root |
 | QML_ROOT | error | Source is outside explicit root | Use an accepted source within the scan root |
+| QML_RESOLUTION_FAILED | error | Project join raises | Correct join failure, retry; graph publication is rejected |
+| QML-META-001 | error | Malformed/unsupported qmldir directive | Correct directive to supported literal subset |
+| QML-META-002 | error | Metadata read/root/size failure | Restore readable in-root metadata |
+| QML-RESOLVE-001 | coverage | Unavailable/ambiguous/dynamic lookup site | Supply supported corpus evidence; no guessed edge is emitted |
 
 Failures emit no authoritative declarations/edges. CLI/watch reject before graph
 reconciliation, reports/HTML, root marker and manifest updates. Prior bytes remain

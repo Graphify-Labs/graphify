@@ -10,6 +10,11 @@ from graphify.extractors.qml_facts import FactBuilder
 
 def extract_qml(path: Path, *, root: Path | None = None) -> dict:
     try:
+        if root is not None:
+            try:
+                path.resolve().relative_to(root.resolve())
+            except ValueError as exc:
+                raise QmlInputError("QML_ROOT", "QML source is outside the explicit scan root") from exc
         source, program, empty = parse_source(path)
         facts = FactBuilder(path, root, source)
         Declarations(facts).extract(program)

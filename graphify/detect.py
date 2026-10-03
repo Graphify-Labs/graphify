@@ -522,6 +522,8 @@ def classify_file(path: Path) -> FileType | None:
     # document path — otherwise apm.yml (a .yml "document") would be LLM-extracted
     # and a package would split into duplicate file-anchored nodes (#1377).
     from graphify.manifest_ingest import is_package_manifest_path
+    if path.name == "qmldir":
+        return FileType.CODE
     if is_package_manifest_path(path):
         return FileType.CODE
     # Compound extensions must be checked before simple suffix lookup

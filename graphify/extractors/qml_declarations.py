@@ -1,7 +1,7 @@
 """Lexical QML declaration scopes; grouped properties are not instances."""
 from __future__ import annotations
 
-from graphify.extractors.qml_facts import FactBuilder, field, make_qml_id, text
+from graphify.extractors.qml_facts import FactBuilder, field, make_scope_key, text
 
 
 class Declarations:
@@ -30,7 +30,7 @@ class Declarations:
                           major=int(major) if major else None, minor=int(minor) if minor else None)
             elif syntax.type == "ui_object_definition":
                 name = facts.path.name.removesuffix(".ui.qml").removesuffix(".qml")
-                component_key = make_qml_id(facts.relative_file, "scope", name)
+                component_key = make_scope_key(facts.relative_file, name)
                 component = facts.add("component", name, syntax, file,
                                       component_key=component_key, type_name=field(syntax, "type_name", self.source),
                                       singleton=singleton)
@@ -50,7 +50,7 @@ class Declarations:
         group = bool(type_name) and type_name.split(".")[0][:1].islower()
         kind = "property_group" if group else "object"
         anchor = f"{component_key}:{parent_scope}:{kind}:{object_id or type_name + ':' + str(ordinal)}"
-        scope = make_qml_id(facts.relative_file, "scope", anchor)
+        scope = make_scope_key(facts.relative_file, anchor)
         node = facts.add(kind, type_name if group else object_id or type_name, syntax, owner,
                          semantic_key=anchor, component_key=component_key,
                          object_scope_key=scope, parent_scope_key=parent_scope,
@@ -61,7 +61,7 @@ class Declarations:
                 self.object(child, node, component_key, scope, index)
             elif child.type == "ui_inline_component":
                 name = field(child, "name", self.source)
-                nested_key = make_qml_id(facts.relative_file, "scope", f"{component_key}:inline:{name}")
+                nested_key = make_scope_key(facts.relative_file, f"{component_key}:inline:{name}")
                 inline = facts.add("inline_component", name, child, node,
                                    semantic_key=f"{component_key}:inline:{name}", component_key=nested_key,
                                    enclosing_component_key=component_key, parent_scope_key=scope)

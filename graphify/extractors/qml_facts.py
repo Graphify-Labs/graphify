@@ -17,6 +17,12 @@ def make_qml_id(relative_file: str, kind: str, semantic_key: str) -> str:
     return make_id("qml", relative_file, kind, semantic_key, digest)
 
 
+def make_scope_key(relative_file: str, semantic_key: str) -> str:
+    """Fixed-width scopes avoid multiplying parent ID length with nesting."""
+    identity = json.dumps([relative_file, semantic_key], ensure_ascii=False)
+    return hashlib.sha256(identity.encode()).hexdigest()
+
+
 def span(node) -> dict:
     return {
         "start_byte": node.start_byte, "end_byte": node.end_byte,
@@ -76,7 +82,7 @@ class FactBuilder:
         identity = make_qml_id(self.relative_file, kind, key)
         meta = encode_metadata({"kind": kind, "raw_name": name,
                                 "raw_type": "", "span": span(syntax_node), **values})
-        node = {"id": identity, "label": name or kind, "file_type": "code",
+        node = {"id": identity, "label": name or kind, "file_type": "code", "_origin": "ast",
                 "type": {"file": "file", "component": "class",
                          "inline_component": "class", "function": "function",
                          "property": "property"}.get(kind, "concept"),
@@ -91,6 +97,7 @@ class FactBuilder:
 
     def edge(self, source: str, target: str, relation: str, syntax_node, **values):
         self.edges.append({"source": source, "target": target, "relation": relation,
+                           "_src": source, "_tgt": target,
                            "confidence": "EXTRACTED", "source_file": self.relative_file,
                            "source_location": f"L{syntax_node.start_point.row + 1}-L{syntax_node.end_point.row + 1}",
                            "metadata": {"qml": encode_metadata({"span": span(syntax_node), **values})}})

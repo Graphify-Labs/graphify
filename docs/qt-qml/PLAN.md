@@ -413,6 +413,11 @@ the complete declared syntax/declaration/span corpus, including embedded JS form
 
 ## QML-02 — Modules and component scope
 
+**Status: complete for the documented static profile.** Review adds **QML-02a** semantic
+qmldir, **QML-02b** immutable module/member indexes and **QML-02c** transport,
+producer provenance and provider-only refresh parity. These follow the existing
+letter-suffix numbering; all must pass to close QML-02. No new top-level increment.
+
 **Scope and code paths.** Add `graphify/qml_resolution.py` and focused
 `graphify/extractors/qml_metadata.py`, with registry integration through
 `graphify/resolver_registry.py` and `graphify/extract.py`. Introduce shared

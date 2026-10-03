@@ -423,6 +423,12 @@ and distinct relationship mechanisms through remapping, cache, incremental
 reconstruction, and export. Do not solve graph edge collapse by silently replacing
 one relationship with another. Follow the documented graph compatibility decision.
 
+Verify new fact contracts through direct extractor, facade, graph assembly,
+sanitation, export and reload. Producer provenance must survive every entry point;
+a facade-only marker is insufficient. Keep literal lookup values distinct from
+escaped display values, test metadata length/list bounds, and reject corrupted
+transport explicitly. Scope keys must have bounded size as nesting grows.
+
 ## Incremental refactoring discipline
 
 Before extracting a responsibility, record current/proposed owners, inputs/outputs,
