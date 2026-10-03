@@ -135,3 +135,12 @@ visibility. The unchanged numeric token remains subject to parser validation.
 native refresh relevance and Qt policy fingerprint. Graph/manifest/analysis-state
 publication remains in the existing CLI/watch owners. The migration keeps those
 owners and interfaces intact and introduces no alternate cache or graph writer.
+
+## HTML community-view interfaces
+
+`graphify/exporters/html_communities.py::prepare_html_communities` owns complete
+large-view partition validation and local grouping/name recovery. The existing
+HTML exporter owns aggregate projection, deferred selection and atomic output.
+The CLI resolves an explicit graph's analysis beside that graph and reports
+skipped/failed view publication as unsuccessful. These are presentation owners;
+source extraction, graph identities and analysis persistence remain unchanged.

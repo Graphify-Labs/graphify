@@ -346,3 +346,29 @@ implementation; direct parser success does not prove production admission. Local
 native-slice proof and an accepted scoped installed result do not establish these
 additional capabilities. New reviewed-head hosted lanes have not been executed
 for this source change; prior INC-QML-07 proof remains revision-specific.
+
+## INC-QML-09 community presentation
+
+HTML community recovery validates complete partition membership and uses the
+existing clustering and hub-labeling interfaces on an export-local view. A
+custom graph's analysis is loaded beside that graph. Missing names become usable
+local labels; stale partition names do not migrate to newly computed groups.
+Failed or skipped publication retains prior output and reports its true CLI
+outcome. The atomic writer and canonical graph owners remain unchanged.
+
+The viewer admits only the ten largest source communities before network
+construction. Deferred controls/search load data explicitly; Overview resets
+the selection, and Select All starts unchecked. All raw semantic metadata remains
+available. No saved-view state, model request or analyzed-project execution is
+introduced. Local Python/CLI and emitted-script tests are recorded in VALIDATION.
+
+New handwritten owners are html_communities.py (79 physical lines),
+test_html_community_recovery.py (293) and test_html_initial_view.py (205).
+Touched legacy ceilings are exporters/html.py (763) and cli.py (4966).
+Owner: presentation maintainer, coordinating CLI/export upstream ownership.
+The HTML module keeps one inline viewer state across layout, filtering, search
+and node details; the CLI retains only adjacent-path and outcome hooks.
+Exit: a characterized, upstream-coordinated extraction of the cohesive viewer
+state into its own frontend resource, preserving emitted payload, controls,
+escaping and packaging. This exception permits the measured cohesive correction,
+not arbitrary growth or speculative layers.

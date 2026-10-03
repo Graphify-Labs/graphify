@@ -69,3 +69,15 @@ only the graph publication owner commits the analysis checkpoint. Static literal
 metadata never invokes a build or runtime engine. The [export matrix](EXPORT_MATRIX.md)
 states which consumers retain complete facts, which omit them, and which live
 service checks remain unexecuted.
+
+## Community navigation
+
+HTML export recovers missing large-graph communities locally and fills names
+from structural hubs. The initial architecture overview shows the ten largest
+source communities; Select All is unchecked. Community controls and search load
+additional view data on demand, and Overview resets the opening selection.
+The full source graph remains available for scoped queries. Aggregated HTML
+states its source-detail omissions; camera/filter state is temporary.
+See [REQ-QML-019](../REQUIREMENTS.md#req-qml-019--readable-large-graph-html-export)
+and [INC-QML-09](PLAN.md#inc-qml-09--readable-large-graph-html-export) for acceptance
+and the exact local evidence boundaries.

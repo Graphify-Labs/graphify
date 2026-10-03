@@ -481,3 +481,38 @@ classifier requirement, public positive/negative fixtures and production
 installed-update proof are needed before admitting a correction. Remaining
 qmake, provider/service, combined adoption and safety criteria remain open in
 [traceability](../../tests/TRACEABILITY.md#planned-adoption-criteria).
+
+## INC-QML-09 HTML export and overview proof
+
+The executed broad selection comprises every `test_qml_*.py`, `test_qt_*.py`,
+`test_cpp_*.py`, `test_html_*.py` and `test_export*.py` file plus test_cli_export.py.
+The clean reviewed artifact is selected by GRAPHIFY_QML_TEST_WHEEL.
+
+```powershell
+$testFiles = (Get-ChildItem tests/test_qml_*.py, tests/test_qt_*.py, tests/test_cpp_*.py, tests/test_html_*.py, tests/test_export*.py).FullName
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q @testFiles tests/test_cli_export.py --tb=short -rs
+```
+
+Result: **921 passed / 7 skipped / 1 warning**, 113.38 seconds. Four skips require
+an unavailable C++ preprocessor, two require symlink permission and one requires
+the optional SVG extra. The warning is the existing Starlette deprecation.
+The focused recovery/export/CLI/Qt payload selection passed 149 with no skips;
+initial-view/legacy/Qt written-script selection passed 83 with no skips.
+The three initial recovery cases failed before their production correction.
+The new Node harness executes emitted selection/search/filter/reset code while
+isolating the external vis network; it is not a browser layout/appearance proof.
+
+Ruff passes the five changed code/test owners; targeted Pyright passes the grouping
+owner and initial-view tests. The lock check resolves 210 packages. Required AST
+navigation refresh succeeds with 20090 nodes, 41767 edges and 1041 communities.
+Those are the Graphify repository's counts, not a private analyzed application.
+
+Reviewed production tree: `b43624a4b933ca012e9430d90772cb72c0bc14d3`.
+Clean installed-wheel SHA256:
+`7dc82ac66a2d50880e537901f5f26e7ab7077b49cf6e9e1422ab3288fc5debc2`.
+The installed production CLI exports an accepted large unclustered graph into
+complete labeled communities, without changing its JSON. Its default datasets
+contain only the bounded overview; prior full source data remains available.
+Private artifacts are retained outside this public repository. Source/fixture,
+CLI, artifact and emitted-script evidence are distinct from browser visual,
+other platform or hosted PR validation, which is not claimed for this revision.

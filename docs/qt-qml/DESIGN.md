@@ -364,3 +364,23 @@ AST artifacts under upstream cache ownership; compatible current cache data,
 semantic cache and prior accepted graph/manifest/state remain protected on a
 failed candidate. The graph writer still commits analysis state after successful
 publication. See the exact regression/evidence inventory in IMPLEMENTATION.md.
+
+## HTML community-view ownership
+
+`exporters/html_communities.py` validates complete, disjoint membership for a
+large aggregate view. Missing or invalid presentation grouping is recovered on
+an export-local graph copy through the existing clustering interface. It fills
+missing labels through the existing hub labeler and discards labels tied to a
+replaced partition. Small full-node views preserve their existing membership.
+Neither grouping recovery nor HTML export changes canonical source facts,
+analysis sidecars or graph JSON. The atomic writer retains the previous HTML
+until successful replacement; CLI status reflects actual publication.
+
+The HTML viewer opens an architecture overview of the ten largest available
+source communities, with deterministic membership-count/ID ordering. Only the
+selected nodes and their edges enter the network datasets before layout.
+Community controls, search and Select All expose additional data on demand;
+Overview restores the initial selection. Full semantic payloads remain in the
+artifact. Community names describe structural hubs; canonical architecture and
+design documents retain intentional component ownership. View selections,
+camera and search are temporary browser state, with no saved-view persistence.

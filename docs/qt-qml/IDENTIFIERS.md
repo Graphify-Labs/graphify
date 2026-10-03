@@ -21,15 +21,16 @@ Current internal links use current headings; existing heading links retain their
 legacy targets. Navigation follows
 [GitHub custom-anchor syntax](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#custom-anchors).
 
-Future requirements continue with `REQ-QML-019`; future top-level increments
-continue with `INC-QML-09`. These counters describe different concerns and need
+Future requirements continue with `REQ-QML-020`; future top-level increments
+continue with `INC-QML-10`. These counters describe different concerns and need
 not advance together. Extend this catalog when retiring or migrating an ID;
 never transfer an alias to unrelated behavior. Document identifiers do not change
 runtime schemas or parser contracts.
 
-The eighteen requirements comprise seventy-four criteria. The initial seventeen
+The nineteen requirements comprise seventy-eight criteria. The initial seventeen
 requirements/sixty-eight criteria and six `REQ-QML-018` adoption criteria retain
-separate support/evidence profiles. Implementation and verification status belong
+separate support/evidence profiles. REQ-QML-019 adds four HTML-view criteria.
+Implementation and verification status belong
 to [requirements](../REQUIREMENTS.md) and [traceability](../../tests/TRACEABILITY.md).
 This catalog establishes identity, not implementation or verification.
 

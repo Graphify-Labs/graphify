@@ -88,3 +88,19 @@ defaults, malformed source and unsupported ordinary call/value contexts retain
 `QT_CPP_SYNTAX` where applicable. Recovery changes only a bounded parse view,
 never source files or graph-write protection. See DESIGN.md for ownership and
 IMPLEMENTATION.md for executed positive/rejection and original-byte regressions.
+
+## HTML view diagnostics
+
+These CLI errors belong to HTML view preparation/publication; they do not describe
+Qt source parsing or an application's runtime import state. Messages retain safe
+stage/recovery guidance and omit raw backend exceptions or source content.
+
+| Code | Severity / owning boundary | Outcome and recovery |
+| --- | --- | --- |
+| `HTML_GROUPING_INVALID` | Error / HTML grouping preparation | Saved membership cannot be recovered as a complete partition, or local clustering fails. Prior HTML/graph are retained. Inspect grouping/backend configuration and retry with accepted graph data. |
+| `HTML_VIEW_UNAVAILABLE` | Error / HTML aggregate projection | A bounded useful community view is unavailable or explicitly skipped. Prior HTML/graph are retained. Inspect the partition or choose a focused graph. |
+| `HTML_VIEW_FAILED` | Error / HTML preparation or publication | The prepared view exceeds the supported aggregate limit, or output replacement fails. Prior HTML/graph are retained. Use a focused graph for oversized views; check output access for publication failure, then retry. |
+
+The CLI exits nonzero for these outcomes and cannot announce a new written file.
+Successful retry uses the normal atomic writer. Clustering labels and source
+payloads stay local; HTML aggregation identifies omitted occurrence-level facts.

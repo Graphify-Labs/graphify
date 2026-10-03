@@ -14,6 +14,12 @@ whole-project adoption remain planned or unverified. Its six REQ-QML-018 criteri
 the original INC-QML-00–INC-QML-07 and sixty-eight-criterion completion remains bounded by
 its recorded evidence. See the [INC-QML-08 work packages](#inc-qml-08--installed-project-adoption-hardening).
 
+INC-QML-09 addresses readable large-graph HTML export separately from source
+adoption. Its REQ-QML-019 changes are locally verified at the exporter/CLI and
+emitted-script boundaries, with the reviewed installed artifact checked. Browser
+visual inspection, other-platform lanes and hosted proof are not claimed for
+this revision; these checks do not close remaining INC-QML-08 adoption gaps.
+
 This plan extends Graphify's existing Python pipeline and contribution workflow.
 It does not propose a Qt application rewrite. Read [REQUIREMENTS.md](../REQUIREMENTS.md),
 [ARCHITECTURE.md](ARCHITECTURE.md), [DESIGN.md](DESIGN.md), [AUDIT.md](AUDIT.md),
@@ -1120,5 +1126,81 @@ stale syntax/epoch retirement, failure retention and ordinary-C++ warm-cache
 preservation for this native slice. The combined adoption safety gates still need
 their metadata/provider/service and installed-update evidence.
 The remaining qmake/provider/service and combined installed-profile work belongs
-to INC-QML-08a/INC-QML-08b/INC-QML-08c. No additional top-level increment is required
-at this checkpoint.
+to INC-QML-08a/INC-QML-08b/INC-QML-08c. INC-QML-09 independently corrects HTML view
+preparation; it does not expand or close the adoption scope.
+
+## INC-QML-09 — Readable large-graph HTML export
+
+**Status: Locally verified; installed artifact checked.** Owner: HTML export
+maintainer, coordinated with the Qt/QML integration maintainer. Acceptance:
+REQ-QML-019-AC01–AC04. Prerequisite: the accepted canonical graph and existing
+HTML/community/export contracts; this increment does not depend on unfinished
+INC-QML-08 metadata or provider work.
+
+The reported artifact can render successfully while presenting an unreadable
+full graph. The default large-graph aggregate path also cannot construct a useful
+view from missing communities, and an incomplete partition can discard members.
+Missing labels leave the legend empty. Correct the owning view-preparation path
+rather than increasing the node limit to force a full graph into the browser.
+
+Keep the correction HTML-specific. Validate that a supplied large-graph partition
+covers every accepted graph node once with no foreign/duplicate members. For a
+missing or invalid partition, invoke the existing local clustering interface on
+a view copy; preserve the canonical graph and analysis files. Preserve applicable
+supplied labels, fill absent labels through the existing hub-based labeling, and
+discard labels attached to a replaced partition. The aggregate artifact must
+show consistent group labels/counts and state which source details it omits.
+No API, build hook or corpus code runs during this preparation.
+
+Start with a bounded architecture overview: the ten largest available source
+communities by source-member count, descending, with ascending community-ID order
+for ties. This is navigation through inferred graph structure, not an assertion
+that communities are authoritative architectural modules. Select All starts
+unchecked. Construct visualization datasets only for the default visible groups
+before network layout; retaining every group in a hidden dataset does not meet
+the delayed-loading contract. Keep the complete exported metadata in RAW, reveal
+other groups through explicit community/search/Select All actions, and let
+Overview restore the default subset and unchecked Select All state. View choices
+remain temporary; saved camera/filter persistence is outside this increment.
+
+The CLI honors actual written/skipped/failed results and selects analysis metadata
+next to an explicitly chosen graph. Unrecoverable grouping reports
+`HTML_GROUPING_INVALID`, a skipped/unusable aggregate reports
+`HTML_VIEW_UNAVAILABLE`, and publication failure reports `HTML_VIEW_FAILED`.
+Each returns a nonzero outcome, retains prior valid files and omits the
+written-file success message. Many isolated groups can still exceed the supported
+aggregate limit; retain a bounded failure with focused-graph guidance rather than
+inventing group membership or bypassing the cap. Corrected retry and
+unchanged-input repetition are acceptance gates.
+
+Use public minimal graphs to cover above-limit exports with missing/empty,
+partial, duplicate and foreign-node partitions; supplied/missing/stale labels;
+direct exporter and actual CLI entry points; graph immutability; many isolated
+groups; and forced clustering/publication/skip failure. Exercise emitted HTML payload and script with
+the existing DOM-harness style and preserve unrelated-language, escaping and
+Qt/QML source-detail regressions. Initial-view tests must verify member-count
+ordering and tie stability, an unchecked Select All, dataset contents before
+layout, deferred community/search/all reveal, Overview reset and preservation of
+the complete RAW payload. Record executed harness coverage accurately;
+it does not establish a browser visit. A browser inspection that cannot run is
+an explicit gap rather than inferred from static payload or screenshot context.
+
+Exit only when every REQ-QML-019 criterion has exact production regression
+evidence, the complete diff preserves graph/persistence contracts, affected
+documentation and traceability agree, and modularity/compatibility checks pass.
+New installed-artifact or hosted evidence must identify the reviewed source,
+artifact and checkout revisions; previous INC-QML-07 lanes do not verify this
+consumer correction. No speculative dependency-loader or unrelated renderer
+enhancement is part of this increment.
+
+REQ-QML-019 retains its first three acceptance IDs and adds AC04, bringing the
+canonical catalog to nineteen requirements and seventy-eight criteria. The
+navigation change remains in INC-QML-09; no extra increment is required at this
+checkpoint. The unfinished qmake, provider and header-classification work remains
+within the separately recorded INC-QML-08 adoption scope.
+
+The INC-QML-09 review retains the remaining INC-QML-08 source/metadata/provider
+work. No additional top-level increment is needed for the bounded HTML grouping
+and overview contract. Personal saved views are separate future work; current
+camera, filters and search remain temporary. Executed exporter/script evidence
+belongs to traceability and validation, with new browser/platform runs explicit.

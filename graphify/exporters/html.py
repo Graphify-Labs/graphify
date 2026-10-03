@@ -64,6 +64,8 @@ def _html_styles() -> str:
   #legend-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 4px 0; }
   #legend-controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #aaa; user-select: none; }
   #legend-controls label:hover { color: #e0e0e0; }
+  #overview-reset { background: #252540; color: #ccc; border: 1px solid #3a3a5e; border-radius: 4px; padding: 4px 6px; cursor: pointer; }
+  #view-caption { font-size: 11px; color: #aaa; line-height: 1.5; margin-bottom: 10px; }
   .legend-cb, #select-all-cb { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border: 1.5px solid #3a3a5e; border-radius: 3px; background: #0f0f1a; cursor: pointer; position: relative; flex-shrink: 0; }
   .legend-cb:checked, #select-all-cb:checked { background: #4E79A7; border-color: #4E79A7; }
   .legend-cb:checked::after, #select-all-cb:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
@@ -149,8 +151,19 @@ function esc(s) {{
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }}
 
-// Build vis datasets
-const nodesDS = new vis.DataSet(RAW_NODES.map((n, i) => ({{
+// The overview is presentation state, not a claim about architectural modules.
+// Deferred communities stay searchable without entering vis physics at startup.
+const overviewCommunities = new Set(LEGEND.slice()
+  .sort((a, b) => (b.count - a.count) || (a.cid - b.cid))
+  .slice(0, 10).map(c => c.cid));
+const knownCommunities = new Set(LEGEND.map(c => c.cid));
+let selectedCommunities = new Set(overviewCommunities);
+let overviewMode = true;
+let showUngrouped = !LEGEND.length;
+const legendControls = new Map();
+
+const VIEW_NODES = RAW_NODES.map((n, i) => ({{
+  ...n,
   id: n.id, label: n.label, color: n.color, size: n.size,
   font: n.font, title: n.title,
   // Fermat/golden-angle spiral seed positions (#3699): spreading nodes out
@@ -164,9 +177,10 @@ const nodesDS = new vis.DataSet(RAW_NODES.map((n, i) => ({{
   member_count: n.member_count,
   qt_qml: n.qt_qml,
   source_location: n.source_location,
-}})));
+}}));
 
-const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
+const VIEW_EDGES = RAW_EDGES.map((e, i) => ({{
+  ...e,
   id: i, from: e.from, to: e.to,
   label: '',
   title: e.title,
@@ -174,7 +188,21 @@ const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
   width: e.width,
   color: e.color,
   arrows: {{ to: {{ enabled: true, scaleFactor: 0.5 }} }},
-}})));
+}}));
+
+function visibleRecords() {{
+  const nodes = VIEW_NODES.filter(n => LEGEND.length
+    ? selectedCommunities.has(n.community) || (showUngrouped && !knownCommunities.has(n.community))
+    : showUngrouped);
+  const ids = new Set(nodes.map(n => n.id));
+  return {{ nodes, edges: VIEW_EDGES.filter(e => ids.has(e.from) && ids.has(e.to)) }};
+}}
+
+const initialRecords = visibleRecords();
+const nodesDS = new vis.DataSet(initialRecords.nodes);
+const edgesDS = new vis.DataSet(initialRecords.edges);
+let loadedNodeIds = new Set(initialRecords.nodes.map(n => n.id));
+let loadedEdgeIds = new Set(initialRecords.edges.map(e => e.id));
 
 const container = document.getElementById('graph');
 const network = new vis.Network(container, {{ nodes: nodesDS, edges: edgesDS }}, {{
@@ -244,8 +272,17 @@ function showInfo(nodeId) {{
   document.getElementById('info-content').innerHTML = html;
 }}
 
-function focusNode(nodeId) {{
-  network.focus(nodeId, {{ scale: 1.4, animation: true }});
+function focusNode(nodeId, scale = 1.4) {{
+  // A search result can belong to a deferred community. Add it before focus.
+  if (!loadedNodeIds.has(nodeId)) {{
+    const node = VIEW_NODES.find(n => n.id === nodeId);
+    if (!node) return;
+    if (knownCommunities.has(node.community)) selectedCommunities.add(node.community);
+    else showUngrouped = true;
+    overviewMode = false;
+    refreshView();
+  }}
+  network.focus(nodeId, {{ scale, animation: true }});
   network.selectNodes([nodeId]);
   showInfo(nodeId);
 }}
@@ -304,9 +341,7 @@ searchInput.addEventListener('input', () => {{
     el.style.borderLeft = `3px solid ${{n.color.background}}`;
     el.style.paddingLeft = '8px';
     el.onclick = () => {{
-      network.focus(n.id, {{ scale: 1.5, animation: true }});
-      network.selectNodes([n.id]);
-      showInfo(n.id);
+      focusNode(n.id, 1.5);
       searchResults.style.display = 'none';
       searchInput.value = '';
     }};
@@ -318,30 +353,62 @@ document.addEventListener('click', e => {{
     searchResults.style.display = 'none';
 }});
 
-const hiddenCommunities = new Set();
-
 const selectAllCb = document.getElementById('select-all-cb');
 
 function updateSelectAllState() {{
   const total = LEGEND.length;
-  const hidden = hiddenCommunities.size;
-  selectAllCb.checked = hidden === 0;
-  selectAllCb.indeterminate = hidden > 0 && hidden < total;
+  const selected = selectedCommunities.size;
+  // Select All expresses an explicit full-view request, never initial overview.
+  selectAllCb.checked = !overviewMode && (total ? selected === total : showUngrouped);
+  selectAllCb.indeterminate = !overviewMode && selected > 0 && selected < total;
+  legendControls.forEach(({{ item, cb }}, cid) => {{
+    cb.checked = selectedCommunities.has(cid);
+    if (cb.checked) item.classList.remove('dimmed');
+    else item.classList.add('dimmed');
+  }});
+  const caption = document.getElementById('view-caption');
+  if (!loadedNodeIds.size) {{
+    caption.textContent = 'No communities selected. Choose a community or reset the overview.';
+  }} else if (!total) {{
+    caption.textContent = `Source graph: ${{loadedNodeIds.size}} nodes; no source communities available.`;
+  }} else {{
+    caption.textContent = `${{overviewMode ? 'Architecture overview' : 'Source communities'}}: ${{selected}} of ${{total}} source communities. Expand with filters or search.`;
+  }}
+}}
+
+function refreshView() {{
+  const next = visibleRecords();
+  const nodeIds = new Set(next.nodes.map(n => n.id));
+  const edgeIds = new Set(next.edges.map(e => e.id));
+  // Remove edges first so no active relationship points at a removed node.
+  edgesDS.remove([...loadedEdgeIds].filter(id => !edgeIds.has(id)));
+  nodesDS.remove([...loadedNodeIds].filter(id => !nodeIds.has(id)));
+  nodesDS.update(next.nodes.filter(n => !loadedNodeIds.has(n.id)));
+  edgesDS.update(next.edges.filter(e => !loadedEdgeIds.has(e.id)));
+  loadedNodeIds = nodeIds;
+  loadedEdgeIds = edgeIds;
+  document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>';
+  hoveredNodeId = null;
+  updateSelectAllState();
+  network.setOptions({{ physics: {{ enabled: nodeIds.size > 0 }} }});
+  if (nodeIds.size) {{
+    network.once('stabilizationIterationsDone', () => network.setOptions({{ physics: {{ enabled: false }} }}));
+    network.stabilize(100);
+  }}
 }}
 
 function toggleAllCommunities(hide) {{
-  document.querySelectorAll('.legend-item').forEach(item => {{
-    hide ? item.classList.add('dimmed') : item.classList.remove('dimmed');
-  }});
-  document.querySelectorAll('.legend-cb').forEach(cb => {{
-    cb.checked = !hide;
-  }});
-  LEGEND.forEach(c => {{
-    if (hide) hiddenCommunities.add(c.cid); else hiddenCommunities.delete(c.cid);
-  }});
-  const updates = RAW_NODES.map(n => ({{ id: n.id, hidden: hide }}));
-  nodesDS.update(updates);
-  updateSelectAllState();
+  overviewMode = false;
+  selectedCommunities = new Set(hide ? [] : LEGEND.map(c => c.cid));
+  showUngrouped = !hide;
+  refreshView();
+}}
+
+function resetOverview() {{
+  overviewMode = true;
+  selectedCommunities = new Set(overviewCommunities);
+  showUngrouped = !LEGEND.length;
+  refreshView();
 }}
 
 const legendEl = document.getElementById('legend');
@@ -351,26 +418,22 @@ LEGEND.forEach(c => {{
   const cb = document.createElement('input');
   cb.type = 'checkbox';
   cb.className = 'legend-cb';
-  cb.checked = true;
+  cb.checked = selectedCommunities.has(c.cid);
   cb.addEventListener('change', (e) => {{
     e.stopPropagation();
     if (cb.checked) {{
-      hiddenCommunities.delete(c.cid);
-      item.classList.remove('dimmed');
+      selectedCommunities.add(c.cid);
     }} else {{
-      hiddenCommunities.add(c.cid);
-      item.classList.add('dimmed');
+      selectedCommunities.delete(c.cid);
     }}
-    const updates = RAW_NODES
-      .filter(n => n.community === c.cid)
-      .map(n => ({{ id: n.id, hidden: !cb.checked }}));
-    nodesDS.update(updates);
-    updateSelectAllState();
+    overviewMode = false;
+    refreshView();
   }});
   item.innerHTML = `<div class="legend-dot" style="background:${{c.color}}"></div>
     <span class="legend-label">${{c.label}}</span>
     <span class="legend-count">${{c.count}}</span>`;
   item.prepend(cb);
+  legendControls.set(c.cid, {{ item, cb }});
   item.onclick = (e) => {{
     if (e.target === cb) return;
     cb.checked = !cb.checked;
@@ -378,6 +441,7 @@ LEGEND.forEach(c => {{
   }};
   legendEl.appendChild(item);
 }});
+updateSelectAllState();
 </script>"""
 
 
@@ -449,6 +513,13 @@ def to_html(
     view would contain fewer than two communities and is intentionally skipped.
     """
     limit = node_limit if node_limit is not None else _viz_node_limit()
+    # HTML grouping is derived presentation state. Recover an absent/incomplete
+    # large-graph partition and missing labels without rewriting source artifacts.
+    from graphify.exporters.html_communities import prepare_html_communities
+    communities, community_labels = prepare_html_communities(
+        G, communities, community_labels,
+        recover_missing=node_limit is not None and G.number_of_nodes() > limit,
+    )
     if G.number_of_nodes() > limit:
         if node_limit is not None:
             # Build aggregated community meta-graph
@@ -675,8 +746,10 @@ def to_html(
   <div id="legend-wrap">
     <h3>Communities</h3>
     <div id="legend-controls">
-      <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
+      <label><input type="checkbox" id="select-all-cb" onchange="toggleAllCommunities(!this.checked)">Select All</label>
+      <button type="button" id="overview-reset" onclick="resetOverview()">Overview</button>
     </div>
+    <div id="view-caption">Architecture overview: largest source communities. Expand with filters or search.</div>
     <div id="legend"></div>
   </div>
   <div id="stats">{stats}</div>

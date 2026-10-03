@@ -2959,6 +2959,9 @@ def dispatch_command(cmd: str) -> None:
         graph_path = graph_path.expanduser()
         if graph_path_explicit:
             graph_out_dir = graph_path.parent
+            # A custom graph owns its analysis as well as its labels/report;
+            # unrelated working-directory sidecars cannot select its grouping.
+            analysis_path = graph_out_dir / ".graphify_analysis.json"
             if not labels_path_explicit:
                 labels_path = graph_out_dir / ".graphify_labels.json"
             if not report_path_explicit:
@@ -3119,8 +3122,16 @@ def dispatch_command(cmd: str) -> None:
                 # Over-cap fallback (#1019): force the community-aggregation
                 # path so the oversized graph still renders a usable artifact.
                 _effective_node_limit = 5000 if _over_cap else node_limit
-                _to_html(G, communities, str(out_dir / "graph.html"),
-                         community_labels=labels or None, node_limit=_effective_node_limit)
+                try:
+                    written = _to_html(G, communities, str(out_dir / "graph.html"),
+                                       community_labels=labels or None, node_limit=_effective_node_limit)
+                except Exception as exc:
+                    code = "HTML_GROUPING_INVALID" if str(exc).startswith("HTML_GROUPING_INVALID") else "HTML_VIEW_FAILED"
+                    print(f"error: {code}: cannot publish the HTML view. Prior HTML was retained; inspect grouping/output access and retry, or use a focused graph for oversized views.", file=sys.stderr)
+                    sys.exit(1)
+                if not written:
+                    print("error: HTML_VIEW_UNAVAILABLE: grouping cannot produce a useful bounded view. Prior HTML was retained; inspect the partition or choose a focused graph.", file=sys.stderr)
+                    sys.exit(1)
                 if G.number_of_nodes() <= _effective_node_limit:
                     print(f"graph.html written - open in any browser, no server needed")
                 if _over_cap:

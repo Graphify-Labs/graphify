@@ -360,3 +360,29 @@ relationships prove a particular runtime connection executes.
 The [plan](qt-qml/PLAN.md) defines acceptance examples and exit gates. Update statuses
 only when implementation and cited evidence justify them; parser selection or a
 passing generic C++ test does not change a Qt/QML requirement to Verified.
+
+### REQ-QML-019 — Readable large-graph HTML export
+
+HTML export of an accepted large graph produces a complete, labeled community
+representation when its analysis partition or labels are unavailable, with a
+bounded overview displayed first. View preparation uses local graph evidence
+and preserves the full canonical graph. An unavailable or failed HTML view is
+reported accurately instead of claiming that a file was written.
+
+**Acceptance Criteria**
+
+1 - Above the configured HTML node limit, production export accepts a community partition only when it covers every graph node exactly once without foreign or duplicate members. Missing, empty or invalid partitions are replaced by a deterministic local partition of a view copy through the existing clustering interface, without an API call or rewriting graph/analysis files. The production CLI resolves analysis metadata beside an explicitly selected graph. Public fixtures exercise missing, empty, partial, duplicate and foreign-node partitions through the actual export path. (`REQ-QML-019-AC01`)
+
+2 - The emitted community view has visible, nonempty labels and a populated legend whose IDs, labels and member counts agree with its plotted groups. Valid supplied labels are preserved; missing labels use the existing local hub-based labeling, and labels for a replaced partition are not reused as if they described the new groups. The artifact identifies its aggregated representation and omitted source details, retains existing escaping and Qt/QML payload protections, and leaves canonical graph nodes, edges and source facts unchanged. Emitted-script/DOM-harness and payload tests establish their exact coverage; an unexecuted browser inspection is not reported as completed browser verification. (`REQ-QML-019-AC02`)
+
+3 - Unrecoverable grouping reports actionable `HTML_GROUPING_INVALID`; an unusable or skipped aggregate view reports `HTML_VIEW_UNAVAILABLE`; an actual publication failure reports `HTML_VIEW_FAILED`. Each causes the production HTML export command to exit unsuccessfully without a false written-file message, preserving prior valid HTML and canonical graph files. A graph with too many isolated groups to fit the supported aggregate limit reports a bounded failure and focused-graph guidance rather than inventing group membership or bypassing the limit. A corrected retry publishes the expected view, and repeated export of unchanged input retains the same grouping and label behavior under the same clustering backend/configuration. (`REQ-QML-019-AC03`)
+
+4 - The initial architecture overview displays at most ten available source communities, ranked by descending source-member count with stable ascending community-ID order for ties. Select All starts unchecked, and only the default visible groups' nodes and edges are added to visualization datasets before network layout begins. Explicit community selection, search selection or Select All reveals deferred groups on demand; Overview restores the same initial subset and unchecked Select All state. The complete exported metadata remains in the RAW payload, canonical graph data is unchanged, and view choices remain temporary with no added saved camera/filter persistence. The overview describes inferred graph structure rather than authoritative architectural modules. Production emitted-script tests exercise initial dataset construction, deferred reveal and reset behavior. (`REQ-QML-019-AC04`)
+
+Status: **Locally verified at the exporter/CLI and emitted-script boundaries**.
+Browser visual inspection and other platform lanes remain separate evidence.
+Acceptance is limited to
+HTML view preparation, bounded initial navigation and publication. It does not complete remaining
+REQ-QML-018 parser, metadata, provider or whole-project adoption work, and does
+not change the canonical graph or require project execution. Assigned work and
+exit gates are in [INC-QML-09](qt-qml/PLAN.md#inc-qml-09--readable-large-graph-html-export).

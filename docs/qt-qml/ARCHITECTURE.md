@@ -375,3 +375,18 @@ helper under the original source owner, not preprocessing, runtime execution or
 an alternate extraction pipeline. Obsolete AST-schema artifacts may be retired
 by the upstream cache migration; this is not deletion of accepted graph data or
 compatible caches to conceal a failed candidate.
+
+## D12 — Recover HTML communities as local presentation state
+
+Large unclustered graphs need a complete partition and usable names before
+community aggregation. Reuse the existing deterministic clustering/hub labeling
+interfaces within HTML view preparation, preserving canonical graph and analysis
+artifacts. Deriving presentation membership avoids requiring a model or a source
+rescan merely to inspect an accepted graph. A failed or unhelpful bounded view
+retains previous HTML and reports its actual result.
+
+The opening architecture overview selects a bounded set of major structural
+communities and loads other view data on demand. Initial selection is explicit
+presentation policy rather than saved personal view state. Structural clustering
+supports navigation; versioned architecture/design documents describe intentional
+ownership. Remaining parser/provider adoption contracts retain their scope.
