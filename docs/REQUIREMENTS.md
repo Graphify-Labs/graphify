@@ -10,8 +10,8 @@ Increment references identify delivery stages, not completion evidence.
 
 | ID | Required behavior (summary) | Increments |
 | --- | --- | --- |
-| QML-001 | The declared parser backend installs on supported Python/OS targets, parses the supported syntax without network access at analysis time, and reports unavailable or incompatible parser support explicitly. Unsupported syntax is distinguished from an empty valid file. | 00, 01 |
-| QML-002 | Full detection and update agree on inclusion of `.qml`, `.ui.qml`, and supported named metadata. Existing ignore, root, symlink, and size boundaries apply. `qmldir` is detected by exact filename. Unrelated extensionless files remain excluded. | 01, 02, 05 |
+| QML-001 | The declared parser backend installs on supported Python/OS targets, parses the supported syntax without network access at analysis time, and reports unavailable or incompatible parser support explicitly. Unsupported syntax is distinguished from an empty valid file. | 00, 01, 03 |
+| QML-002 | Full detection and update agree on inclusion of `.qml`, `.ui.qml`, and supported named metadata. Existing ignore, root, symlink, and size boundaries apply. `qmldir` is detected by exact filename. Unrelated extensionless files remain excluded. | 01, 02, 05, 06 |
 | QML-003 | Components, object instances, properties, signals, and functions produce source-backed nodes with correct locations and deterministic identities. Duplicate `id` values in different component scopes do not merge. Comments, strings, and grouped properties do not create false object declarations. | 01 |
 | QML-004 | Directory and URI imports, aliases, versions, and `qmldir` declarations resolve only within documented import paths and module visibility. Duplicate type names in different modules cannot bind by a global name guess. Unknown, ambiguous, or unavailable modules remain unresolved. | 02 |
 | QML-005 | Component-local `id` scope, inline components, singleton declarations, inherited members, and external types retain their documented boundaries. Same-name members in separate scopes remain distinct. Only supported, source-backed visibility permits a resolved link. | 02 |
@@ -34,6 +34,11 @@ Each criterion belongs to the requirement named in its ID. All criteria are
 **Not executed** for the proposed Qt/QML implementation. Verification owners
 and coverage gaps are assigned in [tests/TRACEABILITY.md](../tests/TRACEABILITY.md).
 Fixture/test names remain proposed until their increment implements them.
+
+Each acceptance ID has a planned completion increment in
+[tests/TRACEABILITY.md](../tests/TRACEABILITY.md), with dependencies and reviewable
+work packages in the [increment plan](qt-qml/PLAN.md). Earlier partial evidence does
+not close a criterion whose metadata, incremental or consumer cases remain pending.
 
 The agreed initial profile is Qt 6 with both CMake and qmake. QML-00 records the
 exact syntax, version, platform and parser matrix used by the criteria. Cases

@@ -38,12 +38,17 @@ Verify its current status before each increment:
 git status --short --branch
 git fetch upstream
 git log -1 upstream/v8
-git switch -c codex/<increment-name> upstream/v8
+git log -1 <reviewed-base-containing-predecessors>
+git switch -c codex/<increment-name> <reviewed-base-containing-predecessors>
 ```
 
 Preserve existing collaborator changes and do not switch branches over unfinished
 work. The foundation branch is `codex/qt-qml-foundation`; subsequent increments
 start from an agreed base containing the required predecessor changes.
+Record its exact revision and the reviewed upstream SHA. Preserve the foundation
+instructions/documents when creating the first execution branch; branching only
+from upstream would omit the local foundation. Keep foundation policy changes
+distinct from parser or feature changes when preparing review diffs.
 
 ## Environment and baseline checks
 

@@ -42,3 +42,9 @@ has four assigned acceptance criteria, with individual traceability entries.
 Start with **QML-00**, the baseline and parser compatibility spike. Its exit gate
 selects a parser and records a supported-syntax matrix before implementation
 begins. A file-extension change alone is not QML support.
+
+The plan retains QML-00 through QML-07, with QML-04a/04b/04c separating exposure,
+native events and reverse object access. Native C++ event work can follow QML-00
+alongside the QML lane; metadata readers can follow QML-02. Every acceptance ID
+has a planned completion increment in traceability. Early graph/persistence/update
+safety is required when a capability is enabled, before later optimization.

@@ -119,3 +119,23 @@ assignment. `git diff --check` passed.
 
 This was a documentation-only review. Runtime tests were not rerun; the baseline
 results and outstanding implementation gates above remain unchanged.
+
+## Increment execution-plan review — 2026-10-03
+
+Refined [PLAN.md](PLAN.md) into reviewable packages with explicit prerequisites,
+readiness/completion gates, file ownership and evidence handoffs. Native Qt event
+work can follow the baseline/contracts checkpoint alongside QML extraction;
+metadata readers precede their later bridge joins. Early enabled update paths
+require a tested safe fallback or rejection before writes.
+
+A one-off Python planning check passed across eleven public foundation files:
+seventeen stable requirements, sixty-eight unchanged criteria with exactly one
+planned completion increment each, and eight preserved increment IDs. The
+dependency graph has eleven nodes and sixteen edges with no cycle. All forty-six
+referenced existing test paths resolve; the sixteen new Qt/QML test files remain
+explicit proposals. Local links, canonical paths, planned/unexecuted status and
+private-reference/credential-pattern checks passed. `git diff --check` passed.
+
+No production code, parser probe or runtime test was executed for this planning
+revision. QML-00 remains the first execution checkpoint, and all implementation
+acceptance criteria remain unexecuted.

@@ -130,9 +130,12 @@ providers change, including changes with no modified QML file.
 
 Until dependency-aware updates are verified, a conservative Qt project resolution
 rebuild is acceptable if bounded and documented. Never cache an empty result from
-an unavailable parser as successful analysis. Preserve prior valid persisted state
-when an extraction fails under the existing write guards, and distinguish deletion
-from failure before using an intentional destructive-update path.
+an unavailable parser as successful analysis. Implement and test the conservative
+fallback before enabling its update/watch path; otherwise reject that unsupported
+operation before writing graph/cache state. A warning does not make stale output
+acceptable. Preserve prior valid persisted state when extraction fails under the
+existing write guards, and distinguish deletion from failure before using an
+intentional destructive-update path.
 
 ## Verification boundaries
 
