@@ -24,6 +24,7 @@ from .resolver_registry import (
 )
 from .ruby_resolution import resolve_ruby_member_calls
 from .csharp_dispatch import resolve_csharp_interface_dispatch
+from .swift_dispatch import resolve_swift_protocol_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
 
@@ -5685,6 +5686,15 @@ register_language_resolver(
 register_language_resolver(
     LanguageResolver(
         "csharp_interface_dispatch", frozenset({".cs"}), resolve_csharp_interface_dispatch
+    )
+)
+# Swift member-level protocol dispatch: the Swift twin of the C# pass above. A
+# call through an injected `Store` lands on the protocol's requirement (#3673)
+# and the conformer's method sits unreachable from it. Lives in
+# graphify.swift_dispatch; the mechanism is shared via graphify.interface_dispatch.
+register_language_resolver(
+    LanguageResolver(
+        "swift_protocol_dispatch", frozenset({".swift"}), resolve_swift_protocol_dispatch
     )
 )
 # Markdown code-span mentions (`Widget`, `mod.py::Widget::render`) become
