@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 
 from graphify.extractors.qml_facts import field, qml_metadata
+from graphify.extractors.qml_literals import literal_fields
 from graphify.extractors.qml_js_scopes import FUNCTIONS, bound_names, hoisted_names, local_declarations, qualified_name, reassigned_names
 
 
@@ -166,7 +167,7 @@ def collect_relationships(declarations) -> None:
                 _handler(declarations, collector, child, owner, name, value, syntax)
             else:
                 member = members.get((qml_metadata(owner).get("object_scope_key"), name), owner)
-                binding = collector.add("binding", child, member, name, reference=name)
+                binding = collector.add("binding", child, member, name, reference=name, **literal_fields(value, collector.source))
                 collector.scan(value, binding)
     for syntax, member in declarations.members:
         md = qml_metadata(member)
@@ -182,7 +183,7 @@ def collect_relationships(declarations) -> None:
                 collector.add("alias", value, member, name, reference=reference or "",
                               status="pending" if reference else "dynamic", reason="" if reference else "alias_not_static")
             else:
-                binding = collector.add("binding", value, member, name)
+                binding = collector.add("binding", value, member, name, **literal_fields(value, collector.source))
                 collector.scan(value, binding)
         elif md["kind"] == "function":
             if qml_metadata(owner).get("type_name") == "Connections" and name.startswith("on"):

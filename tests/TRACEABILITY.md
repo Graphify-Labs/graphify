@@ -13,9 +13,11 @@ All QML source/artifact tests: 247 passed, two Windows symlink-permission skips
 in each of the four Python lanes, including the final BOM/CRLF reader regressions.
 QML-001/003/004/005/006/007 pass their four criteria in the declared profile.
 QML-002/010/011/012/013/014/015 have passing QML cases with remaining whole-Qt gates;
-QML-008/009/016/017 remain planned. Minimal qmldir support is partial QML-009.
+QML-008/016/017 have native source evidence; build/resource and final consumer
+gates remain open. Minimal qmldir support is partial QML-009.
 The optional/core wheel checks pass on Windows Python 3.10/3.12/3.13/3.14 and core
-Python 3.12. Hosted Linux/macOS verification is pending. No skip counts as a pass.
+Python 3.12. QML-03 hosted Ubuntu full suites and all twelve optional/core wheel lanes pass;
+see VALIDATION.md for reviewed source and tested merge SHAs. No skip counts as a pass.
 
 ## Individual acceptance assignments
 
@@ -54,10 +56,10 @@ Later increments reverify affected evidence; preserve these identifiers.
 | QML-007-AC02 | `tests/test_qml_scripts.py::test_literal_imported_helpers_and_library_do_not_inherit_document_ids`; `tests/test_qml_scripts.py::test_mjs_explicit_exports_aliases_and_private_functions`; `tests/test_qml_scripts.py::test_accepted_script_dependencies_support_classic_and_esm_imports`; `tests/test_qml_scripts.py::test_script_overlay_retains_original_shared_js_nodes_and_never_executes` | QML-03 | Verified (declared profile) |
 | QML-007-AC03 | `tests/test_qml_handlers.py::test_declared_and_property_change_handlers_are_subscriptions`; `tests/test_qml_handlers.py::test_connections_target_and_dynamic_target_stay_distinct`; `tests/test_qml_adversarial.py::test_mixed_legacy_connections_handlers_do_not_activate_ignored_function_handlers` | QML-03 | Verified (declared profile) |
 | QML-007-AC04 | `tests/test_qml_scripts.py::test_generic_js_calls_cannot_bind_to_qml_owned_expression_sites`; `tests/test_qml_scripts.py::test_script_overlay_does_not_read_unaccepted_imports_or_network` | QML-03 | Verified (declared profile) |
-| QML-008-AC01 | Open case: Valid declarative and literal procedural C++ registrations | QML-05 | Gap: planned |
-| QML-008-AC02 | Open case: Property/invokable/signal/notify provenance and declaration merging | QML-05 | Gap: planned |
-| QML-008-AC03 | Open case: Duplicate, macro-wrapper, overload and name-only bridge rejection | QML-05 | Gap: planned |
-| QML-008-AC04 | Open case: Comment/literal nonmatching, parser offsets and C++ regressions | QML-05 | Gap: planned |
+| QML-008-AC01 | `tests/test_qt_cpp_exposure.py::test_identifier_named_element_flags_and_quoted_rejection`; `tests/test_qt_cpp_exposure.py::test_literal_registration_variants_exact_versions_and_class_mapping`; open completion: production build-derived module joins | QML-05 | Partial; later gate open |
+| QML-008-AC02 | `tests/test_qt_cpp_exposure.py::test_members_properties_and_notify_have_exact_original_evidence`; `tests/test_qt_cpp_exposure.py::test_header_implementation_members_reuse_accepted_canonical_ids`; open completion: metadata-enriched bridge corpus | QML-05 | Partial; later gate open |
+| QML-008-AC03 | `tests/test_qt_qml_integration.py::test_duplicate_registration_has_no_arbitrary_type_or_member_bridge`; `tests/test_qt_qml_integration.py::test_ambiguous_overload_and_version_revised_member_are_explicit`; `tests/test_qt_qml_projection.py::test_bridge_context_and_label_cannot_replace_exact_endpoint_proof`; open completion: build-metadata provider ambiguity | QML-05 | Partial; later gate open |
+| QML-008-AC04 | `tests/test_qt_cpp_syntax.py::test_comments_strings_raw_literals_and_preprocessor_definitions_are_inert`; `tests/test_qt_cpp_syntax.py::test_unicode_crlf_macro_spans_are_original_bytes`; generic C++ normalization/method/call regressions; open completion: full metadata corpus | QML-05 | Partial; later gate open |
 | QML-009-AC01 | Open case: Qt 6 CMake and qmake literal module/exposure mapping | QML-05 | Gap: completion case pending |
 | QML-009-AC02 | Open case: qmldir/qmltypes exports, provenance and conflicts | QML-05 | Gap: completion case pending |
 | QML-009-AC03 | Open case: Resource alias mapping, path containment and XML entity rejection | QML-05 | Gap: completion case pending |
@@ -86,11 +88,11 @@ Later increments reverify affected evidence; preserve these identifiers.
 | QML-015-AC02 | Open case: Authoritative skillgen changes and artifact/schema checks | QML-07 | Gap: completion case pending |
 | QML-015-AC03 | Open case: Reviewed base/head, dependency attribution and PR reuse evidence | QML-07 | Gap: completion case pending |
 | QML-015-AC04 | Open case: Every release promise traced to evidence or explicit deferral; privacy scan | QML-07 | Gap: completion case pending |
-| QML-016-AC01 | Open case: Signal/slot forms, signatures, spans and emission semantics | QML-04b | Gap: planned |
-| QML-016-AC02 | Open case: Typed/overloaded/lambda/legacy signal connections and scoped endpoints | QML-04b | Gap: planned |
-| QML-016-AC03 | Open case: Connection type/context/conditional evidence and dynamic uncertainty | QML-04b | Gap: planned |
+| QML-016-AC01 | `tests/test_qt_cpp_syntax.py::test_access_sections_keep_original_roles_offsets`; `tests/test_qt_signals_slots.py::test_native_events_have_distinct_sites_and_no_delivery_calls`; `tests/test_qt_signals_slots.py::test_macro_sections_private_meta_slots_and_comments` | QML-04b | Verified (native source profile) |
+| QML-016-AC02 | `tests/test_qt_signals_slots.py::test_overloads_need_selector_and_dynamic_sender_stays_unresolved`; `tests/test_qt_events_boundaries.py::test_functor_function_and_connection_handle_disconnect`; `tests/test_qt_events_boundaries.py::test_explicit_cast_signal_to_signal_and_condition_flags`; `tests/test_qt_events_boundaries.py::test_private_typed_pointer_and_incompatible_receiver_are_rejected` | QML-04b | Verified (native source profile) |
+| QML-016-AC03 | `tests/test_qt_events_boundaries.py::test_explicit_cast_signal_to_signal_and_condition_flags`; `tests/test_qt_events_boundaries.py::test_computed_signal_receiver_and_custom_connect_are_not_qt_targets`; `tests/test_qt_signals_slots.py::test_native_events_have_distinct_sites_and_no_delivery_calls` | QML-04b | Verified (native source profile) |
 | QML-016-AC04 | Open case: Call/emission/connect/disconnect distinction, consumer and update preservation | QML-07 | Gap: planned |
-| QML-017-AC01 | Open case: Literal loader/module/resource-to-QML component provenance | QML-05 | Gap: planned |
-| QML-017-AC02 | Open case: QML root/objectName/member access from C++, distinct from QML id | QML-05 | Gap: planned |
-| QML-017-AC03 | Open case: Two-way signal bridge and literal context/initial-property exposure | QML-05 | Gap: planned |
-| QML-017-AC04 | Open case: Dynamic/duplicate lookup rejection and bidirectional incremental parity | QML-07 | Gap: planned |
+| QML-017-AC01 | `tests/test_qml_cpp_access.py::test_view_root_and_literal_object_name_property_access`; `tests/test_qt_access_providers.py::test_component_create_and_initial_properties_bind_accepted_component`; open completion: production module/qrc loaders | QML-05 | Partial; later gate open |
+| QML-017-AC02 | `tests/test_qml_cpp_access.py::test_view_root_and_literal_object_name_property_access`; `tests/test_qml_cpp_access.py::test_qml_id_is_not_object_name_and_computed_lookup_not_guessed`; `tests/test_qt_access_providers.py::test_qqmlproperty_read_write_preserves_property_handle`; open completion: metadata-enriched object access | QML-05 | Partial; later gate open |
+| QML-017-AC03 | `tests/test_qt_access_providers.py::test_qml_signals_to_cpp_private_slots_and_cpp_signals_to_qml_functions`; `tests/test_qt_access_providers.py::test_context_provider_is_limited_to_loaded_component`; `tests/test_qt_access_providers.py::test_context_object_and_conditional_or_dynamic_providers`; `tests/test_qt_access_providers.py::test_initial_property_provider_requires_declared_qml_property`; open completion: metadata-enriched provider scope | QML-05 | Partial; later gate open |
+| QML-017-AC04 | `tests/test_qml_cpp_access.py::test_duplicate_object_names_do_not_select_first_child`; `tests/test_qt_access_providers.py::test_duplicate_context_provider_and_local_shadow_do_not_choose`; open completion: final incremental and consumer parity | QML-07 | Partial; later gate open |

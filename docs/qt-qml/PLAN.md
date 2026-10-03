@@ -1,7 +1,7 @@
 # Qt and QML feature increment plan
 
-Status: QML-00 through QML-03 complete for the declared optional Windows static
-profile. QML-04 through QML-07 remain planned. Executed checks are recorded in
+Status: QML-00 through QML-04 complete for their documented static source profiles.
+QML-05 through QML-07 remain open; their remaining gates are recorded below. Executed checks are recorded in
 [VALIDATION.md](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md).
 Commands marked proposed are future verification suggestions, not pass claims.
 
@@ -871,7 +871,24 @@ upstream semantic layer. A feature is ready for wider rollout when its advertise
 matrix has evidence; remaining unsupported runtime behavior is part of the public
 contract, not a reason to fabricate relationships.
 
-The next execution checkpoint is QML-00's recorded parser decision and corpus,
-with an explicit accepted/deferred matrix and reuse ledger. After that checkpoint,
-start QML-01 and, with disjoint C++ ownership, QML-04b. Do not start every planned
-branch at once or treat an unexecuted parser probe as accepted evidence.
+The next execution checkpoint is QML-05 public metadata admission and bridge
+integration, followed by QML-06 parity and QML-07 consumer/release evidence.
+QML-00 through QML-04 evidence is recorded in IMPLEMENTATION.md and VALIDATION.md.
+
+
+## QML-04 review and continuation
+
+Retain QML-00..07 and all existing acceptance IDs. QML-04a includes original-byte
+annotation normalization and final canonical ID lookup, after a production fixture
+exposed an omitted invokable. QML-04c includes exact loader/owner scope and supplied
+provider evidence; QML id/objectName, dynamic URLs, duplicate providers, revised
+members and unsupported foreign mappings remain explicit boundaries. Reader/index
+foundations may ship internally in QML-04; public admission is still QML-05.
+
+No additional top-level increment is required by this review. QML-05 activates
+literal metadata and bridge joins; QML-06a proves mutation parity and QML-06b proves
+parser/configuration/ignore compatibility. The user has authorized continuing
+through QML-07a consumer proof and QML-07b hosted packaging/documentation evidence.
+QML-07 is the intended completion of this documented static scope. If a promised
+criterion cannot close there, record its gap and a required follow-on increment;
+dynamic runtime/plugin/widget extensions are separate future scope.

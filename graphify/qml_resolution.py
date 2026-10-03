@@ -11,9 +11,10 @@ from graphify.qml_resolution_types import Resolution, answer, fact_edge, fact_no
 from graphify.qml_scope import QmlProjectIndex
 
 
-def build_qml_index(nodes, edges, *, root: Path, import_roots=None) -> QmlProjectIndex:
+def build_qml_index(nodes, edges, *, root: Path, import_roots=None, native_index=None, project_index=None) -> QmlProjectIndex:
     """Indexes have one run lifetime and never discover or execute additional files."""
-    return QmlProjectIndex(nodes, edges, root=Path(root), import_roots=import_roots)
+    return QmlProjectIndex(nodes, edges, root=Path(root), import_roots=import_roots,
+                           native_index=native_index, project_index=project_index)
 
 
 def _import_target(index: QmlProjectIndex, node: dict, file: str):
@@ -41,14 +42,15 @@ def _import_target(index: QmlProjectIndex, node: dict, file: str):
 
 
 def resolve_qml_project(per_file, all_nodes: list[dict], all_edges: list[dict], *,
-                        root: Path, import_roots=None) -> None:
+                        root: Path, import_roots=None, native_index=None, project_index=None) -> None:
     """Append derived facts only for fresh sources; borrowed context stays immutable.
 
     Resolved imports/types use independent sites so parallel source mechanisms
     cannot overwrite each other in a simple graph. Unresolved sites retain a
     bounded reason/candidate set and never receive a guessed target edge.
     """
-    index = build_qml_index(all_nodes, all_edges, root=root, import_roots=import_roots)
+    index = build_qml_index(all_nodes, all_edges, root=root, import_roots=import_roots,
+                            native_index=native_index, project_index=project_index)
     fresh = {node["id"] for result in per_file.values() for node in result.get("nodes", [])}
     known_nodes = {node["id"] for node in all_nodes}
     known_edges = {(edge["source"], edge["target"], edge["relation"], edge.get("context"))
@@ -78,6 +80,9 @@ def resolve_qml_project(per_file, all_nodes: list[dict], all_edges: list[dict], 
         elif kind == "object":
             label = md.get("type_name") or md.get("raw_type") or ""
             result = index.resolve_type(file, md.get("component_key") or "", label)
+            native = native_index.metadata(result.target_id) if native_index and result.target_id else {}
+            if native.get("qt_native") and (not native.get("creatable") or native.get("singleton")):
+                result = Resolution("unsupported", reason="native_type_not_creatable", evidence=result.evidence)
             site_kind, relation = "type_use", "uses"
         else:
             continue
@@ -99,6 +104,12 @@ def resolve_qml_project(per_file, all_nodes: list[dict], all_edges: list[dict], 
             if kind == "import" and md.get("import_kind") == "script":
                 target_proof = {"target_role": "script_file", "target_file_id": result.target_id,
                                 "target_file": index.paths[result.target_id]}
-            append_edge(fact_edge(site["id"], result.target_id, relation, owner,
+            edge = fact_edge(site["id"], result.target_id, relation, owner,
                                   "qml_import_resolution" if kind == "import" else "qml_type_resolution",
-                                  confidence="INFERRED", span=span, evidence=list(result.evidence[:50]), **target_proof))
+                                  confidence="INFERRED", span=span, evidence=list(result.evidence[:50]), **target_proof)
+            proof = native_index.endpoint_proof(result.target_id, result.evidence,
+                                                kind="module" if kind == "import" else "component") if native_index else {}
+            if proof:
+                from graphify.extractors.qt_cpp_facts import encode_qt
+                edge["metadata"]["qt"] = encode_qt({"kind": "qml_bridge", "span": span, "native_endpoint": proof})
+            append_edge(edge)

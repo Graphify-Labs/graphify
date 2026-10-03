@@ -27,6 +27,10 @@ relative/bounded; messages omit source content and dependency exception details.
 | QML_SCRIPT_SYNTAX | error | Imported-script AST has syntax errors | Correct the script before publication |
 | QML_SCRIPT_UNSUPPORTED | error | Classic Qt directives occur in an ECMAScript `.mjs` module | Use supported classic `.js` directives or supported ESM syntax |
 | QML_SCRIPT_LIMIT | error/failure marker | Imported script exceeds 5 MB, 100,000 AST nodes/depth 256, or overlay graph exceeds 256 files | Reduce input/accepted dependencies or extend a measured bounded profile |
+| QT_CPP_READ / QT_CPP_ROOT | error | Unreadable UTF-8 source or source outside the accepted root | Restore readable accepted source; retry without expanding the scan |
+| QT_CPP_PARSER / QT_CPP_SYNTAX | error | C++ parser failure or incomplete supported Qt syntax | Restore parser dependency or correct the source |
+| QT_CPP_LIMIT / QT_LIMIT | error | Bounded source, AST, parameters or semantic transport exceeds its limit | Reduce input or extend the measured profile |
+| QT_METADATA | rejection prefix | Invalid versioned Qt literal transport | Re-extract valid source facts; the join guard rejects publication |
 
 Failures emit no authoritative declarations/edges. CLI/watch reject before graph
 reconciliation, reports/HTML, root marker and manifest updates. Prior bytes remain

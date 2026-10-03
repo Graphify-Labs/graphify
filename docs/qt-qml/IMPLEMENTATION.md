@@ -151,3 +151,46 @@ The integration owner permits only focused hooks in oversized upstream files:
 Owner: Qt/QML integration maintainer. Exit: upstream coordinated facade/writer
 splitting; domain analysis remains in focused modules. Later hooks must remeasure
 these ceilings and retain this rationale rather than quietly extending them.
+
+
+## QML-04
+
+Complete for the declared Qt6 static source profile verified on Windows Python
+3.12.14; exact later-host proof remains a release obligation. Known annotations
+are normalized before generic C++ extraction, preserving original bytes/spans and
+C++/CLI/test-macro behavior. Separate Qt facts borrow final canonical C++ endpoints.
+Registration, property/accessor/notify, invokable, signal/slot and source event
+mechanisms retain their evidence. Q_OBJECT alone is never QML exposure.
+
+Member pointers, overload selectors/casts, ordinary compatible members, private
+legacy slots, signal-to-signal, lambdas/functors/free functions and supported
+connection/disconnect forms have actual facade regressions. No event projection
+invents runtime delivery or immediate receiver calls. Literal QQmlApplicationEngine,
+QQmlComponent and QQuickView source access, root/handle/objectName provenance,
+QQmlProperty and reflective member intent are covered. Context/initial providers
+remain scoped to an exact loaded component with local/lexical/duplicate rejection.
+
+Qt metadata readers/indexes ship as an internal dependency foundation for literal
+source-file access. Public project/resource admission and their resolved module
+bridges close in QML-05. Revised native members, foreign/extended/attached/value
+providers, arbitrary compiler conversions, dynamic creation and inline temporary
+QQmlProperty expressions remain explicit unsupported results.
+
+The canonical requirements and individual test mappings advance QML-008/016/017;
+QML-016-AC01..AC03 pass their native source cases. Their final incremental and
+consumer criteria remain open. No new top-level increment is needed: QML-06a/06b
+retain mutation/configuration proof and QML-07a/07b retain consumers/hosted release.
+
+All new handwritten source/test files remain below 300 physical lines. Updated
+legacy hooks have the same integration owner and coordinated upstream-splitting
+exit as the prior exception record. QML-04 measured ceilings are:
+
+| Legacy file | Measured/permitted lines | Focused integration reason |
+| --- | --- | --- |
+| graphify/extract.py | 8982 | Canonical C++ normalization followed by the separate Qt join owner |
+| graphify/build.py | 2469 | Exact cross-language endpoint proof guard |
+| graphify/cache.py | 1782 | Syntax schema migration to version 5 |
+| graphify/paths.py | 537 | Restore versioned Qt relationship direction |
+
+Domain logic remains in focused Qt modules. These exceptions do not permit
+unmeasured later growth; each later increment remeasures its touched hooks.

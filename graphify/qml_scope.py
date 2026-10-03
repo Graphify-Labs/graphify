@@ -30,6 +30,32 @@ class QmlProjectIndex(QmlModuleIndex):
                     enclosing = owners[0] if len(set(owners)) == 1 else None
                 self.inline.setdefault((path, enclosing, md.get("raw_name")), []).append(nid)
 
+    def module_import(self, uri, major=None, minor=None):
+        results = [super().module_import(uri, major, minor)]
+        if self.native_index:
+            results.append(self.native_index.module_import(uri, major, minor))
+        if self.project_index:
+            results.append(self.project_index.module_import(uri, major, minor))
+        # One build namespace and its native registrations describe the same
+        # module when the exact context node is carried in native evidence.
+        resolved = [result for result in results if result.target_id]
+        if len(resolved) > 1:
+            namespaces = [result for result in resolved if any(result.target_id in other.evidence
+                          for other in resolved if other is not result)]
+            if len(namespaces) == 1:
+                return Resolution("resolved", namespaces[0].target_id,
+                                  evidence=tuple(sorted({item for result in resolved for item in result.evidence})))
+        return combine(results)
+
+    def module_type(self, uri, major, minor, name, *, importer, **kwargs):
+        results = [super().module_type(uri, major, minor, name, importer=importer, **kwargs)]
+        if kwargs.get("_export_kind", "type") == "type":
+            if self.native_index:
+                results.append(self.native_index.module_type(uri, major, minor, name, importer=importer))
+            if self.project_index:
+                results.append(self.project_index.resolve_component(uri, name, major, minor))
+        return combine(results)
+
     def resolve_type(self, file: str, component_key: str, name: str) -> Resolution:
         """Inline names shadow imports; an import qualifier is document-local."""
         parts = name.split(".")
@@ -67,6 +93,8 @@ class QmlProjectIndex(QmlModuleIndex):
         return combine(results)
 
     def _root_objects(self, component_id: str) -> list[str]:
+        if self.native_index and self.native_index.is_provider(component_id):
+            return [component_id]
         md = qml_metadata(self.nodes[component_id])
         component = md.get("component_key")
         file = self.paths[component_id]
@@ -80,6 +108,8 @@ class QmlProjectIndex(QmlModuleIndex):
         return sorted(candidates)
 
     def _object_member(self, object_id: str, name: str, seen=()) -> Resolution:
+        if self.native_index and self.native_index.is_provider(object_id):
+            return self.native_index.member(object_id, name)
         if object_id in seen or len(seen) >= 32:
             return Resolution("unsupported", reason="inheritance_cycle_or_limit")
         md = qml_metadata(self.nodes[object_id])
@@ -131,14 +161,14 @@ class QmlProjectIndex(QmlModuleIndex):
                 return head
             target = self.resolve_type(file, component_key, parts[0])
             if target.target_id is not None:
-                md = qml_metadata(self.nodes[target.target_id])
+                md = self.md(target.target_id)
                 if not md.get("singleton"):
                     return Resolution("unsupported", reason="type_is_not_instance")
                 return combine([self._follow_member(nid, parts[1:]) for nid in self._root_objects(target.target_id)])
             # Qualified imported singleton (Alias.State.value).
             if len(parts) > 2:
                 target = self.resolve_type(file, component_key, ".".join(parts[:2]))
-                if target.target_id is not None and qml_metadata(self.nodes[target.target_id]).get("singleton"):
+                if target.target_id is not None and self.md(target.target_id).get("singleton"):
                     return combine([self._follow_member(nid, parts[2:]) for nid in self._root_objects(target.target_id)])
                 if target.status == "resolved":
                     return Resolution("unsupported", reason="type_is_not_instance")
@@ -166,6 +196,8 @@ class QmlProjectIndex(QmlModuleIndex):
             return Resolution("unsupported", reason="member_chain_limit")
         if not parts:
             return answer([target_id])
+        if self.native_index and self.native_index.is_provider(target_id):
+            return self._follow_member(target_id, parts)
         md = qml_metadata(self.nodes[target_id])
         if md.get("kind") == "object":
             return self._follow_member(target_id, parts)

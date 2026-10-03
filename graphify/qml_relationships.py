@@ -23,7 +23,7 @@ def _handler(lookup, site):
         reference = md["connection_target"] + "." + reference
     result = lookup.resolve(site, reference)
     if result.status == "resolved":
-        kind = qml_metadata(index.nodes[result.target_id]).get("kind")
+        kind = index.md(result.target_id).get("kind")
         if kind == "signal":
             return result
         return Resolution("unsupported", reason="handler_target_is_not_signal")
@@ -31,7 +31,7 @@ def _handler(lookup, site):
     # Keep that inferred signal distinct from the property and its subscriptions.
     if reference.endswith("Changed"):
         prop = lookup.resolve(site, reference[:-7])
-        if prop.status == "resolved" and qml_metadata(index.nodes[prop.target_id]).get("kind") == "property":
+        if prop.status == "resolved" and index.md(prop.target_id).get("kind") == "property" and not index.md(prop.target_id).get("qt_native"):
             return Resolution("resolved", prop.target_id, "property_notify_signal", prop.evidence)
     return result
 
@@ -48,21 +48,21 @@ def _implicit_handler_parameter(lookup, site, cache):
         if ancestor.get("kind") == "handler":
             if owner not in cache:
                 signal = _handler(lookup, node)
-                cache[owner] = (qml_metadata(index.nodes[signal.target_id]).get("parameter_names") or []
+                cache[owner] = (index.md(signal.target_id).get("parameter_names") or []
                                 if signal.status == "resolved" and signal.target_id in index.nodes else [])
             return first in cache[owner]
         owner = ancestor.get("owner_id")
     return False
 
 
-def resolve_qml_relationships(per_file, all_nodes, all_edges, *, root: Path) -> None:
+def resolve_qml_relationships(per_file, all_nodes, all_edges, *, root: Path, native_index=None, project_index=None) -> None:
     """Mutate fresh source-owned sites only; prior graph context is read-only.
 
     Each occurrence is already a unique fact with its expression span and owner.
     Separate endpoint edges preserve repeated reads/calls through Graph/DiGraph.
     Unsupported/dynamic/ambiguous sites remain explicit and get no guessed edge.
     """
-    index = build_qml_index(all_nodes, all_edges, root=root)
+    index = build_qml_index(all_nodes, all_edges, root=root, native_index=native_index, project_index=project_index)
     lookup = RelationshipLookup(index)
     fresh = {node["id"] for result in per_file.values() if result for node in result.get("nodes", [])}
     node_ids = {node["id"] for node in all_nodes}
@@ -95,7 +95,7 @@ def resolve_qml_relationships(per_file, all_nodes, all_edges, *, root: Path) -> 
         else:
             result = _handler(lookup, site) if kind == "handler" else lookup.resolve(site, md.get("reference") or "")
         if result.status == "resolved" and kind == "call":
-            target_kind = qml_metadata(index.nodes[result.target_id]).get("kind")
+            target_kind = index.md(result.target_id).get("kind")
             if target_kind not in {"function", "js_function", "qml_script_function", "signal"}:
                 result = Resolution("dynamic", reason="runtime_callable_value")
         span = md.get("span", {})
@@ -125,11 +125,16 @@ def resolve_qml_relationships(per_file, all_nodes, all_edges, *, root: Path) -> 
         elif kind == "handler":
             relation, context = "references", "qml_signal_subscription"
         elif kind == "call":
-            target_kind = qml_metadata(index.nodes[target]).get("kind")
+            target_kind = index.md(target).get("kind")
             if target_kind == "signal":
                 context = "qml_signal_emit"
             else:
                 relation = "calls"
                 context = "qml_script_call" if target_kind == "qml_script_function" else "qml_js_call"
-        append_edge(fact_edge(nid, target, relation, owner, context, confidence="INFERRED",
-                              span=span, evidence=list(result.evidence[:50])))
+        edge = fact_edge(nid, target, relation, owner, context, confidence="INFERRED",
+                         span=span, evidence=list(result.evidence[:50]))
+        proof = native_index.endpoint_proof(target, result.evidence) if native_index else {}
+        if proof:
+            from graphify.extractors.qt_cpp_facts import encode_qt
+            edge["metadata"]["qt"] = encode_qt({"kind": "qml_bridge", "span": span, "native_endpoint": proof})
+        append_edge(edge)

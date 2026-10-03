@@ -202,3 +202,51 @@ private-reference/credential-pattern checks passed. `git diff --check` passed.
 No production code, parser probe or runtime test was executed for this planning
 revision. QML-00 remains the first execution checkpoint, and all implementation
 acceptance criteria remain unexecuted.
+
+
+## QML-03 hosted proof — 2026-10-03
+
+Draft [fork PR 1](https://github.com/SlinkyRamey/graphify/pull/1) is open against
+`v8`. Reviewed source head `92f31658beceb5d36f570ae8e3820698b39381fb`, base
+`0b60d47e6cd9338c51143f39f35b6c45c8453385`; both PR workflows checked out synthetic
+merge `a9fba56c165210880236a635d00a96e84e19f1aa`. This is pre-merge evidence;
+no default branch was merged.
+
+[CI run 37087772631](https://github.com/SlinkyRamey/graphify/actions/runs/37087772631)
+completed successfully: Ubuntu Python 3.10 had 6541 passed/16 skipped; Python
+3.12, 3.13 and 3.14 each had 6540 passed/17 skipped. Ruff, skill regeneration,
+security scan and installation checks also succeeded. Skips remain explicit.
+
+[Optional wheel run 37087772653](https://github.com/SlinkyRamey/graphify/actions/runs/37087772653)
+completed successfully in all twelve Ubuntu/Windows/macOS Python 3.10/3.12/3.13/3.14
+lanes. Each lane built and installed the wheel into clean optional/core environments
+and ran isolated offline production smoke. Windows and macOS each ran 249 source
+contracts; Ubuntu ran the three artifact contracts and the separate CI workflow
+owned the full source suite. The hosted Windows symlink cases passed.
+
+This verifies QML-03 only. Later Qt changes require their own reviewed-head proof.
+
+
+## QML-04 local proof — 2026-10-03
+
+Reviewed source boundary starts at QML-03 head `92f31658beceb5d36f570ae8e3820698b39381fb`.
+Official upstream v8 was rechecked and remains
+`0b60d47e6cd9338c51143f39f35b6c45c8453385`. No upstream Qt PR code was copied.
+
+Windows Python3.12.14 focused QML/Qt+C++/cache/registry suite: **547 passed,
+17 skipped** (host symlink permission, artifact env absent in that command, and
+baseline optional language omissions). The actual wheel artifact suite separately
+passed all3 cases. Whole-repository Ruff and lockcheck (210 packages) passed;
+focused runtime/index/helper Pyright had zero errors/warnings. Baseline Windows
+current-directory deletion defects recorded in QML-03 remain unchanged limitations.
+
+A clean Git-index source archive built the noneditable wheel with SHA256
+`a4973256e987d9e75c89e54567350c0ff9af72384b2eed57ff19d173780d972e`.
+Python3.12.14 isolated neutral-directory optional/core smoke both passed, including
+native Qt emission with no QML parser in the core-only environment. The wheel
+contains the internal metadata/index foundation; its public admission remains
+QML-05. Later Python/OS source lanes are owned by the forthcoming PR workflows.
+
+The required repository graph refresh succeeded:19555 nodes,40020 edges and1065
+communities. Existing unavailable optional-language warnings remain explicit.
+Generated graph/report/cache/coverage data are excluded from commits.

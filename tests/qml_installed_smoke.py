@@ -40,6 +40,14 @@ def main():
         module = next(node for node in declarations["nodes"] if qml_metadata(node)["kind"] == "module")
         assert qml_metadata(module)["span"]["start_byte"] == 3
         assert qml_metadata(module)["span"]["end_byte"] == original.index(b'\r\n')
+        from graphify.extractors.qt_cpp_facts import qt_metadata
+        native = root / "Backend.cpp"
+        native.write_text("class Backend : public QObject { Q_OBJECT public: void tick() { emit ready(1); } signals: void ready(int value); };", encoding="utf-8")
+        cpp = extract([native], root=root, cache_root=root, parallel=False)
+        assert not cpp["qml_failures"] and not cpp["failed_sources"]
+        emissions = [node for node in cpp["nodes"] if qt_metadata(node).get("kind") == "emission"]
+        assert len(emissions) == 1 and qt_metadata(emissions[0])["status"] == "resolved"
+        assert any(edge.get("context") == "qt_signal_emit" for edge in cpp["edges"])
         result = extract_qml(path, root=root)
         if "--core-only" in sys.argv:
             assert result["diagnostics"][0]["code"] == "QML_PARSER_MISSING"

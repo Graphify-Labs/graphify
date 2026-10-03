@@ -61,3 +61,22 @@ object-access acceptance contracts; none is implemented by the imported generic
 C++ extractor alone. [DESIGN.md](DESIGN.md) records proposed relation contexts and
 source ownership, including private-slot meta-object endpoints and compatible
 ordinary member-pointer receivers.
+
+
+## Native Qt source owners
+
+| Boundary | Implemented owner |
+| --- | --- |
+| Annotation normalization/original source view | graphify/extractors/qt_cpp_syntax.py |
+| Canonical class/member mapping | graphify/extractors/qt_cpp_mapping.py |
+| Exposure/property/registration collection | graphify/extractors/qt_cpp_exposure.py, qt_cpp_properties.py, qt_cpp_registration.py |
+| Portable Qt transport | graphify/extractors/qt_cpp_facts.py |
+| Source event/access collection | graphify/extractors/qt_cpp_events.py, qt_cpp_access.py and their call/variable/pattern helpers |
+| Scoped native QML provider/member lookup | graphify/qt_qml_bridge.py, qt_qml_bridge_members.py |
+| Native event projection | graphify/qt_event_index.py, qt_event_resolution.py |
+| Component/object/provider access | graphify/qt_qml_access_index.py, qt_qml_access_resolution.py, qt_context_bindings.py, qt_qml_event_access.py |
+| Post-canonical scratch orchestration | graphify/qt_qml_pipeline.py |
+| Cross-family endpoint proof guard | graphify/qt_qml_projection.py |
+
+Metadata reader/index modules ship as an internal dependency foundation. Their
+public discovery and production dispatch activation is recorded with QML-05.

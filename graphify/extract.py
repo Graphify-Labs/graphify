@@ -2908,9 +2908,10 @@ def extract_cpp(path: Path) -> dict:
     except OSError:
         # Let _extract_generic report the read failure in its usual shape.
         return _augment_cpp_string_tests(path, _extract_generic(path, _CPP_CONFIG))
-    result = _extract_generic(
-        path, _CPP_CONFIG, source_override=_normalize_cpp_cli(source) or source
-    )
+    from graphify.extractors.qt_cpp_syntax import normalize_qt_cpp
+    normalized = _normalize_cpp_cli(source) or source
+    normalized = normalize_qt_cpp(normalized) or normalized
+    result = _extract_generic(path, _CPP_CONFIG, source_override=normalized)
     return _augment_cpp_string_tests(path, result)
 
 
@@ -8678,33 +8679,6 @@ def extract(
     else:
         run_language_resolvers(paths, per_file, all_nodes, all_edges)
 
-    # QML joins use accepted facts only and never mutate borrowed context nodes.
-    from graphify.qml_resolution import resolve_qml_project
-    if any(n.get("metadata", {}).get("qml") for n in all_nodes):
-        fresh_ids = {n["id"] for n in all_nodes}
-        joined_nodes = all_nodes + [n for n in resolution_context_nodes or []
-                                   if n.get("id") not in fresh_ids]
-        joined_edges = all_edges + list(resolution_context_edges or [])
-        node_count, edge_count = len(joined_nodes), len(joined_edges)
-        try:
-            resolve_qml_project(dict(zip(paths, per_file)), joined_nodes, joined_edges, root=root)
-            from graphify.qml_relationships import resolve_qml_relationships
-            resolve_qml_relationships(dict(zip(paths, per_file)), joined_nodes, joined_edges, root=root)
-        except Exception:
-            # A broken join must not pass the normal warning-and-continue path.
-            for path, result in zip(paths, per_file):
-                if result and ((path.suffix.lower() == ".qml" or path.name == "qmldir") or path.name == "qmldir"):
-                    relative = path.resolve().relative_to(root).as_posix()
-                    result.setdefault("qml_failures", []).append({"code": "QML_RESOLUTION_FAILED", "source_file": relative})
-                    result.setdefault("diagnostics", []).append({"code": "QML_RESOLUTION_FAILED", "severity": "error",
-                        "owner": "qml_resolution", "source_file": relative, "message": "QML project join failed",
-                        "recovery": "Correct the join failure and retry; prior graph is preserved."})
-                    if str(path) not in _failed_sources:
-                        _failed_sources.append(str(path))
-        else:
-            all_nodes.extend(joined_nodes[node_count:])
-            all_edges.extend(joined_edges[edge_count:])
-
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a
     # portable id and rewrite the edge endpoints that reference it.
@@ -8856,6 +8830,15 @@ def extract(
     for e in all_edges:
         e.pop("local_alias", None)
 
+    # Native overlays must borrow final canonical C++ identities, not the
+    # earlier absolute/stem IDs. Context remains accepted, read-only input.
+    from graphify.qt_qml_pipeline import resolve_qt_qml
+    for failed in resolve_qt_qml(paths, per_file, all_nodes, all_edges, root=root,
+                                context_nodes=resolution_context_nodes,
+                                context_edges=resolution_context_edges):
+        if failed not in _failed_sources:
+            _failed_sources.append(failed)
+
     # Tag AST provenance so the incremental watch rebuild can distinguish
     # AST-extracted nodes from semantic/LLM nodes. On a full re-extraction
     # the watcher drops any AST-marked node missing from the fresh output
@@ -8907,6 +8890,8 @@ def extract(
         "failed_sources": _failed_sources,
         "qml_failures": [failure for result in per_file if result
                          for failure in result.get("qml_failures", [])],
+        "qt_failures": [failure for result in per_file if result
+                        for failure in result.get("qt_failures", [])],
         "diagnostics": [diagnostic for result in per_file if result
                         for diagnostic in result.get("diagnostics", [])],
         # Surfaces the actual dispatched source paths so build_merge /

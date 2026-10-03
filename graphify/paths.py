@@ -527,7 +527,8 @@ def load_node_link_graph(path_or_data):
         for link in data.get("links", []):
             metadata = link.get("metadata", {})
             qml = metadata.get("qml", {}) if isinstance(metadata, dict) else {}
-            if not isinstance(qml, dict) or qml.get("contract_version") != 1:
+            qt = metadata.get("qt", {}) if isinstance(metadata, dict) else {}
+            if not any(isinstance(value, dict) and value.get("contract_version") == 1 for value in (qml, qt)):
                 continue
             source, target = link["source"], link["target"]
             attributes = (graph.edges[source, target, link.get("key", 0)]

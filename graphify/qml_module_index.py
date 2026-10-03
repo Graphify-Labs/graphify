@@ -13,8 +13,9 @@ MAX_MODULE_RESOLUTION_STEPS = 1024
 class QmlModuleIndex:
     """Own lookup tables, borrow declarations read-only, and preserve provider identity."""
 
-    def __init__(self, nodes, edges, *, root: Path, import_roots=None):
+    def __init__(self, nodes, edges, *, root: Path, import_roots=None, native_index=None, project_index=None):
         self.root = Path(root).resolve()
+        self.native_index, self.project_index = native_index, project_index
         self.import_roots = tuple(import_roots if import_roots is not None else (".",))
         self.nodes = {}
         self.paths = {}
@@ -48,6 +49,12 @@ class QmlModuleIndex:
         for directory, ids in self.providers.items():
             modules = [nid for nid in ids if qml_metadata(self.nodes[nid]).get("kind") == "module"]
             self.providers[directory] = sorted(modules or ids)
+
+    def md(self, node_or_id):
+        """Native lookup views are read-only; generic C++ nodes stay unchanged."""
+        node = self.nodes[node_or_id] if isinstance(node_or_id, str) else node_or_id
+        native = self.native_index.metadata(node["id"]) if self.native_index else {}
+        return native or qml_metadata(node)
 
     def _target(self, export: str, *, importer: str) -> Resolution:
         node, md = self.nodes[export], qml_metadata(self.nodes[export])
@@ -151,7 +158,7 @@ class QmlModuleIndex:
         key = (uri, major, minor)
         if key in seen or len(seen) >= 32:
             return Resolution("unsupported", reason="module_import_cycle_or_limit")
-        provider = self.module_import(uri, major, minor)
+        provider = QmlModuleIndex.module_import(self, uri, major, minor)
         if provider.target_id is None:
             return provider
         _, major, minor = self._module_version(provider, major, minor)

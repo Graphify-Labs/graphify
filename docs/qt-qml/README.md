@@ -1,12 +1,11 @@
 # Qt and QML support foundation
 
-QML-00 through QML-03 now have local implementation: optional QML parsing,
-declarations, literal `qmldir` imports/exports, scoped resolution, static expression
-sites, aliases, handlers and accepted JavaScript resource overlays. See
-[executed increments](IMPLEMENTATION.md) and [validation](VALIDATION.md) for the
-individual acceptance gates and executed Windows evidence. The C++ bridges,
-native Qt events, CMake/qmake/resource/type-description metadata, optimized
-invalidation and full release validation remain planned.
+QML-00 through QML-04 now implement optional QML declarations/imports, scoped
+bindings/aliases/JavaScript/handlers, native Qt C++ signals/connections/slots,
+registered C++ APIs and literal QML object access. See [implemented scope](IMPLEMENTATION.md)
+and [validation](VALIDATION.md) for individual gates and revision-specific evidence.
+CMake/qmake/resource/type-description public admission, configuration/update parity
+and final consumer/release evidence continue in QML-05, QML-06 and QML-07.
 
 The goal is to add reliable, local analysis of Qt/QML projects to Graphify and
 contribute that support upstream in small pull requests. Graphify keeps its
@@ -40,7 +39,8 @@ this directory records the local Qt/QML extension and its remaining design.
 The agreed first target is **Qt 6 with both CMake and qmake metadata support**.
 Qt 6.5 and 6.8 are source fixture profiles, not claims of installed SDK/runtime
 equivalence. Executed host evidence is Windows x64/Python 3.10/3.12/3.13/3.14; Linux/macOS lanes
-remain unexecuted. Qt 5.15 is later, separately verified work.
+pass for QML-03 on hosted CI. Newer Qt revisions need their own hosted proof.
+Qt 5.15 is later, separately verified work.
 
 Qt signals, slots, emissions and `QObject::connect` are explicit requirements,
 as is bidirectional QML/C++ integration: C++ APIs supplied to QML and C++ access

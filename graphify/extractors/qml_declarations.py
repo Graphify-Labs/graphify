@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from graphify.extractors.qml_facts import FactBuilder, field, make_scope_key, text
+from graphify.extractors.qml_literals import literal_fields
 
 
 class Declarations:
@@ -101,7 +102,8 @@ class Declarations:
                          component_key=component_key, object_scope_key=scope,
                          parent_scope_key=scope, raw_type=field(syntax, "type", self.source),
                          modifiers=modifiers, signature=text(parameters, self.source),
-                         return_type=field(syntax, "return_type", self.source), parameter_names=parameter_names)
+                         return_type=field(syntax, "return_type", self.source), parameter_names=parameter_names,
+                         **(literal_fields(syntax.child_by_field_name("value"), self.source) if kind == "property" else {}))
         self.members.append((syntax, node))
         value = syntax.child_by_field_name("value")
         if value and value.type in {"ui_object_definition", "ui_object_array"}:

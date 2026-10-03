@@ -34,6 +34,10 @@ def qml_refresh_required(
     changed = list(changed_paths)
     if any(is_qml_path(p) for p in changed):
         return True
+    # C++ exposure/events can change dependencies in unchanged Qt or QML files.
+    # Refresh the admitted corpus until a narrower dependency proof is available.
+    if any(Path(p).suffix.lower() in {".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx"} for p in changed):
+        return True
     return any(is_qml_path(p) for p in corpus) and any(
         Path(p).suffix.lower() in {".js", ".mjs", ".cjs"} for p in changed
     )
@@ -88,10 +92,10 @@ def require_complete_qml(
     failures = [
         Path(p) for p in result.get("failed_sources", []) if is_qml_path(p)
     ]
-    for failure in result.get("qml_failures", []) or []:
+    for failure in [*(result.get("qml_failures", []) or []), *(result.get("qt_failures", []) or [])]:
         if isinstance(failure, dict) and failure.get("source_file"):
             failures.append(Path(failure["source_file"]))
-    unsafe = bool(result.get("qml_failures")) or (
+    unsafe = bool(result.get("qml_failures") or result.get("qt_failures")) or (
         bool(qml_paths) and bool(
             result.get("error") or result.get("partial") or result.get("parse_errors")
         )

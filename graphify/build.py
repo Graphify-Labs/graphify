@@ -1384,7 +1384,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         _edge_rel = attrs.get("relation")
         if _edge_rel in ("calls", "imports", "imports_from", "references"):
             from graphify.qml_projection import allows_qml_script_edge
+            from graphify.qt_qml_projection import allows_qt_qml_edge
             qml_script_edge = allows_qml_script_edge(G.nodes[src], G.nodes[tgt], attrs, target_id=tgt)
+            qt_qml_edge = allows_qt_qml_edge(G.nodes[src], G.nodes[tgt], attrs,
+                                            source_id=src, target_id=tgt, nodes=G.nodes)
             src_ext = Path(G.nodes[src].get("source_file") or "").suffix.lower()
             tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
             src_fam = _EDGE_LANG_FAMILY.get(src_ext)
@@ -1395,14 +1398,14 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 if (
                     attrs.get("confidence") == "INFERRED"
                     and src_ext and tgt_ext and src_fam != tgt_fam
-                    and not qml_script_edge
+                    and not (qml_script_edge or qt_qml_edge)
                 ):
                     continue
             else:
                 # imports/references: drop only when BOTH endpoints are known code
                 # languages of different families, so a config->code reference
                 # (unknown ext, e.g. a manifest) is never mistaken for a phantom.
-                if src_fam is not None and tgt_fam is not None and src_fam != tgt_fam and not qml_script_edge:
+                if src_fam is not None and tgt_fam is not None and src_fam != tgt_fam and not (qml_script_edge or qt_qml_edge):
                     continue
         # A file-level import or re-export cannot carry useful connectivity when
         # both endpoints resolve to the same node.  This most often happens when

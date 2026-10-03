@@ -302,10 +302,39 @@ Before advertising the first Qt/QML release, require:
 ## Decisions and alternatives
 
 - **D1: Extend the existing pipeline.** New extractor/metadata/resolver modules preserve upstream reviewability. A separate Qt-only Graphify rewrite would duplicate orchestration and fragment consumers.
-- **D2: Parser choice follows evidence.** The optional language-pack adapter is accepted from the recorded Windows spike. Other host lanes remain unexecuted; a smaller maintained binding is an alternative if coverage or package footprint later fails. Preserve optional core installation.
+- **D2: Parser choice follows evidence.** The optional language-pack adapter is accepted from the recorded Windows spike. The QML-03 hosted lanes also pass (see VALIDATION.md); a smaller maintained binding is an alternative if coverage or package footprint later fails. Preserve optional core installation.
 - **D3: Source facts precede resolution.** Resolve owned declarations using a per-run project index. Current QML caching is bypassed; future caching needs parser/fact invalidation. Avoid hidden filesystem lookups inside workers and stale context-dependent per-file edges.
 - **D4: Precision requires scope and exposure evidence.** Do not resolve by global short-name matching or combine all language families. Qt bridging is a narrow extension with independent evidence and consumer tests.
 - **D5: Preserve the stable public schema.** Namespaced optional metadata and compatible relations land first. Any new relation or graph storage mode requires a separate consumer/migration design.
 - **D6: Ambiguity is a result.** Store a reason/candidate summary and avoid inventing runtime behavior. Optional Qt validation can strengthen the test corpus without becoming an execution dependency.
 - **D7: Metadata is read, not executed.** Explicit import/build roots and supplied generated files provide reproducibility. Full build-system evaluation and dynamic runtime resolution remain separate future work.
 - **D8: Qt events and both object API directions retain their mechanisms.** Emission/connection/load/access sites preserve source ownership, roles and evidence. Ordinary calls remain ordinary calls; event delivery and meta-object dispatch are dependencies with declared semantics and runtime limits.
+
+
+## QML-04 implemented boundary
+
+Known Qt annotations are normalized in place before generic C++ extraction.
+Byte length, CRLF and original offsets stay unchanged. The existing C++/CLI
+normalization and generic C++ extractor still own canonical declarations. Qt
+class/member/property/registration/event/access facts are separate source-owned
+`metadata.qt.contract_version=1` overlays. Their joins run after final canonical
+ID and path remapping; they never reconstruct a target from its label or ID recipe.
+
+- **D9: Canonical declarations precede Qt joins.** A valid inline Qt annotation
+  previously made the generic parser invent a `public()` method and omit the real
+  invokable. Byte-preserving normalization fixes the parser input; accepting a
+  guessed replacement ID would leave an invalid endpoint. AST cache schema 5
+  invalidates earlier generic declarations while semantic cache entries survive.
+
+Registered QML types and scoped supplied instances use independent provider
+proofs. Class/member identity, exact source scope and endpoint evidence authorize
+cross-family links in the builder. Source-owned occurrence and endpoint-role nodes
+retain signal-to-signal subscriptions, emissions, disconnects, reflective access
+and repeated dependencies in the default simple graph. Versioned Qt edges retain
+producer direction through undirected JSON export/reload.
+
+The packaged metadata-index foundation supports literal file URLs for source
+access. Public CMake/qmake/qrc/qmltypes admission remains QML-05 work. Native
+member revisions, foreign/extended/attached providers and compiler conversions
+are retained as unsupported evidence in this initial profile. Conservative live
+code refresh handles C++ changes; QML-06 adds configuration and metadata parity.

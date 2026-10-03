@@ -258,3 +258,26 @@ Each feature increment updates [requirements](../REQUIREMENTS.md),
 [traceability](../../tests/TRACEABILITY.md), support documentation, and any changed
 design decisions in the same PR. Dynamic object creation, arbitrary plugin code,
 full preprocessing, and arbitrary build-script evaluation remain explicit limits.
+
+
+## Implemented native Qt contracts (QML-04)
+
+`qt_qml_pipeline.resolve_qt_qml` owns scratch integration after final generic C++
+canonicalization. Exposure, events and object access have focused collectors and
+per-run indexes. Every native fact uses recursive, bounded raw semantic transport;
+malformed or oversized transport fails rather than becoming a guessed endpoint.
+All target IDs refer to accepted canonical declarations or independent owned facts.
+
+Native emissions use `uses`/`qt_signal_emit`. Connection/disconnection endpoint
+roles use `references` and their own source sites. Reflective QML method intent
+uses `calls`/`qt_cpp_qml_invoke` only for an evidenced declared function; the distinct
+context and `operation=invokeMethod` retain its reflective mechanism. This category
+records source intent and does not assert successful runtime invocation or delivery.
+Qt connection flags and conditional registration are source configuration evidence.
+
+Literal loader URLs establish source components; source-local handles establish
+roots and objectName trees. QML id is never an objectName. Known context/initial
+providers are scoped to the exact loaded component, with lexical/local shadowing
+and duplicate exposures retained. All joins borrow prior corpus dictionaries
+read-only. `qml_failures` and `qt_failures` both enter the publication integrity gate.
+No force/partial option can publish an incomplete Qt overlay.
