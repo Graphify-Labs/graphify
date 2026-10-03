@@ -5237,8 +5237,19 @@ def _extract_generic(
             return
 
         if (config.ts_module == "tree_sitter_scala"
-                and t in ("val_definition", "var_definition")
-                and parent_class_nid):
+                and t in ("val_definition", "var_definition")):
+            # Scala 3 drops the boilerplate wrapper: `val`/`var` can be written
+            # directly at file scope with no enclosing object/class/trait. Gating
+            # on `parent_class_nid` therefore dropped every type reference a
+            # file-scope binding makes -- the parsed shape is identical to the
+            # in-class case (both carry a `type` field), so the missing container
+            # was the only difference, and the binding vanished from the graph
+            # entirely rather than degrading (#2054). This is the Scala instance
+            # of the same generic defect already fixed for Python (#1050): a
+            # position that legitimately has no container must fall back to the
+            # file node rather than be skipped. Reuses the owner idiom from the
+            # property branch above.
+            owner_nid = parent_class_nid or file_nid
             type_node = node.child_by_field_name("type")
             if type_node is not None:
                 line = node.start_point[0] + 1
@@ -5247,8 +5258,8 @@ def _extract_generic(
                 for ref_name, role in refs:
                     ctx = "generic_arg" if role == "generic_arg" else "field"
                     target_nid = ensure_named_node(ref_name, line)
-                    if target_nid != parent_class_nid:
-                        add_edge(parent_class_nid, target_nid, "references",
+                    if target_nid != owner_nid:
+                        add_edge(owner_nid, target_nid, "references",
                                  line, context=ctx)
             # fall through so any call expressions in the initializer get walked
 
