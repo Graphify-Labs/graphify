@@ -194,3 +194,20 @@ exit as the prior exception record. QML-04 measured ceilings are:
 
 Domain logic remains in focused Qt modules. These exceptions do not permit
 unmeasured later growth; each later increment remeasures its touched hooks.
+
+
+## QML-05
+
+Complete for the literal Qt6 source profile. Discovery/registry/facade/worker
+paths admit metadata without running CMake, qmake, moc, plugins or QML. One per-run
+QtProjectIndex supplies accepted module/source/resource membership to native and
+QML joins. Generated tooling descriptions retain separate origins and warnings.
+Duplicate source declarations survive generic namespace canonicalization, so
+multiple modules/aliases cannot silently become a unique provider. Unknown CMake
+resource policy, dynamic build expressions and locale-dependent resource selection
+remain explicit unsupported results. Final configuration/update parity is QML-06.
+
+Legacy measured ceilings: extract.py 8999, detect.py 2797, test_extract.py 4827;
+owner Qt integration maintainer (discovery owner source discovery maintainer).
+Reason: narrow named-source admission, root-sensitive dispatch and exact fact
+identity protection. Exit: coordinated upstream facade/classification extraction.

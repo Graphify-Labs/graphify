@@ -18,7 +18,7 @@ class QmlSafetyError(RuntimeError):
 def is_qml_path(path: str | Path) -> bool:
     """Recognize QML source and its named/type-description metadata."""
     p = Path(path)
-    return p.suffix.lower() in {".qml", ".qmltypes"} or p.name == "qmldir"
+    return p.suffix.lower() in {".qml", ".qmltypes", ".cmake", ".pro", ".pri", ".qrc"} or p.name in {"qmldir", "CMakeLists.txt"}
 
 
 def qml_refresh_required(

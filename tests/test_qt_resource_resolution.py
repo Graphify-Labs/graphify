@@ -169,3 +169,21 @@ def test_public_qt6_cmake_and_qmake_fixtures_describe_identical_membership():
         md = index.module_metadata(context.target_id)
         assert (md["uri"], md["major"], md["minor"]) == ("Public.Tools", 1, 0)
         assert index.resolve_component("Public.Tools", "Main").target_id == index.resolve_url("qrc:/ui/Public/Tools/Main.qml").target_id
+
+
+@pytest.mark.parametrize("same_file", [False, True])
+def test_same_target_name_does_not_coalesce_distinct_module_providers(tmp_path, same_file):
+    declaration = "qt_add_qml_module(app URI Public.Tools VERSION 1.0)\n"
+    if same_file:
+        results = [parse_cmake(declaration * 2)]
+    else:
+        results = [parse_cmake(declaration, relative_file=file) for file in
+                   ("first/CMakeLists.txt", "second/CMakeLists.txt")]
+    nodes = [node for result in results for node in result["nodes"]]
+    providers = [node["id"] for node in nodes if qml_metadata(node).get("kind") == "qt_module"]
+    assert len(set(providers)) == 2
+    index = QtProjectIndex(nodes, [], root=tmp_path)
+    resolution = index.module_import("Public.Tools", 1, 0)
+    assert resolution.status == "ambiguous" and resolution.target_id is None
+    assert set(resolution.evidence) == set(resolution.candidates) == set(providers)
+    assert index.resolve_component("Public.Tools", "Main", 1, 0).status == "ambiguous"

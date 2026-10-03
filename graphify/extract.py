@@ -58,6 +58,11 @@ from graphify.extractors.powershell import extract_powershell, extract_powershel
 from graphify.extractors.r import extract_r, resolve_r_sourced_calls  # noqa: F401
 from graphify.extractors.qml import extract_qml  # noqa: F401
 from graphify.extractors.qml_metadata import extract_qmldir  # noqa: F401
+from graphify.extractors.qml_cmake import extract_cmake  # noqa: F401
+from graphify.extractors.qml_qmake import extract_qmake  # noqa: F401
+from graphify.extractors.qml_resources import extract_qrc  # noqa: F401
+from graphify.extractors.qml_types import extract_qmltypes  # noqa: F401
+from graphify.qml_safety import is_qml_path
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
@@ -189,7 +194,8 @@ def _safe_extract(
     extractor: Callable, path: Path, *, scan_root: Path | None = None
 ) -> dict:
     try:
-        if extractor in (extract_python, extract_qml, extract_qmldir):
+        if extractor in (extract_python, extract_qml, extract_qmldir,
+                         extract_cmake, extract_qmake, extract_qrc, extract_qmltypes):
             return extractor(path, root=scan_root)
         return extractor(path)
     except RecursionError:
@@ -3068,6 +3074,10 @@ def _canonicalize_csharp_namespace_nodes(all_nodes: list[dict], all_edges: list[
     by_label: dict[str, list[dict]] = {}
     for node in all_nodes:
         if node.get("type") != "namespace":
+            continue
+        # Qt/QML namespace-shaped facts represent distinct source declarations
+        # and occurrences. Equal labels cannot merge providers or resource aliases.
+        if node.get("metadata", {}).get("qml", {}).get("contract_version") == 1:
             continue
         label = node.get("label")
         if isinstance(label, str):
@@ -6712,6 +6722,11 @@ def extract_xaml(path: Path) -> dict:
 
 _DISPATCH: dict[str, Any] = {
     ".qml": extract_qml,
+    ".qmltypes": extract_qmltypes,
+    ".cmake": extract_cmake,
+    ".pro": extract_qmake,
+    ".pri": extract_qmake,
+    ".qrc": extract_qrc,
     ".py": extract_python,
     ".js": extract_js,
     ".jsx": extract_js,
@@ -6966,6 +6981,8 @@ def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
     if path.name == "qmldir":
         return extract_qmldir
+    if path.name == "CMakeLists.txt":
+        return extract_cmake
     if path.name.lower().endswith(".blade.php"):
         return extract_blade
     # MCP config files (.mcp.json, claude_desktop_config.json, ...) are routed
@@ -7044,7 +7061,7 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     root = Path(root_str)
     cache_location = Path(cache_location_str)
     _raise_recursion_limit()
-    bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or (path.suffix.lower() == ".qml" or path.name == "qmldir")
+    bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or is_qml_path(path)
 
     # Check cache first (avoid re-extraction)
     if not bypass_cache:
@@ -7263,7 +7280,7 @@ def _extract_sequential(
         if extractor is None:
             per_file[idx] = {"nodes": [], "edges": []}
             continue
-        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or (path.suffix.lower() == ".qml" or path.name == "qmldir")
+        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or is_qml_path(path)
         # XAML boundary anchors on `root` (the corpus), not the cache location.
         result = _safe_extract_with_xaml_root(extractor, path, root)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666),
@@ -7416,7 +7433,7 @@ def extract(
         if _get_extractor(path) is None:
             per_file[i] = {"nodes": [], "edges": []}
             continue
-        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or (path.suffix.lower() == ".qml" or path.name == "qmldir")
+        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or is_qml_path(path)
         if not bypass_cache:
             cached = load_cached(path, root, cache_root=cache_location)
             if cached is not None:
@@ -8905,7 +8922,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
     containment_root = root if root is not None else target
     from graphify.detect import _resolves_under_root
     if target.is_file():
-        if target.name == "qmldir" or target.suffix.lower() == ".qml":
+        if is_qml_path(target):
             from graphify.detect import _is_ignored, _load_graphifyignore
             ignore_root = root if root is not None else target.parent
             patterns = _load_graphifyignore(ignore_root)
@@ -8943,7 +8960,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
             for fname in filenames:
                 p = dp / fname
                 suffix = p.suffix
-                if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS or p.name == "qmldir") and not _ignored(p) and _resolves_under_root(p, containment_root):
+                if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS or p.name in {"qmldir", "CMakeLists.txt"}) and not _ignored(p) and _resolves_under_root(p, containment_root):
                     results.append(p)
         return sorted(results)
     # Walk with symlink following + cycle detection
@@ -8964,7 +8981,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         for fname in filenames:
             p = dp / fname
             suffix = p.suffix
-            if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS or p.name == "qmldir") and not _ignored(p) and _resolves_under_root(p, containment_root):
+            if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS or p.name in {"qmldir", "CMakeLists.txt"}) and not _ignored(p) and _resolves_under_root(p, containment_root):
                 results.append(p)
     return sorted(results)
 

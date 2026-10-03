@@ -56,3 +56,8 @@ native events and reverse object access. Native C++ event work can follow QML-00
 alongside the QML lane; metadata readers can follow QML-02. Every acceptance ID
 has a planned completion increment in traceability. Early graph/persistence/update
 safety is required when a capability is enabled, before later optimization.
+
+
+QML-05 public metadata admission and module/resource bridge joins are implemented
+and locally verified. QML-06 refresh parity and QML-07 consumer/release proof
+remain open. Static literal metadata never invokes a build or runtime engine.

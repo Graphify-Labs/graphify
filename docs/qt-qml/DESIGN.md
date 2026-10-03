@@ -281,3 +281,12 @@ providers are scoped to the exact loaded component, with lexical/local shadowing
 and duplicate exposures retained. All joins borrow prior corpus dictionaries
 read-only. `qml_failures` and `qt_failures` both enter the publication integrity gate.
 No force/partial option can publish an incomplete Qt overlay.
+
+
+QML-05 activates the internally packaged metadata readers at discovery/dispatch.
+After native overlays borrow final C++ IDs, QtProjectIndex supplies real source
+membership to QtQmlBridgeIndex and both QML resolvers. Resource aliases resolve
+only accepted targets. Generated/source disagreements attach to the fresh source
+result as warnings; partial metadata participates in the publication failure gate.
+Versioned Qt/QML namespace-shaped facts bypass generic C# namespace merging,
+retaining distinct provider and repeated resource identities.

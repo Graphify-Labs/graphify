@@ -13,6 +13,7 @@ def resolve_qt_qml(paths, per_file, all_nodes, all_edges, *, root,
     from graphify.qt_event_resolution import resolve_qt_events
     from graphify.qt_qml_access_resolution import resolve_qt_qml_access
     from graphify.qt_qml_bridge import build_qt_qml_bridge
+    from graphify.qt_project_index import QtProjectIndex
 
     fresh_ids = {node["id"] for node in all_nodes}
     nodes = all_nodes + [node for node in context_nodes or () if node.get("id") not in fresh_ids]
@@ -36,19 +37,25 @@ def resolve_qt_qml(paths, per_file, all_nodes, all_edges, *, root,
         collect(enrich_qt_cpp)
         collect(collect_qt_cpp_events)
         collect(collect_qt_cpp_access)
-        native_index = build_qt_qml_bridge(nodes, edges, root=root)
+        project_index = QtProjectIndex(nodes, edges, root=root)
+        native_index = build_qt_qml_bridge(nodes, edges, root=root, project_index=project_index)
         if any(node.get("metadata", {}).get("qml") for node in nodes):
             from graphify.qml_relationships import resolve_qml_relationships
             from graphify.qml_resolution import resolve_qml_project
-            resolve_qml_project(results, nodes, edges, root=root, native_index=native_index)
-            resolve_qml_relationships(results, nodes, edges, root=root, native_index=native_index)
+            resolve_qml_project(results, nodes, edges, root=root, native_index=native_index, project_index=project_index)
+            resolve_qml_relationships(results, nodes, edges, root=root, native_index=native_index, project_index=project_index)
         resolve_qt_events(results, nodes, edges, root=root)
-        resolve_qt_qml_access(results, nodes, edges, root=root)
+        resolve_qt_qml_access(results, nodes, edges, root=root, project_index=project_index)
+        for diagnostic in project_index.diagnostics:
+            for path, result in results.items():
+                if Path(path).resolve().relative_to(root).as_posix() == diagnostic["source_file"]:
+                    result.setdefault("diagnostics", []).append(dict(diagnostic))
+                    break
     except Exception:
         # Do not expose backend errors or let partial joins reach a graph writer.
         for path, result in results.items():
             path = Path(path)
-            if path.suffix.lower() not in {".qml", ".js", ".mjs", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx"} and path.name != "qmldir":
+            if path.suffix.lower() not in {".qml", ".js", ".mjs", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".qmltypes", ".cmake", ".pro", ".pri", ".qrc"} and path.name not in {"qmldir", "CMakeLists.txt"}:
                 continue
             relative = path.resolve().relative_to(root).as_posix()
             result.setdefault("qml_failures", []).append({"code": "QML_RESOLUTION_FAILED", "source_file": relative})

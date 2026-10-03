@@ -66,20 +66,21 @@ class QtProjectIndex:
 
     def module_import(self, uri: str, major=None, minor=None) -> Resolution:
         """Build-declared namespaces require exact URI/version/provider evidence."""
-        groups = {}
+        providers = []
         for ids in self.modules.values():
             for mid in ids:
                 md = qml_metadata(self.nodes[mid])
                 if md.get("uri") == uri and self._eligible(md, major, minor):
-                    key = (md.get("target_name"), md.get("uri"), md.get("major"), md.get("minor"))
-                    groups.setdefault(key, []).append(mid)
-        evidence = tuple(sorted({mid for ids in groups.values() for mid in ids})[:50])
-        if len(groups) > 1:
+                    providers.append(mid)
+        # A common CMake target spelling does not prove two declarations share
+        # build provenance. Only the exact source-owned identity may coalesce.
+        evidence = tuple(sorted(set(providers))[:50])
+        if len(set(providers)) > 1:
             return Resolution("ambiguous", reason="duplicate_module_provider",
-                              candidates=tuple(sorted(ids[0] for ids in groups.values())[:50]),
+                              candidates=evidence,
                               evidence=evidence)
-        if groups:
-            return Resolution("resolved", sorted(next(iter(groups.values())))[0], evidence=evidence)
+        if providers:
+            return Resolution("resolved", evidence[0], evidence=evidence)
         return Resolution("unavailable", reason="module_or_version_unavailable")
 
     def module_type(self, uri, major, minor, name, *, importer="", **kwargs) -> Resolution:

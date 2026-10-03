@@ -80,3 +80,10 @@ ordinary member-pointer receivers.
 
 Metadata reader/index modules ship as an internal dependency foundation. Their
 public discovery and production dispatch activation is recorded with QML-05.
+
+
+QML-05 public seams: detect.classify_file exact CMakeLists.txt and Qt suffixes;
+extract._get_extractor/_safe_extract forward the explicit scan root; collect_files
+uses identical named-file/ignore/root admission. LANGUAGE_EXTRACTORS exposes the
+four bounded metadata readers. qt_qml_pipeline owns project/native index ordering
+and warning attachment. Partial readers bypass syntax cache and reject publication.

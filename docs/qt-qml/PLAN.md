@@ -1,7 +1,7 @@
 # Qt and QML feature increment plan
 
-Status: QML-00 through QML-04 complete for their documented static source profiles.
-QML-05 through QML-07 remain open; their remaining gates are recorded below. Executed checks are recorded in
+Status: QML-00 through QML-05 complete for their documented static source profiles.
+QML-06 through QML-07 remain open; their remaining gates are recorded below. Executed checks are recorded in
 [VALIDATION.md](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md).
 Commands marked proposed are future verification suggestions, not pass claims.
 
@@ -892,3 +892,17 @@ through QML-07a consumer proof and QML-07b hosted packaging/documentation eviden
 QML-07 is the intended completion of this documented static scope. If a promised
 criterion cannot close there, record its gap and a required follow-on increment;
 dynamic runtime/plugin/widget extensions are separate future scope.
+
+
+## QML-05 review
+
+Public discovery, dispatch and root forwarding now admit exact CMakeLists.txt,
+.cmake, .pro/.pri, .qrc and .qmltypes. Module membership joins declarative native
+providers; source/generated conflict diagnostics retain both origins. Public
+facade regressions exposed generic namespace canonicalization merging independent
+metadata declarations and resource occurrences; versioned Qt/QML source facts now
+retain their original identities. Duplicate providers/aliases remain ambiguous.
+
+QML-06 retains ignore/configuration refresh and last-provider cleanup obligations.
+No extra top-level increment is needed. QML-07 remains the final documented static
+scope gate, with runtime behavior explicitly outside the supported profile.

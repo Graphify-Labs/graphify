@@ -5,10 +5,10 @@ Qt/QML support extension. Add or update product requirements here with the
 behavioural change, preserving established identifiers and acceptance traceability.
 
 QML-001/003/004/005/006/007 are **Verified** for the documented Windows x64
-static profile. QML-002/009/010/011/012/013/014/015 are **Partially implemented**;
-QML-009 currently covers literal qmldir only. QML-008/016/017 are now
+static profile. QML-002/010/011/012/013/014/015 are **Partially implemented**;
+QML-008/009 are Verified for the bounded literal source profile. QML-016/017 are now
 **Partially implemented** with native source exposure/events and literal object
-access; build-derived module/resource joins and final consumer gates remain open.
+access and build-derived module/resource joins; final incremental and consumer gates remain open.
 See individual criterion evidence in [tests/TRACEABILITY.md](../tests/TRACEABILITY.md)
 and [IMPLEMENTATION.md](qt-qml/IMPLEMENTATION.md). Generic C++ and JavaScript remain
 baseline capabilities. Increment references identify delivery stages, not completion evidence.

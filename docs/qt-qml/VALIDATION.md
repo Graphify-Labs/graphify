@@ -250,3 +250,20 @@ QML-05. Later Python/OS source lanes are owned by the forthcoming PR workflows.
 The required repository graph refresh succeeded:19555 nodes,40020 edges and1065
 communities. Existing unavailable optional-language warnings remain explicit.
 Generated graph/report/cache/coverage data are excluded from commits.
+
+
+## QML-05 local evidence
+
+Windows Python3.12.14: 435 Qt/QML tests passed with6 documented skips before the
+final duplicate-provider regression; extract/registry/admission245 passed8 baseline
+optional-language skips. The final canonicalization fix passes independent facade
+CMake/qmake native membership, duplicate module, qrc alias and accepted-target
+regressions. QML-06 tests still demonstrate ignore-only refresh gaps and remain
+open. Ruff passes touched production/tests. The source refresh produced19701 nodes,
+40531 edges and1066 communities before the final identity fix; a final refresh is
+required before commit. Hosted QML-04 runs37090713564/37090713525 were still running
+when this local evidence was recorded; they do not prove the QML-05 revision.
+
+Final focused public admission/native/resource/type suite: 67 passed. Additional
+index regressions retain same-target duplicate project declarations as ambiguous.
+No acceptance is inferred from unfinished QML-06 or QML-07 cases.
