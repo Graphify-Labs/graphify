@@ -163,7 +163,7 @@ def test_write_text_atomic_windows_permission_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "replace", flaky_replace)
     write_text_atomic(p, "new-content")
 
-    assert calls["n"] == 1  # the fallback path was actually exercised
+    assert calls["n"] == 5  # the fallback path was actually exercised after 5 retries
     assert p.read_text() == "new-content"
     assert sorted(x.name for x in tmp_path.iterdir()) == ["graph.json"]
 

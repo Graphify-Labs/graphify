@@ -21,6 +21,7 @@ import os
 import re
 import stat
 import tempfile
+import time
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
@@ -50,12 +51,19 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
     final rename fails, the backup is renamed straight back so a mid-swap
     failure leaves the original in place rather than leaving ``dst`` missing.
     """
-    try:
-        os.replace(src, dst)
-        return
-    except OSError as exc:
-        if not isinstance(exc, PermissionError) and getattr(exc, "winerror", None) != 17:
-            raise
+    for attempt in range(5):
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as exc:
+            if isinstance(exc, PermissionError):
+                if attempt < 4:
+                    time.sleep(0.1)
+                    continue
+                # Exhausted retries; fall through to the copy-and-rename fallback
+            elif getattr(exc, "winerror", None) != 17:
+                raise
+            break
     import shutil
     dst = os.fspath(dst)
     if os.path.normcase(os.path.abspath(os.fspath(src))) == os.path.normcase(os.path.abspath(dst)):
@@ -76,7 +84,15 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
             os.unlink(backup)  # reserve the name only; rename needs it free on Windows
             os.rename(dst, backup)  # a plain rename moves a symlink itself, never its target
         try:
-            os.rename(tmp_copy, dst)
+            for attempt in range(5):
+                try:
+                    os.rename(tmp_copy, dst)
+                    break
+                except PermissionError:
+                    if attempt < 4:
+                        time.sleep(0.1)
+                        continue
+                    raise
         except BaseException:
             if backup is not None:
                 try:
