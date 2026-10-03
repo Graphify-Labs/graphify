@@ -332,3 +332,30 @@ The source graph refresh succeeded:19890 nodes,41131 edges,1069 communities.
 It is navigation data, not acceptance proof. Generated graphs/caches/reports and
 local coverage artifacts are excluded from the public change. Final privacy/link/
 stable-ID and new Python footprint review passes.
+
+### QML-07 reviewed artifact and initial hosted correction
+
+Implementation head `5e73bacf5529f83d014b3709959ebd1784a62593` has reviewed
+Git-index tree `0224d13a5eca209030b6c7873ac3fa052248dea0`. Its built wheel
+SHA256 is `99c5d1030f8781eecb7bb73834bd27086fa0a6c16ed9a5f814173d230f4f42ed`.
+Clean optional/core Python3.12.14 environments pass isolated `-I` offline smoke
+from a neutral directory, including native QML_ELEMENT/CMake/QRC integration;
+the actual built-artifact suite passes3 cases. Tree-sitter0.25.2 and optional
+language-pack0.11.0 are recorded. These local passes do not fill hosted cells.
+
+Final event mutation/removal additions pass2 cases (manual/watch); combined with
+normal-edit/no-change/reverse-access parity,8 pass without skips. An independent
+build/source-priority plus final-parity regression subset passes102 cases.
+Final navigation refresh:19924 nodes,41264 edges,1095 communities.
+
+[Draft fork PR5](https://github.com/SlinkyRamey/graphify/pull/5) is stacked on
+QML-06 head `9fd9cd0d13e601b8e716816020a761484db29b19`. Initial source head
+`5e73bacf5529f83d014b3709959ebd1784a62593` tested merge candidate
+`7229b127ee144b35426501467724e3c471c34b20`.
+The first [wheel run37094103638](https://github.com/SlinkyRamey/graphify/actions/runs/37094103638)
+passed the four Ubuntu installed-artifact lanes but exposed missing historical
+Git objects in Windows/macOS source-guidance tests: checkout was shallow and the
+frozen pre-split baseline could not be read. The wheel workflow now fetches full
+history, matching the existing main CI source-policy job. Tests and frozen guards
+are retained. This failed/obsolete run is not counted as final platform proof;
+the corrected reviewed revision requires its own complete matrix.

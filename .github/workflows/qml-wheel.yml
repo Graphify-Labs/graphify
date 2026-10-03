@@ -23,6 +23,10 @@ jobs:
         python: ['3.10', '3.12', '3.13', '3.14']
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Qt assistant guidance checks read the immutable pre-split baseline.
+          # A shallow checkout cannot execute those source-policy regressions.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           python-version: ${{ matrix.python }}
