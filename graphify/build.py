@@ -145,6 +145,7 @@ def mint_external_stubs_in_data(data: dict) -> None:
 # edge (#1547/#1556) is dropped. Kept local to build.py (not imported from extract.py,
 # which imports build.py — a cycle) and deliberately mirrors extract._LANG_FAMILY_BY_EXT.
 _EDGE_LANG_FAMILY: dict[str, str] = {
+    ".qml": "qml",
     ".py": "py", ".pyi": "py",
     ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "js",
     ".ts": "js", ".tsx": "js", ".mts": "js", ".cts": "js",

@@ -3656,6 +3656,19 @@ def dispatch_command(cmd: str) -> None:
                     existing_graph_path, target, _seen_files, detection=detection
                 )
 
+        # QML scope resolution needs unchanged component/metadata facts too.
+        # Until dependency-directed invalidation is implemented, rebuild the
+        # live code corpus on QML (including deletion) or QML-JS input changes.
+        from graphify.qml_safety import (
+            QmlSafetyError, qml_refresh_required, require_complete_qml,
+        )
+        if incremental_mode and qml_refresh_required(
+            files_by_type.get("code", []),
+            [*code_files, *deleted_files, *excluded_files, *graph_stale_sources],
+        ):
+            code_files = [Path(p) for p in files_by_type.get("code", [])]
+            print("[graphify extract] Qt/QML inputs changed; refreshing the live code corpus.")
+
         semantic_files = doc_files + paper_files + image_files
         # --code-only: index code (pure local AST, no key) and skip the semantic
         # (doc/paper/image) pass entirely, so a mixed repo doesn't hard-fail when no
@@ -4012,6 +4025,14 @@ def dispatch_command(cmd: str) -> None:
                     sys.exit(1)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
                 _extraction_incomplete = True  # the whole AST pass was lost
+            # An incomplete QML scope cannot replace a prior contribution even
+            # when total node counts increase or a force/partial flag is used.
+            # Reject before semantic work, graph reconciliation, or publication.
+            try:
+                require_complete_qml(ast_result, code_files, operation="extract", root=target)
+            except QmlSafetyError as exc:
+                print(f"[graphify extract] error: {exc}", file=sys.stderr)
+                sys.exit(1)
         stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.

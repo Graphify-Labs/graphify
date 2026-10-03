@@ -1529,6 +1529,13 @@ def _rebuild_code(
         )
         code_files = [Path(f) for f in detected['files']['code']]
 
+        from graphify.qml_safety import (
+            qml_refresh_required, require_complete_qml, require_qml_watch_root,
+        )
+        # The legacy subfolder rebase changes paths but not nested scoped IDs.
+        # Refuse before extraction/reconciliation rather than publish mixed roots.
+        require_qml_watch_root(code_files, project_root=project_root, watch_root=watch_root)
+
         # #3511: `graphify extract` has surfaced files it saw but could not
         # classify since #1692; this update/watch rebuild path never did,
         # so a corpus in a language with no extractor (no supported
@@ -1699,6 +1706,11 @@ def _rebuild_code(
                     _add_deleted_source(deleted_in_root)
             from graphify.extractors.terraform import refresh_terraform_paths
             wanted = refresh_terraform_paths(wanted, code_files, changed_paths)
+            # Changes to QML/metadata/embedded JS may invalidate unchanged QML
+            # references. A complete live-code refresh is the safe initial policy.
+            if qml_refresh_required(code_files, changed_paths):
+                wanted = [p for p in code_files if p not in semantic_doc_files]
+                print("[graphify watch] Qt/QML inputs changed; refreshing the live code corpus.")
             if not wanted and not deleted_paths:
                 print("[graphify watch] No tracked code files in change set - skipping rebuild.")
                 return True
@@ -1855,6 +1867,9 @@ def _rebuild_code(
             "nodes": [], "edges": [], "hyperedges": [],
             "input_tokens": 0, "output_tokens": 0,
         }
+        # The count-based shrink guard cannot account for edge loss or unrelated
+        # additions. QML failure rejects the candidate before any reconciliation.
+        require_complete_qml(result, extract_targets, operation="update/watch", root=watch_root)
         _rebase_relative_source_files(result, watch_root, project_root)
 
         # #2543: AST sources that failed this run (error result, or extractor
@@ -2342,7 +2357,8 @@ def _notify_only(watch_path: Path) -> None:
 
 
 def _has_non_code(changed_paths: list[Path]) -> bool:
-    return any(p.suffix.lower() not in _CODE_EXTENSIONS for p in changed_paths)
+    from graphify.qml_safety import is_qml_path
+    return any(p.suffix.lower() not in _CODE_EXTENSIONS and not is_qml_path(p) for p in changed_paths)
 
 
 def _batch_triggers_rebuild(batch: list[Path]) -> bool:
@@ -2354,7 +2370,8 @@ def _batch_triggers_rebuild(batch: list[Path]) -> bool:
     this, a doc-only deletion batch would sit behind the needs_update flag
     until the next code event or a manual `graphify update` (#2580).
     """
-    has_code = any(p.suffix.lower() in _CODE_EXTENSIONS for p in batch)
+    from graphify.qml_safety import is_qml_path
+    has_code = any(p.suffix.lower() in _CODE_EXTENSIONS or is_qml_path(p) for p in batch)
     has_deletion = any(not p.exists() for p in batch)
     return has_code or has_deletion
 
@@ -2434,7 +2451,8 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
             # relative_to guard, so a stray symlinked event won't raise.
             if ignore_patterns and _is_ignored(path, watch_root_for_ignore, ignore_patterns):
                 return
-            if path.suffix.lower() not in _WATCHED_EXTENSIONS:
+            from graphify.qml_safety import is_qml_path
+            if path.suffix.lower() not in _WATCHED_EXTENSIONS and not is_qml_path(path):
                 return
             try:
                 filter_parts = path.relative_to(watch_root_for_ignore).parts

@@ -1,6 +1,8 @@
 # Qt and QML support foundation
 
-Status: planning foundation; no Qt/QML language support is implemented by this change.
+QML-00 and QML-01 declarations/safety are implemented locally. See
+[executed increments](IMPLEMENTATION.md) for acceptance gates still in progress.
+Later metadata, C++ bridges and full release validation remain planned.
 
 The goal is to add reliable, local analysis of Qt/QML projects to Graphify and
 contribute that support upstream in small pull requests. Graphify keeps its

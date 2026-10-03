@@ -355,6 +355,11 @@ an optional extra or defer instead of silently adding a compiler requirement.
 
 ## QML-01 — Discovery and minimal declarations
 
+**Execution: QML-01a/01b implemented; installation gates being verified.** See
+[implementation evidence](IMPLEMENTATION.md). Review retains QML-02/03 semantic
+validation, immutable context and independent use sites. No new top-level
+increment is needed; QML-06 still owns cache optimization.
+
 **Scope and code paths.** Add `graphify/extractors/qml.py` with an isolated parser
 adapter and QML facts as necessary. Integrate `graphify/detect.py`, the public
 facade and `_DISPATCH` in `graphify/extract.py`, and

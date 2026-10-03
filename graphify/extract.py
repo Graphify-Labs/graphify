@@ -56,6 +56,7 @@ from graphify.extractors.ocaml import extract_ocaml  # noqa: F401
 from graphify.extractors.pascal_forms import extract_delphi_form, extract_lazarus_form  # noqa: F401
 from graphify.extractors.powershell import extract_powershell, extract_powershell_manifest  # noqa: F401
 from graphify.extractors.r import extract_r, resolve_r_sourced_calls  # noqa: F401
+from graphify.extractors.qml import extract_qml  # noqa: F401
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
@@ -187,7 +188,7 @@ def _safe_extract(
     extractor: Callable, path: Path, *, scan_root: Path | None = None
 ) -> dict:
     try:
-        if extractor is extract_python:
+        if extractor in (extract_python, extract_qml):
             return extractor(path, root=scan_root)
         return extractor(path)
     except RecursionError:
@@ -3132,6 +3133,7 @@ def _lang_is_case_insensitive(source_file: object) -> bool:
 # Extensions absent from this map (docs, configs, unknown languages) resolve to
 # no family and are never filtered — same permissive default as before.
 _LANG_FAMILY_BY_EXT: dict[str, str] = {
+    ".qml": "qml",
     # JS/TS module graph (SFCs embed JS/TS)
     ".js": "jsts", ".jsx": "jsts", ".mjs": "jsts", ".cjs": "jsts",
     ".ts": "jsts", ".tsx": "jsts", ".mts": "jsts", ".cts": "jsts",
@@ -6707,6 +6709,7 @@ def extract_xaml(path: Path) -> dict:
 
 
 _DISPATCH: dict[str, Any] = {
+    ".qml": extract_qml,
     ".py": extract_python,
     ".js": extract_js,
     ".jsx": extract_js,
@@ -6828,6 +6831,7 @@ _DISPATCH: dict[str, Any] = {
 # rather than falling back like Pascal does. Used by the #1745 warning in
 # extract() to tell the user which extra restores the language.
 _EXTRA_FOR_EXTENSION = {
+    ".qml": "qml",
     ".vb": "vbnet",
     ".r": "r",
     ".sol": "solidity",
@@ -7036,7 +7040,7 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     root = Path(root_str)
     cache_location = Path(cache_location_str)
     _raise_recursion_limit()
-    bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
+    bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or path.suffix.lower() == ".qml"
 
     # Check cache first (avoid re-extraction)
     if not bypass_cache:
@@ -7255,7 +7259,7 @@ def _extract_sequential(
         if extractor is None:
             per_file[idx] = {"nodes": [], "edges": []}
             continue
-        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
+        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or path.suffix.lower() == ".qml"
         # XAML boundary anchors on `root` (the corpus), not the cache location.
         result = _safe_extract_with_xaml_root(extractor, path, root)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666),
@@ -7408,7 +7412,7 @@ def extract(
         if _get_extractor(path) is None:
             per_file[i] = {"nodes": [], "edges": []}
             continue
-        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES
+        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or path.suffix.lower() == ".qml"
         if not bypass_cache:
             cached = load_cached(path, root, cache_root=cache_location)
             if cached is not None:
@@ -8861,6 +8865,10 @@ def extract(
         # manifest does not freeze them as processed (#2543). Callers that
         # only read nodes/edges ignore this key.
         "failed_sources": _failed_sources,
+        "qml_failures": [failure for result in per_file if result
+                         for failure in result.get("qml_failures", [])],
+        "diagnostics": [diagnostic for result in per_file if result
+                        for diagnostic in result.get("diagnostics", [])],
         # Surfaces the actual dispatched source paths so build_merge /
         # merge_raw_extraction know which files were genuinely re-extracted
         # rather than guessing ownership from node["source_file"] (#3411).

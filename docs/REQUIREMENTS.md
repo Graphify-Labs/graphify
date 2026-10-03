@@ -4,8 +4,10 @@ This is the canonical product requirements document. Current entries cover the
 Qt/QML support extension. Add or update product requirements here with the
 behavioural change, preserving established identifiers and acceptance traceability.
 
-All requirements are **Planned**. Existing generic C++ and JavaScript behavior is
-baseline capability, not verification of the Qt/QML requirements below.
+QML-003 is **Verified** for the documented declaration subset. QML-001 and
+QML-002/010/011/012/013/014/015 are **Partially implemented**. Others are **Planned**.
+See criterion evidence in [IMPLEMENTATION.md](qt-qml/IMPLEMENTATION.md).
+Generic C++ and JavaScript behavior remains baseline capability.
 Increment references identify delivery stages, not completion evidence.
 
 | ID | Required behavior (summary) | Increments |
@@ -30,8 +32,8 @@ Increment references identify delivery stages, not completion evidence.
 
 ## Assigned acceptance criteria
 
-Each criterion belongs to the requirement named in its ID. All criteria are
-**Not executed** for the proposed Qt/QML implementation. Verification owners
+Each criterion belongs to the requirement named in its ID. Criteria without
+executed evidence in IMPLEMENTATION.md remain **Not executed**. Verification owners
 and coverage gaps are assigned in [tests/TRACEABILITY.md](../tests/TRACEABILITY.md).
 Fixture/test names remain proposed until their increment implements them.
 
