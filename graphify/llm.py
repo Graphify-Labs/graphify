@@ -1470,7 +1470,13 @@ def _call_openai_compat(
             # heuristic) + 400 for the system prompt, then add output headroom.
             num_ctx = auto_num_ctx
         keep_alive = os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", "30m")
-        kwargs["extra_body"] = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
+        # Merge, don't assign: GRAPHIFY_DISABLE_THINKING may have set extra_body
+        # above, and replacing it here made the flag silently inert on ollama (#3988).
+        kwargs["extra_body"] = {
+            **kwargs.get("extra_body", {}),
+            "options": {"num_ctx": num_ctx},
+            "keep_alive": keep_alive,
+        }
     resp = client.chat.completions.create(**kwargs)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
