@@ -17,6 +17,10 @@ REQ-QML-019 adds four community-view criteria, bringing the catalog to nineteen
 requirements and seventy-eight criteria. INC-QML-10 revalidates the existing
 native ownership criteria for complete bodies and canonical definition provenance;
 multi-level inherited endpoint lookup remains an explicit INC-QML-11 gap.
+REQ-QML-020 adds three planned membership-projection criteria, for twenty
+requirements and eighty-one criteria. INC-QML-12/13 source and final installed
+public-fixture regressions below do not verify that planned projection or the
+broader adoption gaps.
 Verified local profile means
 executed source/consumer acceptance, not runtime equivalence. Every declared
 platform lane requires its own installed-artifact evidence; a skip is not a pass.
@@ -61,7 +65,7 @@ tests. Later revisions reverify affected evidence; preserve these identifiers.
 | REQ-QML-007-AC03 | `tests/test_qml_handlers.py::test_declared_and_property_change_handlers_are_subscriptions`; `tests/test_qml_handlers.py::test_connections_target_and_dynamic_target_stay_distinct`; `tests/test_qml_adversarial.py::test_mixed_legacy_connections_handlers_do_not_activate_ignored_function_handlers` | INC-QML-03 | Verified (declared profile) |
 | REQ-QML-007-AC04 | `tests/test_qml_scripts.py::test_generic_js_calls_cannot_bind_to_qml_owned_expression_sites`; `tests/test_qml_scripts.py::test_script_overlay_does_not_read_unaccepted_imports_or_network` | INC-QML-03 | Verified (declared profile) |
 | REQ-QML-008-AC01 | `tests/test_qt_project_admission.py::test_qml008_ac01_public_element_build_membership_and_canonical_member_endpoints` | INC-QML-05 | Verified static source profile |
-| REQ-QML-008-AC02 | `tests/test_qt_cpp_exposure.py::test_header_implementation_members_reuse_accepted_canonical_ids`; `tests/test_qt_project_admission.py::test_qml008_ac01_public_element_build_membership_and_canonical_member_endpoints`; `tests/test_qt_cpp_definition_ownership.py::test_req_qml008_ac02_definition_provenance_keeps_emission_owned_through_aggregate`; normalization, conflicting callable/body, missing completeness, external/local class, generic identity and original-byte controls in that module; `tests/test_qt_cpp_owner_upgrade.py::test_qml008_ac02_policy_three_reparses_unchanged_native_ownership` (update/extract) | INC-QML-05; INC-QML-10 correction | Locally verified complete-body/canonical-definition ownership; wider source profile gaps retained |
+| REQ-QML-008-AC02 | `tests/test_qt_cpp_exposure.py::test_header_implementation_members_reuse_accepted_canonical_ids`; `tests/test_qt_project_admission.py::test_qml008_ac01_public_element_build_membership_and_canonical_member_endpoints`; `tests/test_qt_cpp_definition_ownership.py::test_req_qml008_ac02_definition_provenance_keeps_emission_owned_through_aggregate`; normalization, conflicting callable/body, missing completeness, external/local class, generic identity and original-byte controls in that module; `tests/test_qt_cpp_owner_upgrade.py::test_qml008_ac02_policy_three_reparses_unchanged_native_ownership` (update/extract); [current constructor/source-containment assignments](#constructor-and-source-containment-corrections) | INC-QML-05; INC-QML-10/12/13 corrections | Locally verified bounded complete-body, constructor and source-containment corrections; unsupported overload/adoption gaps retained |
 | REQ-QML-008-AC03 | `tests/test_qt_native_project_integration.py::test_cpp_source_in_two_distinct_build_contexts_has_no_arbitrary_native_provider; tests/test_qt_qml_integration.py::test_ambiguous_overload_and_version_revised_member_are_explicit` | INC-QML-05 | Verified static source profile |
 | REQ-QML-008-AC04 | `tests/test_qt_cpp_syntax.py::test_unicode_crlf_macro_spans_are_original_bytes; tests/test_qt_cpp_syntax.py::test_comments_strings_raw_literals_and_preprocessor_definitions_are_inert` | INC-QML-05 | Verified static source profile |
 | REQ-QML-009-AC01 | `tests/test_qt_project_admission.py::test_qml008_ac01_public_element_build_membership_and_canonical_member_endpoints; tests/test_qt_resource_resolution.py::test_public_qt6_cmake_and_qmake_fixtures_describe_identical_membership` | INC-QML-05 | Verified static source profile |
@@ -123,18 +127,49 @@ Windows-separator and absolute path spellings retain one body identity. These
 cases first failed before the borrowed source/span transport correction and pass
 within the final focused selection.
 
-Two additional independently owned source cases remain unverified. INC-QML-11
-must reproduce and correct grandparent inherited-signal endpoint lookup under
+INC-QML-11 remains unverified and must reproduce and correct grandparent
+inherited-signal endpoint lookup under
 REQ-QML-016-AC01/AC04; recursive class compatibility currently coexists with an
-immediate-base-only member fallback. INC-QML-12 must reproduce and correct generic
-out-of-line constructor canonical ownership under REQ-QML-008-AC02,
-REQ-QML-016-AC01/AC04 and REQ-QML-017-AC02/AC04. A constructor can retain an exact
-generic callable but only an implicit placeholder parent, which is insufficient
-proof of the accepted complete header class. Missing/unaccepted class bodies and
-function-local structs keep explicit unsupported ownership; no file edge or
-arbitrary class/name link substitutes for source authority. These gaps qualify
-the original bounded-profile statuses and are not passed by the ordinary-method
-correction tests.
+immediate-base-only member fallback. INC-QML-12/13 now have bounded source
+implementation and regression evidence below. Missing/unaccepted class bodies,
+collapsed overloads and dynamic targets retain explicit unavailable ownership.
+A proven enclosing callable or accepted source file may contain the occurrence
+without establishing its native class, QObject role or semantic target. These
+corrections do not use containment as proof of a missing class or runtime call.
+
+## Constructor and source-containment corrections
+
+INC-QML-12 owns generic constructor declaration/definition proof and canonical
+parent correction. INC-QML-13 owns native source-site/file containment, upgrade
+invalidation and truthful community counts. Final reviewed policy-5/schema-7
+wheel identity, complete suite and installed public source-file proof are in
+[validation](../docs/qt-qml/VALIDATION.md#inc-qml-1213-current-source-and-view-evidence).
+The earlier 1029-pass artifact used policy 4 and does not verify the final
+source-file change. Each row retains its original criterion identity.
+
+| Affected criterion | Exact production regression evidence | Boundary and current state |
+| --- | --- | --- |
+| REQ-QML-008-AC02 | `tests/test_cpp_constructor_ownership.py::test_req_qml008_ac02_constructor_prototypes_are_callable_methods`; `tests/test_cpp_constructor_ownership.py::test_req_qml008_ac02_constructor_definition_retains_id_and_exact_accepted_owner`; `tests/test_cpp_constructor_ownership.py::test_req_qml008_ac02_constructor_join_rejects_foreign_or_corrupt_accepted_proof`; `tests/test_cpp_constructor_ownership.py::test_req_qml008_ac02_corrupted_owner_cannot_relabel_another_actual_constructor`; `tests/test_qt_member_source_links.py::test_req_qml008_ac02_plain_member_uses_exact_callable_without_native_class_claim`; `tests/test_qt_member_source_links.py::test_req_qml008_ac02_local_class_links_to_enclosing_callable_without_type_authority`; `tests/test_qt_member_source_links.py::test_req_qml008_ac02_source_fallback_rejects_unproved_or_noncallable_context`; `tests/test_qt_source_file_containment.py::test_req_qml008_ac02_unknown_native_owner_keeps_actual_file_context_after_reload`; `tests/test_qt_source_file_containment.py::test_req_qml008_ac02_file_context_requires_unique_actual_file_role` | Generic direct/facade constructor identity, accepted callable containment and accepted file containment. Missing, foreign, duplicate, non-callable/non-AST and unmarked borrowed inputs cannot prove ownership. Current focused/source/artifact and installed public-fixture evidence pass within the bounded profile. |
+| REQ-QML-010-AC02/AC04 | `tests/test_cpp_constructor_ownership.py::test_req_qml008_ac02_generic_constructor_facts_keep_original_bom_crlf_unicode_spans`; `tests/test_qt_constructor_ownership.py::test_req_qml008_ac02_constructor_spans_use_original_bom_crlf_unicode_bytes`; `tests/test_qt_member_source_links.py::test_req_qml008_ac02_source_link_survives_build_json_and_aggregate`; `tests/test_qt_member_source_links.py::test_req_qml008_ac02_direct_collector_borrows_exact_callable_without_mutating_context`; file containment/reload and role-rejection cases above | Original bytes, canonical IDs, EXTRACTED containment direction, immutable borrowed dictionaries and unresolved native status remain separate from inferred target resolution. Current artifact/reload proof passes. |
+| REQ-QML-011-AC03 | `tests/test_qt_source_links_upgrade.py::test_req_qml011_ac03_source_links_upgrade_reparses_unchanged_cpp` (extract/update; prior policy/schema 3/6 and 4/7) | Real CLI reparses unchanged accepted C++ at the same package version, retires incompatible AST entries, preserves unrelated Python and matches a clean rebuild; repeated operation is idempotent. Current policy 5/schema 7 source/upgrade and installed public-fixture evidence pass. |
+| REQ-QML-011-AC04 | `tests/test_qt_source_links_upgrade.py::test_req_qml011_ac04_removed_admission_removes_source_overlay`; `tests/test_qt_source_file_containment.py::test_req_qml011_ac04_unowned_file_sites_refresh_and_remove_stale_links`; `tests/test_qt_constructor_ownership.py::test_req_qml016_ac04_and_qml017_ac04_constructor_updates_remove_stale_sites_and_preserve_failures` | Actual cold/warm, manual update and watch, edit/removal, no-change repeat and unrelated facts. Supported constructor/member cases require full normalized parity; exact generic overload identity remains unproved and is not passed by native source-file comparison. |
+| REQ-QML-012-AC02 | `tests/test_qt_source_links_upgrade.py::test_req_qml012_ac02_failed_source_links_upgrade_retains_products` (force off/on); constructor mutation/retention case above (manual/watch) | Real malformed-source rejection retains graph, manifest, analysis stamp and applicable root marker; corrected retry and repeat succeed. These cases supplement earlier actual cache/publication-failure regressions, rather than proving every persistence failure by one fixture. Source and current installed public-fixture retention pass. |
+| REQ-QML-016-AC01/AC04 | `tests/test_qt_constructor_ownership.py::test_req_qml016_ac01_and_qml017_ac02_constructor_owns_emission_and_write_after_json_reload` (namespace/plain; directed/undirected); `tests/test_qt_constructor_ownership.py::test_req_qml016_ac04_constructor_conflicts_cannot_invent_a_canonical_owner`; constructor mutation/retention case above | Canonical constructor/source ownership through assembly, JSON reload, query and affected; no fabricated delivery call. Duplicate bodies, foreign namespaces and collapsed overloaded delegation retain unavailable native target proof. Inherited endpoint gap INC-QML-11 remains unverified. |
+| REQ-QML-017-AC02/AC04 | The same exact constructor emission/write, conflict and mutation/retention tests | Literal accepted resource handles independently authorize QML access in a proven source callable; native class authority is not guessed from that access. Current reviewed source/wheel/public-fixture proof passes; unsupported dynamic handles/provider adoption remain separate gaps. |
+| REQ-QML-019-AC02 | `tests/test_html_community_links.py::test_req_qml019_ac02_internal_only_group_has_source_edges_despite_zero_neighbors`; `tests/test_html_community_links.py::test_req_qml019_ac02_external_source_edges_are_distinct_from_neighbor_count`; `tests/test_html_community_links.py::test_req_qml019_ac02_isolated_source_member_does_not_claim_internal_connectivity`; `tests/test_html_community_links.py::test_req_qml019_ac02_source_edge_counts_keep_direction_parallel_edges_and_self_loops`; `tests/test_html_community_links.py::test_req_qml019_ac02_invalid_preaggregated_source_counts_remain_unavailable`; supplied-meta/small-view controls in that module | Eleven emitted-script/exporter cases pass. Counts use canonical graph edges, preserve source inputs and do not add fake plotted loops; unavailable counts, escaping and ordinary small-view Degree remain explicit. No new browser visual run is claimed. |
+
+The source-site suite first failed seven cases before correction. The actual
+facade source-file case then failed until the pipeline supplied explicit fresh
+AST IDs; absent origin on borrowed nodes remains insufficient. The current
+focused containment selection passes 63 cases in 9.56 seconds. Final six-module
+source proof passes 90 cases in 14.70 seconds; final source-file/upgrade proof
+passes 20 cases in 6.06 seconds. The final reviewed artifact broad suite passes
+1044 cases with seven skips and one existing warning in 137.43 seconds. All 154
+Python payloads match reviewed source, wheel and installation. The installed
+public fixture rejects damaged source with force/partial options while preserving
+four prior products, then repairs and repeats successfully. The HTML link
+suite first failed six cases, then passes eleven; its related exporter/CLI
+selection passes 172 cases. Commands and revision boundaries are in validation.
 
 ## Planned adoption criteria
 
@@ -168,6 +203,19 @@ executed commands are recorded in VALIDATION.md.
 | Criterion | Exact production evidence | Increment | Status |
 | --- | --- | --- | --- |
 | REQ-QML-019-AC01 | `tests/test_html_community_recovery.py::test_req_qml019_ac01_large_export_recovers_complete_partition`; `tests/test_html_community_recovery.py::test_req_qml019_ac01_invalid_saved_membership_is_rebuilt_without_stale_names`; `tests/test_html_community_recovery.py::test_req_qml019_ac01_cli_exports_unclustered_saved_graph_without_sidecars`; `tests/test_html_community_recovery.py::test_req_qml019_ac01_explicit_graph_uses_adjacent_analysis_not_malformed_cwd_sidecar` | INC-QML-09 | Locally verified |
-| REQ-QML-019-AC02 | `tests/test_html_community_recovery.py::test_req_qml019_ac02_existing_groups_get_missing_labels`; small/empty/authoritative group and name cases in the same module; `tests/test_qt_graph_html_payload.py::test_qml013_ac03_aggregated_html_explicitly_states_source_fact_omission`; existing escaping and written-node-info runtime regressions in `tests/test_export.py` | INC-QML-09 | Locally verified; browser inspection is separate |
+| REQ-QML-019-AC02 | `tests/test_html_community_recovery.py::test_req_qml019_ac02_existing_groups_get_missing_labels`; small/empty/authoritative group and name cases in the same module; `tests/test_qt_graph_html_payload.py::test_qml013_ac03_aggregated_html_explicitly_states_source_fact_omission`; existing escaping and written-node-info runtime regressions in `tests/test_export.py`; [current exact community-count assignments](#constructor-and-source-containment-corrections) | INC-QML-09; INC-QML-13 correction | Locally verified exporter/emitted-script counts and reviewed installed artifact; browser visual inspection is separate |
 | REQ-QML-019-AC03 | `tests/test_html_community_recovery.py::test_req_qml019_ac03_invalid_computed_partition_preserves_output_and_recovers`; `tests/test_html_community_recovery.py::test_req_qml019_ac03_cli_unavailable_view_retains_prior_outputs_and_retries`; `tests/test_html_community_recovery.py::test_req_qml019_ac03_cli_failure_has_no_false_write_and_preserves_prior_html`; `tests/test_html_community_recovery.py::test_req_qml019_ac03_isolate_partition_over_hard_cap_is_not_published` | INC-QML-09 | Locally verified; actual atomic replacement failure injected at its OS boundary |
 | REQ-QML-019-AC04 | `tests/test_html_initial_view.py::test_default_select_all_constructs_every_exported_node_and_edge_before_network`; `tests/test_html_initial_view.py::test_optional_overview_selects_only_ten_largest_source_communities`; `tests/test_html_initial_view.py::test_optional_overview_ties_use_numeric_community_ids_independent_of_insertion`; `tests/test_html_initial_view.py::test_optional_overview_filters_all_none_and_reset_update_real_datasets`; `tests/test_html_initial_view.py::test_optional_overview_search_reveals_deferred_group_with_exact_source_metadata`; grouped/ungrouped/partial startup controls in the same module | INC-QML-09 | Locally verified checked startup through production emitted-script harness; installed artifact checked. Prior unchecked-startup evidence is revision-specific; camera/layout appearance not reverified |
+
+## Planned project-membership projection
+
+Owner: Qt project-metadata integration maintainer. INC-QML-14 owns all three
+REQ-QML-020 criteria. Current source/resource lookup, source-file containment and
+community edge counts do not constitute declaration-to-file/component membership
+projection. No automated implementation test or installed proof is assigned yet.
+
+| Criterion | Exact remaining production gap | Completion increment | Status |
+| --- | --- | --- | --- |
+| REQ-QML-020-AC01 | Public literal CMake/qmake/source and qrc-alias fixtures must prove uniquely accepted endpoints, direction, context, original spans and confidence through facade/build/JSON reload/scoped query, with existing loader/module lookup unchanged. | INC-QML-14 | Planned / Not executed |
+| REQ-QML-020-AC02 | Missing/duplicate/conditional/generated/out-of-root targets and same-name scopes need explicit unresolved coverage without guessed edges, new reads or execution; actual malformed/failed joins must retain existing diagnostics and prior durable products. | INC-QML-14 | Planned / Not executed |
+| REQ-QML-020-AC03 | Source/resource edit, rename, deletion and ambiguity must remove stale edges; cold/warm/manual/watch and no-change parity, stable unrelated facts, persisted HTML membership and actual failure/retry tests remain unexecuted. | INC-QML-14 | Planned / Not executed |

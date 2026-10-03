@@ -711,15 +711,217 @@ No new test command, artifact or successful criterion evidence is assigned to
 this gap. [INC-QML-11](PLAN.md#inc-qml-11--inherited-qt-signal-endpoint-lookup)
 records the bounded source/ambiguity controls and exit conditions.
 
-## INC-QML-12 constructor canonical-ownership gap
+## INC-QML-12/13 current source and view evidence
 
-**Planned; not implemented or verified.** The generic constructor boundary can
-retain an accepted callable ID and definition provenance while using an implicit
-placeholder class parent instead of the accepted complete header class. Native
-emission/access ownership stays unresolved under its strict guard. Existing
-REQ-QML-008-AC02, REQ-QML-016-AC01/AC04 and REQ-QML-017-AC02/AC04 own this separate
-gap; ordinary-method and policy-3 proof above does not establish constructor
-support. Public constructor/parameter/delegation and namespace/duplicate/foreign
-controls, canonical parent correction, persisted/incremental output and epoch
-impact remain unexecuted. No new artifact, successful command or future policy
-version is assigned. See [INC-QML-12](PLAN.md#inc-qml-12--out-of-line-constructor-canonical-ownership).
+**Bounded source implementation, regression and reviewed installed-artifact
+evidence.** INC-QML-12 corrects the generic constructor
+producer/canonicalization boundary; INC-QML-13 preserves native source-site/file
+containment and clarifies community edge counts. These retain existing
+REQ-QML-008-AC02, REQ-QML-010-AC02/AC04, REQ-QML-011-AC03/AC04,
+REQ-QML-012-AC02, REQ-QML-016-AC01/AC04, REQ-QML-017-AC02/AC04 and
+REQ-QML-019-AC02 identities. Exact criterion assignments are in
+[traceability](../../tests/TRACEABILITY.md#constructor-and-source-containment-corrections).
+The separate inherited-signal gap above remains planned.
+
+### Source and rejection contracts
+
+Generic constructor declarations retain callable identities and byte spans.
+Only a unique accepted complete class, matching source-backed declaration/
+definition/signature and extracted ownership proof establish the canonical
+parent. Corrupted copied owner fields, conflicting parents, foreign scopes,
+wrong source/line, non-callable nodes, malformed transport and invalid spans
+cannot authorize it. Existing unrelated generic edges survive. BOM, CRLF and
+Unicode fixtures compare spans with the original bytes.
+
+Native member occurrences and function-local classes may be contained by an
+independently proven canonical callable without claiming native class authority
+or QObject exposure. If no callable owner can be proven, the final helper may
+contain the source occurrence by its uniquely accepted canonical AST file.
+Fresh canonical file IDs are passed explicitly before final AST provenance
+tagging; borrowed context requires its persisted AST marker. Missing, duplicate,
+foreign/out-of-root, semantic, callable/class and unmarked borrowed file records
+cannot create that link. Original occurrence metadata, empty `owner_id` and
+unavailable native target remain unchanged. This is source containment, not
+evidence of signal delivery or a QML runtime object.
+
+Supported ordinary/parameterized constructors have actual facade/build/JSON
+reload, query and affected proof. Manual update/watch tests cover parameter
+edits, emission removal, cold/warm/full parity, prior-product retention after
+malformed-source rejection, corrected retry and no-change repeat. Duplicate
+complete classes, foreign namespaces and collapsed overloaded delegation remain
+unproved. In the unsupported overloaded fixture, generic untyped containment
+already differs in source location between cold build and watch; typed Qt facts
+and nodes agree. That existing exact-overload identity gap is retained separately
+and does not weaken full normalized parity for supported constructors/members.
+
+Six new modules exercise these production boundaries:
+
+| Module | Evidence scope |
+| --- | --- |
+| `tests/test_cpp_constructor_ownership.py` | Direct generic producer/facade ownership, identity/signature, byte spans and corrupt/foreign/conflicting-proof rejection |
+| `tests/test_qt_constructor_ownership.py` | Native emission and literal QML access ownership through actual assembly/publication/reload/query/affected, edit/removal and manual/watch failure/retry |
+| `tests/test_qt_member_source_links.py` | Exact accepted callable containment without type authority, local source occurrences, immutable borrowed context, negative proof controls and actual JSON/HTML |
+| `tests/test_qt_source_file_containment.py` | Real facade/source-file links for unresolved sites, accepted AST role controls, reload, refresh and stale-site removal |
+| `tests/test_qt_source_links_upgrade.py` | Same-version CLI upgrade from policy/schema 3/6 and 4/7, unchanged-source reparse, unrelated Python, no-change parity and durable failure retention |
+| `tests/test_html_community_links.py` | Production emitted inspector script and aggregate payload counts, escaping, immutable source graphs and supplied-meta/small-view controls |
+
+### Red/green and compatibility evidence
+
+The source-site suite initially had **7 failed / 12 passed** before its ownership
+correction. A later actual facade source-file test had **1 failed / 54 passed**
+because final AST origin tagging occurs after the Qt pipeline. Passing explicit
+fresh AST IDs corrected that ordering; the current focused containment selection
+has **63 passed**, 9.56 seconds. This earlier command preceded the last
+source-file lifecycle/upgrade parameter additions:
+
+```powershell
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_qt_source_file_containment.py tests/test_qt_constructor_ownership.py tests/test_qt_member_source_links.py tests/test_qt_cpp_definition_ownership.py tests/test_qt_source_links_upgrade.py --tb=short -rs
+```
+
+Final six-module source proof passes **90 cases**, 14.70 seconds, with no skips:
+
+```powershell
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_qt_source_file_containment.py tests/test_qt_member_source_links.py tests/test_qt_source_links_upgrade.py tests/test_cpp_constructor_ownership.py tests/test_qt_constructor_ownership.py tests/test_html_community_links.py --tb=short -rs
+```
+
+An earlier 88-pass/two-failure execution of that selection in 12.95 seconds
+exposed the unsupported generic overload source-location parity discrepancy.
+A public comparison without the new augmentation reproduced the same baseline
+discrepancy. The documented overload case now compares every node and typed Qt
+edge; supported singleton constructor tests retain full graph parity. This gap
+is planned under INC-QML-15, not recorded as verified exact-overload behavior.
+Final source-file/upgrade proof passes **20 cases**, 6.06 seconds:
+
+```powershell
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_qt_source_file_containment.py tests/test_qt_source_links_upgrade.py --tb=short -rs
+```
+
+No aggregate constructor red count was captured. Its retained regression
+assertions cover the original missing prototype/implicit-parent failure and the
+adjacent false-owner/corrupt-proof controls; the source-site and file-site red
+counts above must not be attributed to constructor-only tests.
+
+The HTML count regression first had **6 failed / 1 passed**, 2.72 seconds, before
+the exporter/inspector change. The completed new module has **11 passed**, 1.96
+seconds. The emitted production script runs in Node with the external DOM/vis
+boundary isolated; this is executable payload/selection/inspector evidence, not
+a new browser-engine visual acceptance run. The related production command was:
+
+```powershell
+$htmlTests = (Get-ChildItem tests/test_html_*.py).FullName
+.venv/Scripts/python.exe -X utf8 -m pytest -q @htmlTests tests/test_export.py tests/test_cli_export.py tests/test_qt_graph_html_payload.py tests/test_qt_html_consumers.py --tb=short -rs
+```
+
+Result: **172 passed**, 42.36 seconds, with the existing Hypothesis collection
+warning. Ruff passes the three viewer/test owners; explicit-runtime Pyright
+reports zero errors/warnings for the viewer and new test module. Counts use
+canonical NetworkX source edges, including represented directed/parallel edges
+and self-loops. Internal edges do not become plotted aggregate loops. Distinct
+neighboring communities, external source edges and internal source edges remain
+different quantities. Pre-aggregated views lacking accepted source counts report
+them unavailable; full small views retain ordinary Degree. Escaping, Select All,
+display bounds and source graph/group/label immutability remain covered.
+
+### Earlier reviewed artifact
+
+An intermediate policy-4/schema-7 artifact passed **1029 cases / 7 skipped** in
+132.39 seconds. Reviewed production tree:
+`7ef6033868e56ae0bbddb170583826db48b20f05`. Wheel SHA256:
+`206aaf4b7adb5660f1de78e0fb9aa6448c03367961ae97a90cce718977995b0a`.
+All 153 Python payloads matched reviewed source, wheel and isolated installation.
+Those seven skips retain the existing four unavailable C++ preprocessor, two
+Windows symlink-permission and one optional SVG limits. This earlier artifact
+does not contain the final source-file proof and does not verify policy 5.
+
+### Final reviewed-revision gates
+
+Current source policy is **Qt analysis 5 / AST cache schema 7** at the unchanged
+package version. Old analysis policy invalidates derived source links; incompatible
+AST schema retires stale generic constructor output. Real upgrade tests use the
+production CLI and reader/cache path rather than replacing analysis behavior.
+Current failure guards preserve earlier graph/manifest/stamp/root-marker bytes;
+the new source link does not introduce a persistence writer.
+
+The final broad command is:
+
+```powershell
+$env:GRAPHIFY_QML_TEST_WHEEL = (Resolve-Path .venv/qml-13-final-wheels/graphifyy-0.9.74-py3-none-any.whl).Path
+$testFiles = (Get-ChildItem tests/test_qml_*.py, tests/test_qt_*.py, tests/test_cpp_*.py, tests/test_html_*.py, tests/test_export*.py).FullName
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q @testFiles tests/test_cli_export.py --tb=short -rs
+```
+
+Result: **1044 passed / 7 skipped / 1 existing Starlette warning**, 137.43
+seconds. The seven skips are the same four unavailable C++ preprocessor, two
+Windows symlink-permission and one optional SVG boundaries; none is a passing
+acceptance lane. The final artifact remains `graphifyy-0.9.74-py3-none-any.whl`.
+
+| Final gate | Evidence state |
+| --- | --- |
+| Complete current source/test selection | 1044 passed / 7 skipped / 1 existing warning, 137.43 seconds; exact command above |
+| Reviewed production tree identity | `0c65c34737aea316dcd879efb8e6d1a0ba6d9c0b` |
+| Final policy-5/schema-7 wheel SHA256 | `04826d98f11c70edcfd694af169ba54624df107a2c10c07dbdc3cb9092821f95` |
+| Source/wheel/isolated-install Python payload equality | All 154 Python modules byte-equal; zero mismatches |
+| Installed public source-file/constructor/update/retention proof | Final isolated wheel CLI passes; malformed source with force/partial options exits 1 and retains four products; repair and repeat exit 0; no Qt source facts are isolated |
+| Final Ruff and explicit-runtime Pyright | Commands below pass: Ruff clean; Pyright zero errors, warnings or information diagnostics |
+| Traceability/validation document checks | 172 exact automated test references and 31 local file/fragment links resolve within these two documents; final review across all 11 modified public documents resolves 199 exact test references and all local file links; all 81 criteria assigned; public-pattern and diff checks pass |
+| Required `graphify update .` | Final required invocation exits 0 |
+
+The isolated installed interpreter executes the integration owner's offline
+`verify-source-links-final-wheel.py` production proof. Its public fixture publishes
+graph/manifest/analysis/root-marker products, then damages source, invokes the real
+CLI with force/partial options, verifies rejection/byte retention, repairs source
+and repeats the update. The final public graph SHA256 is
+`028adf8e6fb4377ef3501d9c5c3686c6c72b90e5d487f63b14ca168c619b30fc`.
+This installed fixture uses the final wheel, policy 5 and schema 7 rather than
+the earlier 1029-case artifact.
+
+An additional installed adoption refresh and default HTML export pass. The
+resulting graph has no isolated Qt source facts; an unchanged repeat exits 0 and
+leaves prior outputs untouched. The generated production viewer's actual script
+harness confirms Select All and truthful internal-only community counters.
+No private source, project identifier or machine path is retained here; no new
+browser visual claim follows from that harness. This source-analysis check does
+not complete REQ-QML-018's separate metadata/provider/whole-profile matrix.
+
+Final lint/type commands cover the focused production owners and six new suites:
+
+```powershell
+$reviewedFiles = @('graphify/qt_source_containment.py', 'graphify/qt_qml_pipeline.py', 'graphify/qt_incremental.py', 'graphify/extractors/cpp_constructors.py', 'graphify/extractors/qt_cpp_exposure.py', 'graphify/extractors/qt_cpp_mapping.py', 'graphify/extractors/qt_cpp_events.py', 'graphify/extractors/qt_cpp_variables.py', 'graphify/exporters/html.py', 'tests/test_cpp_constructor_ownership.py', 'tests/test_qt_constructor_ownership.py', 'tests/test_qt_source_file_containment.py', 'tests/test_qt_member_source_links.py', 'tests/test_qt_source_links_upgrade.py', 'tests/test_html_community_links.py')
+.venv/Scripts/ruff.exe check @reviewedFiles
+.venv/Scripts/pyright.exe --pythonpath .venv/qt-mcp-312/Scripts/python.exe @reviewedFiles
+uv lock --check --offline
+git diff --check
+git diff --cached --check
+```
+
+The lock check resolves 210 packages with no lockfile change. These scoped type
+checks do not claim that the oversized legacy facade/extractor/resolver files
+are free of their existing baseline type diagnostics. Additional cross-language,
+cross-repository, C++ method and Objective-C guard compatibility passes 25 cases:
+
+```powershell
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_cross_language_call_resolution.py tests/test_cross_repo_external_call_guards.py tests/test_cpp_method_declarations.py tests/test_cpp_objc_cross_file_calls.py --tb=short -rs
+```
+
+INC-QML-12/13 are locally complete for their recorded bounded source, artifact and
+emitted-script contracts. No new hosted, other-platform, browser-layout or executable Qt proof is claimed. Broader
+adoption provider gaps and INC-QML-11/14/15 remain explicitly unverified.
+
+## INC-QML-14 planned membership projection
+
+REQ-QML-020-AC01–AC03 are **Planned; not implemented or verified**. Accepted
+metadata/source/resource facts can resolve module and loader lookups in the
+per-run index while only their owning metadata file contains them in the graph.
+An internal-only metadata community is therefore compatible with the current
+projection contract. Truthful community counts and accepted source-file
+containment do not implement general metadata-to-source membership edges.
+
+AC01 needs public literal CMake/qmake and resource-alias production projection,
+build/reload/query and unchanged-lookup evidence. AC02 needs missing/duplicate/
+conditional/generated/out-of-root and same-name rejection, bounded failure and
+prior-product retention without corpus expansion/execution. AC03 needs actual
+edit/rename/deletion/ambiguity stale-edge removal, cold/warm/incremental/no-change
+parity and persisted HTML membership. No test, successful command or artifact is
+assigned to these gaps. The [plan](PLAN.md#inc-qml-14--explicit-project-membership-relationships)
+owns the proposed scope and exit; [traceability](../../tests/TRACEABILITY.md#planned-project-membership-projection)
+records each unexecuted criterion separately.

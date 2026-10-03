@@ -19,9 +19,10 @@ have local source-ownership and reviewed installed-artifact proof, including
 unchanged accepted-context body deduplication. Affected native criteria remain
 partially verified across their recorded cases. INC-QML-11 separately plans the
 inherited-signal ancestor lookup gap under
-REQ-QML-016-AC01/AC04; that case remains unverified. INC-QML-12 separately plans
+REQ-QML-016-AC01/AC04; that case remains unverified. INC-QML-12 implements bounded
 generic out-of-line constructor canonical ownership under the same five native
-criteria used by INC-QML-10. Earlier method/profile passes do not establish all
+criteria used by INC-QML-10. INC-QML-13 independently preserves source-file context
+and distinguishes internal community links from external connections. Earlier method/profile passes do not establish all
 constructor, inherited-member or runtime support.
 See [IMPLEMENTATION.md](qt-qml/IMPLEMENTATION.md),
 [EXPORT_MATRIX.md](qt-qml/EXPORT_MATRIX.md) and
@@ -174,7 +175,7 @@ Supported `QML_ELEMENT`/named/singleton and literal `qmlRegister*` registrations
 
 1 - Valid `QML_ELEMENT`, identifier-form `QML_NAMED_ELEMENT(Backend)`, singleton and supported literal `qmlRegister*` fixtures map visible QML names to the correct C++ declarations and module evidence. (`REQ-QML-008-AC01`)
 
-2 - `Q_PROPERTY`, invokable methods, signals and `NOTIFY` references retain correct source spans and members; header/implementation pairs reuse existing canonical class/method identities. Merged declarations retain exact accepted definition-file/location and class-ownership evidence when mapping native Qt overlays. Forward declarations retain their facts and IDs without competing with a unique complete class definition for ownership. Fresh and accepted-context representations of the same complete body retain exact source file/span and count as one body without mutating borrowed inputs; distinct complete definitions remain ambiguous. Missing or conflicting evidence does not establish an arbitrary owner. (`REQ-QML-008-AC02`)
+2 - `Q_PROPERTY`, invokable methods, signals and `NOTIFY` references retain correct source spans and members; header/implementation pairs reuse existing canonical class/method identities. Merged declarations retain exact accepted definition-file/location and class-ownership evidence when mapping native Qt overlays. Forward declarations retain their facts and IDs without competing with a unique complete class definition for ownership. Fresh and accepted-context representations of the same complete body retain exact source file/span and count as one body without mutating borrowed inputs; distinct complete definitions remain ambiguous. A member or function-local class occurrence with a uniquely accepted canonical callable retains a source-site containment link even when its class has no accepted Qt definition; this does not establish a native class, QObject role or QML exposure. Missing or conflicting callable evidence cannot create that link or an arbitrary class owner. An observed Qt occurrence without a callable owner retains containment by its uniquely accepted in-corpus source file, using the actual canonical file ID and original occurrence span. Missing, foreign, ambiguous or incorrectly typed file evidence creates no link; file containment leaves callable/class/target identities and unresolved status unchanged. (`REQ-QML-008-AC02`)
 
 3 - Duplicate registrations, unsupported macro wrappers and ambiguous overloads retain reasons rather than arbitrary bridges; `Q_OBJECT`, inheritance or matching labels alone create no exposure link. (`REQ-QML-008-AC03`)
 
@@ -384,7 +385,7 @@ reported accurately instead of claiming that a file was written.
 
 1 - Above the configured HTML node limit, production export accepts a community partition only when it covers every graph node exactly once without foreign or duplicate members. Missing, empty or invalid partitions are replaced by a deterministic local partition of a view copy through the existing clustering interface, without an API call or rewriting graph/analysis files. The production CLI resolves analysis metadata beside an explicitly selected graph. Public fixtures exercise missing, empty, partial, duplicate and foreign-node partitions through the actual export path. (`REQ-QML-019-AC01`)
 
-2 - The emitted community view has visible, nonempty labels and a populated legend whose IDs, labels and member counts agree with its plotted groups. Valid supplied labels are preserved; missing labels use the existing local hub-based labeling, and labels for a replaced partition are not reused as if they described the new groups. The artifact identifies its aggregated representation and omitted source details, retains existing escaping and Qt/QML payload protections, and leaves canonical graph nodes, edges and source facts unchanged. Emitted-script/DOM-harness and payload tests establish their exact coverage; an unexecuted browser inspection is not reported as completed browser verification. (`REQ-QML-019-AC02`)
+2 - The emitted community view has visible, nonempty labels and a populated legend whose IDs, labels and member counts agree with its plotted groups. Valid supplied labels are preserved; missing labels use the existing local hub-based labeling, and labels for a replaced partition are not reused as if they described the new groups. The inspector distinguishes internal source edges, external source edges and neighboring communities. A closed community with internal links is distinguished from a genuinely unlinked source group; internal links are not fabricated as cross-community lines or self-loops. The artifact identifies its aggregated representation and omitted source details, retains existing escaping and Qt/QML payload protections, and leaves canonical graph nodes, edges and source facts unchanged. Emitted-script/DOM-harness and payload tests establish their exact coverage; an unexecuted browser inspection is not reported as completed browser verification. (`REQ-QML-019-AC02`)
 
 3 - Unrecoverable grouping reports actionable `HTML_GROUPING_INVALID`; an unusable or skipped aggregate view reports `HTML_VIEW_UNAVAILABLE`; an actual publication failure reports `HTML_VIEW_FAILED`. Each causes the production HTML export command to exit unsuccessfully without a false written-file message, preserving prior valid HTML and canonical graph files. A graph with too many isolated groups to fit the supported aggregate limit reports a bounded failure and focused-graph guidance rather than inventing group membership or bypassing the limit. A corrected retry publishes the expected view, and repeated export of unchanged input retains the same grouping and label behavior under the same clustering backend/configuration. (`REQ-QML-019-AC03`)
 
@@ -399,3 +400,26 @@ HTML view preparation, selection controls and publication. It does not complete 
 REQ-QML-018 parser, metadata, provider or whole-project adoption work, and does
 not change the canonical graph or require project execution. Assigned work and
 exit gates are in [INC-QML-09](qt-qml/PLAN.md#inc-qml-09--readable-large-graph-html-export).
+
+### REQ-QML-020 — Explicit project membership relationships
+
+Accepted project-source and resource-alias declarations link to their canonical
+source files or QML components in the graph. Metadata lookup and displayed graph
+membership describe the same accepted corpus without expanding it or executing
+project code.
+
+**Acceptance Criteria**
+
+1 - Public CMake, qmake and resource fixtures project each supported literal module/source or resource-alias membership to the uniquely accepted canonical file/component endpoint. Relations preserve the metadata declaration's direction, module/alias context, original span and resolution confidence through build, JSON reload and scoped query; the existing loader/module lookup results remain unchanged. (`REQ-QML-020-AC01`)
+
+2 - Missing, duplicate, conditional, generated or out-of-root targets retain explicit unresolved/unsupported coverage and no guessed membership edge. Same-name files in different scopes remain distinct; graph projection neither reads new files nor evaluates expansions, build hooks or QML. Malformed metadata and failed joins retain existing failure diagnostics and prior durable graph/state. (`REQ-QML-020-AC02`)
+
+3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. (`REQ-QML-020-AC03`)
+
+Status: **Planned; not implemented or verified**. Current metadata readers and
+indexes retain source-owned facts and resolve supported module/resource lookups,
+but do not publish general declaration-to-file/component membership edges.
+Internal-only metadata communities reflect this current projection boundary.
+[INC-QML-14](qt-qml/PLAN.md#inc-qml-14--explicit-project-membership-relationships)
+owns this additional behavior and its evidence; source containment and viewer
+counts do not establish completion.

@@ -422,7 +422,7 @@ cases and 145 physical lines. All ten pass, including equivalent paths and
 distinct-body/legacy/missing-evidence controls. The final rebuilt artifact's 152
 Python payloads match reviewed source and installation; final expanded broad
 proof passes 954 cases. This internal transport correction adds no persisted field or
-policy epoch beyond current policy 3/schema 6.
+policy epoch beyond the historical INC-QML-10 policy 3/schema 6 snapshot.
 
 INC-QML-11 remains planned. Current recursive inheritance compatibility does not
 extend member endpoint lookup beyond immediate bases; a declared grandparent
@@ -431,10 +431,41 @@ This gap belongs to existing REQ-QML-016-AC01/AC04 and is not closed by ownershi
 counts or by forcing edges onto unsupported/isolated nodes. Browser, other-platform
 and new hosted evidence remains separate from the local proof recorded here.
 
-INC-QML-12 is also planned, separately from inherited-signal endpoint lookup.
-Out-of-line constructors can have accepted generic callable provenance but an
-implicit placeholder class parent, leaving emission/access owner evidence absent.
-This needs generic constructor canonicalization before strict Qt mapping can
-borrow a complete header class. It is not fixed or included in the ordinary-method
-ownership proof. The existing five native criteria retain this explicit gap; no
-extra requirement ID, invented owner or future policy epoch is introduced.
+## Constructor/source/view corrections (INC-QML-12/13)
+
+The generic C++ producer now records missing constructor prototypes and bounded
+class/constructor source proof through a focused helper. Exact complete-class,
+prototype, signature, scope and source containment establish supported singleton
+constructor ownership before the existing canonical merge. Supported singleton IDs and
+original source spans remain; collapsed overload/delegation cases, malformed
+facts and conflicting scope/owner/signatures cannot gain native class authority.
+A source-proven callable may still contain observed facts, and independent local
+QML handles retain their own evidence.
+
+Ordinary utility-member and local-class occurrence facts now link to their
+uniquely accepted source callables when no Qt class definition is admitted.
+Class IDs/native roles remain unavailable; this is source containment. Source
+facts are not hidden, merged by label or connected by guessed runtime calls.
+Sites with unproved callable ownership instead retain exact containment by a
+unique accepted source file. This file relationship leaves callable/class/target
+identities and unresolved status unchanged. Rejected file-role/provenance evidence
+cannot authorize containment.
+
+The aggregate HTML inspector reports internal source edges, external source edges
+and distinct connected communities. Closed connected groups are distinguished
+from genuine isolates; counts use the canonical input graph, not duplicated raw
+serialized occurrences. Existing Select All, source-node Degree and bounded
+aggregate rendering remain intact. Pre-aggregated callers without original
+source counts display unavailable counts.
+
+AST schema 7 and policy 5 invalidate stale same-version facts. Local source and
+reviewed installed-artifact verification passes; exact evidence belongs to
+VALIDATION.md and tests/TRACEABILITY.md.
+Browser/system appearance is a separate unexecuted gap. INC-QML-11 inherited
+endpoint lookup and INC-QML-08 metadata/provider adoption remain unfinished.
+Plan review adds INC-QML-14/REQ-QML-020 for explicit metadata membership projection:
+current indexes resolve accepted targets, but general declaration-to-file edges
+are not published. Source-owner and viewer-count corrections do not complete it.
+INC-QML-15 retains the existing generic overloaded-constructor ID/location-parity
+gap. Native source-file links pass their scoped parity checks; exact generic
+overload identity remains unverified.

@@ -42,13 +42,25 @@ def _failure(result, path, root, error):
 
 
 def _class_facts(mapping, facts):
+    # Literal source occurrences can belong to a proven callable even when no
+    # Qt class definition is admitted. This is source containment only: it must
+    # not supply missing class authority, endpoint roles or QML visibility.
+    callables = {node["id"] for node in mapping.nodes if node.get("_callable") is True
+                 and not node.get("_callable_class")}
+
+    def source_owner(record):
+        return record.get("node_id", "") if (record and record.get("status") == "resolved"
+                                              and record.get("node_id") in callables) else ""
+
     for record in mapping.classes:
         owned = [macro for macro in record["macros"] if mapping.class_at(macro["start_byte"]) is record]
         macros = {macro["name"] for macro in owned}
         base = next((child for child in record["syntax"].named_children if child.type == "base_class_clause"), None)
         bases = [mapping.unit.text(child) for child in base.named_children
                  if child.type not in {"access_specifier"}] if base else []
-        facts.add("class", record["name"], record["span"], owner=record["node_id"] or None,
+        enclosing = mapping.owner_at(record["span"]["start_byte"])
+        facts.add("class", record["name"], record["span"],
+                  owner=record["node_id"] or source_owner(enclosing) or None,
                   generic_target_id=record["node_id"], class_id=record["node_id"],
                   class_name=record["qualified_name"], status=record["status"],
                   is_definition=record["is_definition"],
@@ -64,7 +76,8 @@ def _class_facts(mapping, facts):
         revisions = [macro["args"] for macro in mapping.unit.macros if macro["name"] == "Q_REVISION"
                      and macro["end_byte"] <= record["span"]["start_byte"]
                      and not mapping.unit.parsed_source[macro["end_byte"]:record["span"]["start_byte"]].strip()]
-        facts.add("member", record["name"], record["span"], owner=record["class_id"] or None,
+        facts.add("member", record["name"], record["span"],
+                  owner=record["class_id"] or source_owner(record) or None,
                   generic_target_id=record["node_id"], class_id=record["class_id"], class_name=record["class_name"],
                   signature=record["signature"], parameter_types=record["parameter_types"],
                   parameter_names=[item["name"] for item in record["parameters"]],

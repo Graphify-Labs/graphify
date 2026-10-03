@@ -2989,6 +2989,10 @@ def _merge_decl_def_classes(
     member ``_make_id(class_id, "bar")``. So every decl/def member pair is itself an
     id-collision across the same sibling file set and collapses by the same rule.
     """
+    # AST constructor qualification, complete bodies and matching prototypes own
+    # this join; a header collision alone cannot prove a constructor declaration.
+    from graphify.extractors.cpp_constructors import bind_cpp_constructors, constructor_merge_allowed
+    bind_cpp_constructors(all_nodes, all_edges)
     # Group every code node by id, recording the distinct source files involved.
     by_id: dict[str, list[dict]] = {}
     for n in all_nodes:
@@ -3005,6 +3009,8 @@ def _merge_decl_def_classes(
     drop_objs: set[int] = set()
     for nid, group in by_id.items():
         if len(group) < 2:
+            continue
+        if not constructor_merge_allowed(group):
             continue
         # The distinct source files of this collision must form a clean sibling
         # header/impl set with exactly one header. Each file must parse as a

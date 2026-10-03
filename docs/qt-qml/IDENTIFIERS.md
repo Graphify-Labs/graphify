@@ -21,23 +21,24 @@ Current internal links use current headings; existing heading links retain their
 legacy targets. Navigation follows
 [GitHub custom-anchor syntax](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#custom-anchors).
 
-Future requirements continue with `REQ-QML-020`; future top-level increments
-continue with `INC-QML-13`. These counters describe different concerns and need
+Future requirements continue with `REQ-QML-021`; future top-level increments
+continue with `INC-QML-16`. These counters describe different concerns and need
 not advance together. Extend this catalog when retiring or migrating an ID;
 never transfer an alias to unrelated behavior. Document identifiers do not change
 runtime schemas or parser contracts.
 
-The nineteen requirements comprise seventy-eight criteria. The initial seventeen
+The twenty requirements comprise eighty-one criteria. The initial seventeen
 requirements/sixty-eight criteria and six `REQ-QML-018` adoption criteria retain
 separate support/evidence profiles. REQ-QML-019 adds four HTML-view criteria.
-Implementation and verification status belong
+REQ-QML-020 adds three planned explicit-membership criteria; these are not yet
+implemented or verified. Implementation and verification status belong
 to [requirements](../REQUIREMENTS.md) and [traceability](../../tests/TRACEABILITY.md).
 This catalog establishes identity, not implementation or verification.
 
 [INC-QML-10](PLAN.md#inc-qml-10--native-qt-source-ownership-correction) corrects
 native ownership under existing requirements and criteria. It adds no requirement
-or acceptance ID; the catalog remains nineteen requirements/seventy-eight
-criteria. Architecture decision D13 records its authority boundary. Earlier
+or acceptance ID; the catalog at that increment contained nineteen requirements/
+seventy-eight criteria. Architecture decision D13 records its authority boundary. Earlier
 aliases and evidence names remain unchanged.
 Accepted unchanged-context deduplication adds regression evidence, not an ID.
 Current final-artifact status remains in requirements and traceability.
@@ -47,9 +48,9 @@ inherited-signal lookup correction under existing REQ-QML-016-AC01/AC04. It adds
 no requirement or acceptance ID and has no executed acceptance evidence yet.
 
 [INC-QML-12](PLAN.md#inc-qml-12--out-of-line-constructor-canonical-ownership)
-plans generic constructor parent correction under existing native ownership
+locally completes bounded singleton constructor parent correction under existing native ownership
 criteria, separately from INC-QML-11. It adds no requirement/acceptance identity
-or implemented support claim.
+and does not establish exact overload or inherited endpoint support.
 
 ## Requirement aliases
 
@@ -184,3 +185,8 @@ increment section; completion and dependencies remain in the [plan](PLAN.md).
 - QML-08a -> [INC-QML-08a](PLAN.md#inc-qml-08--installed-project-adoption-hardening)
 - QML-08b -> [INC-QML-08b](PLAN.md#inc-qml-08--installed-project-adoption-hardening)
 - QML-08c -> [INC-QML-08c](PLAN.md#inc-qml-08--installed-project-adoption-hardening)
+
+INC-QML-12 corrects generic constructor ownership and INC-QML-13 corrects source
+containment and aggregate edge-count presentation under existing criteria.
+INC-QML-14 separately plans REQ-QML-020 membership projection. No earlier numeric
+identity is changed, retired or reused.

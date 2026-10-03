@@ -35,7 +35,10 @@ def variables_at(unit, mapping, position):
     variables = {parameter["name"]: type_name(parameter["type"])
                  for parameter in owner.get("parameters", []) if parameter.get("name")}
     enclosing = mapping.class_at(position)
-    variables["this"] = (enclosing.get("qualified_name") if enclosing else owner.get("class_name")) or ""
+    # A source-proven constructor callable may still lack an authorized class
+    # join; its spelling alone cannot give `this` a definite native type.
+    variables["this"] = "" if owner.get("native_owner_unavailable") else (
+        enclosing.get("qualified_name") if enclosing else owner.get("class_name")) or ""
     body = owner.get("body")
     if body is None:
         return variables

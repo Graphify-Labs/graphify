@@ -91,10 +91,15 @@ def _emission(facts, unit, mapping, call):
     explicit = bool(re.search(rb"\b(?:emit|Q_EMIT)\s*$", prefix))
     if not explicit and not _qt_owner(mapping, owner) and not variables.get(receiver):
         return
+    # Preserve independent typed receivers; an unbound constructor cannot infer
+    # a native `this` type solely from its syntactic class qualification.
+    receiver_type = variables.get(receiver, "")
+    if receiver == "this":
+        receiver_type = "" if owner.get("native_owner_unavailable") else receiver_type or owner.get("class_name", "")
     facts.add("emission", call["name"], call["span"], owner.get("node_id"),
               owner_class=owner.get("class_name") or "", receiver_reference=receiver,
               owner_scope_key=owner_scope(unit, owner),
-              receiver_type=(variables.get(receiver) or owner.get("class_name") or "") if receiver == "this" else variables.get(receiver, ""),
+              receiver_type=receiver_type,
               member_name=call["name"], argument_count=len(call["args"]), explicit_emit=explicit,
               conditional=conditional_at(unit, call["start_byte"]), status="pending", reason="")
 

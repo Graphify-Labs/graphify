@@ -436,10 +436,39 @@ member identities, bounded traversal and genuine ambiguity. Its grandparent
 signal cases are not verified by INC-QML-10 or the initial profile; no arbitrary
 inherited-member or runtime support is claimed.
 
-INC-QML-12 is independently planned for generic constructor canonicalization:
+The INC-QML-12 baseline identified the generic constructor canonicalization gap:
 an accepted out-of-line constructor can still be contained by an implicit class
 placeholder instead of its complete header class. D13's native guard must retain
 unresolved ownership until the generic producer/canonicalization supplies the
-correct parent evidence. Preserve constructor IDs/provenance and test conflicting
-namespace/class/parent cases rather than weakening the guard. This existing gap
-does not invalidate the bounded ordinary-method correction or close INC-QML-11.
+correct parent evidence. The implemented constructor seam now supplies bounded
+class/prototype/signature proof; source containment remains independent. Preserve
+constructor IDs/provenance and reject conflicting namespace/class/parent cases.
+Its separate proof does not close INC-QML-11.
+
+## D14 — Source containment is independent of native class authority
+
+Observed Qt source occurrences retain links to their accepted generic callables
+even when Qt class evidence is absent. This connects source facts without
+guessing a class, QObject role, QML exposure or runtime target. Local class
+syntax can retain its enclosing callable while its canonical native class ID
+remains unavailable. Exact source/provenance and ambiguity guards still apply.
+An occurrence without a proven callable can retain a link to its uniquely accepted
+source file. This is file membership, not a callable or class identity; its
+unresolved semantic metadata remains unchanged.
+
+Generic constructor prototypes and class authority belong to the C++ producer
+and declaration/definition canonicalizer, not a Qt name-based fallback. A focused
+helper carries bounded original-source identity and signature proof; native
+consumers reject unbound constructors without removing their source evidence.
+Existing callable IDs and persistence owners remain authoritative. AST schema 7
+and Qt policy 5 retire stale same-version facts. Original INC-QML-10 policy-3/
+schema-6 evidence is historical, not proof of these additional cases.
+
+HTML aggregation is presentation state: internal source links and distinct
+external communities are different measurements. Display their actual counts
+without inventing topology, suppressing isolates or changing source data.
+Metadata membership projection remains the separate planned REQ-QML-020 contract;
+internal-only metadata communities do not establish a missing runtime import.
+INC-QML-15 separately covers existing constructor-overload identity collisions
+and generic full/update location parity; the bounded singleton proof does not
+establish that broader profile.

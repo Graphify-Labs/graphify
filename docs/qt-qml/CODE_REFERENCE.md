@@ -147,8 +147,9 @@ source extraction, graph identities and analysis persistence remain unchanged.
 
 ## Native source-ownership correction seams (INC-QML-10)
 
-The source/context correction, final broad suite and reviewed installed-artifact
-checks pass locally. These owners retain their interfaces and operate after generic canonical
+This table records the historical INC-QML-10 correction and its verified artifact.
+Current policy/schema and constructor seams are recorded in INC-QML-12/13 below.
+These owners retain their interfaces and operate after generic canonical
 identity/provenance is available:
 
 | Owner | Correction responsibility |
@@ -167,12 +168,13 @@ both when borrowing complete-class facts so `CppMapping.bind_classes` recognizes
 the same body consistently with fresh AST records. Context node/metadata
 dictionaries remain immutable inputs; distinct body locations do not coalesce.
 Direct and actual pipeline/build/reload context tests pass. This internal record
-transport fix leaves persisted fact shape, policy 3 and AST schema 6 unchanged.
+transport fix left persisted fact shape, policy 3 and AST schema 6 unchanged at
+that revision; INC-QML-12/13 subsequently use policy 5/schema 7.
 The source/root, metadata validation, checkpoint and graph-writer boundaries are
 unchanged. [D13](ARCHITECTURE.md#d13--complete-definitions-and-exact-provenance-authorize-native-ownership)
 and [DESIGN.md](DESIGN.md#native-ownership-authority-inc-qml-10) define authority
 and unresolved-case limits; [VALIDATION.md](VALIDATION.md#inc-qml-10-native-source-ownership)
-records current source/context, final broad and reviewed installed-artifact proof.
+records that source/context, final broad and reviewed installed-artifact proof.
 
 INC-QML-11's planned seam is `QtEventIndex.member`: compatibility in `inherits`
 already traverses ancestors, but current inherited-member candidates come only
@@ -181,11 +183,29 @@ authority, canonical member identity, bounded lookup and existing ambiguity/
 signature/role/access rules. No implementation or proof is assigned yet; see
 [the increment plan](PLAN.md#inc-qml-11--inherited-qt-signal-endpoint-lookup).
 
-INC-QML-12 starts at the generic C++ constructor producer and canonicalization
-seam (`extractors/engine.py`, `extractors/resolution.py`), with exact owner selection
-to be established by characterization. A constructor's accepted callable
-provenance does not repair containment by an implicit placeholder class.
-`qt_cpp_mapping` remains a consumer of proven complete-class containment; its
-strict guard must not acquire a name-based fallback. The
-[planned increment](PLAN.md#inc-qml-12--out-of-line-constructor-canonical-ownership)
-owns generic/source/persistence compatibility and unresolved-case evidence.
+## Constructor and source-containment seams (INC-QML-12/13)
+
+| Owner | Implemented responsibility |
+| --- | --- |
+| `extractors/cpp_constructors.py` | Bounded AST class/constructor facts, exact prototype/type/scope join, ambiguity and consumer authority guard |
+| `extractors/engine.py` | C++-only producer hook; no second extractor or analyzed project execution |
+| `extractors/resolution.py::_merge_decl_def_classes` | Invoke constructor binding before existing ID-collision canonicalization; reject unsafe constructor merges |
+| `extractors/qt_cpp_mapping.py::CppMapping.bind_classes` | Preserve exact source callable while preventing rejected/legacy constructor substitution by a header prototype |
+| `extractors/qt_cpp_variables.py`, `qt_cpp_events.py` | Unproved constructor class authority cannot establish native `this` or an implicit emission receiver type |
+| `extractors/qt_cpp_exposure.py::_class_facts` | Member/local-class source containment by unique accepted callable without native class/QObject/exposure authority |
+| `exporters/html.py::to_html` and emitted inspector | Actual canonical internal/external source-edge counts and distinct connected-community counts; no graph mutation |
+| `qt_source_containment.py`, `qt_qml_pipeline.py` | Exact accepted file-to-unknown-occurrence containment, explicit fresh AST authority and unchanged unresolved semantic roles |
+| `cache.py`, `qt_incremental.py` | AST schema 7 and Qt policy 5 same-package refresh; original persistence owners unchanged |
+
+Constructor metadata version 1 carries bounded original names/lexical scope,
+source spans, exact type-signature hashes and rejected/accepted class-binding
+outcome. Canonical declaration and definition IDs remain authoritative; absent
+or conflicting proof cannot gain an endpoint through Qt mapping. Source-only
+containment does not change class IDs/native roles. D14 and DESIGN.md describe
+these boundaries. Legacy module measurements/exceptions are versioned in
+DESIGN.md; tests and exact commands belong to validation/traceability.
+
+The separate INC-QML-14 seam is planned: project accepted metadata memberships
+through QtProjectIndex evidence to existing canonical file/component endpoints.
+Current lookup and source-owned metadata facts do not publish that general edge
+projection; REQ-QML-020 remains unimplemented/unverified.

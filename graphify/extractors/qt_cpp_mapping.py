@@ -6,6 +6,7 @@ import re
 from graphify.qml_resolution_types import source_path
 from graphify.extractors.qt_cpp_syntax import walk, source_span
 from graphify.extractors.qt_cpp_facts import qt_metadata
+from graphify.extractors.cpp_constructors import constructor_class_authorized
 
 
 def normalize_type(value: str) -> str:
@@ -98,6 +99,7 @@ class CppMapping:
         self.parents = {}
         self.class_parents = {}
         accepted = {node["id"]: node for node in self.nodes}
+        self.accepted = accepted
         for edge in self.edges:
             if edge.get("relation") in {"method", "contains"}:
                 self.parents.setdefault(edge["target"], set()).add(edge["source"])
@@ -173,6 +175,9 @@ class CppMapping:
                       parameters=parameters, parameter_types=[item["type"] for item in parameters],
                       return_type=normalize_type(self.unit.field(declaration, "type")), roles=roles, access=access,
                       body=declaration.child_by_field_name("body"), signature=short + "(" + ",".join(item["type"] for item in parameters) + ")")
+        record["out_of_line_constructor"] = (
+            class_record is None and declaration.type == "function_definition"
+            and not record["return_type"] and "::" in name and name.split("::")[-2] == short)
         self.functions.append(record)
 
     def owner_at(self, byte):
@@ -199,6 +204,16 @@ class CppMapping:
                         span.get("start_byte"), span.get("end_byte"))
             definitions[identity] = item
         for record in self.functions:
+            # A constructor's source callable is independent of class authority.
+            # Never replace a rejected/legacy constructor body with a same-name
+            # header prototype after generic canonicalization declined the join.
+            if record["out_of_line_constructor"]:
+                targets = [self.accepted[candidate] for candidate in record["candidates"]
+                           if candidate in self.accepted]
+                if (len(targets) != 1 or not targets[0].get("metadata", {}).get("cpp_constructor")
+                        or not constructor_class_authorized(targets[0])):
+                    record.update(class_id="", native_owner_unavailable=True)
+                    continue
             if record["class_id"] or not record["class_name"]:
                 continue
             owners = record["definition_owners"]
@@ -216,7 +231,7 @@ class CppMapping:
                 continue
             class_id = definition["node_id"]
             candidates = {node["id"] for node in self.nodes if node.get("_callable") and _label(node) == record["name"]
-                          and class_id in self.class_parents.get(node["id"], ())}
+                          and class_id in self.class_parents.get(node["id"], ()) and constructor_class_authorized(node)}
             if owners:
                 candidates.intersection_update(record["candidates"])
             record.update(class_id=class_id, class_name=name, node_id=next(iter(candidates)) if len(candidates) == 1 else "",

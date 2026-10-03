@@ -55,7 +55,8 @@ Native registration coverage belongs to `QtQmlBridgeIndex`, not the parser or
 graph writer. `native_class_definition_unavailable` with status `unavailable`
 means the accepted class ID has no source record explicitly proving a complete
 class body. Forward declarations and legacy records without `is_definition`
-cannot establish a provider. Reanalyse accepted sources with Qt policy 3; if the
+cannot establish a provider. Reanalyse accepted sources with Qt policy 5 and
+AST cache schema 7; if the
 body is outside the accepted corpus, supply that source through the supported
 scope rather than guessing a target. A complete body without accepted meta-object
 evidence retains `unsupported` / `native_class_metaobject_unavailable`.
@@ -65,7 +66,7 @@ retain ambiguity; source-owned unresolved facts remain visible in exports.
 
 Ownership recovery does not add a new success or write-failure code. Exact
 canonical definition provenance and complete class evidence permit normal source
-edges; missing or conflicting evidence does not. Qt policy 3 forces unchanged-
+edges; missing or conflicting evidence does not. Qt policy 5 forces unchanged-
 input refresh after the correction. A malformed native refresh still reaches
 `QT_CPP_SYNTAX` and the existing publication guard, preserving the prior graph,
 manifest, Qt stamp and root marker even under force. Corrected retry commits the
@@ -129,3 +130,15 @@ stage/recovery guidance and omit raw backend exceptions or source content.
 The CLI exits nonzero for these outcomes and cannot announce a new written file.
 Successful retry uses the normal atomic writer. Clustering labels and source
 payloads stay local; HTML aggregation identifies omitted occurrence-level facts.
+
+
+Constructor/source-containment corrections add no diagnostic code or persistence
+boundary. Rejected constructor class proof retains source-site evidence with
+unavailable native ownership; it is different from a parser failure. Unknown
+emission targets and unproved QML handles retain existing coverage reasons.
+Malformed native input or failed joins still reject publication with the existing
+stage-specific errors. AST schema 7 retires incompatible caches; prior valid
+graph/manifest/root/Qt state survives a failed refresh. Corrected retry uses the
+normal publication sequence. Internal-only or genuinely unlinked community counts
+are successful view states, not HTML publication failures. REQ-QML-020 projection
+and any additional diagnostics remain planned.

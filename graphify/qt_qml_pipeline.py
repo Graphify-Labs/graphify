@@ -14,6 +14,7 @@ def resolve_qt_qml(paths, per_file, all_nodes, all_edges, *, root,
     from graphify.qt_qml_access_resolution import resolve_qt_qml_access
     from graphify.qt_qml_bridge import build_qt_qml_bridge
     from graphify.qt_project_index import QtProjectIndex
+    from graphify.qt_source_containment import attach_qt_file_sites
 
     fresh_ids = {node["id"] for node in all_nodes}
     nodes = all_nodes + [node for node in context_nodes or () if node.get("id") not in fresh_ids]
@@ -46,6 +47,9 @@ def resolve_qt_qml(paths, per_file, all_nodes, all_edges, *, root,
             resolve_qml_relationships(results, nodes, edges, root=root, import_roots=import_roots, native_index=native_index, project_index=project_index)
         resolve_qt_events(results, nodes, edges, root=root)
         resolve_qt_qml_access(results, nodes, edges, root=root, project_index=project_index)
+        # Unresolved callable/class identity does not erase observed membership
+        # in a uniquely accepted source file; this grants no native target role.
+        edges.extend(attach_qt_file_sites(results, nodes, edges, root=root, fresh_ast_ids=fresh_ids))
         for diagnostic in project_index.diagnostics:
             for path, result in results.items():
                 if Path(path).resolve().relative_to(root).as_posix() == diagnostic["source_file"]:

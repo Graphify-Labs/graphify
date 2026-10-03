@@ -12,8 +12,10 @@ INC-QML-10 native ownership corrections, including accepted-context source/span
 deduplication, pass local source, final broad and reviewed installed-artifact checks.
 INC-QML-11 inherited-signal ancestor
 lookup remains planned; initial profile evidence does not verify that case.
-INC-QML-12 generic out-of-line constructor ownership is separately planned;
-ordinary-method proof does not authorize an unproven constructor class parent.
+INC-QML-12 constructor source proof and INC-QML-13 source containment/view counts
+are implemented with local source and reviewed installed-artifact validation. Missing constructor class proof
+cannot be supplied by a same-name header prototype; source containment alone
+does not establish a native endpoint.
 
 ## Ownership and dependency direction
 
@@ -425,12 +427,13 @@ for one canonical body share that identity and count as one definition. Copying
 only ID/name/definition authority loses the body key and creates false ambiguity.
 Inputs stay read-only; deduplication cannot merge distinct body locations or
 compensate for missing provenance by a name guess.
-Indexes remain per-run and borrowed canonical nodes remain unchanged. Qt policy
-epoch 3 forces same-package analysis refresh for old ownership facts. AST cache
-schema 6 and existing graph/manifest/checkpoint publication ordering are unchanged.
+Indexes remain per-run and borrowed canonical nodes remain unchanged. At the
+INC-QML-10 snapshot, Qt policy epoch 3 forced same-package analysis refresh for
+old ownership facts and AST cache schema remained 6. INC-QML-12/13 subsequently
+use policy 5/schema 7 with the same graph/manifest/checkpoint publication ordering.
 Direct/pipeline/build/reload context and ownership tests pass locally. This
 internal body-identity transport correction changes no persisted fact contract;
-policy epoch 3 and AST schema 6 remain appropriate. Final broad and reviewed
+policy epoch 3 and AST schema 6 were appropriate for that revision. Final broad and reviewed
 installed-artifact proof passes locally; see
 [INC-QML-10 validation](VALIDATION.md#inc-qml-10-native-source-ownership).
 
@@ -447,16 +450,107 @@ consumer and incremental proof remains unexecuted; the
 [INC-QML-11 plan](PLAN.md#inc-qml-11--inherited-qt-signal-endpoint-lookup) owns scope
 and exit conditions.
 
-## Planned constructor canonical ownership (INC-QML-12)
+## Constructor source proof (INC-QML-12)
 
-Current generic out-of-line constructor facts can retain a callable's accepted
-ID/file/line while linking it to an implicit placeholder class. Native mapping
-cannot substitute the complete header class without accepted containment proof.
-The correction belongs first to generic C++ extraction/canonicalization, preserving
-constructor identity and source spans; Qt overlays consume the corrected evidence
-through the existing strict mapping interface. Initializer/delegation expressions
-are source syntax, not runtime construction proof. Namespace, duplicate class,
-conflicting parent and missing/foreign provenance controls must prevent false
-ownership. Source, persistence, incremental and epoch-impact verification is
-planned in [INC-QML-12](PLAN.md#inc-qml-12--out-of-line-constructor-canonical-ownership);
-no code or compatibility-epoch change is specified as implemented.
+The generic C++ producer augments constructor prototypes that tree-sitter emits
+as class-body `declaration` nodes. `cpp_constructors.py` owns bounded exact
+qualified names, original-byte spans, normalized parameter-type signature hashes
+and ambiguity. `metadata.cpp_class` version 1 records complete-body authority;
+`metadata.cpp_constructor` version 1 records declaration/definition identity and
+class-binding outcome. Literal names use bounded base64 transport so display
+sanitation cannot alter identity. No native Qt role or runtime object is implied.
+
+The engine hook runs only for accepted C++ inputs; the existing declaration/
+definition canonicalization calls the focused binder before its normal merge.
+A unique complete class, matching unambiguous constructor prototype, exact scope,
+signature and accepted source-backed method containment authorize a class join.
+Supported singleton definition IDs are retained; missing header prototypes use
+the existing ID formula. Unsupported overload collisions can use the baseline
+ID disambiguation path and do not establish distinct overload identity.
+Qualified namespace definitions need not merge into a differently
+keyed header symbol. Both accepted identities retain their own provenance.
+
+Collapsed overloads, missing/malformed facts, foreign scope, mismatched signatures
+or conflicting owners cannot authorize a class join. Signature normalization
+retains word boundaries, excludes parameter names/defaults and does not resolve
+aliases or compiler conversions. Unsupported delegation/overload cases remain
+unknown rather than gaining a guessed class. `constructor_class_authorized`
+allows consumers to reject class authority without losing an independently
+accepted source callable.
+
+Native mapping consumes the exact body candidate and this guard. An unbound or
+legacy out-of-line constructor cannot be replaced with a same-name header
+prototype. Its source callable may contain observed sites, but `this` cannot
+acquire a native type from that spelling alone. Independently typed local
+handles and literal QML access retain their own evidence.
+
+## Source containment and aggregate counters (INC-QML-13)
+
+`qt_cpp_exposure._class_facts` keeps accepted class containment first. Without
+Qt class authority, a member occurrence may instead be contained by its uniquely
+resolved canonical callable; a local class occurrence may be contained by its
+accepted enclosing callable. The fallback requires an actual callable node,
+never a class-like target or global label. Class IDs, native roles and unresolved
+class status remain unchanged. Unknown/conflicting callable evidence adds no
+link. Borrowed nodes and edges remain immutable.
+
+`qt_source_containment.attach_qt_file_sites` adds file-to-occurrence `contains`
+edges with context `qt_source_file` when callable ownership remains unknown.
+It reuses a unique accepted code file node with exact in-root path, filename
+label, L1 location and no callable/class/semantic role. Fresh AST identities
+are supplied explicitly before final facade tagging; borrowed context requires
+its persisted AST marker. Duplicate, foreign or unmarked borrowed candidates
+fail closed. Original spans and endpoint direction survive publication. File
+context does not populate `owner_id`, class identity or semantic resolution.
+
+The HTML aggregate counts each canonical source-graph edge once as internal to
+a community or external at both incident communities. Distinct neighboring
+communities remain a separate count. Canonical self-loops and parallel/directed
+edges are counted as represented by the input graph; serialized duplicate
+occurrences are not additional edges. Counts add no aggregate self-loops or
+synthetic relationships. The inspector distinguishes closed connected groups
+from actual isolates. A pre-aggregated caller without source counters displays
+unavailable counts; ordinary source-node Degree and Select All remain unchanged.
+
+AST cache schema 7 retires older C++ producer facts at the same package version;
+Qt policy epoch 5 invalidates derived constructor/source-ownership facts, including
+the intermediate policy-4 analysis produced before source-file containment.
+Graph/manifest/checkpoint persistence owners and publication order are unchanged.
+Migration discards incompatible AST cache entries; failed analysis retains prior
+graph/manifest/root/Qt state and requires a corrected retry. This is different
+from promising incompatible old-cache retention.
+
+### Legacy file cohesion exceptions
+
+| Owner/file | Current measured size / permitted ceiling | Rationale and extraction exit |
+| --- | --- | --- |
+| HTML exporter maintainer: `exporters/html.py` | 800 / 810 physical lines | Existing embedded template and recursive aggregate projection share serialization; this correction adds truthful counters at that owner. Extract aggregate projection or template responsibility in a separate characterized viewer increment when the next cohesive change requires it. |
+| Generic extractor maintainer: `extractors/engine.py` | 7694 / 7700 | Five-line constructor producer hook only; domain logic belongs to `cpp_constructors.py`. Continue the upstream mechanical migration sequencing rather than mixing unrelated language moves into this fix. |
+| Generic resolver maintainer: `extractors/resolution.py` | 3974 / 3980 | Six-line pre-merge/guard hook only; the helper owns constructor decisions. Extract the existing declaration/definition responsibility as a separate characterized increment when upstream sequencing permits. |
+| Cache maintainer: `cache.py` | 1782 / 1783 physical lines | Schema constant/comment changes only; cache ownership and migration ordering stay intact. No responsibility extraction is needed for this epoch update. |
+| Export test maintainer: `tests/test_export.py` | 1375 / 1375 physical lines | One existing inspector assertion follows the clarified aggregate label; no growth. New behavior is characterized in the focused community-link suite. Extract a cohesive existing exporter-test responsibility separately when that suite is next expanded. |
+
+New handwritten constructor/source-link/viewer modules and tests must remain
+below 300 lines. Verification measurements and any remaining platform/system
+gaps belong to VALIDATION.md and tests/TRACEABILITY.md.
+
+## Planned metadata membership projection (INC-QML-14)
+
+The current QtProjectIndex resolves accepted source and resource literal targets
+for module/load/access lookup. Metadata facts are source-owned by their declaring
+file, but general fact-to-source membership edges are not published. REQ-QML-020
+and INC-QML-14 separately plan that additional graph projection. Define scoped
+relation context/direction, uncertainty and multi-relation preservation before
+implementation; functioning lookup and truthful internal counts do not verify
+the proposed projection.
+
+## Planned exact overload identity (INC-QML-15)
+
+The generic C++ producer can collapse multiple constructor overloads into one
+name-based node. Cold building and watch rebuilding can then retain different
+locations for its ordinary file containment edge. This behavior predates the
+constructor proof helper. Its conservative proof guard rejects conflicting spans;
+native source-file links remain exact, but complete generic overload identity and
+full generic overload graph parity are unverified. A separate characterized
+producer/identity change must define compatibility and migration before correcting
+that ownership boundary. Native file-context parity is not evidence of that fix.

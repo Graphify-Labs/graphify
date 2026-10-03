@@ -264,8 +264,24 @@ function showInfo(nodeId) {{
     }}
   }} else if (n.member_count !== undefined && n.member_count !== null) {{
     html += `<div class="field">Members: ${{esc(n.member_count)}}</div>`;
+    // Aggregate neighbors omit internal source relationships. Missing source
+    // counts in a caller-supplied meta-graph remain unknown, never zero.
+    const internalKnown = Number.isInteger(n.internal_source_edges);
+    const externalKnown = Number.isInteger(n.external_source_edges);
+    html += `<div class="field">Internal source edges: ${{esc(internalKnown ? n.internal_source_edges : 'unavailable')}}</div>`;
+    html += `<div class="field">External source edges: ${{esc(externalKnown ? n.external_source_edges : 'unavailable')}}</div>`;
+    html += `<div class="field">Connected communities: ${{esc(n.connected_communities)}}</div>`;
+    html += '<div class="field">Member-level source details are not expanded in this view.</div>';
+    if (internalKnown && externalKnown && n.external_source_edges === 0) {{
+      const explanation = n.internal_source_edges > 0
+        ? 'This community has internal source relationships and no links to other communities.'
+        : 'No source relationships are represented for this community.';
+      html += `<div class="field">${{esc(explanation)}}</div>`;
+    }}
   }}
-  html += `<div class="field">Degree: ${{n.degree}}</div>`;
+  if (!isMetaNode || n.member_count === undefined || n.member_count === null) {{
+    html += `<div class="field">Degree: ${{n.degree}}</div>`;
+  }}
   if (neighborIds.length) {{
     html += `<div class="field" style="margin-top:8px;color:#aaa;font-size:11px">Neighbors (${{neighborIds.length}})</div><div id="neighbors-list">${{neighborItems}}</div>`;
   }}
@@ -530,11 +546,24 @@ def to_html(
             meta = _nx.Graph()
             for cid, members in communities.items():
                 meta.add_node(str(cid), label=(community_labels or {}).get(cid, f"Community {cid}"))
-            edge_counts = _Counter()
+            edge_counts, internal_counts, external_counts = _Counter(), _Counter(), _Counter()
             for u, v in G.edges():
                 cu, cv = node_to_community.get(u), node_to_community.get(v)
-                if cu is not None and cv is not None and cu != cv:
+                if cu is None or cv is None:
+                    continue
+                # Each canonical source edge counts once, including a self-loop
+                # or each parallel/directed edge represented by G. Boundary
+                # edges belong to both incident communities; no self-link is
+                # added to the aggregate merely to display internal connectivity.
+                if cu == cv:
+                    internal_counts[cu] += 1
+                else:
+                    external_counts[cu] += 1
+                    external_counts[cv] += 1
                     edge_counts[(min(cu, cv), max(cu, cv))] += 1
+            for cid in communities:
+                meta.nodes[str(cid)].update(internal_source_edges=internal_counts[cid],
+                                            external_source_edges=external_counts[cid])
             for (cu, cv), w in edge_counts.items():
                 meta.add_edge(str(cu), str(cv), weight=w,
                               relation=f"{w} cross-community edges", confidence="AGGREGATED")
@@ -643,6 +672,14 @@ def to_html(
         }
         if member_counts:
             node["member_count"] = member_counts.get(cid, len(communities.get(cid, [])))
+            if not data.get("file_type") and not data.get("source_file"):
+                # This count names distinct other communities even when a
+                # supplied meta-graph has loops or reciprocal directed edges.
+                node["connected_communities"] = len(set(nx.all_neighbors(G, node_id)) - {node_id})
+                for field in ("internal_source_edges", "external_source_edges"):
+                    value = data.get(field)
+                    if type(value) is int and value >= 0:
+                        node[field] = value
         # Project bounded human-readable Qt/QML fields while retaining the
         # complete source contract and user attributes, without editing G.
         node.update(semantic_fields(data))

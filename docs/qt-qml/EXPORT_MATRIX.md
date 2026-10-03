@@ -87,3 +87,12 @@ occurrences; an identical re-push should retain the same count. Record redacted
 failures and clean up only the authorized disposable database. Corpus execution,
 production graph replacement and cleanup need their own scope and ownership
 decision; no account access or live-service result is assumed here.
+
+
+The aggregated HTML inspector distinguishes canonical internal/external source
+edges from distinct neighboring communities. Internal-only metadata groups retain
+true source relationships without fake meta-graph self-loops. Source-only callable
+containment preserves native class uncertainty and original Qt fact payloads;
+counts do not imply resolution or runtime delivery. Explicit metadata-to-file/
+component membership projection is planned under REQ-QML-020 and is not part of
+current export support.

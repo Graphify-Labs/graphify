@@ -7549,6 +7549,11 @@ def _extract_generic(
             result["ts_type_table"] = {"path": str_path, "table": type_table}
         elif config.ts_module == "tree_sitter_cpp":
             result["cpp_type_table"] = {"path": str_path, "table": type_table}
+    # Constructor prototypes use C++ `declaration`, unlike ordinary member fields.
+    # Retain their exact source proof before corpus canonicalization owns the join.
+    if config.ts_module == "tree_sitter_cpp":
+        from graphify.extractors.cpp_constructors import augment_cpp_constructors
+        augment_cpp_constructors(root, source, nodes, clean_edges, path)
     return result
 
 def _python_decorator_name(deco_node, source: bytes) -> str | None:

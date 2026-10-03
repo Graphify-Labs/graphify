@@ -46,7 +46,7 @@ def test_req_qml018_ac02_schema_retires_real_same_package_syntax_cache(tmp_path,
     assert cache.load_cached(path, root=tmp_path) is None
     assert not old_dir.exists()
     assert before == (path.read_bytes(), cache._EXTRACTOR_VERSION)
-    assert cache.cache_dir(tmp_path).name.endswith("-s6")
+    assert cache.cache_dir(tmp_path).name.endswith(f"-s{cache._AST_CACHE_SCHEMA}")
 
 
 def test_req_qml018_ac02_policy_epoch_refreshes_same_package_unchanged_cpp(tmp_path, monkeypatch):
@@ -167,7 +167,7 @@ def test_req_qml018_ac02_actual_cli_refreshes_old_epoch_without_source_or_packag
     monkeypatch.setattr(extraction, "_safe_extract_with_xaml_root", observe)
     current = cli(tmp_path, monkeypatch, operation)
     assert paths[0] in observed
-    assert not old_dir.exists() and cache.cache_dir(tmp_path).name.endswith("-s6")
+    assert not old_dir.exists() and cache.cache_dir(tmp_path).name.endswith(f"-s{cache._AST_CACHE_SCHEMA}")
     assert cache.load_cached(paths[0], root=tmp_path) is None
     assert cache.load_cached(paths[1], root=tmp_path) is not None
     state = inspect_qt_analysis(tmp_path, tmp_path / "graphify-out", paths)
@@ -211,7 +211,7 @@ def test_req_qml018_ac02_current_epoch_failure_keeps_real_cache_and_products(tmp
     accepted = cli(tmp_path, monkeypatch, "update")
     cache.save_cached(path, extraction.extract_cpp(path), root=tmp_path)
     before, cached = products(tmp_path), ast_entries(tmp_path)
-    assert cached and all("-s6/" in name for name in cached)
+    assert cached and all(f"-s{cache._AST_CACHE_SCHEMA}/" in name for name in cached)
     path.write_text("void use(){ Q_UNUSED(helper()) broken( }", encoding="utf-8")
     with pytest.raises(SystemExit) as failure:
         cli(tmp_path, monkeypatch, "update", force=force)

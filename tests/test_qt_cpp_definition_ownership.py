@@ -218,7 +218,7 @@ def test_req_qml008_ac02_missing_body_proof_cannot_become_a_native_provider(tmp_
 
 
 def test_req_qml008_ac02_external_and_function_local_classes_keep_unknown_ownership(tmp_path):
-    """Unsupported owners remain visible facts; no file edges or invented declarations hide them."""
+    """Proven source containment does not invent an unavailable native class owner."""
     source = '#include "external.hpp"\nvoid External::run(){QObject *object;}\n' + (
         'void utility(){struct Local {void work(){}}; QObject *object;}')
     result = analysis(tmp_path, {"unresolved.cpp": source})
@@ -226,8 +226,13 @@ def test_req_qml008_ac02_external_and_function_local_classes_keep_unknown_owners
     local = next(node for node in sites(result, "class") if qt_metadata(node)["raw_name"] == "Local")
     assert qt_metadata(external)["class_id"] == "" and qt_metadata(external)["generic_target_id"]
     assert qt_metadata(local)["class_id"] == "" and qt_metadata(local)["is_definition"] is True
-    assert all(qt_metadata(node)["owner_id"] == "" for node in (external, local))
-    assert not any(edge["target"] in {external["id"], local["id"]} for edge in result["edges"])
+    function = next(node for node in result["nodes"] if node.get("label") == "utility()")
+    for node, owner in ((external, qt_metadata(external)["generic_target_id"]), (local, function["id"])):
+        assert qt_metadata(node)["owner_id"] == owner
+        assert any(edge["source"] == owner and edge["target"] == node["id"]
+                   and edge["relation"] == "contains" and edge["confidence"] == "EXTRACTED"
+                   and edge["context"] == "qt_source_site" for edge in result["edges"])
+    assert qt_metadata(local)["generic_target_id"] == "" and qt_metadata(local)["status"] == "unavailable"
 
 
 def test_req_qml008_ac02_unrelated_plain_cpp_keeps_generic_identities(tmp_path):

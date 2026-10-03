@@ -7,6 +7,8 @@ Status: INC-QML-00 through INC-QML-07 complete for the documented bounded Qt 6/Q
 source profile. All final source, consumer, update and declared hosted artifact gates pass. Executed checks are recorded in
 [VALIDATION.md](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md).
 Commands marked proposed are future verification suggestions, not pass claims.
+Original work-package filenames are historical proposals; actual implemented
+tests and executable verification commands are assigned in validation and traceability.
 
 INC-QML-08 is **In progress; partially implemented**. Its native INC-QML-08a syntax
 slice has local source, cache-upgrade and installed-artifact proof; project metadata, typed context/provider chains and
@@ -30,8 +32,14 @@ correction. Initial
 INC-QML-00–INC-QML-07 evidence remains limited to its original bounded profile.
 INC-QML-11 separately plans multi-level inherited-signal endpoint lookup under
 existing REQ-QML-016-AC01/AC04; its implementation and verification are pending.
-INC-QML-12 separately plans generic out-of-line constructor canonical ownership
-under the existing native ownership criteria; it is also unimplemented/unverified.
+INC-QML-12 implements bounded generic out-of-line constructor canonical ownership
+under the existing native ownership criteria; its bounded singleton source and
+reviewed installed-artifact correction are locally verified.
+INC-QML-13 restores source-site links for accepted utility-member occurrences and
+distinguishes internal community links from external connections. Its affected
+REQ-QML-008-AC02 and REQ-QML-019-AC02 cases are locally verified. INC-QML-14 plans
+explicit metadata membership edges; INC-QML-15 plans exact generic overload
+identity/location parity. Neither follow-up is implemented or verified.
 
 This plan extends Graphify's existing Python pipeline and contribution workflow.
 It does not propose a Qt application rewrite. Read [REQUIREMENTS.md](../REQUIREMENTS.md),
@@ -1313,7 +1321,7 @@ verify it.
 
 ## INC-QML-12 — Out-of-line constructor canonical ownership
 
-**Status: Planned; not implemented or verified.** Owner: generic C++ extraction/
+**Status: Locally complete for the bounded singleton profile.** Owner: generic C++ extraction/
 canonicalization maintainer, coordinated with the Qt native integration
 maintainer. Acceptance: existing REQ-QML-008-AC02, REQ-QML-016-AC01/AC04 and
 REQ-QML-017-AC02/AC04. Dependency: INC-QML-10's exact native ownership guard.
@@ -1332,7 +1340,7 @@ changing it. Establish the correct constructor-to-complete-class containment
 using accepted source/provenance and preserve callable IDs, original spans and
 unrelated generic relationships. Then exercise the existing strict native mapper
 against the corrected evidence. Scope public fixtures to ordinary and
-parameterized/delegating out-of-line constructors, with paired namespace,
+parameterized out-of-line constructors, with unsupported delegation/overload controls and paired namespace,
 duplicate-class, conflicting-parent and missing/foreign-proof controls. A
 constructor name, initializer expression or matching label alone is insufficient.
 
@@ -1342,6 +1350,124 @@ affected paths, without inferred runtime delivery. Test constructor/parameter/
 base/ownership edits and removal, cold/full/incremental parity, stale-edge cleanup,
 failure preservation and corrected retry. Review generic C++ compatibility and
 analysis-epoch/cache impact before admission, then record a reviewed installed
-artifact and exact commands. No epoch beyond current policy 3 or implementation
-claim is assigned at this planning checkpoint. Preserve genuinely unsupported
+artifact and exact commands. AST schema 7 and Qt policy 5 retire stale same-version
+producer and derived facts. Preserve genuinely unsupported
 constructors and dynamic QML targets as explicit unresolved cases.
+Final related verification passes 1,044 cases with seven documented skips;
+reviewed installed source/artifact and failure/recovery proof are recorded in
+[validation](VALIDATION.md). Exact generic overload identity remains INC-QML-15;
+browser appearance, other-platform and new hosted evidence remain separate gaps.
+
+## INC-QML-13 — Source-site links and community edge counts
+
+Status: **Locally complete for the recorded source and emitted-script boundaries**. Acceptance: REQ-QML-008-AC02,
+REQ-QML-010-AC02/AC04, REQ-QML-011-AC03/AC04, REQ-QML-012-AC02 and
+REQ-QML-019-AC02. Dependency: INC-QML-10 canonical source-provenance mapping.
+INC-QML-12 independently corrects constructor containment; INC-QML-11 remains
+planned. No new requirement or criterion identity is introduced.
+
+A Qt-admitted implementation can belong to an ordinary utility class whose
+header has no Qt markers. Its accepted canonical callable already identifies
+the member occurrence, while absent Qt class authority leaves the overlay
+without containment. Preserve a source-site link to that unique callable
+without admitting unrelated headers, establishing QObject roles, guessing a
+class or inventing runtime calls. Missing, conflicting and foreign callable
+evidence remains unlinked. Canonical class containment remains preferred.
+When a callable owner is unavailable, retain actual file-to-occurrence containment
+only from a unique accepted in-corpus source file. Do not populate a callable or
+class owner from that file link. Explicit fresh AST identities and persisted
+context provenance authorize the file role; conflicting, foreign or incorrectly
+typed candidates cannot create an edge.
+
+Community aggregation omits internal source edges from its plotted meta-graph.
+A community can therefore show zero neighboring communities while its members
+have many internal links. Publish internal and external source-edge counts and
+label neighboring-community degree explicitly. Distinguish that closed group
+from a truly unlinked source group; never fabricate inter-community edges.
+
+Ownership: the integration maintainer owns native member/source ownership, policy invalidation,
+requirements, documentation and installed proof; the viewer owner changes only
+aggregate projection and inspector regression tests; the constructor owner
+changes generic canonicalization and its tests independently.
+
+Acceptance matrix: exact canonical utility-method mapping and reload; absent
+class authority without exposure; wrong/ambiguous callable rejection; unchanged
+unresolved metadata with truthful file context; actual file IDs, fresh/context
+provenance, missing/foreign/ambiguous/non-file rejection; unchanged
+borrowed inputs; source spans and stable unrelated identities; cold/warm and
+manual-update parity with stale-link removal; failed refresh retaining graph,
+manifest and analysis state. Viewer fixtures cover closed connected groups,
+true isolates, external weighted links and internal self-loops, full payload
+counts, emitted inspector behavior, escaping and source-graph immutability.
+Successful analysis adds no new diagnostic; unresolved semantic targets retain
+the existing status/reason. Parser/transport/publication failures use existing
+rejection and retention contracts; there is no new persistence boundary.
+
+Exit: focused production regressions fail before and pass after correction,
+required related compatibility checks pass, a reviewed wheel reproduces the
+source behavior, and the installed code-only consumer retains truthful counts
+and links. Record commands, skipped lanes and remaining source-adoption gaps
+without publishing private corpus content. Review the plan after completion.
+The six focused production suites pass 90 cases; the final related suite passes
+1,044 cases. The reviewed installed artifact reproduces file containment,
+zero isolated Qt facts in the accepted adoption scope, truthful aggregate counts,
+malformed-input retention and corrected retry. These facts do not establish
+native runtime targets or close INC-QML-08/11/14/15. See
+[validation](VALIDATION.md) for exact artifact identity, commands and exclusions.
+
+## INC-QML-14 — Explicit project membership relationships
+
+Status: **Planned; not implemented or verified**. Acceptance: REQ-QML-020-AC01–AC03,
+with compatibility checks under REQ-QML-009-AC01/AC03, REQ-QML-010-AC02/AC03 and
+REQ-QML-013-AC01/AC03. Dependencies: accepted QtProjectIndex module/resource lookup
+and source endpoint identities. The current source-ownership correction does
+not depend on this projection enhancement.
+
+Plan review identifies a separate display boundary: metadata source/resource
+facts can resolve their targets in the per-run index while their only published
+relationship is containment by the metadata file. A closed metadata community
+therefore has true internal links but no displayed route to the declared source
+files. Project accepted membership evidence through a focused resolver seam,
+retaining literal scope, canonical identity and uncertainty. Define relation
+context/direction and multi-relation preservation before changing projection.
+
+Use public CMake, qmake and qrc fixtures with duplicate names, conditional paths,
+generated/out-of-root targets, root relocation, parser/transport failure and
+metadata-only/source removal updates. Verify actual build/JSON reload/query/HTML
+output, cold/warm/manual parity, stale-edge cleanup and prior-output retention.
+No corpus expansion, engine/build execution, synthetic architectural grouping
+or guessed endpoint is permitted. Determine policy/schema impact from the final
+owner and contract; do not predeclare an epoch or diagnostic as implemented.
+
+Exit only after every REQ-QML-020 criterion has exact production evidence, related
+metadata/loader/native and unrelated-language regressions pass, and a reviewed
+installed artifact confirms the projection. Existing index lookup and internal
+community counts remain evidence of their own boundary, not this enhancement.
+
+## INC-QML-15 — Exact constructor-overload identity and location parity
+
+Status: **Planned; not implemented or verified**. Acceptance: existing
+REQ-QML-008-AC02/AC03 and REQ-QML-011-AC01/AC04. Owner: generic C++ producer and
+canonicalization maintainer. Dependency: characterized baseline overload IDs,
+source locations, relationships and compatibility rules. No new requirement ID.
+
+Multiple constructor overloads can share one generic name-based ID. Baseline
+node deduplication retains the first definition while ordinary containment edges
+can retain different occurrence locations in cold and watch graphs. Added header
+prototypes can invoke existing collision remapping; neither path proves exact
+overload identity. Conservative native guards reject contradictory proof and
+source-file links remain truthful. This limitation is separate from singleton
+constructor ownership and the INC-QML-13 correction.
+
+Characterize overload declarations/definitions, inline and out-of-line forms,
+delegation, signature changes and same-named namespace classes through production
+facade/build/reload/manual/watch. Define stable identity, declaration merge,
+original-span authority, dependency queries and existing-graph compatibility before
+changing the producer. Preserve ambiguity when type/alias evidence is insufficient.
+Do not assign one overload's callable or class to another source occurrence.
+
+Exit requires exact accepted overloads and their locations to agree across
+cold/warm/full/incremental graphs, stale-edge removal, failure retention and
+corrected retry, with generic call and unrelated-language regressions. Record
+schema/policy migration, reviewed artifact proof and remaining unsupported forms.
+Current native-only source-file parity does not verify this increment.
