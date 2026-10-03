@@ -3096,6 +3096,37 @@ def _cpp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str
         return True
     return False
 
+def _php_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
+                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
+                    parent_class_nid: str | None, add_node_fn, add_edge_fn) -> bool:
+    """Emit a node per PHP 8.1 enum case with a case_of edge. Returns True if handled.
+
+    A PHP `enum` is in class_types, so its type and methods are captured, but the
+    cases (`case Hearts = 'H';`) nest in the `enum_declaration_list` body as
+    `enum_case` nodes that nothing handled — they were dropped, leaving the enum a
+    caseless leaf. Each case carries its name in a `name` field. Emit a node plus a
+    `case_of` edge per case, the PHP parity of Java #1719 (enum_constant), Swift,
+    Scala, and C++.
+    """
+    if node.type == "enum_case" and parent_class_nid:
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            name_node = next(
+                (c for c in node.children if c.type == "name"), None
+            )
+        if name_node is None:
+            return True
+        case_name = _read_text(name_node, source)
+        if case_name:
+            line = node.start_point[0] + 1
+            case_nid = _make_id(parent_class_nid, case_name)
+            if case_nid not in seen_ids:
+                add_node_fn(case_nid, case_name, line)
+                add_edge_fn(parent_class_nid, case_nid, "case_of", line)
+        return True
+    return False
+
+
 def _java_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                      nodes: list, edges: list, seen_ids: set, function_bodies: list,
                      parent_class_nid: str | None, add_node_fn, add_edge_fn,
@@ -5996,6 +6027,13 @@ def _extract_generic(
             if _kotlin_extra_walk(node, source, file_nid, stem, str_path,
                                   nodes, edges, seen_ids, function_bodies,
                                   parent_class_nid, add_node, add_edge, walk):
+                return
+
+        # PHP 8.1 enum cases (`case Hearts = 'H';`) inside an enum body.
+        if config.ts_module == "tree_sitter_php":
+            if _php_extra_walk(node, source, file_nid, stem, str_path,
+                               nodes, edges, seen_ids, function_bodies,
+                               parent_class_nid, add_node, add_edge):
                 return
 
         # Scala 3 enum cases (`case Red`, `case Add(x: Int)`) nest under an
