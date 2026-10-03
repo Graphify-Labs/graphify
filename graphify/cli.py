@@ -3662,10 +3662,17 @@ def dispatch_command(cmd: str) -> None:
         from graphify.qml_safety import (
             QmlSafetyError, qml_refresh_required, require_complete_qml,
         )
-        if incremental_mode and qml_refresh_required(
+        from graphify.qt_analysis_state import inspect_qt_analysis, commit_qt_analysis
+        try:
+            qt_state = inspect_qt_analysis(target, graphify_out, files_by_type.get("code", []),
+                                          excludes=_effective_excludes or (), gitignore=_effective_gitignore)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+        if incremental_mode and ((qt_state.has_qt and qt_state.changed) or qml_refresh_required(
             files_by_type.get("code", []),
             [*code_files, *deleted_files, *excluded_files, *graph_stale_sources],
-        ):
+        )):
             code_files = [Path(p) for p in files_by_type.get("code", [])]
             print("[graphify extract] Qt/QML inputs changed; refreshing the live code corpus.")
 
@@ -3871,7 +3878,7 @@ def dispatch_command(cmd: str) -> None:
             # graphify-out/ dir into a project that asked for external output.
             # `root` stays the scanned project so source_file/ids relativize
             # against it; conflating the two basenamed every node (#1941).
-            ast_kwargs: dict = {"cache_root": out_root, "root": target}
+            ast_kwargs: dict = {"cache_root": out_root, "root": target, "qml_import_roots": qt_state.import_roots, "refresh_native": qt_state.has_qt}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
             # #2437/#2438 (the `graphify update` twin of watch's #2406 fix): an
@@ -4396,6 +4403,8 @@ def dispatch_command(cmd: str) -> None:
                 )
                 try:
                     _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
+                    if not _cleared_ast:
+                        commit_qt_analysis(graphify_out, qt_state)
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
                 stages.total()
@@ -4519,6 +4528,8 @@ def dispatch_command(cmd: str) -> None:
             try:
                 if has_path:
                     _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
+                    if not _cleared_ast:
+                        commit_qt_analysis(graphify_out, qt_state)
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
             if global_merge:
@@ -4703,6 +4714,8 @@ def dispatch_command(cmd: str) -> None:
         try:
             if has_path:
                 _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
+                if not _cleared_ast:
+                    commit_qt_analysis(graphify_out, qt_state)
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
 

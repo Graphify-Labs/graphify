@@ -338,3 +338,14 @@ access. Public CMake/qmake/qrc/qmltypes admission remains QML-05 work. Native
 member revisions, foreign/extended/attached providers and compiler conversions
 are retained as unsupported evidence in this initial profile. Conservative live
 code refresh handles C++ changes; QML-06 adds configuration and metadata parity.
+
+
+### D10 — Conservative Qt refresh and explicit syntax policy
+
+Use a full refresh of already accepted code when Qt inputs or analysis compatibility
+change. It trades extraction cost for equivalent cold/warm/manual/watch output and
+last-provider cleanup. Qt contexts reparse native syntax; plain C++ retains baseline
+portable caching. No prior cache is deleted to recover a failed Qt analysis. A
+future dependency-directed optimization must prove the same mutation/configuration
+contracts before replacing this policy. The writer commits the hash-only Qt state
+after the graph and manifest, so a failed publication cannot mark the input current.

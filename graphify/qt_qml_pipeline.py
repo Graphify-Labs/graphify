@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def resolve_qt_qml(paths, per_file, all_nodes, all_edges, *, root,
-                   context_nodes=(), context_edges=()):
+                   context_nodes=(), context_edges=(), import_roots=None):
     """Publish successful scratch joins; never annotate borrowed context facts."""
     from graphify.extractors.qt_cpp_access import collect_qt_cpp_access
     from graphify.extractors.qt_cpp_events import collect_qt_cpp_events
@@ -37,13 +37,13 @@ def resolve_qt_qml(paths, per_file, all_nodes, all_edges, *, root,
         collect(enrich_qt_cpp)
         collect(collect_qt_cpp_events)
         collect(collect_qt_cpp_access)
-        project_index = QtProjectIndex(nodes, edges, root=root)
+        project_index = QtProjectIndex(nodes, edges, root=root, import_roots=import_roots)
         native_index = build_qt_qml_bridge(nodes, edges, root=root, project_index=project_index)
         if any(node.get("metadata", {}).get("qml") for node in nodes):
             from graphify.qml_relationships import resolve_qml_relationships
             from graphify.qml_resolution import resolve_qml_project
-            resolve_qml_project(results, nodes, edges, root=root, native_index=native_index, project_index=project_index)
-            resolve_qml_relationships(results, nodes, edges, root=root, native_index=native_index, project_index=project_index)
+            resolve_qml_project(results, nodes, edges, root=root, import_roots=import_roots, native_index=native_index, project_index=project_index)
+            resolve_qml_relationships(results, nodes, edges, root=root, import_roots=import_roots, native_index=native_index, project_index=project_index)
         resolve_qt_events(results, nodes, edges, root=root)
         resolve_qt_qml_access(results, nodes, edges, root=root, project_index=project_index)
         for diagnostic in project_index.diagnostics:

@@ -1528,6 +1528,10 @@ def _rebuild_code(
             gitignore=_gitignore_enabled,
         )
         code_files = [Path(f) for f in detected['files']['code']]
+        from graphify.qt_analysis_state import inspect_qt_analysis, commit_qt_analysis
+        qt_state = inspect_qt_analysis(watch_root, out, code_files,
+                                      excludes=_persisted_excludes, gitignore=_gitignore_enabled)
+        qt_full_refresh = qt_state.has_qt and qt_state.changed
 
         from graphify.qml_safety import (
             qml_refresh_required, require_complete_qml, require_qml_watch_root,
@@ -1708,10 +1712,10 @@ def _rebuild_code(
             wanted = refresh_terraform_paths(wanted, code_files, changed_paths)
             # Changes to QML/metadata/embedded JS may invalidate unchanged QML
             # references. A complete live-code refresh is the safe initial policy.
-            if qml_refresh_required(code_files, changed_paths):
+            if qt_full_refresh or qml_refresh_required(code_files, changed_paths):
                 wanted = [p for p in code_files if p not in semantic_doc_files]
                 print("[graphify watch] Qt/QML inputs changed; refreshing the live code corpus.")
-            if not wanted and not deleted_paths:
+            if not wanted and not deleted_paths and not qt_full_refresh:
                 print("[graphify watch] No tracked code files in change set - skipping rebuild.")
                 return True
             extract_targets = wanted
@@ -1861,6 +1865,8 @@ def _rebuild_code(
         result = extract(
             extract_targets,
             cache_root=watch_root,
+            qml_import_roots=qt_state.import_roots,
+            refresh_native=qt_state.has_qt,
             resolution_context_nodes=resolution_context_nodes or None,
             resolution_context_edges=resolution_context_edges or None,
         ) if extract_targets else {
@@ -1870,6 +1876,11 @@ def _rebuild_code(
         # The count-based shrink guard cannot account for edge loss or unrelated
         # additions. QML failure rejects the candidate before any reconciliation.
         require_complete_qml(result, extract_targets, operation="update/watch", root=watch_root)
+        if project_root != watch_root and any(
+            node.get("metadata", {}).get("qt", {}).get("contract_version") == 1
+            for node in result.get("nodes", [])
+        ):
+            raise ValueError("QML_ROOT_MISMATCH: native Qt scoped facts require the absolute project scan root; prior graph and manifest were preserved")
         _rebase_relative_source_files(result, watch_root, project_root)
 
         # #2543: AST sources that failed this run (error result, or extractor
@@ -1924,7 +1935,7 @@ def _rebuild_code(
                 watch_root=watch_root,
                 code_files=code_files,
                 extract_targets=extract_targets,
-                full_rebuild=changed_paths is None,
+                full_rebuild=changed_paths is None or qt_full_refresh,
                 deleted_paths=deleted_paths,
                 deleted_source_identities=deleted_source_identities,
                 is_ignored_always=_ignored_always,
@@ -2056,6 +2067,8 @@ def _rebuild_code(
                     scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                     clear_ast=_failed_ast_sources or None,
                 )
+                if not _failed_ast_sources:
+                    commit_qt_analysis(out, qt_state)
             except Exception:
                 pass
 
@@ -2101,6 +2114,8 @@ def _rebuild_code(
                         scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                         clear_ast=_failed_ast_sources or None,
                     )
+                    if not _failed_ast_sources:
+                        commit_qt_analysis(out, qt_state)
                 except Exception:
                     pass
                 html_action = _reconcile_graph_html(out, existing_graph_data)
@@ -2288,6 +2303,8 @@ def _rebuild_code(
                 scan_corpus={f for _fl in detected["files"].values() for f in _fl},
                 clear_ast=_failed_ast_sources or None,
             )
+            if not _failed_ast_sources:
+                commit_qt_analysis(out, qt_state)
         except Exception:
             pass
 
@@ -2371,7 +2388,7 @@ def _batch_triggers_rebuild(batch: list[Path]) -> bool:
     until the next code event or a manual `graphify update` (#2580).
     """
     from graphify.qml_safety import is_qml_path
-    has_code = any(p.suffix.lower() in _CODE_EXTENSIONS or is_qml_path(p) for p in batch)
+    has_code = any(p.suffix.lower() in _CODE_EXTENSIONS or is_qml_path(p) or p.name in {".graphifyignore", ".gitignore"} for p in batch)
     has_deletion = any(not p.exists() for p in batch)
     return has_code or has_deletion
 
@@ -2440,25 +2457,29 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
 
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
-            nonlocal last_trigger, pending
+            nonlocal last_trigger, pending, ignore_patterns
             if event.is_directory or _is_read_only_event(event):
                 return
             path = Path(os.fsdecode(event.src_path))
+            policy_change = path.name in {".graphifyignore", ".gitignore"} and _is_relative_to(path, watch_root_for_ignore)
+            if policy_change:
+                ignore_patterns = _load_graphifyignore(watch_root_for_ignore,
+                    gitignore=_read_build_gitignore(watch_path / _GRAPHIFY_OUT))
             # Check .graphifyignore BEFORE the extension/dotfile/out filters so
             # the cheapest short-circuit for users with broad ignore patterns
             # (node_modules/, .venv/, build/, …) fires first. _is_ignored
             # tolerates absolute paths outside watch_root via its internal
             # relative_to guard, so a stray symlinked event won't raise.
-            if ignore_patterns and _is_ignored(path, watch_root_for_ignore, ignore_patterns):
+            if not policy_change and ignore_patterns and _is_ignored(path, watch_root_for_ignore, ignore_patterns):
                 return
             from graphify.qml_safety import is_qml_path
-            if path.suffix.lower() not in _WATCHED_EXTENSIONS and not is_qml_path(path):
+            if not policy_change and path.suffix.lower() not in _WATCHED_EXTENSIONS and not is_qml_path(path):
                 return
             try:
                 filter_parts = path.relative_to(watch_root_for_ignore).parts
             except ValueError:
                 filter_parts = path.parts
-            if any(part.startswith(".") for part in filter_parts):
+            if any(part.startswith(".") for part in (filter_parts[:-1] if policy_change else filter_parts)):
                 return
             if _GRAPHIFY_OUT in filter_parts:
                 return

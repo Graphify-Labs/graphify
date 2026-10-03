@@ -290,3 +290,11 @@ only accepted targets. Generated/source disagreements attach to the fresh source
 result as warnings; partial metadata participates in the publication failure gate.
 Versioned Qt/QML namespace-shaped facts bypass generic C# namespace merging,
 retaining distinct provider and repeated resource identities.
+
+
+QML-06 owners: qt_incremental computes accepted-input refresh/cache policy without
+scanning directories; qt_analysis_state inspects accepted ancestors and produces a
+frozen checkpoint. CLI/watch own successful publication and checkpoint commit.
+Each parallel worker receives native-cache bypass explicitly; no mutable global
+root or policy is introduced. Borrowed context facts remain read-only. Native Qt
+scoped facts reject subfolder path-only rebasing; callers update the project root.

@@ -30,17 +30,8 @@ def qml_refresh_required(
     rather than reuse project-context edges from an obsolete component scope.
     Deleted/renamed QML paths count even when the live corpus has none left.
     """
-    corpus = list(corpus_paths)
-    changed = list(changed_paths)
-    if any(is_qml_path(p) for p in changed):
-        return True
-    # C++ exposure/events can change dependencies in unchanged Qt or QML files.
-    # Refresh the admitted corpus until a narrower dependency proof is available.
-    if any(Path(p).suffix.lower() in {".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx"} for p in changed):
-        return True
-    return any(is_qml_path(p) for p in corpus) and any(
-        Path(p).suffix.lower() in {".js", ".mjs", ".cjs"} for p in changed
-    )
+    from graphify.qt_incremental import plan_qt_refresh
+    return plan_qt_refresh(corpus_paths, changed_paths).required
 
 
 def require_qml_watch_root(

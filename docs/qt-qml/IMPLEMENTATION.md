@@ -211,3 +211,22 @@ Legacy measured ceilings: extract.py 8999, detect.py 2797, test_extract.py 4827;
 owner Qt integration maintainer (discovery owner source discovery maintainer).
 Reason: narrow named-source admission, root-sensitive dispatch and exact fact
 identity protection. Exit: coordinated upstream facade/classification extraction.
+
+
+## QML-06
+
+Implemented accepted-corpus refresh and immutable worker cache policy. Native
+syntax is reparsed in Qt contexts; ordinary C++ portable cache behavior remains.
+Generic JavaScript already bypasses its syntax cache. Versioned Qt/QML metadata
+is never reused as a project-resolved syntax result. .qt_analysis.json stores a
+bounded hash-only parser/fact/policy/root/ignore/corpus checkpoint, committed after
+successful graph and manifest writes. Failed source/configuration analysis keeps
+prior graph, manifest and checkpoint bytes. Ordered GRAPHIFY_QML_IMPORT_ROOTS is
+a project-relative JSON list; it changes lookup order, never corpus admission.
+
+Actual extract/update/watch tests cover metadata-only/native-only changes, ignored
+providers, rename/delete/duplicate resources and modules, import-root order, parser
+version, last Qt deletion, unchanged reruns and forced malformed-input rejection.
+Focused worker/native cache and root-boundary evidence is recorded in validation.
+
+QML-06 legacy ceilings: extract.py 9009, cli.py 4949, watch.py 2527. Owner Qt integration maintainer; focused policy/root/publication hooks only. Exit coordinated upstream facade/writer extraction. New handwritten modules/tests remain below300 lines.

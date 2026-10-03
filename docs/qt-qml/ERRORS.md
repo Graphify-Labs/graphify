@@ -56,9 +56,16 @@ fan-out limit is retained as `qml_failures` even where no parser diagnostic is
 available. Force cannot override either marker at publication.
 
 
-QML-05 metadata codes QML_PROJECT_READ/ROOT/LIMIT, QML_PROJECT_UNSUPPORTED,
-QML_QRC_ENTITY/PATH/SYNTAX and QML_TYPES_UNSUPPORTED describe bounded read/root,
+QML-05 metadata codes QML_PROJECT_READ/LIMIT, QML_PROJECT_UNSUPPORTED,
+QML_CMAKE_SYNTAX, QML_QRC_ENTITY/PATH/SYNTAX and QML_TYPES_SYNTAX/UNSUPPORTED describe bounded read/root,
 work, unsupported build/type and resource XML failures. Failed/partial accepted
 metadata reaches the existing publication guard. QML_TYPES_CONFLICT is a warning
 that retains source and generated facts. Duplicate providers/aliases are coverage
 ambiguity, not permission to choose the first record.
+
+
+Qt configuration errors use bounded QT_CONFIG / QT_CONFIG_LIMIT messages and reject
+before publication. Incompatible/missing .qt_analysis.json forces a refresh; it
+never authorizes reading a previously accepted/deleted provider. State is committed
+after graph and manifest success. Native scoped root mismatch uses the existing
+QML_ROOT_MISMATCH rejection and retains prior durable outputs.

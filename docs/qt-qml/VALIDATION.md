@@ -267,3 +267,21 @@ when this local evidence was recorded; they do not prove the QML-05 revision.
 Final focused public admission/native/resource/type suite: 67 passed. Additional
 index regressions retain same-target duplicate project declarations as ambiguous.
 No acceptance is inferred from unfinished QML-06 or QML-07 cases.
+
+
+## QML-06 local evidence
+
+Windows Python3.12.14: policy/state/config/provider tests73 passed; the corrected
+plain-C++ cache plus config/provider subset52 passed; actual code-only/extract/
+QML publication CLI tests89 passed. An intermediate broad run1001 passed28 skipped
+with a corrected plain-header cache regression and the two established Windows
+WinError32 deleted-current-directory baseline failures. Final regression and worker
+proof follow. Both QML-04 and QML-05 hosted CI and twelve optional/core wheel lanes
+completed successfully for their respective PR heads; final QML-07 proof remains.
+
+Final worker/cache/native-root suite6 passed; compatibility fallback regression
+plus worker suite7 passed after preserving the legacy helper invocation. Targeted
+Qt policy/state/project/resolver typing reports0errors0warnings; whole Ruff passes.
+The last broad regression1001 passed28skipped, with corrected helper invocation
+and the two established Windows deleted-current-directory failures. Their hosted
+Linux proof remains required; no test or assertion was skipped to mask them.

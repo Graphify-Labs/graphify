@@ -61,3 +61,9 @@ safety is required when a capability is enabled, before later optimization.
 QML-05 public metadata admission and module/resource bridge joins are implemented
 and locally verified. QML-06 refresh parity and QML-07 consumer/release proof
 remain open. Static literal metadata never invokes a build or runtime engine.
+
+
+QML-06 update/configuration parity is implemented. Use project-root updates for
+Qt scoped facts. GRAPHIFY_QML_IMPORT_ROOTS accepts an ordered relative JSON list
+for CLI/watch lookup within the accepted corpus. QML-07 consumer/release proof
+remains open; hosted evidence must match its final revision.

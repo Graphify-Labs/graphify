@@ -55,14 +55,14 @@ def _implicit_handler_parameter(lookup, site, cache):
     return False
 
 
-def resolve_qml_relationships(per_file, all_nodes, all_edges, *, root: Path, native_index=None, project_index=None) -> None:
+def resolve_qml_relationships(per_file, all_nodes, all_edges, *, root: Path, import_roots=None, native_index=None, project_index=None) -> None:
     """Mutate fresh source-owned sites only; prior graph context is read-only.
 
     Each occurrence is already a unique fact with its expression span and owner.
     Separate endpoint edges preserve repeated reads/calls through Graph/DiGraph.
     Unsupported/dynamic/ambiguous sites remain explicit and get no guessed edge.
     """
-    index = build_qml_index(all_nodes, all_edges, root=root, native_index=native_index, project_index=project_index)
+    index = build_qml_index(all_nodes, all_edges, root=root, import_roots=import_roots, native_index=native_index, project_index=project_index)
     lookup = RelationshipLookup(index)
     fresh = {node["id"] for result in per_file.values() if result for node in result.get("nodes", [])}
     node_ids = {node["id"] for node in all_nodes}

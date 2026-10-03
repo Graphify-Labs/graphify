@@ -63,6 +63,7 @@ from graphify.extractors.qml_qmake import extract_qmake  # noqa: F401
 from graphify.extractors.qml_resources import extract_qrc  # noqa: F401
 from graphify.extractors.qml_types import extract_qmltypes  # noqa: F401
 from graphify.qml_safety import is_qml_path
+from graphify.qt_incremental import qt_syntax_cache_bypass, requires_native_refresh
 from graphify.extractors.razor import extract_razor  # noqa: F401
 from graphify.extractors.robot import extract_robot  # noqa: F401
 from graphify.extractors.rust import extract_rust  # noqa: F401
@@ -7052,8 +7053,9 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     Returns:
         (index, result_dict) so results can be placed back in order.
     """
-    if len(args) == 4:
-        idx, path_str, root_str, cache_location_str = args
+    native_cache_bypass = bool(args[4]) if len(args) == 5 else False
+    if len(args) in (4, 5):
+        idx, path_str, root_str, cache_location_str = args[:4]
     else:  # legacy 3-tuple: location == anchor
         idx, path_str, root_str = args
         cache_location_str = root_str
@@ -7061,7 +7063,7 @@ def _extract_single_file(args: tuple) -> tuple[int, dict]:
     root = Path(root_str)
     cache_location = Path(cache_location_str)
     _raise_recursion_limit()
-    bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or is_qml_path(path)
+    bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or qt_syntax_cache_bypass(path, native=native_cache_bypass)
 
     # Check cache first (avoid re-extraction)
     if not bypass_cache:
@@ -7121,6 +7123,7 @@ def _extract_parallel(
     max_workers: int | None,
     total_files: int,
     cache_location: Path | None = None,
+    native_cache_bypass: bool = False,
 ) -> bool:
     """Extract uncached files in parallel using ProcessPoolExecutor.
 
@@ -7170,7 +7173,8 @@ def _extract_parallel(
     # the cache dir is written (defaults to root when not decoupled) (#1774).
     root_str = str(root)
     cache_loc_str = str(cache_location if cache_location is not None else root)
-    work_items = [(idx, str(path), root_str, cache_loc_str) for idx, path in uncached_work]
+    work_items = [(idx, str(path), root_str, cache_loc_str, True) if native_cache_bypass
+                  else (idx, str(path), root_str, cache_loc_str) for idx, path in uncached_work]
 
     done_count = 0
     failed: list[int] = []  # positions into uncached_work whose future failed
@@ -7263,6 +7267,7 @@ def _extract_sequential(
     root: Path,
     total_files: int,
     cache_location: Path | None = None,
+    native_cache_bypass: bool = False,
 ) -> None:
     """Extract uncached files sequentially (fallback for small batches)."""
     _PROGRESS_INTERVAL = 100
@@ -7280,7 +7285,7 @@ def _extract_sequential(
         if extractor is None:
             per_file[idx] = {"nodes": [], "edges": []}
             continue
-        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or is_qml_path(path)
+        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or qt_syntax_cache_bypass(path, native=native_cache_bypass)
         # XAML boundary anchors on `root` (the corpus), not the cache location.
         result = _safe_extract_with_xaml_root(extractor, path, root)
         # See _extract_single_file: don't cache an anomalous zero-node result (#1666),
@@ -7306,6 +7311,8 @@ def extract(
     max_workers: int | None = None,
     resolution_context_nodes: list[dict] | None = None,
     resolution_context_edges: list[dict] | None = None,
+    qml_import_roots: tuple[str, ...] | None = None,
+    refresh_native: bool = False,
 ) -> dict:
     """Extract AST nodes and edges from a list of code files.
 
@@ -7425,6 +7432,8 @@ def extract(
     cache_location = (cache_root if cache_root is not None else Path(".")).resolve()
     total = len(paths)
 
+    native_cache_bypass = refresh_native or requires_native_refresh(paths)
+    native_policy_kwargs = {"native_cache_bypass": True} if native_cache_bypass else {}
     # Phase 1: separate cached hits from uncached work
     per_file: list[dict | None] = [None] * total
     uncached_work: list[tuple[int, Path]] = []
@@ -7433,7 +7442,7 @@ def extract(
         if _get_extractor(path) is None:
             per_file[i] = {"nodes": [], "edges": []}
             continue
-        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or is_qml_path(path)
+        bypass_cache = path.suffix in _JS_CACHE_BYPASS_SUFFIXES or qt_syntax_cache_bypass(path, native=native_cache_bypass)
         if not bypass_cache:
             cached = load_cached(path, root, cache_root=cache_location)
             if cached is not None:
@@ -7466,7 +7475,7 @@ def extract(
         ran_parallel = False
         if parallel and len(uncached_work) >= _PARALLEL_THRESHOLD:
             ran_parallel = _extract_parallel(
-                uncached_work, per_file, root, max_workers, total, cache_location
+                uncached_work, per_file, root, max_workers, total, cache_location, **native_policy_kwargs
             )
         if not ran_parallel:
             # #2444: only re-extract what the pool didn't finish. A pool that
@@ -7474,7 +7483,7 @@ def extract(
             # the whole batch would throw that work away.
             _extract_sequential(
                 [(i, p) for (i, p) in uncached_work if per_file[i] is None],
-                per_file, root, total, cache_location,
+                per_file, root, total, cache_location, **native_policy_kwargs,
             )
 
     # Fill any remaining None slots. With the #2444/#2445 handling above this
@@ -8851,6 +8860,7 @@ def extract(
     # earlier absolute/stem IDs. Context remains accepted, read-only input.
     from graphify.qt_qml_pipeline import resolve_qt_qml
     for failed in resolve_qt_qml(paths, per_file, all_nodes, all_edges, root=root,
+                                import_roots=qml_import_roots,
                                 context_nodes=resolution_context_nodes,
                                 context_edges=resolution_context_edges):
         if failed not in _failed_sources:

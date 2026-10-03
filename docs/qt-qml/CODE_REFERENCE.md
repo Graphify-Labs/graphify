@@ -87,3 +87,10 @@ extract._get_extractor/_safe_extract forward the explicit scan root; collect_fil
 uses identical named-file/ignore/root admission. LANGUAGE_EXTRACTORS exposes the
 four bounded metadata readers. qt_qml_pipeline owns project/native index ordering
 and warning attachment. Partial readers bypass syntax cache and reject publication.
+
+
+QML-06 public seams: extract(...qml_import_roots=None, refresh_native=False) carries
+ordered lookup roots and native cache policy to a per-run Qt pipeline. Worker
+three/four-tuples remain compatible; a fifth bool carries context policy.
+qt_analysis_state.inspect_qt_analysis and commit_qt_analysis separate inspection
+from successful publication. qt_incremental.plan_qt_refresh never expands corpus.

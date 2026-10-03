@@ -83,10 +83,18 @@ def test_qml009_ac03_public_metadata_qrc_load_build_export_reload(tmp_path, buil
 def test_qml008_ac03_macro_without_membership_or_wrong_module_does_not_guess(tmp_path):
     """A class name or neighboring module is insufficient provider provenance."""
     no_build = analysis(tmp_path, {"backend.h": HEADER, "Main.qml": QML})
-    assert all(qml_metadata(node)["status"] != "resolved" for node in facts(no_build, "read", "count"))
+    assert qml_metadata(facts(no_build, "read", "count")[0])["status"] != "resolved"
     wrong = analysis(tmp_path, {"backend.h": HEADER, "Main.qml": QML,
         "CMakeLists.txt": 'qt_add_qml_module(tools URI Other.Tools VERSION 1.2 SOURCES backend.h)\n'})
-    assert all(qml_metadata(node)["status"] != "resolved" for node in facts(wrong, "read", "count"))
+    assert qml_metadata(facts(wrong, "read", "count")[0])["status"] != "resolved"
+
+
+def test_qml009_ac03_build_sources_do_not_expand_accepted_cpp_corpus(tmp_path):
+    """A disk-only header listed by CMake cannot create a native endpoint."""
+    (tmp_path / "backend.h").write_text(HEADER, encoding="utf-8")
+    result = analysis(tmp_path, {"Main.qml": QML, "CMakeLists.txt": BUILDS["CMakeLists.txt"]})
+    assert not sites(result, "class")
+    assert qml_metadata(facts(result, "read", "count")[0])["status"] != "resolved"
 
 
 @pytest.mark.parametrize("build_file", list(BUILDS))
@@ -116,7 +124,7 @@ def test_qml009_ac03_generated_resource_path_requires_explicit_prefix(tmp_path):
     assert (md["status"], md["reason"]) == ("unavailable", "resource_alias_unavailable")
 
 
-def test_qml017_ac03_resource_duplicate_and_unaccepted_targets_remain_unresolved(tmp_path):
+def test_qml017_ac01_resource_duplicate_and_unaccepted_targets_remain_unresolved(tmp_path):
     """A duplicate alias and a disk-only target cannot authorize a C++ load edge."""
     source = 'void use(){ QQmlApplicationEngine engine; engine.load(QUrl("qrc:/ui/Main.qml")); }'
     duplicate = QRC.replace('</qresource>', '<file alias="Main.qml">Main.qml</file></qresource>')

@@ -1,7 +1,7 @@
 # Qt and QML feature increment plan
 
-Status: QML-00 through QML-05 complete for their documented static source profiles.
-QML-06 through QML-07 remain open; their remaining gates are recorded below. Executed checks are recorded in
+Status: QML-00 through QML-06 complete for their documented static source profiles.
+QML-07 remains open; their remaining gates are recorded below. Executed checks are recorded in
 [VALIDATION.md](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md).
 Commands marked proposed are future verification suggestions, not pass claims.
 
@@ -906,3 +906,20 @@ retain their original identities. Duplicate providers/aliases remain ambiguous.
 QML-06 retains ignore/configuration refresh and last-provider cleanup obligations.
 No extra top-level increment is needed. QML-07 remains the final documented static
 scope gate, with runtime behavior explicitly outside the supported profile.
+
+
+## QML-06 review
+
+Accepted Qt source/provider/configuration changes conservatively refresh the live
+accepted code corpus. Ordered import roots reach both production QML resolver
+passes; parser/fact/policy and ignore configuration stamps commit only after
+successful graph and manifest publication. Last-provider deletion clears stale
+facts and checkpoints the remaining non-Qt corpus. Watch reloads ignore rules
+and schedules their changes. Explicit native worker cache policy avoids obsolete
+Qt canonical declarations without changing ordinary C++ portable caching. Native
+Qt subfolder updates reject unsafe scope-ID rebasing before publication.
+
+All remaining consumer/export/MCP, guidance and fresh hosted proof obligations
+fit QML-07a/07b. No additional top-level increment is currently required. A bounded
+static analysis profile is the completion claim; runtime-generated behavior stays
+explicitly unsupported rather than acquiring guessed links.
