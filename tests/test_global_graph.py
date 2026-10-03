@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import pytest
 import networkx as nx
+from contextlib import contextmanager
 from unittest.mock import patch
 
 
@@ -33,6 +34,67 @@ def _graph_to_json(G, path):
     except TypeError:
         data = jg.node_link_data(G)
     path.write_text(json.dumps(data), encoding="utf-8")
+
+
+@contextmanager
+def _global_store(global_dir):
+    """Point graphify.global_graph at ``global_dir`` instead of the user's home."""
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        yield global_dir / "global-graph.json", global_dir / "global-manifest.json"
+
+
+def _write_batch_units(tmp_path):
+    """Three unit graphs: repoA parks a member call repoB answers, plus a shared stub.
+
+    repoC contributes a second copy of the `logging` stub so the external-label dedup has
+    something to do on a unit that is not the first one composed.
+    """
+    units = {}
+    units["repoA"] = _make_graph(
+        [{"id": "app", "label": ".run()", "source_file": "src/App.java",
+          "metadata": {"unresolved_calls": [
+              {"lang": "java", "receiver_type": "Greeter", "callee": "greet", "line": 7}]}},
+         {"id": "logging", "label": "logging"}],
+        [{"source": "app", "target": "logging", "relation": "imports"}],
+    )
+    units["repoB"] = _make_graph(
+        [{"id": "greeter", "label": "Greeter", "source_file": "src/Greeter.java",
+          "_callable_class": True},
+         {"id": "greet", "label": ".greet()", "source_file": "src/Greeter.java"}],
+        [{"source": "greeter", "target": "greet", "relation": "method"}],
+    )
+    units["repoC"] = _make_graph(
+        [{"id": "worker", "label": "Worker", "source_file": "src/worker.py"},
+         {"id": "logging", "label": "logging"}],
+        [{"source": "worker", "target": "logging", "relation": "imports"}],
+    )
+    sources = []
+    for tag, G in units.items():
+        path = tmp_path / tag / "graph.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _graph_to_json(G, path)
+        sources.append((path, tag))
+    return sources
+
+
+def _read_store(graph_path, manifest_path):
+    """Return the stored graph and manifest in a form two runs can be compared by."""
+    from networkx.readwrite import json_graph as jg
+    data = json.loads(graph_path.read_text(encoding="utf-8"))
+    if "links" not in data and "edges" in data:
+        data = dict(data, links=data["edges"])
+    try:
+        G = jg.node_link_graph(data, edges="links")
+    except TypeError:
+        G = jg.node_link_graph(data)
+    nodes = {n: dict(d) for n, d in G.nodes(data=True)}
+    edges = {frozenset((u, v)): dict(d) for u, v, d in G.edges(data=True)}
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for entry in manifest["repos"].values():
+        entry.pop("added_at", None)
+    return nodes, edges, manifest
 
 
 # ── build.py helpers ──────────────────────────────────────────────────────────
@@ -198,6 +260,122 @@ def test_global_add_two_repos_no_collision(tmp_path):
     assert G.number_of_nodes() == 2  # no silent merge
 
 
+def _shared_stub_repos(tmp_path, extra_a=None):
+    """Two repos whose real code both reference a `message` stub (no source_file)."""
+    nodes_a = [
+        {"id": "a_service", "label": "AService", "source_file": "src/a.java"},
+        {"id": "message", "label": "message"},
+    ] + (extra_a or [])
+    nodes_b = [
+        {"id": "b_service", "label": "BService", "source_file": "src/b.java"},
+        {"id": "message", "label": "message"},
+    ]
+    ga = _make_graph(nodes_a, [{"source": "a_service", "target": "message",
+                                "relation": "references"}])
+    gb = _make_graph(nodes_b, [{"source": "b_service", "target": "message",
+                                "relation": "references"}])
+    pa, pb = tmp_path / "graph_a.json", tmp_path / "graph_b.json"
+    _graph_to_json(ga, pa)
+    _graph_to_json(gb, pb)
+    return pa, pb
+
+
+def test_global_add_keeps_stubs_per_repo(tmp_path):
+    """Shared external stubs must not be merged across repos: merging them is what
+    turns an in-unit reference into a cross-repo edge."""
+    pa, pb = _shared_stub_repos(tmp_path)
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add, _load_global_graph
+        res_a = global_add(pa, "repoA")
+        global_add(pb, "repoB")
+        G = _load_global_graph()
+        manifest = json.loads((global_dir / "global-manifest.json").read_text(encoding="utf-8"))
+
+    assert "repoA::message" in G.nodes and "repoB::message" in G.nodes
+    assert G.has_edge("repoA::a_service", "repoA::message")
+    assert G.has_edge("repoB::b_service", "repoB::message")
+    cross = [(u, v) for u, v in G.edges()
+             if G.nodes[u].get("repo") != G.nodes[v].get("repo")]
+    assert cross == []
+    # node_count must not be discounted by a remap that no longer exists
+    assert res_a["nodes_added"] == 2
+    assert manifest["repos"]["repoA"]["node_count"] == 2
+
+
+def test_global_add_rescan_preserves_other_repo_edges(tmp_path):
+    """Re-adding the repo that owned the shared stub used to prune it out from
+    under the other repos, silently dropping their real edges."""
+    pa, pb = _shared_stub_repos(tmp_path)
+    global_dir = tmp_path / ".graphify"
+    v2 = tmp_path / "v2"
+    v2.mkdir()
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add, _load_global_graph
+        global_add(pa, "repoA")
+        global_add(pb, "repoB")
+        before = {frozenset((u, v)) for u, v in _load_global_graph().edges()
+                  if u.startswith("repoB::") or v.startswith("repoB::")}
+        pa2, _ = _shared_stub_repos(
+            v2,
+            extra_a=[{"id": "a_extra", "label": "AExtra", "source_file": "src/a2.java"}],
+        )
+        global_add(pa2, "repoA")
+        after = {frozenset((u, v)) for u, v in _load_global_graph().edges()
+                 if u.startswith("repoB::") or v.startswith("repoB::")}
+
+    assert after == before
+
+
+def test_global_add_matches_merge_graphs_on_the_same_inputs(tmp_path):
+    """`global add` one repo at a time must land where one `merge-graphs` of the same
+    inputs lands. `merge-graphs` composes the prefixed units as-is, so any stub the
+    incremental path merges by label is a graph only that path can produce."""
+    from graphify.cli import dispatch_command
+    from networkx.readwrite import json_graph as jg
+
+    paths = []
+    for tag, svc in (("repoA", "a_service"), ("repoB", "b_service")):
+        out = tmp_path / tag / "graphify-out"
+        out.mkdir(parents=True)
+        g = _make_graph(
+            [{"id": svc, "label": svc, "source_file": f"src/{tag}.java"},
+             {"id": "message", "label": "message"}],
+            [{"source": svc, "target": "message", "relation": "references"}],
+        )
+        _graph_to_json(g, out / "graph.json")
+        paths.append(out / "graph.json")
+
+    global_dir = tmp_path / ".graphify"
+    with patch("graphify.global_graph._GLOBAL_DIR", global_dir), \
+         patch("graphify.global_graph._GLOBAL_GRAPH", global_dir / "global-graph.json"), \
+         patch("graphify.global_graph._GLOBAL_MANIFEST", global_dir / "global-manifest.json"):
+        from graphify.global_graph import global_add, _load_global_graph
+        global_add(paths[0], "repoA")
+        global_add(paths[1], "repoB")
+        incremental = _load_global_graph()
+
+    merged_path = tmp_path / "merged.json"
+    argv = ["graphify", "merge-graphs", str(paths[0]), str(paths[1]), "--out", str(merged_path)]
+    with patch("sys.argv", argv):
+        dispatch_command("merge-graphs")
+    data = json.loads(merged_path.read_text(encoding="utf-8"))
+    if "links" not in data and "edges" in data:
+        data = dict(data, links=data["edges"])
+    try:
+        one_shot = jg.node_link_graph(data, edges="links")
+    except TypeError:
+        one_shot = jg.node_link_graph(data)
+
+    assert set(incremental.nodes) == set(one_shot.nodes)
+    assert ({frozenset((u, v)) for u, v in incremental.edges()}
+            == {frozenset((u, v)) for u, v in one_shot.edges()})
+
+
 def test_global_remove(tmp_path):
     src_graph = tmp_path / "graph.json"
     G = _make_graph([{"id": "userservice", "label": "UserService", "source_file": "src/user.py"}])
@@ -327,9 +505,9 @@ def test_merge_graphs_prefixes_ids(tmp_path):
     assert merged.number_of_nodes() == 2  # no silent collapse
 
 
-def test_global_add_rewires_edges_to_deduplicated_externals(tmp_path):
-    """Edges incident to an external node that gets deduplicated against an
-    already-present external must be rewired to the existing node, not dropped."""
+def test_global_add_keeps_externals_per_repo(tmp_path):
+    """An external stub present in two repos stays two nodes: deduplicating it by
+    label would hand one repo's stub to whichever repo merged first."""
     g1 = tmp_path / "graph1.json"
     g2 = tmp_path / "graph2.json"
     GA = _make_graph(
@@ -358,14 +536,14 @@ def test_global_add_rewires_edges_to_deduplicated_externals(tmp_path):
         global_add(g2, "repoB")
         G = _load_global_graph()
 
-    # repoB's external "requests" was deduplicated against repoA's
+    # each repo keeps its own external stub
     assert "repoA::requests" in G.nodes
-    assert "repoB::requests" not in G.nodes
-    # repoA's edge is untouched
+    assert "repoB::requests" in G.nodes
+    # both edges stay in-unit; neither is rewired across repos
     assert G.has_edge("repoA::moda", "repoA::requests")
-    # repoB's edge must be rewired to the existing external node, not dropped
-    assert G.has_edge("repoB::modb", "repoA::requests")
-    assert G.edges["repoB::modb", "repoA::requests"]["relation"] == "imports"
+    assert G.has_edge("repoB::modb", "repoB::requests")
+    assert not G.has_edge("repoB::modb", "repoA::requests")
+    assert G.edges["repoB::modb", "repoB::requests"]["relation"] == "imports"
 
 
 def test_global_add_rejects_oversized_source_graph(monkeypatch, tmp_path):
@@ -385,3 +563,202 @@ def test_global_add_rejects_oversized_source_graph(monkeypatch, tmp_path):
         from graphify.global_graph import global_add
         with pytest.raises(ValueError, match="exceeds"):
             global_add(src_graph, "repoA")
+
+
+# ── global_add_many ───────────────────────────────────────────────────────────
+
+def test_global_add_many_matches_one_add_per_unit(tmp_path):
+    """The acceptance criterion for the batch path: same inputs, same artifact.
+
+    Sequential adds round-trip the global graph through JSON between every two units and
+    run the cross-repo pass after each; the batch does neither. Nodes, node attributes,
+    edges, edge attributes and the manifest all have to come out the same anyway.
+    """
+    from graphify.global_graph import global_add, global_add_many
+
+    seq_sources = _write_batch_units(tmp_path / "seq")
+    with _global_store(tmp_path / "seq-store") as (graph_path, manifest_path):
+        for source_path, repo_tag in seq_sources:
+            global_add(source_path, repo_tag)
+        sequential = _read_store(graph_path, manifest_path)
+
+    batch_sources = _write_batch_units(tmp_path / "batch")
+    with _global_store(tmp_path / "batch-store") as (graph_path, manifest_path):
+        global_add_many(batch_sources)
+        batched = _read_store(graph_path, manifest_path)
+
+    # The manifest records each source's absolute path, which differs by design here.
+    for _, _, manifest in (sequential, batched):
+        for entry in manifest["repos"].values():
+            entry.pop("source_path", None)
+    assert batched[0] == sequential[0]
+    assert batched[1] == sequential[1]
+    assert batched[2] == sequential[2]
+    # The fixture exists to exercise the pass, so a run that resolves nothing proves nothing.
+    assert any(d.get("_cross_repo_call") for d in batched[1].values()), batched[1]
+
+
+def test_global_add_many_reports_per_unit_and_batch_level_counts(tmp_path):
+    from graphify.global_graph import global_add_many
+
+    sources = _write_batch_units(tmp_path)
+    with _global_store(tmp_path / "store"):
+        batch = global_add_many(sources)
+
+    assert [r["repo_tag"] for r in batch["results"]] == ["repoA", "repoB", "repoC"]
+    assert all(r["skipped"] is False for r in batch["results"])
+    assert all(r["nodes_added"] > 0 for r in batch["results"])
+    assert batch["cross_repo_calls"] == 1
+    # A per-unit number would have to attribute the pass's output to one of the two repos
+    # that produced it, so the count stays at the batch level.
+    assert all("cross_repo_calls" not in r for r in batch["results"])
+
+
+def test_global_add_many_keeps_external_stubs_per_repo(tmp_path):
+    """Batch composition must preserve each unit's external-stub ownership."""
+    from graphify.global_graph import _load_global_graph, global_add_many
+
+    sources = []
+    for tag, service in (("repoA", "service_a"), ("repoB", "service_b")):
+        graph = _make_graph(
+            [
+                {"id": service, "label": service, "source_file": f"{service}.py"},
+                {"id": "requests", "label": "requests"},
+            ],
+            [{"source": service, "target": "requests", "relation": "imports"}],
+        )
+        path = tmp_path / tag / "graph.json"
+        path.parent.mkdir(parents=True)
+        _graph_to_json(graph, path)
+        sources.append((path, tag))
+
+    with _global_store(tmp_path / "store"):
+        global_add_many(sources)
+        graph = _load_global_graph()
+
+    assert "repoA::requests" in graph
+    assert "repoB::requests" in graph
+    assert graph.has_edge("repoA::service_a", "repoA::requests")
+    assert graph.has_edge("repoB::service_b", "repoB::requests")
+    assert all(data.get("repo") for _, data in graph.nodes(data=True))
+
+
+def test_global_add_many_replacement_does_not_remove_unrelated_repo(tmp_path):
+    """Replacing one repo in a batch must leave another repo untouched."""
+    from graphify.global_graph import _load_global_graph, global_add_many
+
+    repo_a_v1 = tmp_path / "repo_a_v1.json"
+    repo_a_v2 = tmp_path / "repo_a_v2.json"
+    repo_b = tmp_path / "repo_b.json"
+    _graph_to_json(_make_graph([{"id": "old", "label": "old"}]), repo_a_v1)
+    _graph_to_json(_make_graph([{"id": "new", "label": "new"}]), repo_a_v2)
+    _graph_to_json(_make_graph([{"id": "keep", "label": "keep"}]), repo_b)
+
+    with _global_store(tmp_path / "store"):
+        global_add_many([(repo_a_v1, "repoA"), (repo_b, "repoB")])
+        global_add_many([(repo_a_v2, "repoA")])
+        graph = _load_global_graph()
+
+    assert "repoA::old" not in graph
+    assert "repoA::new" in graph
+    assert "repoB::keep" in graph
+
+
+
+def test_global_add_many_keeps_a_skipped_unit_in_position(tmp_path):
+    from graphify.global_graph import _load_global_graph, global_add_many
+
+    sources = _write_batch_units(tmp_path)
+    with _global_store(tmp_path / "store"):
+        global_add_many(sources[:1])
+        before = {frozenset(e) for e in _load_global_graph().edges()}
+        batch = global_add_many(sources)
+        after = {frozenset(e) for e in _load_global_graph().edges()}
+
+    assert [r["skipped"] for r in batch["results"]] == [True, False, False]
+    assert batch["results"][0]["nodes_added"] == 0
+    assert batch["results"][0]["nodes_removed"] == 0
+    # A skipped unit must not be pruned and re-composed: its edges survive untouched.
+    assert before <= after
+
+
+def test_global_add_many_runs_the_cross_repo_pass_once(tmp_path):
+    from graphify.global_graph import global_add_many
+
+    sources = _write_batch_units(tmp_path)
+    with _global_store(tmp_path / "store"):
+        with patch("graphify.cross_repo_calls.link_cross_repo_member_calls",
+                   return_value=7) as spy:
+            batch = global_add_many(sources)
+
+    assert spy.call_count == 1
+    assert batch["cross_repo_calls"] == 7
+
+
+def test_global_add_many_leaves_the_store_untouched_when_nothing_changed(tmp_path):
+    """An unchanged batch must not read or rewrite the global graph. Loading it to discover
+    there is nothing to do costs a full deserialize plus a full write of the same bytes."""
+    from graphify.global_graph import global_add_many
+
+    sources = _write_batch_units(tmp_path)
+    with _global_store(tmp_path / "store") as (graph_path, _):
+        global_add_many(sources)
+        before = graph_path.stat().st_mtime_ns
+        with patch("graphify.global_graph._load_global_graph") as load:
+            batch = global_add_many(sources)
+
+    assert load.call_count == 0
+    assert graph_path.stat().st_mtime_ns == before
+    assert [r["skipped"] for r in batch["results"]] == [True, True, True]
+    assert batch["cross_repo_calls"] == 0
+
+
+def test_global_add_many_rejects_one_tag_naming_two_sources(tmp_path):
+    """Two sources under one tag would have the second prune the first, so the batch
+    reports a graph half of which is missing. Refuse the input instead."""
+    from graphify.global_graph import global_add_many
+
+    sources = _write_batch_units(tmp_path)
+    clashing = [sources[0], (sources[1][0], sources[0][1])]
+    with _global_store(tmp_path / "store") as (graph_path, _):
+        with pytest.raises(ValueError, match="two sources in one batch"):
+            global_add_many(clashing)
+    assert not graph_path.exists()
+
+
+def test_global_add_many_reports_a_missing_source_the_way_one_add_does(tmp_path):
+    """Hashing the source would raise on its own, with the OS message for a missing file.
+    The batch is still the caller's own input, so it gets `global_add`'s wording."""
+    from graphify.global_graph import global_add_many
+
+    sources = _write_batch_units(tmp_path)
+    with _global_store(tmp_path / "store") as (graph_path, manifest_path):
+        with patch("graphify.build.prefix_graph_for_global") as compose:
+            with pytest.raises(FileNotFoundError, match="graph not found"):
+                global_add_many([*sources, (tmp_path / "absent" / "graph.json", "repoD")])
+
+    assert compose.call_count == 0
+    assert not graph_path.exists()
+    assert not manifest_path.exists()
+
+
+def test_global_add_many_checks_every_size_cap_before_composing_any(monkeypatch, tmp_path):
+    """The batch writes only at the end, so a unit rejected late throws away every unit
+    composed before it. The cap is a stat, so it can be paid for the whole batch up front."""
+    from graphify.global_graph import global_add_many
+
+    sources = _write_batch_units(tmp_path)
+    oversized = tmp_path / "repoD" / "graph.json"
+    oversized.parent.mkdir(parents=True, exist_ok=True)
+    _graph_to_json(_make_graph([{"id": "d", "label": "D" * 4096, "source_file": "d.py"}]),
+                   oversized)
+    cap = max(p.stat().st_size for p, _ in sources) + 1
+    assert oversized.stat().st_size > cap
+    monkeypatch.setattr("graphify.security._MAX_GRAPH_FILE_BYTES", cap)
+
+    with _global_store(tmp_path / "store"):
+        with patch("graphify.build.prefix_graph_for_global") as compose:
+            with pytest.raises(ValueError, match="exceeds"):
+                global_add_many([*sources, (oversized, "repoD")])
+
+    assert compose.call_count == 0

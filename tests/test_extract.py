@@ -626,6 +626,24 @@ def test_cross_file_calls_skip_ambiguous_duplicate_labels(tmp_path):
     )
 
 
+def test_unresolved_python_call_is_retained_for_cross_file_resolution(tmp_path):
+    """An unresolved caller-side call must survive collection and resolve later."""
+    pytest.importorskip("tree_sitter_python")
+    caller = tmp_path / "caller.py"
+    helper = tmp_path / "helper.py"
+    caller.write_text("def run():\n    helper()\n", encoding="utf-8")
+    helper.write_text("def helper():\n    return 1\n", encoding="utf-8")
+
+    result = extract([caller, helper], cache_root=tmp_path)
+    nodes = {node["id"]: node for node in result["nodes"]}
+    assert any(
+        edge["relation"] == "calls"
+        and nodes[edge["source"]]["label"] == "run()"
+        and nodes[edge["target"]]["label"] == "helper()"
+        for edge in result["edges"]
+    )
+
+
 def test_cross_file_call_survives_same_named_test_mock(tmp_path):
     """A real cross-file call must NOT be erased by a same-named test mock.
 
