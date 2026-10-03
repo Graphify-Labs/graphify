@@ -179,12 +179,20 @@ Include success, boundary or rejection, and relevant failure outcomes; explain
 inapplicable categories. These obligations apply to all product requirements,
 including corrections discovered during development or troubleshooting.
 
-Follow any pre-existing numbering standard in the owning document or component.
-Preserve requirement `QML-001` style IDs, criterion `QML-001-AC01` style IDs,
-`QML-00` style increment IDs, and existing `D1` style architecture decision IDs.
-Extend the same scheme for new entries; do not introduce competing IDs, renumber existing
-entries, or reuse retired IDs for unrelated behavior. Preserve external references
-when reorganizing documentation.
+Follow the owning document/component numbering standard. Qt/QML requirements
+use `REQ-QML-001` style IDs, criteria `REQ-QML-001-AC01`, and delivery increments
+`INC-QML-00`; existing `D1` architecture decision IDs remain unchanged. Keep
+requirement/criterion and increment namespaces distinct. Preserve every numeric
+identity and resolve earlier shared-prefix IDs through the
+[canonical identifier/alias catalog](docs/qt-qml/IDENTIFIERS.md). Old aliases, test
+names and historical evidence remain valid. Extend the current scheme without
+competing IDs, renumbering or reuse, and preserve heading/external references.
+
+Present each requirement as its number and title, followed by the required
+observable behavior and an **Acceptance Criteria** label. Display criteria as
+`1 - criterion`, `2 - criterion`, and so on within that requirement. Retain each
+stable acceptance ID alongside its criterion for test and evidence references.
+Keep status and delivery details separate from the behavioral statement.
 
 Identify affected acceptance IDs before implementation. Update requirements,
 design, comments, tests, and traceability together when behavior changes. Do not

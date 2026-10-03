@@ -36,7 +36,7 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 5  # Byte-preserving Qt annotations affect canonical C++ declarations.
+_AST_CACHE_SCHEMA = 6  # Same-version C++ default/Q_UNUSED recovery retires pre-fix AST output.
 
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()

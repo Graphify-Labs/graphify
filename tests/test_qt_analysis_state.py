@@ -79,6 +79,8 @@ def test_inspection_import_root_order_and_known_input_inventory(tmp_path, monkey
 
 
 def test_package_fact_policy_and_ignore_configuration_invalidate_unchanged_qml(tmp_path, monkeypatch):
+    from graphify.qt_incremental import QT_POLICY_VERSION
+
     path = tmp_path / "nested/Main.qml"
     path.parent.mkdir()
     path.write_text("Item {}")
@@ -92,9 +94,9 @@ def test_package_fact_policy_and_ignore_configuration_invalidate_unchanged_qml(t
     monkeypatch.setattr("graphify.qt_analysis_state.CONTRACT_VERSION", 2)
     assert inspect_qt_analysis(tmp_path, out, [path]).changed
     monkeypatch.setattr("graphify.qt_analysis_state.CONTRACT_VERSION", 1)
-    monkeypatch.setattr("graphify.qt_incremental.QT_POLICY_VERSION", 2)
+    monkeypatch.setattr("graphify.qt_incremental.QT_POLICY_VERSION", QT_POLICY_VERSION + 1)
     assert inspect_qt_analysis(tmp_path, out, [path]).changed
-    monkeypatch.setattr("graphify.qt_incremental.QT_POLICY_VERSION", 1)
+    monkeypatch.setattr("graphify.qt_incremental.QT_POLICY_VERSION", QT_POLICY_VERSION)
     ignore = path.parent / ".graphifyignore"
     ignore.write_bytes(b"ignored.qml\n")
     assert inspect_qt_analysis(tmp_path, out, [path]).changed

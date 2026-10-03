@@ -1,8 +1,8 @@
 # Qt/QML export capabilities
 
-Status: QML-07 source implementation. This matrix describes accepted static
+Status: INC-QML-07 source implementation. This matrix describes accepted static
 source facts, not Qt runtime delivery or database-service verification. The
-canonical requirement is [QML-013-AC03](../REQUIREMENTS.md). A presentation export
+canonical requirement is [REQ-QML-013-AC03](../REQUIREMENTS.md). A presentation export
 is an inspection aid; retain `graph.json` when exporting one.
 
 | Consumer or format | Retained Qt/QML information | Direction and reload | Explicit limitations |

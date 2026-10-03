@@ -2,7 +2,7 @@
 
 The first table records baseline owners, with their current extension seams.
 [AUDIT.md](AUDIT.md) retains historical line evidence. The second table lists
-implemented QML/Qt owners through QML-06 and local QML-07 consumer hooks.
+implemented QML/Qt owners through INC-QML-06 and local INC-QML-07 consumer hooks.
 Revision-specific verification remains in [VALIDATION.md](VALIDATION.md).
 
 | Existing owner | Role and extension considerations |
@@ -52,7 +52,7 @@ The Qt C++ overlay owns source-local meta-object declarations, emissions,
 connect/disconnect syntax, loader/access sites and literal context/initial-property
 facts. Its resolver owns scoped module/resource joins and
 engine/component/view-to-QML-object provenance. It must support native C++ events
-without requiring QML parsing. QML-008, QML-016 and QML-017 in
+without requiring QML parsing. REQ-QML-008, REQ-QML-016 and REQ-QML-017 in
 [REQUIREMENTS.md](../REQUIREMENTS.md) define the separate exposure, event and reverse
 object-access acceptance contracts; none is implemented by the imported generic
 C++ extractor alone. [DESIGN.md](DESIGN.md) records implemented relation contexts and
@@ -75,7 +75,7 @@ ordinary member-pointer receivers.
 | Post-canonical scratch orchestration | graphify/qt_qml_pipeline.py |
 | Cross-family endpoint proof guard | graphify/qt_qml_projection.py |
 
-Metadata readers are publicly discovered/dispatched with QML-05. Their index
+Metadata readers are publicly discovered/dispatched with INC-QML-05. Their index
 consumes accepted facts without executing a build or expanding the corpus.
 
 | Metadata boundary | Implemented owner |
@@ -88,20 +88,20 @@ consumes accepted facts without executing a build or expanding the corpus.
 | Source/generated conflict evidence | `graphify/qt_generated_conflicts.py` |
 
 
-QML-05 public seams: detect.classify_file exact CMakeLists.txt and Qt suffixes;
+INC-QML-05 public seams: detect.classify_file exact CMakeLists.txt and Qt suffixes;
 extract._get_extractor/_safe_extract forward the explicit scan root; collect_files
 uses identical named-file/ignore/root admission. LANGUAGE_EXTRACTORS exposes the
 four bounded metadata readers. qt_qml_pipeline owns project/native index ordering
 and warning attachment. Partial readers bypass syntax cache and reject publication.
 
 
-QML-06 public seams: extract(...qml_import_roots=None, refresh_native=False) carries
+INC-QML-06 public seams: extract(...qml_import_roots=None, refresh_native=False) carries
 ordered lookup roots and native cache policy to a per-run Qt pipeline. Worker
 three/four-tuples remain compatible; a fifth bool carries context policy.
 qt_analysis_state.inspect_qt_analysis and commit_qt_analysis separate inspection
 from successful publication. qt_incremental.plan_qt_refresh never expands corpus.
 
-QML-07 consumers use `qt_qml_search.search_attributes` for bounded public semantic
+INC-QML-07 consumers use `qt_qml_search.search_attributes` for bounded public semantic
 fields; raw transport and opaque scope keys stay outside search text.
 `qt_affected.owned_ancestors` promotes current source-owned dependency sites to
 their enclosing members/components. `qt_relationship_views` and `qt_html` retain
@@ -117,3 +117,21 @@ It does not commit `.qt_analysis.json`; CLI/watch retain checkpoint ownership
 after successful graph/manifest publication. The generator's exact sanctioned
 line policy retains frozen baseline checks; its current 1,450-line legacy
 exception and extraction exit are in [PLATFORM_MATRIX.md](PLATFORM_MATRIX.md).
+
+## Adoption native parser compatibility owner
+
+`graphify/extractors/qt_cpp_compat.py::recover_cpp_syntax(source, code, *, parse, walk)`
+is a pure equal-length parse-view helper. `needs_recovery(code)` is its cheap
+candidate admission. `qt_cpp_syntax` owns source reads, lexical masking, parser
+errors and limits and calls this helper before its final syntax gate. Neither
+module imports the extractor facade. Empty default clauses and Qt-unused argument
+syntax recovery do not own source facts or runtime interpretation.
+
+`qt_cpp_syntax.lexical_code` also owns preprocessing-number token recognition
+before character-quote masking, preserving numeric separators and later source
+visibility. The unchanged numeric token remains subject to parser validation.
+
+`graphify/cache.py` owns the AST schema epoch; `graphify/qt_incremental.py` owns
+native refresh relevance and Qt policy fingerprint. Graph/manifest/analysis-state
+publication remains in the existing CLI/watch owners. The migration keeps those
+owners and interfaces intact and introduces no alternate cache or graph writer.

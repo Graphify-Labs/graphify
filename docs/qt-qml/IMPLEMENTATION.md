@@ -1,20 +1,24 @@
 # Executed increments
 
-## QML-00
+<a name="qml-00"></a>
+
+## INC-QML-00
 
 Complete for optional parser selection; see [parser evidence](PARSER_DECISION.md).
 No production criterion closes from probes alone.
 
-## QML-01
+<a name="qml-01"></a>
 
-QML-01a implements publication guards and conservative refresh. QML-01b adds lazy
+## INC-QML-01
+
+INC-QML-01a implements publication guards and conservative refresh. INC-QML-01b adds lazy
 offline grammar loading, QML admission, declarations/imports, explicit roots,
 scoped portable IDs, spans, safe failures and a pinned optional qml extra.
 Bounded base64 companions preserve semantic values through HTML sanitation.
 Empty editor files have file facts and an explicit informational diagnostic.
 The subset includes objects, grouped properties, properties/modifiers, signals,
-functions, inline components, enums, pragmas and imports. Module joins are QML-02;
-bindings/calls/signals QML-03. C++/CMake/qmake/resources remain later increments.
+functions, inline components, enums, pragmas and imports. Module joins are INC-QML-02;
+bindings/calls/signals INC-QML-03. C++/CMake/qmake/resources remain later increments.
 
 Windows focused checks: 90 passed, zero skipped. Real spawn workers, portable
 identity, build/JSON reload, forced/equal-count/edge-loss retention, read races
@@ -23,24 +27,24 @@ installation and remaining parser-failure cases are being verified.
 
 | Criterion | Status | Evidence / remaining gate |
 | --- | --- | --- |
-| QML-001-AC01 | Verified for Windows x64 | Wheel from committed source installs and runs in isolated Python 3.10/3.12/3.13/3.14 environments; tests/qml_installed_smoke.py |
-| QML-001-AC02 | Verified in QML-03 | Hand-checked production syntax and original spans; fresh offline process; test_qml_syntax_profile.py |
-| QML-001-AC03 | Verified | Actual optional import rejection, incompatible binding/native parse failures, safe cache bypass |
-| QML-001-AC04 | Verified | Empty, malformed and grammar-recognized unsupported fixtures have distinct diagnostics |
-| QML-003-AC01 | Verified | Exact declarations/ownership/types in test_qml_declarations.py |
-| QML-003-AC02 | Verified | Duplicate scopes/paths/stems/case in identity and graph tests |
-| QML-003-AC03 | Verified | Comment/string/grouped-property negatives |
-| QML-003-AC04 | Verified | Relocation, inserted comments, reordered/warm batches and actual spawn |
+| REQ-QML-001-AC01 | Verified for Windows x64 | Wheel from committed source installs and runs in isolated Python 3.10/3.12/3.13/3.14 environments; tests/qml_installed_smoke.py |
+| REQ-QML-001-AC02 | Verified in INC-QML-03 | Hand-checked production syntax and original spans; fresh offline process; test_qml_syntax_profile.py |
+| REQ-QML-001-AC03 | Verified | Actual optional import rejection, incompatible binding/native parse failures, safe cache bypass |
+| REQ-QML-001-AC04 | Verified | Empty, malformed and grammar-recognized unsupported fixtures have distinct diagnostics |
+| REQ-QML-003-AC01 | Verified | Exact declarations/ownership/types in test_qml_declarations.py |
+| REQ-QML-003-AC02 | Verified | Duplicate scopes/paths/stems/case in identity and graph tests |
+| REQ-QML-003-AC03 | Verified | Comment/string/grouped-property negatives |
+| REQ-QML-003-AC04 | Verified | Relocation, inserted comments, reordered/warm batches and actual spawn |
 
-QML-003 is Verified for this subset. QML-001/002/010/011/012/013/014/015 are Partially
+REQ-QML-003 is Verified for this subset. REQ-QML-001/REQ-QML-002/REQ-QML-010/REQ-QML-011/REQ-QML-012/REQ-QML-013/REQ-QML-014/REQ-QML-015 are Partially
 implemented, with later metadata/update/platform/consumer gates still open.
 Other requirements remain Planned.
 
 ## Increment review and module debt
 
-QML-00 added QML-01a/01b. QML-01 review requires semantic qmldir validation,
+INC-QML-00 added INC-QML-01a/INC-QML-01b. INC-QML-01 review requires semantic qmldir validation,
 immutable indexes, provider-only refresh and independent reference/event sites
-in QML-02/03. No new top-level increment is needed. Cache optimization is QML-06.
+in INC-QML-02/INC-QML-03. No new top-level increment is needed. Cache optimization is INC-QML-06.
 
 Root owns narrow integration hooks in oversized legacy extract.py, detect.py,
 build.py, cli.py and watch.py. New responsibilities remain in modules below 300
@@ -48,13 +52,15 @@ lines. Exception: integration hooks only in these existing files. Exit: upstream
 coordinated facade/writer splitting, outside this increment. Final validation
 records measured sizes/deltas before handoff.
 
-QML-01 completion review: clean built-wheel checks pass in all four declared
+INC-QML-01 completion review: clean built-wheel checks pass in all four declared
 Windows lanes with Python-level network/process denial and no Qt SDK. Parser
 absence/ABI/native-error and unsupported-source regressions also pass. Production
-parser corpus AC02 remains assigned to QML-03. Linux/macOS stay unverified.
-QML-01 is complete for this declared optional profile; advance to QML-02.
+parser corpus AC02 remains assigned to INC-QML-03. Linux/macOS stay unverified.
+INC-QML-01 is complete for this declared optional profile; advance to INC-QML-02.
 
-## QML-02
+<a name="qml-02"></a>
+
+## INC-QML-02
 
 Implemented immutable per-run module/member indexes, explicit-root URI providers,
 directory imports, aliases, observed versions, singleton/inline/internal visibility,
@@ -63,43 +69,45 @@ Unknown framework types/versions remain unresolved. Module import grants visibil
 packaging depends does not. No corpus expansion, plugin execution or SDK traversal.
 
 Observed export versions establish module availability in this initial profile.
-Requested unobserved module minors remain unresolved pending QML-05 metadata.
+Requested unobserved module minors remain unresolved pending INC-QML-05 metadata.
 Runtime parent/outer context remain unavailable without supported explicit evidence.
 
-Review added QML-02a/02b/02c and caught growing scope keys and missing direct-producer
-provenance. Digest scopes and AST markers fix both with regressions. Raw semantic
+INC-QML-02a/INC-QML-02b/INC-QML-02c use digest scopes and direct-producer AST markers.
+Regressions cover growing scope keys and missing producer provenance. Raw semantic
 metadata survives sanitation. The repository graph excludes its two deliberately
 malformed parser fixtures via .graphifyignore; tests still open them directly.
 Integrated admission/update checks pass: 44 passed, two symlink cases skipped
 because the Windows account lacks symlink creation privilege. Those skipped
-platform cases remain open under QML-002/014. Real >20-file pool execution,
+platform cases remain open under REQ-QML-002/REQ-QML-014. Real >20-file pool execution,
 borrowed-context immutability, named ignores/root admission and metadata-only
 update parity passed. Raw update lost orientation on reload until QML edges also
 carried Graphify's `_src`/`_tgt` markers; the strict parity regression now passes.
-All new production modules pass Ruff/Pyright. QML-02 is complete for this profile.
+All new production modules pass Ruff/Pyright. INC-QML-02 is complete for this profile.
 
 | Criterion | Status | Actual test in test_qml_resolution.py or test_qml_scope.py |
 | --- | --- | --- |
-| QML-004-AC01 | Verified | test_aliased_directory_and_uri_imports_do_not_cross_bind; test_version_availability_and_latest_compatible_export |
-| QML-004-AC02 | Verified | test_aliased_directory_and_uri_imports_do_not_cross_bind; test_versioned_layout_and_missing_version_evidence |
-| QML-004-AC03 | Verified | test_competing_providers_and_missing_modules_have_no_target_edges |
-| QML-004-AC04 | Verified | test_declared_roots_and_remote_import_never_expand_corpus; test_directory_and_script_projection_and_ignored_disk_provider |
-| QML-005-AC01 | Verified | test_component_ids_do_not_leak_between_files_or_inline_components |
-| QML-005-AC02 | Verified | test_inline_shadow_and_inherited_members_are_distinct_roles; test_singleton_pragma_and_qualified_access |
-| QML-005-AC03 | Verified | test_internal_external_dynamic_and_lexical_members_stay_unresolved; bounded inheritance cycle test |
-| QML-005-AC04 | Verified | test_module_script_exports_have_separate_lookup_roles; inline shadow test |
+| REQ-QML-004-AC01 | Verified | test_aliased_directory_and_uri_imports_do_not_cross_bind; test_version_availability_and_latest_compatible_export |
+| REQ-QML-004-AC02 | Verified | test_aliased_directory_and_uri_imports_do_not_cross_bind; test_versioned_layout_and_missing_version_evidence |
+| REQ-QML-004-AC03 | Verified | test_competing_providers_and_missing_modules_have_no_target_edges |
+| REQ-QML-004-AC04 | Verified | test_declared_roots_and_remote_import_never_expand_corpus; test_directory_and_script_projection_and_ignored_disk_provider |
+| REQ-QML-005-AC01 | Verified | test_component_ids_do_not_leak_between_files_or_inline_components |
+| REQ-QML-005-AC02 | Verified | test_inline_shadow_and_inherited_members_are_distinct_roles; test_singleton_pragma_and_qualified_access |
+| REQ-QML-005-AC03 | Verified | test_internal_external_dynamic_and_lexical_members_stay_unresolved; bounded inheritance cycle test |
+| REQ-QML-005-AC04 | Verified | test_module_script_exports_have_separate_lookup_roles; inline shadow test |
 
-Review retains QML-03's lexical/script/handler gates and QML-06 cache optimization.
-No additional top-level increment is required. QML-02c covers the newly found
-ignore/provenance/direction defects. QML-04/05 retain C++ and project metadata work.
+INC-QML-03 owns lexical/script/handler gates; INC-QML-06 owns cache optimization.
+No additional top-level increment is required. INC-QML-02c covers the newly found
+ignore/provenance/direction defects. INC-QML-04/INC-QML-05 retain C++ and project metadata work.
 
-## QML-03
+<a name="qml-03"></a>
+
+## INC-QML-03
 
 Complete for the declared Windows x64 static profile, including Qt 6.5/6.8 source
-fixtures. QML-03a adds objects held in properties/bindings/arrays and conservative
-template scope barriers. QML-03b adds source-owned binding, read, alias, call and
+fixtures. INC-QML-03a adds objects held in properties/bindings/arrays and conservative
+template scope barriers. INC-QML-03b adds source-owned binding, read, alias, call and
 handler facts with lexical shadowing and explicit unresolved/dynamic reasons.
-QML-03c adds accepted `.js`/`.mjs` overlays, classic Qt directives, explicit callable
+INC-QML-03c adds accepted `.js`/`.mjs` overlays, classic Qt directives, explicit callable
 ESM exports and script dependencies without changing the generic JavaScript graph.
 
 Subscriptions use references, emissions use uses, and proven callable invocations
@@ -108,8 +116,8 @@ repeated dependencies through the simple graph. Named declaration identity remai
 stable after inserted comments; derived occurrence identities intentionally include
 their source span. Extracted syntax and inferred endpoints remain separate.
 
-All four QML-006 and QML-007 criteria pass the exact tests listed individually in
-[traceability](../../tests/TRACEABILITY.md). QML-001-AC02 closes against the shipping
+All four REQ-QML-006 and REQ-QML-007 criteria pass the exact tests listed individually in
+[traceability](../../tests/TRACEABILITY.md). REQ-QML-001-AC02 closes against the shipping
 adapter and the hand-checked syntax corpus. Explicit runtime target/context lookup,
 ESM reexports, imported value exports and unavailable framework signals remain
 unresolved. Name-based Component/delegate/sourceComponent barriers conservatively
@@ -128,17 +136,19 @@ wheels run bindings/script/subscription production smoke; actual core-only insta
 retains Python extraction and emits missing-parser diagnostics. Final reader/wheel
 reverification is recorded in VALIDATION.md. Linux/macOS remain pending hosted CI.
 
-Plan review adds QML-06a/06b for mutation/config/cache contracts and QML-07a/07b for
-consumer direction and hosted installation/upstream evidence. Existing QML-00..07
-and QML-04a/04b/04c identities remain unchanged. The user has authorized continuing
-through QML-04, QML-05 and QML-06; their implementation evidence follows separately.
+INC-QML-06a/INC-QML-06b cover mutation/config/cache contracts; INC-QML-07a/INC-QML-07b cover
+consumer direction and hosted installation/upstream evidence. Existing INC-QML-00..INC-QML-07
+and INC-QML-04a/INC-QML-04b/INC-QML-04c identities remain unchanged.
+INC-QML-04, INC-QML-05 and INC-QML-06 implementation evidence follows separately.
 
-## QML-03 measured modularity exceptions
+<a name="qml-03-measured-modularity-exceptions"></a>
+
+## INC-QML-03 measured modularity exceptions
 
 All new handwritten production and test modules stay below the 300-line default.
 The integration owner permits only focused hooks in oversized upstream files:
 
-| Legacy file | Upstream lines | QML-03 measured ceiling | Reason |
+| Legacy file | Upstream lines | INC-QML-03 measured ceiling | Reason |
 | --- | --- | --- | --- |
 | graphify/extract.py | 8943 | 8997 | Admission/worker and scoped-overlay dispatch |
 | graphify/detect.py | 2793 | 2797 | QML and exact named metadata admission |
@@ -153,7 +163,9 @@ splitting; domain analysis remains in focused modules. Later hooks must remeasur
 these ceilings and retain this rationale rather than quietly extending them.
 
 
-## QML-04
+<a name="qml-04"></a>
+
+## INC-QML-04
 
 Complete for the declared Qt6 static source profile verified on Windows Python
 3.12.14; exact later-host proof remains a release obligation. Known annotations
@@ -172,18 +184,18 @@ remain scoped to an exact loaded component with local/lexical/duplicate rejectio
 
 Qt metadata readers/indexes ship as an internal dependency foundation for literal
 source-file access. Public project/resource admission and their resolved module
-bridges close in QML-05. Revised native members, foreign/extended/attached/value
+bridges close in INC-QML-05. Revised native members, foreign/extended/attached/value
 providers, arbitrary compiler conversions, dynamic creation and inline temporary
 QQmlProperty expressions remain explicit unsupported results.
 
-The canonical requirements and individual test mappings advance QML-008/016/017;
-QML-016-AC01..AC03 pass their native source cases. Their final incremental and
-consumer criteria remain open. No new top-level increment is needed: QML-06a/06b
-retain mutation/configuration proof and QML-07a/07b retain consumers/hosted release.
+The canonical requirements and individual test mappings advance REQ-QML-008/REQ-QML-016/REQ-QML-017;
+REQ-QML-016-AC01..AC03 pass their native source cases. Their final incremental and
+consumer criteria remain open. No new top-level increment is needed: INC-QML-06a/INC-QML-06b
+retain mutation/configuration proof and INC-QML-07a/INC-QML-07b retain consumers/hosted release.
 
 All new handwritten source/test files remain below 300 physical lines. Updated
 legacy hooks have the same integration owner and coordinated upstream-splitting
-exit as the prior exception record. QML-04 measured ceilings are:
+exit as the prior exception record. INC-QML-04 measured ceilings are:
 
 | Legacy file | Measured/permitted lines | Focused integration reason |
 | --- | --- | --- |
@@ -196,7 +208,9 @@ Domain logic remains in focused Qt modules. These exceptions do not permit
 unmeasured later growth; each later increment remeasures its touched hooks.
 
 
-## QML-05
+<a name="qml-05"></a>
+
+## INC-QML-05
 
 Complete for the literal Qt6 source profile. Discovery/registry/facade/worker
 paths admit metadata without running CMake, qmake, moc, plugins or QML. One per-run
@@ -205,7 +219,7 @@ QML joins. Generated tooling descriptions retain separate origins and warnings.
 Duplicate source declarations survive generic namespace canonicalization, so
 multiple modules/aliases cannot silently become a unique provider. Unknown CMake
 resource policy, dynamic build expressions and locale-dependent resource selection
-remain explicit unsupported results. Final configuration/update parity is QML-06.
+remain explicit unsupported results. Final configuration/update parity is INC-QML-06.
 
 Legacy measured ceilings: extract.py 8999, detect.py 2797, test_extract.py 4827;
 owner Qt integration maintainer (discovery owner source discovery maintainer).
@@ -213,7 +227,9 @@ Reason: narrow named-source admission, root-sensitive dispatch and exact fact
 identity protection. Exit: coordinated upstream facade/classification extraction.
 
 
-## QML-06
+<a name="qml-06"></a>
+
+## INC-QML-06
 
 Implemented accepted-corpus refresh and immutable worker cache policy. Native
 syntax is reparsed in Qt contexts; ordinary C++ portable cache behavior remains.
@@ -229,9 +245,11 @@ providers, rename/delete/duplicate resources and modules, import-root order, par
 version, last Qt deletion, unchanged reruns and forced malformed-input rejection.
 Focused worker/native cache and root-boundary evidence is recorded in validation.
 
-QML-06 legacy ceilings: extract.py 9009, cli.py 4949, watch.py 2527. Owner Qt integration maintainer; focused policy/root/publication hooks only. Exit coordinated upstream facade/writer extraction. New handwritten modules/tests remain below300 lines.
+INC-QML-06 legacy ceilings: extract.py 9009, cli.py 4949, watch.py 2527. Owner Qt integration maintainer; focused policy/root/publication hooks only. Exit coordinated upstream facade/writer extraction. New handwritten modules/tests remain below300 lines.
 
-## QML-07
+<a name="qml-07"></a>
+
+## INC-QML-07
 
 Implemented the bounded static profile through real query/explain/path/affected,
 ordinary graph HTML, call-flow HTML, source coverage reports and optional HTTP/
@@ -263,14 +281,16 @@ ordered import paths and native refresh policy, and gate before publication.
 The installed-artifact smoke now includes native QML_ELEMENT, literal CMake
 membership and QRC loader resolution without executing corpus or a Qt SDK.
 
-QML-07 review retains the seventeen requirements and sixty-eight acceptance IDs.
-Explicit real normal-QML-edit/update/watch and no-change parity closes an evidence
-gap in the existing QML-011 criteria. No additional top-level increment is needed
+INC-QML-07 retains the seventeen requirements and sixty-eight acceptance IDs.
+Production normal-QML-edit/update/watch and no-change parity verify the existing
+REQ-QML-011 criteria. No additional top-level increment is needed
 for the agreed profile; computed/runtime/framework/plugin behavior remains an
 explicit unsupported boundary. Final hosted verification is recorded in
 VALIDATION.md and the delivery PR, not inferred from local tests or earlier runs.
 
-### QML-07 measured modularity exceptions
+<a name="qml-07-measured-modularity-exceptions"></a>
+
+### INC-QML-07 measured modularity exceptions
 
 Thin consumer hooks stay in their existing upstream owners; domain policy lives
 in focused qt_qml_search, qt_affected, qt_relationship_views, qt_html, qt_coverage,
@@ -293,3 +313,36 @@ export and generator boundaries with their upstream maintainers. Exit: an
 upstream-coordinated extraction of shared consumer/writer/validator interfaces,
 retaining existing regression characterization and frozen guidance contracts.
 This exception does not authorize arbitrary growth or mechanical file slicing.
+
+## INC-QML-08a native source compatibility
+
+The bounded native syntax slice of REQ-QML-018-AC02 is locally implemented and
+verified. Parser-only compatibility normalization accepts empty-brace parameter
+defaults and `Q_UNUSED` statements without a caller semicolon. Its arguments
+retain evaluated calls rather than being erased. C++ numeric digit separators
+remain part of numeric tokens before quote masking, preserving later signal and
+member ownership. Original source bytes remain authoritative for identities and
+spans, including BOM, CRLF and Unicode; malformed/incomplete controls still fail
+closed. Analysis does not execute corpus code or weaken publication guards.
+
+AST cache schema 6 retires earlier syntax records even at the same package
+version. Qt policy epoch 2 invalidates an earlier unchanged-source analysis stamp.
+Production regressions cover actual CLI refresh, prior graph/manifest/state/cache
+retention on failure and ordinary-C++ warm-cache preservation. The local focused,
+broad and installed-artifact evidence is recorded in
+[validation](VALIDATION.md#inc-qml-08a-native-source-compatibility).
+
+The new `graphify/extractors/qt_cpp_compat.py` is 142 physical lines;
+`graphify/extractors/qt_cpp_syntax.py` is 234. The existing cache owner remains
+1782 lines without growth. Its focused schema hook has a 1782-line ceiling, owned
+by the Qt integration maintainer, with upstream-coordinated behavior-preserving
+extraction of the source-cache interface as its exit condition.
+
+INC-QML-08 and REQ-QML-018 remain incomplete. Header-classification assessment,
+bounded qmake extensions, typed factory/member providers, child-service signal
+chains and combined whole-project/safe-subroot adoption stay within the remaining
+INC-QML-08a/08b/08c work. Header discovery needs its own agreed requirement before
+implementation; direct parser success does not prove production admission. Local
+native-slice proof and an accepted scoped installed result do not establish these
+additional capabilities. New reviewed-head hosted lanes have not been executed
+for this source change; prior INC-QML-07 proof remains revision-specific.

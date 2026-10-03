@@ -1,11 +1,11 @@
 # Qt and QML support foundation
 
-QML-00 through QML-07 implement optional QML declarations/imports, scoped
+INC-QML-00 through INC-QML-07 implement optional QML declarations/imports, scoped
 bindings/aliases/JavaScript/handlers, native Qt C++ signals/connections/slots,
 registered C++ APIs and literal QML object access. See [implemented scope](IMPLEMENTATION.md)
 and [validation](VALIDATION.md) for individual gates and revision-specific evidence.
 Literal CMake/qmake/resource/type-description admission and configuration/update
-parity are implemented. QML-07 completes consumer/export/assistant support and the declared hosted
+parity are implemented. INC-QML-07 completes consumer/export/assistant support and the declared hosted
 source/artifact matrix; see the exact revision evidence in VALIDATION.md.
 
 The goal is to add reliable, local analysis of Qt/QML projects to Graphify and
@@ -41,9 +41,9 @@ this directory records the local Qt/QML extension and its remaining design.
 
 The agreed first target is **Qt 6 with both CMake and qmake metadata support**.
 Qt 6.5 and 6.8 are source fixture profiles, not claims of installed SDK/runtime
-equivalence. The [platform matrix](PLATFORM_MATRIX.md) records successful QML-03
-through QML-07 hosted Linux/Windows/macOS lanes at their respective heads.
-QML-07 has local and reviewed-head hosted evidence for that declared matrix.
+equivalence. The [platform matrix](PLATFORM_MATRIX.md) records successful INC-QML-03
+through INC-QML-07 hosted Linux/Windows/macOS lanes at their respective heads.
+INC-QML-07 has local and reviewed-head hosted evidence for that declared matrix.
 Qt 5.15 is later, separately verified work.
 
 Qt signals, slots, emissions and `QObject::connect` are explicit requirements,
@@ -51,13 +51,13 @@ as is bidirectional QML/C++ integration: C++ APIs supplied to QML and C++ access
 to QML-created objects, signals, properties and methods. Each of the 17 requirements
 has four assigned acceptance criteria, with individual traceability entries.
 
-The [QML-00 decision](PARSER_DECISION.md) selects the optional, pinned language-pack
+The [INC-QML-00 decision](PARSER_DECISION.md) selects the optional, pinned language-pack
 adapter. The source analysis requires no Qt runtime, compiler or JavaScript
 execution. Scope and unresolved-coverage limits are in [architecture](ARCHITECTURE.md).
 
-The plan retains QML-00 through QML-07, with QML-04a/04b/04c separating exposure,
-native events and reverse object access. Native C++ event work can follow QML-00
-alongside the QML lane; metadata readers can follow QML-02. Every acceptance ID
+The plan retains INC-QML-00 through INC-QML-07, with INC-QML-04a/INC-QML-04b/INC-QML-04c separating exposure,
+native events and reverse object access. Native C++ event work can follow INC-QML-00
+alongside the QML lane; metadata readers can follow INC-QML-02. Every acceptance ID
 has a planned completion increment in traceability. Early graph/persistence/update
 safety is required when a capability is enabled, before later optimization.
 

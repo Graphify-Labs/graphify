@@ -37,7 +37,7 @@ reconciliation, reports/HTML, root marker and manifest updates. Prior bytes rema
 intact under forced, equal-count and edge-only losses. Earlier scan/stat bookkeeping
 is outside that boundary. QML and supported Qt metadata bypass AST cache
 reads/writes. Native syntax in an explicit Qt context also bypasses syntax cache;
-plain generic C++ keeps its existing portable cache. QML-06 fingerprints installed
+plain generic C++ keeps its existing portable cache. INC-QML-06 fingerprints installed
 parser/package/fact/policy versions, ordered import roots and admission configuration.
 Qt/provider/script/configuration changes conservatively refresh accepted code.
 Generic JS keeps its existing extraction/cache-bypass policy; overlays are
@@ -59,7 +59,7 @@ fan-out limit is retained as `qml_failures` even where no parser diagnostic is
 available. Force cannot override either marker at publication.
 
 
-QML-05 metadata codes QML_PROJECT_READ/LIMIT, QML_PROJECT_UNSUPPORTED,
+INC-QML-05 metadata codes QML_PROJECT_READ/LIMIT, QML_PROJECT_UNSUPPORTED,
 QML_CMAKE_SYNTAX, QML_QRC_ENTITY/PATH/SYNTAX and QML_TYPES_SYNTAX/UNSUPPORTED describe bounded read/root,
 work, unsupported build/type and resource XML failures. Failed/partial accepted
 metadata reaches the existing publication guard. QML_TYPES_CONFLICT is a warning
@@ -73,9 +73,18 @@ never authorizes reading a previously accepted/deleted provider. State is commit
 after graph and manifest success. Native scoped root mismatch uses the existing
 QML_ROOT_MISMATCH rejection and retains prior durable outputs.
 
-QML-07 export direction validation uses `QT_EXPORT_DIRECTION` when stored logical
+INC-QML-07 export direction validation uses `QT_EXPORT_DIRECTION` when stored logical
 endpoint markers do not name the current accepted edge pair. Correct/re-extract
 the graph before exporting; marker text cannot authorize a different endpoint.
 Consumer coverage displays unresolved site reasons without converting them into
 parser failures or a successful runtime dispatch claim. Presentation omissions
 and live database gaps are explicit in [EXPORT_MATRIX.md](EXPORT_MATRIX.md).
+
+Adoption syntax recovery for valid empty parameter defaults, standalone
+`Q_UNUSED` statements and numeric digit separators changes neither diagnostic
+IDs nor failure ownership.
+Supported input passes the existing syntax stage; incomplete parentheses, damaged
+defaults, malformed source and unsupported ordinary call/value contexts retain
+`QT_CPP_SYNTAX` where applicable. Recovery changes only a bounded parse view,
+never source files or graph-write protection. See DESIGN.md for ownership and
+IMPLEMENTATION.md for executed positive/rejection and original-byte regressions.

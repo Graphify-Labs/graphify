@@ -1,4 +1,6 @@
-# QML-00 parser evidence
+<a name="qml-00-parser-evidence"></a>
+
+# INC-QML-00 parser evidence
 
 Decision D2 is accepted for an **optional** `qml` extra using
 `tree-sitter-language-pack==0.11.0`, with Tree-sitter `>=0.25.2,<0.26`.
@@ -58,7 +60,7 @@ Grouped properties parse as object definitions and require semantic separation.
 An empty QML file has a grammar error: production must explicitly describe its
 empty-editor-file policy. Malformed source must not become an authoritative
 partial graph or successful cache entry. The qmldir grammar accepts invalid
-versions and missing module URIs, so QML-02 requires a dedicated semantic parser.
+versions and missing module URIs, so INC-QML-02 requires a dedicated semantic parser.
 
 Use explicit scan roots, case-sensitive lookup keys and normalized IDs containing
 an exact-identity digest. Scope keys must be portable. Persist independent import,
@@ -66,17 +68,17 @@ export and use-site nodes; avoid lists silently truncated by metadata sanitation
 Resolver indexes are per run and borrowed context is immutable. Multiple event
 sites need distinct IDs because the existing graph is a DiGraph.
 
-QML-01 must reject failed QML extraction before publishing a graph or manifest,
-including forced updates and equal-node-count losses. QML-02/03 must widen a Qt
-change to the whole accepted corpus or reject it safely until QML-06 adds precise
+INC-QML-01 must reject failed QML extraction before publishing a graph or manifest,
+including forced updates and equal-node-count losses. INC-QML-02/INC-QML-03 must widen a Qt
+change to the whole accepted corpus or reject it safely until INC-QML-06 adds precise
 invalidation. QML C++ bridges retain declaration identity and source-owned event
-sites; runtime C++ implementation remains assigned to QML-04.
+sites; runtime C++ implementation remains assigned to INC-QML-04.
 
 ## Increment review
 
-QML-00 is complete for optional parser selection, with Linux/macOS evidence
-explicitly unverified. Add QML-01a (write/cache safety) and QML-01b (declarations,
+INC-QML-00 is complete for optional parser selection, with Linux/macOS evidence
+explicitly unverified. Add INC-QML-01a (write/cache safety) and INC-QML-01b (declarations,
 admission and installation), following the existing letter-suffix convention.
-Both are required before QML-01 completion. QML-02 must test semantic qmldir
+Both are required before INC-QML-01 completion. INC-QML-02 must test semantic qmldir
 validation, immutable indexes, metadata transport and changes to unchanged users.
 No production requirement acceptance criterion is closed by this probe alone.

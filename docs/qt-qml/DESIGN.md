@@ -1,9 +1,9 @@
 # Qt/QML implementation contracts
 
-Status: QML-00 through QML-06 are implemented for the bounded static profile.
-Local QML-07 adds consumer, export and assistant contracts; its final hosted-head
+Status: INC-QML-00 through INC-QML-06 are implemented for the bounded static profile.
+Local INC-QML-07 adds consumer, export and assistant contracts; its final hosted-head
 proof remains pending. [PLATFORM_MATRIX.md](PLATFORM_MATRIX.md) records historical
-hosted runs through QML-06. [ARCHITECTURE.md](ARCHITECTURE.md) owns ADRs and
+hosted runs through INC-QML-06. [ARCHITECTURE.md](ARCHITECTURE.md) owns ADRs and
 [traceability](../../tests/TRACEABILITY.md) owns individual acceptance evidence.
 Dependency-directed cache optimization and Qt runtime equivalence remain deferred.
 
@@ -163,7 +163,7 @@ accepted script file/path/role, and calls target QML script-function overlays.
 Generic JS callers and unrelated C++ edges keep their existing rules. On reload
 of an undirected graph, `load_node_link_graph` restores QML edge `_src`/`_tgt`
 from serialized endpoints; consumer direction uses these values, not iteration
-order. Build/JSON preservation does not establish all QML-07 presentation support.
+order. Build/JSON preservation does not establish all INC-QML-07 presentation support.
 
 Any new fields need compatible defaults, serialization tests, and a cache/version
 decision. Remapping IDs must also remap resolver-fact keys, references, and provider
@@ -171,8 +171,8 @@ indexes, not just node IDs and edge endpoints.
 
 ## Qt events and bidirectional object boundaries
 
-QML-008 supplies the registered C++ surface to QML. QML-016 adds native C++
-signal/slot semantics independently of the QML parser. QML-017 follows C++
+REQ-QML-008 supplies the registered C++ surface to QML. REQ-QML-016 adds native C++
+signal/slot semantics independently of the QML parser. REQ-QML-017 follows C++
 consumers of QML objects and literal context/initial-property providers back to
 their scoped declarations. These are implemented bounded source contracts,
 with acceptance evidence and remaining consumer/release gates in traceability.
@@ -226,7 +226,7 @@ consumer output; changed QML APIs must invalidate unchanged C++ consumers.
 QML and Qt metadata extraction bypass AST cache reads and writes. A Qt analysis
 context also bypasses native syntax cache; plain C++ retains portable syntax
 caching. Generic JS retains its existing cache-bypass rules, and QML overlays are
-constructed for the current run. QML-06 refreshes the accepted code corpus after
+constructed for the current run. INC-QML-06 refreshes the accepted code corpus after
 provider/script/source changes and parser/import/admission-configuration changes.
 Dependency-directed reuse is a later optimization, not a completion prerequisite.
 
@@ -265,7 +265,9 @@ design decisions in the same PR. Dynamic object creation, arbitrary plugin code,
 full preprocessing, and arbitrary build-script evaluation remain explicit limits.
 
 
-## Implemented native Qt contracts (QML-04)
+<a name="implemented-native-qt-contracts-qml-04"></a>
+
+## Implemented native Qt contracts (INC-QML-04)
 
 `qt_qml_pipeline.resolve_qt_qml` owns scratch integration after final generic C++
 canonicalization. Exposure, events and object access have focused collectors and
@@ -288,7 +290,7 @@ read-only. `qml_failures` and `qt_failures` both enter the publication integrity
 No force/partial option can publish an incomplete Qt overlay.
 
 
-QML-05 activates the internally packaged metadata readers at discovery/dispatch.
+INC-QML-05 activates the internally packaged metadata readers at discovery/dispatch.
 After native overlays borrow final C++ IDs, QtProjectIndex supplies real source
 membership to QtQmlBridgeIndex and both QML resolvers. Resource aliases resolve
 only accepted targets. Generated/source disagreements attach to the fresh source
@@ -297,14 +299,16 @@ Versioned Qt/QML namespace-shaped facts bypass generic C# namespace merging,
 retaining distinct provider and repeated resource identities.
 
 
-QML-06 owners: qt_incremental computes accepted-input refresh/cache policy without
+INC-QML-06 owners: qt_incremental computes accepted-input refresh/cache policy without
 scanning directories; qt_analysis_state inspects accepted ancestors and produces a
 frozen checkpoint. CLI/watch own successful publication and checkpoint commit.
 Each parallel worker receives native-cache bypass explicitly; no mutable global
 root or policy is introduced. Borrowed context facts remain read-only. Native Qt
 scoped facts reject subfolder path-only rebasing; callers update the project root.
 
-## QML-07 consumer and assistant contracts
+<a name="qml-07-consumer-and-assistant-contracts"></a>
+
+## INC-QML-07 consumer and assistant contracts
 
 Search projects bounded decoded semantic fields under `graphify_qt_qml` rather
 than assuming nested metadata is searchable. Query/explain/path and installed MCP
@@ -330,4 +334,33 @@ without writing state. It passes `qml_import_roots` and `refresh_native` explici
 then calls the production integrity gate before AST JSON publication. CLI/watch
 alone own the final analysis checkpoint. Authoritative fragments and frozen
 generator guards are validated together; artifacts are regenerated rather than
-edited independently. Hosted proof must be rerun for the final QML-07 head.
+edited independently. Hosted proof must be rerun for the final INC-QML-07 head.
+
+## Valid native syntax recovery during adoption
+
+`extractors/qt_cpp_syntax.py` retains original source/lexical views and delegates
+only the recovery parse view to `extractors/qt_cpp_compat.py`. The caller supplies
+its bounded parser and iterative traversal; the helper owns no roots, files,
+mutable state, cache or persistence. An AST-confirmed empty parameter default is
+omitted only in the equal-length parse view. A standalone Qt `Q_UNUSED` statement
+uses the macro's existing bytes for its void cast and supplied semicolon while
+preserving evaluated argument/call bytes. Original facts, declaration types and
+locations still use the original source. Comments, strings, directives, local
+macro overrides, ordinary declared/qualified functions, value contexts and
+malformed controls cannot authorize recovery. This corrects supported syntax;
+it does not relax the graph integrity guard or infer runtime targets.
+
+The lexical owner recognizes C++ preprocessing-number tokens before quote
+masking. Numeric digit separators therefore cannot obscure later Qt annotations
+or signal sections. Numeric bytes remain unchanged and the parser validates their
+syntax; malformed separators do not acquire a successful recovery. Character,
+string, raw-string and comment exclusion retain their existing ownership.
+
+The same-version development upgrade uses a new AST cache schema and Qt policy
+epoch to prevent reuse of pre-correction declarations/graphs. Conservative native
+refresh relevance includes the accepted syntax candidates; unrelated plain C++
+keeps its portable cache behavior. Epoch/schema migration invalidates obsolete
+AST artifacts under upstream cache ownership; compatible current cache data,
+semantic cache and prior accepted graph/manifest/state remain protected on a
+failed candidate. The graph writer still commits analysis state after successful
+publication. See the exact regression/evidence inventory in IMPLEMENTATION.md.

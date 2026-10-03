@@ -1,6 +1,6 @@
 # Qt/QML platform and artifact proof
 
-This is a delivery matrix for [QML-001 and QML-014](../REQUIREMENTS.md),
+This is a delivery matrix for [REQ-QML-001 and REQ-QML-014](../REQUIREMENTS.md),
 not a claim that all Qt runtime behavior is statically resolvable. The project
 declares Python `>=3.10`; the twelve advertised CI lanes below are the narrower
 tested matrix. Python 3.11 is not a declared lane in this matrix.
@@ -15,22 +15,22 @@ They therefore cannot prove runtime dispatch, plugin availability or build succe
 
 ## Declared lanes and revision-specific evidence
 
-| OS runner | Python | QML-03 optional/core wheel result | QML-04/05/06 optional/core result | Final QML-07 result |
+| OS runner | Python | INC-QML-03 optional/core wheel result | INC-QML-04/INC-QML-05/INC-QML-06 optional/core result | Final INC-QML-07 result |
 |---|---|---|---|---|
-| ubuntu-latest | 3.10 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
-| ubuntu-latest | 3.12 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
-| ubuntu-latest | 3.13 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
-| ubuntu-latest | 3.14 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
-| windows-latest | 3.10 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
-| windows-latest | 3.12 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
-| windows-latest | 3.13 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
-| windows-latest | 3.14 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
-| macos-latest | 3.10 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
-| macos-latest | 3.12 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
-| macos-latest | 3.13 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
-| macos-latest | 3.14 | Passed | Passed at recorded heads | Passed at recorded QML-07 head |
+| ubuntu-latest | 3.10 | Passed | Passed at recorded heads | Passed at recorded INC-QML-07 head |
+| ubuntu-latest | 3.12 | Passed | Passed at recorded heads | Passed at recorded INC-QML-07 head |
+| ubuntu-latest | 3.13 | Passed | Passed at recorded heads | Passed at recorded INC-QML-07 head |
+| ubuntu-latest | 3.14 | Passed | Passed at recorded heads | Passed at recorded INC-QML-07 head |
+| windows-latest | 3.10 | Passed | Passed at recorded heads | Passed at recorded INC-QML-07 head |
+| windows-latest | 3.12 | Passed | Passed at recorded heads | Passed at recorded INC-QML-07 head |
+| windows-latest | 3.13 | Passed | Passed at recorded heads | Passed at recorded INC-QML-07 head |
+| windows-latest | 3.14 | Passed | Passed at recorded heads | Passed at recorded INC-QML-07 head |
+| macos-latest | 3.10 | Passed | Passed at recorded heads | Passed at recorded INC-QML-07 head |
+| macos-latest | 3.12 | Passed | Passed at recorded heads | Passed at recorded INC-QML-07 head |
+| macos-latest | 3.13 | Passed | Passed at recorded heads | Passed at recorded INC-QML-07 head |
+| macos-latest | 3.14 | Passed | Passed at recorded heads | Passed at recorded INC-QML-07 head |
 
-The QML-03 snapshot is recorded in [VALIDATION.md](VALIDATION.md): reviewed head
+The INC-QML-03 snapshot is recorded in [VALIDATION.md](VALIDATION.md): reviewed head
 `92f31658beceb5d36f570ae8e3820698b39381fb`, base
 `0b60d47e6cd9338c51143f39f35b6c45c8453385`, tested synthetic merge
 `a9fba56c165210880236a635d00a96e84e19f1aa`.
@@ -41,21 +41,21 @@ passed Ubuntu full-source suites: Python 3.10 had 6541 passed/16 skipped;
 3.12/3.13/3.14 each had 6540 passed/17 skipped. Windows/macOS wheel lanes ran
 249 QML source contracts each; Ubuntu wheel lanes ran three artifact contracts
 alongside their separate full-source CI jobs. This historical proof covers
-QML-03. It does not verify later native Qt, build metadata, analysis stamps or
+INC-QML-03. It does not verify later native Qt, build metadata, analysis stamps or
 the new assistant runbooks.
 
-The subsequent QML-04/05/06 runs completed successfully for their respective
+The subsequent INC-QML-04/INC-QML-05/INC-QML-06 runs completed successfully for their respective
 source heads, including all twelve optional/core wheel lanes and the main CI
-matrix. These are historical revision-specific results; final QML-07 proof does
+matrix. These are historical revision-specific results; final INC-QML-07 proof does
 not inherit them.
 
 | Increment | Reviewed source head | Main CI | Optional/core wheel matrix |
 | --- | --- | --- | --- |
-| QML-04 | `6e454b749b1dbbdfb6d30e31d4f70dee80f2a053` | [37090713564](https://github.com/SlinkyRamey/graphify/actions/runs/37090713564), passed | [37090713525](https://github.com/SlinkyRamey/graphify/actions/runs/37090713525), twelve passed |
-| QML-05 | `47b422b9438163fe273bb2ec01e950940420db50` | [37091318091](https://github.com/SlinkyRamey/graphify/actions/runs/37091318091), passed | [37091318124](https://github.com/SlinkyRamey/graphify/actions/runs/37091318124), twelve passed |
-| QML-06 | `9fd9cd0d13e601b8e716816020a761484db29b19` | [37092273563](https://github.com/SlinkyRamey/graphify/actions/runs/37092273563), passed | [37092273562](https://github.com/SlinkyRamey/graphify/actions/runs/37092273562), twelve passed |
+| INC-QML-04 | `6e454b749b1dbbdfb6d30e31d4f70dee80f2a053` | [37090713564](https://github.com/SlinkyRamey/graphify/actions/runs/37090713564), passed | [37090713525](https://github.com/SlinkyRamey/graphify/actions/runs/37090713525), twelve passed |
+| INC-QML-05 | `47b422b9438163fe273bb2ec01e950940420db50` | [37091318091](https://github.com/SlinkyRamey/graphify/actions/runs/37091318091), passed | [37091318124](https://github.com/SlinkyRamey/graphify/actions/runs/37091318124), twelve passed |
+| INC-QML-06 | `9fd9cd0d13e601b8e716816020a761484db29b19` | [37092273563](https://github.com/SlinkyRamey/graphify/actions/runs/37092273563), passed | [37092273562](https://github.com/SlinkyRamey/graphify/actions/runs/37092273562), twelve passed |
 
-Local QML-07 consumer/export/assistant checks have executed; their commands,
+Local INC-QML-07 consumer/export/assistant checks have executed; their commands,
 skips and current-head limitations belong to [VALIDATION.md](VALIDATION.md).
 All twelve implementation-head hosted cells pass. A source-head association does
 not claim that the CI checkout is the raw head rather than its recorded synthetic
@@ -127,7 +127,9 @@ python -m tools.skillgen --always-on-roundtrip
 ```
 
 
-## QML-07 completed implementation-head proof
+<a name="qml-07-completed-implementation-head-proof"></a>
+
+## INC-QML-07 completed implementation-head proof
 
 Reviewed source head `235987b9a72e0353cbc9e8cf2c53c7ccd07fceed`, base `9fd9cd0d13e601b8e716816020a761484db29b19`, PR5 synthetic merge candidate
 `bcd4d7b4bf9ac1ce91f9e25957d6599fda75f87d`. [Main CI 37094308786](https://github.com/SlinkyRamey/graphify/actions/runs/37094308786)

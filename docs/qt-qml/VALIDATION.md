@@ -1,20 +1,22 @@
 # Qt/QML validation record
 
-## Executed QML-00 through QML-03 — 2026-10-03
+<a name="executed-qml-00-through-qml-03--2026-10-03"></a>
+
+## Executed INC-QML-00 through INC-QML-03 — 2026-10-03
 
 The imported baseline remains `0b60d47e6cd9338c51143f39f35b6c45c8453385`.
-QML-00 commit `2f0fdce`, QML-01 commits `4f587f6`/`63075e8`, and QML-02
-commit `df432a7` separate the executed stages. QML-03 is on
+INC-QML-00 commit `2f0fdce`, INC-QML-01 commits `4f587f6`/`63075e8`, and INC-QML-02
+commit `df432a7` separate the executed stages. INC-QML-03 is on
 `codex/qml-03-relationships`; its source and final evidence are committed together.
 The upstream API was rechecked: v8 still points at the imported baseline. Proposal
 #1748 remains unmerged; no proposal code was copied into these modules/fixtures.
 
 | Executed check | Result |
 | --- | --- |
-| QML-00 candidate probes, each Windows Python 3.10/3.12/3.13/3.14 | 40 passed, no skips per lane |
-| All 21 actual QML test files with reviewed QML-03 wheel, each Windows Python lane | 239 passed, two symlink-permission skips per lane before final eight BOM/CRLF reader regressions |
+| INC-QML-00 candidate probes, each Windows Python 3.10/3.12/3.13/3.14 | 40 passed, no skips per lane |
+| All 21 actual QML test files with reviewed INC-QML-03 wheel, each Windows Python lane | 239 passed, two symlink-permission skips per lane before final eight BOM/CRLF reader regressions |
 | Final qmldir reader and production syntax profile | 33 passed, no skips, including original BOM/CRLF/Unicode bytes and bounded binary reads |
-| QML-03 optional wheel installs, neutral cwd, isolated `-I` production entry point | Passed Python 3.10.21/3.12.14/3.13.15/3.14.7; bindings, imported scripts and subscriptions exercised with Python network/process audit denial |
+| INC-QML-03 optional wheel installs, neutral cwd, isolated `-I` production entry point | Passed Python 3.10.21/3.12.14/3.13.15/3.14.7; bindings, imported scripts and subscriptions exercised with Python network/process audit denial |
 | Fresh core-only wheel, Python 3.12.14 | Passed with pack actually absent; Python extraction still works, QML reports parser unavailable |
 | Built-artifact tests with GRAPHIFY_QML_TEST_WHEEL supplied | Three passed; artifact imports and core/parser boundary executed |
 | New CI helper executed locally, Python 3.12 | Clean extra/core installs and both isolated smoke checks passed; three artifact tests passed |
@@ -50,7 +52,7 @@ The eight new original-byte regressions invalidate the earlier wheel's qmldir
 provenance evidence. Final source-snapshot wheel rebuilding/reverification is
 recorded below before published completion; earlier counts remain historical.
 
-Final QML-03 revalidation: source archive built from the reviewed Git index,
+Final INC-QML-03 revalidation: source archive built from the reviewed Git index,
 excluding concurrent next-increment modules; optional wheel SHA256
 `b6d98399ad534f9a86a99c8d4f35d18027c7143ee90b1ec72e7e2aaab03bf881`.
 All four isolated Windows lanes run the updated installed production smoke,
@@ -162,19 +164,19 @@ it was not merged or tested as the working implementation.
 QML parser installation/API compatibility, representative Qt version profiles,
 grammar error recovery, PR implementation tests, full-suite/all-extras CI, macOS
 and Linux extraction, performance, and Qt-specific incremental parity remain
-unverified. QML-00 in [PLAN.md](PLAN.md) owns the next investigation.
+unverified. INC-QML-00 in [PLAN.md](PLAN.md) owns the next investigation.
 
 ## Development-standard review — 2026-10-03
 
-Strengthened [AGENTS.md](../../AGENTS.md) across the twelve requested discipline
-areas, adapted pipeline rules to GitHub, and retained the specialized upstream
-extractor-migration constraints. Protected proof rules remain future policy;
-no workflow protection or runtime language support was introduced.
+[AGENTS.md](../../AGENTS.md) covers twelve discipline areas, GitHub pipeline
+sequencing and the specialized upstream extractor-migration constraints.
+Protected proof rules remain future policy; the standard does not establish
+workflow protection or runtime language support.
 
-Moved the canonical requirements to [docs/REQUIREMENTS.md](../REQUIREMENTS.md)
-and updated the index, audit, design, plan, code reference, and traceability links.
-A one-off Python document check passed across eleven public foundation files:
-all requested headings exist, local links resolve, the old requirements path is
+The canonical requirements are in [docs/REQUIREMENTS.md](../REQUIREMENTS.md),
+linked from the index, audit, design, plan, code reference and traceability.
+A Python document check passed across eleven public foundation files:
+all standard headings exist, local links resolve, the old requirements path is
 absent, and private-reference/credential-pattern checks pass. All seventeen
 requirement IDs and sixty-eight acceptance criteria retain their numbering;
 criterion text/order is unchanged and each criterion still has one traceability
@@ -200,11 +202,13 @@ explicit proposals. Local links, canonical paths, planned/unexecuted status and
 private-reference/credential-pattern checks passed. `git diff --check` passed.
 
 No production code, parser probe or runtime test was executed for this planning
-revision. QML-00 remains the first execution checkpoint, and all implementation
+revision. INC-QML-00 remains the first execution checkpoint, and all implementation
 acceptance criteria remain unexecuted.
 
 
-## QML-03 hosted proof — 2026-10-03
+<a name="qml-03-hosted-proof--2026-10-03"></a>
+
+## INC-QML-03 hosted proof — 2026-10-03
 
 Draft [fork PR 1](https://github.com/SlinkyRamey/graphify/pull/1) is open against
 `v8`. Reviewed source head `92f31658beceb5d36f570ae8e3820698b39381fb`, base
@@ -224,12 +228,14 @@ and ran isolated offline production smoke. Windows and macOS each ran 249 source
 contracts; Ubuntu ran the three artifact contracts and the separate CI workflow
 owned the full source suite. The hosted Windows symlink cases passed.
 
-This verifies QML-03 only. Later Qt changes require their own reviewed-head proof.
+This verifies INC-QML-03 only. Later Qt changes require their own reviewed-head proof.
 
 
-## QML-04 local proof — 2026-10-03
+<a name="qml-04-local-proof--2026-10-03"></a>
 
-Reviewed source boundary starts at QML-03 head `92f31658beceb5d36f570ae8e3820698b39381fb`.
+## INC-QML-04 local proof — 2026-10-03
+
+Reviewed source boundary starts at INC-QML-03 head `92f31658beceb5d36f570ae8e3820698b39381fb`.
 Official upstream v8 was rechecked and remains
 `0b60d47e6cd9338c51143f39f35b6c45c8453385`. No upstream Qt PR code was copied.
 
@@ -238,46 +244,50 @@ Windows Python3.12.14 focused QML/Qt+C++/cache/registry suite: **547 passed,
 baseline optional language omissions). The actual wheel artifact suite separately
 passed all3 cases. Whole-repository Ruff and lockcheck (210 packages) passed;
 focused runtime/index/helper Pyright had zero errors/warnings. Baseline Windows
-current-directory deletion defects recorded in QML-03 remain unchanged limitations.
+current-directory deletion defects recorded in INC-QML-03 remain unchanged limitations.
 
 A clean Git-index source archive built the noneditable wheel with SHA256
 `a4973256e987d9e75c89e54567350c0ff9af72384b2eed57ff19d173780d972e`.
 Python3.12.14 isolated neutral-directory optional/core smoke both passed, including
 native Qt emission with no QML parser in the core-only environment. The wheel
 contains the internal metadata/index foundation; its public admission remains
-QML-05. Later Python/OS source lanes are owned by the forthcoming PR workflows.
+INC-QML-05. Later Python/OS source lanes are owned by the forthcoming PR workflows.
 
 The required repository graph refresh succeeded:19555 nodes,40020 edges and1065
 communities. Existing unavailable optional-language warnings remain explicit.
 Generated graph/report/cache/coverage data are excluded from commits.
 
 
-## QML-05 local evidence
+<a name="qml-05-local-evidence"></a>
+
+## INC-QML-05 local evidence
 
 Windows Python3.12.14: 435 Qt/QML tests passed with6 documented skips before the
 final duplicate-provider regression; extract/registry/admission245 passed8 baseline
 optional-language skips. The final canonicalization fix passes independent facade
 CMake/qmake native membership, duplicate module, qrc alias and accepted-target
-regressions. QML-06 tests still demonstrate ignore-only refresh gaps and remain
+regressions. INC-QML-06 tests still demonstrate ignore-only refresh gaps and remain
 open. Ruff passes touched production/tests. The source refresh produced19701 nodes,
 40531 edges and1066 communities before the final identity fix; a final refresh is
-required before commit. Hosted QML-04 runs37090713564/37090713525 were still running
-when this local evidence was recorded; they do not prove the QML-05 revision.
+required before commit. Hosted INC-QML-04 runs37090713564/37090713525 were still running
+when this local evidence was recorded; they do not prove the INC-QML-05 revision.
 
 Final focused public admission/native/resource/type suite: 67 passed. Additional
 index regressions retain same-target duplicate project declarations as ambiguous.
-No acceptance is inferred from unfinished QML-06 or QML-07 cases.
+No acceptance is inferred from unfinished INC-QML-06 or INC-QML-07 cases.
 
 
-## QML-06 local evidence
+<a name="qml-06-local-evidence"></a>
+
+## INC-QML-06 local evidence
 
 Windows Python3.12.14: policy/state/config/provider tests73 passed; the corrected
 plain-C++ cache plus config/provider subset52 passed; actual code-only/extract/
 QML publication CLI tests89 passed. An intermediate broad run1001 passed28 skipped
 with a corrected plain-header cache regression and the two established Windows
 WinError32 deleted-current-directory baseline failures. Final regression and worker
-proof follow. Both QML-04 and QML-05 hosted CI and twelve optional/core wheel lanes
-completed successfully for their respective PR heads; final QML-07 proof remains.
+proof follow. Both INC-QML-04 and INC-QML-05 hosted CI and twelve optional/core wheel lanes
+completed successfully for their respective PR heads; final INC-QML-07 proof remains.
 
 Final worker/cache/native-root suite6 passed; compatibility fallback regression
 plus worker suite7 passed after preserving the legacy helper invocation. Targeted
@@ -286,7 +296,9 @@ The last broad regression1001 passed28skipped, with corrected helper invocation
 and the two established Windows deleted-current-directory failures. Their hosted
 Linux proof remains required; no test or assertion was skipped to mask them.
 
-## QML-07 local final source proof
+<a name="qml-07-local-final-source-proof"></a>
+
+## INC-QML-07 local final source proof
 
 Windows Python 3.12.14, actual optional QML/MCP environment: all Qt/QML source
 contracts **613 passed, 6 skipped** in 48.69s before the final explicit normal-edit
@@ -317,7 +329,7 @@ private marker and credential-shaped text review is part of final delivery.
 
 Final normal-edit parity, reviewed-source wheel digest, clean isolated optional/
 core smoke, graph refresh and exact-head hosted CI remain separately recorded
-gates. Earlier QML-03/04/05/06 passes do not verify the QML-07 revision.
+gates. Earlier INC-QML-03/INC-QML-04/INC-QML-05/INC-QML-06 passes do not verify the INC-QML-07 revision.
 
 The final real incremental parity additions pass all6 cases without skips. Both
 actual manual update CLI and locked watch driver compare normal QML edits and
@@ -333,7 +345,9 @@ It is navigation data, not acceptance proof. Generated graphs/caches/reports and
 local coverage artifacts are excluded from the public change. Final privacy/link/
 stable-ID and new Python footprint review passes.
 
-### QML-07 reviewed artifact and initial hosted correction
+<a name="qml-07-reviewed-artifact-and-initial-hosted-correction"></a>
+
+### INC-QML-07 reviewed artifact and initial hosted correction
 
 Implementation head `5e73bacf5529f83d014b3709959ebd1784a62593` has reviewed
 Git-index tree `0224d13a5eca209030b6c7873ac3fa052248dea0`. Its built wheel
@@ -349,7 +363,7 @@ build/source-priority plus final-parity regression subset passes102 cases.
 Final navigation refresh:19924 nodes,41264 edges,1095 communities.
 
 [Draft fork PR5](https://github.com/SlinkyRamey/graphify/pull/5) is stacked on
-QML-06 head `9fd9cd0d13e601b8e716816020a761484db29b19`. Initial source head
+INC-QML-06 head `9fd9cd0d13e601b8e716816020a761484db29b19`. Initial source head
 `5e73bacf5529f83d014b3709959ebd1784a62593` tested merge candidate
 `7229b127ee144b35426501467724e3c471c34b20`.
 The first [wheel run37094103638](https://github.com/SlinkyRamey/graphify/actions/runs/37094103638)
@@ -361,7 +375,9 @@ are retained. This failed/obsolete run is not counted as final platform proof;
 the corrected reviewed revision requires its own complete matrix.
 
 
-## QML-07 corrected hosted completion
+<a name="qml-07-corrected-hosted-completion"></a>
+
+## INC-QML-07 corrected hosted completion
 
 Reviewed implementation/workflow head `235987b9a72e0353cbc9e8cf2c53c7ccd07fceed`; stack base `9fd9cd0d13e601b8e716816020a761484db29b19`;
 synthetic merge candidate `bcd4d7b4bf9ac1ce91f9e25957d6599fda75f87d`.
@@ -374,7 +390,7 @@ below after reading logs; an overall security job with continue-on-error steps
 does not establish absence of baseline findings.
 
 Final review preserves17requirements/68criteria, correct public support limits,
-privacy, local links and focused module ceilings. QML-00..07 are complete within
+privacy, local links and focused module ceilings. INC-QML-00..INC-QML-07 are complete within
 the declared static profile. Documentation-only follow-up changes trigger fresh
 PR checks, whose current head is available from
 [PR5 checks](https://github.com/SlinkyRamey/graphify/pull/5/checks).
@@ -400,3 +416,68 @@ upstream revision. No new production HIGH statement is identified. These are
 recorded existing findings, not a clean security scan and not a Qt parser issue.
 They remain upstream dependency/security debt rather than being silently fixed,
 hidden or treated as a passing scanner result in this feature change.
+
+## INC-QML-08a native source compatibility
+
+Local Windows Python 3.12.14 checks verify the bounded native syntax correction
+and same-package upgrade behavior. They do not close the full installed-project
+adoption profile or supply new reviewed-head hosted OS/Python evidence.
+
+The focused command was:
+
+```powershell
+.venv/Scripts/python.exe -X utf8 -m pytest -q tests/test_qt_cpp_adoption_syntax.py tests/test_qt_cpp_syntax.py tests/test_qt_signals_slots.py tests/test_qt_events_boundaries.py --tb=short
+```
+
+Result: **63 passed**, one pre-existing Hypothesis warning, 3.09 seconds. The public
+fixtures cover empty-brace parameter defaults, evaluated `Q_UNUSED` arguments,
+original BOM/CRLF/Unicode byte spans, valid numeric separators and later
+signal/member ownership. Malformed, inert and ordinary-C++ controls retain their
+rejection or canonical behavior. Before the numeric correction, four valid cases
+failed while three malformed controls passed; all seven pass after correction.
+
+The upgrade/cache command was:
+
+```powershell
+.venv/Scripts/python.exe -X utf8 -m pytest -q tests/test_qt_cpp_upgrade_invalidation.py tests/test_cache.py tests/test_qt_incremental_policy.py tests/test_qt_analysis_state.py tests/test_qt_worker_cache_integrity.py --tb=short
+```
+
+Result: **135 passed / 8 skipped**, 9.94 seconds. All thirteen new upgrade cases
+pass. The skips require host symlink permission and are not passes. Actual
+production cache and CLI boundaries cover schema 6 retirement, policy epoch 2
+refresh without source/package changes, accepted-input limits, plain-C++ warm
+cache and byte-for-byte retention of prior cache/products after failure.
+
+The final broad run used `.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q`
+with every file matching `tests/test_qml_*.py`, `tests/test_qt_*.py` and
+`tests/test_cpp_*.py`, including the upgrade and numeric regressions. The equivalent
+explicit PowerShell selection for reproducing that test set is:
+
+```powershell
+$qtTestFiles = @(rg --files tests -g 'test_qml_*.py' -g 'test_qt_*.py' -g 'test_cpp_*.py')
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q @qtTestFiles
+```
+
+Result: **716 passed / 7 skipped / 1 warning**, 76.98 seconds. Four skips require
+an unavailable C++ executable/toolchain, two require host symlink permission and
+one requires the optional SVG renderer. The warning is a Starlette deprecation.
+Ruff passes for the seven changed files; targeted Pyright using
+`--pythonpath .venv/Scripts/python.exe` passes the three production files with zero
+errors/warnings. The lock check passes with 210 packages. The navigation graph
+refresh succeeds with 20012 nodes, 41589 edges and 1100 communities; those counts
+describe the Graphify repository, not an analyzed private project.
+
+The clean reviewed installed wheel has SHA256
+`083b0d0bd422d91cd55b724088af2aa1301251bdeefb4a46d796c350d11f8a47`;
+its reviewed production tree is `5aa323e403481f5e57c9caad77b4e244fed470a6`.
+Installed source analysis and query/explain/affected consumers retain the bounded
+native facts, and a no-change CLI update preserves the graph. This is local
+artifact/scope evidence, not execution of analyzed Qt code, whole-project
+compatibility or closure of typed provider/service relationships.
+
+Native-header classification remains a planned INC-QML-08a assessment: a C
+dispatch can omit C++ facts despite a successful direct C++ parse. A bounded
+classifier requirement, public positive/negative fixtures and production
+installed-update proof are needed before admitting a correction. Remaining
+qmake, provider/service, combined adoption and safety criteria remain open in
+[traceability](../../tests/TRACEABILITY.md#planned-adoption-criteria).

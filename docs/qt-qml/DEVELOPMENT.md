@@ -90,7 +90,7 @@ gh api repos/Graphify-Labs/graphify/pulls/1748/files --paginate
 gh api repos/Graphify-Labs/graphify/commits/<reviewed-head>/check-runs
 ```
 
-Read-only review is part of QML-00. Do not apply an old PR's replacement function
+Read-only review is part of INC-QML-00. Do not apply an old PR's replacement function
 body blindly onto a newer upstream base: preserve current C++ normalization,
 test-macro handling, resolver contracts, and cache/update invariants.
 
@@ -128,6 +128,6 @@ gh pr create --repo <target-owner>/graphify --base v8 --head <fork-owner>:codex/
 Verify the resulting PR head and checks through the API. The baseline CI push
 filter does not run on `codex/*` pushes; a matching-base PR or an explicit supported
 dispatch is needed. A passing local baseline is not a claim of passing GitHub CI.
-Attach any newly created PR to the working chat and keep its description aligned
+Attach each newly created PR to the active task and keep its description aligned
 with the final implementation. Merge only under the repository's authorized review
 and check policy.

@@ -11,7 +11,7 @@ QT_METADATA_SUFFIXES = frozenset({".qmltypes", ".cmake", ".pro", ".pri", ".qrc"}
 QT_CPP_SUFFIXES = frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx"})
 QT_SCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
 QT_NAMED_METADATA = frozenset({"qmldir", "CMakeLists.txt"})
-QT_POLICY_VERSION = 1
+QT_POLICY_VERSION = 2
 
 
 def is_qt_metadata(path: str | Path) -> bool:
@@ -32,13 +32,16 @@ def requires_native_refresh(paths: Iterable[str | Path]) -> bool:
     """Inspect only accepted bounded inputs; comments may conservatively refresh.
 
     A Qt corpus must reparse canonical native declarations when its installed
-    parser changes. Plain C++ retains its established portable syntax cache.
+    parser changes. Plain C++ without Qt/recovery candidates retains its cache.
     """
     import re
     paths = tuple(Path(path) for path in paths)
     if any(is_qt_source(path) or is_qt_metadata(path) for path in paths):
         return True
-    markers = re.compile(rb"Q_OBJECT|Q_GADGET|Q_PROPERTY|Q_INVOKABLE|QML_|qmlRegister|QQml|QQuickView|QObject|Q_SIGNALS|Q_SLOTS|Q_SIGNAL|Q_SLOT|Q_EMIT|SIGNAL\s*\(|SLOT\s*\(")
+    # Same-version fork upgrades can change valid default/Q_UNUSED syntax.
+    # Comments adjacent to a possible empty default conservatively refresh;
+    # only the parser's lexical/AST adapter determines actual source semantics.
+    markers = re.compile(rb"Q_OBJECT|Q_GADGET|Q_PROPERTY|Q_INVOKABLE|QML_|qmlRegister|QQml|QQuickView|QObject|Q_SIGNALS|Q_SLOTS|Q_SIGNAL|Q_SLOT|Q_EMIT|SIGNAL\s*\(|SLOT\s*\(|Q_UNUSED\b|=\s*(?:\{\s*(?:\}|/\*|//)|/\*|//)")
     for path in paths:
         if path.suffix.lower() not in QT_CPP_SUFFIXES:
             continue

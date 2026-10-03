@@ -1,9 +1,18 @@
 # Qt and QML feature increment plan
 
-Status: QML-00 through QML-07 complete for the documented bounded Qt 6/QML static
+Use `INC-QML-` for delivery increments and `REQ-QML-` for requirements/criteria.
+The [identifier catalog](IDENTIFIERS.md) retains every prior ID as a permanent alias.
+
+Status: INC-QML-00 through INC-QML-07 complete for the documented bounded Qt 6/QML static
 source profile. All final source, consumer, update and declared hosted artifact gates pass. Executed checks are recorded in
 [VALIDATION.md](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md).
 Commands marked proposed are future verification suggestions, not pass claims.
+
+INC-QML-08 is **In progress; partially implemented**. Its native INC-QML-08a syntax
+slice has local source, cache-upgrade and installed-artifact proof; project metadata, typed context/provider chains and
+whole-project adoption remain planned or unverified. Its six REQ-QML-018 criteria extend that profile;
+the original INC-QML-00–INC-QML-07 and sixty-eight-criterion completion remains bounded by
+its recorded evidence. See the [INC-QML-08 work packages](#inc-qml-08--installed-project-adoption-hardening).
 
 This plan extends Graphify's existing Python pipeline and contribution workflow.
 It does not propose a Qt application rewrite. Read [REQUIREMENTS.md](../REQUIREMENTS.md),
@@ -15,7 +24,7 @@ by the foundation audit; recheck upstream changes before starting each PR.
 Upstream already tracks this feature in [issue #1716](https://github.com/Graphify-Labs/graphify/issues/1716)
 and [PR #1748](https://github.com/Graphify-Labs/graphify/pull/1748). The PR was open
 when inspected for this foundation and includes QML extraction and a C++ bridge.
-Its page contains older dependency notes superseded by later commits. QML-00
+Its page contains older dependency notes superseded by later commits. INC-QML-00
 must review its current head, tests, dependencies, maintainer feedback and overlap
 before deciding what to reuse, supplement or replace. Do not create a duplicate
 issue or assume unmerged code is present in the imported baseline.
@@ -24,48 +33,50 @@ issue or assume unmerged code is present in the imported baseline.
 
 | Increment | Outcome | Prerequisites | Requirement references |
 | --- | --- | --- | --- |
-| QML-00 | Existing-PR review, reproducible baseline and accepted parser decision | Foundation review | QML-001, QML-010, QML-012, QML-014, QML-015 |
-| QML-01 | Discover `.qml` and extract minimal source-backed declarations | QML-00 | QML-001, QML-002, QML-003, QML-010, QML-011, QML-012, QML-013, QML-014, QML-015 |
-| QML-02 | Resolve explicit QML modules, local components and scoped names | QML-01 | QML-002, QML-004, QML-005, QML-010, QML-012, QML-014, QML-015 |
-| QML-03 | Model bindings, aliases, JavaScript and signal relationships | QML-02 | QML-006, QML-007, QML-010, QML-012, QML-014, QML-015 |
-| QML-04 | C++ exposure into QML, Qt signal connections and C++ access to QML APIs | QML-04b after QML-00; resolved QML-04a joins after QML-02; QML-04c after QML-03, QML-04a and QML-04b; metadata joins finish with QML-05 | QML-008, QML-016, QML-017, QML-010, QML-012, QML-014, QML-015 |
-| QML-05 | Enrich modules and resources from static Qt project metadata | QML-02; enrich QML-04 when available | QML-002, QML-004, QML-008, QML-009, QML-017, QML-010, QML-012, QML-014, QML-015 |
-| QML-06 | Guarantee dependency-aware update/watch/cache parity | QML-03, QML-04, QML-05 | QML-002, QML-011, QML-016, QML-017, QML-010, QML-012, QML-014, QML-015 |
-| QML-07 | Verify consumers, publish support matrix and prepare upstream release | QML-00 through QML-06 | QML-013, QML-014, QML-015; regression of all requirements |
+| INC-QML-00 | Existing-PR review, reproducible baseline and accepted parser decision | Foundation review | REQ-QML-001, REQ-QML-010, REQ-QML-012, REQ-QML-014, REQ-QML-015 |
+| INC-QML-01 | Discover `.qml` and extract minimal source-backed declarations | INC-QML-00 | REQ-QML-001, REQ-QML-002, REQ-QML-003, REQ-QML-010, REQ-QML-011, REQ-QML-012, REQ-QML-013, REQ-QML-014, REQ-QML-015 |
+| INC-QML-02 | Resolve explicit QML modules, local components and scoped names | INC-QML-01 | REQ-QML-002, REQ-QML-004, REQ-QML-005, REQ-QML-010, REQ-QML-012, REQ-QML-014, REQ-QML-015 |
+| INC-QML-03 | Model bindings, aliases, JavaScript and signal relationships | INC-QML-02 | REQ-QML-006, REQ-QML-007, REQ-QML-010, REQ-QML-012, REQ-QML-014, REQ-QML-015 |
+| INC-QML-04 | C++ exposure into QML, Qt signal connections and C++ access to QML APIs | INC-QML-04b after INC-QML-00; resolved INC-QML-04a joins after INC-QML-02; INC-QML-04c after INC-QML-03, INC-QML-04a and INC-QML-04b; metadata joins finish with INC-QML-05 | REQ-QML-008, REQ-QML-016, REQ-QML-017, REQ-QML-010, REQ-QML-012, REQ-QML-014, REQ-QML-015 |
+| INC-QML-05 | Enrich modules and resources from static Qt project metadata | INC-QML-02; enrich INC-QML-04 when available | REQ-QML-002, REQ-QML-004, REQ-QML-008, REQ-QML-009, REQ-QML-017, REQ-QML-010, REQ-QML-012, REQ-QML-014, REQ-QML-015 |
+| INC-QML-06 | Guarantee dependency-aware update/watch/cache parity | INC-QML-03, INC-QML-04, INC-QML-05 | REQ-QML-002, REQ-QML-011, REQ-QML-016, REQ-QML-017, REQ-QML-010, REQ-QML-012, REQ-QML-014, REQ-QML-015 |
+| INC-QML-07 | Verify consumers, publish support matrix and prepare upstream release | INC-QML-00 through INC-QML-06 | REQ-QML-013, REQ-QML-014, REQ-QML-015; regression of initial REQ-QML-001–REQ-QML-017 |
+| INC-QML-08 | Harden installed-project adoption with evidenced source forms and typed context chains | INC-QML-07; public reproductions and bounded contract review | REQ-QML-018; reverify affected REQ-QML-004/REQ-QML-007/REQ-QML-008/REQ-QML-009/REQ-QML-011/REQ-QML-012/REQ-QML-013/REQ-QML-014/REQ-QML-015/REQ-QML-017 |
 
 Keep the existing increment numbers as stable scope identifiers; they do not
 require independent work to wait for every lower number. The QML lane follows
-QML-00, QML-01, QML-02 and QML-03. Native Qt C++ events in QML-04b can proceed
-after QML-00 establishes C++ identity and event-site projection contracts, without
+INC-QML-00, INC-QML-01, INC-QML-02 and INC-QML-03. Native Qt C++ events in INC-QML-04b can proceed
+after INC-QML-00 establishes C++ identity and event-site projection contracts, without
 waiting for QML parsing or JavaScript integration. Raw C++ exposure/access facts
 can also be developed early against those agreed interfaces; resolved joins have
 the prerequisites in the table.
 
-After QML-02 establishes the module-index contract, QML-05's independent metadata
-readers may proceed alongside QML-03 and the C++ work. Their bridge integration
-waits for QML-04a/04c facts. Minimal `qmldir` discovery belongs to QML-02. Simple
-literal-file access in QML-04c can precede QML-05; module-loaded components and qrc
-aliases finish with QML-05's index. This separates reader readiness from completed
+After INC-QML-02 establishes the module-index contract, INC-QML-05's independent metadata
+readers may proceed alongside INC-QML-03 and the C++ work. Their bridge integration
+waits for INC-QML-04a/INC-QML-04c facts. Minimal `qmldir` discovery belongs to INC-QML-02. Simple
+literal-file access in INC-QML-04c can precede INC-QML-05; module-loaded components and qrc
+aliases finish with INC-QML-05's index. This separates reader readiness from completed
 bridge integration and avoids a circular prerequisite.
 
 ```mermaid
 flowchart LR
-    baseline["QML-00: baseline and contracts"] --> declarations["QML-01: declarations"]
-    declarations --> modules["QML-02: modules and scope"]
-    modules --> interactions["QML-03: bindings, JS and handlers"]
-    baseline --> events["QML-04b: native Qt events"]
-    modules --> exposure["QML-04a: resolved C++ exposure"]
-    modules --> readers["QML-05: metadata readers"]
-    interactions --> access["QML-04c: QML object access"]
+    baseline["INC-QML-00: baseline and contracts"] --> declarations["INC-QML-01: declarations"]
+    declarations --> modules["INC-QML-02: modules and scope"]
+    modules --> interactions["INC-QML-03: bindings, JS and handlers"]
+    baseline --> events["INC-QML-04b: native Qt events"]
+    modules --> exposure["INC-QML-04a: resolved C++ exposure"]
+    modules --> readers["INC-QML-05: metadata readers"]
+    interactions --> access["INC-QML-04c: QML object access"]
     exposure --> access
     events --> access
-    readers --> joined["QML-05: module/resource bridge joins"]
+    readers --> joined["INC-QML-05: module/resource bridge joins"]
     access --> joined
     exposure --> joined
-    joined --> updates["QML-06: dependency-aware updates"]
+    joined --> updates["INC-QML-06: dependency-aware updates"]
     interactions --> updates
     events --> updates
-    updates --> release["QML-07: consumers and release evidence"]
+    updates --> release["INC-QML-07: consumers and release evidence"]
+    release --> adoption["INC-QML-08: installed-project adoption hardening (planned)"]
 ```
 
 ## Reviewable work packages
@@ -78,16 +89,17 @@ separate PR would expose a broken path or have no independently useful outcome.
 
 | Increment | Work packages | Demonstrable result |
 | --- | --- | --- |
-| QML-00 | Baseline/upstream overlap review; parser and syntax probe; fact/graph/update contracts | Reproducible parser choice and hand-checked corpus; no production admission |
-| QML-01 | Parser adapter and declarations; discovery/dispatch/packaging integration | A small QML file yields exact scoped declarations and spans, with safe failures and updates |
-| QML-02 | `qmldir` facts; URI/version/alias lookup; component/member scope | Equal names in different modules/components resolve correctly or remain ambiguous |
-| QML-03 | Bindings/aliases; embedded/imported JS; handlers and `Connections` | Property, call and signal dependencies preserve scope, source evidence and mechanism |
-| QML-04a | Meta-object/member overlay; literal procedural registration; declarative exports | QML references reach evidenced C++ APIs; build-derived module joins finish in QML-05 |
-| QML-04b | Declarations/emissions; typed/overloaded/lambda connections; legacy signatures/private slots/disconnect | Native C++ events remain distinct from direct calls, including ordinary compatible receivers |
-| QML-04c | Loader/root provenance; objectName/member access; context/initial providers and signal joins | C++ accesses the evidenced QML object/member; unknown or duplicate targets remain unresolved |
-| QML-05 | CMake/qmake module readers; `.qmltypes`; `.qrc`; bridge integration | Equivalent Qt 6 project forms resolve modules/resources and both bridge directions without execution |
-| QML-06 | Invalidation/reconstruction; watch integration; mutation/parity corpus | Updates equal clean rebuilds after QML, C++, resource and metadata changes |
-| QML-07 | Query/affected; export/MCP/callflow; install/release evidence and generated guidance | Users can inspect the verified dependency graph through advertised consumers |
+| INC-QML-00 | Baseline/upstream overlap review; parser and syntax probe; fact/graph/update contracts | Reproducible parser choice and hand-checked corpus; no production admission |
+| INC-QML-01 | Parser adapter and declarations; discovery/dispatch/packaging integration | A small QML file yields exact scoped declarations and spans, with safe failures and updates |
+| INC-QML-02 | `qmldir` facts; URI/version/alias lookup; component/member scope | Equal names in different modules/components resolve correctly or remain ambiguous |
+| INC-QML-03 | Bindings/aliases; embedded/imported JS; handlers and `Connections` | Property, call and signal dependencies preserve scope, source evidence and mechanism |
+| INC-QML-04a | Meta-object/member overlay; literal procedural registration; declarative exports | QML references reach evidenced C++ APIs; build-derived module joins finish in INC-QML-05 |
+| INC-QML-04b | Declarations/emissions; typed/overloaded/lambda connections; legacy signatures/private slots/disconnect | Native C++ events remain distinct from direct calls, including ordinary compatible receivers |
+| INC-QML-04c | Loader/root provenance; objectName/member access; context/initial providers and signal joins | C++ accesses the evidenced QML object/member; unknown or duplicate targets remain unresolved |
+| INC-QML-05 | CMake/qmake module readers; `.qmltypes`; `.qrc`; bridge integration | Equivalent Qt 6 project forms resolve modules/resources and both bridge directions without execution |
+| INC-QML-06 | Invalidation/reconstruction; watch integration; mutation/parity corpus | Updates equal clean rebuilds after QML, C++, resource and metadata changes |
+| INC-QML-07 | Query/affected; export/MCP/callflow; install/release evidence and generated guidance | Users can inspect the verified dependency graph through advertised consumers |
+| INC-QML-08 | Public adoption reproductions; project/native source compatibility; typed context chains; installed/update safety | Newly accepted ordinary project forms work through the installed CLI with accurate uncertainty and preserved prior data |
 
 One integration owner controls shared discovery, dispatch, registry, graph,
 cache/watch and resolver contracts. Parser, metadata, event and access contributors
@@ -96,9 +108,9 @@ C++ overlay one owner; event/access slices supply focused modules rather than
 concurrently editing its central integration file. Record ownership before work,
 review commits at handoff, and coordinate every Git mutation.
 
-The first useful QML slice is QML-01. Native Qt event analysis is a separate useful
-slice in QML-04b. Project-level mixed-language analysis needs QML-02/03/04/05;
-the release candidate also needs QML-06/07. Estimate elapsed effort after QML-00
+The first useful QML slice is INC-QML-01. Native Qt event analysis is a separate useful
+slice in INC-QML-04b. Project-level mixed-language analysis needs INC-QML-02/INC-QML-03/INC-QML-04/INC-QML-05;
+the release candidate also needs INC-QML-06/INC-QML-07. Estimate elapsed effort after INC-QML-00
 resolves parser packaging and reuse uncertainty, using those measured findings.
 
 ## Increment readiness and completion
@@ -137,43 +149,46 @@ Every acceptance criterion has one planned completion increment in
 partial evidence and later ones reverify affected contracts. This is a delivery
 assignment, not a change to the criterion or a claim that it passed. Cross-cutting
 criteria remain obligations in every affected PR, even when their complete
-mixed-language evidence is assigned to QML-06 or QML-07.
+mixed-language evidence is assigned to INC-QML-06 or INC-QML-07.
 
 | Requirement | Planned criterion completion |
 | --- | --- |
-| QML-001 | AC01/AC03/AC04: QML-01; AC02 complete supported-source corpus: QML-03 |
-| QML-002 | AC02/AC03 metadata/corpus boundaries: QML-05; AC01/AC04 entry-point parity: QML-06 |
-| QML-003 | AC01–AC04: QML-01 |
-| QML-004 | AC01–AC04: QML-02 |
-| QML-005 | AC01–AC04: QML-02; reverify added metadata visibility in QML-05 |
-| QML-006 | AC01–AC04: QML-03 |
-| QML-007 | AC01–AC04: QML-03; reverify C++ signal joins in QML-04/05 |
-| QML-008 | AC01–AC04: QML-05, following QML-04a source exposure |
-| QML-009 | AC01–AC04: QML-05 |
-| QML-010 | AC01–AC04: QML-07; graph correctness gates apply when each fact lands |
-| QML-011 | AC01–AC04: QML-06 |
-| QML-012 | AC01–AC04: QML-06; safe failure/persistence gates apply from QML-01 |
-| QML-013 | AC01–AC04: QML-07 |
-| QML-014 | AC01–AC04: QML-07; install/platform evidence starts in QML-00/01 |
-| QML-015 | AC01–AC04: QML-07; documentation/evidence gates apply in every PR |
-| QML-016 | AC01–AC03: QML-04b; AC04 full parity/consumer evidence: QML-07 |
-| QML-017 | AC01–AC03: QML-05 after QML-04c; AC04 full parity/consumer evidence: QML-07 |
+| REQ-QML-001 | AC01/AC03/AC04: INC-QML-01; AC02 complete supported-source corpus: INC-QML-03 |
+| REQ-QML-002 | AC02/AC03 metadata/corpus boundaries: INC-QML-05; AC01/AC04 entry-point parity: INC-QML-06 |
+| REQ-QML-003 | AC01–AC04: INC-QML-01 |
+| REQ-QML-004 | AC01–AC04: INC-QML-02 |
+| REQ-QML-005 | AC01–AC04: INC-QML-02; reverify added metadata visibility in INC-QML-05 |
+| REQ-QML-006 | AC01–AC04: INC-QML-03 |
+| REQ-QML-007 | AC01–AC04: INC-QML-03; reverify C++ signal joins in INC-QML-04/INC-QML-05 |
+| REQ-QML-008 | AC01–AC04: INC-QML-05, following INC-QML-04a source exposure |
+| REQ-QML-009 | AC01–AC04: INC-QML-05 |
+| REQ-QML-010 | AC01–AC04: INC-QML-07; graph correctness gates apply when each fact lands |
+| REQ-QML-011 | AC01–AC04: INC-QML-06 |
+| REQ-QML-012 | AC01–AC04: INC-QML-06; safe failure/persistence gates apply from INC-QML-01 |
+| REQ-QML-013 | AC01–AC04: INC-QML-07 |
+| REQ-QML-014 | AC01–AC04: INC-QML-07; install/platform evidence starts in INC-QML-00/INC-QML-01 |
+| REQ-QML-015 | AC01–AC04: INC-QML-07; documentation/evidence gates apply in every PR |
+| REQ-QML-016 | AC01–AC03: INC-QML-04b; AC04 full parity/consumer evidence: INC-QML-07 |
+| REQ-QML-017 | AC01–AC03: INC-QML-05 after INC-QML-04c; AC04 full parity/consumer evidence: INC-QML-07 |
+| REQ-QML-018 | AC01/AC02: INC-QML-08a; AC03/AC04: INC-QML-08b; AC05/AC06: INC-QML-08c; safety gates apply to every slice |
 
-The parser spike informs QML-001; production install/failure acceptance closes in
-QML-01 and the complete supported syntax/declaration corpus in QML-03. Parsing
+The parser spike informs REQ-QML-001; production install/failure acceptance closes in
+INC-QML-01 and the complete supported syntax/declaration corpus in INC-QML-03. Parsing
 success alone cannot replace those production-boundary assertions.
-All named metadata and their corpus boundaries close in QML-05. Exposure and
-resource/module-backed access close in QML-05 after the QML-04 source slices.
-Native event syntax closes in QML-04b, while QML-016-AC04 and QML-017-AC04 need
-incremental and consumer evidence before closing in QML-07. The final release gate
-rechecks all sixty-eight criteria for the advertised matrix.
+All named metadata and their corpus boundaries close in INC-QML-05. Exposure and
+resource/module-backed access close in INC-QML-05 after the INC-QML-04 source slices.
+Native event syntax closes in INC-QML-04b, while REQ-QML-016-AC04 and REQ-QML-017-AC04 need
+incremental and consumer evidence before closing in INC-QML-07. The final release gate
+rechecks all sixty-eight initial-profile criteria for the advertised matrix.
+INC-QML-08 adds six separately planned criteria and reverifies affected original
+contracts; existing passes do not establish the expanded adoption profile.
 
 The primary acceptance profiles are ordinary Qt 6.5 and Qt 6.8 source/metadata,
 as specified in ARCHITECTURE. Both CMake and qmake project forms are required for
 the first Qt 6 target. Literal procedural registration is also part of Qt 6 bridge
 support; neither qmake nor procedural registration is restricted to legacy Qt.
 Qt 5.15 is a separate legacy compatibility profile with separately reviewed PRs
-within QML-02, QML-04 and QML-05. Parsing common versioned-import syntax earlier
+within INC-QML-02, INC-QML-04 and INC-QML-05. Parsing common versioned-import syntax earlier
 does not establish that profile's semantic support. Record module import versions
 separately from the Qt release used to define a fixture.
 
@@ -198,7 +213,7 @@ All paths below are relative to the repository root. Proposed new test files and
 fixture directories are deliberately named so work can start without inventing
 the test layout. Adapt names to an upstream-reviewed convention while retaining
 the acceptance-criterion mapping. Every requirement has individually assigned
-criterion IDs in REQUIREMENTS, such as `QML-003-AC01` through `QML-003-AC04`.
+criterion IDs in REQUIREMENTS, such as `REQ-QML-003-AC01` through `REQ-QML-003-AC04`.
 Before starting an increment, list all affected criterion IDs and map each one to
 a concrete fixture/action/observable result and an exact automated test, or to an
 explicit manual/system verification gap. Dedicated tests should use criterion
@@ -217,7 +232,7 @@ scope change in the requirement rather than silently treating it as a pass.
 Establish a pinned development environment with `uv sync --frozen`. If a PR changes
 dependencies, deliberately regenerate and review `uv.lock` first; a frozen command
 must not be used to pretend that an old lock covers a new dependency. Use the
-selected QML extra after QML-00 accepts its packaging contract. Do not substitute
+selected QML extra after INC-QML-00 accepts its packaging contract. Do not substitute
 live Qt execution or model calls for deterministic offline parser tests.
 
 Before handoff, execute the increment's focused tests and the following applicable
@@ -251,24 +266,26 @@ explained before completion; unchanged aggregate coverage does not settle them.
 
 Every new fact shape must pass extraction, graph-build and JSON reload assertions
 when introduced. Event/access packages also demonstrate their minimal query and
-affected behavior before claiming usability. QML-07 expands that coverage to the
+affected behavior before claiming usability. INC-QML-07 expands that coverage to the
 complete advertised consumer matrix; it does not defer basic graph correctness.
 
 Before enabling an update/watch path, implement and test its conservative full-
 project resolution/rebuild fallback or reject the unsupported operation before
 mutating graph/cache state. Test deletion, failed extraction and stale-edge removal
 at each newly enabled boundary. A warning or support note cannot justify leaving
-an enabled path known to produce stale results. QML-06 improves invalidation and
+an enabled path known to produce stale results. INC-QML-06 improves invalidation and
 establishes full parity after this safety baseline.
 
-## QML-00 — Baseline and parser decision
+<a name="qml-00--baseline-and-parser-decision"></a>
+
+## INC-QML-00 — Baseline and parser decision
 
 **Status: complete for optional parser selection (3 October 2026).** See the
 [parser decision and executed evidence](PARSER_DECISION.md). Linux/macOS lanes
 remain unverified; this does not authorize default-installed parser promotion.
-The review adds **QML-01a** (write/cache safety) and **QML-01b** (declarations,
-admission and installation) as required QML-01 work packages. A dedicated semantic
-qmldir parser and nonlossy, immutable fact transport are mandatory in QML-02.
+INC-QML-01 includes **INC-QML-01a** (write/cache safety) and **INC-QML-01b** (declarations,
+admission and installation) as required INC-QML-01 work packages. A dedicated semantic
+qmldir parser and nonlossy, immutable fact transport are mandatory in INC-QML-02.
 Production acceptance criteria remain open until exercised through production.
 
 **Scope and code paths.** First inspect the current exact head of PR #1748 without
@@ -324,7 +341,7 @@ Verify installation and parser invocation on Python 3.10, 3.12, 3.13, and 3.14,
 matching upstream's current Python CI matrix; include Windows x64, Linux, and
 macOS compatibility evidence or record each unsupported/unverified combination.
 Build a syntax matrix using version-tagged source fixtures rather than claiming
-runtime support for all Qt releases. Pin the supported syntax subset before QML-01.
+runtime support for all Qt releases. Pin the supported syntax subset before INC-QML-01.
 
 Use focused packaging/probe jobs for additional platforms; the audited workflow
 currently covers Ubuntu and does not prove Windows/macOS support. Advertise only
@@ -353,12 +370,14 @@ production extraction if that makes review clearer. A missing cross-platform
 wheel or incompatible ABI blocks promotion to default-installed support; document
 an optional extra or defer instead of silently adding a compiler requirement.
 
-## QML-01 — Discovery and minimal declarations
+<a name="qml-01--discovery-and-minimal-declarations"></a>
 
-**Status: QML-01a/01b complete for the declared Windows optional profile.** See
-[implementation evidence](IMPLEMENTATION.md). Review retains QML-02/03 semantic
+## INC-QML-01 — Discovery and minimal declarations
+
+**Status: INC-QML-01a/INC-QML-01b complete for the declared Windows optional profile.** See
+[implementation evidence](IMPLEMENTATION.md). INC-QML-02/INC-QML-03 require semantic
 validation, immutable context and independent use sites. No new top-level
-increment is needed; QML-06 still owns cache optimization.
+increment is needed; INC-QML-06 still owns cache optimization.
 
 **Scope and code paths.** Add `graphify/extractors/qml.py` with an isolated parser
 adapter and QML facts as necessary. Integrate `graphify/detect.py`, the public
@@ -372,7 +391,7 @@ existing contracts. Add `tests/test_qml_extract.py` and
 Extract file/component declarations, nested object scopes, `id` declarations,
 properties, signal declarations, and method declarations with source ranges.
 Record imports as raw facts or import records without guessing a target. Method
-bodies and bindings remain opaque source facts until QML-03. A declared property
+bodies and bindings remain opaque source facts until INC-QML-03. A declared property
 alias may be recognized here while its target relationship remains unsupported.
 Keep QML semantic information in `metadata.qml` and the versioned fact contract
 specified in DESIGN. Represent `id` as component-local identity, not an ordinary
@@ -399,24 +418,26 @@ uv run --frozen python -X utf8 -m pytest tests/test_qml_extract.py tests/test_de
 public fixtures, dependency packaging, extraction validation, a cold/warm smoke
 test, and an honest declarations-only support note. Do not ship discovery alone
 that routes QML into an unusable extractor. Existing zero-node/shrink/cache guards
-must apply. Until QML-06, resolver-changing input must use a tested safe full
+must apply. Until INC-QML-06, resolver-changing input must use a tested safe full
 project resolution/rebuild path or be rejected before writes. Include admission,
 edit, deletion and forced parser/write failure evidence for the enabled update and
 watch paths; a known stale-graph path must not remain enabled with only a warning.
 
-QML-001-AC01 also requires a clean built-wheel installation with the selected QML
+REQ-QML-001-AC01 also requires a clean built-wheel installation with the selected QML
 extra and production parser invocation on every declared lane. Extend the existing
 wheel-packaging coverage and use isolated install/probe jobs; source-tree imports
-or QML-00's experimental adapter are insufficient. Test a core-only installation
-without that extra. QML-001-AC02 stays open until QML-03's production adapter passes
+or INC-QML-00's experimental adapter are insufficient. Test a core-only installation
+without that extra. REQ-QML-001-AC02 stays open until INC-QML-03's production adapter passes
 the complete declared syntax/declaration/span corpus, including embedded JS forms.
 
-## QML-02 — Modules and component scope
+<a name="qml-02--modules-and-component-scope"></a>
 
-**Status: complete for the documented static profile.** Review adds **QML-02a** semantic
-qmldir, **QML-02b** immutable module/member indexes and **QML-02c** transport,
+## INC-QML-02 — Modules and component scope
+
+**Status: complete for the documented static profile.** Work packages cover **INC-QML-02a** semantic
+qmldir, **INC-QML-02b** immutable module/member indexes and **INC-QML-02c** transport,
 producer provenance and provider-only refresh parity. These follow the existing
-letter-suffix numbering; all must pass to close QML-02. No new top-level increment.
+letter-suffix numbering; all must pass to close INC-QML-02. No new top-level increment.
 
 **Scope and code paths.** Add `graphify/qml_resolution.py` and focused
 `graphify/extractors/qml_metadata.py`, with registry integration through
@@ -457,31 +478,33 @@ is a separate PR from later binding/call semantics. Keep the module-index contra
 small enough for C++ and project metadata enrichment without a generic resolver
 rewrite. No global same-name fallback or implicit Qt SDK scan.
 
-## QML-03 — Bindings, aliases, JavaScript and signals
+<a name="qml-03--bindings-aliases-javascript-and-signals"></a>
 
-**Status: complete for the documented static profile.** QML-001-AC02 and all
-QML-006/007 criteria pass production fixtures. Actual tests are in
+## INC-QML-03 — Bindings, aliases, JavaScript and signals
+
+**Status: complete for the documented static profile.** REQ-QML-001-AC02 and all
+REQ-QML-006/REQ-QML-007 criteria pass production fixtures. Actual tests are in
 test_qml_syntax_profile.py, test_qml_expressions.py, test_qml_handlers.py,
 test_qml_scripts.py, test_qml_adversarial.py and the graph/persistence suites.
 See [implementation evidence](IMPLEMENTATION.md); proposed names below describe
 the initial planning contract and are superseded by those actual owners.
 
-Review added **QML-03a** held-object/array/template declarations, **QML-03b**
-lexical expressions/aliases/handlers and **QML-03c** accepted-script overlays,
+INC-QML-03 comprises **INC-QML-03a** held-object/array/template declarations, **INC-QML-03b**
+lexical expressions/aliases/handlers and **INC-QML-03c** accepted-script overlays,
 generic-JS isolation, typed cross-family proof and durable edge direction. All
 three work packages are delivered. Regression discoveries include lexical-list
 truncation, duplicate anonymous Connections, inherited signal parameters,
 mixed Connections handler styles, alias cycles, module export roles and missing
 script-file endpoint proof. Separate source sites retain repeated relationships.
 
-No new top-level increment is needed. Add **QML-06a** source/metadata/script/C++
-mutation parity and **QML-06b** bounded parser/config/import-root cache contracts;
-add **QML-07a** direction/evidence across every advertised consumer and **QML-07b**
+No new top-level increment is needed. Add **INC-QML-06a** source/metadata/script/C++
+mutation parity and **INC-QML-06b** bounded parser/config/import-root cache contracts;
+add **INC-QML-07a** direction/evidence across every advertised consumer and **INC-QML-07b**
 hosted installation/profile evidence and upstream review. These refine existing
-increments, preserving QML-00 through QML-07 and QML-04a/04b/04c numbering.
+increments, preserving INC-QML-00 through INC-QML-07 and INC-QML-04a/INC-QML-04b/INC-QML-04c numbering.
 Runtime contexts, framework members, reexports and name-based template barriers
-remain documented conservative limits. Native C++ work advances in QML-04 next;
-build/resource/type-description enrichment remains QML-05.
+remain documented conservative limits. Native C++ work advances in INC-QML-04 next;
+build/resource/type-description enrichment remains INC-QML-05.
 
 **Scope and code paths.** Extend focused QML extraction/resolution modules, reusing
 existing JavaScript AST helpers only through a narrow adapter that preserves QML
@@ -516,7 +539,9 @@ support matrix for dynamic limitations. No execution of user expressions, no
 wholesale reuse of JavaScript resolution without QML scope context, and no claim
 of complete runtime signal tracing.
 
-## QML-04 — Qt/C++ exposure, signals and access to QML
+<a name="qml-04--qtc-exposure-signals-and-access-to-qml"></a>
+
+## INC-QML-04 — Qt/C++ exposure, signals and access to QML
 
 **Scope and code paths.** Add a source-overlay module such as
 `graphify/extractors/qt_cpp.py`, enriching existing C++ declarations rather than
@@ -529,18 +554,18 @@ Add `tests/test_qt_cpp_bridge.py`, `tests/test_qt_signals_slots.py`,
 
 Keep three focused PR boundaries without renumbering the surrounding increments:
 
-- **QML-04a:** C++ types/members exposed into QML, advancing QML-008 with
-  registration/member evidence; complete module-derived acceptance in QML-05.
-- **QML-04b:** Qt C++ signal declarations, emissions and explicit connections,
-  completing `QML-016-AC01` through `QML-016-AC03` and the source/graph part of
-  `QML-016-AC04`; its full incremental/consumer criterion closes in QML-07.
-- **QML-04c:** C++ consumers of QML objects, functions, properties and signals,
-  advancing all QML-017 criteria; complete module/resource-backed AC01–AC03 in
-  QML-05 and full incremental/consumer AC04 in QML-07.
+- **INC-QML-04a:** C++ types/members exposed into QML, advancing REQ-QML-008 with
+  registration/member evidence; complete module-derived acceptance in INC-QML-05.
+- **INC-QML-04b:** Qt C++ signal declarations, emissions and explicit connections,
+  completing `REQ-QML-016-AC01` through `REQ-QML-016-AC03` and the source/graph part of
+  `REQ-QML-016-AC04`; its full incremental/consumer criterion closes in INC-QML-07.
+- **INC-QML-04c:** C++ consumers of QML objects, functions, properties and signals,
+  advancing all REQ-QML-017 criteria; complete module/resource-backed AC01–AC03 in
+  INC-QML-05 and full incremental/consumer AC04 in INC-QML-07.
 
 Each sub-PR must map every affected criterion to its own observable assertions and
-traceability evidence. Later QML-06 verifies invalidation of these facts, and
-QML-07 verifies their query/export/MCP projection. Criterion-level status remains
+traceability evidence. Later INC-QML-06 verifies invalidation of these facts, and
+INC-QML-07 verifies their query/export/MCP projection. Criterion-level status remains
 unverified for those later obligations until their evidence exists.
 
 Begin with statically identifiable `Q_OBJECT`, `Q_PROPERTY`, signals/slots,
@@ -551,7 +576,7 @@ and scope limits; uncertain ownership must remain inferred/unresolved. Use
 `uses`/`references` and `qml_cpp_member` context first. Concrete cross-language
 `calls` require narrowly validated registration/member evidence and dedicated
 negative tests before extending a guard. QML_ELEMENT module URI enrichment that
-requires build metadata remains pending until QML-05.
+requires build metadata remains pending until INC-QML-05.
 
 **Acceptance cases.** A QML property or method reference links only to the registered
 class/member in the correct URI/version/registration scope. Test declaration and
@@ -565,7 +590,7 @@ Missing generated metadata or plugin binaries does
 not trigger execution, an SDK scan or a guessed linkage. Removing or renaming a
 registration on a C++-only change must reach the safe rebuild path.
 
-**Qt signal/connect/slot acceptance cases (QML-016).** Retain signal and slot
+**Qt signal/connect/slot acceptance cases (REQ-QML-016).** Retain signal and slot
 declarations/signatures and distinguish an emission from an ordinary method call.
 Cover `signals`, `Q_SIGNALS`, `Q_SIGNAL`, slot access sections, `Q_SLOTS`, `Q_SLOT`,
 and both `emit` and `Q_EMIT` forms with original source spans.
@@ -603,13 +628,13 @@ graph. Ordinary direct slot calls, emit sites, connect sites and disconnect site
 must remain distinguishable after build/export/query/affected and incremental
 updates.
 
-QML-04b must also pass on a Qt C++-only corpus with no `.qml` files and no optional
+INC-QML-04b must also pass on a Qt C++-only corpus with no `.qml` files and no optional
 QML parser installed. Activation cannot depend on a QML suffix or parser presence.
 Unrelated APIs named `connect` or `emit` must not acquire Qt event relationships.
 This independent acceptance case enables useful native Qt support in parallel
 with the QML lane.
 
-**C++ access to QML acceptance cases (QML-017).** Collect literal `load` and
+**C++ access to QML acceptance cases (REQ-QML-017).** Collect literal `load` and
 `loadFromModule` requests and `QQmlComponent` creation as access/creation facts with
 the owning engine/component. Include the common Qt Quick `QQuickView::setSource`
 and `rootObject` loader/access profile with its owning view. Track bounded
@@ -622,7 +647,7 @@ property reads/writes against the declared member, and C++ connections to declar
 QML signals separately from ordinary direct calls. Also preserve exposed C++ signal
 to QML-handler relationships in the appropriate receiver scope. Supported literal
 `setContextProperty`, `setContextObject` and initial-property exposure carry their
-provider, engine/component and provenance facts; reuse QML-04a's exposure model
+provider, engine/component and provenance facts; reuse INC-QML-04a's exposure model
 instead of creating competing definitions. Conditional or dynamic exposure remains
 visibly uncertain. Annotate static access intent
 without claiming object creation, lookup, mutation, invocation or signal delivery
@@ -636,7 +661,7 @@ overloads, read-only/unknown members, and QML signal-to-C++ slot connections.
 Include C++ signal-to-QML handler cases and literal/dynamic context-property,
 context-object and initial-property exposure variants.
 Uncertain loader paths or receiver provenance remain unresolved. Resource aliases
-and module URI/export mappings consume QML-05's index instead of a global basename
+and module URI/export mappings consume INC-QML-05's index instead of a global basename
 search. Never instantiate an engine, create a component or load a plugin to resolve
 these source relationships.
 Qt Quick Widgets loaders remain an explicitly deferred, separately reviewed
@@ -667,18 +692,20 @@ uv run --frozen python -X utf8 -m pytest tests/test_qt_cpp_bridge.py tests/test_
 broader bridge behavior if appropriate. Preserve existing C++ extraction and guards.
 Every concrete exposure bridge edge has source-backed registration and member
 evidence; connection/access edges have source-backed endpoint and object-flow
-evidence. Confidence matches the actual claim. Review QML-016/QML-017 criteria
+evidence. Confidence matches the actual claim. Review REQ-QML-016/REQ-QML-017 criteria
 individually, including negative paths and distinct relation preservation. No
 unrestricted name-based bridge or runtime event scheduling inference. Runtime
 contexts, plugins and dynamic registrations remain documented gaps. Metadata-only
-or C++-only changes use the conservative safe rebuild path until QML-06 proves
-targeted invalidation; metadata-backed access cases finish with QML-05 integration.
+or C++-only changes use the conservative safe rebuild path until INC-QML-06 proves
+targeted invalidation; metadata-backed access cases finish with INC-QML-05 integration.
 
-## QML-05 — Build, module and resource metadata
+<a name="qml-05--build-module-and-resource-metadata"></a>
+
+## INC-QML-05 — Build, module and resource metadata
 
 **Scope and code paths.** Extend `qml_metadata.py` or separate focused Qt project
 readers for `CMakeLists.txt`/`.cmake`, `.pro`/`.pri`, `.qrc`, `qmldir` and
-`.qmltypes`. Reuse discovery and ignore boundaries from QML-02; inspect existing
+`.qmltypes`. Reuse discovery and ignore boundaries from INC-QML-02; inspect existing
 `graphify/manifest.py`, `graphify/manifest_ingest.py`, `graphify/detect.py`,
 `graphify/extract.py`, and watch recognition. Add
 `tests/test_qt_project_metadata.py`, `tests/test_qt_resource_resolution.py`, and
@@ -703,7 +730,7 @@ resource paths escaping the approved corpus. XML readers must not resolve extern
 entities. A project with no Qt commands must not gain fabricated Qt modules.
 Generated `.qmltypes` cannot overwrite real source provenance. `.qrc` or build
 metadata-only changes trigger safe resolution before optimized invalidation exists.
-Loader/access facts from QML-04c must resolve the same intended component through
+Loader/access facts from INC-QML-04c must resolve the same intended component through
 literal file/resource URLs and accepted `loadFromModule` URI/type mappings; missing
 or conflicting metadata must not select an unrelated equal-name component.
 
@@ -719,7 +746,9 @@ Every supported construct has an explicit static policy and unresolved fallback.
 No implicit build execution, external traversal or unconditional generated-source
 indexing. Metadata enriches QML/C++ indexes without redefining Graphify's build.
 
-## QML-06 — Incremental updates, watch and caches
+<a name="qml-06--incremental-updates-watch-and-caches"></a>
+
+## INC-QML-06 — Incremental updates, watch and caches
 
 **Scope and code paths.** Integrate accepted fact/index contracts with
 `graphify/cache.py`, `graphify/manifest.py`, `graphify/watch.py`, the CLI's incremental
@@ -750,7 +779,7 @@ checkout relocation and custom output directories. Watch batches recognize named
 files and preserve existing debounce/locking/retry rules. Unsupported or partial
 re-extraction cannot erase valid prior graph state or poison caches. Edge removal
 and repointing are verified even when total node count remains unchanged.
-For `QML-016-AC04` and `QML-017-AC04`, mutate a signal/slot signature, connection or
+For `REQ-QML-016-AC04` and `REQ-QML-017-AC04`, mutate a signal/slot signature, connection or
 disconnect declaration, QML `objectName`/function/property, loader URL/module,
 resource mapping and C++ context/initial-property provider. Verify both integration
 directions equal a clean rebuild, while preserving distinct direct-call, emission,
@@ -769,7 +798,9 @@ Record invalidation cost and cache-hit/reparse evidence on the public fixture
 corpus; do not invent a performance target before measuring the baseline. Remove
 the earlier conservative full-rebuild limitation only after these cases pass.
 
-## QML-07 — Consumers, support matrix and upstream delivery
+<a name="qml-07--consumers-support-matrix-and-upstream-delivery"></a>
+
+## INC-QML-07 — Consumers, support matrix and upstream delivery
 
 **Scope and code paths.** Audit and extend only the consumers that need explicit
 Qt/QML behavior: `graphify/cli.py`, `graphify/affected.py`, `graphify/analyze.py`,
@@ -797,7 +828,7 @@ of QML members. Query/affected, JSON/export reload and MCP must preserve source
 direction, `metadata.qt.bridge_direction` and scoped object provenance, and
 distinguish direct calls from emitted signals, declared connections,
 disconnect statements and property access. Explicitly exercise the consumer parts
-of `QML-016-AC04` and `QML-017-AC04`; diagram visibility alone is insufficient.
+of `REQ-QML-016-AC04` and `REQ-QML-017-AC04`; diagram visibility alone is insufficient.
 
 Publish a matrix with syntax/version fixtures, module forms, build/resource forms,
 bridge evidence, incremental behavior, consumer formats and installation platforms.
@@ -830,7 +861,7 @@ with unrestricted QML runtime understanding or accepted upstream integration.
 
 ## First executable task and rollout
 
-Start with QML-00 on a focused branch from an agreed base containing the reviewed
+Start with INC-QML-00 on a focused branch from an agreed base containing the reviewed
 foundation documents and current upstream `v8` changes. Preserve predecessor work
 and record both the foundation revision and upstream source SHA. Keep foundation
 policy/documentation changes distinct from parser production changes when preparing
@@ -862,7 +893,7 @@ that lacks them. Its ready specification is:
    a reviewable PR. No production dispatch changes are required to accept the
    spike. Failed packaging or syntax gates return to the decision; they do not
    become undocumented extraction heuristics.
-6. After review, implement QML-01 as the next PR with minimal declaration extraction
+6. After review, implement INC-QML-01 as the next PR with minimal declaration extraction
    and an explicitly bounded support claim. Expand the subset one increment at a
    time. Keep each later capability disabled, unresolved or accurately documented
    until its acceptance cases and consumer behavior are verified.
@@ -874,30 +905,34 @@ upstream semantic layer. A feature is ready for wider rollout when its advertise
 matrix has evidence; remaining unsupported runtime behavior is part of the public
 contract, not a reason to fabricate relationships.
 
-QML-00 through QML-07 are complete within the accepted static profile.
+INC-QML-00 through INC-QML-07 are complete within the accepted static profile.
 Implementation and validation evidence are recorded in IMPLEMENTATION.md and
 VALIDATION.md. Upstream submission/maintainer acceptance is a separate action.
 
 
-## QML-04 review and continuation
+<a name="qml-04-review-and-continuation"></a>
 
-Retain QML-00..07 and all existing acceptance IDs. QML-04a includes original-byte
+## INC-QML-04 review and continuation
+
+Retain INC-QML-00..INC-QML-07 and all existing acceptance IDs. INC-QML-04a includes original-byte
 annotation normalization and final canonical ID lookup, after a production fixture
-exposed an omitted invokable. QML-04c includes exact loader/owner scope and supplied
+exposed an omitted invokable. INC-QML-04c includes exact loader/owner scope and supplied
 provider evidence; QML id/objectName, dynamic URLs, duplicate providers, revised
 members and unsupported foreign mappings remain explicit boundaries. Reader/index
-foundations may ship internally in QML-04; public admission is still QML-05.
+foundations may ship internally in INC-QML-04; public admission is still INC-QML-05.
 
-No additional top-level increment is required by this review. QML-05 activates
-literal metadata and bridge joins; QML-06a proves mutation parity and QML-06b proves
-parser/configuration/ignore compatibility. The user has authorized continuing
-through QML-07a consumer proof and QML-07b hosted packaging/documentation evidence.
-QML-07 is the intended completion of this documented static scope. If a promised
+Within the initial profile, INC-QML-05 activates
+literal metadata and bridge joins; INC-QML-06a proves mutation parity and INC-QML-06b proves
+parser/configuration/ignore compatibility. INC-QML-07a covers consumer proof and
+INC-QML-07b covers hosted packaging/documentation evidence.
+INC-QML-07 is the intended completion of this documented static scope. If a promised
 criterion cannot close there, record its gap and a required follow-on increment;
 dynamic runtime/plugin/widget extensions are separate future scope.
 
 
-## QML-05 review
+<a name="qml-05-review"></a>
+
+## INC-QML-05 review
 
 Public discovery, dispatch and root forwarding now admit exact CMakeLists.txt,
 .cmake, .pro/.pri, .qrc and .qmltypes. Module membership joins declarative native
@@ -906,12 +941,14 @@ facade regressions exposed generic namespace canonicalization merging independen
 metadata declarations and resource occurrences; versioned Qt/QML source facts now
 retain their original identities. Duplicate providers/aliases remain ambiguous.
 
-QML-06 retains ignore/configuration refresh and last-provider cleanup obligations.
-No extra top-level increment is needed. QML-07 remains the final documented static
+INC-QML-06 retains ignore/configuration refresh and last-provider cleanup obligations.
+No extra top-level increment is needed. INC-QML-07 remains the final documented static
 scope gate, with runtime behavior explicitly outside the supported profile.
 
 
-## QML-06 review
+<a name="qml-06-review"></a>
+
+## INC-QML-06 review
 
 Accepted Qt source/provider/configuration changes conservatively refresh the live
 accepted code corpus. Ordered import roots reach both production QML resolver
@@ -923,36 +960,40 @@ Qt canonical declarations without changing ordinary C++ portable caching. Native
 Qt subfolder updates reject unsafe scope-ID rebasing before publication.
 
 All remaining consumer/export/MCP, guidance and fresh hosted proof obligations
-fit QML-07a/07b. No additional top-level increment is currently required. A bounded
+fit INC-QML-07a/INC-QML-07b. No additional top-level increment is currently required. A bounded
 static analysis profile is the completion claim; runtime-generated behavior stays
 explicitly unsupported rather than acquiring guessed links.
 
 
-## QML-07 implementation review
+<a name="qml-07-implementation-review"></a>
 
-Real consumer review required three corrections within QML-07a: propagate affected
+## INC-QML-07 implementation review
+
+INC-QML-07a propagates affected
 Qt occurrence dependencies to their proven owners (including canonical C++ header/
-implementation pairs), retain source/event evidence in HTML and path output, and
-make decoded semantic search bounded and identical through CLI and optional MCP.
+implementation pairs), retains source/event evidence in HTML and path output, and
+keeps decoded semantic search bounded and identical through CLI and optional MCP.
 Database transports retain exact metadata and logical endpoints; reserved field
 collisions reject before file publication or driver creation. Export omissions
 and report source-coverage limits are explicit in EXPORT_MATRIX.md.
 
-QML-07b updates the authoritative assistant fragments and all generated artifacts,
+INC-QML-07b updates the authoritative assistant fragments and all generated artifacts,
 executes real rendered publication safety/configuration examples, and adds installed
-native CMake/resource bridge smoke. The final regression review adds explicit real
+native CMake/resource bridge smoke. Production regression coverage includes
 normal-QML-edit/manual/watch parity and no-change preservation evidence for the
-existing QML-011 criteria. All work fits the existing QML-07a/07b packages.
+existing REQ-QML-011 criteria. All work fits the existing INC-QML-07a/INC-QML-07b packages.
 
-No QML-08 is needed for the agreed initial static profile. QML-07 closes only after
-the remaining gates pass. Runtime-created registrations/objects, computed lookup,
+INC-QML-07 is the completion gate for the initial static profile; each applicable
+gate must pass before closure. Runtime-created registrations/objects, computed lookup,
 framework/plugin internals, arbitrary build execution, legacy Qt profiles and
 additional platform architectures would require separate agreed increments.
 Completion here prepares reviewable fork PRs; upstream maintainer acceptance and
 an actual upstream merge remain separate delivery actions.
 
 
-## Final QML-07 acceptance review
+<a name="final-qml-07-acceptance-review"></a>
+
+## Final INC-QML-07 acceptance review
 
 All68 existing acceptance criteria have executed evidence for the declared bounded
 profile. Real manual/watch edits cover native event changes/removal and reverse
@@ -961,10 +1002,123 @@ accepted facts. Clean installed optional/core wheel smoke and the twelve hosted
 OS/Python artifact lanes pass, alongside four full Ubuntu source lanes. Source
 policy checks retain their frozen Git history and all generated guidance guards.
 
-No additional increment is required for the agreed initial Qt6/QML scope.
-QML-07 completes the fork implementation and reviewable delivery preparation.
+No additional increment was required to close the agreed initial Qt6/QML scope.
+INC-QML-07 completes the fork implementation and reviewable delivery preparation.
 Runtime-generated registrations/objects, computed targets, arbitrary build/plugin
 execution, additional Qt/platform profiles and live database systems remain
 explicit limits or separately agreed future work. Upstream Graphify acquires this
 implementation when its maintainers accept and merge the change; no upstream
 merge, package publication or Qt application execution is claimed here.
+
+<a name="qml-08--installed-project-adoption-hardening"></a>
+
+## INC-QML-08 — Installed-project adoption hardening
+
+**Status: In progress; partially implemented.** Owner: Qt/QML integration
+maintainer. The native source slice is locally implemented; project metadata,
+provider/service chains and combined adoption acceptance remain incomplete.
+Agree disjoint file/behavior ownership before each remaining implementation slice.
+Prerequisite: the saved INC-QML-07 implementation and its revision-specific proof.
+Adoption trials found source forms not represented by the accepted public corpus:
+project-relative qmake expansion and conditional/irrelevant build statements,
+native declaration/macro parse failures, typed factory/member context providers,
+and context-provider signal/child-service chains. A passing installed synthetic
+fixture does not establish whole-project compatibility. Record only generic public
+reproductions and redacted conclusions; retain project evidence outside the public
+repository. Local syntax proof does not establish the full adoption profile.
+
+| Package | Scope and acceptance | Dependency and exit |
+| --- | --- | --- |
+| INC-QML-08a | Minimize source/build failures; support agreed valid declaration/macro forms and bounded qmake path facts; REQ-QML-018-AC01/AC02, safety portions of AC06 | After INC-QML-07. Exit with public hand-checked success/malformed/uncertain fixtures, original-byte spans and agreed diagnostic/publication policy |
+| INC-QML-08b | Resolve statically typed factory/member context providers and typed child-service API/signal chains; REQ-QML-018-AC03/AC04, safety portions of AC06 | Reproductions may proceed alongside 08a; resolved joins depend on its accepted declaration/type contracts. Exit with canonical scoped endpoints and persisted consumer evidence, including negative controls |
+| INC-QML-08c | Exercise the combined profile through a clean installed optional wheel and production updates; REQ-QML-018-AC05/AC06 | After 08a/08b. Exit with whole-project/safe-subroot source/artifact parity, failure retention/recovery, mutation/idempotency and affected platform/consumer evidence |
+
+Before code changes, make each suspected product failure a public minimal
+reproduction at its lowest faithful parser, reader or resolver boundary. Separate
+valid syntax unsupported by the adapter from malformed input and unresolved
+relationships. Do not bypass syntax or publication guards to obtain a graph.
+For native failures record the smallest declaration/macro shape, parser version,
+expected AST/facts and original byte ranges; do not presume file size is the cause.
+Initial focused cases are empty-brace parameter defaults and `Q_UNUSED` use without
+a caller semicolon. Those cases and numeric digit separators now retain original
+byte spans and later signal ownership through the source parser/facade, with
+malformed controls rejected. The focused local run has 63 passed. Same-package
+cache/schema and analysis-epoch upgrade regressions pass, and the reviewed optional
+wheel retains the bounded native source facts through installed consumers; exact
+commands and artifact identity are in [validation](VALIDATION.md#inc-qml-08a-native-source-compatibility). Other
+adoption patterns retain their own planned or unverified status.
+Add regression coverage before the correction, then exercise the actual facade,
+installed CLI and persistence boundary. Root/import and scope ownership remain
+explicit; scanning a subfolder cannot invent missing project context or rebase
+canonical identities unsafely.
+
+Native-header classification remains a separate discovery assessment within
+INC-QML-08a. A header selected as C can omit valid C++ references or declarations
+even when direct C++ parsing succeeds. Before changing admission, define a stable
+requirement and a bounded classifier contract with public C++ header positives,
+plain-C and ambiguous-header controls, original-byte spans, actual facade and
+installed-update evidence, and diagnostic/failure preservation. This assessment
+does not enlarge the locally verified syntax criterion or claim a classifier fix.
+
+The qmake extension is bounded path interpretation, not a qmake interpreter.
+For example, `QML_IMPORT_PATH += $$PWD/ui/qml` is a generic source shape to cover.
+Use the current parsed file's directory for an accepted `$$PWD` prefix, preserve
+ordered literal entries and accepted-root/ignore limits, and never expand arbitrary
+variables, conditions, functions or includes by running qmake. Classify statements
+by whether they can affect required analysis facts: recognized unrelated build
+options can retain a coverage note; an unknown branch changing module, source or
+provider facts stays uncertain/incomplete under the reviewed publication policy.
+
+Qt 6.8 distinguishes [Qt Creator `QML_IMPORT_PATH` hints from build-time `QMLPATHS`](https://doc.qt.io/qt-6.8/qmake-variable-reference.html#qml-import-path);
+neither automatically establishes an application's runtime search path. Preserve
+those roles and [current-file `PWD` provenance](https://doc.qt.io/qt-6.8/qmake-variable-reference.html#pwd).
+Before enabling lookup, document precedence and the explicit accepted analysis-root
+policy; do not silently promote a tool hint into engine evidence or expand the corpus.
+
+Context-provider support follows declared API types and accepted canonical owners.
+Generic cases include `setContextProperty("backend", factory.makeBackend())`,
+`backend.service.refresh()` and `backend.service.ready.connect(handler)`.
+Accept a factory/member chain only with bounded unambiguous return/property type,
+context and source evidence. Type evidence identifies a declared API; it does not
+prove a runtime allocation, concrete subclass, getter result or delivery order.
+Test duplicate providers, unresolved returns, conditional setup, shadowing, cycles
+and chain limits; all retain uncertainty rather than acquiring guessed links.
+Preserve distinct source sites for calls, subscriptions and handlers through
+serialization, search, path and affected consumers. Fact/API/cache policy changes
+need the architecture/design/error/assistant documentation impact review before
+public admission, with original INC-QML-00–INC-QML-07 contracts preserved.
+
+The proposed verification matrix comprises direct extractor/reader/resolver tests,
+facade build/JSON reload and consumers, installed optional/core behavior, whole
+project and configured application subroot, metadata/provider/child-member/signal
+mutation and removal, cold/warm/manual/watch parity, and actual failure at each
+changed persistence boundary. Include a corrected retry and no-change repetition.
+Record exact commands and new head/base/tested-checkout evidence when executed;
+no proposed test path or previous hosted lane counts as new acceptance evidence.
+Reverify the declared OS/Python installation lanes and affected generic C++/JS
+regressions proportionately to changed parser/package/shared contracts.
+
+REQ-QML-018 has one locally verified bounded native syntax criterion and five remaining
+unverified adoption criteria in
+[traceability](../../tests/TRACEABILITY.md#planned-adoption-criteria). INC-QML-08 is
+complete only after each independently passes and public support limits match the
+expanded installed profile. It does not authorize project execution, arbitrary
+runtime dataflow, an unrestricted build interpreter, upstream merging or package
+publication. Newly observed cases require the same review and a versioned plan
+update rather than a silent widening of verified support.
+
+A qualified application-subroot result may establish only its explicitly accepted
+facts while whole-project build forms or factory/service relationships remain
+unsupported. Record that scope and its remaining coverage; do not close REQ-QML-018 or
+claim completed adoption from the successful subset or the focused native fix.
+
+The native correction preserves source authority through parser-only compatibility
+normalization. AST cache schema 6 retires pre-correction syntax records even when
+the package version is unchanged; Qt policy epoch 2 refreshes unchanged native
+inputs under the updated analysis contract. Executed upgrade regressions prove
+stale syntax/epoch retirement, failure retention and ordinary-C++ warm-cache
+preservation for this native slice. The combined adoption safety gates still need
+their metadata/provider/service and installed-update evidence.
+The remaining qmake/provider/service and combined installed-profile work belongs
+to INC-QML-08a/INC-QML-08b/INC-QML-08c. No additional top-level increment is required
+at this checkpoint.

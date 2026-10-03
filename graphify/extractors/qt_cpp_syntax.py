@@ -8,9 +8,12 @@ import re
 from tree_sitter import Language, Node, Parser
 import tree_sitter_cpp
 
+from graphify.extractors.qt_cpp_compat import needs_recovery, recover_cpp_syntax
+
 MAX_CPP_BYTES = 5_000_000
 _MACRO = re.compile(rb"\b(?:QML_[A-Z_]+|Q_(?:OBJECT|GADGET|PROPERTY|INVOKABLE|SIGNAL|SLOT|SIGNALS|SLOTS|ENUM(?:_NS)?|FLAG(?:_NS)?|REVISION|CLASSINFO|INTERFACES|DECLARE_METATYPE|EMIT)|SIGNAL|SLOT)\b")
 _RAW_STRING = re.compile(rb'(?:u8|u|U|L)?R"([^\s()\\]{0,16})\(')
+_NUMBER = re.compile(rb"(?:[0-9]|\.[0-9])(?:[A-Za-z0-9_.]|'[A-Za-z0-9_]|(?<=[eEpP])[+-])*")
 _MEMBER_CAST = re.compile(rb"\bstatic_cast\s*<[\w:\s*&<>]+\(\s*[\w:]+\s*::\s*\*\s*\)\s*\([\w:\s*&<>,]*\)\s*(?:const\s*)?>\s*\(\s*(&\s*[\w:]+\s*::\s*[A-Za-z_]\w*)\s*\)")
 
 
@@ -30,6 +33,13 @@ def lexical_code(source: bytes) -> bytes:
     """Mask comments/quoted/raw literals in place, including continued comments."""
     result, index = bytearray(source), 0
     while index < len(source):
+        # C++ preprocessing numbers own digit separators. Skip their complete
+        # lexical token before testing apostrophes as character-literal starts;
+        # the parser still validates the unchanged numeric syntax itself.
+        number = _NUMBER.match(source, index)
+        if number and (index == 0 or source[index - 1] not in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"):
+            index = number.end()
+            continue
         start, end = index, index
         if source[index:index + 2] == b"//":
             end = index + 2
@@ -170,7 +180,15 @@ def _normalized(source: bytes, code: bytes):
             parsed[start:end] = b" " * (end - start)
         elif match[0] == b"emit" and re.match(rb"[A-Za-z_]", after):
             parsed[start:end] = b" " * (end - start)
-    return bytes(parsed), macros
+    return recover_cpp_syntax(bytes(parsed), code, parse=_parse_cpp, walk=walk), macros
+
+
+def _parse_cpp(source: bytes) -> Node:
+    """Compatibility recovery and final admission share the parser diagnostic."""
+    try:
+        return Parser(Language(tree_sitter_cpp.language())).parse(source).root_node
+    except Exception as exc:
+        raise QtCppError("QT_CPP_PARSER", "Cannot parse Qt C++ source") from exc
 
 
 def normalize_qt_cpp(source: bytes) -> bytes | None:
@@ -182,7 +200,7 @@ def normalize_qt_cpp(source: bytes) -> bytes | None:
     if len(source) > MAX_CPP_BYTES:
         return None
     code = lexical_code(source)
-    if not _MACRO.search(code) and not re.search(rb"\b(?:signals|slots)\s*:|\bemit\s+[A-Za-z_]|\bQObject\s*::\s*(?:connect|disconnect)\s*\(", code):
+    if not needs_recovery(code) and not _MACRO.search(code) and not re.search(rb"\b(?:signals|slots)\s*:|\bemit\s+[A-Za-z_]|\bQObject\s*::\s*(?:connect|disconnect)\s*\(", code):
         return None
     try:
         normalized, _ = _normalized(source, code)
@@ -209,10 +227,7 @@ def read_cpp(path: Path, root: Path) -> CppUnit:
         raise QtCppError("QT_CPP_LIMIT", "Qt C++ source exceeds 5 MB")
     code = lexical_code(source)
     normalized, macros = _normalized(source, code)
-    try:
-        tree = Parser(Language(tree_sitter_cpp.language())).parse(normalized).root_node
-    except Exception as exc:
-        raise QtCppError("QT_CPP_PARSER", "Cannot parse Qt C++ source") from exc
+    tree = _parse_cpp(normalized)
     list(walk(tree))
     if tree.has_error:
         raise QtCppError("QT_CPP_SYNTAX", "Qt C++ syntax is incomplete or outside the supported profile")
