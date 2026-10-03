@@ -145,6 +145,29 @@ The CLI resolves an explicit graph's analysis beside that graph and reports
 skipped/failed view publication as unsuccessful. These are presentation owners;
 source extraction, graph identities and analysis persistence remain unchanged.
 
+INC-QML-16 removes the Overview control and ranking state while retaining checked
+full startup, community filters, search, Select All/None and aggregate rendering.
+It is **Locally verified at emitted-script and reviewed installed-artifact
+boundaries** under changed REQ-QML-019-AC04 and new REQ-QML-021-AC01–AC03.
+Native browser/device and other-platform behavior remains unverified.
+
+| Owner | Camera/control responsibility |
+| --- | --- |
+| `graphify/exporters/html_navigation.py::MIDDLE_PAN_SCRIPT` | Isolated camera-only IIFE; incremental client delta/current-scale movement, input/capture guards and cleanup; no graph/dataset writes or wheel hook |
+| `graphify/exporters/html.py::to_html` | Remove Overview markup/function/state/ranking; inject the helper once after existing network/initial-physics setup; retain emitted payload and selection/search/inspector interfaces |
+| `tests/test_html_middle_pan.py` | Production emitted-script geometry, termination, invalid-camera/capture and coexistence/immutability evidence; current local source checkpoint passes |
+| `tests/test_html_initial_view.py` | Retained checked startup and filters/all/none/search/partial-membership behavior; obsolete Overview expectations are replaced |
+
+The camera helper and new tests remain below 300 lines. The cohesive legacy HTML
+owner retains its 810-line ceiling; current integration measurements belong to
+DESIGN/validation. [D16](ARCHITECTURE.md#d16--middle-button-input-owns-only-the-temporary-camera)
+defines temporary camera ownership. The existing vis camera API is reused with no
+new SDK, persistence operation, graph diagnostic or Qt policy/schema change.
+Actual navigation/selection outcomes pass 60 focused cases and reviewed installed-
+artifact script checks pass. Source/wheel/isolated installation contains 156 byte-
+equal Python payloads. Native browser visual/device, new hosted and other-platform
+checks remain explicit gaps; this evidence does not establish a full device profile.
+
 ## Native source-ownership correction seams (INC-QML-10)
 
 This table records the historical INC-QML-10 correction and its verified artifact.

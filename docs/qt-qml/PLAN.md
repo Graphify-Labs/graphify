@@ -42,6 +42,14 @@ locally complete and REQ-QML-020 is Verified within its bounded static source pr
 INC-QML-15 plans exact generic overload identity/location parity; that follow-up
 remains unimplemented and unverified.
 
+INC-QML-16 is **Locally complete for the emitted/installed HTML consumer profile**.
+It removes the optional Overview selection mode
+under revised REQ-QML-019-AC04 and adds middle mouse camera navigation under
+REQ-QML-021. Earlier Overview checks describe an older consumer contract;
+the revised criterion has fresh exporter, emitted-script and installed-artifact
+evidence. Native browser/device/platform interaction remains unverified. Source
+analysis, Qt policy 6 and AST schema 7 remain unchanged.
+
 This plan extends Graphify's existing Python pipeline and contribution workflow.
 It does not propose a Qt application rewrite. Read [REQUIREMENTS.md](../REQUIREMENTS.md),
 [ARCHITECTURE.md](ARCHITECTURE.md), [DESIGN.md](DESIGN.md), [AUDIT.md](AUDIT.md),
@@ -1177,11 +1185,9 @@ No API, build hook or corpus code runs during this preparation.
 Select All starts checked. Construct visualization datasets with all exported
 view nodes and edges active before network layout. For large source graphs,
 these are the complete labeled aggregate communities within the supported cap,
-not a forced full-source view. Overview remains an optional subset of the ten
-largest available source communities by source-member count, descending, with
-ascending community-ID order for ties; it leaves Select All unchecked. This is
-navigation through inferred graph structure, not an assertion that communities
-are authoritative architectural modules. Keep the complete exported metadata in
+not a forced full-source view. INC-QML-16 removes the former optional top-ten
+Overview selection. Community labels describe inferred graph structure without
+asserting authoritative architectural modules. Keep the complete exported metadata in
 RAW and retain community filters, search, Select All and Select None. View choices
 remain temporary; saved camera/filter persistence is outside this increment.
 
@@ -1201,8 +1207,7 @@ direct exporter and actual CLI entry points; graph immutability; many isolated
 groups; and forced clustering/publication/skip failure. Exercise emitted HTML payload and script with
 the existing DOM-harness style and preserve unrelated-language, escaping and
 Qt/QML source-detail regressions. Initial-view tests must verify a checked Select
-All and complete exported-view datasets before layout, optional Overview's
-member-count ordering/tie stability and unchecked Select All, community filters,
+All and complete exported-view datasets before layout, community filters,
 search/all/none controls and preservation of
 the complete RAW payload. Record executed harness coverage accurately;
 it does not establish a browser visit. A browser inspection that cannot run is
@@ -1218,14 +1223,14 @@ enhancement is part of this increment.
 
 REQ-QML-019 retains its first three acceptance IDs and adds AC04, bringing the
 canonical catalog to nineteen requirements and seventy-eight criteria. The
-current selection policy updates the existing AC04 without adding an ID. The
-navigation change remains in INC-QML-09; no extra increment is required at this
-checkpoint. The unfinished qmake, provider and header-classification work remains
+current selection policy updates the existing AC04 without adding an ID.
+INC-QML-16 owns the later Overview removal and camera interaction. The unfinished
+qmake, provider and header-classification work remains
 within the separately recorded INC-QML-08 adoption scope.
 
 The INC-QML-09 review retains the remaining INC-QML-08 source/metadata/provider
 work. No additional top-level increment is needed for the bounded HTML grouping
-and overview contract. Personal saved views are separate future work; current
+contract at its recorded revision. Personal saved views are separate future work; current
 camera, filters and search remain temporary. Executed exporter/script evidence
 belongs to traceability and validation, with new browser/platform runs explicit.
 
@@ -1519,3 +1524,56 @@ cold/warm/full/incremental graphs, stale-edge removal, failure retention and
 corrected retry, with generic call and unrelated-language regressions. Record
 schema/policy migration, reviewed artifact proof and remaining unsupported forms.
 Current native-only source-file parity does not verify this increment.
+
+## INC-QML-16 — Middle mouse navigation and Overview removal
+
+Status: **Locally complete for the emitted/installed HTML consumer profile**.
+Native browser/device/platform interaction remains unverified. Acceptance: revised REQ-QML-019-AC04 and
+REQ-QML-021-AC01–AC03. Dependency: the existing HTML viewer, its source-community
+projection and pinned vis-network camera API. Owner: HTML exporter maintainer.
+
+The viewer starts with every exported community selected. The Overview button,
+top-ten selection calculation and reset function are removed. Community filters,
+Select All/None, search and inspector behavior remain available. Select All reflects the
+actual loaded dataset, including nodes without community metadata; a partially
+visible dataset is indeterminate even when every named community is checked.
+
+`graphify/exporters/html_navigation.py` owns a private middle mouse gesture
+injected after network construction. Holding the middle button and dragging pans
+the camera in both axes using each movement's current zoom scale. Native wheel
+zoom remains available. Pointer capture and window listeners keep outside moves
+and release safe; release, cancellation, capture loss, blur and page exit restore
+prior cursor/selection styles. Invalid input or camera failure ends the gesture
+without publishing an invalid camera position. No graph, node position, filter,
+selection, cache or persistent view state belongs to this controller.
+
+| Criterion | Success and boundary evidence | Rejection, state and failure evidence |
+| --- | --- | --- |
+| REQ-QML-019-AC04 | Full initial dataset; filters, Select All/None and hidden-result search; no Overview control or reset path | Partial and ungrouped selections report accurate checkbox state; graph and raw payload retain their identities |
+| REQ-QML-021-AC01 | Actual emitted source/community script pans horizontally, vertically and diagonally at multiple scales; repeated/outside moves and visible instructions | Middle autoscroll and selection are suppressed; camera movement changes no nodes, edges or zoom |
+| REQ-QML-021-AC02 | Release/cancel/capture loss/blur/page exit restore style and permit retry | Unrelated pointers, missing/failed capture, invalid coordinates/camera, overflow and API errors cannot leave an active or invalid gesture |
+| REQ-QML-021-AC03 | Left/right/touch and native wheel paths, community filters, search and inspection remain available | Camera-only changes preserve raw/source graph bytes and filter/selection state; unavailable browser/platform proof stays explicit |
+
+Production-interface JavaScript regressions use a DOM/network boundary harness;
+the production controller supplies the coordinate calculation. Run related
+exporter/CLI regressions, lint/type checks, a reviewed wheel installation and the
+installed HTML export. Bind proof to the exact source tree and wheel digest.
+Regenerate the existing application HTML without re-extracting its unchanged
+source graph. Browser appearance and other-platform interaction remain separate
+system gaps unless actually executed.
+
+Diagnostic impact is ephemeral camera cleanup or a no-op on rejected input; no
+new parser, writer, persistence boundary or diagnostic code is introduced. The
+existing HTML publication failure policy continues to apply. The new module and
+tests retain the 300-line ceiling; the existing HTML template's documented
+810-line exception allows its narrow injection and removal. Plan review must
+record any evidenced new follow-up without treating pending INC-QML-08/11/15 as
+completed by this consumer increment.
+
+The exit review finds no additional increment necessary for this control change.
+Sixty focused selection/navigation cases pass; the final exporter/CLI/membership
+selection passes 231 cases, and seven additional consumer/reviewed-wheel cases
+pass. Exact outcomes, reviewed source tree, wheel identity and installed-view
+proof belong to [validation](VALIDATION.md#inc-qml-16-middle-mouse-navigation-and-overview-removal)
+and traceability. No source schema or analysis policy changes. INC-QML-08 remains
+partial and INC-QML-11/15 planned; camera persistence is outside this contract.

@@ -1,9 +1,12 @@
 # Qt/QML implementation contracts
 
 Status: INC-QML-00 through INC-QML-07 are implemented and verified for the bounded
-static profile, with revision-specific hosted source/artifact proof. Current
-INC-QML-09 HTML selection is locally verified at exporter/CLI and emitted-script
-boundaries; browser, other-platform and new hosted proof remain unexecuted.
+static profile, with revision-specific hosted source/artifact proof.
+Earlier INC-QML-09 HTML selection is locally verified at exporter/CLI and emitted-
+script boundaries for its recorded revision. INC-QML-16 changes REQ-QML-019-AC04
+and adds camera navigation under REQ-QML-021; those current contracts have local
+emitted-script and reviewed installed-artifact proof. Native browser/device,
+other-platform and new hosted behavior remains unverified.
 [PLATFORM_MATRIX.md](PLATFORM_MATRIX.md) records declared installation lanes.
 [ARCHITECTURE.md](ARCHITECTURE.md) owns ADRs and
 [traceability](../../tests/TRACEABILITY.md) owns individual acceptance evidence.
@@ -391,17 +394,18 @@ until successful replacement; CLI status reflects actual publication.
 The HTML viewer starts with Select All checked and all exported view nodes and
 edges active in its datasets before layout. Large graphs keep their complete
 labeled community aggregate and supported cap; startup selection does not
-replace that view with raw full-source rendering. Overview optionally selects
-the ten largest available source communities using deterministic member-count/ID
-ordering and leaves Select All unchecked. Community filters, search, Select All
-and Select None keep their existing selection roles. Full exported semantic
+replace that view with raw full-source rendering. INC-QML-16 removes the Overview
+button, its reset function/state and ten-community ranking. Community filters,
+search, Select All and Select None keep their existing selection roles. Full exported semantic
 payloads remain in the artifact. Community names describe structural hubs;
 canonical architecture and design documents retain intentional component
 ownership. View selections, camera and search are temporary browser state, with
-no saved-view persistence. Checked-default AC04 is locally verified through the
-production emitted scripts and reviewed installed artifact. Exact evidence is in
-[VALIDATION.md](VALIDATION.md#inc-qml-09-current-selection-policy); browser visual
-inspection and other-platform/hosted checks remain separate unexecuted evidence.
+no saved-view persistence. Earlier checked-default/Overview AC04 proof belongs to
+its prior revision; current removal/coexistence checks pass at emitted-script and
+reviewed installed-artifact boundaries. [Earlier selection proof](VALIDATION.md#inc-qml-09-current-selection-policy)
+and [current removal/navigation proof](VALIDATION.md#inc-qml-16-middle-mouse-navigation-and-overview-removal)
+retain their revision boundaries. Native browser/device and other-platform/hosted
+checks remain separate unexecuted evidence.
 
 ## Native ownership authority (INC-QML-10)
 
@@ -529,11 +533,11 @@ from promising incompatible old-cache retention.
 
 | Owner/file | Current measured size / permitted ceiling | Rationale and extraction exit |
 | --- | --- | --- |
-| HTML exporter maintainer: `exporters/html.py` | 800 / 810 physical lines | Existing embedded template and recursive aggregate projection share serialization; this correction adds truthful counters at that owner. Extract aggregate projection or template responsibility in a separate characterized viewer increment when the next cohesive change requires it. |
+| HTML exporter maintainer: `exporters/html.py` | 789 / 810 physical lines | Existing embedded template and recursive aggregate projection share serialization. INC-QML-16 removes Overview and injects the isolated camera helper through a narrow seam, retaining this ceiling. Extract aggregate projection or template responsibility in a separate characterized viewer increment when the next cohesive change requires it. |
 | Generic extractor maintainer: `extractors/engine.py` | 7694 / 7700 | Five-line constructor producer hook only; domain logic belongs to `cpp_constructors.py`. Continue the upstream mechanical migration sequencing rather than mixing unrelated language moves into this fix. |
 | Generic resolver maintainer: `extractors/resolution.py` | 3974 / 3980 | Six-line pre-merge/guard hook only; the helper owns constructor decisions. Extract the existing declaration/definition responsibility as a separate characterized increment when upstream sequencing permits. |
 | Cache maintainer: `cache.py` | 1782 / 1783 physical lines | Schema constant/comment changes only; cache ownership and migration ordering stay intact. No responsibility extraction is needed for this epoch update. |
-| Export test maintainer: `tests/test_export.py` | 1375 / 1375 physical lines | One existing inspector assertion follows the clarified aggregate label; no growth. New behavior is characterized in the focused community-link suite. Extract a cohesive existing exporter-test responsibility separately when that suite is next expanded. |
+| Export/Qt integration test maintainers: `tests/test_export.py` | 1377 / 1377 physical lines | INC-QML-16 adds listener registration to the existing inspector harness without dispatch, camera math, swallowed errors or changed inspector assertions. New behavior stays in the focused navigation suite. Exit through coordinated upstream inspector-harness extraction that preserves production-script assertions. |
 
 New handwritten constructor/source-link/viewer modules and tests must remain
 below 300 lines. Verification measurements and any remaining platform/system
@@ -613,3 +617,58 @@ native source-file links remain exact, but complete generic overload identity an
 full generic overload graph parity are unverified. A separate characterized
 producer/identity change must define compatibility and migration before correcting
 that ownership boundary. Native file-context parity is not evidence of that fix.
+
+## Temporary middle-button camera navigation (INC-QML-16)
+
+Status: **Locally verified at emitted-script and reviewed installed-artifact
+boundaries** under REQ-QML-021-AC01–AC03 and changed REQ-QML-019-AC04. Native
+browser/device and other-platform behavior remains unverified.
+[D16](ARCHITECTURE.md#d16--middle-button-input-owns-only-the-temporary-camera)
+assigns mouse middle-button movement to the camera without changing source facts,
+node geometry, physics, selection or filters. The Overview control/function/state
+and top-ten ranking are removed. Checked full startup, community aggregation,
+Select All/None, filters, search and the inspector retain their current roles.
+
+`exporters/html_navigation.py::MIDDLE_PAN_SCRIPT` is a plain JavaScript IIFE using
+the existing `container` and `network`, injected once after network construction
+and initial physics setup. It has no package, SDK or DOM dependency beyond the
+existing viewer. For each active mouse movement, obtain `network.getViewPosition()`
+and `network.getScale()`, then call `network.moveTo` with position
+`(view.x - dx/scale, view.y - dy/scale)`, unchanged current scale and
+`animation: false`. The screen delta is incremental. Reading the scale at each
+movement preserves a native wheel zoom that occurs between movements; no wheel
+listener or zoom-policy override is added.
+
+Only mouse middle-button pointer input with a held middle-button mask and a
+nonnegative integer pointer identity starts the gesture. Guarded container
+pointer capture plus window move/up/cancel listeners keep outside-container
+movement and capture-failure fallback bounded. Matching release/cancel, lost
+middle-button state, lost capture, window blur or page hide ends the gesture.
+Pointer coordinates and view coordinates must be finite, scale positive, and the
+derived world position finite; invalid camera/API state safely aborts rather than
+accumulating a jump. Cleanup restores cursor/user-selection state before optional
+capture release. Middle mousedown/auxclick and active text selection are suppressed
+to prevent native autoscroll/selection; left/right/touch and wheel behavior are
+otherwise retained.
+
+The helper writes only temporary camera/input state. It neither calls node-move/
+selection/filter/physics APIs nor writes datasets, RAW metadata, graph JSON,
+sidecars, local storage or saved preferences. Camera/capture failure ends or safely
+falls back from the gesture; it adds no parser diagnostic, persistence operation
+or graph-write bypass. Qt policy 6, AST schema 7 and source fact contracts remain
+unchanged. The helper and focused public tests stay below 300 physical lines;
+HTML integration measures 789 lines within its existing 810-line legacy ceiling.
+The helper/initial-view/middle-pan modules measure 116/245/223 physical lines;
+each remains below 300. The inspector-harness compatibility adjustment retains
+its own documented 1377-line legacy test ceiling.
+
+Production emitted-script tests pass source/aggregate pan math at normal and
+changed zoom, autoscroll prevention, release/invalid-state paths, input/wheel
+coexistence, retained controls and immutable payloads. The 60-case focused suite
+includes 24 independent horizontal/vertical/diagonal, scale and view variants.
+Existing Overview expectations are superseded, not evidence for changed AC04.
+Reviewed source/wheel/isolated-install equality covers all 156 Python payloads;
+installed viewer scripts retain canonical/RAW facts, checked startup, source
+inspectors and clean release/blur/retry camera behavior. Current exact outcomes
+belong to traceability/validation. No native browser visual/device, new hosted or
+other-platform result is claimed.

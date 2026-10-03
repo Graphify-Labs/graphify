@@ -389,17 +389,20 @@ reported accurately instead of claiming that a file was written.
 
 3 - Unrecoverable grouping reports actionable `HTML_GROUPING_INVALID`; an unusable or skipped aggregate view reports `HTML_VIEW_UNAVAILABLE`; an actual publication failure reports `HTML_VIEW_FAILED`. Each causes the production HTML export command to exit unsuccessfully without a false written-file message, preserving prior valid HTML and canonical graph files. A graph with too many isolated groups to fit the supported aggregate limit reports a bounded failure and focused-graph guidance rather than inventing group membership or bypassing the limit. A corrected retry publishes the expected view, and repeated export of unchanged input retains the same grouping and label behavior under the same clustering backend/configuration. (`REQ-QML-019-AC03`)
 
-4 - Select All starts checked, and all exported view nodes and edges are active in the visualization datasets before network layout begins. Large source graphs retain the complete, labeled community aggregate and supported display cap; selecting all exported view data does not force raw full-source rendering. Overview optionally selects at most ten available source communities, ranked by descending source-member count with stable ascending community-ID order for ties, and leaves Select All unchecked. Community filters, search, Select All and Select None retain their selection behavior. The complete exported metadata remains in the RAW payload, canonical graph data is unchanged, and view choices remain temporary with no added saved camera/filter persistence. Overview describes inferred graph structure rather than authoritative architectural modules. Production emitted-script tests exercise checked startup with full exported-view datasets, optional Overview, filters/search/all/none and payload preservation. (`REQ-QML-019-AC04`)
+4 - Select All starts checked, and all exported view nodes and edges are active in the visualization datasets before network layout begins. Large source graphs retain the complete, labeled community aggregate and supported display cap; selecting all exported view data does not force raw full-source rendering. The Overview button, top-ten selection mode and reset function are absent. Community filters, search, Select All and Select None retain their selection behavior; the Select All checkbox accurately reflects complete, partial and empty active datasets, including ungrouped nodes. Search restores a filtered result before focusing it. The complete exported metadata remains in the RAW payload, canonical graph data is unchanged, and view choices remain temporary with no added saved camera/filter persistence. Production emitted-script tests exercise checked startup, removal of Overview, filters/search/all/none and payload preservation. (`REQ-QML-019-AC04`)
 
-Status: **Locally verified at the exporter/CLI and emitted-script boundaries**.
-The checked-default AC04 has focused production and reviewed installed-artifact
-proof. Prior initial-selection results remain evidence for their own revision.
+Status: **AC01–AC04 locally verified at exporter/emitted-script boundaries**.
+INC-QML-16 removes the former optional Overview contract and re-verifies the
+remaining selection lifecycle, with reviewed installed-artifact proof. Earlier
+AC04 startup/Overview results remain
+evidence for their own revision and do not verify this removal.
 Browser visual inspection, other platform lanes and hosted proof are not claimed
 for this revision. Acceptance is limited to
 HTML view preparation, selection controls and publication. It does not complete remaining
 REQ-QML-018 parser, metadata, provider or whole-project adoption work, and does
 not change the canonical graph or require project execution. Assigned work and
-exit gates are in [INC-QML-09](qt-qml/PLAN.md#inc-qml-09--readable-large-graph-html-export).
+exit gates are in [INC-QML-09](qt-qml/PLAN.md#inc-qml-09--readable-large-graph-html-export)
+and [INC-QML-16](qt-qml/PLAN.md#inc-qml-16--middle-mouse-navigation-and-overview-removal).
 
 ### REQ-QML-020 — Explicit project membership relationships
 
@@ -427,3 +430,26 @@ use. Browser, new hosted, other-platform and executable Qt proof are not claimed
 [INC-QML-14](qt-qml/PLAN.md#inc-qml-14--explicit-project-membership-relationships)
 owns this additional behavior and its evidence; source containment and viewer
 counts do not establish completion.
+
+### REQ-QML-021 — Middle mouse graph navigation
+
+Holding the middle mouse button and dragging pans the displayed graph in both
+axes. Wheel scrolling retains its existing zoom behavior. Navigation changes
+the temporary camera view while preserving source facts, node positions and
+community selection.
+
+**Acceptance Criteria**
+
+1 - A mouse middle-button press inside the graph starts panning. Subsequent movement, including outside the graph while that button remains held, moves the camera by the corresponding screen displacement at the current zoom scale without moving individual nodes or changing zoom itself. Horizontal, vertical and diagonal drags work in source and aggregated views, including consecutive drags and multiple positive zoom scales. Middle-button press/auxiliary click suppress browser autoscroll and unintended node selection. An on-screen hint explains middle-button drag and wheel zoom. Actual emitted-script tests verify camera calls and active datasets. (`REQ-QML-021-AC01`)
+
+2 - Button release, a move reporting the middle button no longer held, pointer cancellation, lost capture, window blur or page exit ends panning and restores the previous cursor and selection behavior. A stale or unrelated pointer cannot continue the gesture. Unavailable or failed pointer capture retains a safe cleanup path. Invalid coordinates, non-positive/non-finite camera scale or position, arithmetic overflow and camera API failures cannot produce an invalid move or leave a stuck gesture; a subsequent valid gesture can start normally. Success, interruption and rejection retain source/selection data and add no persistent state or new parser/publication diagnostic. (`REQ-QML-021-AC02`)
+
+3 - Left-button node selection/drag, right-button behavior, touch gestures, native wheel zoom, search, community filters, Select All/None and the inspector retain their supported behavior. Middle-button movement changes only the camera; no node, edge, source metadata, physics configuration, filter or selection is rewritten. Original graph bytes and exported source payloads remain unchanged. The production exporter, emitted script and reviewed installed artifact exercise the new controls and removal of Overview; unavailable browser appearance or platform checks remain explicit gaps. (`REQ-QML-021-AC03`)
+
+Status: **Implemented; AC01–AC03 locally verified at emitted-script and reviewed
+installed-artifact boundaries**. Native browser/device appearance and other-platform
+interaction remain unverified; the external DOM/network harness does not establish
+those system results. Exact evidence and limitations belong to
+[INC-QML-16](qt-qml/PLAN.md#inc-qml-16--middle-mouse-navigation-and-overview-removal)
+and traceability.
+The existing HTML publication and canonical graph contracts remain authoritative.

@@ -21,19 +21,24 @@ Current internal links use current headings; existing heading links retain their
 legacy targets. Navigation follows
 [GitHub custom-anchor syntax](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#custom-anchors).
 
-Future requirements continue with `REQ-QML-021`; future top-level increments
-continue with `INC-QML-16`. These counters describe different concerns and need
+Future requirements continue with `REQ-QML-022`; future top-level increments
+continue with `INC-QML-17`. These counters describe different concerns and need
 not advance together. Extend this catalog when retiring or migrating an ID;
 never transfer an alias to unrelated behavior. Document identifiers do not change
 runtime schemas or parser contracts.
 
-The twenty requirements comprise eighty-one criteria. The initial seventeen
+The twenty-one requirements comprise eighty-four criteria. The initial seventeen
 requirements/sixty-eight criteria and six `REQ-QML-018` adoption criteria retain
 separate support/evidence profiles. REQ-QML-019 adds four HTML-view criteria.
 REQ-QML-020 adds three explicit-membership criteria locally Verified for the bounded
 static source profile through INC-QML-14. Implementation and verification status belong
 to [requirements](../REQUIREMENTS.md) and [traceability](../../tests/TRACEABILITY.md).
 This catalog establishes identity, not implementation or verification.
+
+REQ-QML-021 adds three middle mouse navigation criteria. INC-QML-16 implements
+that camera interaction and removes the optional Overview selection mode under
+the revised REQ-QML-019-AC04. These identities describe the HTML consumer and do
+not advance the Qt analysis policy or AST schema.
 
 [INC-QML-10](PLAN.md#inc-qml-10--native-qt-source-ownership-correction) corrects
 native ownership under existing requirements and criteria. It adds no requirement

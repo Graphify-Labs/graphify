@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from graphify.exporters.base import COMMUNITY_COLORS  # noqa: E402,F401
+from graphify.exporters.html_navigation import MIDDLE_PAN_SCRIPT
 from pathlib import Path
 import html as _html
 from graphify.analyze import _node_community_map
@@ -64,8 +65,8 @@ def _html_styles() -> str:
   #legend-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 4px 0; }
   #legend-controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #aaa; user-select: none; }
   #legend-controls label:hover { color: #e0e0e0; }
-  #overview-reset { background: #252540; color: #ccc; border: 1px solid #3a3a5e; border-radius: 4px; padding: 4px 6px; cursor: pointer; }
   #view-caption { font-size: 11px; color: #aaa; line-height: 1.5; margin-bottom: 10px; }
+  #navigation-help { font-size: 11px; color: #aaa; line-height: 1.5; margin-bottom: 10px; }
   .legend-cb, #select-all-cb { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border: 1.5px solid #3a3a5e; border-radius: 3px; background: #0f0f1a; cursor: pointer; position: relative; flex-shrink: 0; }
   .legend-cb:checked, #select-all-cb:checked { background: #4E79A7; border-color: #4E79A7; }
   .legend-cb:checked::after, #select-all-cb:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
@@ -152,13 +153,8 @@ function esc(s) {{
 }}
 
 // Start with all exported communities; large graphs are already aggregated.
-// Overview remains an optional subset, not a claim about architectural modules.
-const overviewCommunities = new Set(LEGEND.slice()
-  .sort((a, b) => (b.count - a.count) || (a.cid - b.cid))
-  .slice(0, 10).map(c => c.cid));
 const knownCommunities = new Set(LEGEND.map(c => c.cid));
 let selectedCommunities = new Set(knownCommunities);
-let overviewMode = false;
 let showUngrouped = true;
 const legendControls = new Map();
 
@@ -234,6 +230,8 @@ network.once('stabilizationIterationsDone', () => {{
   network.setOptions({{ physics: {{ enabled: false }} }});
 }});
 
+{MIDDLE_PAN_SCRIPT}
+
 function showInfo(nodeId) {{
   const n = nodesDS.get(nodeId);
   if (!n) return;
@@ -295,7 +293,6 @@ function focusNode(nodeId, scale = 1.4) {{
     if (!node) return;
     if (knownCommunities.has(node.community)) selectedCommunities.add(node.community);
     else showUngrouped = true;
-    overviewMode = false;
     refreshView();
   }}
   network.focus(nodeId, {{ scale, animation: true }});
@@ -374,9 +371,10 @@ const selectAllCb = document.getElementById('select-all-cb');
 function updateSelectAllState() {{
   const total = LEGEND.length;
   const selected = selectedCommunities.size;
-  // Select All reflects the full view; an explicit Overview keeps it unchecked.
-  selectAllCb.checked = !overviewMode && (total ? selected === total : showUngrouped);
-  selectAllCb.indeterminate = !overviewMode && selected > 0 && selected < total;
+  // Named groups alone cannot prove full selection when ungrouped nodes are hidden.
+  selectAllCb.checked = loadedNodeIds.size === VIEW_NODES.length &&
+    (loadedNodeIds.size > 0 || showUngrouped);
+  selectAllCb.indeterminate = !selectAllCb.checked && loadedNodeIds.size > 0;
   legendControls.forEach(({{ item, cb }}, cid) => {{
     cb.checked = selectedCommunities.has(cid);
     if (cb.checked) item.classList.remove('dimmed');
@@ -384,11 +382,11 @@ function updateSelectAllState() {{
   }});
   const caption = document.getElementById('view-caption');
   if (!loadedNodeIds.size) {{
-    caption.textContent = 'No communities selected. Choose a community or reset the overview.';
+    caption.textContent = 'No communities selected. Use Select All or choose a community.';
   }} else if (!total) {{
     caption.textContent = `Source graph: ${{loadedNodeIds.size}} nodes; no source communities available.`;
   }} else {{
-    caption.textContent = `${{overviewMode ? 'Architecture overview' : 'Source communities'}}: ${{selected}} of ${{total}} source communities. Expand with filters or search.`;
+    caption.textContent = `Source communities: ${{selected}} of ${{total}} source communities. Filter or search to focus.`;
   }}
 }}
 
@@ -414,16 +412,8 @@ function refreshView() {{
 }}
 
 function toggleAllCommunities(hide) {{
-  overviewMode = false;
   selectedCommunities = new Set(hide ? [] : LEGEND.map(c => c.cid));
   showUngrouped = !hide;
-  refreshView();
-}}
-
-function resetOverview() {{
-  overviewMode = true;
-  selectedCommunities = new Set(overviewCommunities);
-  showUngrouped = !LEGEND.length;
   refreshView();
 }}
 
@@ -442,7 +432,6 @@ LEGEND.forEach(c => {{
     }} else {{
       selectedCommunities.delete(c.cid);
     }}
-    overviewMode = false;
     refreshView();
   }});
   item.innerHTML = `<div class="legend-dot" style="background:${{c.color}}"></div>
@@ -784,9 +773,9 @@ def to_html(
     <h3>Communities</h3>
     <div id="legend-controls">
       <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
-      <button type="button" id="overview-reset" onclick="resetOverview()">Overview</button>
     </div>
-    <div id="view-caption">Source communities: all available groups. Filter or choose Overview to focus.</div>
+    <div id="view-caption">Source communities: all available groups. Filter or search to focus.</div>
+    <div id="navigation-help">Hold the middle mouse button and drag to pan. Scroll the wheel to zoom.</div>
     <div id="legend"></div>
   </div>
   <div id="stats">{stats}</div>

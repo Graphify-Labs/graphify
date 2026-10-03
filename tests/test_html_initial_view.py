@@ -1,4 +1,4 @@
-"""Execute default Select All and the explicitly requested overview lifecycle."""
+"""REQ-QML-019-AC04 retains default selection, filters and source search."""
 from __future__ import annotations
 
 import copy
@@ -14,43 +14,93 @@ import pytest
 from graphify.export import to_html
 
 
+# External DOM/vis APIs only: emitted code owns selection and camera arithmetic.
 HARNESS = r"""
-class Element {
+class Event {
+  constructor(type, options = {}) {
+    Object.assign(this, {type, bubbles: true, cancelable: true, defaultPrevented: false}, options);
+    this.stopped = false; this.immediate = false;
+  }
+  preventDefault() { if (this.cancelable) this.defaultPrevented = true; }
+  stopPropagation() { this.stopped = true; }
+  stopImmediatePropagation() { this.immediate = this.stopped = true; }
+}
+class EventTarget {
+  constructor() { this.listeners = {}; this.handlers = {}; }
+  addEventListener(name, fn, options = {}) {
+    const capture = options === true || !!options.capture;
+    (this.listeners[name] ||= []).push({fn, capture, once: !!options.once});
+    this.handlers[name] = (event = {}) => this.dispatchEvent(new Event(name, event));
+  }
+  removeEventListener(name, fn, options = {}) {
+    const capture = options === true || !!options.capture;
+    this.listeners[name] = (this.listeners[name] || []).filter(x => x.fn !== fn || x.capture !== capture);
+  }
+  deliver(event, capture) {
+    event.currentTarget = this;
+    for (const listener of [...(this.listeners[event.type] || [])]) {
+      if (event.immediate) break;
+      if (listener.capture !== capture) continue;
+      listener.fn.call(this, event);
+      if (listener.once) this.removeEventListener(event.type, listener.fn, {capture});
+    }
+  }
+  dispatchEvent(event) {
+    event = event instanceof Event ? event : new Event(event.type, event);
+    event.target ||= this;
+    const parents = []; for (let p = this.parent; p; p = p.parent) parents.push(p);
+    for (const p of [...parents].reverse()) { p.deliver(event, true); if (event.stopped) break; }
+    if (!event.stopped) { this.deliver(event, true); if (!event.immediate) this.deliver(event, false); }
+    if (event.bubbles && !event.stopped) for (const p of parents) {
+      p.deliver(event, false); if (event.stopped) break;
+    }
+    return !event.defaultPrevented;
+  }
+}
+class Element extends EventTarget {
   constructor() {
-    this.children = []; this.handlers = {}; this.style = {}; this.innerHTML = '';
-    this.checked = false; this.indeterminate = false; this.value = '';
+    super(); this.children = []; this.style = {}; this.innerHTML = ''; this.captures = new Set();
+    this.checked = false; this.indeterminate = false; this.value = ''; this.captureLog = [];
     this.classes = new Set();
     this.classList = {add: x => this.classes.add(x), remove: x => this.classes.delete(x)};
   }
-  addEventListener(name, fn) { this.handlers[name] = fn; }
-  appendChild(child) { this.children.push(child); }
-  prepend(child) { this.children.unshift(child); }
-  contains(child) { return this.children.includes(child); }
-  dispatchEvent(event) { this.handlers[event.type](event); }
+  appendChild(child) { child.parent = this; this.children.push(child); }
+  prepend(child) { child.parent = this; this.children.unshift(child); }
+  contains(child) { return child === this || this.children.some(x => x.contains(child)); }
+  setPointerCapture(id) { this.captureLog.push(['set', id]); if (this.failCapture) throw Error('capture'); this.captures.add(id); }
+  releasePointerCapture(id) { this.captureLog.push(['release', id]); if (this.failRelease) throw Error('release'); this.captures.delete(id); }
+  hasPointerCapture(id) { return this.captures.has(id); }
 }
-const document = {
-  elements: {},
-  getElementById(id) { return this.elements[id] ||= new Element(); },
-  createElement() { return new Element(); },
-  addEventListener() {}, querySelectorAll() { return []; }
-};
+const window = new EventTarget();
+const document = Object.assign(new EventTarget(), {
+  elements: {}, parent: window,
+  getElementById(id) { if (!this.elements[id]) { this.elements[id] = new Element(); this.elements[id].parent = this; } return this.elements[id]; },
+  createElement() { const element = new Element(); element.parent = this; return element; },
+  querySelectorAll() { return []; }
+});
 class DataSet {
-  constructor(items) { this.map = new Map(items.map(n => [n.id, n])); }
+  constructor(items) { this.map = new Map(items.map(n => [n.id, n])); this.updates = 0; }
   get(id) { return this.map.get(id); }
-  update(items) { items.forEach(n => this.map.set(n.id, n)); }
+  update(items) { this.updates += items.length; items.forEach(n => this.map.set(n.id, n)); }
   remove(ids) { ids.forEach(id => this.map.delete(id)); }
 }
 let constructed;
 const focusChecks = [];
 const vis = {DataSet, Network: class {
   constructor(container, data) {
-    this.data = data;
+    this.data = data; this.camera = {x: 100, y: -50}; this.scale = 2; this.moves = []; this.selections = [];
     constructed = {nodes: [...data.nodes.map.keys()], edges: [...data.edges.map.values()]};
   }
   once() {} on() {} setOptions() {} stabilize() {}
-  selectNodes() {}
+  selectNodes(ids) { this.selections.push(ids); }
   focus(id) { focusChecks.push({id, present: this.data.nodes.map.has(id)}); }
   getConnectedNodes() { return []; }
+  getViewPosition() { if (this.failView) throw Error('view'); return {...this.camera}; }
+  getScale() { if (this.failScale) throw Error('scale'); return this.scale; }
+  moveTo(options) {
+    if (this.failMove) throw Error('move'); this.moves.push(JSON.parse(JSON.stringify(options)));
+    this.camera = {...options.position}; if ('scale' in options) this.scale = options.scale;
+  }
 }};
 function state() {
   return {nodes: [...nodesDS.map.keys()].sort(), edges: [...edgesDS.map.values()],
@@ -118,117 +168,78 @@ def test_default_select_all_constructs_every_exported_node_and_edge_before_netwo
     assert result["initial"]["checked"] and not result["initial"]["indeterminate"]
     assert "Source communities: 12 of 12 source communities" in result["initial"]["caption"]
     assert 'id="select-all-cb" checked' in content
+    assert 'id="overview-reset"' not in content and 'resetOverview' not in content
     assert len(result["rawNodes"]) == 12 and len(result["rawEdges"]) == 11
 
 
-def test_optional_overview_selects_only_ten_largest_source_communities(tmp_path):
-    """Overview is an explicit presentation choice; it removes deferred nodes from physics."""
+def test_req_qml019_ac04_filters_all_none_preserve_endpoint_safe_source_data(tmp_path):
+    """Community filters, Select None and Select All change actual datasets."""
     content, _ = write_view(tmp_path)
-    result = execute(content, "resetOverview();")
-    assert len(result["constructed"]["nodes"]) == 12
-    assert set(result["final"]["nodes"]) == {f"n{i}" for i in range(2, 12)}
-    assert len(result["final"]["edges"]) == 9
-    assert result["final"]["checkedGroups"] == list(range(2, 12))
-    assert not result["final"]["checked"] and not result["final"]["indeterminate"]
-    assert "Architecture overview: 10 of 12 source communities" in result["final"]["caption"]
-
-
-def test_optional_overview_ties_use_numeric_community_ids_independent_of_insertion(tmp_path):
-    """An explicit overview selects stable numeric IDs when member counts tie."""
-    content, _ = write_view(tmp_path, counts={i: 2 for i in range(12)}, reverse=True)
-    result = execute(content, "resetOverview();")
-    assert len(result["constructed"]["nodes"]) == 12
-    assert set(result["final"]["nodes"]) == {f"n{i}" for i in range(10)}
-    assert not result["final"]["checked"] and not result["final"]["indeterminate"]
-
-
-def test_optional_overview_filters_all_none_and_reset_update_real_datasets(tmp_path):
-    """After choosing Overview, filters change data and preserve endpoint-safe relationships."""
-    content, _ = write_view(tmp_path)
-    actions = """
-resetOverview();
-const overview = JSON.stringify(state());
+    result = execute(content, """
 const control = legendControls.get(0).cb;
-control.checked = true; control.handlers.change({stopPropagation() {}});
-if (!nodesDS.get('n0')) throw Error('checked deferred group was not loaded');
 control.checked = false; control.handlers.change({stopPropagation() {}});
-if (nodesDS.get('n0')) throw Error('unchecked group stayed active');
-toggleAllCommunities(false);
-if (nodesDS.map.size !== 12 || !selectAllCb.checked) throw Error('explicit full selection failed');
+if (nodesDS.get('n0') || selectAllCb.checked || !selectAllCb.indeterminate) throw Error('filter failed');
 toggleAllCommunities(true);
-if (nodesDS.map.size || edgesDS.map.size) throw Error('deselection left active data');
+if (nodesDS.map.size || edgesDS.map.size || selectAllCb.checked) throw Error('deselection failed');
 if (!state().caption.includes('No communities selected')) throw Error('empty selection lacks guidance');
-resetOverview();
-if (JSON.stringify(state()) !== overview) throw Error('optional overview was not restored');
-"""
-    result = execute(content, actions)
-    assert result["initial"]["checked"] and not result["final"]["checked"]
-    assert set(result["final"]["nodes"]) == {f"n{i}" for i in range(2, 12)}
+toggleAllCommunities(false);
+""")
+    assert set(result["final"]["nodes"]) == {f"n{i}" for i in range(12)}
+    assert result["final"]["checked"] and not result["final"]["indeterminate"]
+    assert len(result["final"]["edges"]) == 11
     assert all(e["from"] in result["final"]["nodes"] and e["to"] in result["final"]["nodes"]
                for e in result["final"]["edges"])
 
 
-def test_optional_overview_search_reveals_deferred_group_with_exact_source_metadata(tmp_path):
-    """A hidden overview result restores its source evidence before the real focus call."""
+def test_req_qml019_ac04_search_restores_filtered_source_and_exact_metadata(tmp_path):
+    """Filtered source evidence is restored before the real focus call."""
     content, _ = write_view(tmp_path)
     result = execute(content, """
-resetOverview();
-if (nodesDS.get('n0')) throw Error('optional overview did not defer the search target');
+legendControls.get(0).cb.checked = false; legendControls.get(0).cb.handlers.change();
 searchInput.value = '<Widget>'; searchInput.handlers.input();
-if (searchResults.children.length !== 1) throw Error('deferred search result unavailable');
+if (searchResults.children.length !== 1) throw Error('filtered search result unavailable');
 searchResults.children[0].onclick();
-if (!document.getElementById('info-content').innerHTML.includes('src/Widget.qml'))
-  throw Error('revealed source evidence missing');
+if (!document.getElementById('info-content').innerHTML.includes('src/Widget.qml')) throw Error('source missing');
 if (nodesDS.get('n0').metadata.qml.raw_name !== 'deferred') throw Error('metadata changed');
 if (nodesDS.get('n0').qt_qml.qml.raw_name !== 'deferred') throw Error('public Qt projection changed');
 """)
     assert result["focusChecks"] == [{"id": "n0", "present": True}]
-    assert "n0" in result["final"]["nodes"]
-    assert not result["final"]["checked"] and result["final"]["indeterminate"]
+    assert result["final"]["checked"] and not result["final"]["indeterminate"]
+    assert "n0" in result["final"]["nodes"] and len(result["final"]["edges"]) == 11
     source = next(n for n in result["rawNodes"] if n["id"] == "n0")
-    assert source["source_location"] == "L3-L4"
-    assert source["attributes"]["public"] == "retained"
+    assert source["source_location"] == "L3-L4" and source["attributes"]["public"] == "retained"
     assert all(e["from"] in result["final"]["nodes"] and e["to"] in result["final"]["nodes"]
                for e in result["final"]["edges"])
 
 
 @pytest.mark.parametrize("grouped", [False, True])
 def test_small_grouped_and_ungrouped_views_default_to_select_all(tmp_path, grouped):
-    """Every small view starts selected; choosing Overview then leaves Select All unchecked."""
-    graph = nx.Graph()
-    graph.add_node("a", label="A")
-    graph.add_node("b", label="B")
-    graph.add_edge("a", "b", relation="uses")
+    """Small views retain all facts and captions appropriate to their source form."""
+    graph = nx.Graph([("a", "b")])
     path = tmp_path / "small.html"
     assert to_html(graph, {0: ["a", "b"]} if grouped else {}, str(path), learning_overlay={})
-    result = execute(path.read_text(encoding="utf-8"), "resetOverview();")
+    result = execute(path.read_text(encoding="utf-8"))
     assert set(result["constructed"]["nodes"]) == {"a", "b"}
     assert len(result["constructed"]["edges"]) == 1
     assert result["initial"]["checked"] and not result["initial"]["indeterminate"]
-    assert not result["final"]["checked"] and not result["final"]["indeterminate"]
-    assert ("Architecture overview" if grouped else "Source graph") in result["final"]["caption"]
+    assert ("Source communities" if grouped else "Source graph") in result["final"]["caption"]
 
 
-def test_partial_small_membership_starts_selected_and_overview_search_recovers_ungrouped_facts(tmp_path):
-    """Missing legend membership cannot drop initial data or strand optional overview results."""
-    graph = nx.Graph()
-    graph.add_node("a", label="Grouped")
-    graph.add_node("b", label="Ungrouped")
-    graph.add_edge("a", "b", relation="uses")
+def test_req_qml019_ac04_partial_membership_cannot_mark_hidden_ungrouped_fact_selected(tmp_path):
+    """Known groups alone cannot imply full selection while an ungrouped fact is hidden."""
+    graph = nx.Graph([("a", "b")])
     path = tmp_path / "partial.html"
     assert to_html(graph, {1: ["a"]}, str(path), learning_overlay={})
-    content = path.read_text(encoding="utf-8")
-    result = execute(content, """
-resetOverview();
-if (nodesDS.get('b')) throw Error('optional overview did not defer the ungrouped target');
+    result = execute(path.read_text(encoding="utf-8"), """
+toggleAllCommunities(true);
+legendControls.get(1).cb.checked = true; legendControls.get(1).cb.handlers.change();
+if (selectAllCb.checked || !selectAllCb.indeterminate || nodesDS.get('b')) throw Error('false full selection');
 focusNode('b');
-if (!nodesDS.get('b') || edgesDS.map.size !== 1) throw Error('ungrouped result was stranded');
-resetOverview();
-toggleAllCommunities(false);
+if (!nodesDS.get('b') || edgesDS.map.size !== 1) throw Error('ungrouped result stranded');
 """)
     assert result["constructed"]["nodes"] == ["a", "b"]
     assert len(result["constructed"]["edges"]) == 1
     assert result["initial"]["checked"] and not result["initial"]["indeterminate"]
-    assert result["final"]["nodes"] == ["a", "b"]
     assert result["final"]["checked"]
+    assert result["final"]["nodes"] == ["a", "b"]
     assert result["focusChecks"] == [{"id": "b", "present": True}]

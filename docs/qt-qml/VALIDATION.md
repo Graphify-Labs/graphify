@@ -1097,3 +1097,91 @@ revision evidence and broader adoption/inheritance/overload limitations remain
 unchanged. The bounded public membership criteria are locally verified; the
 additional accepted-code-scope adoption check passes, while REQ-QML-018's
 whole-root/provider/parser and combined profile matrix remains unverified.
+
+## INC-QML-16 middle mouse navigation and Overview removal
+
+Status: **Locally complete for the emitted/installed HTML consumer profile**.
+Native browser/device/platform interaction remains unverified. Acceptance: revised
+REQ-QML-019-AC04 and REQ-QML-021-AC01–AC03. This consumer change does not invalidate
+accepted source memberships or change Qt policy 6, AST schema 7 or package version
+0.9.74. Previous Overview checks describe their original revision and do not
+verify removal of that feature.
+
+Red characterization runs actual exporter output through Node.js with external
+DOM/vis APIs isolated. Before production changes, the combined selection/navigation
+run reports **30 failed / 4 passed**, 4.42 seconds: 28 cases lack camera movement,
+and two expose the retained Overview control and a falsely checked Select All
+when ungrouped nodes remain hidden. The four retained startup/filter/search cases
+pass. These failures establish the interaction and paired-selection regression;
+the harness does not implement the production coordinate calculation.
+
+The initial green selection/navigation run passes **34 cases**, 4.02 seconds.
+Review requires actual community projection as well as source rendering and
+additional unavailable-capture/invalid-input boundaries before final closure.
+The first wider exporter run reports **3 failed / 168 passed**, 49.08 seconds.
+Those three inspector tests model `window` as an empty object, lacking the real
+browser event-registration API now required by emitted navigation. Extend that
+external boundary while retaining the original inspector assertions, then rerun
+the complete affected exporter selection. Do not hide those failures or claim
+that an incomplete harness establishes browser compatibility.
+
+Final commands and outcomes below bind the frozen source/test owners. The local artifact procedure builds the reviewed tree,
+checks wheel contents against source and the isolated installation, regenerates
+HTML with the installed CLI and proves unchanged canonical graph bytes. Actual
+emitted-script movement/cleanup, default selection and source/aggregate inspectors
+supplement that artifact identity check. No new browser visual, other-platform,
+hosted or executable Qt proof is implied.
+
+### Final local and artifact evidence
+
+The final review restores retained source metadata, public Qt projection, initial
+edge counts and endpoint-safety assertions independently of the removed Overview
+expectations. No retained product assertion is weakened for this removal.
+
+| Boundary | Executed result |
+| --- | --- |
+| Final focused controls/navigation | 60 passed, 6.57 seconds; 24 pan cases cover independent horizontal/vertical/diagonal movement, four scales and actual source/community exporters |
+| Final exporter/CLI/membership/inspector regressions | 231 passed, 53.15 seconds; no failures or skips |
+| Additional Qt HTML consumers and reviewed wheel | 7 passed, 4.60 seconds; no failures or skips; 238 distinct final selected cases across both runs |
+| Inspector harness correction | Three former failures pass, 1.55 seconds; full legacy export file passes 67 cases, 2.95 seconds; assertions unchanged |
+| Reviewed production tree | `a991dd9fb2d638cf15fbb2c76499ed1f6ebd51ea` |
+| Wheel SHA256 | `11e370a19d328a01b4e9e30726731c815b4ef58399833ff3d0a7c644f71e98f0` |
+| Reviewed source/wheel/isolated tool | All 156 Python modules byte-equal; zero mismatches |
+| Installed CLI HTML export | Exit 0; Overview control/ranking/reset absent; initial Select All complete; actual emitted script camera moves, release/blur cleanup and retry pass; source inspectors retained |
+| Source retention | Prior accepted canonical graph bytes and RAW nodes/edges/legend are identical after installed HTML regeneration; no re-extraction needed |
+| File ceilings | HTML 789/810; helper 116/300; initial-view tests 245/300; middle-pan tests 223/300; inspector compatibility owner 1377/1377 |
+| Ruff and type checks | Five touched owners pass Ruff. The four navigation/source/test owners pass explicit-runtime Pyright with zero errors/warnings. Legacy export tests retain one proven pre-existing error described below |
+| Lockfile | Offline check resolves 210 packages; no dependency or lockfile change |
+
+```powershell
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_html_initial_view.py tests/test_html_middle_pan.py tests/test_export.py tests/test_cli_export.py tests/test_html_community_links.py tests/test_html_community_recovery.py tests/test_qt_graph_html_payload.py tests/test_qt_project_membership_updates.py --tb=short -rs
+$env:GRAPHIFY_QML_TEST_WHEEL = '<reviewed wheel>'
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_qt_html_consumers.py tests/test_qml_wheel_artifact.py --tb=short -rs
+Remove-Item Env:GRAPHIFY_QML_TEST_WHEEL
+$navigationFiles = @('graphify/exporters/html.py', 'graphify/exporters/html_navigation.py', 'tests/test_html_initial_view.py', 'tests/test_html_middle_pan.py')
+.venv/Scripts/ruff.exe check @navigationFiles tests/test_export.py
+.venv/Scripts/pyright.exe --pythonpath .venv/qt-mcp-312/Scripts/python.exe @navigationFiles
+uv lock --check --offline
+graphify update .
+```
+
+The wheel placeholder identifies the digest above rather than an arbitrary
+same-version artifact. Package version 0.9.74, Qt policy 6 and AST schema 7 remain
+unchanged. The final production subtree is compared with the reviewed tree before
+handoff; documentation/test commits do not substitute for that byte binding.
+
+Including `tests/test_export.py` in Pyright reports one existing
+`reportOptionalOperand` at line 1008: the backup test uses an optional return as
+a path without narrowing. The exact pre-change `HEAD` file reproduces the same
+error under an explicit configuration that includes the ignored baseline copy.
+The two-line growth at the inspector window API, line 1307, does not affect that
+test. The baseline error is retained and disclosed; no assertion, type rule or
+unrelated backup behavior is changed.
+
+The required repository graph update exits 0 after source changes. Six existing
+optional-parser fixture warnings and the deliberate Luau partial fixture remain
+explicit; no model labeling or corpus execution runs. A final update after the
+retained test assertions are restored keeps the local graph current.
+The increment review adds no further scope. Broader adoption, inherited endpoints
+and generic overload parity remain with INC-QML-08/11/15, and native browser/device,
+other-platform and hosted proof remain unverified system gaps.

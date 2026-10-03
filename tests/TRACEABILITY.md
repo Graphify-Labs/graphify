@@ -2,7 +2,8 @@
 
 Current criterion IDs use `REQ-QML-`; completion increments use `INC-QML-`.
 [Legacy aliases](../docs/qt-qml/IDENTIFIERS.md) retain earlier evidence identity.
-Existing test filenames, function names and source annotations are unchanged.
+Recorded test identities retain their historical evidence; current renamed viewer
+tests are mapped to their actual functions below. Source annotations keep their IDs.
 
 INC-QML-00 through INC-QML-07 are complete for the documented bounded Qt 6/QML static
 profile. Consumer, export, assistant, update and installed-artifact gates have
@@ -21,6 +22,12 @@ REQ-QML-020 adds three membership-projection criteria, for twenty
 requirements and eighty-one criteria. INC-QML-12/13 source and final installed
 public-fixture regressions below do not verify the new membership projection or the
 broader adoption gaps.
+REQ-QML-021 adds three camera-navigation criteria, bringing the catalog to
+twenty-one requirements and eighty-four criteria. INC-QML-16 also changes the
+existing REQ-QML-019-AC04 without adding or renumbering that criterion. Its current
+removal/navigation acceptance has local emitted-script and reviewed installed-
+artifact proof; native browser/device and other-platform behavior remains
+unverified. Earlier Overview checks remain historical evidence for their own revision.
 Verified local profile means
 executed source/consumer acceptance, not runtime equivalence. Every declared
 platform lane requires its own installed-artifact evidence; a skip is not a pass.
@@ -194,8 +201,11 @@ REQ-QML-001–REQ-QML-017 evidence above applies to the original bounded profile
 
 ## HTML community-view criteria
 
-REQ-QML-019 is locally verified at the Python exporter/CLI and emitted JavaScript
-selection boundaries. Node harnesses execute production scripts with the external
+REQ-QML-019-AC01–AC03 retain local verification at the Python exporter/CLI and
+emitted JavaScript boundaries. INC-QML-16 changes AC04 by removing Overview; its
+current control acceptance is locally verified at emitted-script and reviewed
+installed-artifact boundaries. Native browser/device behavior remains unverified.
+Node harnesses execute production scripts with the external
 vis network isolated; they prove dataset admission, controls and source payload,
 not a new browser-engine or visual acceptance run. Installed-artifact identity and
 executed commands are recorded in VALIDATION.md.
@@ -205,7 +215,7 @@ executed commands are recorded in VALIDATION.md.
 | REQ-QML-019-AC01 | `tests/test_html_community_recovery.py::test_req_qml019_ac01_large_export_recovers_complete_partition`; `tests/test_html_community_recovery.py::test_req_qml019_ac01_invalid_saved_membership_is_rebuilt_without_stale_names`; `tests/test_html_community_recovery.py::test_req_qml019_ac01_cli_exports_unclustered_saved_graph_without_sidecars`; `tests/test_html_community_recovery.py::test_req_qml019_ac01_explicit_graph_uses_adjacent_analysis_not_malformed_cwd_sidecar` | INC-QML-09 | Locally verified |
 | REQ-QML-019-AC02 | `tests/test_html_community_recovery.py::test_req_qml019_ac02_existing_groups_get_missing_labels`; small/empty/authoritative group and name cases in the same module; `tests/test_qt_graph_html_payload.py::test_qml013_ac03_aggregated_html_explicitly_states_source_fact_omission`; existing escaping and written-node-info runtime regressions in `tests/test_export.py`; [current exact community-count assignments](#constructor-and-source-containment-corrections) | INC-QML-09; INC-QML-13 correction | Locally verified exporter/emitted-script counts and reviewed installed artifact; browser visual inspection is separate |
 | REQ-QML-019-AC03 | `tests/test_html_community_recovery.py::test_req_qml019_ac03_invalid_computed_partition_preserves_output_and_recovers`; `tests/test_html_community_recovery.py::test_req_qml019_ac03_cli_unavailable_view_retains_prior_outputs_and_retries`; `tests/test_html_community_recovery.py::test_req_qml019_ac03_cli_failure_has_no_false_write_and_preserves_prior_html`; `tests/test_html_community_recovery.py::test_req_qml019_ac03_isolate_partition_over_hard_cap_is_not_published` | INC-QML-09 | Locally verified; actual atomic replacement failure injected at its OS boundary |
-| REQ-QML-019-AC04 | `tests/test_html_initial_view.py::test_default_select_all_constructs_every_exported_node_and_edge_before_network`; `tests/test_html_initial_view.py::test_optional_overview_selects_only_ten_largest_source_communities`; `tests/test_html_initial_view.py::test_optional_overview_ties_use_numeric_community_ids_independent_of_insertion`; `tests/test_html_initial_view.py::test_optional_overview_filters_all_none_and_reset_update_real_datasets`; `tests/test_html_initial_view.py::test_optional_overview_search_reveals_deferred_group_with_exact_source_metadata`; grouped/ungrouped/partial startup controls in the same module | INC-QML-09 | Locally verified checked startup through production emitted-script harness; installed artifact checked. Prior unchecked-startup evidence is revision-specific; camera/layout appearance not reverified |
+| REQ-QML-019-AC04 | `tests/test_html_initial_view.py::test_default_select_all_constructs_every_exported_node_and_edge_before_network`; `tests/test_html_initial_view.py::test_req_qml019_ac04_filters_all_none_preserve_endpoint_safe_source_data`; `tests/test_html_initial_view.py::test_req_qml019_ac04_search_restores_filtered_source_and_exact_metadata`; `tests/test_html_initial_view.py::test_small_grouped_and_ungrouped_views_default_to_select_all`; `tests/test_html_initial_view.py::test_req_qml019_ac04_partial_membership_cannot_mark_hidden_ungrouped_fact_selected` | INC-QML-09; INC-QML-16 removal | Locally verified current emitted-script controls and reviewed installed-artifact scripts. Native browser/device behavior unverified; earlier Overview results are revision-specific and superseded |
 
 <a name="planned-project-membership-projection"></a>
 
@@ -245,5 +255,64 @@ between reviewed source, wheel and isolated installation. The installed public
 CMake/qmake/qrc fixture has six resolved membership sites, accepted consumer/HTML
 results, and actual force/partial failure retention followed by repair/repeat.
 Browser visual, other-platform and executable Qt proof are not claimed. The
-additional accepted-code-scope adoption refresh also passes; 81-criterion
-numbering and earlier verified revision evidence are unchanged.
+additional accepted-code-scope adoption refresh also passes. That INC-QML-14
+checkpoint contained 81 criteria; the subsequent camera requirement adds three
+without changing earlier criterion identities or revision evidence.
+
+## Temporary middle-button camera and Overview removal
+
+Owner: HTML viewer maintainer. INC-QML-16 owns REQ-QML-021-AC01–AC03 and the changed
+REQ-QML-019-AC04, depending on the existing REQ-QML-019 community-view contract.
+Status: **Locally verified at emitted-script and reviewed installed-artifact
+boundaries; native browser/device and other-platform behavior unverified**.
+The tests below execute the actual
+emitted navigation script with a recording camera/network boundary; a stubbed
+network does not establish a browser-engine, layout or native-device result.
+The initial-view module separately retains checked startup, controls, dataset and
+source metadata assertions while removing obsolete Overview expectations.
+
+| Criterion | Exact production evidence and boundaries | Increment | Status |
+| --- | --- | --- | --- |
+| REQ-QML-021-AC01 | `tests/test_html_middle_pan.py::test_req_qml021_ac01_middle_drag_translates_both_axes_at_current_zoom` (24 horizontal/vertical/diagonal, four-scale, source/aggregate variants); incremental client delta divided by current zoom, preserved scale, no animation, and suppressed native middle autoscroll | INC-QML-16 | Locally verified emitted-script and reviewed installed-artifact boundary; native browser/device and other platforms unverified |
+| REQ-QML-021-AC02 | `tests/test_html_middle_pan.py::test_req_qml021_ac02_release_cancel_blur_and_lost_buttons_end_drag`; `tests/test_html_middle_pan.py::test_req_qml021_ac02_capture_failure_has_window_fallback_and_no_lingering_drag`; `tests/test_html_middle_pan.py::test_req_qml021_ac02_invalid_camera_or_input_aborts_without_jump`; `tests/test_html_middle_pan.py::test_req_qml021_ac02_invalid_press_cannot_capture_or_resume_after_repair`; `tests/test_html_middle_pan.py::test_req_qml021_ac02_unrelated_pointer_and_nonmiddle_release_preserve_owned_drag`. Matching release/cancel, lost button/capture, blur/pagehide, outside movement/capture fallback, invalid finite/scale/derived-position and cursor restoration controls prove termination and no later jump | INC-QML-16 | Locally verified emitted-script and reviewed installed-artifact boundary; native browser/device and other platforms unverified |
+| REQ-QML-021-AC03 | `tests/test_html_middle_pan.py::test_req_qml021_ac03_other_inputs_and_source_datasets_remain_unchanged`; `tests/test_html_middle_pan.py::test_req_qml021_ac03_filters_and_search_work_after_middle_drag`; left/right/touch/wheel coexistence and actual startup/filter/all/none/search/inspector controls preserve graph/payload/dataset metadata, node positions, physics and temporary camera-only state | INC-QML-16 | Locally verified emitted-script and reviewed installed-artifact boundary; native browser/device and other platforms unverified |
+
+The focused command executes both current modules:
+
+```powershell
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_html_middle_pan.py tests/test_html_initial_view.py --tb=short -rs
+```
+
+Result: **60 passed**, 6.57 seconds, with no skips, after restoring retained Qt
+projection, metadata/span/attribute and endpoint-safe source-edge assertions.
+The earlier 60-pass/6.71-second checkpoint precedes that assertion review; the
+44-pass/4.99-second checkpoint precedes independent horizontal/vertical/diagonal expansion.
+An earlier missing-hook selection has 28 failed cases; the integration owner's validation record owns its
+exact command/revision. Earlier exporter/CLI/membership-consumer regression proof
+passes 219 cases in 54.20 seconds before the sixteen additional geometry cases.
+The final exporter/CLI/membership/inspector selection passes 231 cases in 53.15
+seconds, without failures or skips.
+Wheel-artifact/Qt HTML consumers pass seven cases in 4.60 seconds, and the legacy
+export module passes 67 cases in 2.95 seconds. These recorded script/artifact
+boundaries do not close native browser/device behavior. The final 231-case
+selection and seven additional consumer/wheel cases cover 238 distinct cases.
+Five touched owners pass Ruff; the four navigation/source/test owners pass
+explicit-runtime Pyright with zero errors/warnings. Including the legacy
+`tests/test_export.py` owner reports one unchanged `reportOptionalOperand` error
+at line 1008, reproduced against the prior revision with the same explicit
+include/exclude configuration. The narrow listener-registration adjustment does
+not alter that optional-return expression, inspector assertions or type checks.
+
+The reviewed production tree is `a991dd9fb2d638cf15fbb2c76499ed1f6ebd51ea`; wheel
+SHA256 is `11e370a19d328a01b4e9e30726731c815b4ef58399833ff3d0a7c644f71e98f0`.
+All 156 Python payloads match reviewed source, wheel and isolated installation.
+The installed viewer artifact retains canonical/RAW data, checked startup and
+source inspectors; actual emitted-script camera moves and release/blur/retry
+cleanup pass. No private input identifiers, paths or source are retained here.
+Helper/HTML/initial-view/middle-pan measurements are 116/789/245/223 physical lines;
+the updated inspector harness remains within its documented 1377-line exception.
+Qt policy 6 and AST schema 7 are unchanged; this is viewer input, with no source
+execution, new SDK, persistence operation or graph diagnostic. Earlier Overview
+and camera selection evidence is historical. A changed requirement is verified
+only after its own applicable controls and failure/cleanup cases pass; broader
+adoption, inherited endpoint and constructor-overload gaps remain independent.

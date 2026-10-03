@@ -387,14 +387,15 @@ retains previous HTML and reports its actual result.
 
 Initial selection activates all exported view nodes and edges, with Select All
 checked. Large graphs retain complete labeled community aggregation and its
-supported cap rather than forcing raw full-source rendering. An optional
-Overview selects the ten largest structural communities by member count with
-stable community-ID ordering and leaves Select All unchecked. Initial selection
-is explicit presentation policy rather than saved personal view state.
+supported cap rather than forcing raw full-source rendering. INC-QML-16 removes
+the Overview control and its selection/ranking state; community filters, search
+and Select All/None remain the selection interfaces. Initial selection is
+explicit presentation policy rather than saved personal view state.
 Structural clustering supports navigation; versioned architecture/design
-documents describe intentional ownership. Checked-default AC04 has local
-exporter/CLI, emitted-script and reviewed installed-artifact proof; browser visual,
-other-platform and new hosted checks remain unexecuted. Remaining parser/provider
+documents describe intentional ownership. Earlier checked-default/Overview AC04
+proof belongs to that prior revision. The changed AC04 is locally verified at
+current emitted-script and reviewed installed-artifact boundaries; native browser,
+device, other-platform and new hosted checks remain unverified. Remaining parser/provider
 adoption contracts retain their scope.
 
 ## D13 — Complete definitions and exact provenance authorize native ownership
@@ -500,3 +501,41 @@ producer, lifecycle, consumer and installed-artifact evidence belongs to
 requirements, plan and
 traceability. HTML clustering consumes persisted edges and adds no synthetic
 membership. Exact overload identity remains the separate planned INC-QML-15.
+
+## D16 — Middle-button input owns only the temporary camera
+
+Status: **Locally verified at emitted-script and reviewed installed-artifact
+boundaries** under REQ-QML-021-AC01–AC03 and changed REQ-QML-019-AC04. Native
+browser/device and other-platform behavior remains unverified. A held mouse
+middle button pans the existing 2D network camera.
+Screen movement `(dx, dy)` produces world movement `(-dx / scale, -dy / scale)`
+from the current view, preserving the current scale and disabling camera animation
+for that movement. Reading the scale on each move preserves native wheel zoom
+between movements. Source and aggregate views share this input contract.
+
+`exporters/html_navigation.py::MIDDLE_PAN_SCRIPT` owns a plain JavaScript IIFE over
+the existing `container` and `network`; the HTML exporter injects it once after
+network construction and initial physics setup. Mouse middle pointer input is
+handled separately from left/right/touch and wheel behavior. Native middle-button
+autoscroll and active text-selection gestures are suppressed only for this input.
+The helper calls the existing camera API; it changes no node positions, selection,
+physics options, filter state, datasets or canonical graph payload.
+
+Container pointer capture is guarded. Window pointer listeners provide an outside-
+container/capture-failure fallback. Matching release/cancel, lost middle-button
+state, lost capture, window blur and page hide end the gesture. Finite pointer and
+camera values, positive scale and finite derived movement are required; invalid
+camera/API state aborts safely without a later jump. Cleanup restores the previous
+cursor/user-selection state before attempting capture release.
+
+This is temporary browser camera state with no persistence, account access,
+network fetch, analyzed-code execution or new SDK dependency. Existing renderer,
+export and atomic-write owners retain their failure boundaries; invalid gesture
+state adds no graph diagnostic or writer operation. Qt policy 6, AST schema 7 and
+source fact schemas remain unchanged. The new helper/tests stay below 300 lines;
+the narrow HTML injection/removal stays within the measured legacy viewer ceiling.
+Exact production emitted-script, rejection/coexistence and reviewed installed-
+artifact evidence belongs to traceability/validation. Current navigation/selection
+tests pass 60 cases, including 24 independent axis/scale/view variants. The source,
+wheel and isolated installation contain 156 byte-equal Python payloads. No browser
+visual or native-device proof is inferred from the recorded camera/network harness.
