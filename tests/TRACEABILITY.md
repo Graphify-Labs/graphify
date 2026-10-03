@@ -1,7 +1,9 @@
 # Qt/QML acceptance traceability
 
-Status: planning. There are no Qt/QML-specific automated tests in this change.
-Baseline generic-language tests are evidence about existing behavior only.
+QML-00 evidence: `test_qml_parser_probe.py` has 40 passing probes without skips
+on Windows x64 Python 3.10, 3.12, 3.13 and 3.14. See
+[PARSER_DECISION.md](../docs/qt-qml/PARSER_DECISION.md). Production criteria below
+remain open; baseline generic-language tests prove existing behavior only.
 
 The requirement definitions are authoritative in
 [REQUIREMENTS.md](../docs/REQUIREMENTS.md). The

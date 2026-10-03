@@ -263,6 +263,14 @@ establishes full parity after this safety baseline.
 
 ## QML-00 — Baseline and parser decision
 
+**Status: complete for optional parser selection (3 October 2026).** See the
+[parser decision and executed evidence](PARSER_DECISION.md). Linux/macOS lanes
+remain unverified; this does not authorize default-installed parser promotion.
+The review adds **QML-01a** (write/cache safety) and **QML-01b** (declarations,
+admission and installation) as required QML-01 work packages. A dedicated semantic
+qmldir parser and nonlossy, immutable fact transport are mandatory in QML-02.
+Production acceptance criteria remain open until exercised through production.
+
 **Scope and code paths.** First inspect the current exact head of PR #1748 without
 changing this workspace to its branch. Review its extractor, C++ modifications,
 dependency metadata, tests, graph-family policy and mergeability against the

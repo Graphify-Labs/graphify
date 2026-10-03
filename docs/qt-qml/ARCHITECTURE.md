@@ -81,6 +81,10 @@ The initial resolver can rebuild a bounded project index each run. Optimize afte
 
 ## Parser decision and packaging gate
 
+D2 is accepted for the optional language-pack adapter. The
+[QML-00 decision](PARSER_DECISION.md) records installed ABI, license, footprint,
+offline invocation, executed platform lanes and remaining evidence gaps.
+
 QML is a dedicated grammar with embedded JavaScript. Parsing all QML as JavaScript or recovering types with regular expressions cannot support reliable scope and bindings.
 
 Verified candidate evidence as of 3 October 2026:
