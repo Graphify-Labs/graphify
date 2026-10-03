@@ -51,6 +51,7 @@ def _class_facts(mapping, facts):
         facts.add("class", record["name"], record["span"], owner=record["node_id"] or None,
                   generic_target_id=record["node_id"], class_id=record["node_id"],
                   class_name=record["qualified_name"], status=record["status"],
+                  is_definition=record["is_definition"],
                   is_qobject="Q_OBJECT" in macros or "QObject" in bases,
                   source_q_object="Q_OBJECT" in macros, is_gadget="Q_GADGET" in macros, bases=bases)
         add_macro_registration(mapping, facts, record)
@@ -97,7 +98,11 @@ def enrich_qt_cpp(paths, per_file, *, root, accepted_nodes=None, accepted_edges=
         except QtCppError as error:
             _failure(result, path, root, error)
     classes = [record for mapping, _ in units for record in mapping.classes]
-    classes.extend({"node_id": md["class_id"], "qualified_name": md["class_name"]}
+    # Borrowed complete bodies retain their source/span identity so binding can
+    # deduplicate the same accepted body reconstructed by the canonical mapper.
+    classes.extend({"node_id": md["class_id"], "qualified_name": md["class_name"],
+                    "source_file": node.get("source_file"), "span": md.get("span", {}),
+                    "is_definition": md.get("is_definition")}
                    for node in nodes if (md := qt_metadata(node)).get("kind") == "class"
                    and md.get("class_id") and md.get("class_name"))
     for path, result in pending:
@@ -112,7 +117,9 @@ def enrich_qt_cpp(paths, per_file, *, root, accepted_nodes=None, accepted_edges=
         facts = QtFacts(mapping.unit)
         try:
             _class_facts(mapping, facts)
-            add_literal_registrations(mapping, facts, classes)
+            # Forward declarations remain source facts, but only a parsed body
+            # establishes a registration provider; old metadata proves neither.
+            add_literal_registrations(mapping, facts, [item for item in classes if item.get("is_definition") is True])
         except QtCppError as error:
             _failure(result, mapping.unit.path, root, error)
             continue

@@ -563,3 +563,163 @@ The HTML owner remains 763 physical lines and the initial-view test owner is 234
 other recorded owner sizes are unchanged. Browser visual, other-platform and
 hosted proof remain separate unexecuted evidence for this revision. This result
 does not establish closure of separately investigated source or display cases.
+
+## INC-QML-10 native source ownership
+
+**Current result: 88 focused and 954 broad cases pass**, with seven documented
+broad-suite skips. The final reviewed wheel, installed proof and accepted-context
+contract appear below. Earlier ownership-only counts and artifacts are retained
+as intermediate evidence.
+
+**Intermediate proof before accepted-context correction.** Existing criteria
+REQ-QML-008-AC02, REQ-QML-016-AC01/AC04 and REQ-QML-017-AC02/AC04 have new public
+native-ownership regressions. The 78/944 counts and tree/wheel below precede the
+accepted-context body-key correction; they are not its final proof. Earlier profile, syntax and HTML counts/artifacts
+above remain evidence for their recorded revisions.
+
+Production proof covers retained forward facts/IDs, unique complete-class
+authority, accepted canonical header/implementation definition provenance and
+member/emission/reverse-access ownership through graph build, serialization and
+consumers. Negative cases include forward-only ownership, distinct complete-class
+ambiguity, wrong file/line, conflicting qualification/signature and missing
+canonical evidence. Genuine unsupported relationships remain unresolved; no
+claim is made that every isolated Qt node should acquire an edge.
+
+Qt policy epoch 3 with AST cache schema 6 unchanged refreshes the same package
+version's ownership facts. The new upgrade cases exercise actual unchanged-source
+CLI refresh and preservation of prior graph/manifest/stamp after a rejected native
+candidate. Before the epoch correction, two upgrade cases failed because
+`inspect.changed` stayed false, with two deselected, in 1.08 seconds. The public
+ownership tests also reproduced four failing cases before their correction.
+
+The focused command was:
+
+```powershell
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_qt_cpp_owner_upgrade.py tests/test_qt_cpp_definition_ownership.py tests/test_qt_cpp_upgrade_invalidation.py tests/test_qt_analysis_state.py tests/test_qt_incremental_policy.py --tb=short -rs
+```
+
+Result: **78 passed**, 6.55 seconds in the intermediate focused run, including actual JSON
+publication/reload assertions for namespace-scoped QML access. The new ownership module has 18 cases and the
+owner-upgrade module has four. Source pairs, BOM/CRLF/Unicode spans, namespace
+qualification, normalized paths, missing/foreign definition evidence, genuine
+complete-class ambiguity, unsupported owners and unrelated plain C++ controls
+exercise the actual extractor/facade/build/reload boundaries.
+
+The reviewed artifact broad command was:
+
+```powershell
+$env:GRAPHIFY_QML_TEST_WHEEL = (Resolve-Path .venv/qml-10-wheels/graphifyy-0.9.74-py3-none-any.whl).Path
+$testFiles = (Get-ChildItem tests/test_qml_*.py, tests/test_qt_*.py, tests/test_cpp_*.py, tests/test_html_*.py, tests/test_export*.py).FullName
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q @testFiles tests/test_cli_export.py --tb=short -rs
+```
+
+Result: **944 passed / 7 skipped / 1 warning**, 102.58 seconds. Four skips require
+an unavailable C++ preprocessor, two require Windows symlink permission and one
+requires optional SVG support. The warning is the existing Starlette deprecation.
+
+`uv build` produces `graphifyy-0.9.74-py3-none-any.whl`, installed in an isolated
+environment without changing the package version. Intermediate reviewed production tree:
+`3ee40bc9fa8b8c182664fa601ef2d5e68c2a078c`. Intermediate wheel SHA256:
+`684b83764ec20cc2e24af0c0ae8fa3f9b9b02a5f38b8bbe02b3d25cc7ea13e32`.
+All 152 Python payloads match reviewed source, wheel and installation with zero
+mismatches. Ruff passes all seven changed production/test files. Explicit-runtime
+Pyright passes with **zero errors and zero warnings**:
+
+```powershell
+.venv/Scripts/pyright.exe --pythonpath .venv/qt-mcp-312/Scripts/python.exe graphify/extractors/qt_cpp_mapping.py graphify/extractors/qt_cpp_exposure.py graphify/qt_event_index.py graphify/qt_qml_bridge.py graphify/qt_incremental.py tests/test_qt_cpp_definition_ownership.py tests/test_qt_cpp_owner_upgrade.py
+```
+
+An initial default-environment invocation could not resolve pytest imports.
+Selecting the configured runtime corrected that environment mismatch; source and
+assertions are preserved. The final required `graphify update .` also exits zero
+after the publication/reload assertions. Production source and installed artifact
+are unchanged. Measured new test
+owners are 261 and 91 physical lines; production
+mapping/exposure/event-index/bridge/policy owners are 233/131/111/110/114. This is
+local Windows exporter/source/CLI/artifact proof; no new hosted or other-platform
+result or runtime Qt equivalence is claimed.
+
+### Accepted unchanged-context proof
+
+Borrowed complete-class records retain exact producer `source_file`/`span`
+alongside ID/name/definition authority. Without those fields, a repeated accepted
+body acquired a different deduplication key from its fresh AST representation and
+falsely competed with itself. The correction preserves body identity, immutable
+context inputs and canonical class/member/emission ownership while retaining
+real distinct-definition ambiguity.
+
+Four positive context cases failed before correction, with three passed in
+1.35 seconds under `.venv/Scripts/python.exe`; the warning was existing
+Hypothesis behavior. The final context module has ten passing cases, including
+three equivalent-path cases, direct collection and actual Qt pipeline/join/build/
+JSON reload, namespace/qualified ownership, and distinct-body/legacy/missing
+controls. Its physical size is 145 lines; exposure is 134 lines.
+
+The current focused command was:
+
+```powershell
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_qt_cpp_context_ownership.py tests/test_qt_cpp_owner_upgrade.py tests/test_qt_cpp_definition_ownership.py tests/test_qt_cpp_upgrade_invalidation.py tests/test_qt_analysis_state.py tests/test_qt_incremental_policy.py --tb=short -rs
+```
+
+Result: **88 passed**, 7.38 seconds. Ruff passes all eight changed production/test
+owners; Pyright with the explicit configured Python runtime reports zero errors/
+warnings for the same eight owners.
+
+Final reviewed production tree:
+`360b714402af8915c0b301f875c7a469733a02e0`. Rebuilt
+`graphifyy-0.9.74-py3-none-any.whl` SHA256:
+`b3266bb402ef1ef79287046d7c192df82c08ba3655a9497eb7b6dd9f5cc136d8`.
+Clean `uv build` and isolated installation pass; all 152 Python payloads match
+reviewed source, wheel and installation with zero mismatches. The installed
+public-fixture CLI rejects damaged QML even with force/partial flags, preserving
+prior published bytes; repair and repeated update succeed and restore the graph.
+The first expanded broad run has **one failed / 953 passed / 7 skipped / 1
+warning**, 105.89 seconds. The existing
+`tests/test_qml_skillgen_guidance.py::test_qt_marker_does_not_sanction_unrelated_monolith_edits`
+negative-control case failed when `tools.skillgen.gen._git_show` received a
+nonzero Git baseline-read result for `skill-devin.md`, with no stderr. The
+recorded commit/blob is subsequently readable by `git cat-file` and `git show`.
+An isolated rerun of the entire guidance module passes **24 cases**, 2.70 seconds,
+with no source or assertion changes. The read failure is not reproduced there;
+its exact cause is unknown. The repeated full broad run passes **954 cases / 7
+skipped / 1 existing warning**, 101.89 seconds, with no source or assertion edits
+between the failed read and the confirmation run. Its command is:
+
+```powershell
+$env:GRAPHIFY_QML_TEST_WHEEL = (Resolve-Path .venv/qml-10-final-wheels/graphifyy-0.9.74-py3-none-any.whl).Path
+$testFiles = (Get-ChildItem tests/test_qml_*.py, tests/test_qt_*.py, tests/test_cpp_*.py, tests/test_html_*.py, tests/test_export*.py).FullName
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q @testFiles tests/test_cli_export.py --tb=short -rs
+```
+
+The same seven dependency/platform skips and Starlette warning are accounted for
+above. Final Ruff and explicit-runtime Pyright include the new
+`tests/test_qt_cpp_context_ownership.py` with the other seven owners; both pass.
+`graphify update .` exits zero after all source/test changes. The final installed
+source-only full/unchanged-repeat and HTML checks pass without changing the
+accepted graph or view bytes established by the full-corpus ownership correction.
+Browser/runtime, other-platform and new hosted proof remain unexecuted for this
+revision. Policy 3 and AST schema 6 remain unchanged because the repaired body key
+is internal record transport, not a new persisted fact contract.
+
+## INC-QML-11 inherited-signal lookup gap
+
+**Planned; not implemented or verified.** Recursive inheritance compatibility in
+`QtEventIndex.inherits()` does not supply grandparent member candidates because
+`member()` currently considers only immediate bases. Existing
+REQ-QML-016-AC01/AC04 own the planned endpoint and persisted/incremental correction.
+No new test command, artifact or successful criterion evidence is assigned to
+this gap. [INC-QML-11](PLAN.md#inc-qml-11--inherited-qt-signal-endpoint-lookup)
+records the bounded source/ambiguity controls and exit conditions.
+
+## INC-QML-12 constructor canonical-ownership gap
+
+**Planned; not implemented or verified.** The generic constructor boundary can
+retain an accepted callable ID and definition provenance while using an implicit
+placeholder class parent instead of the accepted complete header class. Native
+emission/access ownership stays unresolved under its strict guard. Existing
+REQ-QML-008-AC02, REQ-QML-016-AC01/AC04 and REQ-QML-017-AC02/AC04 own this separate
+gap; ordinary-method and policy-3 proof above does not establish constructor
+support. Public constructor/parameter/delegation and namespace/duplicate/foreign
+controls, canonical parent correction, persisted/incremental output and epoch
+impact remain unexecuted. No new artifact, successful command or future policy
+version is assigned. See [INC-QML-12](PLAN.md#inc-qml-12--out-of-line-constructor-canonical-ownership).

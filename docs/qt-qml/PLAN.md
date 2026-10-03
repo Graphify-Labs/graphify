@@ -22,6 +22,17 @@ evidence. Browser visual inspection,
 other-platform lanes and hosted proof remain separate evidence, and this
 consumer work does not close remaining INC-QML-08 adoption gaps.
 
+INC-QML-10 corrects native Qt source ownership under five existing criteria.
+Forward-declaration, canonical header/implementation and accepted-context
+regressions pass locally with policy-epoch upgrade, final broad and reviewed
+installed-artifact proof. Earlier artifact results precede the accepted-context
+correction. Initial
+INC-QML-00–INC-QML-07 evidence remains limited to its original bounded profile.
+INC-QML-11 separately plans multi-level inherited-signal endpoint lookup under
+existing REQ-QML-016-AC01/AC04; its implementation and verification are pending.
+INC-QML-12 separately plans generic out-of-line constructor canonical ownership
+under the existing native ownership criteria; it is also unimplemented/unverified.
+
 This plan extends Graphify's existing Python pipeline and contribution workflow.
 It does not propose a Qt application rewrite. Read [REQUIREMENTS.md](../REQUIREMENTS.md),
 [ARCHITECTURE.md](ARCHITECTURE.md), [DESIGN.md](DESIGN.md), [AUDIT.md](AUDIT.md),
@@ -1208,3 +1219,129 @@ work. No additional top-level increment is needed for the bounded HTML grouping
 and overview contract. Personal saved views are separate future work; current
 camera, filters and search remain temporary. Executed exporter/script evidence
 belongs to traceability and validation, with new browser/platform runs explicit.
+
+## INC-QML-10 — Native Qt source ownership correction
+
+**Status: Locally verified source/context correction and reviewed installed artifact.** Owner: Qt native
+integration maintainer. This focused source
+correction is separate from INC-QML-09's HTML grouping and selection policy.
+Affected acceptance: REQ-QML-008-AC02, REQ-QML-016-AC01/AC04 and, where the same
+source-owner boundary applies, REQ-QML-017-AC02/AC04. Existing identifiers remain
+authoritative; this correction does not introduce a competing requirement scheme.
+
+An accepted canonical method can carry its declaration in a header and its
+definition-file/location in an implementation. Native Qt mapping must consume
+that exact provenance and accepted class ownership rather than leaving the
+implementation's member/emission facts disconnected or choosing a class by name.
+The corrected lookup separates forward class declarations from distinct complete
+class definitions. Retain forward facts and IDs, but authorize
+binding only from a uniquely evidenced complete definition. Add the bounded
+`is_definition` class field from AST body presence; duplicate complete definitions
+remain ambiguous, and missing authority does not become a guessed endpoint.
+Public paired-source regressions must reproduce the missing ownership and check
+ambiguous, wrong-file/line and unsupported-owner controls. Graph construction,
+serialization/reload and aggregation retain established source-owned edges;
+genuinely unresolved endpoints retain their uncertainty.
+
+Disjoint owners are canonical mapping in `qt_cpp_mapping.py`, class transport
+and enrichment in `qt_cpp_exposure.py`, and complete-class endpoint eligibility in
+`qt_event_index.py`. Scratch orchestration, source facts and graph/cache writers
+retain their existing ownership; no generic IDs are replaced or borrowed nodes
+mutated. Exact `definition_file`/`definition_location`, callable identity and
+accepted class containment jointly authorize cross-file method binding. A name
+match or a complete-class flag alone is insufficient.
+
+Accepted unchanged contexts preserve the class producer's exact source file and
+original span alongside ID/name/definition authority. Dropping those fields gave
+a borrowed representation a different deduplication key from a fresh record of
+the same complete body, falsely creating competing definitions. Preserve the
+body identity through borrowing and count identical accepted bodies once without
+mutating context inputs. Distinct bodies and unsupported provenance retain their
+ambiguity/unavailable status. The current direct/pipeline/build/reload context
+regressions, final broad suite and reviewed installed-wheel proof pass locally.
+
+The correction requires same-version Qt policy epoch 3 invalidation while AST
+cache schema 6 remains unchanged. Prove cold/warm and full/incremental parity,
+stale-fact removal and prior-graph retention on failure. Include actual member,
+emission, reverse-access and affected/serialized ownership paths; controls cover
+forward-only classes, duplicate complete definitions, wrong definition file/line,
+namespace/signature collisions and missing canonical evidence. Preserve generic
+C++ and unchanged plain-C++ cache behavior. A successful fix does not imply that
+all isolated Qt nodes can or should be connected.
+Earlier proof includes 78 focused ownership/upgrade cases, 944 broad cases and
+an intermediate same-version installed artifact. Current focused context/
+ownership/upgrade proof passes 88 cases; the final broad suite passes 954 cases,
+with seven skips and one existing warning. Exact commands, skips, source tree
+and wheel identity are in [validation](VALIDATION.md#inc-qml-10-native-source-ownership).
+The bounded ordinary-method and accepted-context correction is locally complete;
+remaining INC-QML-08 metadata/provider/header-admission gaps remain separate.
+Review the plan after the source audit and record any additional independently
+owned defect before adding implementation scope.
+
+## INC-QML-11 — Inherited Qt signal endpoint lookup
+
+**Status: Planned; not implemented or verified.** Owner: Qt native event
+maintainer. Acceptance: existing REQ-QML-016-AC01/AC04. Dependency: INC-QML-10's
+complete-class authority and canonical member ownership. No requirement or
+acceptance ID is added.
+
+`QtEventIndex.inherits()` traverses declared ancestors recursively, while
+`member()` searches only the immediate bases when a class lacks its own member.
+A source-established grandparent signal can therefore pass type compatibility
+without supplying its declared endpoint. This is an endpoint lookup defect,
+separate from canonical method ownership and from genuinely dynamic or
+unsupported types.
+
+First reproduce a public three-level class fixture at the actual event resolver
+and facade/build/reload boundary. Then extend ancestor member lookup through
+accepted complete-class evidence with bounded, cycle-safe traversal, preserving
+canonical declaration IDs and existing role, signature, visibility and ambiguity
+rules. Check direct-base regressions, missing/ambiguous complete classes,
+conflicting ancestor signals and repeated paths to the same declaration. Do not
+infer compiler conversions, unknown inheritance, runtime delivery or links merely
+because nodes are isolated.
+
+Exit requires the declared grandparent endpoint and source emission/connection
+mechanisms to survive export/reload/query/affected, with no invented direct
+receiver call. Verify base/signal edits and removal across cold/full/incremental
+results, stale-edge cleanup, retained prior products on failure and corrected
+retry. Review compatibility-fingerprint impact before admission and use a
+reviewed installed artifact for production proof. Keep exact unresolved cases
+and broader runtime/platform limitations visible. This increment remains planned
+until its own tests and source correction land together; INC-QML-10 counts do not
+verify it.
+
+## INC-QML-12 — Out-of-line constructor canonical ownership
+
+**Status: Planned; not implemented or verified.** Owner: generic C++ extraction/
+canonicalization maintainer, coordinated with the Qt native integration
+maintainer. Acceptance: existing REQ-QML-008-AC02, REQ-QML-016-AC01/AC04 and
+REQ-QML-017-AC02/AC04. Dependency: INC-QML-10's exact native ownership guard.
+INC-QML-11's inherited endpoint lookup remains independently owned.
+
+A public source shape such as `Backend::Backend(QObject *parent) : QObject(parent)
+{ emit changed(); }` retains an accepted generic callable ID and definition
+file/line, but its containment can point to an implicit generic placeholder class
+instead of the accepted complete header class. The strict Qt mapper therefore
+leaves emission/access ownership unresolved. This is a generic constructor
+canonicalization gap, not permission for native mapping to invent a class owner
+or a regression of the proven ordinary-method correction.
+
+Characterize the actual generic producer and canonicalization boundary before
+changing it. Establish the correct constructor-to-complete-class containment
+using accepted source/provenance and preserve callable IDs, original spans and
+unrelated generic relationships. Then exercise the existing strict native mapper
+against the corrected evidence. Scope public fixtures to ordinary and
+parameterized/delegating out-of-line constructors, with paired namespace,
+duplicate-class, conflicting-parent and missing/foreign-proof controls. A
+constructor name, initializer expression or matching label alone is insufficient.
+
+Exit requires source-owned emission and supported QML-access sites to retain the
+canonical constructor/class through actual facade, publication/reload, query and
+affected paths, without inferred runtime delivery. Test constructor/parameter/
+base/ownership edits and removal, cold/full/incremental parity, stale-edge cleanup,
+failure preservation and corrected retry. Review generic C++ compatibility and
+analysis-epoch/cache impact before admission, then record a reviewed installed
+artifact and exact commands. No epoch beyond current policy 3 or implementation
+claim is assigned at this planning checkpoint. Preserve genuinely unsupported
+constructors and dynamic QML targets as explicit unresolved cases.

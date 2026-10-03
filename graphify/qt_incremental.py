@@ -11,7 +11,9 @@ QT_METADATA_SUFFIXES = frozenset({".qmltypes", ".cmake", ".pro", ".pri", ".qrc"}
 QT_CPP_SUFFIXES = frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx"})
 QT_SCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
 QT_NAMED_METADATA = frozenset({"qmldir", "CMakeLists.txt"})
-QT_POLICY_VERSION = 2
+# Definition ownership changes derived native facts without changing source or
+# generic AST caches; unchanged-input updates must refresh the Qt analysis layer.
+QT_POLICY_VERSION = 3
 
 
 def is_qt_metadata(path: str | Path) -> bool:

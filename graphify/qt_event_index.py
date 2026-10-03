@@ -25,7 +25,10 @@ class QtEventIndex:
         for node in nodes:
             metadata = qt_metadata(node)
             if metadata.get("kind") == "class":
-                self.classes.setdefault(metadata.get("class_name"), []).append(node)
+                # A forward declaration is source evidence, not a competing
+                # definition. Missing legacy completeness is also unproven.
+                if metadata.get("is_definition") is True:
+                    self.classes.setdefault(metadata.get("class_name"), []).append(node)
             elif metadata.get("kind") == "member":
                 self.members.setdefault((metadata.get("class_name"), metadata.get("raw_name")), []).append(node)
             elif metadata.get("kind") == "callable":

@@ -144,3 +144,48 @@ HTML exporter owns aggregate projection, deferred selection and atomic output.
 The CLI resolves an explicit graph's analysis beside that graph and reports
 skipped/failed view publication as unsuccessful. These are presentation owners;
 source extraction, graph identities and analysis persistence remain unchanged.
+
+## Native source-ownership correction seams (INC-QML-10)
+
+The source/context correction, final broad suite and reviewed installed-artifact
+checks pass locally. These owners retain their interfaces and operate after generic canonical
+identity/provenance is available:
+
+| Owner | Correction responsibility |
+| --- | --- |
+| `graphify/extractors/qt_cpp_mapping.py::CppMapping` | Complete-class eligibility and exact out-of-line callable mapping from accepted definition file/location and class containment |
+| `graphify/extractors/qt_cpp_exposure.py::_class_facts`, `enrich_qt_cpp` | Additive `is_definition` from AST body presence; retain forward facts/IDs and exact producer source file/span when carrying fresh or accepted-context complete-body authority into per-run binding |
+| `graphify/qt_event_index.py::QtEventIndex` | Establish class-qualified event endpoints from unique complete definitions; preserve real ambiguity/unavailable evidence |
+| `graphify/qt_qml_bridge.py::QtQmlBridgeIndex` | Require accepted complete class evidence for native provider/meta-object availability; a retained forward fact does not establish a provider |
+| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Epoch 3 analysis invalidation at unchanged package/source versions; AST schema remains 6 under the cache owner |
+
+`definition_file`/`definition_location` remain accepted canonical attributes and
+do not replace header declaration provenance. Qt member/emission/access facts
+keep their original implementation spans and refer to proven canonical owners.
+Class source file/span belong to the original producer. `enrich_qt_cpp` preserves
+both when borrowing complete-class facts so `CppMapping.bind_classes` recognizes
+the same body consistently with fresh AST records. Context node/metadata
+dictionaries remain immutable inputs; distinct body locations do not coalesce.
+Direct and actual pipeline/build/reload context tests pass. This internal record
+transport fix leaves persisted fact shape, policy 3 and AST schema 6 unchanged.
+The source/root, metadata validation, checkpoint and graph-writer boundaries are
+unchanged. [D13](ARCHITECTURE.md#d13--complete-definitions-and-exact-provenance-authorize-native-ownership)
+and [DESIGN.md](DESIGN.md#native-ownership-authority-inc-qml-10) define authority
+and unresolved-case limits; [VALIDATION.md](VALIDATION.md#inc-qml-10-native-source-ownership)
+records current source/context, final broad and reviewed installed-artifact proof.
+
+INC-QML-11's planned seam is `QtEventIndex.member`: compatibility in `inherits`
+already traverses ancestors, but current inherited-member candidates come only
+from immediate bases. Future ancestor endpoint traversal retains complete-class
+authority, canonical member identity, bounded lookup and existing ambiguity/
+signature/role/access rules. No implementation or proof is assigned yet; see
+[the increment plan](PLAN.md#inc-qml-11--inherited-qt-signal-endpoint-lookup).
+
+INC-QML-12 starts at the generic C++ constructor producer and canonicalization
+seam (`extractors/engine.py`, `extractors/resolution.py`), with exact owner selection
+to be established by characterization. A constructor's accepted callable
+provenance does not repair containment by an implicit placeholder class.
+`qt_cpp_mapping` remains a consumer of proven complete-class containment; its
+strict guard must not acquire a name-based fallback. The
+[planned increment](PLAN.md#inc-qml-12--out-of-line-constructor-canonical-ownership)
+owns generic/source/persistence compatibility and unresolved-case evidence.

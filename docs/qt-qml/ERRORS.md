@@ -51,6 +51,31 @@ targets, reassigned callable values, runtime `Connections` targets, mixed-handle
 style suppression and attached-provider absence. A coverage gap can coexist with
 successful extraction; its site has no arbitrarily selected target edge.
 
+Native registration coverage belongs to `QtQmlBridgeIndex`, not the parser or
+graph writer. `native_class_definition_unavailable` with status `unavailable`
+means the accepted class ID has no source record explicitly proving a complete
+class body. Forward declarations and legacy records without `is_definition`
+cannot establish a provider. Reanalyse accepted sources with Qt policy 3; if the
+body is outside the accepted corpus, supply that source through the supported
+scope rather than guessing a target. A complete body without accepted meta-object
+evidence retains `unsupported` / `native_class_metaobject_unavailable`.
+`test_req_qml008_ac02_missing_body_proof_cannot_become_a_native_provider` covers
+forward-only and legacy metadata rejection. Genuine competing complete bodies
+retain ambiguity; source-owned unresolved facts remain visible in exports.
+
+Ownership recovery does not add a new success or write-failure code. Exact
+canonical definition provenance and complete class evidence permit normal source
+edges; missing or conflicting evidence does not. Qt policy 3 forces unchanged-
+input refresh after the correction. A malformed native refresh still reaches
+`QT_CPP_SYNTAX` and the existing publication guard, preserving the prior graph,
+manifest, Qt stamp and root marker even under force. Corrected retry commits the
+new state only after normal graph/manifest completion.
+Borrowed unchanged-header bodies preserve their original source/span identity;
+two representations of that same body do not create a false ambiguous owner.
+Distinct source bodies still remain ambiguous. The accepted-context regressions
+in `test_qt_cpp_context_ownership.py` cover both outcomes without mutating borrowed
+data or relaxing the complete-body guard.
+
 Literal transport permits at most 50 string companions, each at most 512 encoded
 bytes. The getter validates companion-map/field types and base64/UTF-8 before
 lookup. `QML_METADATA` is the low-level rejection prefix, not a separate logger;

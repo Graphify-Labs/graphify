@@ -13,6 +13,10 @@ testable criteria in the canonical [requirements](../docs/REQUIREMENTS.md).
 REQ-QML-018 adds six adoption criteria, for eighteen requirements and seventy-four
 criteria overall. AC02 has local verification for bounded native syntax cases;
 the remaining adoption criteria are unverified. Explicit gaps appear below.
+REQ-QML-019 adds four community-view criteria, bringing the catalog to nineteen
+requirements and seventy-eight criteria. INC-QML-10 revalidates the existing
+native ownership criteria for complete bodies and canonical definition provenance;
+multi-level inherited endpoint lookup remains an explicit INC-QML-11 gap.
 Verified local profile means
 executed source/consumer acceptance, not runtime equivalence. Every declared
 platform lane requires its own installed-artifact evidence; a skip is not a pass.
@@ -57,7 +61,7 @@ tests. Later revisions reverify affected evidence; preserve these identifiers.
 | REQ-QML-007-AC03 | `tests/test_qml_handlers.py::test_declared_and_property_change_handlers_are_subscriptions`; `tests/test_qml_handlers.py::test_connections_target_and_dynamic_target_stay_distinct`; `tests/test_qml_adversarial.py::test_mixed_legacy_connections_handlers_do_not_activate_ignored_function_handlers` | INC-QML-03 | Verified (declared profile) |
 | REQ-QML-007-AC04 | `tests/test_qml_scripts.py::test_generic_js_calls_cannot_bind_to_qml_owned_expression_sites`; `tests/test_qml_scripts.py::test_script_overlay_does_not_read_unaccepted_imports_or_network` | INC-QML-03 | Verified (declared profile) |
 | REQ-QML-008-AC01 | `tests/test_qt_project_admission.py::test_qml008_ac01_public_element_build_membership_and_canonical_member_endpoints` | INC-QML-05 | Verified static source profile |
-| REQ-QML-008-AC02 | `tests/test_qt_cpp_exposure.py::test_header_implementation_members_reuse_accepted_canonical_ids; tests/test_qt_project_admission.py::test_qml008_ac01_public_element_build_membership_and_canonical_member_endpoints` | INC-QML-05 | Verified static source profile |
+| REQ-QML-008-AC02 | `tests/test_qt_cpp_exposure.py::test_header_implementation_members_reuse_accepted_canonical_ids`; `tests/test_qt_project_admission.py::test_qml008_ac01_public_element_build_membership_and_canonical_member_endpoints`; `tests/test_qt_cpp_definition_ownership.py::test_req_qml008_ac02_definition_provenance_keeps_emission_owned_through_aggregate`; normalization, conflicting callable/body, missing completeness, external/local class, generic identity and original-byte controls in that module; `tests/test_qt_cpp_owner_upgrade.py::test_qml008_ac02_policy_three_reparses_unchanged_native_ownership` (update/extract) | INC-QML-05; INC-QML-10 correction | Locally verified complete-body/canonical-definition ownership; wider source profile gaps retained |
 | REQ-QML-008-AC03 | `tests/test_qt_native_project_integration.py::test_cpp_source_in_two_distinct_build_contexts_has_no_arbitrary_native_provider; tests/test_qt_qml_integration.py::test_ambiguous_overload_and_version_revised_member_are_explicit` | INC-QML-05 | Verified static source profile |
 | REQ-QML-008-AC04 | `tests/test_qt_cpp_syntax.py::test_unicode_crlf_macro_spans_are_original_bytes; tests/test_qt_cpp_syntax.py::test_comments_strings_raw_literals_and_preprocessor_definitions_are_inert` | INC-QML-05 | Verified static source profile |
 | REQ-QML-009-AC01 | `tests/test_qt_project_admission.py::test_qml008_ac01_public_element_build_membership_and_canonical_member_endpoints; tests/test_qt_resource_resolution.py::test_public_qt6_cmake_and_qmake_fixtures_describe_identical_membership` | INC-QML-05 | Verified static source profile |
@@ -88,14 +92,49 @@ tests. Later revisions reverify affected evidence; preserve these identifiers.
 | REQ-QML-015-AC02 | `tests/test_qml_skillgen_guidance.py`; `tests/test_skillgen.py`; five generator validators run separately; all 134 generated artifacts and expected outputs regenerated | INC-QML-07 | Verified (declared hosted/static profile) |
 | REQ-QML-015-AC03 | Verified upstream v8/base/head and earlier upstream proposal read-only; preserved grammar attribution; exact PR head/base/tested merge and workflows recorded in [VALIDATION](../docs/qt-qml/VALIDATION.md) | INC-QML-07 | Verified (declared hosted/static profile) |
 | REQ-QML-015-AC04 | Executed public privacy/reference/footprint review; all 68 criteria accounted for with explicit static/runtime/platform/export boundaries; [README](../docs/qt-qml/README.md), [EXPORT_MATRIX](../docs/qt-qml/EXPORT_MATRIX.md), [PLATFORM_MATRIX](../docs/qt-qml/PLATFORM_MATRIX.md) | INC-QML-07 | Verified (declared hosted/static profile) |
-| REQ-QML-016-AC01 | `tests/test_qt_cpp_syntax.py::test_access_sections_keep_original_roles_offsets`; `tests/test_qt_signals_slots.py::test_native_events_have_distinct_sites_and_no_delivery_calls`; `tests/test_qt_signals_slots.py::test_macro_sections_private_meta_slots_and_comments` | INC-QML-04b | Verified (native source profile) |
+| REQ-QML-016-AC01 | `tests/test_qt_cpp_syntax.py::test_access_sections_keep_original_roles_offsets`; `tests/test_qt_signals_slots.py::test_native_events_have_distinct_sites_and_no_delivery_calls`; `tests/test_qt_signals_slots.py::test_macro_sections_private_meta_slots_and_comments`; `tests/test_qt_cpp_definition_ownership.py::test_req_qml016_ac01_forward_declaration_does_not_compete_with_complete_definition` | INC-QML-04b; INC-QML-10 correction | Locally verified bounded ownership correction; grandparent endpoint lookup remains unverified (INC-QML-11) |
 | REQ-QML-016-AC02 | `tests/test_qt_signals_slots.py::test_overloads_need_selector_and_dynamic_sender_stays_unresolved`; `tests/test_qt_events_boundaries.py::test_functor_function_and_connection_handle_disconnect`; `tests/test_qt_events_boundaries.py::test_explicit_cast_signal_to_signal_and_condition_flags`; `tests/test_qt_events_boundaries.py::test_private_typed_pointer_and_incompatible_receiver_are_rejected` | INC-QML-04b | Verified (native source profile) |
 | REQ-QML-016-AC03 | `tests/test_qt_events_boundaries.py::test_explicit_cast_signal_to_signal_and_condition_flags`; `tests/test_qt_events_boundaries.py::test_computed_signal_receiver_and_custom_connect_are_not_qt_targets`; `tests/test_qt_signals_slots.py::test_native_events_have_distinct_sites_and_no_delivery_calls` | INC-QML-04b | Verified (native source profile) |
-| REQ-QML-016-AC04 | `tests/test_qt_event_incremental_consumers.py::test_qml016_ac04_event_mutation_and_removal_match_clean_rebuild_without_delivery_calls`; `tests/test_qt_html_consumers.py::test_signal_emission_is_not_rendered_as_a_caller_in_the_call_table`; `tests/test_qt_affected_definitions.py`; `tests/test_qt_mcp_consumers.py::test_qml016_ac04_http_metadata_search_keeps_connection_reference_semantics`; `tests/test_qt_worker_cache_integrity.py` | INC-QML-07 | Verified (bounded static profile) |
+| REQ-QML-016-AC04 | `tests/test_qt_event_incremental_consumers.py::test_qml016_ac04_event_mutation_and_removal_match_clean_rebuild_without_delivery_calls`; `tests/test_qt_html_consumers.py::test_signal_emission_is_not_rendered_as_a_caller_in_the_call_table`; `tests/test_qt_affected_definitions.py`; `tests/test_qt_mcp_consumers.py::test_qml016_ac04_http_metadata_search_keeps_connection_reference_semantics`; `tests/test_qt_worker_cache_integrity.py`; `tests/test_qt_cpp_owner_upgrade.py::test_qml016_ac04_failed_owner_upgrade_retains_prior_graph_stamp_and_manifest` (force off/on); persisted JSON and aggregate ownership in `tests/test_qt_cpp_definition_ownership.py` | INC-QML-07; INC-QML-10 correction | Locally verified correction/upgrade/retention; multi-level inherited endpoint parity remains unverified (INC-QML-11) |
 | REQ-QML-017-AC01 | `tests/test_qt_project_admission.py::test_qml017_ac01_literal_module_load_reaches_declared_component_and_property; tests/test_qt_project_admission.py::test_qml009_ac03_public_metadata_qrc_load_build_export_reload` | INC-QML-05 | Verified static source profile |
-| REQ-QML-017-AC02 | `tests/test_qml_cpp_access.py::test_view_root_and_literal_object_name_property_access`; `tests/test_qt_access_providers.py::test_qqmlproperty_read_write_preserves_property_handle`; `tests/test_qt_project_admission.py::test_qml017_ac01_literal_module_load_reaches_declared_component_and_property` | INC-QML-05 | Verified (bounded static profile) |
+| REQ-QML-017-AC02 | `tests/test_qml_cpp_access.py::test_view_root_and_literal_object_name_property_access`; `tests/test_qt_access_providers.py::test_qqmlproperty_read_write_preserves_property_handle`; `tests/test_qt_project_admission.py::test_qml017_ac01_literal_module_load_reaches_declared_component_and_property`; `tests/test_qt_cpp_definition_ownership.py::test_req_qml017_ac02_namespace_definition_owns_source_backed_qml_access` | INC-QML-05; INC-QML-10 correction | Locally verified bounded canonical-definition access ownership |
 | REQ-QML-017-AC03 | `tests/test_qt_access_providers.py`; `tests/test_qt_project_admission.py::test_qml008_ac01_public_element_build_membership_and_canonical_member_endpoints`; `tests/test_qt_native_project_integration.py` | INC-QML-05 | Verified (bounded static profile) |
-| REQ-QML-017-AC04 | `tests/test_qt_final_incremental_parity.py::test_qml017_ac04_qml_member_edit_refreshes_unchanged_reverse_cpp_access`; `tests/test_qml_cpp_access.py::test_duplicate_object_names_do_not_select_first_child`; `tests/test_qt_access_providers.py::test_duplicate_context_provider_and_local_shadow_do_not_choose`; `tests/test_qt_metadata_incremental.py`; `tests/test_qt_qml_export_consumers.py`; `tests/test_qt_mcp_stdio.py` | INC-QML-07 | Verified (bounded static profile) |
+| REQ-QML-017-AC04 | `tests/test_qt_final_incremental_parity.py::test_qml017_ac04_qml_member_edit_refreshes_unchanged_reverse_cpp_access`; `tests/test_qml_cpp_access.py::test_duplicate_object_names_do_not_select_first_child`; `tests/test_qt_access_providers.py::test_duplicate_context_provider_and_local_shadow_do_not_choose`; `tests/test_qt_metadata_incremental.py`; `tests/test_qt_qml_export_consumers.py`; `tests/test_qt_mcp_stdio.py`; persisted export ownership in `tests/test_qt_cpp_definition_ownership.py::test_req_qml017_ac02_namespace_definition_owns_source_backed_qml_access` | INC-QML-07; INC-QML-10 correction | Locally verified bounded persisted access ownership; adoption provider gaps retained |
+
+## Native ownership correction and remaining gaps
+
+INC-QML-10's bounded source-ownership correction is locally verified through the
+production facade, graph assembly, JSON publication/reload, aggregate HTML and
+real CLI upgrade/retention paths. The final focused ownership/context/upgrade
+selection passes 88 cases in 7.38 seconds. The reviewed final-wheel Qt/QML, C++,
+HTML and export selection passes 954 cases with seven documented skips. Exact
+commands, artifact identity and red/green evidence belong to
+[validation](../docs/qt-qml/VALIDATION.md#inc-qml-10-native-source-ownership).
+These results do not establish browser appearance or new hosted/platform evidence.
+
+Accepted unchanged-header contexts have separate production regressions in
+`tests/test_qt_cpp_context_ownership.py::test_req_qml008_ac02_borrowed_complete_header_is_not_counted_as_two_definitions`
+and `tests/test_qt_cpp_context_ownership.py::test_req_qml016_ac01_context_pipeline_preserves_owned_emission_through_json_reload`.
+They map REQ-QML-008-AC02 and REQ-QML-016-AC01/AC04 to actual collector and
+pipeline/join/build/publication/reload ownership, canonical IDs and unchanged
+borrowed dictionaries. Genuine distinct-body and false/missing completeness
+controls in the same module retain unproved endpoints; equivalent relative,
+Windows-separator and absolute path spellings retain one body identity. These
+cases first failed before the borrowed source/span transport correction and pass
+within the final focused selection.
+
+Two additional independently owned source cases remain unverified. INC-QML-11
+must reproduce and correct grandparent inherited-signal endpoint lookup under
+REQ-QML-016-AC01/AC04; recursive class compatibility currently coexists with an
+immediate-base-only member fallback. INC-QML-12 must reproduce and correct generic
+out-of-line constructor canonical ownership under REQ-QML-008-AC02,
+REQ-QML-016-AC01/AC04 and REQ-QML-017-AC02/AC04. A constructor can retain an exact
+generic callable but only an implicit placeholder parent, which is insufficient
+proof of the accepted complete header class. Missing/unaccepted class bodies and
+function-local structs keep explicit unsupported ownership; no file edge or
+arbitrary class/name link substitutes for source authority. These gaps qualify
+the original bounded-profile statuses and are not passed by the ordinary-method
+correction tests.
 
 ## Planned adoption criteria
 

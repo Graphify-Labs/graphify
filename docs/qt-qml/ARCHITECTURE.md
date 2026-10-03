@@ -396,3 +396,50 @@ documents describe intentional ownership. Checked-default AC04 has local
 exporter/CLI, emitted-script and reviewed installed-artifact proof; browser visual,
 other-platform and new hosted checks remain unexecuted. Remaining parser/provider
 adoption contracts retain their scope.
+
+## D13 — Complete definitions and exact provenance authorize native ownership
+
+Forward declarations and complete definitions are distinct accepted source facts.
+Retain their IDs and spans while separating declaration evidence from complete
+class authority. An additive `is_definition` field records AST body presence;
+native out-of-line binding and event lookup require a unique accepted complete
+class. Two distinct complete definitions remain ambiguous. Exact canonical
+method `definition_file`/`definition_location` and class containment authorize
+header/implementation ownership; a global class or member name does not.
+
+Complete-body authority survives reuse only when exact producer source file and
+original span accompany accepted-context records. Fresh and borrowed
+representations of one canonical body count once; losing provenance cannot make
+them competing definitions. Preserve borrowed input dictionaries and genuine
+ambiguity between distinct bodies. Current source tests cover the corrected
+context path; earlier full-corpus artifact results did not cover this regression.
+
+Deleting/merging forward declarations would lose source identity. Accepting every
+same-name class or broadly matching methods by name would create false owners.
+Reusing complete-definition and canonical-provenance evidence corrects ownership
+without replacing the generic C++ extractor, remapping IDs or inventing runtime
+relationships. Native source enrichment, mapping and event indexes retain their
+focused owners; missing or unsupported evidence remains visibly unresolved.
+
+INC-QML-10 introduces Qt policy epoch 3 for same-package refresh while retaining
+AST cache schema 6 and existing persistence owners. Source ownership/context and
+upgrade tests, final broad suite and reviewed installed-artifact checks pass locally.
+The body-key fix is internal transport, not a new persisted fact contract. Earlier profile passes remain
+revision-specific. Isolated nodes can represent valid unsupported or unproven
+relationships and are not a requirement to invent connectivity. D12 presentation
+policy and unfinished INC-QML-08 adoption work remain separate.
+
+INC-QML-11 is a planned event-lookup follow-up: recursive inheritance compatibility
+currently exceeds the immediate-base search used to find a member endpoint.
+Extending ancestor lookup must retain D13's complete-class authority and exact
+member identities, bounded traversal and genuine ambiguity. Its grandparent
+signal cases are not verified by INC-QML-10 or the initial profile; no arbitrary
+inherited-member or runtime support is claimed.
+
+INC-QML-12 is independently planned for generic constructor canonicalization:
+an accepted out-of-line constructor can still be contained by an implicit class
+placeholder instead of its complete header class. D13's native guard must retain
+unresolved ownership until the generic producer/canonicalization supplies the
+correct parent evidence. Preserve constructor IDs/provenance and test conflicting
+namespace/class/parent cases rather than weakening the guard. This existing gap
+does not invalidate the bounded ordinary-method correction or close INC-QML-11.

@@ -378,3 +378,63 @@ Exit: a characterized, upstream-coordinated extraction of the cohesive viewer
 state into its own frontend resource, preserving emitted payload, controls,
 escaping and packaging. This exception permits the measured cohesive correction,
 not arbitrary growth or speculative layers.
+
+## INC-QML-10 native source ownership
+
+**Locally verified source/context correction and reviewed installed artifact.** This correction uses existing
+REQ-QML-008-AC02, REQ-QML-016-AC01/AC04 and REQ-QML-017-AC02/AC04. The initial
+seventeen-requirement/sixty-eight-criterion evidence remains the original bounded
+profile, not proof of the newly reproduced ownership cases.
+
+Forward declarations retain their canonical facts/IDs without competing
+with a unique complete class definition for out-of-line member/event ownership.
+AST body presence supplies additive `is_definition` authority through the Qt
+class overlay. Mapping also needs exact accepted `definition_file` and
+`definition_location` with callable/class ownership; true duplicate complete
+definitions or unsupported evidence remain unresolved. The focused owners are
+`qt_cpp_mapping.py`, `qt_cpp_exposure.py` and `qt_event_index.py`.
+
+Qt policy epoch 3 refreshes earlier same-package analysis facts; AST cache schema
+6 stays unchanged. The current context/ownership/upgrade selection passes 88
+cases; the final broad suite passes 954 with seven documented skips and one
+existing warning. Earlier 78-focused/944-broad results describe the intermediate revision
+before accepted-context body provenance was repaired.
+Actual same-package CLI refresh and failure-retention controls use prior persisted
+products; the reviewed wheel is built and installed at version 0.9.74 with 152
+Python payloads matching source/wheel/installation. No source identity is removed,
+generic C++ ownership rewritten or connection inferred merely because a node is
+isolated. Remaining INC-QML-08 source/metadata/provider gaps and D12 HTML
+presentation policy are unchanged. See [D13](ARCHITECTURE.md#d13--complete-definitions-and-exact-provenance-authorize-native-ownership)
+and the [executed validation](VALIDATION.md#inc-qml-10-native-source-ownership).
+
+Measured production owners are `qt_cpp_mapping.py` 233 physical lines,
+`qt_cpp_exposure.py` 134, `qt_event_index.py` 111, `qt_qml_bridge.py` 110 and
+`qt_incremental.py` 114. New `test_qt_cpp_definition_ownership.py` is 261 lines
+with 18 cases; `test_qt_cpp_owner_upgrade.py` is 91 lines with four cases. All
+remain below the 300-line handwritten-file ceiling.
+
+`enrich_qt_cpp` preserves exact producer source file/span when borrowing unchanged
+complete-class context. Repeated fresh/context representations of one body now
+deduplicate consistently; distinct body locations remain ambiguous. Borrowed
+dictionaries and canonical class/member/emission IDs remain unchanged. New
+`test_qt_cpp_context_ownership.py` has ten production direct/pipeline/build/reload
+cases and 145 physical lines. All ten pass, including equivalent paths and
+distinct-body/legacy/missing-evidence controls. The final rebuilt artifact's 152
+Python payloads match reviewed source and installation; final expanded broad
+proof passes 954 cases. This internal transport correction adds no persisted field or
+policy epoch beyond current policy 3/schema 6.
+
+INC-QML-11 remains planned. Current recursive inheritance compatibility does not
+extend member endpoint lookup beyond immediate bases; a declared grandparent
+signal needs a separate bounded lookup correction and regression/installed proof.
+This gap belongs to existing REQ-QML-016-AC01/AC04 and is not closed by ownership
+counts or by forcing edges onto unsupported/isolated nodes. Browser, other-platform
+and new hosted evidence remains separate from the local proof recorded here.
+
+INC-QML-12 is also planned, separately from inherited-signal endpoint lookup.
+Out-of-line constructors can have accepted generic callable provenance but an
+implicit placeholder class parent, leaving emission/access owner evidence absent.
+This needs generic constructor canonicalization before strict Qt mapping can
+borrow a complete header class. It is not fixed or included in the ordinary-method
+ownership proof. The existing five native criteria retain this explicit gap; no
+extra requirement ID, invented owner or future policy epoch is introduced.

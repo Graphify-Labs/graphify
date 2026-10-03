@@ -8,6 +8,12 @@ boundaries; browser, other-platform and new hosted proof remain unexecuted.
 [ARCHITECTURE.md](ARCHITECTURE.md) owns ADRs and
 [traceability](../../tests/TRACEABILITY.md) owns individual acceptance evidence.
 Dependency-directed cache optimization and Qt runtime equivalence remain deferred.
+INC-QML-10 native ownership corrections, including accepted-context source/span
+deduplication, pass local source, final broad and reviewed installed-artifact checks.
+INC-QML-11 inherited-signal ancestor
+lookup remains planned; initial profile evidence does not verify that case.
+INC-QML-12 generic out-of-line constructor ownership is separately planned;
+ordinary-method proof does not authorize an unproven constructor class parent.
 
 ## Ownership and dependency direction
 
@@ -392,3 +398,65 @@ no saved-view persistence. Checked-default AC04 is locally verified through the
 production emitted scripts and reviewed installed artifact. Exact evidence is in
 [VALIDATION.md](VALIDATION.md#inc-qml-09-current-selection-policy); browser visual
 inspection and other-platform/hosted checks remain separate unexecuted evidence.
+
+## Native ownership authority (INC-QML-10)
+
+The correction adds `is_definition` to version-1 Qt class facts, derived solely
+from the parsed class/struct body's presence. Forward declarations remain owned
+facts with their existing canonical IDs and spans; they do not supply complete
+class authority to out-of-line binding or native event type lookup. The mapper
+and event index require a unique accepted complete definition, preserve ambiguity
+between distinct complete definitions, and leave forward-only or unsupported
+evidence unresolved. The flag does not establish QML exposure or a runtime object.
+
+`qt_cpp_mapping.CppMapping` maps out-of-line methods using their exact accepted
+canonical `definition_file` and `definition_location`, original source span,
+callable identity and class-containment evidence. Header provenance remains the
+declaration owner; the implementation owns its emitted/access source sites.
+These two locations are complementary evidence, not permission to bind a method
+in any matching file or namespace. Do not delete forward declarations, merge IDs
+by label, relax signature/owner checks or fabricate calls to remove isolated nodes.
+
+`qt_cpp_exposure` transports definition authority and carries it through global
+binding; `qt_event_index` consumes it when establishing class-qualified endpoints.
+Borrowed complete-class records also transport the producer's exact `source_file`
+and original `span`. A fresh AST record and an accepted unchanged-context fact
+for one canonical body share that identity and count as one definition. Copying
+only ID/name/definition authority loses the body key and creates false ambiguity.
+Inputs stay read-only; deduplication cannot merge distinct body locations or
+compensate for missing provenance by a name guess.
+Indexes remain per-run and borrowed canonical nodes remain unchanged. Qt policy
+epoch 3 forces same-package analysis refresh for old ownership facts. AST cache
+schema 6 and existing graph/manifest/checkpoint publication ordering are unchanged.
+Direct/pipeline/build/reload context and ownership tests pass locally. This
+internal body-identity transport correction changes no persisted fact contract;
+policy epoch 3 and AST schema 6 remain appropriate. Final broad and reviewed
+installed-artifact proof passes locally; see
+[INC-QML-10 validation](VALIDATION.md#inc-qml-10-native-source-ownership).
+
+## Planned inherited-signal lookup (INC-QML-11)
+
+Current event type compatibility traverses ancestors recursively, but inherited
+member lookup considers only immediate bases. The planned correction extends
+endpoint lookup over accepted complete definitions while retaining exact
+canonical member identity and existing role/signature/access/ambiguity checks.
+Traversal must be bounded and cycle-safe; repeated paths cannot invent distinct
+declarations or hide conflicting ancestor members. No mutable project state or
+new runtime owner is introduced. Actual grandparent-signal source, persistence,
+consumer and incremental proof remains unexecuted; the
+[INC-QML-11 plan](PLAN.md#inc-qml-11--inherited-qt-signal-endpoint-lookup) owns scope
+and exit conditions.
+
+## Planned constructor canonical ownership (INC-QML-12)
+
+Current generic out-of-line constructor facts can retain a callable's accepted
+ID/file/line while linking it to an implicit placeholder class. Native mapping
+cannot substitute the complete header class without accepted containment proof.
+The correction belongs first to generic C++ extraction/canonicalization, preserving
+constructor identity and source spans; Qt overlays consume the corrected evidence
+through the existing strict mapping interface. Initializer/delegation expressions
+are source syntax, not runtime construction proof. Namespace, duplicate class,
+conflicting parent and missing/foreign provenance controls must prevent false
+ownership. Source, persistence, incremental and epoch-impact verification is
+planned in [INC-QML-12](PLAN.md#inc-qml-12--out-of-line-constructor-canonical-ownership);
+no code or compatibility-epoch change is specified as implemented.

@@ -9,9 +9,20 @@ Identifiers use separate `REQ-QML-` and `INC-QML-` namespaces under the
 REQ-QML-001 through REQ-QML-017 are implemented for the documented bounded Qt 6/QML
 static source profile. Source, update, consumer and artifact acceptance evidence is
 assigned individually in [tests/TRACEABILITY.md](../tests/TRACEABILITY.md).
-All seventeen requirements are Verified within that bounded profile. Final
+All seventeen requirements were Verified within the original bounded fixture profile. Final
 INC-QML-07 source and installed-artifact proof passes all declared PR workflow lanes;
 completion is not inferred from earlier CI or a skipped test.
+That evidence describes the original fixture profile. INC-QML-10 corrects native
+source ownership under existing REQ-QML-008-AC02, REQ-QML-016-AC01/AC04 and
+REQ-QML-017-AC02/AC04; new forward-declaration and header/implementation cases
+have local source-ownership and reviewed installed-artifact proof, including
+unchanged accepted-context body deduplication. Affected native criteria remain
+partially verified across their recorded cases. INC-QML-11 separately plans the
+inherited-signal ancestor lookup gap under
+REQ-QML-016-AC01/AC04; that case remains unverified. INC-QML-12 separately plans
+generic out-of-line constructor canonical ownership under the same five native
+criteria used by INC-QML-10. Earlier method/profile passes do not establish all
+constructor, inherited-member or runtime support.
 See [IMPLEMENTATION.md](qt-qml/IMPLEMENTATION.md),
 [EXPORT_MATRIX.md](qt-qml/EXPORT_MATRIX.md) and
 [PLATFORM_MATRIX.md](qt-qml/PLATFORM_MATRIX.md) for concrete limits. Generic C++
@@ -163,7 +174,7 @@ Supported `QML_ELEMENT`/named/singleton and literal `qmlRegister*` registrations
 
 1 - Valid `QML_ELEMENT`, identifier-form `QML_NAMED_ELEMENT(Backend)`, singleton and supported literal `qmlRegister*` fixtures map visible QML names to the correct C++ declarations and module evidence. (`REQ-QML-008-AC01`)
 
-2 - `Q_PROPERTY`, invokable methods, signals and `NOTIFY` references retain correct source spans and members; header/implementation pairs reuse existing canonical class/method identities. (`REQ-QML-008-AC02`)
+2 - `Q_PROPERTY`, invokable methods, signals and `NOTIFY` references retain correct source spans and members; header/implementation pairs reuse existing canonical class/method identities. Merged declarations retain exact accepted definition-file/location and class-ownership evidence when mapping native Qt overlays. Forward declarations retain their facts and IDs without competing with a unique complete class definition for ownership. Fresh and accepted-context representations of the same complete body retain exact source file/span and count as one body without mutating borrowed inputs; distinct complete definitions remain ambiguous. Missing or conflicting evidence does not establish an arbitrary owner. (`REQ-QML-008-AC02`)
 
 3 - Duplicate registrations, unsupported macro wrappers and ambiguous overloads retain reasons rather than arbitrary bridges; `Q_OBJECT`, inheritance or matching labels alone create no exposure link. (`REQ-QML-008-AC03`)
 
@@ -289,13 +300,13 @@ Qt C++ signals, slots, emissions and signal connections retain their meta-object
 
 **Acceptance Criteria**
 
-1 - Fixtures using `signals`, `Q_SIGNALS`, `Q_SIGNAL`, slot access sections, `Q_SLOTS` and `Q_SLOT` retain member signatures/kinds and source spans; `emit`/`Q_EMIT` link the originating code to the declared signal without inventing immediate receiver calls. (`REQ-QML-016-AC01`)
+1 - Fixtures using `signals`, `Q_SIGNALS`, `Q_SIGNAL`, slot access sections, `Q_SLOTS` and `Q_SLOT` retain member signatures/kinds and source spans; `emit`/`Q_EMIT` link the originating code to the declared signal without inventing immediate receiver calls. A forward declaration does not obscure the unique complete class or exact canonical header/implementation method that owns the emission. Supported source-visible inherited signals retain their declaring endpoint through multi-level base chains; incomplete or ambiguous ownership remains unresolved. (`REQ-QML-016-AC01`)
 
 2 - Member-pointer, explicit overload-selector/cast, signal-to-signal, functor/lambda and legacy `SIGNAL`/`SLOT` connect fixtures resolve the expected sender/signal/receiver/callable endpoints from typed or signature evidence, including compatible ordinary member targets and supported private-slot meta-object connections; same-name ordinary functions do not satisfy a connection by global label. (`REQ-QML-016-AC02`)
 
 3 - Connection records preserve source location, sender/receiver context, literal connection type/flags and conditional registration evidence; ambiguous signatures, dynamic endpoints or unsupported expressions remain unresolved, and declared Auto/Queued/Direct forms do not imply verified runtime thread affinity or delivery order. (`REQ-QML-016-AC03`)
 
-4 - Direct slot calls, signal emissions, connection declarations and supported disconnect statements remain distinct facts through build/export/query/affected and incremental updates; comments/strings do not become signal/slot declarations or connections, and unrelated C++ call regressions still pass. (`REQ-QML-016-AC04`)
+4 - Direct slot calls, signal emissions, connection declarations and supported disconnect statements remain distinct facts through build/export/query/affected and incremental updates, including supported forward-declaration, header/implementation and inherited-signal ownership changes. Comments/strings do not become signal/slot declarations or connections, and unrelated C++ call regressions still pass. (`REQ-QML-016-AC04`)
 
 <a name="qml-017--bidirectional-qml-and-c-object-integration"></a>
 
@@ -307,11 +318,11 @@ Both integration directions are analyzed: registered or explicitly supplied C++ 
 
 1 - Literal `QQmlApplicationEngine::load`/`loadFromModule`, `QQmlComponent` create and `QQuickView::setSource` fixtures link C++ loader/access sites to the correct QML component using accepted module/resource metadata; unavailable/dynamic URLs and modules retain unresolved reasons without loading an engine. (`REQ-QML-017-AC01`)
 
-2 - When the QML object provenance is established, `rootObjects`/`rootObject`, literal `objectName`/`findChild` lookup, supported `property`/`setProperty` and `QMetaObject::invokeMethod` calls resolve to the correct QML object/member and preserve access direction/source evidence; QML `id` alone is not treated as a C++ `objectName` lookup key. (`REQ-QML-017-AC02`)
+2 - When the QML object provenance is established, `rootObjects`/`rootObject`, literal `objectName`/`findChild` lookup, supported `property`/`setProperty` and `QMetaObject::invokeMethod` calls resolve to the correct QML object/member and preserve access direction/source evidence, including exact canonical enclosing-method/class ownership for supported header/implementation pairs. QML `id` alone is not treated as a C++ `objectName` lookup key. (`REQ-QML-017-AC02`)
 
 3 - Connections from declared QML signals to C++ slots/callables, and from exposed C++ signals to QML handlers, resolve in the appropriate object scope; supported literal `setContextProperty`, `setContextObject` and initial-property exposure preserve provider/provenance facts, while conditional or dynamic exposure remains visibly uncertain. (`REQ-QML-017-AC03`)
 
-4 - Duplicate object names, computed lookup/method names and unsupported dynamic creation produce no guessed member target; query/affected and cold/full/incremental comparisons retain both integration directions after QML members, loader metadata or C++ exposure changes, with no evaluated QML or executed plugin code. (`REQ-QML-017-AC04`)
+4 - Duplicate object names, computed lookup/method names and unsupported dynamic creation produce no guessed member target; query/affected and cold/full/incremental comparisons retain both integration directions after QML members, loader metadata, C++ exposure or supported native source-ownership changes, with no evaluated QML or executed plugin code. (`REQ-QML-017-AC04`)
 
 <a name="qml-018--installed-project-adoption-hardening"></a>
 

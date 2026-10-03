@@ -19,7 +19,7 @@ class QtQmlBridgeIndex(QtMemberViews):
         classes = {}
         for node in self.nodes.values():
             md = qt_metadata(node)
-            if md.get("kind") == "class" and md.get("class_id"):
+            if md.get("kind") == "class" and md.get("class_id") and md.get("is_definition") is True:
                 classes.setdefault(md["class_id"], []).append(md)
         for node in self.nodes.values():
             md = qt_metadata(node)
@@ -50,6 +50,10 @@ class QtQmlBridgeIndex(QtMemberViews):
                 self.unresolved[node["id"]] = value
                 continue
             observed = classes.get(value["class_id"], [])
+            if not observed:
+                value.update(status="unavailable", reason="native_class_definition_unavailable")
+                self.unresolved[node["id"]] = value
+                continue
             if not any(item.get("is_qobject") for item in observed):
                 value.update(status="unsupported", reason="native_class_metaobject_unavailable")
                 self.unresolved[node["id"]] = value
