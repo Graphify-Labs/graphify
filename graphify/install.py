@@ -43,6 +43,7 @@ except Exception:
 
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
+from graphify.paths import write_text_atomic as _write_text_atomic
 
 
 def _skill_lock_path(skill_dir: Path) -> Path:
@@ -1557,65 +1558,130 @@ def _uninstall_kilo_plugin(project_dir: Path) -> None:
             f"  {write_config_file.relative_to(project_dir)}  ->  plugin deregistered"
         )
 # OpenCode tool.execute.before plugin — fires before every tool call.
-# Injects a graph reminder into bash command output when graph.json exists.
+# Injects a graph reminder into shell command output when graph.json exists.
 _OPENCODE_PLUGIN_JS = """\
 // graphify OpenCode plugin
-// Injects a knowledge graph reminder before bash tool calls when the graph exists.
+// Injects a knowledge graph reminder before the first shell command of a
+// session when the graph exists.
+//
+// One file for both runtimes. OpenCode 2 reads `id` and `setup()` from the
+// default export; OpenCode 1 (1.3.4 and later) reads `server()` from it. Each
+// ignores the other's function. Nothing is imported from an opencode package:
+// a plain file in .opencode/plugins/ cannot resolve one.
 //
 // IMPORTANT: keep the reminder string free of backticks and $(...) constructs.
-// The hook prepends `echo "<reminder>" && <cmd>` to the user's bash command;
-// backticks inside the double-quoted echo trigger bash command substitution,
+// The hook prepends `echo "<reminder>" ; <cmd>` to the user's shell command;
+// backticks inside the double-quoted echo trigger command substitution,
 // which both corrupts tool output and silently executes the very graphify
 // command we are only suggesting. Plain words render fine in opencode's TUI.
 import { existsSync } from "fs";
 import { join } from "path";
 
-export const GraphifyPlugin = async ({ directory }) => {
-  let reminded = false;
+// ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a statement
+// separator, breaking the first shell command of the session (#1646).
+const REMINDER =
+  'echo "[graphify] knowledge graph at graphify-out/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." ; ';
 
-  return {
-    "tool.execute.before": async (input, output) => {
-      if (reminded) return;
-      if (!existsSync(join(directory, "graphify-out", "graph.json"))) return;
+const hasGraph = (directory) => existsSync(join(directory, "graphify-out", "graph.json"));
 
-      if (input.tool === "bash") {
-        // ';' not '&&' — Windows PowerShell 5.1 rejects '&&' as a statement
-        // separator, breaking the first bash command of the session (#1646).
-        output.args.command =
-          'echo "[graphify] knowledge graph at graphify-out/. For focused questions, run graphify query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." ; ' +
-          output.args.command;
+export default {
+  id: "graphify",
+
+  // OpenCode 2: the command tool is "shell", and one server outlives many
+  // sessions, so the reminder is tracked per session.
+  async setup(ctx) {
+    const reminded = new Set();
+
+    await ctx.tool.hook("execute.before", (event) => {
+      if (event.tool !== "shell" || typeof event.input?.command !== "string") return;
+      if (reminded.has(event.sessionID)) return;
+      if (!hasGraph(ctx.location.directory)) return;
+
+      event.input = { ...event.input, command: REMINDER + event.input.command };
+      reminded.add(event.sessionID);
+    });
+  },
+
+  // OpenCode 1: the command tool is "bash".
+  async server({ directory }) {
+    let reminded = false;
+
+    return {
+      "tool.execute.before": async (input, output) => {
+        if (input.tool !== "bash" || typeof output.args?.command !== "string") return;
+        if (reminded) return;
+        if (!hasGraph(directory)) return;
+
+        output.args.command = REMINDER + output.args.command;
         reminded = true;
-      }
-    },
-  };
+      },
+    };
+  },
 };
 """
 _OPENCODE_PLUGIN_PATH = Path(".opencode") / "plugins" / "graphify.js"
 _OPENCODE_CONFIG_PATH = Path(".opencode") / "opencode.json"
+# First line of every plugin graphify has written, back to the first one (#71).
+_OPENCODE_PLUGIN_HEADER = "// graphify OpenCode plugin"
+def _opencode_plugin_is_v1_only(body: str) -> bool:
+    """True for a graphify plugin written before the OpenCode 2 entrypoint.
+
+    Releases up to 0.9.74 exported a named ``GraphifyPlugin`` function and
+    nothing else. OpenCode 2 needs a default export, so it rejects the file
+    with "Plugin must export a default definition" (#3554, #3732).
+    """
+    return body.startswith(_OPENCODE_PLUGIN_HEADER) and "export default" not in body
+def _drop_opencode_config_entry(project_dir: Path) -> bool:
+    """Remove the plugin entry older releases wrote into opencode.json.
+
+    The entry was the bare path ``.opencode/plugins/graphify.js``. OpenCode
+    loads every file in ``.opencode/plugins/`` on its own, so the entry was
+    never needed, and OpenCode 2 reads a bare path as an npm package name and
+    fails to install it (#3732). Returns True when the config changed.
+    """
+    config_file = project_dir / _OPENCODE_CONFIG_PATH
+    entry = _OPENCODE_PLUGIN_PATH.as_posix()
+    try:
+        raw = config_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    try:
+        config = json.loads(raw)
+    except ValueError:
+        # OpenCode accepts comments in this file, json does not. Rewriting it
+        # would drop them, so say what to remove instead.
+        if f'"{entry}"' in raw:
+            print(
+                f"  {_OPENCODE_CONFIG_PATH}  ->  not plain JSON, left as is; "
+                f'remove "{entry}" from its plugin list by hand'
+            )
+        return False
+    if not isinstance(config, dict):
+        return False
+    changed = False
+    for key in ("plugin", "plugins"):
+        plugins = config.get(key)
+        if isinstance(plugins, list) and entry in plugins:
+            config[key] = [p for p in plugins if p != entry]
+            if not config[key]:
+                config.pop(key)
+            changed = True
+    if changed:
+        # ensure_ascii=False: keep the user's non-ASCII values readable.
+        _write_text_atomic(config_file, json.dumps(config, indent=2, ensure_ascii=False))
+    return changed
 def _install_opencode_plugin(project_dir: Path) -> None:
-    """Write graphify.js plugin and register it in opencode.json."""
+    """Write graphify.js into .opencode/plugins/, where OpenCode discovers it.
+
+    Both files are replaced atomically. The CLI refresh can run this while
+    OpenCode is watching them, and it must never see half a plugin.
+    """
     plugin_file = project_dir / _OPENCODE_PLUGIN_PATH
-    plugin_file.parent.mkdir(parents=True, exist_ok=True)
-    plugin_file.write_text(_OPENCODE_PLUGIN_JS, encoding="utf-8")
+    _write_text_atomic(plugin_file, _OPENCODE_PLUGIN_JS)
     print(f"  {_OPENCODE_PLUGIN_PATH}  ->  tool.execute.before hook written")
 
-    config_file = project_dir / _OPENCODE_CONFIG_PATH
-    if config_file.exists():
-        try:
-            config = json.loads(config_file.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            config = {}
-    else:
-        config = {}
-
-    plugins = config.setdefault("plugin", [])
-    entry = _OPENCODE_PLUGIN_PATH.as_posix()
-    if entry not in plugins:
-        plugins.append(entry)
-        config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
-        print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin registered")
-    else:
-        print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin already registered (no change)")
+    if _drop_opencode_config_entry(project_dir):
+        print(f"  {_OPENCODE_CONFIG_PATH}  ->  stale plugin entry removed")
 def _uninstall_opencode_plugin(project_dir: Path) -> None:
     """Remove graphify.js plugin and deregister from opencode.json."""
     plugin_file = project_dir / _OPENCODE_PLUGIN_PATH
@@ -1623,20 +1689,7 @@ def _uninstall_opencode_plugin(project_dir: Path) -> None:
         plugin_file.unlink()
         print(f"  {_OPENCODE_PLUGIN_PATH}  ->  removed")
 
-    config_file = project_dir / _OPENCODE_CONFIG_PATH
-    if not config_file.exists():
-        return
-    try:
-        config = json.loads(config_file.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return
-    plugins = config.get("plugin", [])
-    entry = _OPENCODE_PLUGIN_PATH.as_posix()
-    if entry in plugins:
-        plugins.remove(entry)
-        if not plugins:
-            config.pop("plugin")
-        config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    if _drop_opencode_config_entry(project_dir):
         print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin deregistered")
 def _resolve_graphify_exe(project: bool = False) -> str:
     """Return the absolute path to the graphify executable, with forward slashes.
