@@ -80,3 +80,82 @@ def test_the_citation_is_gone_from_the_source_not_just_one_path():
     assert "may be partially extracted: {_shown}{_more} (#2551)" not in text
     assert "no symbols extracted" in text
     assert "symbol(s) extracted" in text
+
+
+def test_warning_suppressed_via_graphifyallow(tmp_path, capsys):
+    fixture = _partial_parse_fixture(tmp_path)
+    allow = tmp_path / ".graphifyallow"
+    allow.write_text("broken.lua\n", encoding="utf-8")
+    res = extract([fixture], root=tmp_path)
+    err = capsys.readouterr().err
+    assert "partially extracted" not in err
+    assert "syntax errors" not in err
+    # Nodes from broken.lua are preserved and extracted
+    file_nodes = [n for n in res.get("nodes", []) if n.get("source_file") == "broken.lua"]
+    assert len(file_nodes) > 0
+
+
+def test_warning_suppressed_does_not_suppress_other_files(tmp_path, capsys):
+    fixture1 = _partial_parse_fixture(tmp_path)
+    fixture2 = tmp_path / "other.lua"
+    fixture2.write_text("local t = {\nfunction f() end\n", encoding="utf-8")
+    allow = tmp_path / ".graphifyallow"
+    allow.write_text("broken.lua\n", encoding="utf-8")
+    res = extract([fixture1, fixture2], root=tmp_path)
+    err = capsys.readouterr().err
+    assert "partially extracted" in err
+    assert "other.lua" in err
+    assert "broken.lua" not in err
+
+
+def test_warning_suppressed_via_graphifywarnignore(tmp_path, capsys):
+    fixture = _partial_parse_fixture(tmp_path)
+    allow = tmp_path / ".graphifywarnignore"
+    allow.write_text("broken.lua\n", encoding="utf-8")
+    res = extract([fixture], root=tmp_path)
+    err = capsys.readouterr().err
+    assert "partially extracted" not in err
+    assert "syntax errors" not in err
+
+
+def test_warning_suppressed_via_param(tmp_path, capsys):
+    fixture = _partial_parse_fixture(tmp_path)
+    res = extract([fixture], root=tmp_path, suppress_syntax_warnings=["broken.lua"])
+    err = capsys.readouterr().err
+    assert "partially extracted" not in err
+    assert "syntax errors" not in err
+
+
+def test_warning_suppressed_all_via_param_bool(tmp_path, capsys):
+    fixture = _partial_parse_fixture(tmp_path)
+    res = extract([fixture], root=tmp_path, suppress_syntax_warnings=True)
+    err = capsys.readouterr().err
+    assert "partially extracted" not in err
+    assert "syntax errors" not in err
+
+
+def test_warning_suppressed_via_env(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_QUIET_SYNTAX_WARNINGS", "1")
+    fixture = _partial_parse_fixture(tmp_path)
+    res = extract([fixture], root=tmp_path)
+    err = capsys.readouterr().err
+    assert "partially extracted" not in err
+    assert "syntax errors" not in err
+
+
+def test_warning_suppressed_with_root_none_or_str(tmp_path, capsys, monkeypatch):
+    """Ensure extract() handles root=None or root as a string without crashing when syntax error files exist."""
+    monkeypatch.chdir(tmp_path)
+    fixture = _partial_parse_fixture(tmp_path)
+    allow = tmp_path / ".graphifyallow"
+    allow.write_text("broken.lua\n", encoding="utf-8")
+
+    # root as string
+    res_str = extract([fixture], root=str(tmp_path))
+    err_str = capsys.readouterr().err
+    assert "partially extracted" not in err_str
+
+    # root as None (anchors at cwd)
+    res_none = extract([fixture], root=None)
+    err_none = capsys.readouterr().err
+    assert "partially extracted" not in err_none

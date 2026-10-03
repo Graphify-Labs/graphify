@@ -7272,6 +7272,49 @@ def _extract_sequential(
 _PARALLEL_THRESHOLD = 20
 
 
+def _load_warning_ignore_patterns(root: Path | str | None) -> list[tuple[Path, str]]:
+    """Read .graphifyallow / .graphifywarnignore files and return (anchor_dir, pattern) pairs (#3912)."""
+    if root is None:
+        root = Path(".")
+    elif isinstance(root, str):
+        root = Path(root)
+    from graphify.detect import _parse_gitignore_line, _read_ignore_text
+    patterns: list[tuple[Path, str]] = []
+    root = root.resolve()
+    for fname in (".graphifyallow", ".graphifywarnignore"):
+        allow_file = root / fname
+        if allow_file.is_file():
+            try:
+                for raw in _read_ignore_text(allow_file).splitlines():
+                    line = _parse_gitignore_line(raw)
+                    if line:
+                        patterns.append((root, line))
+            except Exception:
+                pass
+    return patterns
+
+
+def _is_warning_suppressed(
+    path: Path | str,
+    root: Path | str | None,
+    patterns: list[tuple[Path, str]],
+) -> bool:
+    """Return True if path matches any warning suppression pattern (#3912)."""
+    if not patterns:
+        return False
+    if root is None:
+        root = Path(".")
+    elif isinstance(root, str):
+        root = Path(root)
+    if isinstance(path, str):
+        path = Path(path)
+    from graphify.detect import _is_ignored
+    try:
+        return _is_ignored(path.resolve(), root.resolve(), patterns)
+    except Exception:
+        return False
+
+
 def extract(
     paths: list[Path],
     cache_root: Path | None = None,
@@ -7281,6 +7324,7 @@ def extract(
     max_workers: int | None = None,
     resolution_context_nodes: list[dict] | None = None,
     resolution_context_edges: list[dict] | None = None,
+    suppress_syntax_warnings: list[str] | bool | None = None,
 ) -> dict:
     """Extract AST nodes and edges from a list of code files.
 
@@ -7320,6 +7364,11 @@ def extract(
             Read-only, same contract as
             resolution_context_nodes: they widen the resolvers' view but only
             fresh results are appended to the returned nodes/edges.
+        suppress_syntax_warnings: optional list of glob patterns to suppress
+            partial extraction / syntax error warnings for specific files, or
+            True to suppress all syntax error warnings (#3912). When None,
+            reads patterns from .graphifyallow / .graphifywarnignore in root,
+            or GRAPHIFY_QUIET_SYNTAX_WARNINGS environment variable.
     """
     paths = [Path(p) for p in paths]
     anchor_root = Path(root) if root is not None else None
@@ -7599,7 +7648,32 @@ def extract(
             # one that yielded most of its symbols and lost an ERROR region is
             # partial. "May be partially extracted" rendered both identically.
             _kept = max(len(_res.get("nodes", [])) - 1, 0)
-            _syntax_error_files.append((_rel, _pe.get("first_error_line"), _kept))
+            _syntax_error_files.append((_rel, _pe.get("first_error_line"), _kept, _p))
+    if _syntax_error_files:
+        if suppress_syntax_warnings is True or os.environ.get("GRAPHIFY_QUIET_SYNTAX_WARNINGS") in ("1", "true", "yes"):
+            _syntax_error_files = []
+        else:
+            _warning_suppress_patterns: list[tuple[Path, str]] = []
+            effective_root = Path(root) if root is not None else Path(".")
+            if isinstance(suppress_syntax_warnings, (list, tuple, set)):
+                from graphify.detect import _parse_gitignore_line
+                for pat in suppress_syntax_warnings:
+                    line = _parse_gitignore_line(str(pat))
+                    if line:
+                        _warning_suppress_patterns.append((effective_root, line))
+            else:
+                _warning_suppress_patterns = _load_warning_ignore_patterns(effective_root)
+            if _warning_suppress_patterns:
+                _syntax_error_files = [
+                    (rel, line, kept)
+                    for (rel, line, kept, p) in _syntax_error_files
+                    if not _is_warning_suppressed(p, effective_root, _warning_suppress_patterns)
+                ]
+            else:
+                _syntax_error_files = [
+                    (rel, line, kept)
+                    for (rel, line, kept, _p) in _syntax_error_files
+                ]
     if _syntax_error_files:
         def _describe_syntax_error(rel: str, line: "int | None", kept: int) -> str:
             _where = f"first error at line {line}" if line else "syntax error"
