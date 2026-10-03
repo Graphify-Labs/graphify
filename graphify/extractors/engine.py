@@ -1356,6 +1356,63 @@ def _python_collect_assignment_targets(node, source: bytes, out: set[str]) -> No
         for c in node.children:
             _python_collect_assignment_targets(c, source, out)
 
+# Languages whose `self`/`this` member calls bind through _self_call_target.
+_SELF_CALL_LANGUAGES = frozenset({
+    "tree_sitter_python", "tree_sitter_javascript", "tree_sitter_typescript",
+    "tree_sitter_swift",
+})
+
+def _self_call_target(
+    caller_nid: str,
+    callee: str,
+    receiver: str,
+    label_to_nid: dict[str, str],
+    scope_parents: dict[str, str],
+    method_owner: dict[str, str],
+    methods_by_owner: dict[tuple[str, str], str],
+    class_bases: dict[str, list[str]],
+    walk_bases: bool = True,
+) -> str | None:
+    """In-file target of `self.m()` / `cls.m()` / `super().m()` in Python and
+    `this.m()` / `super.m()` in JS/TS, else None.
+
+    ``walk_bases=False`` stops after the caller's own class and otherwise keeps
+    the plain lookup: JS/TS `extends` edges come from the later symbol pass, so
+    the chain is unknown here and an inherited `this.m()` must not be refused.
+
+    The receiver is the caller's own instance, so the lookup starts at the
+    enclosing class (skipped for `super`) and walks its in-file bases one level
+    at a time, nearest first, the order the ObjC resolver already uses for
+    `self`. Two hits on one level are a multiple-inheritance tie this pass
+    cannot order, so neither is bound. A method of a class outside that chain is
+    never the target: the file-wide name map used to hand `self.save()` in one
+    class to whichever class declared save() last. A file-wide hit that is not
+    a method (a module-level callable stored on the instance) still binds, as
+    before.
+    """
+    scope: str | None = caller_nid
+    while scope and scope not in method_owner:
+        scope = scope_parents.get(scope)
+    fallback = label_to_nid.get(callee)
+    if not scope:
+        return fallback
+    level = [method_owner[scope]]
+    seen: set[str] = set()
+    skip_own = receiver == "super"
+    while level:
+        seen.update(level)
+        if not skip_own:
+            hits = {methods_by_owner[(c, callee)] for c in level if (c, callee) in methods_by_owner}
+            if hits:
+                return hits.pop() if len(hits) == 1 else None
+        if not walk_bases:
+            return fallback
+        skip_own = False
+        level = list(dict.fromkeys(
+            base for c in level for base in class_bases.get(c, ()) if base not in seen
+        ))
+    return None if fallback in method_owner else fallback
+
 def _python_local_bound_names(func_def_node, source: bytes) -> set[str]:
     """Names bound LOCALLY inside a Python function: parameters plus assignment,
     `for`, `with ... as`, and comprehension targets.
@@ -6172,6 +6229,18 @@ def _extract_generic(
         if _e.get("relation") == "inherits":
             _local_bases.setdefault(_e["source"], []).append(_e["target"])
 
+    # Class membership for self-calls (see _self_call_target): Python
+    # self/cls/super and JS/TS this/super.
+    method_owner: dict[str, str] = {}
+    methods_by_owner: dict[tuple[str, str], str] = {}
+    if config.ts_module in _SELF_CALL_LANGUAGES:
+        label_by_nid = {n["id"]: n["label"] for n in nodes}
+        for e in edges:
+            if e["relation"] == "method":
+                method_owner[e["target"]] = e["source"]
+                name = label_by_nid.get(e["target"], "").strip("()").lstrip(".")
+                methods_by_owner.setdefault((e["source"], name), e["target"])
+
     def _fields_up_chain(tables: dict, class_nid) -> dict:
         if not class_nid:
             return {}
@@ -6453,6 +6522,10 @@ def _extract_generic(
             callee_name: str | None = None
             is_member_call: bool = False
             is_this_field_call: bool = False
+            # `this.m()` / `self.m()` / `super.m()` (and Swift's implicit
+            # self): kept apart from member_receiver, which feeds the
+            # receiver-typed resolvers and raw_calls.
+            self_receiver: str | None = None
             swift_receiver: str | None = None
             member_receiver: str | None = None
             kotlin_qualified_prefix: str | None = None
@@ -6471,6 +6544,8 @@ def _extract_generic(
                 if first:
                     if first.type == "simple_identifier":
                         callee_name = _read_text(first, source)
+                        # Inside a method a bare `save()` is `self.save()`.
+                        self_receiver = "self"
                     elif first.type == "navigation_expression":
                         is_member_call = True
                         for child in first.children:
@@ -6482,6 +6557,10 @@ def _extract_generic(
                         # resolve it through the file's type table.
                         recv_node = first.children[0] if first.children else None
                         swift_receiver = _swift_receiver_name(recv_node, source)
+                        if recv_node is not None and recv_node.type == "self_expression":
+                            self_receiver = "self"
+                        elif recv_node is not None and recv_node.type == "super_expression":
+                            self_receiver = "super"
             elif config.ts_module == "tree_sitter_kotlin":
                 # Kotlin: first child may be simple_identifier/identifier or
                 # navigation_expression. PyPI's `tree_sitter_kotlin` produces
@@ -6839,6 +6918,12 @@ def _extract_generic(
                             if obj is not None and obj.type == "identifier":
                                 member_receiver = _read_text(obj, source)
                             elif (
+                                obj is not None
+                                and obj.type in ("this", "super")
+                                and config.ts_module in _SELF_CALL_LANGUAGES
+                            ):
+                                self_receiver = obj.type
+                            elif (
                                 config.ts_module == "tree_sitter_python"
                                 and obj is not None
                                 and obj.type == "call"
@@ -6963,6 +7048,19 @@ def _extract_generic(
                             curr_scope = scope_parents.get(curr_scope)
                         if not tgt_nid:
                             tgt_nid = label_to_nid.get(callee_name)
+                    elif self_receiver or (
+                        config.ts_module == "tree_sitter_python"
+                        and is_member_call
+                        and member_receiver in ("self", "cls", "super")
+                    ):
+                        tgt_nid = _self_call_target(
+                            caller_nid, callee_name, self_receiver or member_receiver or "",
+                            label_to_nid, scope_parents, method_owner, methods_by_owner,
+                            _local_bases,
+                            walk_bases=config.ts_module not in (
+                                "tree_sitter_javascript", "tree_sitter_typescript",
+                            ),
+                        )
                     else:
                         tgt_nid = label_to_nid.get(callee_name)
                     # A qualified `new A.B.Foo()` whose bare name matches only a

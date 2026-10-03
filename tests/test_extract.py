@@ -2139,6 +2139,190 @@ def test_python_unresolved_receiver_never_crosses_modules(tmp_path):
     )
 
 
+def _python_call_pairs(tmp_path, source):
+    """Extract one Python file and return {(caller_id, callee_id)} for calls edges."""
+    f = tmp_path / "svc.py"
+    f.write_text(source, encoding="utf-8")
+    result = extract([f], cache_root=tmp_path)
+    return {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"}
+
+
+def test_python_self_call_binds_to_own_class_not_last_declared(tmp_path):
+    """`self.save()` in Server must reach Server.save even when a later class in
+    the same file also defines save(). The file-wide name map kept only the last
+    declaration, so both classes' self-calls landed on Cache.save as EXTRACTED."""
+    calls = _python_call_pairs(tmp_path, (
+        "class Server:\n"
+        "    def save(self): return 1\n"
+        "    def flush(self): return self.save()\n"
+        "    @classmethod\n"
+        "    def make(cls): return cls.build()\n"
+        "    @classmethod\n"
+        "    def build(cls): return cls()\n"
+        "    def deferred(self):\n"
+        "        def inner():\n"
+        "            return self.save()\n"
+        "        return inner()\n\n"
+        "class Cache:\n"
+        "    def save(self): return 2\n"
+        "    def flush(self): return self.save()\n"
+        "    def build(self): return 3\n"
+    ))
+    assert ("svc_server_flush", "svc_server_save") in calls
+    assert ("svc_server_flush", "svc_cache_save") not in calls
+    assert ("svc_server_make", "svc_server_build") in calls, "cls.build() stays in the class"
+    assert ("svc_server_deferred_inner", "svc_server_save") in calls, \
+        "a nested def closes over the enclosing method's self"
+    assert ("svc_cache_flush", "svc_cache_save") in calls
+
+
+def test_python_self_call_never_binds_to_an_unrelated_class(tmp_path):
+    """Server has no ping() anywhere on its chain, so `self.ping()` must not
+    borrow Cache.ping just because it is the only ping() in the file."""
+    calls = _python_call_pairs(tmp_path, (
+        "class Server:\n"
+        "    def run(self): return self.ping()\n\n"
+        "class Cache:\n"
+        "    def ping(self): return 1\n"
+    ))
+    assert ("svc_server_run", "svc_cache_ping") not in calls
+
+
+def test_python_self_and_super_calls_walk_in_file_bases(tmp_path):
+    """Inherited methods resolve up the in-file inherits chain, nearest first;
+    `super().save()` skips the caller's own override."""
+    calls = _python_call_pairs(tmp_path, (
+        "class Base:\n"
+        "    def save(self): return 0\n"
+        "    def ping(self): return 0\n\n"
+        "class Child(Base):\n"
+        "    def save(self): return super().save()\n"
+        "    def run(self): return self.ping()\n\n"
+        "class Other:\n"
+        "    def save(self): return 9\n"
+        "    def ping(self): return 9\n"
+    ))
+    assert ("svc_child_run", "svc_base_ping") in calls
+    assert ("svc_child_run", "svc_other_ping") not in calls
+    assert ("svc_child_save", "svc_base_save") in calls
+    assert ("svc_child_save", "svc_other_save") not in calls
+
+
+def test_python_self_call_multiple_inheritance_tie_binds_nothing(tmp_path):
+    """Two bases on the same level both define m(): ordering them needs the
+    MRO, which this pass does not model, so it binds neither."""
+    calls = _python_call_pairs(tmp_path, (
+        "class A:\n"
+        "    def m(self): return 1\n\n"
+        "class B:\n"
+        "    def m(self): return 2\n\n"
+        "class C(A, B):\n"
+        "    def run(self): return self.m()\n"
+    ))
+    assert not any(src == "svc_c_run" for src, _ in calls), calls
+
+
+def test_python_self_call_to_stored_module_function_still_binds(tmp_path):
+    """A module-level callable stored on the instance is not a method of any
+    class, so the file-wide lookup that found it before still applies."""
+    calls = _python_call_pairs(tmp_path, (
+        "def handler(): return 1\n\n"
+        "class Job:\n"
+        "    def __init__(self): self.handler = handler\n"
+        "    def run(self): return self.handler()\n"
+    ))
+    assert ("svc_job_run", "svc_handler") in calls
+
+
+def _single_file_call_pairs(tmp_path, source, ext):
+    """Extract one source file and return {(caller_id, callee_id)} for calls edges."""
+    f = tmp_path / f"svc.{ext}"
+    f.write_text(source, encoding="utf-8")
+    result = extract([f], cache_root=tmp_path)
+    return {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"}
+
+
+@pytest.mark.parametrize("ext", ["ts", "js"])
+def test_js_this_call_binds_to_own_class_not_last_declared(tmp_path, ext):
+    """`this.save()` in Server must reach Server.save, not the save() of a class
+    declared later in the file. An arrow function keeps the method's `this`."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "class Server {\n"
+        "  save() { return 1; }\n"
+        "  flush() { return this.save(); }\n"
+        "  later() { return [1].map(() => this.save()); }\n"
+        "}\n"
+        "class Cache {\n"
+        "  save() { return 2; }\n"
+        "  flush() { return this.save(); }\n"
+        "}\n"
+    ), ext)
+    assert ("svc_server_flush", "svc_server_save") in calls
+    assert ("svc_server_flush", "svc_cache_save") not in calls
+    assert ("svc_server_later", "svc_server_save") in calls
+    assert ("svc_cache_flush", "svc_cache_save") in calls
+
+
+@pytest.mark.parametrize("ext", ["ts", "js"])
+def test_js_this_call_to_inherited_method_keeps_its_edge(tmp_path, ext):
+    """`extends` is only known after the symbol pass, so a method the class does
+    not define itself keeps the plain lookup instead of being refused."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "class Base {\n"
+        "  ping() { return 0; }\n"
+        "}\n"
+        "class Server extends Base {\n"
+        "  run() { return this.ping(); }\n"
+        "}\n"
+    ), ext)
+    assert ("svc_server_run", "svc_base_ping") in calls
+
+
+def test_swift_self_calls_bind_within_own_class_chain(tmp_path):
+    """`self.save()`, a bare `save()` (implicit self) and `super.ping()` must stay
+    on Server's chain, not jump to the class the file declares last."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "class Base {\n"
+        "    func ping() -> Int { return 0 }\n"
+        "}\n"
+        "class Server: Base {\n"
+        "    func save() -> Int { return 1 }\n"
+        "    func flush() -> Int { return self.save() }\n"
+        "    func bare() -> Int { return save() }\n"
+        "    func run() -> Int { return self.ping() }\n"
+        "    func zuper() -> Int { return super.ping() }\n"
+        "}\n"
+        "class Cache {\n"
+        "    func save() -> Int { return 2 }\n"
+        "    func ping() -> Int { return 3 }\n"
+        "}\n"
+    ), "swift")
+    assert ("svc_server_flush", "svc_server_save") in calls
+    assert ("svc_server_bare", "svc_server_save") in calls
+    assert ("svc_server_run", "svc_base_ping") in calls
+    assert ("svc_server_zuper", "svc_base_ping") in calls
+    assert not any(tgt.startswith("svc_cache_") for _, tgt in calls), calls
+
+
+def test_swift_bare_call_to_free_function_and_extension_keep_their_edges(tmp_path):
+    """Implicit self only claims methods of the caller's own chain: a free
+    function, a constructor and a method reached from an extension of the same
+    type resolve exactly as before."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "func helper() -> Int { return 1 }\n"
+        "class Foo {\n"
+        "    func a() -> Int { return helper() }\n"
+        "    func make() -> Foo { return Foo() }\n"
+        "}\n"
+        "extension Foo {\n"
+        "    func b() -> Int { return a() }\n"
+        "}\n"
+    ), "swift")
+    assert ("svc_foo_a", "svc_helper") in calls
+    assert ("svc_foo_make", "svc_foo") in calls
+    assert ("svc_foo_b", "svc_foo_a") in calls
+
+
 def test_python_qualified_call_ambiguous_class_bails(tmp_path):
     """When the class name is defined in 2+ files, the qualified call must not
     resolve — single-definition god-node guard (#1446)."""
