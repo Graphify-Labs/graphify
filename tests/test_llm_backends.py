@@ -707,6 +707,19 @@ def test_ollama_num_ctx_env_override(monkeypatch):
     assert captured["extra_body"]["options"]["num_ctx"] == 65536
 
 
+def test_ollama_passes_max_tokens(monkeypatch):
+    # #3982: Ollama's OpenAI-compatible endpoint ignores max_completion_tokens
+    # and requires max_tokens.
+    captured = _install_capturing_openai(monkeypatch)
+    llm._call_openai_compat(
+        "http://localhost:11434/v1", "ollama", "qwen2.5-coder:7b",
+        "u", temperature=0, max_completion_tokens=4096, backend="ollama",
+    )
+    assert captured.get("max_tokens") == 4096
+    assert captured.get("max_completion_tokens") == 4096
+
+
+
 def test_non_ollama_backend_gets_no_num_ctx_extra_body(monkeypatch):
     captured = _install_capturing_openai(monkeypatch)
 

@@ -1509,7 +1509,12 @@ def save_semantic_cache(
         cache_path = source_path(fpath)
         resolved = resolved_source_path(fpath)
         if not resolved.is_file() and allowed_paths is not None:
+            # 1. Exact basename match
             candidates = [ap for ap in allowed_paths if ap.name == cache_path.name]
+            # 2. Case-insensitive basename match fallback (#3982)
+            if not candidates:
+                target_cf = cache_path.name.casefold()
+                candidates = [ap for ap in allowed_paths if ap.name.casefold() == target_cf]
             if len(candidates) == 1:
                 cache_path = candidates[0]
                 resolved = candidates[0]

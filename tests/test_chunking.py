@@ -862,3 +862,87 @@ def test_pack_chunks_with_special_token_doc_does_not_crash(tmp_path):
     code = tmp_path / "code.py"; code.write_text("def f():\n    return 1\n")
     chunks = _pack_chunks_by_tokens([doc, code], token_budget=60_000)
     assert chunks  # produced at least one chunk, no exception
+
+
+def test_corpus_parallel_edge_source_file_backfill(tmp_path):
+    """#3982: extract_corpus_parallel backfills edge source_file from endpoint nodes
+    when the model omits it, and attributes missing source_files in single-file chunks."""
+    from graphify.llm import extract_corpus_parallel
+
+    f1 = tmp_path / "a.py"
+    f2 = tmp_path / "b.py"
+    f1.write_text("def a(): pass\n")
+    f2.write_text("def b(): pass\n")
+
+    # Multi-file chunk where edge has no source_file
+    def stub_multi(chunk, **kwargs):
+        return {
+            "nodes": [
+                {"id": "n_a", "label": "a", "source_file": "a.py"},
+                {"id": "n_b", "label": "b", "source_file": "b.py"},
+            ],
+            "edges": [
+                {"source": "n_a", "target": "n_b", "relation": "calls"},  # missing source_file
+            ],
+            "hyperedges": [],
+            "input_tokens": 10,
+            "output_tokens": 10,
+            "finish_reason": "stop",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stub_multi):
+        res = extract_corpus_parallel([f1, f2], backend="kimi", chunk_size=2, token_budget=None, max_concurrency=1)
+        assert len(res["edges"]) == 1
+        assert res["edges"][0]["source_file"] == "a.py"
+
+    # Single-file chunk where edge and node have no source_file
+    def stub_single(chunk, **kwargs):
+        return {
+            "nodes": [
+                {"id": "n_lone", "label": "lone"},  # missing source_file
+            ],
+            "edges": [
+                {"source": "n_lone", "target": "external", "relation": "uses"},  # missing source_file
+            ],
+            "hyperedges": [],
+            "input_tokens": 10,
+            "output_tokens": 10,
+            "finish_reason": "stop",
+        }
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stub_single):
+        res = extract_corpus_parallel([f1], backend="kimi", chunk_size=1, token_budget=None, max_concurrency=1)
+        assert res["nodes"][0]["source_file"] == str(f1)
+        assert res["edges"][0]["source_file"] == str(f1)
+
+
+def test_on_chunk_done_receives_allowed(tmp_path):
+    """#3982: on_chunk_done receives allowed keyword argument if supported."""
+    from graphify.llm import extract_corpus_parallel
+
+    f1 = tmp_path / "x.py"
+    f1.write_text("x = 1\n")
+
+    def stub(chunk, **kwargs):
+        return {
+            "nodes": [{"id": "nx", "label": "x", "source_file": str(f1)}],
+            "edges": [],
+            "hyperedges": [],
+            "input_tokens": 5,
+            "output_tokens": 5,
+            "finish_reason": "stop",
+        }
+
+    captured_allowed = []
+
+    def callback(idx, total, result, allowed=None):
+        captured_allowed.append((idx, total, allowed))
+
+    with patch("graphify.llm.extract_files_direct", side_effect=stub):
+        extract_corpus_parallel([f1], backend="kimi", on_chunk_done=callback, max_concurrency=1)
+
+    assert len(captured_allowed) == 1
+    assert captured_allowed[0][0] == 0
+    assert captured_allowed[0][1] == 1
+    assert captured_allowed[0][2] == [f1]
+
