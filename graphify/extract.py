@@ -3983,12 +3983,28 @@ def _resolve_python_member_calls(
     # to the module in the importing file. Keyed by (importing file, target module)
     # so two files aliasing the same module differently each match their own.
     import_alias_by_filenode: dict[str, dict[str, str]] = {}
+    from_targets = {(e.get("source"), e.get("target")) for e in all_edges
+                    if e.get("relation") == "imports_from"}
+    from_import_sites = {(e.get("source"), e.get("source_file"), e.get("source_location"))
+                         for e in all_edges if e.get("relation") == "imports_from"}
+    external_plain_imports: dict[str, dict[str, list[str]]] = {}
     for e in all_edges:
         if e.get("relation") in ("imports", "imports_from"):
             imported_by_filenode.setdefault(e.get("source"), set()).add(e.get("target"))
             alias = e.get("local_alias")
             if alias:
                 import_alias_by_filenode.setdefault(e.get("source"), {})[e.get("target")] = _key(alias)
+        if e.get("relation") == "imports":
+            src, target = e.get("source"), e.get("target")
+            if ((src, target) in from_targets
+                    or (src, e.get("source_file"), e.get("source_location")) in from_import_sites
+                    or not isinstance(target, str)):
+                continue
+            if target in node_by_id or target in contains_children or target in file_of_node:
+                continue
+            binding = e.get("local_alias") or target
+            if isinstance(binding, str):
+                external_plain_imports.setdefault(src, {}).setdefault(binding, []).append(target)
 
     def _module_stem_key(nid: str) -> str:
         n = node_by_id.get(nid)
@@ -4029,6 +4045,17 @@ def _resolve_python_member_calls(
         caller = rc.get("caller_nid")
         if not receiver or not callee or not caller:
             continue
+        # External modules have no parsed member definition. The extractor's
+        # present-false lexical fact and one exact plain import are both needed;
+        # older cached facts, from-imports, and ambiguous bindings fail closed.
+        if rc.get("_python_receiver_shadowed") is False:
+            caller_file = file_of_node.get(caller)
+            targets = external_plain_imports.get(caller_file, {}).get(receiver, [])
+            if len(targets) == 1:
+                _emit_call(caller, targets[0], rc)
+                continue
+            if targets:
+                continue
         if receiver[:1].isupper():
             # Class arm (#1446): a capitalized receiver is a class reference; an
             # instance (`self`, `obj`) never collides with a same-spelled class.

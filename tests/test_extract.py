@@ -1904,11 +1904,8 @@ def test_python_namespace_package_import_of_non_module_fabricates_nothing(tmp_pa
     assert fabricated == [], fabricated
 
 
-def test_python_external_aliased_import_fabricates_no_call_edge(tmp_path):
-    """#2082 must not over-resolve: an aliased import of an EXTERNAL/uncorpus
-    module (`import numpy as np; np.array()`) has no in-corpus callee, so it must
-    produce NO `calls` edge — the alias resolution stays inside the member-call
-    carve-out (in-corpus target required)."""
+def test_python_external_aliased_import_fabricates_no_member_node(tmp_path):
+    """External calls may target the imported module, never an invented member."""
     caller = tmp_path / "app.py"
     caller.write_text(
         "import numpy as np\n"
@@ -1926,6 +1923,97 @@ def test_python_external_aliased_import_fabricates_no_call_edge(tmp_path):
              or "join" in nodes.get(e["target"], {}).get("label", ""))
     ]
     assert fabricated == [], f"external aliased calls must not fabricate edges: {fabricated}"
+
+
+@pytest.mark.parametrize("hint", [None, 0, 1, "false"])
+def test_python_external_resolver_requires_explicit_false_shadow_fact(hint):
+    from graphify.extract import _resolve_python_member_calls
+
+    raw = {"caller_nid": "caller_fetch", "callee": "get", "receiver": "requests",
+           "is_member_call": True, "source_file": "caller.py", "source_location": "L4"}
+    if hint is not None:
+        raw["_python_receiver_shadowed"] = hint
+    nodes = [{"id": "caller", "label": "caller.py", "source_file": "caller.py"},
+             {"id": "caller_fetch", "label": "fetch()", "source_file": "caller.py"}]
+    edges = [{"source": "caller", "target": "caller_fetch", "relation": "contains"},
+             {"source": "caller", "target": "requests", "relation": "imports"}]
+    _resolve_python_member_calls([{"raw_calls": [raw]}], nodes, edges)
+    assert not any(e["relation"] == "calls" for e in edges)
+
+
+@pytest.mark.parametrize(("receiver", "imports", "extra_edges"), [
+    ("Requests", [("requests", "requests")], []),
+    ("Request", [("requests", None)], []),
+    ("requests", [], []),
+    ("requests", [("requests", None), ("other", "requests")], []),
+    ("requests", [("requests", None)], [("imports_from", "requests")]),
+    ("requests", [("requests", None)], [("imports_from", "other")]),
+])
+def test_python_external_resolver_requires_unique_exact_plain_import(
+    receiver, imports, extra_edges,
+):
+    from graphify.extract import _resolve_python_member_calls
+
+    raw = {"caller_nid": "caller_fetch", "callee": "get", "receiver": receiver,
+           "is_member_call": True, "source_file": "caller.py", "source_location": "L4",
+           "_python_receiver_shadowed": False}
+    nodes = [{"id": "caller", "label": "caller.py", "source_file": "caller.py"},
+             {"id": "caller_fetch", "label": "fetch()", "source_file": "caller.py"}]
+    edges = [{"source": "caller", "target": "caller_fetch", "relation": "contains"}]
+    edges.extend({"source": "caller", "target": target, "relation": "imports",
+                  "source_file": "caller.py", "source_location": "L1",
+                  **({"local_alias": alias} if alias else {})} for target, alias in imports)
+    edges.extend({"source": "caller", "target": target, "relation": relation,
+                  "source_file": "caller.py", "source_location": "L1"}
+                 for relation, target in extra_edges)
+    _resolve_python_member_calls([{"raw_calls": [raw]}], nodes, edges)
+    assert not any(e["relation"] == "calls" for e in edges)
+
+
+@pytest.mark.parametrize("member_count", [0, 2])
+def test_python_parsed_module_never_falls_back_to_coarse_call(member_count):
+    from graphify.extract import _resolve_python_member_calls
+
+    raw = {"caller_nid": "caller_fetch", "callee": "get", "receiver": "helper",
+           "is_member_call": True, "source_file": "caller.py", "source_location": "L4",
+           "_python_receiver_shadowed": False}
+    nodes = [{"id": "caller", "label": "caller.py", "source_file": "caller.py"},
+             {"id": "caller_fetch", "label": "fetch()", "source_file": "caller.py"},
+             {"id": "helper", "label": "helper.py", "source_file": "helper.py"}]
+    edges = [{"source": "caller", "target": "caller_fetch", "relation": "contains"},
+             {"source": "caller", "target": "helper", "relation": "imports"}]
+    for number in range(member_count):
+        nid = f"helper_get_{number}"
+        nodes.append({"id": nid, "label": "get()", "source_file": "helper.py"})
+        edges.append({"source": "helper", "target": nid, "relation": "contains"})
+    _resolve_python_member_calls([{"raw_calls": [raw]}], nodes, edges)
+    assert not any(e["relation"] == "calls" for e in edges)
+
+
+def test_python_external_module_call_survives_cache_and_context(tmp_path):
+    source = tmp_path / "caller.py"
+    source.write_text("import requests\n\ndef fetch():\n    return requests.get('/data')\n")
+    cold = extract([source], cache_root=tmp_path, root=tmp_path)
+    warm = extract([source], cache_root=tmp_path, root=tmp_path)
+    context = extract(
+        [source], cache_root=tmp_path, root=tmp_path,
+        resolution_context_nodes=[{"id": "unrelated", "label": "unrelated.py",
+                                   "source_file": "unrelated.py"}],
+        resolution_context_edges=[],
+    )
+    def calls(result):
+        return [e for e in result["edges"] if e["relation"] == "calls" and e["target"] == "requests"]
+    assert len(calls(cold)) == len(calls(warm)) == len(calls(context)) == 1
+    assert calls(cold) == calls(warm) == calls(context)
+    graph = build_from_json(cold)
+    assert graph.nodes["requests"]["external"] is True
+    assert graph.get_edge_data("caller_fetch", "requests")["relation"] == "calls"
+    shadow = tmp_path / "shadow.py"
+    shadow.write_text("import requests\n\ndef fetch(requests):\n    return requests.get('/data')\n")
+    for result in (extract([shadow], cache_root=tmp_path, root=tmp_path),
+                   extract([shadow], cache_root=tmp_path, root=tmp_path)):
+        assert not any(e["relation"] == "calls" and e["target"] == "requests"
+                       for e in result["edges"])
 
 
 def test_python_aliased_call_survives_warm_cache(tmp_path):

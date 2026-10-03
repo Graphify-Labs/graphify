@@ -36,7 +36,7 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 4  # Rust generic-impl identity markers + Terraform block attributes.
+_AST_CACHE_SCHEMA = 5  # Python receiver-shadow facts in persisted raw calls.
 
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()

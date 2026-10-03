@@ -1432,6 +1432,145 @@ def _python_module_bound_names(root, source: bytes) -> set[str]:
     walk(root)
     return bound
 
+
+def _python_receiver_shadow_checker(root, source: bytes):
+    """Conservative lexical guard for a plain external module receiver.
+
+    A module-root plain import is the only eligible binding. Other bindings in
+    any enclosing scope make the receiver unsafe, regardless of statement order.
+    Cache each scope scan because every member call in that scope asks again.
+    """
+    scope_types = {"module", "function_definition", "class_definition", "lambda"}
+    scopes: dict[int, tuple[set[str], dict[str, int], bool]] = {}
+    # A nested function can mutate module/captured bindings later. Dynamic
+    # namespace operations can also replace an import without an assignment AST.
+    dynamic_binding = False
+    pending = [root]
+    while pending:
+        candidate = pending.pop()
+        if candidate.type in {"global_statement", "nonlocal_statement"}:
+            dynamic_binding = True
+            break
+        if candidate.type == "call":
+            function = candidate.child_by_field_name("function")
+            if (function is not None and function.type == "identifier"
+                    and _read_text(function, source) in {
+                        "exec", "eval", "globals", "locals", "vars", "setattr", "delattr",
+                    }):
+                dynamic_binding = True
+                break
+        pending.extend(candidate.named_children)
+
+    def target_names(node, names: set[str]) -> bool:
+        if node is None:
+            return False
+        if node.type == "identifier":
+            names.add(_read_text(node, source))
+            return True
+        if node.type in {"tuple_pattern", "list_pattern", "pattern_list",
+                         "parenthesized_expression", "as_pattern_target"}:
+            return all(target_names(c, names) for c in node.named_children)
+        if node.type in {"attribute", "subscript"}:
+            return target_names(node.child_by_field_name("object") or node.named_children[0], names)
+        return False
+
+    def import_names(node) -> list[str] | None:
+        names: list[str] = []
+        for item in node.named_children:
+            if item.type == "aliased_import":
+                alias = item.child_by_field_name("alias")
+                if alias is None:
+                    return None
+                names.append(_read_text(alias, source))
+            elif item.type == "dotted_name":
+                names.append(_read_text(item, source).split(".")[0])
+            elif item.type == "wildcard_import":
+                return None
+        return names
+
+    def facts(scope):
+        key = scope.id
+        if key in scopes:
+            return scopes[key]
+        bound: set[str] = set()
+        plain_imports: dict[str, int] = {}
+        unsafe = bool(scope.has_error or (scope.type == "module" and dynamic_binding))
+        if scope.type in {"function_definition", "lambda"}:
+            bound.update(_python_param_names(scope.child_by_field_name("parameters"), source))
+
+        def walk(node) -> None:
+            nonlocal unsafe
+            for child in node.named_children:
+                kind = child.type
+                if kind in {"function_definition", "class_definition"}:
+                    name = child.child_by_field_name("name")
+                    if name is None:
+                        unsafe = True
+                    else:
+                        bound.add(_read_text(name, source))
+                    continue
+                if kind == "lambda":
+                    continue
+                if kind in {"global_statement", "nonlocal_statement", "match_statement", "ERROR"}:
+                    unsafe = True
+                    continue
+                if kind in {"import_statement", "import_from_statement"}:
+                    names = import_names(child)
+                    if names is None:
+                        unsafe = True
+                    elif kind == "import_statement" and scope.type == "module" and node == scope:
+                        for name in names:
+                            plain_imports[name] = plain_imports.get(name, 0) + 1
+                    else:
+                        bound.update(names)
+                    continue
+                if kind in {"assignment", "augmented_assignment", "for_statement", "for_in_clause"}:
+                    if not target_names(child.child_by_field_name("left"), bound):
+                        unsafe = True
+                elif kind == "named_expression":
+                    if not target_names(child.child_by_field_name("name"), bound):
+                        unsafe = True
+                elif kind == "with_item":
+                    alias = child.child_by_field_name("alias")
+                    value = child.child_by_field_name("value")
+                    if alias is None and value is not None and value.type == "as_pattern":
+                        alias = value.child_by_field_name("alias")
+                    if alias is not None and not target_names(alias, bound):
+                        unsafe = True
+                elif kind == "as_pattern" and node.type == "except_clause":
+                    if not target_names(child.child_by_field_name("alias"), bound):
+                        unsafe = True
+                elif kind == "delete_statement":
+                    for item in child.named_children:
+                        if not target_names(item, bound):
+                            unsafe = True
+                walk(child)
+
+        body = scope if scope.type == "module" else scope.child_by_field_name("body")
+        if body is None:
+            unsafe = True
+        else:
+            walk(body)
+        scopes[key] = (bound, plain_imports, unsafe)
+        return scopes[key]
+
+    def is_shadowed(call, receiver: str) -> bool:
+        node = call
+        found_module = False
+        while node is not None:
+            if node.type in scope_types:
+                bound, plain_imports, unsafe = facts(node)
+                if unsafe or receiver in bound:
+                    return True
+                if node.type == "module":
+                    found_module = True
+                    if plain_imports.get(receiver) != 1:
+                        return True
+            node = node.parent
+        return not found_module
+
+    return is_shadowed
+
 _JS_SCOPE_BOUNDARY = frozenset({
     "function_declaration", "function_expression", "function", "arrow_function",
     "method_definition", "class_declaration", "class", "generator_function",
@@ -3895,6 +4034,10 @@ def _extract_generic(
         _js_external_import_names(root, source, str_path)
         if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
         else set()
+    )
+    python_receiver_shadowed = (
+        _python_receiver_shadow_checker(root, source)
+        if config.ts_module == "tree_sitter_python" else None
     )
     nodes: list[dict] = []
     edges: list[dict] = []
@@ -7019,6 +7162,10 @@ def _extract_generic(
                             "source_location": f"L{node.start_point[0] + 1}",
                             "receiver": swift_receiver or member_receiver,
                         }
+                        if python_receiver_shadowed is not None and is_member_call:
+                            rc_entry["_python_receiver_shadowed"] = python_receiver_shadowed(
+                                node, member_receiver or ""
+                            )
                         # This file already named the callee as a type it does
                         # not define, so extract() binds it cross-file only with
                         # import or namespace evidence (#3888).

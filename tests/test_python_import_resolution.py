@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from graphify.extract import extract
 from graphify.extractors.resolution import (
     _SCAN_ROOT_NAMESPACE_CACHE,
@@ -33,6 +35,77 @@ def _has_edge(result: dict, source: str, target: str, relation: str) -> bool:
         and edge["relation"] == relation
         for edge in result["edges"]
     )
+
+
+@pytest.mark.parametrize(("import_line", "receiver", "target"), [
+    ("import requests", "requests", "requests"),
+    ("import requests as rq", "rq", "requests"),
+    ("import requests as Requests", "Requests", "requests"),
+    ("import os", "os", "os"),
+    ("import pkg.sub as sub", "sub", "pkg_sub"),
+])
+def test_external_plain_import_member_call_targets_module(
+    tmp_path: Path, import_line: str, receiver: str, target: str,
+):
+    source = _write(tmp_path / "caller.py", (
+        f"{import_line}\n\n"
+        "def fetch():\n"
+        f"    return {receiver}.get('/data')\n\n"
+        "def unrelated():\n"
+        "    return 1\n"
+    ))
+    result = extract([source], cache_root=tmp_path)
+    caller = _node_id(result, "fetch()", "caller.py")
+    calls = [e for e in result["edges"] if e["relation"] == "calls" and e["target"] == target]
+    assert len(calls) == 1
+    assert calls[0]["source"] == caller
+    assert calls[0]["source_file"] == "caller.py"
+    assert (calls[0]["confidence"], calls[0]["confidence_score"], calls[0]["context"],
+            calls[0]["source_location"], calls[0]["weight"]) == ("EXTRACTED", 1.0, "call", "L4", 1.0)
+    assert not any(n.get("label") == "get()" for n in result["nodes"])
+    assert not any("_python_receiver_shadowed" in item for item in result["nodes"] + result["edges"])
+
+
+@pytest.mark.parametrize("body", [
+    "def fetch(requests):\n    return requests.get()\n",
+    "def fetch(*, requests=None):\n    return requests.get()\n",
+    "def fetch():\n    requests = object()\n    return requests.get()\n",
+    "def fetch():\n    requests, x = pair\n    return requests.get()\n",
+    "def fetch():\n    requests += 1\n    return requests.get()\n",
+    "def fetch():\n    (requests := object())\n    return requests.get()\n",
+    "def fetch():\n    for requests in xs: pass\n    return requests.get()\n",
+    "def fetch():\n    xs = [requests.get() for requests in things]\n    return requests.get()\n",
+    "def fetch():\n    with open('x') as requests: pass\n    return requests.get()\n",
+    "def fetch():\n    try: pass\n    except Exception as requests: pass\n    return requests.get()\n",
+    "def fetch():\n    def requests(): pass\n    return requests.get()\n",
+    "def fetch():\n    class requests: pass\n    return requests.get()\n",
+    "def fetch():\n    del requests\n    return requests.get()\n",
+    "def fetch():\n    requests.value = 1\n    return requests.get()\n",
+    "def fetch():\n    import requests\n    return requests.get()\n",
+    "def fetch():\n    global requests\n    return requests.get()\n",
+    "def fetch():\n    nonlocal requests\n    return requests.get()\n",
+    "def fetch():\n    match x:\n        case requests: pass\n    return requests.get()\n",
+    "def fetch():\n    return (lambda requests: requests.get())(object())\n",
+    "def fetch():\n    return (lambda *, requests=None: requests.get())()\n",
+    "def fetch():\n    return (lambda **requests: requests.get())()\n",
+    "requests = object()\ndef fetch():\n    return requests.get()\n",
+    "def outer():\n    requests = object()\n    def fetch():\n        return requests.get()\n",
+    "if flag:\n    import requests\ndef fetch():\n    return requests.get()\n",
+    "from elsewhere import *\ndef fetch():\n    return requests.get()\n",
+    "def fetch():\n    exec('requests = other')\n    return requests.get()\n",
+    "def fetch():\n    eval('globals().__setitem__(\\\"requests\\\", other)')\n    return requests.get()\n",
+    "def fetch():\n    globals()['requests'] = other\n    return requests.get()\n",
+    "def fetch():\n    locals()['requests'] = other\n    return requests.get()\n",
+    "def fetch():\n    setattr(requests, 'get', other)\n    return requests.get()\n",
+    "def fetch():\n    delattr(requests, 'get')\n    return requests.get()\n",
+    "def mutate():\n    global requests\n    requests = other\ndef fetch():\n    return requests.get()\n",
+    "import requests\ndef fetch():\n    return requests.get()\n",
+    "import other as requests\ndef fetch():\n    return requests.get()\n",
+])
+def test_external_module_fallback_rejects_receiver_shadow(tmp_path: Path, body: str):
+    source = _write(tmp_path / "caller.py", "import requests\n" + body)
+    result = extract([source], cache_root=tmp_path)
+    assert not any(e["relation"] == "calls" and e["target"] == "requests" for e in result["edges"])
 
 
 def test_overdeep_relative_import_is_unresolved_not_fatal(tmp_path: Path):
