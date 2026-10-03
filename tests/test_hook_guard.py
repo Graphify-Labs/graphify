@@ -311,3 +311,49 @@ def test_read_nudge_em_dash_survives_utf8(tmp_path):
     text = r.stdout.decode("utf-8")   # raises if not valid UTF-8
     payload = json.loads(text)
     assert "—" in payload["hookSpecificOutput"]["additionalContext"]  # em dash preserved
+
+
+# --------------------------------------------------------------------------- #
+# #4040: reminders name the effective graph.json when GRAPHIFY_OUT is customized
+# --------------------------------------------------------------------------- #
+def _ctx(out):
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_custom_out_read_nudge_names_effective_graph(tmp_path, monkeypatch):
+    out = _invoke("read", {"tool_name": "Read", "tool_input": {"file_path": "src/app.py"}},
+                  tmp_path, monkeypatch, out_name="artifacts/graphify")
+    assert "artifacts/graphify/graph.json" in _ctx(out)
+    assert "graphify-out/" not in _ctx(out)
+
+
+def test_custom_out_stale_nudge_names_effective_graph(tmp_path, monkeypatch):
+    target = tmp_path / "src" / "app.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("x = 1\n", encoding="utf-8")
+    g = tmp_path / "artifacts" / "graphify" / "graph.json"
+    g.parent.mkdir(parents=True)
+    g.write_text("{}", encoding="utf-8")
+    os.utime(g, (1, 1))
+    out = _invoke("read", {"tool_name": "Read", "tool_input": {"file_path": str(target)}},
+                  tmp_path, monkeypatch, graph=False, out_name="artifacts/graphify")
+    assert "STALE" in _ctx(out)
+    assert "artifacts/graphify/graph.json" in _ctx(out)
+    assert "graphify-out/" not in _ctx(out)
+
+
+def test_custom_out_search_nudge_names_effective_graph(tmp_path, monkeypatch):
+    out = _invoke("search", {"tool_name": "Bash", "tool_input": {"command": "grep -rn x ."}},
+                  tmp_path, monkeypatch, out_name="artifacts/graphify")
+    assert "artifacts/graphify/graph.json" in _ctx(out)
+    assert "graphify-out/" not in _ctx(out)
+
+
+@pytest.mark.parametrize("kind,payload,const", [
+    ("read", {"tool_name": "Read", "tool_input": {"file_path": "src/app.py"}}, "_READ_NUDGE"),
+    ("search", {"tool_name": "Bash", "tool_input": {"command": "grep -rn x ."}}, "_SEARCH_NUDGE"),
+])
+def test_default_out_nudge_is_byte_identical(kind, payload, const, tmp_path, monkeypatch):
+    from graphify import cli
+    out = _invoke(kind, payload, tmp_path, monkeypatch)
+    assert out == getattr(cli, const)
