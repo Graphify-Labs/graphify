@@ -410,16 +410,20 @@ project code.
 
 **Acceptance Criteria**
 
-1 - Public CMake, qmake and resource fixtures project each supported literal module/source or resource-alias membership to the uniquely accepted canonical file/component endpoint. Relations preserve the metadata declaration's direction, module/alias context, original span and resolution confidence through build, JSON reload and scoped query; the existing loader/module lookup results remain unchanged. (`REQ-QML-020-AC01`)
+1 - Public CMake, qmake and resource fixtures project each supported literal module/source or resource-alias membership through an independent source-owned `membership_resolution` site to the uniquely accepted canonical file/component endpoint. The declaration contains its site with context `qt_membership_site`; a resolved site references the target with confidence `EXTRACTED` and context `qt_project_source` or `qt_resource_membership`. Direction, module/alias context and original span survive build, JSON reload and scoped query; raw declarations and existing loader/module lookup results remain unchanged. (`REQ-QML-020-AC01`)
 
-2 - Missing, duplicate, conditional, generated or out-of-root targets retain explicit unresolved/unsupported coverage and no guessed membership edge. Same-name files in different scopes remain distinct; graph projection neither reads new files nor evaluates expansions, build hooks or QML. Malformed metadata and failed joins retain existing failure diagnostics and prior durable graph/state. (`REQ-QML-020-AC02`)
+2 - Missing, duplicate, conditional, generated or out-of-root targets retain explicit unresolved/unsupported site status, reason and bounded evidence without a target edge. Same-name files in different scopes remain distinct; graph projection neither reads new files nor evaluates expansions, build hooks or QML. Malformed metadata and failed joins retain existing failure diagnostics and prior durable graph/state; force cannot authorize partial membership publication. (`REQ-QML-020-AC02`)
 
 3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. (`REQ-QML-020-AC03`)
 
-Status: **Planned; not implemented or verified**. Current metadata readers and
-indexes retain source-owned facts and resolve supported module/resource lookups,
-but do not publish general declaration-to-file/component membership edges.
-Internal-only metadata communities reflect this current projection boundary.
+Status: **Locally Verified for the bounded static source profile**. All three
+criteria have production, lifecycle/consumer and reviewed installed-artifact
+evidence assigned in [traceability](../tests/TRACEABILITY.md#project-membership-projection).
+The two new source/lifecycle suites contribute 37 passing cases to the final
+reviewed-wheel selection. Qt policy epoch 6 with AST cache schema 7 unchanged
+refreshes earlier same-version graphs. Raw facts and existing module/resource
+lookups remain unchanged; static membership does not establish runtime component
+use. Browser, new hosted, other-platform and executable Qt proof are not claimed.
 [INC-QML-14](qt-qml/PLAN.md#inc-qml-14--explicit-project-membership-relationships)
 owns this additional behavior and its evidence; source containment and viewer
 counts do not establish completion.

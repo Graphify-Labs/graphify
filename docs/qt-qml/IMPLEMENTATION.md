@@ -458,14 +458,81 @@ serialized occurrences. Existing Select All, source-node Degree and bounded
 aggregate rendering remain intact. Pre-aggregated callers without original
 source counts display unavailable counts.
 
-AST schema 7 and policy 5 invalidate stale same-version facts. Local source and
+The INC-QML-12/13 artifact's AST schema 7 and policy 5 invalidate stale same-version
+facts. Its local source and
 reviewed installed-artifact verification passes; exact evidence belongs to
 VALIDATION.md and tests/TRACEABILITY.md.
 Browser/system appearance is a separate unexecuted gap. INC-QML-11 inherited
 endpoint lookup and INC-QML-08 metadata/provider adoption remain unfinished.
-Plan review adds INC-QML-14/REQ-QML-020 for explicit metadata membership projection:
-current indexes resolve accepted targets, but general declaration-to-file edges
-are not published. Source-owner and viewer-count corrections do not complete it.
+At the INC-QML-12/13 review, INC-QML-14/REQ-QML-020 was recorded as a planned
+metadata-membership correction: indexes resolved accepted targets without general
+declaration-to-file edges. That policy-5/schema-7 artifact remains historical
+evidence for constructor/source/view corrections. INC-QML-14 is now locally
+complete as recorded below; earlier source-owner and viewer-count results
+do not complete it.
 INC-QML-15 retains the existing generic overloaded-constructor ID/location-parity
 gap. Native source-file links pass their scoped parity checks; exact generic
 overload identity remains unverified.
+
+## Project/resource membership projection (INC-QML-14)
+
+Status: **Locally complete; Verified within the bounded static source profile**.
+Production, lifecycle/consumer and reviewed installed-artifact evidence passes
+under the existing REQ-QML-020-AC01–AC03. No requirement or acceptance identity is
+added. [D15](ARCHITECTURE.md#d15--project-membership-is-independent-of-component-use)
+separates observed package/resource membership from component use or Qt execution.
+
+`graphify/qt_project_membership.py::resolve_project_memberships` projects accepted
+`qt_source` and `resource_alias` declarations into independent
+`membership_resolution` sites. It consumes the accepted QtProjectIndex corpus and
+explicit fresh AST identities; borrowed declarations/context remain read-only.
+The helper returns fresh derived nodes/edges while replacing only its own stale
+scratch sites/mechanisms. Identity-based pipeline publication prevents a replaced
+borrowed site from shifting append offsets or leaking unrelated context facts.
+
+Each declaration contains its site with context `qt_membership_site`. A uniquely
+resolved site references the actual canonical file/component with context
+`qt_project_source` or `qt_resource_membership` and confidence `EXTRACTED`. Original
+source spans, declaration identity, module/alias context and bounded status/reason/
+evidence remain on the site. Missing, duplicate, conditional, generated and unsafe
+targets retain unresolved/unsupported attempts without a target edge. The helper
+performs no source read, path expansion, build/QML/plugin execution or filename-
+based endpoint reconstruction; raw facts and existing lookup behavior stay intact.
+
+The narrow `graphify/qt_qml_pipeline.py` hook runs after canonicalization in its
+existing scratch join. Coverage uses `QML-RESOLVE-001`; invalid transport or an
+unexpected failure reaches `QML_RESOLUTION_FAILED` and the existing publication
+guard. No parser or writer is added. Qt policy epoch 6 refreshes earlier
+same-version graphs; AST cache schema stays 7 and existing graph/manifest/root/
+analysis-state sequencing owns retention, corrected retry and idempotence.
+
+The helper/source-test/pipeline/lifecycle-test owners measure 187/283/85/267
+physical lines, all below the 300-line handwritten-file ceiling. The helper API
+accepts optional `fresh_ast_ids=()` and returns `(derived_nodes, derived_edges)`.
+Before the two additional graph-direction variants, the new source/lifecycle
+suites pass 37 focused cases in 8.77 seconds and contribute those cases to the
+reviewed-wheel broad selection:
+**1081 passed / 7 skipped / 1 existing warning** in 135.53 seconds. A separate
+cross-language/C# compatibility selection passes 97 cases in 4.05 seconds.
+The later focused direction expansion passes 39 cases in 9.50 seconds, including
+explicit CMake/qmake positives in both graph orientations. The unchanged
+production artifact's broad 1081-case result remains its own earlier selection.
+Exact assignments, commands and skip reasons belong to
+[validation](VALIDATION.md#inc-qml-14-membership-projection) and
+[traceability](../../tests/TRACEABILITY.md#project-membership-projection).
+
+The reviewed production tree is `a8656510281354913dcc92a3f733b70183874fbd`; the
+version-0.9.74 wheel SHA256 is
+`221c7efa8db69e6cad048aea67d88fe3049cf98bae933816017aba833525dc6c`.
+All 155 Python payloads are byte-equal across reviewed source, wheel and isolated
+installation. The installed public CMake/qmake/qrc fixture publishes 30 nodes,
+31 edges and six resolved memberships (five source and one resource), including
+an uninstantiated QML component. Real query/explain/affected/HTML commands exit 0.
+Malformed qrc with force/partial options exits 1 and retains four durable products;
+repair and repeat exit 0 with unchanged graph bytes on repeat. This is actual
+installed static-analysis evidence, with no Qt application/build execution.
+
+No new browser, hosted, other-platform or executable Qt proof is claimed. Earlier
+INC-QML-12/13 completion and policy-5 artifact evidence remain revision-specific;
+INC-QML-08 adoption stays partial and INC-QML-11/15 remain planned. Plan review
+identified no additional required increment for the completed membership profile.

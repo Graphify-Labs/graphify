@@ -16,6 +16,8 @@ INC-QML-12 constructor source proof and INC-QML-13 source containment/view count
 are implemented with local source and reviewed installed-artifact validation. Missing constructor class proof
 cannot be supplied by a same-name header prototype; source containment alone
 does not establish a native endpoint.
+INC-QML-14 membership projection is locally complete and REQ-QML-020 is Verified
+within the bounded static profile with policy 6/schema 7. INC-QML-15 remains planned.
 
 ## Ownership and dependency direction
 
@@ -512,10 +514,13 @@ synthetic relationships. The inspector distinguishes closed connected groups
 from actual isolates. A pre-aggregated caller without source counters displays
 unavailable counts; ordinary source-node Degree and Select All remain unchanged.
 
-AST cache schema 7 retires older C++ producer facts at the same package version;
-Qt policy epoch 5 invalidates derived constructor/source-ownership facts, including
+The reviewed INC-QML-12/13 artifact uses AST cache schema 7 to retire older C++
+producer facts at the same package version. Its Qt policy epoch 5 invalidates
+derived constructor/source-ownership facts, including
 the intermediate policy-4 analysis produced before source-file containment.
 Graph/manifest/checkpoint persistence owners and publication order are unchanged.
+INC-QML-14 subsequently uses Qt policy 6 with schema 7; this earlier artifact's
+proof remains tied to its constructor/source-containment revision.
 Migration discards incompatible AST cache entries; failed analysis retains prior
 graph/manifest/root/Qt state and requires a corrected retry. This is different
 from promising incompatible old-cache retention.
@@ -534,15 +539,69 @@ New handwritten constructor/source-link/viewer modules and tests must remain
 below 300 lines. Verification measurements and any remaining platform/system
 gaps belong to VALIDATION.md and tests/TRACEABILITY.md.
 
-## Planned metadata membership projection (INC-QML-14)
+## Metadata membership projection (INC-QML-14)
 
-The current QtProjectIndex resolves accepted source and resource literal targets
-for module/load/access lookup. Metadata facts are source-owned by their declaring
-file, but general fact-to-source membership edges are not published. REQ-QML-020
-and INC-QML-14 separately plan that additional graph projection. Define scoped
-relation context/direction, uncertainty and multi-relation preservation before
-implementation; functioning lookup and truthful internal counts do not verify
-the proposed projection.
+Status: **Locally complete; Verified within the bounded static source profile**.
+QtProjectIndex resolves accepted
+source/resource literals for module/load/access lookup. The additional projection
+reuses those accepted facts and canonical endpoints rather than reading a declared
+path or evaluating a build condition. Functioning lookup and truthful internal
+community counts do not establish this new acceptance evidence.
+Architecture decision [D15](ARCHITECTURE.md#d15--project-membership-is-independent-of-component-use)
+separates membership from component use and Qt runtime behavior.
+
+`qt_project_membership.resolve_project_memberships(results, nodes, edges, *, root,
+project_index, fresh_ast_ids=())` owns the derived joins after canonical source
+identities exist. It returns `(derived_nodes, derived_edges)` and replaces only
+its own scratch/per-file site mechanisms; borrowed declaration/context dictionaries
+remain immutable. The pipeline publishes through starting node identities and
+edge-object identities, explicitly including fresh same-ID membership replacements.
+Replacing a borrowed site cannot shift append offsets or publish unrelated context.
+The helper and its focused test
+module stay below 300 physical lines. Reader syntax, corpus admission, existing
+indexes and graph persistence remain in their existing owners.
+
+Each declaration owns an independent `metadata.qml` contract-version-1
+`membership_resolution` site. Its bounded fields include `declaration_id`,
+`declaration_kind`, original `span`, `source_kind`, `module_key`, resource alias or
+logical URL context, `status`, `reason`, `evidence` and `candidates`. Evidence and
+candidates each retain at most 50 IDs. A resolved site also records `target_id`.
+Site identity is deterministic for the same accepted declaration/input and does
+not depend on an absolute checkout path. It retains the declaration's source
+provenance without changing the raw declaration's metadata.
+
+| Logical edge | Relation / context / confidence | Authority |
+| --- | --- | --- |
+| Declaration to membership site | `contains` / `qt_membership_site` / `EXTRACTED` | The accepted declaration owns this observed membership attempt |
+| Resolved build-source site to file/component | `references` / `qt_project_source` / `EXTRACTED` | Supported literal source membership establishes a unique accepted canonical endpoint |
+| Resolved resource-alias site to file/component | `references` / `qt_resource_membership` / `EXTRACTED` | Supported literal alias/path evidence establishes a unique accepted canonical endpoint |
+
+Separate sites prevent repeated declarations and parallel source/resource
+mechanisms from collapsing in the existing graph representation. Preserve typed
+logical endpoints and original source locations through default-undirected and
+directed build/JSON transport. A published source reference establishes static
+membership, not a runtime import, QObject relationship or architectural module.
+
+Missing, duplicate, conditional, generated or out-of-root targets retain explicit
+unresolved/unsupported site status and bounded reason/evidence without a target
+edge. The helper does not open a file, expand the corpus, run a build/QML/plugin,
+or choose by filename label. Existing module/resource/loader lookup results are
+unchanged. Ordinary coverage follows `QML-RESOLVE-001` semantics; invalid transport
+or an unexpected join failure propagates into the existing
+`QML_RESOLUTION_FAILED` publication guard rather than adding a second writer.
+
+Qt policy epoch is 6; AST cache schema remains 7. Refresh derives new
+membership sites from accepted inputs at the same package version and retires
+stale target edges after source/resource edits or removal. Existing publication
+ordering retains graph/manifest/root/Qt state on genuine failure even under force;
+corrected retry and no-change repeat use the normal lifecycle. These migration,
+production consumer and reviewed installed-artifact outcomes pass locally; exact
+evidence is recorded in [validation](VALIDATION.md#inc-qml-14-membership-projection)
+and [traceability](../../tests/TRACEABILITY.md#project-membership-projection).
+The helper/source-test/pipeline/lifecycle-test owners are 187/283/85/267 physical
+lines, respectively, all below the 300-line handwritten-file ceiling. Prior
+policy-5/schema-7 proof remains historical for INC-QML-12/13. No browser, new
+hosted, other-platform or executable Qt evidence is inferred from local tests.
 
 ## Planned exact overload identity (INC-QML-15)
 

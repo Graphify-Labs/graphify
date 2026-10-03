@@ -11,9 +11,9 @@ QT_METADATA_SUFFIXES = frozenset({".qmltypes", ".cmake", ".pro", ".pri", ".qrc"}
 QT_CPP_SUFFIXES = frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx"})
 QT_SCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
 QT_NAMED_METADATA = frozenset({"qmldir", "CMakeLists.txt"})
-# Source-site and constructor ownership change native facts at the same package
-# version; unchanged-input updates must refresh the accepted Qt analysis layer.
-QT_POLICY_VERSION = 5
+# Project membership projection changes derived facts at the same package version;
+# unchanged-input updates must refresh the accepted Qt analysis layer.
+QT_POLICY_VERSION = 6
 
 
 def is_qt_metadata(path: str | Path) -> bool:

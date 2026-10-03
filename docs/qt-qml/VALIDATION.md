@@ -905,23 +905,195 @@ cross-repository, C++ method and Objective-C guard compatibility passes 25 cases
 
 INC-QML-12/13 are locally complete for their recorded bounded source, artifact and
 emitted-script contracts. No new hosted, other-platform, browser-layout or executable Qt proof is claimed. Broader
-adoption provider gaps and INC-QML-11/14/15 remain explicitly unverified.
+adoption provider gaps and INC-QML-11/15 remain explicitly unverified. INC-QML-14
+was unverified at this policy-5 checkpoint; its separate policy-6 proof follows.
 
-## INC-QML-14 planned membership projection
+<a name="inc-qml-14-planned-membership-projection"></a>
 
-REQ-QML-020-AC01–AC03 are **Planned; not implemented or verified**. Accepted
-metadata/source/resource facts can resolve module and loader lookups in the
-per-run index while only their owning metadata file contains them in the graph.
-An internal-only metadata community is therefore compatible with the current
-projection contract. Truthful community counts and accepted source-file
-containment do not implement general metadata-to-source membership edges.
+## INC-QML-14 membership projection
 
-AC01 needs public literal CMake/qmake and resource-alias production projection,
-build/reload/query and unchanged-lookup evidence. AC02 needs missing/duplicate/
-conditional/generated/out-of-root and same-name rejection, bounded failure and
-prior-product retention without corpus expansion/execution. AC03 needs actual
-edit/rename/deletion/ambiguity stale-edge removal, cold/warm/incremental/no-change
-parity and persisted HTML membership. No test, successful command or artifact is
-assigned to these gaps. The [plan](PLAN.md#inc-qml-14--explicit-project-membership-relationships)
-owns the proposed scope and exit; [traceability](../../tests/TRACEABILITY.md#planned-project-membership-projection)
-records each unexecuted criterion separately.
+REQ-QML-020-AC01–AC03 are **Locally Verified for the bounded static public
+profile**. Earlier accepted
+metadata/source/resource facts could resolve module and loader lookups in the
+per-run index while only their owning metadata file contained them in the graph.
+The new increment targets the missing graph route to declared, accepted source
+files/components. Earlier truthful community counts and source-file containment
+remain evidence for their existing contracts, not this new projection.
+
+Each independent source-owned `membership_resolution` site retains the raw
+declaration's identity, source/span, module/alias context, evidence and status.
+Declaration containment uses `qt_membership_site`; a resolved site references its
+actual accepted canonical endpoint with confidence `EXTRACTED` and context
+`qt_project_source` or `qt_resource_membership`. Missing, competing, conditional,
+generated and unsafe targets retain coverage with no target edge. Raw producer
+facts, borrowed dictionaries and existing loader/module results remain unchanged.
+Static package membership does not establish runtime import, instantiated QML,
+architectural dependency or an evaluated build branch.
+
+### Pre-fix production regression
+
+The original `tests/test_qt_project_membership_updates.py` lifecycle selection
+has **4 failed**, 3.76 seconds before membership projection. Both actual manual
+update and watch variants have no membership sites in their initial published
+public fixture. The test reaches the real extraction/assembly/persistence path;
+it does not replace the resolver or CLI behavior. This establishes the missing
+membership regression, not success of later mutation or failure-retention steps.
+Only safe scenario/count conclusions from the local red log are retained here.
+
+The actual facade positive CMake/qmake selection also has **2 failed**, 2.42
+seconds when only membership projection is disabled and real parsing/index
+behavior remains. Its sites are absent despite the accepted source declarations.
+An earlier import failure while the new module was not yet present is not used
+as product regression proof.
+
+### Executed source tests and commands
+
+The two new public modules are
+`tests/test_qt_project_membership.py` and
+`tests/test_qt_project_membership_updates.py`. The exact criterion-to-test map is
+in [traceability](../../tests/TRACEABILITY.md#project-membership-projection).
+Their executed assignment covers the following production boundaries. Earlier
+development checkpoints remain tied to their own source/test state.
+
+The integration owner's development lifecycle checkpoint reports **9 passed**,
+8.57 seconds, including force rejection, fail-after-real-join retention, policy
+refresh and aggregate inspection. The projection module's negative controls
+still have failures under correction at that checkpoint. This partial selection
+is not final reviewed-revision evidence or verification of any complete criterion.
+
+A later development focused selection has **36 passed**, 8.74 seconds. The
+development broad selection has **1071 passed / 10 skipped / 1 existing Starlette
+warning**, 130.98 seconds. Three skips are built-wheel tests because
+`GRAPHIFY_QML_TEST_WHEEL` was unset; the other seven are two Windows symlink,
+one optional SVG and four unavailable C++ preprocessor cases. These are source
+development results, not reviewed-wheel proof. The final typed-file punctuation/
+published-context fixture follows that checkpoint. Investigation shows actual publication retains the raw punctuation
+label, so an earlier escaped-label hypothesis is disproved; no production guard
+is relaxed to accommodate that hypothesis.
+
+The pre-direction-expansion source-projection checkpoint has **26 passed**,
+1.90 seconds:
+
+```powershell
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_qt_project_membership.py --tb=short
+```
+
+The helper and test file at that checkpoint are 187 and 276 physical lines. Ruff passes those
+two owners; explicit-runtime Pyright reports zero errors and warnings. This is
+source-projection proof, not the final combined lifecycle/artifact gate.
+
+| Criterion | Executed source/lifecycle scope | Final evidence |
+| --- | --- | --- |
+| REQ-QML-020-AC01 | Public CMake/qmake and qrc fixtures, uniquely accepted file/component endpoints, independent/repeated declarations and same-name scoped paths, original BOM/CRLF/Unicode spans and punctuation, actual build/JSON reload/scoped query, unchanged module/loader lookup and serialized aggregate export/emitted inspector counts | Source/consumer and final reviewed installed public-fixture checks pass |
+| REQ-QML-020-AC02 | Missing/duplicate/conditional/generated/unsafe/wrong-role and ambiguous alias controls, malformed literal transport/exact-location rejection, immutable borrowed facts and guarded target reads/discovery/process execution; real malformed-qrc manual/force/watch publication rejection with byte retention, repair and repeat; the actual projection helper executes before an injected completion failure | Explicit status/reason, source rejection and final installed retention/recovery checks pass |
+| REQ-QML-020-AC03 | Cold/warm/full/manual/watch comparison, source edit/rename with updated metadata/alias, resource alias rename/duplicates/removal, target deletion, stale-edge retirement, stable unrelated Python and relocated-root identities, fresh-site replacement/publication without borrowed mutation, accepted typed-file identity through punctuation/publication, same-version policy-5 to policy-6 refresh and no-change repeat | Complete source/lifecycle/consumer, final broad compatibility and installed public-fixture checks pass |
+
+The reviewed-wheel focused checkpoint below passes **37 cases**, 8.77 seconds,
+with no skips (26 projection cases and 11 lifecycle/consumer cases). Two further
+directed graph variants expand CMake/qmake positives to directed and undirected
+actual assembly/JSON reload, checking the same logical endpoints and original
+declaration spans. The identical focused command then passes **39 cases**,
+9.50 seconds, with no skips (28 projection and 11 lifecycle/consumer cases):
+
+The first two directed variants assumed JSON would retain redundant `_src`/`_tgt`
+hints, which the established directed serializer omits because edge orientation
+is structural. That incorrect test expectation is not product red proof. The
+unchanged undirected assertions retain the hints; directed assertions prove the
+actual site-to-target edge and absence of its reverse. No production behavior or
+acceptance direction contract is relaxed.
+
+```powershell
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_qt_project_membership.py tests/test_qt_project_membership_updates.py --tb=short -rs
+```
+
+The complete reviewed-wheel command passes **1081 cases / 7 skipped / 1 existing
+Starlette warning**, 135.53 seconds:
+
+```powershell
+$env:GRAPHIFY_QML_TEST_WHEEL = (Resolve-Path .venv/qml-14-wheels/graphifyy-0.9.74-py3-none-any.whl).Path
+$testFiles = (Get-ChildItem tests/test_qml_*.py, tests/test_qt_*.py, tests/test_cpp_*.py, tests/test_html_*.py, tests/test_export*.py).FullName
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q @testFiles tests/test_cli_export.py --tb=short -rs
+```
+
+All three built-artifact tests execute with the reviewed wheel supplied. The
+seven remaining skips are two Windows symlink-permission, one optional SVG and
+four unavailable C++ preprocessor cases; no artifact test is skipped. These
+results do not turn skipped lanes into verification. That broad execution
+includes the earlier 37-case new membership selection. The two extra directed
+cases have the separate final focused result above; no 1083-case broad run is
+claimed. No production source or reviewed wheel changes follow this test-only
+expansion. Current new helper/source-test/lifecycle-test sizes are 187/283/267
+physical lines, within the 300-line ceiling.
+
+### Current revision and exit evidence
+
+The correction uses **Qt policy 6 / AST schema 7 / package version 0.9.74**.
+Actual CLI extract/update tests show the policy bump refreshes earlier same-version
+graphs even with unchanged source bytes; the AST schema and
+graph/manifest/checkpoint writer remain unchanged.
+The earlier policy-5/schema-7 artifact and its 1044-case result above stay tied to
+that earlier revision and do not verify the membership correction.
+
+| Gate | Current evidence state |
+| --- | --- |
+| Three individual criteria and two new source/lifecycle modules | Final 39 focused cases pass in 9.50 seconds; earlier wheel checkpoint has 37 passed in 8.77 seconds; original red lifecycle/facade failures retained |
+| Related metadata/loader/native and unrelated-language compatibility | Reviewed-wheel broad selection: 1081 passed / 7 documented skips / 1 existing warning, 135.53 seconds |
+| Same-version policy-5 to policy-6 refresh | Actual CLI extract/update tests pass with previous policy-5 state, unchanged source/package bytes, clean-rebuild equality and no-change repeat |
+| Actual join/transport/publication failure, force rejection and recovery | Source manual/force/watch and fail-after-real-join tests pass; installed force/partial rejection retains four products and repair/repeat succeed |
+| Final production tree | `a8656510281354913dcc92a3f733b70183874fbd` |
+| Final wheel SHA256 | `221c7efa8db69e6cad048aea67d88fe3049cf98bae933816017aba833525dc6c` |
+| Reviewed source/wheel/isolated installation equality | All 155 Python modules byte-equal; zero mismatches |
+| Installed unused-component route and query/export/HTML | Public CMake/qmake/qrc fixture: 30 nodes, 31 edges, six resolved membership sites; query/explain/affected/HTML exit 0 and HTML leaves the graph unchanged |
+| Final lint/type and lock | Five owners pass Ruff; explicit-runtime Pyright has zero errors/warnings in 2.29 seconds; lock check resolves 210 packages with no lockfile change |
+| Required `graphify update .` | Exits 0; existing optional parser fixture warnings and Luau partial-fixture baseline remain explicit |
+| Additional installed accepted-code-scope adoption | Refresh, HTML, query/explain/affected and no-change repeat exit 0 with the final wheel; no private source or identifiers retained and no whole-root/runtime claim |
+
+The final five-owner commands are:
+
+```powershell
+$membershipFiles = @('graphify/qt_project_membership.py', 'graphify/qt_qml_pipeline.py', 'graphify/qt_incremental.py', 'tests/test_qt_project_membership.py', 'tests/test_qt_project_membership_updates.py')
+.venv/Scripts/ruff.exe check @membershipFiles
+.venv/Scripts/pyright.exe --pythonpath .venv/qt-mcp-312/Scripts/python.exe @membershipFiles
+uv lock --check --offline
+```
+
+### Reviewed installed public procedure
+
+The integration owner runs the ignored public-fixture script
+`verify-membership-wheel.py` with the isolated noneditable installation's Python:
+
+```powershell
+& $installedPython -I -X utf8 $membershipProofScript
+```
+
+The two variables identify the provisioned isolated interpreter and that script;
+machine-specific paths are intentionally omitted. Inputs are public static
+CMake/qmake/qrc/QML/C++ fixtures. The script invokes the production CLI instead
+of copying an accepted graph into place. Its six resolved sites are five project
+source memberships and one resource membership. Query, explain, affected and
+HTML commands exit 0, with no project execution or canonical graph rewrite.
+It then damages qrc source and invokes the actual CLI with `--force` and
+`--allow-partial`: exit 1 preserves graph, manifest, analysis stamp and root
+marker byte-for-byte. Byte repair and repeat exit 0. The accepted public graph
+SHA256 is `d9ce1b82fec2b092446416a5dc90c8de46de398b8087db23acc356e94bd24e62`.
+That evidence is bound to the tree/wheel/payload identities above, Qt policy 6,
+AST schema 7 and unchanged package version 0.9.74.
+
+An additional redacted installed adoption check of the accepted code scope passes
+refresh, HTML, query, explain, affected and no-change repeat, each with exit 0.
+This is actual final-wheel source analysis, not an inference from the synthetic
+fixture. It does not establish whole-root discovery, unresolved provider/parser
+forms, application execution or browser appearance. Unrelated C#/cross-language
+compatibility also passes **97 cases**, 4.05 seconds:
+
+```powershell
+.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_cross_language_call_resolution.py tests/test_csharp_type_resolution.py tests/test_csharp_member_nodes.py tests/test_csharp_member_calls.py --tb=short -rs
+```
+
+No new hosted, other-platform, browser visual or executable Qt proof is claimed.
+The [plan](PLAN.md#inc-qml-14--explicit-project-membership-relationships) owns
+implementation and exit. Existing requirement/criterion identities, prior verified
+revision evidence and broader adoption/inheritance/overload limitations remain
+unchanged. The bounded public membership criteria are locally verified; the
+additional accepted-code-scope adoption check passes, while REQ-QML-018's
+whole-root/provider/parser and combined profile matrix remains unverified.

@@ -467,8 +467,36 @@ schema-6 evidence is historical, not proof of these additional cases.
 HTML aggregation is presentation state: internal source links and distinct
 external communities are different measurements. Display their actual counts
 without inventing topology, suppressing isolates or changing source data.
-Metadata membership projection remains the separate planned REQ-QML-020 contract;
+Metadata membership projection belongs to the separate REQ-QML-020 contract;
 internal-only metadata communities do not establish a missing runtime import.
 INC-QML-15 separately covers existing constructor-overload identity collisions
 and generic full/update location parity; the bounded singleton proof does not
 establish that broader profile.
+
+## D15 — Project membership is independent of component use
+
+Literal accepted CMake/qmake source lists and resource aliases prove packaging
+membership even when no QML source instantiates the component. Project that
+evidence through independent source-owned resolution sites: metadata declaration
+to site containment, then a resolved site to the unique accepted file or QML
+component by `references`. Retain declaration spans, scope and provenance.
+This relationship establishes neither a component instance nor runtime loading,
+signal delivery or source dependency beyond the declared membership.
+
+The per-run project index remains the lookup owner. The projection consumes its
+accepted corpus and does not read target files, execute build scripts, widen
+discovery or alter module/resource lookup behavior. Missing, conflicting,
+conditional, generated or foreign evidence remains unresolved without a target
+edge. Exact endpoint roles and original literal transport remain authoritative;
+labels and HTML proximity cannot supply proof. Borrowed source dictionaries stay
+immutable, including when a refreshed decision replaces old derived context.
+
+`qt_project_membership.py` owns projection; `qt_qml_pipeline.py` owns invocation
+and failure isolation. Existing CLI/watch writers retain publication ordering
+and prior-output failure policy. Qt policy 6 invalidates prior derived graphs at
+the same package version; AST schema 7 and producer fact contracts are unchanged.
+INC-QML-14 implements this bounded literal membership profile. Exact local
+producer, lifecycle, consumer and installed-artifact evidence belongs to
+requirements, plan and
+traceability. HTML clustering consumes persisted edges and adds no synthetic
+membership. Exact overload identity remains the separate planned INC-QML-15.

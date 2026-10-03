@@ -30,8 +30,8 @@ runtime schemas or parser contracts.
 The twenty requirements comprise eighty-one criteria. The initial seventeen
 requirements/sixty-eight criteria and six `REQ-QML-018` adoption criteria retain
 separate support/evidence profiles. REQ-QML-019 adds four HTML-view criteria.
-REQ-QML-020 adds three planned explicit-membership criteria; these are not yet
-implemented or verified. Implementation and verification status belong
+REQ-QML-020 adds three explicit-membership criteria locally Verified for the bounded
+static source profile through INC-QML-14. Implementation and verification status belong
 to [requirements](../REQUIREMENTS.md) and [traceability](../../tests/TRACEABILITY.md).
 This catalog establishes identity, not implementation or verification.
 
@@ -188,5 +188,7 @@ increment section; completion and dependencies remain in the [plan](PLAN.md).
 
 INC-QML-12 corrects generic constructor ownership and INC-QML-13 corrects source
 containment and aggregate edge-count presentation under existing criteria.
-INC-QML-14 separately plans REQ-QML-020 membership projection. No earlier numeric
-identity is changed, retired or reused.
+INC-QML-14 locally completes REQ-QML-020 membership projection as a separate bounded
+correction with production and reviewed installed-artifact evidence. D15
+distinguishes source membership from component use and Qt runtime behavior.
+No earlier numeric identity is changed, retired or reused.

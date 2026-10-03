@@ -55,7 +55,7 @@ Native registration coverage belongs to `QtQmlBridgeIndex`, not the parser or
 graph writer. `native_class_definition_unavailable` with status `unavailable`
 means the accepted class ID has no source record explicitly proving a complete
 class body. Forward declarations and legacy records without `is_definition`
-cannot establish a provider. Reanalyse accepted sources with Qt policy 5 and
+cannot establish a provider. Reanalyse accepted sources with Qt policy 6 and
 AST cache schema 7; if the
 body is outside the accepted corpus, supply that source through the supported
 scope rather than guessing a target. A complete body without accepted meta-object
@@ -66,7 +66,7 @@ retain ambiguity; source-owned unresolved facts remain visible in exports.
 
 Ownership recovery does not add a new success or write-failure code. Exact
 canonical definition provenance and complete class evidence permit normal source
-edges; missing or conflicting evidence does not. Qt policy 5 forces unchanged-
+edges; missing or conflicting evidence does not. Qt policy 6 forces unchanged-
 input refresh after the correction. A malformed native refresh still reaches
 `QT_CPP_SYNTAX` and the existing publication guard, preserving the prior graph,
 manifest, Qt stamp and root marker even under force. Corrected retry commits the
@@ -140,5 +140,25 @@ Malformed native input or failed joins still reject publication with the existin
 stage-specific errors. AST schema 7 retires incompatible caches; prior valid
 graph/manifest/root/Qt state survives a failed refresh. Corrected retry uses the
 normal publication sequence. Internal-only or genuinely unlinked community counts
-are successful view states, not HTML publication failures. REQ-QML-020 projection
-and any additional diagnostics remain planned.
+are successful view states, not HTML publication failures.
+
+## Project-membership coverage (INC-QML-14)
+
+Status: **Locally complete; Verified within the bounded static source profile**.
+`membership_resolution` sites retain the
+source declaration, original span, bounded evidence/candidates and status/reason.
+Missing, duplicate, conditional, generated or out-of-root targets retain ordinary
+`QML-RESOLVE-001` coverage semantics with no target edge. Unresolved membership is
+different from a malformed source or failed graph write; the site does not permit
+reading a new path or executing a build/QML/plugin to obtain a target.
+
+Invalid metadata/transport or unexpected projection failure uses the existing
+reader diagnostics or `QML_RESOLUTION_FAILED` pipeline guard. No new parser code,
+logger or publication bypass is introduced. Prior durable products remain subject
+to the normal failure-retention boundary, including force. Qt policy 6 with AST
+schema 7 unchanged has local same-version refresh, failed-refresh retention,
+corrected retry and repeat proof. The reviewed installed public fixture rejects
+malformed qrc under force/partial options while retaining graph, manifest, analysis
+state and root marker; repaired and repeated updates succeed. Earlier policy-5
+evidence remains tied to its original revision. Continue using the installed artifact's normal
+`graphify update .` workflow after installation rather than editing graph facts.

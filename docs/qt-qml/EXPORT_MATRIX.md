@@ -4,6 +4,9 @@ Status: INC-QML-07 source implementation. This matrix describes accepted static
 source facts, not Qt runtime delivery or database-service verification. The
 canonical requirement is [REQ-QML-013-AC03](../REQUIREMENTS.md). A presentation export
 is an inspection aid; retain `graph.json` when exporting one.
+INC-QML-14 adds locally verified source-owned project/resource membership
+projection under REQ-QML-020 for its bounded static profile. Current producer/
+consumer evidence is recorded separately from earlier export results.
 
 | Consumer or format | Retained Qt/QML information | Direction and reload | Explicit limitations |
 | --- | --- | --- | --- |
@@ -93,6 +96,35 @@ The aggregated HTML inspector distinguishes canonical internal/external source
 edges from distinct neighboring communities. Internal-only metadata groups retain
 true source relationships without fake meta-graph self-loops. Source-only callable
 containment preserves native class uncertainty and original Qt fact payloads;
-counts do not imply resolution or runtime delivery. Explicit metadata-to-file/
-component membership projection is planned under REQ-QML-020 and is not part of
-current export support.
+counts do not imply resolution or runtime delivery.
+
+## Project/resource membership correction (INC-QML-14)
+
+Status: **Locally complete; Verified within the bounded static source profile**.
+The source projection adds independent
+`membership_resolution` sites owned by accepted CMake/qmake source declarations
+and qrc aliases. A declaration contains its site with `qt_membership_site`; only
+a uniquely resolved site references an accepted canonical file/component with
+`qt_project_source` or `qt_resource_membership`, confidence `EXTRACTED`. Site
+status/reason and bounded evidence retain unresolved attempts without a guessed
+target. Raw declaration facts and existing module/resource/loader lookup results
+stay unchanged. [D15](ARCHITECTURE.md#d15--project-membership-is-independent-of-component-use)
+defines this static membership boundary independently of component use.
+
+Canonical JSON retains those site identities, original spans, module/alias
+context and logical endpoints in directed and default-undirected graphs. Written
+full HTML exposes the retained source payload; aggregate HTML displays only
+actual persisted community relationships and counts, with its existing source-
+detail omissions. A membership reference is neither a call nor proof of a runtime
+import, plugin load or architectural dependency. Existing export omissions and
+database-service limitations remain unchanged.
+
+Actual build/reload/query/HTML regressions and reviewed installed-artifact
+evidence for REQ-QML-020 pass locally and are recorded in
+[validation](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md). The
+correction uses Qt policy 6 with AST schema 7 unchanged. The installed public
+CMake/qmake/qrc fixture retains six resolved memberships and succeeds through
+query/explain/affected/HTML; malformed-resource rejection, repair and repeat pass.
+An earlier export or policy-5 artifact does not verify this correction. No new
+browser visual, hosted, other-platform, database-service or executable Qt proof is
+claimed; other export omissions remain those listed above.

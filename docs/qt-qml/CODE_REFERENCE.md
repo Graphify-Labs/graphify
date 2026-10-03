@@ -195,7 +195,7 @@ signature/role/access rules. No implementation or proof is assigned yet; see
 | `extractors/qt_cpp_exposure.py::_class_facts` | Member/local-class source containment by unique accepted callable without native class/QObject/exposure authority |
 | `exporters/html.py::to_html` and emitted inspector | Actual canonical internal/external source-edge counts and distinct connected-community counts; no graph mutation |
 | `qt_source_containment.py`, `qt_qml_pipeline.py` | Exact accepted file-to-unknown-occurrence containment, explicit fresh AST authority and unchanged unresolved semantic roles |
-| `cache.py`, `qt_incremental.py` | AST schema 7 and Qt policy 5 same-package refresh; original persistence owners unchanged |
+| `cache.py`, `qt_incremental.py` | Historical INC-QML-12/13 artifact: AST schema 7 and Qt policy 5 same-package refresh; INC-QML-14 subsequently uses policy 6 with the same persistence owners |
 
 Constructor metadata version 1 carries bounded original names/lexical scope,
 source spans, exact type-signature hashes and rejected/accepted class-binding
@@ -205,7 +205,28 @@ containment does not change class IDs/native roles. D14 and DESIGN.md describe
 these boundaries. Legacy module measurements/exceptions are versioned in
 DESIGN.md; tests and exact commands belong to validation/traceability.
 
-The separate INC-QML-14 seam is planned: project accepted metadata memberships
-through QtProjectIndex evidence to existing canonical file/component endpoints.
-Current lookup and source-owned metadata facts do not publish that general edge
-projection; REQ-QML-020 remains unimplemented/unverified.
+## Project-membership seams (INC-QML-14)
+
+Status: **Locally complete; Verified within the bounded static source profile**.
+The owners below implement
+REQ-QML-020-AC01–AC03 without a new parser or persistence pipeline.
+
+| Owner | Correction responsibility |
+| --- | --- |
+| `graphify/qt_project_membership.py::resolve_project_memberships` | Independent source-owned membership sites; literal/unique accepted canonical targets; no reads, corpus expansion or mutation of borrowed facts |
+| `graphify/qt_project_index.py::QtProjectIndex` | Existing accepted module/source/resource evidence and lookup behavior; projection does not change the index's runtime-uncertainty boundary |
+| `graphify/qt_qml_pipeline.py::resolve_qt_qml` | Narrow post-canonicalization helper hook, scratch publication and existing resolver failure guard |
+| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Policy-6 same-package refresh; AST schema 7 remains under the existing cache owner |
+| `tests/test_qt_project_membership.py` | Public literal, ambiguity, source/span, direction and immutable-input production regressions; exact executed coverage belongs to traceability |
+| `tests/test_qt_project_membership_updates.py` | Real CLI/watch changes, policy upgrade, prior-product retention/repair/repeat, aggregate inspection and replacement publication without borrowed mutation |
+
+Declaration-to-site `contains` uses `qt_membership_site`; a resolved site's
+`references` uses `qt_project_source` or `qt_resource_membership` with confidence
+`EXTRACTED`. Unresolved status/reason retains the source attempt without a guessed
+endpoint. The helper, source test, pipeline and lifecycle test measure
+187/283/85/267 physical lines, each below 300. Actual CLI/watch refresh,
+prior-product retention, consumer and reviewed installed-artifact evidence pass
+locally. The API accepts optional `fresh_ast_ids=()` and returns derived nodes/
+edges; starting node/edge-object identities authorize replacement publication
+without depending on append offsets. Exact criterion evidence and local limits
+remain in validation/traceability.

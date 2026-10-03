@@ -37,9 +37,10 @@ under the existing native ownership criteria; its bounded singleton source and
 reviewed installed-artifact correction are locally verified.
 INC-QML-13 restores source-site links for accepted utility-member occurrences and
 distinguishes internal community links from external connections. Its affected
-REQ-QML-008-AC02 and REQ-QML-019-AC02 cases are locally verified. INC-QML-14 plans
-explicit metadata membership edges; INC-QML-15 plans exact generic overload
-identity/location parity. Neither follow-up is implemented or verified.
+REQ-QML-008-AC02 and REQ-QML-019-AC02 cases are locally verified. INC-QML-14 is
+locally complete and REQ-QML-020 is Verified within its bounded static source profile.
+INC-QML-15 plans exact generic overload identity/location parity; that follow-up
+remains unimplemented and unverified.
 
 This plan extends Graphify's existing Python pipeline and contribution workflow.
 It does not propose a Qt application rewrite. Read [REQUIREMENTS.md](../REQUIREMENTS.md),
@@ -1417,7 +1418,8 @@ native runtime targets or close INC-QML-08/11/14/15. See
 
 ## INC-QML-14 — Explicit project membership relationships
 
-Status: **Planned; not implemented or verified**. Acceptance: REQ-QML-020-AC01–AC03,
+Status: **Locally complete; Verified within the bounded static source profile**.
+Acceptance: REQ-QML-020-AC01–AC03,
 with compatibility checks under REQ-QML-009-AC01/AC03, REQ-QML-010-AC02/AC03 and
 REQ-QML-013-AC01/AC03. Dependencies: accepted QtProjectIndex module/resource lookup
 and source endpoint identities. The current source-ownership correction does
@@ -1428,21 +1430,67 @@ facts can resolve their targets in the per-run index while their only published
 relationship is containment by the metadata file. A closed metadata community
 therefore has true internal links but no displayed route to the declared source
 files. Project accepted membership evidence through a focused resolver seam,
-retaining literal scope, canonical identity and uncertainty. Define relation
-context/direction and multi-relation preservation before changing projection.
+retaining literal scope, canonical identity and uncertainty. This is static source
+membership; a source package declaration does not establish a runtime import,
+architectural dependency or an evaluated build branch.
+
+**Scope and ownership.** `graphify/qt_project_membership.py` owns
+`resolve_project_memberships(results, nodes, edges, *, root, project_index,
+fresh_ast_ids=())` and
+`tests/test_qt_project_membership.py` owns its public production regressions.
+Keep each new handwritten file below 300 physical lines. The integration owner
+owns the narrow hook in `qt_qml_pipeline.py`, policy-epoch/lifecycle handling and
+actual CLI/watch/artifact checks. Existing parsers, indexes and persistence owners
+retain their responsibilities. Comments explain accepted endpoint authority,
+read-only borrowed input and uncertainty; they do not infer Qt execution.
+
+**Projection contract.** Each accepted declaration gets an independent
+`membership_resolution` site with its original source/span, declaration identity,
+source kind, module/alias context, bounded evidence/candidates and status/reason.
+Declaration-to-site `contains` uses `qt_membership_site`. A uniquely resolved site
+uses `references`, confidence `EXTRACTED`, and context `qt_project_source` for build
+source membership or `qt_resource_membership` for a resource alias. The endpoint
+is the actual accepted canonical file/component, never a reconstructed filename
+ID. Separate sites retain repeated declarations and parallel mechanisms. No
+target edge is emitted for missing, competing, conditional, generated or unsafe
+targets. Raw declarations, borrowed dictionaries and existing lookup results stay
+unchanged. Qt policy 6 refreshes prior same-version analysis; AST schema 7 and the
+graph/manifest/checkpoint publication sequence stay unchanged.
+
+**Acceptance matrix; each criterion is locally verified in its bounded profile.**
+Exact test assignments and executed outcomes are in
+[traceability](../../tests/TRACEABILITY.md#project-membership-projection) and
+[validation](VALIDATION.md#inc-qml-14-membership-projection).
+
+| Criterion | Success and boundary evidence | Rejection, state and failure evidence |
+| --- | --- | --- |
+| REQ-QML-020-AC01 | Actual CMake/qmake literals and qrc aliases reach unique canonical file/component targets through independent sites; direction, context, spans and confidence survive build/JSON/query; existing module/loader results agree | Same-name accepted paths and repeated declarations stay distinct; source/context inputs remain immutable and lookup results are not changed by projection |
+| REQ-QML-020-AC02 | Explicit site status/reason and bounded evidence expose unavailable membership | Missing, duplicate, conditional, generated and out-of-root targets add no target edge or read; malformed transport/metadata and forced join failures reach existing diagnostics/publication guards and retain prior products |
+| REQ-QML-020-AC03 | Actual cold/warm, manual update and watch match clean builds after source/resource edit, rename, deletion and ambiguity; no-change repeat is idempotent | Stale edges retire, unrelated accepted identities remain stable, HTML reflects persisted memberships, policy-6 upgrade refreshes unchanged prior inputs, and failed refresh/repair/repeat preserve the normal lifecycle |
 
 Use public CMake, qmake and qrc fixtures with duplicate names, conditional paths,
 generated/out-of-root targets, root relocation, parser/transport failure and
 metadata-only/source removal updates. Verify actual build/JSON reload/query/HTML
 output, cold/warm/manual parity, stale-edge cleanup and prior-output retention.
 No corpus expansion, engine/build execution, synthetic architectural grouping
-or guessed endpoint is permitted. Determine policy/schema impact from the final
-owner and contract; do not predeclare an epoch or diagnostic as implemented.
+or guessed endpoint is permitted. Ordinary unresolved sites use existing
+`QML-RESOLVE-001` coverage semantics without becoming parser errors. Unexpected
+join/transport failures reach the existing `QML_RESOLUTION_FAILED` guard; no new
+parser or graph writer is introduced. Policy 6 and unchanged AST schema 7 have
+current source and reviewed installed-artifact evidence.
 
-Exit only after every REQ-QML-020 criterion has exact production evidence, related
-metadata/loader/native and unrelated-language regressions pass, and a reviewed
-installed artifact confirms the projection. Existing index lookup and internal
-community counts remain evidence of their own boundary, not this enhancement.
+The completed exit gate has exact production evidence for all three criteria,
+related metadata/loader/native and unrelated-language regressions, and reviewed
+installed-artifact confirmation. The final reviewed-wheel selection passes
+1081 cases with seven documented skips and one existing warning in 135.53 seconds;
+its 37 new membership cases include 26 source and 11 lifecycle/consumer cases.
+The later focused direction expansion passes 39 cases in 9.50 seconds; its two
+additional variants do not retroactively change that broad-run count.
+The installed public CMake/qmake/qrc fixture has six resolved memberships, preserves
+four durable products after forced malformed metadata, then repairs and repeats
+successfully. These outcomes are scoped to the local static profile; no browser,
+new hosted, other-platform or Qt runtime proof is claimed. No additional increment
+was required by this review. INC-QML-08 remains partial and INC-QML-11/15 planned.
 
 ## INC-QML-15 — Exact constructor-overload identity and location parity
 

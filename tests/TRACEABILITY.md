@@ -17,9 +17,9 @@ REQ-QML-019 adds four community-view criteria, bringing the catalog to nineteen
 requirements and seventy-eight criteria. INC-QML-10 revalidates the existing
 native ownership criteria for complete bodies and canonical definition provenance;
 multi-level inherited endpoint lookup remains an explicit INC-QML-11 gap.
-REQ-QML-020 adds three planned membership-projection criteria, for twenty
+REQ-QML-020 adds three membership-projection criteria, for twenty
 requirements and eighty-one criteria. INC-QML-12/13 source and final installed
-public-fixture regressions below do not verify that planned projection or the
+public-fixture regressions below do not verify the new membership projection or the
 broader adoption gaps.
 Verified local profile means
 executed source/consumer acceptance, not runtime equivalence. Every declared
@@ -207,15 +207,43 @@ executed commands are recorded in VALIDATION.md.
 | REQ-QML-019-AC03 | `tests/test_html_community_recovery.py::test_req_qml019_ac03_invalid_computed_partition_preserves_output_and_recovers`; `tests/test_html_community_recovery.py::test_req_qml019_ac03_cli_unavailable_view_retains_prior_outputs_and_retries`; `tests/test_html_community_recovery.py::test_req_qml019_ac03_cli_failure_has_no_false_write_and_preserves_prior_html`; `tests/test_html_community_recovery.py::test_req_qml019_ac03_isolate_partition_over_hard_cap_is_not_published` | INC-QML-09 | Locally verified; actual atomic replacement failure injected at its OS boundary |
 | REQ-QML-019-AC04 | `tests/test_html_initial_view.py::test_default_select_all_constructs_every_exported_node_and_edge_before_network`; `tests/test_html_initial_view.py::test_optional_overview_selects_only_ten_largest_source_communities`; `tests/test_html_initial_view.py::test_optional_overview_ties_use_numeric_community_ids_independent_of_insertion`; `tests/test_html_initial_view.py::test_optional_overview_filters_all_none_and_reset_update_real_datasets`; `tests/test_html_initial_view.py::test_optional_overview_search_reveals_deferred_group_with_exact_source_metadata`; grouped/ungrouped/partial startup controls in the same module | INC-QML-09 | Locally verified checked startup through production emitted-script harness; installed artifact checked. Prior unchecked-startup evidence is revision-specific; camera/layout appearance not reverified |
 
-## Planned project-membership projection
+<a name="planned-project-membership-projection"></a>
+
+## Project-membership projection
 
 Owner: Qt project-metadata integration maintainer. INC-QML-14 owns all three
-REQ-QML-020 criteria. Current source/resource lookup, source-file containment and
-community edge counts do not constitute declaration-to-file/component membership
-projection. No automated implementation test or installed proof is assigned yet.
+REQ-QML-020 criteria. Status: **Locally Verified for the bounded static public
+profile**. The new production tests below have executed source, lifecycle,
+consumer and reviewed installed-artifact evidence.
+Current source/resource lookup, source-file containment and community edge counts
+remain evidence for their existing boundary. Each independent membership site
+must preserve declaration/target identity, direction, provenance and uncertainty
+through the actual graph/consumer lifecycle. Qt policy 6/schema 7 at package
+version 0.9.74 has source upgrade and reviewed installed public-fixture evidence.
+Additional accepted-code-scope adoption checks pass; whole-root/provider/runtime
+adoption gaps remain outside this closure.
 
-| Criterion | Exact remaining production gap | Completion increment | Status |
+| Criterion | Exact executed production evidence | Completion increment | Status |
 | --- | --- | --- | --- |
-| REQ-QML-020-AC01 | Public literal CMake/qmake/source and qrc-alias fixtures must prove uniquely accepted endpoints, direction, context, original spans and confidence through facade/build/JSON reload/scoped query, with existing loader/module lookup unchanged. | INC-QML-14 | Planned / Not executed |
-| REQ-QML-020-AC02 | Missing/duplicate/conditional/generated/out-of-root targets and same-name scopes need explicit unresolved coverage without guessed edges, new reads or execution; actual malformed/failed joins must retain existing diagnostics and prior durable products. | INC-QML-14 | Planned / Not executed |
-| REQ-QML-020-AC03 | Source/resource edit, rename, deletion and ambiguity must remove stale edges; cold/warm/manual/watch and no-change parity, stable unrelated facts, persisted HTML membership and actual failure/retry tests remain unexecuted. | INC-QML-14 | Planned / Not executed |
+| REQ-QML-020-AC01 | `tests/test_qt_project_membership.py::test_req_qml020_ac01_unused_component_has_persisted_build_and_resource_membership` (CMake/qmake; directed/undirected); `tests/test_qt_project_membership.py::test_req_qml020_ac01_metadata_spans_survive_bom_crlf_unicode_and_sanitation`; `tests/test_qt_project_membership.py::test_req_qml020_ac01_scoped_paths_repeated_declarations_and_query_keep_exact_identity`; `tests/test_qt_project_membership_updates.py::test_req_qml020_ac01_unused_packaged_component_survives_aggregate_export`. Targets uniquely accepted file/component endpoints, independent/repeated sites and same-name scoped files, `EXTRACTED` references, direction and original spans through facade/build/JSON reload/scoped query, unchanged loader/module lookup and actual aggregate-script membership counts. Source, consumer and final reviewed installed public-fixture evidence pass. | INC-QML-14 | Locally Verified (bounded static public profile) |
+| REQ-QML-020-AC02 | `tests/test_qt_project_membership.py::test_req_qml020_ac02_source_projection_rejects_unproved_membership`; `tests/test_qt_project_membership.py::test_req_qml020_ac02_resources_reuse_existing_alias_guard_decisions`; `tests/test_qt_project_membership.py::test_req_qml020_ac02_corrupt_literal_transport_is_rejected`; `tests/test_qt_project_membership.py::test_req_qml020_ac02_location_prefix_cannot_authorize_another_source_span`; `tests/test_qt_project_membership.py::test_req_qml020_ac02_projection_reads_no_targets_and_executes_no_corpus`; `tests/test_qt_project_membership_updates.py::test_req_qml020_ac02_failed_metadata_join_preserves_products_and_recovers` (manual/force/watch); `tests/test_qt_project_membership_updates.py::test_req_qml020_ac02_join_exception_cannot_publish_partial_memberships`. Missing, duplicate, conditional, generated, wrong-role and out-of-root cases must have explicit status/reason and no target edge. The actual helper executes before injected failure; graph/manifest/analysis/root-marker bytes must remain unchanged. Projection guards target reads/discovery/process execution and preserves borrowed facts. All assigned source rejection/retention and final installed public-fixture checks pass. | INC-QML-14 | Locally Verified (bounded static public profile) |
+| REQ-QML-020-AC03 | `tests/test_qt_project_membership.py::test_req_qml020_ac03_fresh_derived_sites_replace_borrowed_state_without_mutation`; `tests/test_qt_project_membership.py::test_req_qml020_ac03_typed_file_role_survives_punctuation_and_borrowed_publication`; `tests/test_qt_project_membership_updates.py::test_req_qml020_ac03_metadata_resource_and_source_updates_remove_stale_memberships` (manual/watch); `tests/test_qt_project_membership_updates.py::test_req_qml020_ac03_policy_upgrade_refreshes_unchanged_packaging` (extract/update); `tests/test_qt_project_membership_updates.py::test_req_qml020_ac03_membership_ids_are_independent_of_checkout_location`; `tests/test_qt_project_membership_updates.py::test_req_qml020_ac03_pipeline_publishes_replacement_without_borrowed_mutation`; malformed-resource recovery and aggregate-export tests above. Targets cold/warm/full/manual/watch parity, source edit/rename with metadata/alias updates, alias duplicates, target deletion, stale-edge removal, stable unrelated Python/relocated root identity, accepted typed-file identity through punctuation/publication, fresh-site replacement without borrowed mutation and policy-5 to policy-6 refresh without source/package changes. Complete source/lifecycle/consumer and reviewed installed public-fixture evidence pass for the bounded profile. | INC-QML-14 | Locally Verified (bounded static public profile) |
+
+The first actual lifecycle selection failed all four cases in 3.76 seconds before
+projection existed: the public fixture had no `membership_resolution` sites.
+The failure record is baseline regression proof. Exact executed commands,
+artifact identity and remaining broader limitations are in
+[validation](../docs/qt-qml/VALIDATION.md#inc-qml-14-membership-projection).
+The frozen source-projection module passes 26 cases in 1.90 seconds; its positive
+facade cases fail twice with only projection disabled and actual parsing/indexes
+retained. The reviewed-wheel checkpoint's combined selection passes 37 cases in
+8.77 seconds. Two added directed graph variants then pass within a final
+39-case focused selection in 9.50 seconds, with no production change. The
+reviewed-wheel broad selection passes 1081 cases with seven documented skips and
+one existing warning in 135.53 seconds. All 155 Python modules are byte-equal
+between reviewed source, wheel and isolated installation. The installed public
+CMake/qmake/qrc fixture has six resolved membership sites, accepted consumer/HTML
+results, and actual force/partial failure retention followed by repair/repeat.
+Browser visual, other-platform and executable Qt proof are not claimed. The
+additional accepted-code-scope adoption refresh also passes; 81-criterion
+numbering and earlier verified revision evidence are unchanged.

@@ -14,12 +14,14 @@ def resolve_qt_qml(paths, per_file, all_nodes, all_edges, *, root,
     from graphify.qt_qml_access_resolution import resolve_qt_qml_access
     from graphify.qt_qml_bridge import build_qt_qml_bridge
     from graphify.qt_project_index import QtProjectIndex
+    from graphify.qt_project_membership import resolve_project_memberships
     from graphify.qt_source_containment import attach_qt_file_sites
 
     fresh_ids = {node["id"] for node in all_nodes}
     nodes = all_nodes + [node for node in context_nodes or () if node.get("id") not in fresh_ids]
     edges = all_edges + list(context_edges or ())
-    node_count, edge_count = len(nodes), len(edges)
+    initial_ids = {node["id"] for node in nodes}
+    initial_edges = {id(edge) for edge in edges}
     results = {path: result for path, result in zip(paths, per_file) if result}
     active_paths, active_results = list(results), list(results.values())
 
@@ -39,6 +41,11 @@ def resolve_qt_qml(paths, per_file, all_nodes, all_edges, *, root,
         collect(collect_qt_cpp_events)
         collect(collect_qt_cpp_access)
         project_index = QtProjectIndex(nodes, edges, root=root, import_roots=import_roots)
+        # Packaging membership is source evidence independent of QML use/load.
+        # Only fresh declarations publish decisions over the accepted corpus.
+        membership_nodes, _ = resolve_project_memberships(
+            results, nodes, edges, root=root, project_index=project_index,
+            fresh_ast_ids=fresh_ids)
         native_index = build_qt_qml_bridge(nodes, edges, root=root, project_index=project_index)
         if any(node.get("metadata", {}).get("qml") for node in nodes):
             from graphify.qml_relationships import resolve_qml_relationships
@@ -67,7 +74,12 @@ def resolve_qt_qml(paths, per_file, all_nodes, all_edges, *, root,
                 "owner": "qt_qml_resolution", "source_file": relative, "message": "Qt/QML project join failed",
                 "recovery": "Correct the join failure and retry; prior graph is preserved."})
     else:
-        all_nodes.extend(nodes[node_count:])
-        all_edges.extend(edges[edge_count:])
+        # Derived membership decisions can replace borrowed same-ID sites.
+        # Publish fresh facts by identity, so removal of stale context cannot
+        # shift list offsets or leak unrelated borrowed nodes into this result.
+        membership_ids = {node["id"] for node in membership_nodes}
+        all_nodes.extend(node for node in nodes if node["id"] not in initial_ids
+                         or (node["id"] in membership_ids and node["id"] not in fresh_ids))
+        all_edges.extend(edge for edge in edges if id(edge) not in initial_edges)
 
     return [str(path) for path, result in results.items() if result.get("qml_failures") or result.get("qt_failures")]
