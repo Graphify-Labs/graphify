@@ -707,19 +707,20 @@ def _query_stamp_fresh() -> bool:
         return False
 
 
-def _mark_session_denied(session_id: str) -> bool:
-    """Atomically claim a one-time strict block for this session. Returns True only
-    on the FIRST call for a given session id (O_EXCL create wins once); every later
-    call — or any error — returns False, so a session is blocked at most once and an
-    agent can never be stranded. Best-effort GC of markers older than 24h."""
+def _claim_session_marker(key: str, suffix: str) -> bool:
+    """Atomically claim a one-time marker for this key. Returns True only on
+    the FIRST call for a given (key, suffix) pair (O_EXCL create wins once);
+    every later call — or any error — returns False, so a caller can never be
+    stranded waiting on a claim that silently failed. Best-effort GC of
+    markers older than 24h."""
     from graphify.paths import out_path
-    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:64]
+    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(key))[:64]
     if not sid:
         return False
     try:
         d = out_path("cache", "hook_sessions")
         d.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(d / f"{sid}.denied"), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        fd = os.open(str(d / f"{sid}.{suffix}"), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         os.close(fd)
         try:
             cutoff = time.time() - 86400
@@ -736,6 +737,27 @@ def _mark_session_denied(session_id: str) -> bool:
         return False
     except Exception:
         return False
+
+
+def _mark_session_denied(session_id: str) -> bool:
+    """Atomically claim a one-time strict block for this session, so a
+    session is blocked at most once and an agent can never be stranded."""
+    return _claim_session_marker(session_id, "denied")
+
+
+def _mark_session_search_nudged(session_id: str, agent_id: str = "") -> bool:
+    """Atomically claim a one-time search nudge for this session (#3756).
+
+    Keyed on session_id PLUS agent_id, not session_id alone: a Claude Code
+    subagent inherits the parent's session_id but starts with an empty
+    context, so keying on session_id alone would silently starve every
+    subagent of the nudge — and a fork that happened to search first would
+    wrongly consume the parent's own claim too, since a fork shares the
+    parent's session_id. agent_id is only present in the hook payload for
+    subagent calls; a main-thread call composes with an empty string, so it
+    collapses to the same key session_id alone would give."""
+    key = f"{session_id}_{agent_id}" if agent_id else session_id
+    return _claim_session_marker(key, "nudged")
 
 
 _SEARCH_COMMANDS = frozenset({
@@ -866,7 +888,22 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # grep. Nudge-only, even in strict mode — see the docstring.
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
             is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
-            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
+            # Fires at most once per session (#3756, mirrors _mark_session_denied):
+            # the claim happens only once a matching command has already decided
+            # to nudge, so an unmatched call (git status, a non-search Bash
+            # invocation) can never spend the claim on nothing. A host that
+            # omits session_id can't be deduplicated at all — fail open there
+            # (always nudge, the pre-#3756 behavior) rather than silently
+            # going quiet, matching this function's own fail-open design.
+            session_id = str(d.get("session_id") or "")
+            if (
+                (is_grep_tool or is_bash_search)
+                and out_path("graph.json").is_file()
+                and (
+                    not session_id
+                    or _mark_session_search_nudged(session_id, str(d.get("agent_id") or ""))
+                )
+            ):
                 sys.stdout.write(_SEARCH_NUDGE)
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
