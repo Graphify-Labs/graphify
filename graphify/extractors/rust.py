@@ -197,6 +197,13 @@ def extract_rust(path: Path) -> dict:
     _scan_local_types(root)
     local_type_names = frozenset(local_types)
 
+    # `macro_rules!` macros defined in this file, keyed by bare name. A macro and a
+    # function can share a name in Rust (`vec!` vs `vec`), and a macro is invoked
+    # as `name!(...)` (a `macro_invocation`, never a `call_expression`), so macros
+    # are resolved through their own registry rather than the function/type
+    # label_to_nid to avoid cross-binding.
+    macro_nids_by_name: dict[str, str] = {}
+
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
@@ -380,6 +387,23 @@ def extract_rust(path: Path) -> dict:
                     add_node(func_nid, f"{func_name}()", line)
                     add_edge(file_nid, func_nid, "contains", line)
                 emit_param_return_refs(node, func_nid, line)
+            return
+
+        if t == "macro_definition":
+            # `macro_rules! name { ... }` defines a named, invocable item. This node
+            # type had no branch, so the macro was dropped entirely: it was never a
+            # node, and a `name!(...)` invocation of it had nothing to resolve to.
+            # The id is macro-qualified so it never collides with a same-named fn or
+            # type (`vec!` vs `vec`); the `!` suffix in the label marks it a macro.
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                macro_name = _read_text(name_node, source)
+                if macro_name:
+                    line = node.start_point[0] + 1
+                    macro_nid = _make_id(stem, "macro", macro_name)
+                    add_node(macro_nid, f"{macro_name}!", line)
+                    add_edge(file_nid, macro_nid, "contains", line)
+                    macro_nids_by_name.setdefault(macro_name, macro_nid)
             return
 
         if t in ("struct_item", "enum_item", "trait_item"):
@@ -647,6 +671,34 @@ def extract_rust(path: Path) -> dict:
     ) -> None:
         if node.type == "function_item":
             return
+        if node.type == "macro_invocation":
+            # `name!(...)` invoking a macro_rules! macro defined in this file.
+            # Resolve only a bare `identifier` macro against the local registry;
+            # a `scoped_identifier` (`log::info!`) is cross-module/crate and stays
+            # unresolved (fail-closed), matching how scoped calls are handled above.
+            macro_node = node.child_by_field_name("macro")
+            if macro_node is not None and macro_node.type == "identifier":
+                macro_name = _read_text(macro_node, source)
+                tgt_nid = macro_nids_by_name.get(macro_name)
+                if tgt_nid and tgt_nid != caller_nid:
+                    pair = (caller_nid, tgt_nid)
+                    if pair not in seen_call_pairs:
+                        seen_call_pairs.add(pair)
+                        line = node.start_point[0] + 1
+                        edges.append({
+                            "source": caller_nid,
+                            "target": tgt_nid,
+                            "relation": "calls",
+                            "context": "call",
+                            "confidence": "EXTRACTED",
+                            "source_file": str_path,
+                            "source_location": f"L{line}",
+                            "weight": 1.0,
+                        })
+            # Fall through to the generic child recursion below rather than
+            # returning, preserving the prior traversal of the invocation's
+            # subtree (its arguments are a raw token tree, so this neither adds
+            # nor drops any nested edges relative to before).
         if node.type == "call_expression":
             func_node = node.child_by_field_name("function")
             callee_name: str | None = None
