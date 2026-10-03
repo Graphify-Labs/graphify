@@ -192,7 +192,16 @@ def extract_elixir(path: Path) -> dict:
                     walk(child, parent_module_nid=impl_nid)
             return
 
-        if keyword in ("def", "defp"):
+        # `defmacro`/`defmacrop` (macros) and `defguard`/`defguardp` (guard
+        # macros) define named, invocable members with the exact same head shape
+        # as `def`/`defp` — a `call` head, optionally wrapped in a `when`
+        # binary_operator. They were not in this branch, so they fell through to
+        # the generic recursion and were dropped entirely: the member was never a
+        # node and a call to it (e.g. a macro invoked elsewhere) had nothing to
+        # resolve to. Handle them identically to def/defp; they are already in the
+        # call-pass _SKIP_KEYWORDS so their own keyword is never mistaken for a call.
+        if keyword in ("def", "defp", "defmacro", "defmacrop",
+                       "defguard", "defguardp"):
             func_name = None
             if arguments_node:
                 for child in arguments_node.children:
