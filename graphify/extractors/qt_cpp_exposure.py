@@ -60,7 +60,19 @@ def _class_facts(mapping, facts, *, classes=(), alias_nodes=None):
         macros = {macro["name"] for macro in owned}
         base = next((child for child in record["syntax"].named_children if child.type == "base_class_clause"), None)
         bases = [mapping.unit.text(child) for child in base.named_children
-                 if child.type not in {"access_specifier"}] if base else []
+                 if child.type not in {"access_specifier", "comment"}] if base else []
+        # Inheritance visibility belongs to each source base, independently of
+        # member visibility. Each comma restores class/struct default access;
+        # virtual and comments cannot provide or replace an access specifier.
+        default_access = "public" if record["syntax"].type == "struct_specifier" else "private"
+        access, base_access = default_access, []
+        for child in base.children if base else ():
+            if child.type == ",":
+                access = default_access
+            elif child.type == "access_specifier":
+                access = mapping.unit.text(child)
+            elif child.is_named and child.type != "comment":
+                base_access.append(access)
         # Construction authority needs lexical base identities, not a Q_OBJECT
         # marker or a guessed basename. Unknown header aliases remain opaque.
         canonical_bases = [types.resolve(name, record["span"]["start_byte"]) for name in bases]
@@ -73,7 +85,10 @@ def _class_facts(mapping, facts, *, classes=(), alias_nodes=None):
                   is_qobject="Q_OBJECT" in macros or "QObject" in bases,
                   source_q_object="Q_OBJECT" in macros, is_gadget="Q_GADGET" in macros, bases=bases,
                   canonical_base_names=canonical_bases,
-                  canonical_base_status="resolved" if all(canonical_bases) else "unavailable")
+                  canonical_base_status="resolved" if all(canonical_bases) else "unavailable",
+                  canonical_base_access=base_access,
+                  canonical_base_access_status="resolved" if len(base_access) == len(bases)
+                  and all(value in {"public", "protected", "private"} for value in base_access) else "unavailable")
         add_macro_registration(mapping, facts, record)
         add_properties(mapping.unit, mapping, facts, record)
     for record in mapping.functions:

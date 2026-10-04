@@ -13,8 +13,8 @@ other-platform and new hosted behavior remains unverified.
 Dependency-directed cache optimization and Qt runtime equivalence remain deferred.
 INC-QML-10 native ownership corrections, including accepted-context source/span
 deduplication, pass local source, final broad and reviewed installed-artifact checks.
-INC-QML-11 inherited-signal ancestor
-lookup remains planned; initial profile evidence does not verify that case.
+INC-QML-11 implements bounded ancestor lookup with local source/update evidence;
+installed integration and INC-QML-28 emission admission remain pending.
 INC-QML-12 constructor source proof and INC-QML-13 source containment/view counts
 are implemented with local source and reviewed installed-artifact validation. Missing constructor class proof
 cannot be supplied by a same-name header prototype; source containment alone
@@ -450,18 +450,29 @@ policy epoch 3 and AST schema 6 were appropriate for that revision. Final broad 
 installed-artifact proof passes locally; see
 [INC-QML-10 validation](VALIDATION.md#inc-qml-10-native-source-ownership).
 
-## Planned inherited-signal lookup (INC-QML-11)
+## Inherited-signal lookup (INC-QML-11)
 
-Current event type compatibility traverses ancestors recursively, but inherited
-member lookup considers only immediate bases. The planned correction extends
-endpoint lookup over accepted complete definitions while retaining exact
-canonical member identity and existing role/signature/access/ambiguity checks.
-Traversal must be bounded and cycle-safe; repeated paths cannot invent distinct
-declarations or hide conflicting ancestor members. No mutable project state or
-new runtime owner is introduced. Actual grandparent-signal source, persistence,
-consumer and incremental proof remains unexecuted; the
-[INC-QML-11 plan](PLAN.md#inc-qml-11--inherited-qt-signal-endpoint-lookup) owns scope
-and exit conditions.
+`QtEventIndex` owns a run-local, cycle-safe lookup over at most 32 uniquely
+accepted complete classes. Canonical base names and their source-owned access
+come from the native class producer. Each branch stops at its first same-name
+declaration before role, signature and visibility filters. An ordinary member
+therefore shadows an ancestor signal. Repeated paths to one canonical declaring
+member deduplicate; different declaring classes remain ambiguous even when a
+selector matches only one branch. Missing, duplicate, partial, conditional,
+corrupt or over-limit ancestry cannot lend endpoint identity.
+
+External typed member pointers require public inheritance as well as the existing
+member-access checks. Each comma resets class/struct default base access; comments
+and `virtual` spelling do not authorize visibility. Legacy meta-object lookup and
+owning emission retain their separate access rules. The index adds no runtime
+conversion, object-instance, scheduling or thread-safety claim.
+
+Policy 13 refreshes derived Qt facts at unchanged source/package versions. AST
+schema remains 9 for this increment; the later constructor/header migration owns
+schema 10. Source, JSON/query/affected and actual manual/watch mutation, retention
+and repaired retry checks pass locally. Installed integration remains pending.
+An unchanged explicit emission whose declaration disappears exposed a collector
+admission gap; INC-QML-28 owns that correction, independently of endpoint lookup.
 
 ## Constructor source proof (INC-QML-12)
 

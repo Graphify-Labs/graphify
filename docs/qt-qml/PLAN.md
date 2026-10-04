@@ -1303,7 +1303,7 @@ owned defect before adding implementation scope.
 
 ## INC-QML-11 — Inherited Qt signal endpoint lookup
 
-**Status: Planned; not implemented or verified.** Owner: Qt native event
+**Status: Implemented; local inherited endpoint and update checks pass; installed integration pending.** Owner: Qt native event
 maintainer. Acceptance: existing REQ-QML-016-AC01/AC04. Dependency: INC-QML-10's
 complete-class authority and canonical member ownership. No requirement or
 acceptance ID is added.
@@ -1330,9 +1330,15 @@ receiver call. Verify base/signal edits and removal across cold/full/incremental
 results, stale-edge cleanup, retained prior products on failure and corrected
 retry. Review compatibility-fingerprint impact before admission and use a
 reviewed installed artifact for production proof. Keep exact unresolved cases
-and broader runtime/platform limitations visible. This increment remains planned
-until its own tests and source correction land together; INC-QML-10 counts do not
-verify it.
+and broader runtime/platform limitations visible. The new inherited suites supply
+their own endpoint and lifecycle evidence; INC-QML-10 counts do not verify this
+expanded profile. Source-owned base access also gates external member-pointer
+lookup. Legacy meta-object lookup and emission retain their own access mechanism;
+compiler conversions or friend/protected context are not inferred. Qt policy 13
+invalidates prior derived facts.
+
+Exit review found the distinct explicit-emission admission gap now assigned to
+INC-QML-28. Its correction follows without enlarging this endpoint traversal scope.
 
 ## INC-QML-12 — Out-of-line constructor canonical ownership
 
@@ -1922,3 +1928,49 @@ is confirmed at this checkpoint. Final reviewed wheel, contribution-gate limitat
 refresh results are recorded in validation; the bounded local exit is complete. INC-QML-08/11/15 retain their
 separate broader adoption, inherited-signal and overload scope; runtime SDK
 behavior, other-platform/native-device and new hosted proof remain unverified.
+
+## Remaining adoption delivery
+
+INC-QML-11, INC-QML-15 and the remaining INC-QML-08 packages are active local
+development. Review and commit inherited endpoints first, overload identity
+second, then the combined adoption profile. Independent characterization and
+metadata work may proceed concurrently with disjoint file ownership. Completion
+requires new evidence; the previous partial and planned statuses remain in force
+until their exit checks pass.
+
+| Scope / acceptance | Success and boundary matrix | Failure and recovery matrix | Ownership |
+| --- | --- | --- | --- |
+| INC-QML-11; REQ-QML-016-AC01/AC04 | Three-level and diamond signal inheritance, exact declaring member, shadowing, conflicting ancestors, cycles, unavailable classes, original spans; export/query/affected and full/update parity | Real publication failure preserves accepted products; signal/base edits, removal, repaired retry and repeat update | Native event agent: event index/resolution and new inherited-signal tests; integration owner: docs, epochs and publication integration |
+| INC-QML-15; REQ-QML-008-AC02/AC03, REQ-QML-011-AC01/AC04 | Distinct constructor signatures; declaration/definition merge, inline/out-of-line/delegating and namespaced forms; exact original locations, rejected ambiguous type evidence and generic language controls | Signature edit/removal, cold/warm/manual/watch parity, failed publication and repaired retry; explicit identity migration | Generic C++ agent: constructor/producer identity and new overload tests; integration owner: shared cache/graph hooks and docs |
+| INC-QML-08a; REQ-QML-018-AC01/AC02/AC06/AC07 | Current-file literal PWD prefixes, relevant versus unrelated qmake statements, separate import-hint/build/analysis roles; header classification assessment; source spans and no project execution | Conditional required facts, unsupported expansion, missing/corrupt metadata, root escape, retained products and retry | Metadata agent: qmake reader and new metadata tests; integration owner: discovery classification, admission and docs |
+| INC-QML-08b; REQ-QML-018-AC03/AC04/AC06 | Declared factory return/member types, context providers and bounded child-service calls/subscriptions; exact scoped endpoints, lexical shadows, duplicate/conditional/unresolved/cyclic evidence | Metadata-only, C++-only and QML-only invalidation, transport rejection, failed resolution/publication and corrected retry | Integration owner: provider/member join scope until assigned disjoint modules |
+| INC-QML-08c; REQ-QML-018-AC05/AC06 | Public combined Qt 6 CMake/qmake corpus through source and reviewed installed wheel, whole root and configured safe subroot, cold/warm/manual/watch consumers | Actual parser/resolver/publication failures; prior graph/checkpoint/cache retention, missing optional parser, bounded safe diagnostics, recovery and idempotency | Integration owner: installed acceptance, shared state, graph refresh, documentation, staging and commits |
+| INC-QML-28; REQ-QML-016-AC01/AC04 | Explicit emit/Q_EMIT source occurrences survive a missing, renamed or removed declaration; only proven declarations supply signal endpoints | Header-only removal/restoration, full/watch equality, failed publication and retry; no fabricated delivery call | Native event agent after INC-QML-11 freezes: emission collector and new admission tests; integration owner: epochs and docs |
+
+Scoped Graphify queries locate owners and callers. Source bytes, production
+interfaces and durable outputs establish correctness. No corpus code, Qt engine,
+project build hook or plugin executes during analysis. New handwritten helpers
+and tests retain the 300-line ceiling; touched legacy growth needs a measured
+ownership and extraction rationale. Each exit reviews this plan and records any
+confirmed additional gap without silently widening verified support.
+
+## INC-QML-28 — Explicit emission source admission
+
+Status: **Planned; reproduced during INC-QML-11 lifecycle validation**.
+Acceptance: REQ-QML-016-AC01/AC04. Owner: native event collector maintainer.
+Dependency: accepted source-site ownership and INC-QML-11 inherited endpoint lookup.
+
+An explicit `emit` or `Q_EMIT` occurrence remains a source-backed event site when
+its declared signal is unavailable. Renaming or removing the declaration removes
+the prior endpoint edge and retains an unresolved reason at the occurrence. The
+collector cannot use the current declaration inventory as permission to observe
+the explicit source syntax. Ordinary bare calls still require existing signal
+evidence; comments and strings cannot create event sites.
+
+The initial header-rename reproduction loses the unchanged emission occurrence
+while connections become unavailable. Verify direct collector/facade/build/reload,
+exact original bytes and canonical callable ownership, positive inherited signals,
+missing/private/ambiguous targets, and both emission spellings. Exercise C++-only
+and header-only edits, removal/restoration, cold/warm/manual/watch parity, failed
+publication and corrected retry through installed consumers. Preserve ordinary
+call behavior and do not infer immediate receiver delivery. Review the plan at exit.

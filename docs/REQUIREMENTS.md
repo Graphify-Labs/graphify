@@ -17,9 +17,9 @@ source ownership under existing REQ-QML-008-AC02, REQ-QML-016-AC01/AC04 and
 REQ-QML-017-AC02/AC04; new forward-declaration and header/implementation cases
 have local source-ownership and reviewed installed-artifact proof, including
 unchanged accepted-context body deduplication. Affected native criteria remain
-partially verified across their recorded cases. INC-QML-11 separately plans the
-inherited-signal ancestor lookup gap under
-REQ-QML-016-AC01/AC04; that case remains unverified. INC-QML-12 implements bounded
+partially verified across their recorded cases. INC-QML-11 implements bounded inherited-signal lookup with local source/update
+evidence under REQ-QML-016-AC01/AC04; installed integration remains pending.
+INC-QML-28 retains the separate explicit-emission admission gap. INC-QML-12 implements bounded
 generic out-of-line constructor canonical ownership under the same five native
 criteria used by INC-QML-10. INC-QML-13 independently preserves source-file context
 and distinguishes internal community links from external connections. Earlier method/profile passes do not establish all
@@ -30,9 +30,9 @@ See [IMPLEMENTATION.md](qt-qml/IMPLEMENTATION.md),
 and JavaScript remain baseline capabilities. Increment numbers are delivery stages.
 
 REQ-QML-018 is **Partially implemented; not Verified**. AC02 is locally verified for bounded native syntax and upgrade fixtures;
-other adoption criteria remain unverified. Native header classification is a
-separate recorded compatibility gap. Additional ordinary project forms extend the initial fixture profile.
-Its six new criteria extend that profile through INC-QML-08; they do not replace or
+other adoption criteria remain unverified. Native header classification is tracked separately under AC07;
+combined adoption evidence remains pending. Additional ordinary project forms
+extend the initial fixture profile. Its seven criteria extend that profile through INC-QML-08; they do not replace or
 retroactively broaden the original seventeen requirements and sixty-eight criteria.
 
 ## Requirement catalog
@@ -330,7 +330,7 @@ Qt C++ signals, slots, emissions and signal connections retain their meta-object
 
 **Acceptance Criteria**
 
-1 - Fixtures using `signals`, `Q_SIGNALS`, `Q_SIGNAL`, slot access sections, `Q_SLOTS` and `Q_SLOT` retain member signatures/kinds and source spans; `emit`/`Q_EMIT` link the originating code to the declared signal without inventing immediate receiver calls. A forward declaration does not obscure the unique complete class or exact canonical header/implementation method that owns the emission. Supported source-visible inherited signals retain their declaring endpoint through multi-level base chains; incomplete or ambiguous ownership remains unresolved. (`REQ-QML-016-AC01`)
+1 - Fixtures using `signals`, `Q_SIGNALS`, `Q_SIGNAL`, slot access sections, `Q_SLOTS` and `Q_SLOT` retain member signatures/kinds and source spans; `emit`/`Q_EMIT` link the originating code to the declared signal without inventing immediate receiver calls. Explicit emission sites remain observable and unresolved when their declaration is missing or removed. A forward declaration does not obscure the unique complete class or exact canonical header/implementation method that owns the emission. Supported source-visible inherited signals retain their declaring endpoint through multi-level base chains; incomplete or ambiguous ownership remains unresolved. Source base access gates external member-pointer lookup independently of legacy meta-object access; unavailable access proof cannot authorize an inherited pointer endpoint. (`REQ-QML-016-AC01`)
 
 2 - Member-pointer, explicit overload-selector/cast, signal-to-signal, functor/lambda and legacy `SIGNAL`/`SLOT` connect fixtures resolve the expected sender/signal/receiver/callable endpoints from typed or signature evidence, including compatible ordinary member targets and supported private-slot meta-object connections; same-name ordinary functions do not satisfy a connection by global label. Lexical type-alias shadowing cannot select a different global class; unsupported alias evidence remains unresolved. (`REQ-QML-016-AC02`)
 
@@ -374,11 +374,14 @@ Installed Qt/QML analysis supports the newly accepted project/declaration and ty
 
 6 - Actual parser, resolver and publication failures against that fixture produce bounded stage-specific diagnostics and preserve prior graph, manifest, analysis state and existing successful content-keyed source-cache bytes, including rejected read-only destination replacement on supported Windows hosts. Missing optional parser, rejected root/path expansion and corrupt transport remain explicit failures; a corrected retry succeeds and a repeated no-change update is idempotent. Diagnostics and public fixtures contain no private source, identifiers, paths or credentials, and analysis runs no Qt application, build hook or plugin. (`REQ-QML-018-AC06`)
 
+7 - Ambiguous `.h` inputs with supported source-visible C++ declaration markers select the C++ extractor across whitespace, BOM, CRLF and Unicode forms. Comments and string literals cannot supply those markers; plain C and inconclusive headers retain existing C dispatch, and Objective-C dispatch retains its established priority. Header-only edits refresh the selected extractor's source facts through the facade and installed updates without executing the header. (`REQ-QML-018-AC07`)
+
 Status: **Partially implemented; not Verified**. AC02 has local passing evidence for
 empty-brace parameter defaults, `Q_UNUSED` statements and valid numeric digit
 separators under the public source-fixture profile. AC02 is locally verified for the bounded syntax and upgrade fixtures.
-Native header-dispatch assessment and the broader adoption profile remain separate
-incomplete work.
+The new AC07 header-dispatch criterion and the broader adoption profile remain
+incomplete work. INC-QML-11 and INC-QML-15 retain their existing acceptance IDs;
+their current delivery is in progress until fresh evidence closes each bounded gap.
 INC-QML-23/25 supply actual read-only replacement and product-cohort failure
 retention/recovery evidence under AC06. Valid new source-cache entries may be
 added after successful source analysis before graph publication; they do not

@@ -1470,3 +1470,41 @@ retains existing INC-QML-08/11/15 and explicit SDK/runtime/platform/system exclu
 No further concrete increment is confirmed by the completed peer review. The
 exposure chapter and named macros have explicit mechanism/evidence mappings;
 their review is not a promise to model every Qt API or runtime behavior.
+
+
+## Remaining adoption delivery baseline
+
+Local delivery continues from `5c0f2cab8bd8c14a7cb139c90997025b58f1c81c` on the
+existing feature branch. Upstream v8 advanced to `48d7c0e` (v0.9.75); incoming
+changes and the five existing stacked fork pull requests were inspected read-only.
+No upstream integration, new pull request, publication or merge is performed by
+this local delivery. Disjoint agents own native ancestry, constructor identity and
+adoption joins; the integration owner owns shared docs, cache epochs and Git.
+
+## INC-QML-11 inherited endpoints
+
+The first real-facade grandparent regression failed before implementation:
+`python -m pytest tests/test_qt_inherited_endpoints.py -q --tb=short` (one collected
+case at that revision): **1 failed, 2.79 seconds**. Adjacent external typed-pointer
+controls then exposed nonpublic inheritance authority:
+`python -m pytest tests/test_qt_inherited_access.py -q --tb=short`:
+**9 failed, 1.37 seconds** before the source-access correction.
+
+The final dedicated command uses the pinned Python 3.12 environment:
+`python -m pytest tests/test_qt_inherited_access.py
+ tests/test_qt_inherited_endpoints.py tests/test_qt_inherited_updates.py -q --tb=short`.
+It passed **43 cases, zero skips, 14.72 seconds**; integration-owner rerun passed
+**43 cases, zero skips, 15.01 seconds**. These exercise original spans, exact
+canonical members, complete-class rejection, diamond/role/signature ambiguity,
+32-class bounds, public base access, durable JSON/query/affected, actual
+manual/watch header/member/base edits, malformed input, real read-only manifest
+retention, repaired retry and unchanged repeat parity. Ruff and targeted Pyright
+pass; these targeted checks do not replace full contribution gates.
+
+Policy 13 invalidates unchanged derived Qt analysis; this increment does not
+change AST schema 9. The installed artifact and shared final gates remain pending
+until the constructor/adoption source freezes. A source-only explicit emission
+was lost after a header signal rename; an isolated ordinary-production regression
+failed **1 case, 0.98 seconds**. INC-QML-28 now owns occurrence admission and its
+separate lifecycle proof. That pending gap prevents whole native criteria from
+being declared Verified on this lookup result alone.

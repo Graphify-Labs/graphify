@@ -300,3 +300,22 @@ the actual canonical native signal. These are source-resolution reasons under
 the existing QML diagnostic boundary, not parser/write exception codes. Correct
 registration, property or accessor evidence and run ordinary update; retries do
 not grant missing provider or native signal authority.
+
+
+## Inherited endpoint coverage (INC-QML-11)
+
+The event index retains bounded coverage reasons under the existing Qt resolution
+status contract: `inheritance_identity_unavailable` for missing/incomplete/invalid
+canonical ancestry, `inheritance_cycle_or_limit` for a cycle or the 32-class
+budget, and `inheritance_access_unavailable` for absent/invalid/nonpublic base
+access on external member-pointer routes. Successful lookup preserves the exact
+declaring member and source occurrence; it adds no warning. Shadowed or competing
+members retain existing unavailable/ambiguous outcomes and no guessed edge.
+
+These are source-analysis coverage outcomes, not parser or persistence failures.
+Correct the source/provenance and run ordinary update; retry does not establish
+missing authority. Actual parser/join/write failures still use the existing stage
+guards and publication transaction. Executed malformed-input and real read-only
+manifest failures preserve previous products and allow repaired retry. Policy 13
+refreshes old derived ancestry. INC-QML-28 separately preserves explicitly spelled
+emission occurrences when declaration evidence is absent.

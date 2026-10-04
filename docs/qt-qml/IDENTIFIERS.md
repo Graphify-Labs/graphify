@@ -22,13 +22,13 @@ legacy targets. Navigation follows
 [GitHub custom-anchor syntax](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#custom-anchors).
 
 Future requirements continue with `REQ-QML-022`; future top-level increments
-continue with `INC-QML-17`. These counters describe different concerns and need
+continue with `INC-QML-29`. These counters describe different concerns and need
 not advance together. Extend this catalog when retiring or migrating an ID;
 never transfer an alias to unrelated behavior. Document identifiers do not change
 runtime schemas or parser contracts.
 
-The twenty-one requirements comprise eighty-four criteria. The initial seventeen
-requirements/sixty-eight criteria and six `REQ-QML-018` adoption criteria retain
+The twenty-one requirements comprise eighty-five criteria. The initial seventeen
+requirements/sixty-eight criteria and seven `REQ-QML-018` adoption criteria retain
 separate support/evidence profiles. REQ-QML-019 adds four HTML-view criteria.
 REQ-QML-020 adds three explicit-membership criteria locally Verified for the bounded
 static source profile through INC-QML-14. Implementation and verification status belong
@@ -48,9 +48,12 @@ aliases and evidence names remain unchanged.
 Accepted unchanged-context deduplication adds regression evidence, not an ID.
 Current final-artifact status remains in requirements and traceability.
 
-[INC-QML-11](PLAN.md#inc-qml-11--inherited-qt-signal-endpoint-lookup) plans the
-inherited-signal lookup correction under existing REQ-QML-016-AC01/AC04. It adds
-no requirement or acceptance ID and has no executed acceptance evidence yet.
+[INC-QML-11](PLAN.md#inc-qml-11--inherited-qt-signal-endpoint-lookup) implements
+bounded inherited-signal lookup under existing REQ-QML-016-AC01/AC04. It adds
+no requirement or acceptance ID. Local source/update evidence and remaining
+integration gaps belong to traceability. INC-QML-28 retains explicit-emission
+admission under the same criteria. REQ-QML-018-AC07 adds the header-dispatch
+criterion without renumbering earlier identities.
 
 [INC-QML-12](PLAN.md#inc-qml-12--out-of-line-constructor-canonical-ownership)
 locally completes bounded singleton constructor parent correction under existing native ownership

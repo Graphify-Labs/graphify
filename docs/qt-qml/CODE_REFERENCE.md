@@ -208,12 +208,14 @@ and [DESIGN.md](DESIGN.md#native-ownership-authority-inc-qml-10) define authorit
 and unresolved-case limits; [VALIDATION.md](VALIDATION.md#inc-qml-10-native-source-ownership)
 records that source/context, final broad and reviewed installed-artifact proof.
 
-INC-QML-11's planned seam is `QtEventIndex.member`: compatibility in `inherits`
-already traverses ancestors, but current inherited-member candidates come only
-from immediate bases. Future ancestor endpoint traversal retains complete-class
-authority, canonical member identity, bounded lookup and existing ambiguity/
-signature/role/access rules. No implementation or proof is assigned yet; see
-[the increment plan](PLAN.md#inc-qml-11--inherited-qt-signal-endpoint-lookup).
+INC-QML-11 uses `QtEventIndex._lookup_members` for bounded ancestor candidates,
+`_bases` for canonical complete-class proof, and `_base_access` for source-owned
+inheritance visibility. `member` stops name lookup before role/signature filtering;
+`inherits(..., public_only=True)` gates external member-pointer conversion paths.
+The producer `qt_cpp_exposure._class_facts` owns each canonical base/access pair.
+Both files remain below 300 lines at this increment (186 and 184). No mutable
+project state or new persistence owner is introduced. Policy 13 retires derived
+facts; installed integration and explicit-emission admission remain separate exits.
 
 ## Constructor and source-containment seams (INC-QML-12/13)
 

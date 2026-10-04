@@ -17,7 +17,8 @@ the remaining adoption criteria are unverified. Explicit gaps appear below.
 REQ-QML-019 adds four community-view criteria, bringing the catalog to nineteen
 requirements and seventy-eight criteria. INC-QML-10 revalidates the existing
 native ownership criteria for complete bodies and canonical definition provenance;
-multi-level inherited endpoint lookup remains an explicit INC-QML-11 gap.
+multi-level inherited endpoint lookup now has local INC-QML-11 source/update proof.
+Installed integration and explicit-emission admission INC-QML-28 remain pending.
 REQ-QML-020 adds three membership-projection criteria, for twenty
 requirements and eighty-one criteria. INC-QML-12/13 source and final installed
 public-fixture regressions below do not verify the new membership projection or the
@@ -146,10 +147,9 @@ Windows-separator and absolute path spellings retain one body identity. These
 cases first failed before the borrowed source/span transport correction and pass
 within the final focused selection.
 
-INC-QML-11 remains unverified and must reproduce and correct grandparent
-inherited-signal endpoint lookup under
-REQ-QML-016-AC01/AC04; recursive class compatibility currently coexists with an
-immediate-base-only member fallback. INC-QML-12/13 now have bounded source
+INC-QML-11 now corrects grandparent inherited-signal endpoint lookup under
+REQ-QML-016-AC01/AC04 with the exact source/update evidence below. Earlier
+immediate-base-only evidence is superseded for this bounded lookup profile. INC-QML-12/13 now have bounded source
 implementation and regression evidence below. Missing/unaccepted class bodies,
 collapsed overloads and dynamic targets retain explicit unavailable ownership.
 A proven enclosing callable or accepted source file may contain the occurrence
@@ -489,3 +489,17 @@ existing atomic symlink/mode and external-symlink admission cases remain explici
 host gaps; optional language skips do not establish acceptance. Full repository
 pytest and typing retain the separately recorded baseline failures. Broader
 adoption/inherited native endpoint/overload criteria remain Partially verified.
+
+
+## Inherited endpoints and pending adoption integration
+
+| Acceptance ID | Exact production-boundary evidence | State |
+| --- | --- | --- |
+| REQ-QML-016-AC01 | `tests/test_qt_inherited_endpoints.py::test_req_qml016_ac01_grandparent_endpoints_use_declaring_members`; `tests/test_qt_inherited_endpoints.py::test_req_qml016_ac01_diamond_deduplicates_declarations_and_rejects_conflicts`; `tests/test_qt_inherited_endpoints.py::test_req_qml016_ac01_shadowing_precedes_role_signature_and_visibility`; `tests/test_qt_inherited_endpoints.py::test_req_qml016_ac01_ancestor_traversal_has_a_fail_closed_32_class_budget`; `tests/test_qt_inherited_access.py::test_req_qml016_ac01_external_member_pointer_cannot_cross_nonpublic_base`; missing/corrupt access and lexical namespace controls in those modules | Locally verified inherited declaration/access profile; explicit missing-declaration emissions remain INC-QML-28 |
+| REQ-QML-016-AC04 | `tests/test_qt_inherited_endpoints.py::test_req_qml016_ac04_ancestor_edges_reach_reload_query_and_affected`; `tests/test_qt_inherited_updates.py::test_req_qml016_ac04_header_signal_base_and_site_edits_match_full_cold_warm`; `tests/test_qt_inherited_updates.py::test_req_qml016_ac04_malformed_ancestor_preserves_products_then_retries`; `tests/test_qt_inherited_updates.py::test_req_qml016_ac04_readonly_ancestor_refresh_preserves_cohort_and_retry` | Local manual/watch, reload/query/affected and real failure/retry pass; installed integration pending |
+| REQ-QML-018-AC07 | Gap: bounded header lexical classification, Objective-C priority, source spans, actual update/recovery and installed dispatch evidence assigned to INC-QML-08a/08c | Planned; evidence integrated with the adoption change |
+
+Current adoption criterion count is seven, bringing the catalog to 85 acceptance
+criteria across 21 requirements. Earlier six-criterion counts describe the earlier
+profile. No criterion is renumbered. Runtime execution, arbitrary include search,
+Qt SDK equivalence and other platforms remain outside this bounded static proof.
