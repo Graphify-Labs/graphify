@@ -138,8 +138,8 @@ and [session configuration](https://github.com/openai/codex/blob/rust-v0.160.0/c
 All dependency installation and focused test processes have finished. The full
 source rerun is deferred until the WSL installation restart and initialization.
 The native all-extras environment is compatible; the lock and original coverage
-file remain unchanged. The AST-only repository update completed with 22,271 nodes
-and 50,092 edges using `graphify update . --no-cluster`, with no LLM invocation.
+file remain unchanged. The final AST-only repository update completed with 22,274 nodes
+and 50,115 edges using `graphify update . --no-cluster`, with no LLM invocation.
 These raw graph counts are navigation output, not extraction correctness proof.
 
 Full Pyright with the explicit native environment reports 604 errors and zero
