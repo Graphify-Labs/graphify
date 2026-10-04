@@ -17,9 +17,12 @@ and reviewed installed-wheel evidence. All seven REQ-QML-018 criteria are locall
 verified for the bounded Windows x64/Python 3.12 profile. Individual assignments
 and the [final local matrix](#final-adoption-delivery) distinguish passing cases
 from wider platform, native interaction, live-service and runtime limitations.
-The full source suite retains 59 baseline failures and 178 skips, with no added
-failure identities; full typing remains a failed baseline gate. Neither aggregate
-test totals nor skipped cases establish acceptance.
+The recorded full source run has 59 baseline failures and 178 skips, with no added
+failure identities; full typing remains a failed baseline gate. The later
+[Windows dependency follow-up](../docs/qt-qml/VALIDATION.md#windows-shell-and-optional-dependency-follow-up--2026-10-04)
+clears 40 of those 59 in a selective rerun, retains 19, and exposes two previously
+skipped hook portability assertions. It does not replace full-suite evidence.
+Neither aggregate test totals nor skipped cases establish acceptance.
 
 The chronological records below preserve checkpoint evidence. Their older pending
 statements, epochs and test totals describe the recorded revisions. Current status

@@ -20,6 +20,11 @@ not been published or run through the twelve hosted OS/Python lanes. Local
 completion does not fill those cells or establish native browser/device, live
 database or Qt runtime proof.
 
+The later [Windows dependency follow-up](VALIDATION.md#windows-shell-and-optional-dependency-follow-up--2026-10-04)
+installs portable Bash and locked optional packages without product changes.
+Its selective rerun clears 40 of the original 59 failures, retains 19, and exposes
+two previously skipped hook path assertions. No full-suite gate is inferred.
+
 INC-QML-00–07 hosted results remain evidence for their recorded original profile.
 INC-QML-09/13/16 implement community presentation and middle mouse navigation;
 emitted-script/installed contracts pass, with native interaction still unverified.

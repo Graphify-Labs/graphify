@@ -1928,3 +1928,84 @@ current host. Shell-security cases stop before the missing shell starts; they
 establish neither successful security acceptance nor an injection vulnerability.
 The full contribution gate remains failed, and this attribution does not remove
 its baseline exceptions or fill unexecuted platform evidence.
+
+## Windows shell and optional dependency follow-up — 2026-10-04
+
+This dependency-only follow-up tests unchanged source at
+`6369e97f30e36ac2fd22d09c6ce2a216e9fbb81b` on Windows x64/CPython 3.12.14.
+Production code, collected tests, generated skills, requirements and `uv.lock`
+remain unchanged. The earlier full-suite and pre-increment replay totals remain
+historical results for their recorded environments.
+
+Portable [Git for Windows 2.56.0](https://github.com/git-for-windows/git/releases/tag/v2.56.0.windows.1)
+provides working `bash` and `sh`, both reporting Bash 5.3.15. The downloaded
+`PortableGit-2.56.0-64-bit.7z.exe` matches its published SHA256
+`eceb5e061aa90df2f69ddd3e90f0030e1b8037a7829934bc40e4be1caa1accc1`.
+Installation is portable and per-user; test subprocesses receive an explicit
+PATH. No persistent system/user PATH change or WSL installation is claimed.
+
+The source test environment adds `openai==2.36.0`,
+`tree-sitter-solidity==1.2.13` and `tree-sitter-vb-dotnet==0.3.0` with
+`uv pip install --only-binary :all:`. Constraints retain all 88 existing dependency
+versions and pin the fifteen added packages, including transitives, to `uv.lock`.
+Tree-sitter remains 0.25.2 and language-pack remains 0.11.0. No compiler or
+global Graphify upgrade is used. The SDK cases replace `openai.OpenAI` with a
+mock before production calls; no provider request or API credential is required.
+
+| Executed selection | Passed | Failed | Skipped | Evidence boundary |
+| --- | --- | --- | --- | --- |
+| `tests/test_ollama_retry_cap.py`, `tests/test_solidity_extractor.py`, `tests/test_vbnet_extractor.py` | 17 | 0 | 0 | All fourteen former dependency failures and three existing controls |
+| Exact 29 former missing-shell node IDs | 26 | 3 | 0 | Original assertions unchanged; three legitimate-path controls fail |
+| Exact 59 original failure node IDs | 40 | 19 | 0 | Selective current-source rerun; no failure outside that selection |
+| Complete `tests/test_hooks.py` and `tests/test_skillgen_input_path_injection.py` | 138 | 5 | 8 | Includes two previously skipped hook cases now failing path-spelling assertions |
+
+The pytest invocation uses the source environment's Python with
+`-I -X utf8`, an explicit source-import assertion, and
+`pytest -q --tb=short -p no:cacheprovider -rs --junitxml=REPORT`.
+Literal parameterized node IDs are passed as argument-array entries. Per-stage
+logs, JUnit reports, commands, dependency constraints and bounded comparisons
+are retained in ignored `.venv/bash-verification/`. Failure identities come from
+JUnit testcase failure/error elements; `-rs` alone does not print failure IDs.
+
+The shell subprocess PATH excludes global `uv`, `pip` and Graphify launchers.
+A test-only `python3` shim forwards arguments unchanged to the real native proof
+interpreter and rejects `-m pip`; interpreter imports are from the selected source.
+Tool/cache/package destinations are isolated and installation fallbacks are
+offline. Existing home-directory fixture isolation is retained, with additional
+AppData isolation. The global launcher, unrelated coverage data and working tree
+are preserved. This controls the installation-discovery boundary while exercising
+the actual shipped shell blocks, not a reimplementation of their input handling.
+
+### Shell portability and security evidence limits
+
+`tests/test_skillgen_input_path_injection.py::_run_step1` rewrites Windows paths
+to `/mnt/c/...`. The generated Step 1 passes that value through stdin to native
+Python `os.chdir`; Git Bash argument conversion cannot translate stdin. Thus
+`test_step1_still_resolves_a_legitimate_path` fails for all three shipped skill
+files. An unreachable hostile sentinel can also make an original negative case
+pass without proving injection resistance.
+
+Supplementary controls execute the unchanged committed Step 1 blocks with native
+literal `C:/...` paths, including spaces. All **26 checks pass**: three successful
+interpreter/root-marker controls, three missing-path rejection controls and twenty
+hostile-input checks. Relative sentinels are verified against deliberately unsafe
+`true INPUT_PATH` controls through the same Bash invocation; all **20 unsafe
+controls create the expected sentinel**. This proves reachability and supports the
+shipped-block result for that bounded profile. It does not convert the three
+original fixture failures into passes or provide ordinary collected regression
+coverage for a harness correction.
+
+The newly executable
+`tests/test_hooks.py::test_uv_tool_env_rescues_hook_when_pin_and_launcher_fail` and
+`tests/test_hooks.py::test_shebang_parse_requires_leading_hash_bang` report MSYS
+`/tmp/...` interpreter paths while asserting literal native Windows path strings.
+Both remain failing portability assertions. No test is changed, skipped or
+weakened to hide these discrepancies.
+
+The original failure selection retains eight installer/assistant-skill cases,
+seven Windows filesystem fixture cases, three Step 1 path fixtures and one
+Terraform expectation: **19 failures**. The two newly executable hook failures
+are additional to that historical selection. The entire source suite has not
+been rerun in the expanded environment; no new global failure/skip total or
+passing contribution gate is inferred. Hosted OS/Python lanes, native interaction
+and live service proof remain outside this local dependency follow-up.
