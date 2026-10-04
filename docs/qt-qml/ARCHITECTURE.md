@@ -578,7 +578,54 @@ association; the accepted resource/module index supplies the QML target. URL
 wrappers and overloads require bounded SDK authority. Policy 10 invalidates old
 derived overlays; source AST schema 7 and graph relationship contracts are intact.
 
-INC-QML-21/22 remain distinct producer/API authority corrections. INC-QML-23
-addresses an unchanged shared Windows persistence failure discovered by full
-validation. Local correction acceptance and repository gate status are separate
+At the INC-QML-20 checkpoint INC-QML-21/22 were distinct producer/API
+authority corrections and INC-QML-23 owned the shared Windows persistence
+failure. The later decisions and correction seams below supersede those gaps. Local correction acceptance and repository gate status are separate
 evidence boundaries, recorded in validation and traceability.
+
+## D18 — Exact qualified native producer identity
+
+INC-QML-21 changes the authoritative generic C++ producer before Qt mapping.
+Global class/member IDs retain their previous contract; qualified classes use a
+digest of the exact case-sensitive namespace/class spelling before ordinary ID
+normalization. Members inherit the accepted class identity. Complete source body,
+original span, sibling family and unique signature evidence govern header/source
+joins; forward declarations cannot replace a complete body. Literal using-namespace
+scope is bounded and fails closed on overflow. Label-only remapping is rejected.
+
+The alternative of reconstructing qualified identities in a Qt resolver leaves
+generic facts, raw calls and consumers inconsistent. Producer ownership instead
+preserves one identity through facade, native overlays, graph and reload. Qualified
+IDs intentionally change; consumers must rebuild rather than mix old and new IDs.
+Final AST schema 9 and Qt policy 12 retire older cached/derived facts. The same
+schema also includes INC-QML-27's explicit handler parameter authority. Generic
+legacy IDs and graph schema remain unchanged. A downgrade requires a fresh rebuild
+with its matching analyzer; cached output is not a migration oracle.
+
+## D19 — Coordinated acceptance product publication
+
+INC-QML-23 preserves individual replacement rollback. INC-QML-25 adds one caller-
+owned publication transaction around graph, root, manifest, Qt stamp and optional
+cluster report/labels. Existing serializers prepare owned staged files; accepted
+products advance only after preparation succeeds. Recoverable publication failures
+restore prior durable products, while a second restoration failure preserves disk
+snapshots and reports an integrity/recovery diagnostic.
+
+Successful content-keyed source AST cache entries remain analysis-owned and may
+survive rejected graph publication. They do not accept a graph or its checkpoint.
+Unchanged products avoid replacement; the transaction rejects a detected competing
+writer. This is completion and exception recovery, not multi-file atomicity under
+process termination, power loss or uncoordinated OS writers. Recovery guidance and
+cleanup outcomes are defined in the error catalog. No second runtime or persistence
+framework is introduced.
+
+## Native notification and refresh ownership
+
+INC-QML-22/24 require source-position SDK type authority, including rejection of
+same-spelled forward declarations, before admitting reflection/loader semantics.
+INC-QML-26 removes only unreferenced source-less AST placeholders absent from a
+successful complete Qt corpus refresh; unchanged semantic and live references
+remain owned by their origins. INC-QML-27 maps accepted property notifications to
+real native signals and separates explicit formal parameters from legacy injection.
+The [chapter review](EXPOSURE_CHAPTER_REVIEW.md) and API inventory state exclusions.
+Bounded correctness evidence remains separate from wider adoption and hosted proof.

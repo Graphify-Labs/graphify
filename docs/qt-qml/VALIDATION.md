@@ -1350,3 +1350,123 @@ diagnostic files and original-source archives remain ignored.
 INC-QML-21/22/23 are separately scoped after the exit review. Broader adoption,
 inherited event lookup and overload identity remain INC-QML-08/11/15; bounded
 loader success does not imply every Qt SDK API or runtime effect is modeled.
+
+## Follow-up source acceptance (INC-QML-21–27)
+
+Baseline for the original reproductions is `1128205`; INC-QML-17–20 were committed
+separately before these follow-ups. Local platform: Windows, Python 3.12.14,
+tree-sitter 0.25.2 and language-pack 0.11.0. Tests use offline synthetic public
+fixtures and production extract/build/update/consumer boundaries; no Qt application
+or build hook runs. Final AST schema 9 and Qt policy 12 retire older same-version
+qualified IDs, SDK-derived facts and handler parameter authority.
+
+Focused commands use `python -B -X utf8 -m pytest -q <files> --tb=short`; the exact
+file selections below retain test/criterion mappings in traceability. The full
+gate and reviewed installed artifact are separate pending checks at this checkpoint.
+
+| Increment | Executed source selection and result | Genuine reproduction/review boundary |
+| --- | --- | --- |
+| INC-QML-21 | qualified identity/proof/updates, construction authority, constructor ownership, nested/CLI, native definition/constructor ownership: 152 passed, 14.21 seconds; explicit optional-index type narrowing then 43 related cases passed | Initial 7 failed/1 passed; signature/proof controls corrected; 51 using namespaces initially fail while 2 remain ambiguous, then both pass without truncating authority |
+| INC-QML-22 | reflection identity/updates and orphan controls: 131 passed, 45.63 seconds | 12 false-target rejections fail before the correction; strict watch parity initially exposes four orphan failures, corrected by INC-QML-26 |
+| INC-QML-23 | atomic replacement/readonly caller, prior atomic/export/source-state/loader-update compatibility: 79 passed, 3 baseline platform skips, 18.41 seconds | Actual readonly destination failure reproduces on original source; injected landing/cleanup/second-restore faults preserve or explicitly retain recovery evidence |
+| INC-QML-24 | SDK declarations, boundaries, provenance, updates and providers: 107 passed, 33.25 seconds. Included-header/SDK/native alias/definition/context/loader/reflection compatibility: 169 passed, 58.22 seconds | Eight direct forward controls fail; included-header correction then 20 failed/10 passed, promoted to 33 collected cases including transitive/order/unincluded/namespace/provenance/overflow |
+| INC-QML-25/26 | final publication/setup/product/orphan selection: 65 passed, 1 host-symlink skip, 25.16 seconds; one subsequently added partial-setup cleanup regression passed separately | 16 initial caller failures; non-OS second rollback/cleanup 3 failures; setup 6 failures/2 controls, realpath 1 failure; exact old cache-entry bytes remain unchanged while new valid entries may be added |
+| INC-QML-27 | native property notify, pure-QML formals and native notify update files: 58 passed, 21.81 seconds, no skips. Handler/adversarial/integration compatibility: 91 passed, 2 Windows-symlink skips; script/scope/native compatibility: 29 passed | Native notify 8 failed/11 passed; explicit-style 4 failed; actual native/QML/qmake lifecycle, manual/force/watch parse and post-graph manifest rollback now pass |
+
+The final artifact re-executes the current combined selections; overlapping source
+counts are not additive. Historical excluded probes remain baseline evidence only.
+New handwritten files measure at most 288 lines at this checkpoint; touched legacy
+ceilings and extraction exits are recorded in design. Ruff and bounded explicit-
+interpreter Pyright checks pass for the owning changes. Final full typing retains
+baseline comparison rather than assuming a clean project gate.
+
+Peer review found and corrected real namespace-cap, included-forward, rollback
+and setup diagnostic gaps. Documentation review verifies public manual wording,
+exact test references, ownership, cache epochs and diagnostic recovery. Wider
+adoption, inherited native signals and qualifier-aware event overload scope remain
+INC-QML-08/11/15. No new hosted, other-platform, native Qt/device, clean all-extra
+installation or process/power-loss atomicity evidence is inferred.
+
+## Final local follow-up integration evidence
+
+Reviewed source revision: `75a6c5123f3316f96c89df2a5133de05ccb68af4`. The five cohesive source commits are
+`d854509` (INC-QML-21), `6a774de` (INC-QML-22/24), `3e2c01a` (INC-QML-23),
+`a9b9c5a` (INC-QML-25/26) and `75a6c51` (INC-QML-27 and final cache epochs).
+Each retains the required Codex co-author trailer. Shared requirements/design/
+traceability records form the same change set. Later evidence edits affect only
+documentation, not the reviewed runtime or tests.
+
+### Installed reviewed artifact
+
+The Git index was exported to an ignored review directory, built with
+`uv build --wheel --offline --project <review> --out-dir <artifacts>`, and installed
+into a separate Python 3.12.14 verification environment. The source checkout was
+not moved. Wheel: `graphifyy-0.9.74-py3-none-any.whl`; SHA-256
+`220c2fa7bc558885a96170ca3bc29853ed3e950fbc06e4a53b74066850e111f2`. All 165 Graphify Python payloads
+are byte-equal across reviewed index export, wheel and installed package.
+
+Declared core dependencies are installed; tree-sitter 0.25.2 and language-pack
+0.11.0 remain pinned. PyYAML 6.0.3 is the existing source-suite dependency used by
+the selected Markdown compatibility oracle, not a new declared Graphify runtime
+contract. Its wheel was unavailable in the offline cache and was installed from
+the registry for this verification environment only. No package manifests,
+lockfile or parser dependency contracts changed.
+
+The final real-file driver imports the installed package before tests, verifies
+that import origin and supports Windows process-pool spawning. Command shape:
+`python -I -X utf8 <installed-driver.py> <installed-package> <reviewed-tests>
+<pinned-test-dependencies> <selected-tests>`. The 44-file selection includes all
+new correction tests, prior receiver/provider/type/loader cases, native ownership,
+handlers/scripts, atomic writes, public update/failure consumers and the complete
+language-facade file. **1,198 passed, 52 skipped, 194.61 seconds**; no failing case.
+
+Skips are explicitly unverified: three existing atomic mode/symlink cases, one
+publication symlink-target case, two external-symlink QML admission cases and 46
+language-facade cases requiring unavailable optional parsers. Collected identities
+and progress outcomes agree for all 1,250 cases. These skips do not verify their
+criteria/platform forms. Executed rejection tests cover the remaining ordinary
+root/path/provenance boundaries; other-platform/native system proof remains open.
+
+Earlier artifact invocations are not passing gates: the first had 1,195 passes,
+52 skips and three harness/dependency failures (non-importable `python -c` pool
+driver, missing core dependency in an isolated child, absent YAML oracle). After
+the real-file driver and declared core install, 1,197 passed and the YAML case
+still failed. The final frozen environment and unchanged assertions produce the
+green result above. The source/wheel payload hash remains identical throughout.
+
+### Contribution gates and compatibility limits
+
+| Executed command/check | Final result |
+| --- | --- |
+| `PYTHONUTF8=1 uv run --no-sync python -m pytest tests -q --tb=short` | 7,558 passed, 59 failed, 178 skipped, 3 warnings; 728.80 seconds. All 59 failure IDs match the recorded original baseline subset; no added failures. The formerly failing actual read-only atomic replacement now passes. |
+| `ruff check .` | Pass for the canonical current source. |
+| `uv run --no-sync pyright --outputjson` | Failing full gate: 647 errors/4 warnings across 605 files, 19.809 seconds. All 651 diagnostics match the original canonical baseline; zero added/removed. |
+| `uv run --no-sync pyright --pythonpath <pinned-python> --outputjson` | Failing full gate: 646 errors/6 warnings, 20.275 seconds. Zero added diagnostics; one original missing-build-import diagnostic is no longer present. |
+| `python -m tools.skillgen --check` | 134 artifacts match committed and expected output. |
+| `python -m tools.skillgen --audit-coverage`, `--schema-singleton`, `--monolith-roundtrip`, `--always-on-roundtrip` | All pass. |
+| `uv lock --check --offline` | Pass; 210 packages resolved. |
+| Public document checks | 22 documents; local links, exact tests and all 84 criterion assignments pass; no private-path/project/credential pattern. |
+
+The unchanged full-suite failures comprise unavailable shell/platform fixtures,
+deleted-working-directory Windows controls, optional OpenAI/Solidity/Visual-Basic
+dependencies, installer expectations and a Terraform Windows path expectation.
+Full pytest and typing are **not green**. No assertion, rule, required check or
+fixture is removed or weakened to obtain the bounded correction result. Local
+installed acceptance does not imply a clean all-extra or other-platform install,
+new hosted validation, publication or merge.
+
+### Graph navigation and increment exit
+
+The required AST-only `graphify update .` completed after code freeze and before
+this documentation closure. Durable output has 21,171 nodes, 45,426 edges and
+1,055 communities; graph, HTML and report were written. Scoped `explain
+ProductPublication` returns its source owner and caller links. Navigation uses
+scoped graph queries and the report; source/tests remain correctness evidence.
+Unavailable optional fixture-language parsers and the existing partial Luau
+fixture are disclosed by the refresh, not treated as complete language analysis.
+
+INC-QML-21–27 close their locally verified bounded correction scope. Plan review
+retains existing INC-QML-08/11/15 and explicit SDK/runtime/platform/system exclusions.
+No further concrete increment is confirmed by the completed peer review. The
+exposure chapter and named macros have explicit mechanism/evidence mappings;
+their review is not a promise to model every Qt API or runtime behavior.

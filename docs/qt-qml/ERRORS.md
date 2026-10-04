@@ -255,3 +255,48 @@ Full Windows testing found an unchanged atomic-write exception: a read-only
 destination may be replaced before displaced-file cleanup raises. INC-QML-23
 retains that integrity/recovery gap under REQ-QML-018-AC06. Prior generic retention
 statements describe the executed failure profiles, not this failing OS boundary.
+
+## Retained publication and source rejection (INC-QML-21–27)
+
+Qualified source proof, SDK-name shadows and invalid native notification evidence
+retain unresolved/ambiguous source results without guessed targets. Static API
+identity rejection uses `reflection_api_type_unestablished`; loader overload/type,
+declaration-identity and unavailable signal reasons retain their owning collectors.
+Complete-source namespace overflow grants no partial join authority. Successful
+resolution adds no warning; source corrections recover through normal update.
+
+| Code | Severity and owner | Outcome and recovery |
+| --- | --- | --- |
+| `GRAPH_PUBLICATION_FAILED` | Error; caller-owned product preparation/commit | Update returns failure and prior accepted products survive recoverable faults. Correct permissions/source/output conditions and retry the ordinary update. First-build failure accepts no product cohort. |
+| `GRAPH_PUBLICATION_RECOVERY` | Integrity error; publication rollback | A second restoration failure leaves recovery snapshots on disk. Stop accepting the mixed output, restore the complete prior cohort from the retained owned snapshot, correct the OS failure and rebuild. An automatic retry alone is not restoration proof. |
+| `GRAPH_PUBLICATION_CLEANUP` | Warning after committed success; error after an uncommitted run; owned transaction cleanup | Accepted committed products remain coherent. Retained scratch files need cleanup after releasing locks/permissions; failed preparation preserves prior products. Cleanup failure never retroactively turns coherent committed success into false rollback evidence. |
+
+Diagnostics expose bounded stages/codes, not private filesystem paths or serializer
+bodies. Internal exception chaining retains the failure cause for local debugging.
+Owned `.gfy-publish-*` directories contain `old`, `stage` and `restore` products.
+On recovery, retain the `old` snapshot until every required destination has been
+restored and read back; remove owned scratch only after that verification. A
+missing original product is restored to absence. Follow configured output symlink
+targets; never delete or move an unchecked computed path. Do not publish these
+local snapshots because their contents belong to the analyzed project.
+
+Individual writer restore failures likewise preserve a recovery backup when one
+exists, or explicitly report that no prior backup exists. Ordinary read-only
+destinations reject before displacement. The transaction does not promise atomic
+visibility across products under process termination, power loss or racing writers.
+Successful AST cache facts may survive publication failure; graph/root/manifest/
+Qt stamp remain the accepted cohort. Schema 9/policy 12 retire older analysis facts;
+rollback/downgrade uses the matching analyzer and a fresh build.
+
+### Native property notification outcomes
+
+`QtMemberViews.property_notify` owns `native_property_notify_unavailable`,
+`native_property_notify_provenance_unavailable`,
+`native_property_has_no_notify_signal`, `native_property_notify_accessor_not_unique`
+and `native_property_notify_is_not_signal`. They retain unavailable, ambiguous or
+unsupported resolution status, original handler/property context and no guessed
+subscription. Successful admission records `native_property_notify_signal` with
+the actual canonical native signal. These are source-resolution reasons under
+the existing QML diagnostic boundary, not parser/write exception codes. Correct
+registration, property or accessor evidence and run ordinary update; retries do
+not grant missing provider or native signal authority.

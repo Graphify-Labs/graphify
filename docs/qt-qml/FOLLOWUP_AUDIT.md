@@ -245,3 +245,18 @@ The full contribution gate also exposes unavailable Windows fixtures/dependencie
 and unchanged platform expectations. Exact baseline comparison and current
 correction evidence are recorded in [validation](VALIDATION.md); no gate is
 weakened to treat those results as successful.
+
+## Correction exit findings A17–A20
+
+| Finding | Reproduction and disposition |
+| --- | --- |
+| A17 — SDK-name forward declarations authorize loaders | Eight source-forward controls fail while eight external SDK controls pass. INC-QML-24 applies source declaration authority at constructors, loaders, engine associations and URL wrappers. |
+| A18 — Product completion does not govern success | Sixteen initial real/injected publication caller assertions fail. INC-QML-25 prepares and commits the accepted cohort together; rollback and cleanup have truthful independent diagnostics. Peer review also exposed a non-OS second restoration fault that discarded snapshots; its correction retains recovery evidence. |
+| A19 — Watch keeps orphan references after source restoration | Four reflection lifecycle assertions fail complete normalized parity; seven orphan-cleanup reproductions fail while five ownership controls pass. INC-QML-26 receives successful complete-refresh authority and preserves live/semantic/hyperedge references. |
+| A20 — Native property handler omits custom NOTIFY | Eight of nineteen initial native handler cases fail accepted subscription assertions. INC-QML-27 maps the property's accepted accessor; adjacent explicit-handler parameter tests expose and correct improper signal-name injection. |
+
+A14's qualified identity correction additionally rejects namespace-list overflow:
+the two-namespace ambiguity control passes while a 51-namespace case fails before
+the guard correction. These are concrete acceptance corrections, not claims that
+every Qt runtime mechanism is modeled. Final validation and plan review record
+implemented cases, artifact evidence and remaining broader scope separately.

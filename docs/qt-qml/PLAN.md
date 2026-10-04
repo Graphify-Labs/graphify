@@ -11,7 +11,8 @@ The [follow-up audit](FOLLOWUP_AUDIT.md) found four semantic false positives at
 `95adbdc`. INC-QML-17/18/19 correct those cases under existing requirements.
 Affected REQ-QML-016/017 criteria are partial; their original fixture passes do
 not verify every expanded boundary. INC-QML-17–20 have bounded local correction
-evidence; INC-QML-21/22/23 proceed as separate follow-ups.
+evidence; INC-QML-21–27 extend that bounded correction scope with separately
+assigned source, update, recovery and artifact checks.
 The [Qt API mechanism matrix](QT_API_COVERAGE.md) records supported, excluded,
 generic and omitted families. INC-QML-20 fills two reproduced literal loader
 provenance omissions; the plan does not promise individual whole-SDK semantics.
@@ -1746,14 +1747,14 @@ claimed, and INC-QML-08/11/15 remain open.
 
 ## INC-QML-21 — Qualified native class identities
 
-Status: **Planned; reproduced canonical ID collision**. Acceptance:
+Status: **Complete for the locally verified bounded profile; full repository/system limitations remain explicit**. Acceptance:
 REQ-QML-008-AC02, REQ-QML-016-AC01/AC04 and REQ-QML-017-AC02/AC04.
 Owner: generic C++ identity/canonicalization maintainer. Dependency: characterize
 the existing generic producer, native mapping and sanitation/export ID contracts.
 
 Distinct qualified classes with the same basename in one accepted source file
 must retain separate canonical identities. A global Base and Public::Base
-currently collide, causing accepted class proof to become ambiguous. Preserve
+collide at the audited baseline, causing accepted class proof to become ambiguous. Preserve
 forward/definition/header matching and reject actually conflicting definitions;
 never reconstruct an identity in a downstream Qt resolver to bypass the producer.
 
@@ -1765,50 +1766,159 @@ through build/sanitation/export/reload/query/affected and cold/warm/manual/watch
 Require stale-node/edge removal, compatibility/migration policy, actual failed
 publication retention/retry and reviewed installed artifact evidence.
 
-This increment remains outside the completed INC-QML-17–20 correction scope.
-Current source acceptance keeps the ambiguous identity unresolved; the rejection
-does not establish successful support for the colliding class form.
+At the INC-QML-20 checkpoint, colliding producer identities remained unresolved.
+INC-QML-21 separates accepted qualified declarations at the producer and retains
+conservative rejection for conflicting or insufficient declaration evidence.
 
 ## INC-QML-22 — Static reflection API identity
 
-Status: **Planned; reproduced false-positive targets**. Acceptance:
+Status: **Complete for the locally verified bounded profile; full repository/system limitations remain explicit**. Acceptance:
 REQ-QML-017-AC02/AC04. Owner: native access collector/type-authority maintainer.
 Dependency: the source-local declaration/type authority introduced by INC-QML-18/19.
 
 Apply SDK class identity to QMetaObject::invokeMethod, QQmlProperty::read/write
 and QQmlProperty handles. A local alias, global source class or namespace class
-with the SDK name currently creates a wrong persisted QML target. Preserve the
+with the SDK name creates a wrong persisted QML target at the audited baseline. Preserve the
 unshadowed SDK controls and exact receiver-owned access semantics.
 
-The retained opt-in probe has twelve failing rejection cases and two passing
-controls. Promote it into ordinary regression collection with the correction.
+The original opt-in probe recorded twelve failing rejection cases and two passing
+controls. The correction promotes those cases into ordinary regression collection.
 Verify original spans, SDK-qualified and source-shadowed forms, handle lifetime,
 directed/undirected reload, query/affected, cold/warm/manual/watch stale-edge
 removal and failed publication/retry. Preserve unrelated C++ and native-event
 contracts, refresh policy if necessary and prove a reviewed installed artifact.
 
-This increment remains outside INC-QML-17–20. Receiver ownership is corrected;
-passing receiver tests does not verify the identity of the static API itself.
+INC-QML-17 established receiver ownership. INC-QML-22 separately verifies static
+API authority, including source declarations that shadow SDK spellings.
 
 ## INC-QML-23 — Failed Windows replacement retention
 
-Status: **Planned; reproduced pre-existing persistence defect**. Acceptance:
+Status: **Complete for the locally verified bounded profile; full repository/system limitations remain explicit**. Acceptance:
 REQ-QML-018-AC06, with REQ-QML-011-AC04 and REQ-QML-013-AC03 regression review.
 Owner: shared atomic-write/persistence maintainer. Dependency: characterize the
 existing rename/replace/cleanup ordering and caller-owned product publication.
 
-On Windows, replacing an existing read-only destination can publish new bytes
-and then fail while deleting the displaced read-only file. A reported failure
+At the audited Windows baseline, replacing an existing read-only destination could
+publish new bytes and then fail while deleting the displaced file. A reported failure
 must preserve the prior accepted destination and leave no leaked temporary file.
 Preserve the existing public writer interface and product publication ownership.
 
-The existing strict atomic-write test fails on both baseline and correction
-revisions. Correct this shared boundary separately, using actual OS read-only
+The existing strict atomic-write test failed on the baseline and INC-QML-20
+revisions. Verify this shared boundary separately, using actual OS read-only
 files, supported replace/rename fallback paths, cleanup failure and permission
 recovery. Exercise manual/watch graph, manifest, stamp and cache retention,
 corrected retry and repeat idempotency; include unrelated writer/platform
 regressions and installed-artifact evidence. Document diagnostic and rollback
 ordering and any unavoidable multi-product atomicity limits.
 
-This increment remains outside INC-QML-17–20. Forced replacement failures already
-pass in the loader tests; they do not close this actual read-only OS boundary.
+At the INC-QML-20 checkpoint, injected loader replacement failures passed while
+the real read-only OS boundary remained open. INC-QML-23 verifies individual
+replacement retention; INC-QML-25 verifies coordinated product publication.
+
+## INC-QML-24 — Loader SDK declaration authority
+
+Status: **Complete for the locally verified bounded profile; full repository/system limitations remain explicit**.
+Acceptance: REQ-QML-017-AC01/AC04. Owner: loader collector/type-authority maintainer.
+Dependency: INC-QML-22's explicit external-SDK versus source-declaration lookup.
+
+An incomplete source declaration with a Qt SDK name must not authorize loader,
+engine, URL-wrapper or root semantics merely because no canonical complete class
+was admitted. At the audited baseline, engine constructor/load, component
+constructor/loadUrl, engine association, view and QUrl/QString wrapper cases
+retained false targets. The initial reproduction recorded eight passing external
+SDK controls and eight failing source-forward controls at persisted target assertions.
+
+Apply the shared SDK authority contract at source positions. Preserve explicit
+global SDK controls, accepted literal source provenance and conservative alias/
+forward uncertainty. Verify original spans, build/reload/query/affected, real
+manual/watch forward-declaration edits/restoration/removal, failed publication
+retention/retry and reviewed installed artifact. Refresh derived policy as needed.
+Review plan at exit; source declarations are inputs, not automatically SDK proof.
+
+Included-header forward declarations are part of the same SDK-authority boundary.
+Literal accepted include/provenance evidence must retain their shadows separately
+from complete native target identity. Header-only edits require the same update
+invalidation and restoration/removal tests; imported target support is not implied.
+
+## INC-QML-25 — Product publication completion and rollback
+
+Status: **Complete for the locally verified bounded profile; full repository/system limitations remain explicit**.
+Acceptance: REQ-QML-018-AC06, REQ-QML-012-AC02 and REQ-QML-011-AC04.
+Owner: CLI/watch publication integration maintainer. Dependency: INC-QML-23
+individual atomic replacement retention and existing product persistence owners.
+
+At the audited baseline, real read-only manifest or Qt analysis-stamp writes could
+fail after graph bytes advanced while watch returned success. A successful update must complete every
+required publication product. A rejected/failed publication must retain the prior
+accepted graph and state, report failure, and permit corrected retry. Distinguish
+successful source-cache facts from accepted published graph/state and document
+that boundary precisely.
+
+Characterize manual/watch graph, manifest, root and Qt stamp ordering. Use actual
+read-only destinations and injected staged-write, replacement, cleanup and rollback
+failures; assert durable bytes, explicit caller results, diagnostics and owned
+temporary cleanup. Preserve safe-root/symlink behavior and unrelated consumers.
+Require repaired retry, repeat idempotency, cold rebuild agreement and reviewed
+installed artifact. Define recovery evidence for a second OS failure during
+rollback without hiding the integrity failure. Coordinate shared watch ownership
+with INC-QML-26 and review the plan at exit.
+
+## INC-QML-26 — Watch removal of orphan reference nodes
+
+Status: **Complete for the locally verified bounded profile; full repository/system limitations remain explicit**.
+Acceptance: REQ-QML-011-AC02/AC04 and REQ-QML-017-AC04.
+Owner: incremental graph cleanup maintainer. Dependency: accepted source-node,
+derived-edge and synthetic-reference ownership; publication integration INC-QML-25.
+
+At the audited baseline, changing SDK reflection to a source alias and restoring
+it left an orphan generic QObject reference after watch that a clean graph lacked.
+The accepted Qt targets agreed; full graph parity must also remove stale synthetic nodes.
+Keep exact node identity/provenance and preserve references owned by unchanged
+sources or other graph origins.
+
+Retain the strict SDK→alias→SDK lifecycle assertion. Characterize multiple source
+owners, remaining live references, source deletion and generic-language controls
+at the smallest faithful production boundary. Verify no stale node/edge after
+manual/watch edits/restoration/removal, JSON reload, query/affected and normalized
+cold/warm parity. Force publication failure/retry through the shared guards,
+document migration if needed and prove a reviewed installed artifact. Review the
+plan after correction; do not weaken parity to ignore unattributed nodes.
+
+## INC-QML-27 — Native property notification handlers
+
+Status: **Complete for the locally verified bounded profile; full repository/system limitations remain explicit**.
+Acceptance: REQ-QML-007-AC01/AC03, REQ-QML-008-AC02/AC03 and
+REQ-QML-017-AC03/AC04. Owner: QML/native member and expression-binding maintainers.
+Dependency: accepted property/provider/accessor identity and existing signal joins.
+
+A registered native property must connect `on<Property>Changed` to its actual
+accepted NOTIFY signal even when that signal has a different name. Bind only an
+established property provider and unique accepted signal; absent, CONSTANT,
+non-signal, conflicting or unavailable notification evidence supplies no target.
+Retain original source spans, canonical native IDs and subscription direction.
+
+Explicit function/arrow handlers bind only their declared parameters. Legacy
+block handlers retain their implicit signal-parameter behavior. An omitted formal
+parameter must not hide a visible native property merely because it shares a
+NOTIFY signal parameter's name. This adjacent binding correction belongs to the
+same notification/parameter scope; it is not an unrelated refactoring.
+
+Characterize direct and Connections handlers, conventional/custom/shared NOTIFY,
+multiple providers, parameter shadowing, unavailable modules and invalid accessor
+evidence. Verify actual facade/build/JSON/query/affected behavior, cold/warm/manual/
+watch edits/restoration/removal, publication failure/retry and installed artifact.
+Invalidate cached QML handler facts when their parameter-authority contract changes.
+The [chapter review](EXPOSURE_CHAPTER_REVIEW.md) records the official semantic
+checklist and conservative runtime exclusions. Review the plan at exit.
+
+## Follow-up exit review (INC-QML-21–27)
+
+All seven correction sources have local passing production regressions. Peer
+review corrected capped namespace ambiguity, included SDK-name forwards,
+non-OS rollback loss and unguarded publication setup diagnostics within their
+owning increment scopes. No separate increment is needed for those corrections;
+the shared acceptance obligations already cover them. No additional concrete gap
+is confirmed at this checkpoint. Final reviewed wheel, contribution-gate limitations and graph
+refresh results are recorded in validation; the bounded local exit is complete. INC-QML-08/11/15 retain their
+separate broader adoption, inherited-signal and overload scope; runtime SDK
+behavior, other-platform/native-device and new hosted proof remain unverified.

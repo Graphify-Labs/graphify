@@ -552,6 +552,7 @@ extractors or authorize facade imports elsewhere.
 | HTML exporter maintainer: `exporters/html.py` | 789 / 810 physical lines | Existing embedded template and recursive aggregate projection share serialization. INC-QML-16 removes Overview and injects the isolated camera helper through a narrow seam, retaining this ceiling. Extract aggregate projection or template responsibility in a separate characterized viewer increment when the next cohesive change requires it. |
 | Generic extractor maintainer: `extractors/engine.py` | 7694 / 7700 | Five-line constructor producer hook only; domain logic belongs to `cpp_constructors.py`. Continue the upstream mechanical migration sequencing rather than mixing unrelated language moves into this fix. |
 | Generic resolver maintainer: `extractors/resolution.py` | 3974 / 3980 | Six-line pre-merge/guard hook only; the helper owns constructor decisions. Extract the existing declaration/definition responsibility as a separate characterized increment when upstream sequencing permits. |
+| Extractor facade maintainer: `extract.py` | 9009 / 9010 physical lines | One existing canonicalization call supplies raw calls to the same resolver owner; preserve dispatcher direction and extract a cohesive facade responsibility separately under the migration playbook. |
 | Cache maintainer: `cache.py` | 1782 / 1783 physical lines | Schema constant/comment changes only; cache ownership and migration ordering stay intact. No responsibility extraction is needed for this epoch update. |
 | Export/Qt integration test maintainers: `tests/test_export.py` | 1377 / 1377 physical lines | INC-QML-16 adds listener registration to the existing inspector harness without dispatch, camera math, swallowed errors or changed inspector assertions. New behavior stays in the focused navigation suite. Exit through coordinated upstream inspector-harness extraction that preserves production-script assertions. |
 
@@ -810,5 +811,77 @@ precise declaration-identity reason; no target/retention assertion is weakened.
 | Language-fixture maintainer: `tests/test_languages.py` | 5117 / 5120 physical lines | One QML facade/original-span case follows CONTRIBUTING's language admission convention. Existing multi-language ownership is preserved. Extract per-language fixtures through a separate characterized change that keeps discovery and unrelated-language contracts. |
 
 Every new handwritten loader/probe/test module remains below 300 physical lines.
-The unchanged atomic writer's read-only Windows failure remains INC-QML-23;
-passing forced replacement-failure tests is narrower evidence.
+At the INC-QML-20 checkpoint the unchanged atomic writer's read-only Windows
+failure remained INC-QML-23. Later individual/cohort corrections below supersede
+that disposition; forced replacement-failure tests remain narrower evidence.
+
+## Follow-up correction acceptance matrix (INC-QML-21–27)
+
+| Increment | Success and boundary/rejection | Failure and retained state |
+| --- | --- | --- |
+| INC-QML-21 | Exact global/namespaced/nested owners and header/source members survive raw-call remapping and export; missing, corrupted, later, duplicate, CV/ref-mismatched or over-limit using authority cannot bind by basename | Actual manual/watch edits and original-byte proof; common publication failure/retry contracts apply |
+| INC-QML-22 | Unshadowed static reflection and handle forms target receiver-owned members; alias/class/forward/conditional SDK-name shadows and invalid receiver/lifetime evidence create no target | Original spans, query/affected and strict whole-graph manual/watch parity; parse/write failures preserve all four accepted products |
+| INC-QML-23 | Writable destinations and bounded OS fallbacks preserve the individual writer contract; read-only and directory destinations reject before displacement | Landing/source-cleanup/backup-cleanup faults restore prior bytes; a second restore fault retains explicit recovery evidence |
+| INC-QML-24 | Literal SDK loaders retain source provenance and global qualification; incomplete SDK-name source declarations cannot authorize engines, wrappers or roots; conditional/reassigned identity remains uncertain | SDK→forward→SDK→removed manual/watch parity, parse/publication retention, repaired retry and repeat |
+| INC-QML-25 | Prepared graph/root/manifest/Qt-state and optional clustered products form one accepted cohort; unchanged bytes skip replacement; duplicate targets and detected concurrent change reject | Actual read-only products, staging/late replace faults and ordinary/non-OS restoration failures retain or explicitly report recoverable disk copies; first-build failure accepts no products |
+| INC-QML-26 | Only absent fresh, unreferenced source-less AST placeholders are pruned after a complete successful Qt refresh; live edges/hyperedges, semantic/native/source-owned facts survive | Partial/failed refresh grants no prune authority; common publication failure/retry contract protects the resulting graph |
+| INC-QML-27 | Accepted property/provider NOTIFY authority creates real canonical subscriptions for direct/Connections handlers; explicit formals and legacy injected parameters have separate scope | Invalid/CONSTANT/unavailable/ambiguous notify evidence creates no edge; real source/metadata/QML edits and guarded publication prove removal/recovery |
+
+Successful source resolution has no new operational warning. Static rejection
+retains source status/reason; actual parser/join/write failures use their owning
+diagnostic contract. Native execution and process/power-loss simulation are not
+performed because the runtime analyzes source and promises exception recovery only.
+Other-platform/native system evidence remains explicitly unexecuted.
+
+### Producer and API authority
+
+`CppIdentity`, class proof and member canonicalization own qualified C++ metadata
+before deduplication. Exact UTF-8 spelling is transported separately from bounded
+display text. Unique source body/signature and accepted containment evidence are
+required; over-limit namespace authority is rejected rather than truncated into
+a resolved target. Full source/AST/member direction remains consistent.
+
+`NativeTypeScope.sdk_type` distinguishes external SDK spelling from any visible
+source declaration. `CppDeclarationIdentity.type_binding` retains declared type
+spelling/position independently of runtime identity. Reassignment can preserve an
+observed SDK loader fact while preventing its target join. Explicit global syntax
+bypasses a namespace shadow, not a source-defined global SDK-name class. Runtime
+factory/member expressions and unsupported aliases remain unavailable. Accepted
+literal includes carry generic class declarations as SDK shadows separately from
+opaque alias targets. Included forwards, transitive paths, source order and the
+128-header walk bound grant no new corpus discovery or native provider admission.
+
+`QtMemberViews.property_notify` follows the accepted property's real NOTIFY
+accessor, requiring its provider, signal role and source proof. It does not invent
+a native propertyChanged declaration. QML handler facts carry `implicit_parameters`:
+legacy blocks alone receive injected names; function/arrow formals own bindings.
+Final AST schema 9 and Qt policy 12 invalidate stale unchanged-input facts. IDs,
+original spans and graph projection remain governed by the existing contracts.
+
+### Publication and cleanup
+
+The watch/update owner uses `ProductPublication` to snapshot old products, prepare
+candidate serializer output and commit replacements. Source cache ownership is
+independent. The Qt state writer receives a stage directory; its candidate is
+accepted only with the cohort. Successful cleanup failure warns without reporting
+the coherent accepted update as failed. Unsuccessful rollback retains snapshots.
+
+After complete Qt extraction/reconciliation, `prune_stale_ast_orphans` receives
+fresh identities and reference ownership. Partial/failed extraction cannot prune.
+It preserves source-backed, native/semantic, callable and live edge/hyperedge facts,
+and never mutates borrowed dictionary inputs. Non-Qt legacy reconciliation remains
+under its existing owner.
+
+| Touched legacy owner/file | Measured size / ceiling | Cohesion rationale and extraction exit |
+| --- | --- | --- |
+| Generic extractor maintainer: `extractors/engine.py` | 7716 / 7730 physical lines | Narrow producer identity integration within the existing dispatcher; extract C++ ownership separately after characterization under the migration playbook. |
+| Generic resolver maintainer: `extractors/resolution.py` | 3981 / 4000 | One guarded class/member canonicalization seam; move that responsibility in a separate characterized increment. |
+| Shared writer maintainer: `paths.py` | 577 / 600 | Preserve one OS replace/rollback owner; separate a cohesive writer extraction after failure/ordering characterization. |
+| Update maintainer: `watch.py` | 2487 / 2550 | Cohort integration replaces existing duplicated writes and shrinks the file; separate publication orchestration only after compatibility characterization. |
+| Extractor facade maintainer: `extract.py` | 9009 / 9010 physical lines | One existing canonicalization call supplies raw calls to the same resolver owner; preserve dispatcher direction and extract a cohesive facade responsibility separately under the migration playbook. |
+| Cache maintainer: `cache.py` | 1782 / 1783 | Existing schema seam only; retain the previously documented cache extraction boundary. |
+
+New helper and test files remain under 300 physical lines. Existing extractor
+facade ownership and dependency direction remain unchanged; children do not import
+`graphify.extract`. Plan review distinguishes corrected cases from open wider
+adoption, inherited-signal and overload support.

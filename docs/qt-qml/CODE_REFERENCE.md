@@ -68,7 +68,8 @@ The corrected semantic seams are `QtQmlAccessIndex.member`/`find_child`
 type/alias authority (INC-QML-19), and bounded loader admission (INC-QML-20).
 [FOLLOWUP_AUDIT.md](FOLLOWUP_AUDIT.md) preserves baseline findings and current
 dispositions. Same-file canonical IDs, static reflection API shadows and failed
-Windows replacement retention remain INC-QML-21/22/23.
+Windows replacement retention are corrected by INC-QML-21/22/23; the following
+source/publication seams describe the wider INC-QML-24–27 correction scope.
 
 | Boundary | Implemented owner |
 | --- | --- |
@@ -322,3 +323,29 @@ Imported-header targets remain unavailable rather than falling back globally.
 - `QtQmlAccessIndex.load` and `resolve_cpp_qml_access` reject unsupported loader/
   root forms before selecting a source component. Context providers retain the
   exact associated engine; no new persistence owner or graph mechanism is added.
+
+## Qualified source, SDK authority and coordinated update seams
+
+- `extractors/cpp_identity.py::CppIdentity` owns exact named native scopes and
+  qualified class/member IDs. `cpp_class_proof` validates accepted class bodies.
+- `extractors/cpp_member_identity.py` owns ordinary qualified member facts and
+  bounded using-namespace signature joins; `resolution._merge_decl_def_classes`
+  remaps canonical nodes, edges and raw calls together.
+- `extractors/qt_cpp_type_scope.py::NativeTypeScope.sdk_type` rejects source
+  declarations as SDK authority. `qt_cpp_identity.CppDeclarationIdentity.type_binding`
+  retains original declared type/position independently of runtime identity.
+- `extractors/qt_cpp_loaders.py::declared_sdk_type` applies that authority to
+  engine/component/view and URL wrapper admission; the access collector retains
+  uncertain observed source occurrences without lending target identity.
+- `publication.py::ProductPublication` owns staging/snapshots/replacement/recovery;
+  existing serializers and `watch._rebuild_code` retain semantic/run ownership.
+  `qt_analysis_state.commit_qt_analysis` prepares candidate state in that stage.
+- `qt_orphan_cleanup.py::prune_stale_ast_orphans` receives explicit complete-refresh
+  authority, fresh IDs and graph references after caller-owned reconciliation.
+- `qt_qml_bridge_members.py::QtMemberViews.property_notify` returns an established
+  native signal for a property's notifier. `qml_relationships` consumes it;
+  `extractors/qml_expressions` owns explicit versus implicit handler parameters.
+
+Final AST schema 9 and Qt policy 12 require fresh source/derived reconstruction.
+Diagnostic and recovery contracts belong to [ERRORS.md](ERRORS.md); bounded
+acceptance, platform/artifact results and outstanding gaps belong to traceability.

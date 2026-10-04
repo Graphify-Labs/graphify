@@ -44,13 +44,14 @@ manual/watch lifecycle and reviewed installed-wheel evidence is recorded per
 increment in [validation](qt-qml/VALIDATION.md) and acceptance traceability.
 Existing acceptance IDs and numeric identities are unchanged.
 
-The expanded criteria remain **Partially verified**. Same-file qualified class
-identity collisions remain INC-QML-21; shadowed static reflection API identity
-remains INC-QML-22; failed read-only Windows replacement retention remains
-INC-QML-23. Broader provider adoption, inherited endpoints and overload identity
+The expanded criteria remain **Partially verified** across their full adoption
+profile. INC-QML-21–27 implement qualified native identity, static API/loader SDK
+authority, retained Windows writes, coordinated product publication, orphan
+reference cleanup and native property notification handlers. Their focused source, reviewed installed-artifact and contribution-gate
+results are assigned in validation and traceability. The correction cases have
+local passing evidence; skipped/system and wider profile cases remain unverified. Broader provider adoption, inherited endpoints and overload identity
 remain INC-QML-08/11/15. Original fixture passes establish their recorded profiles,
-not these outstanding cases. Full repository testing and typing retain documented
-baseline failures; bounded correction evidence does not make those gates pass.
+not every SDK API or runtime effect. Baseline test/type failures remain explicit.
 
 Unsupported parenting, type, URL, overload or lifetime evidence retains an
 unresolved source site. Matching text or successful publication alone does not
@@ -183,7 +184,11 @@ Embedded functions, handlers, `Connections`, and imported JavaScript participate
 
 2 - Imported `.js`/`.mjs` helpers, aliases and supported `.pragma library` directives resolve without changing ordinary JS behavior or executing script code. (`REQ-QML-007-AC02`)
 
-3 - Supported `Connections` and handler fixtures link the expected target signal and handler, distinguish declarations from subscriptions, and preserve evidence/direction. (`REQ-QML-007-AC03`)
+3 - Supported `Connections` and handler fixtures link the expected target signal and handler, distinguish declarations from subscriptions, and preserve evidence/direction. A native `on<Property>Changed` subscription uses the property's actual accepted
+NOTIFY signal, including a differently named or shared signal. Explicit function
+and arrow handlers bind their declared formal parameters; only legacy block
+handlers receive implicit signal parameters. A missing, invalid, CONSTANT,
+ambiguous or unexposed notifier creates no guessed subscription. (`REQ-QML-007-AC03`)
 
 4 - Runtime-selected targets and dynamic calls remain explicitly unresolved; shared JS used by QML and non-QML callers does not gain spurious cross-language edges. (`REQ-QML-007-AC04`)
 
@@ -197,7 +202,9 @@ Supported `QML_ELEMENT`/named/singleton and literal `qmlRegister*` registrations
 
 1 - Valid `QML_ELEMENT`, identifier-form `QML_NAMED_ELEMENT(Backend)`, singleton and supported literal `qmlRegister*` fixtures map visible QML names to the correct C++ declarations and module evidence. (`REQ-QML-008-AC01`)
 
-2 - `Q_PROPERTY`, invokable methods, signals and `NOTIFY` references retain correct source spans and members; header/implementation pairs reuse existing canonical class/method identities. Distinct qualified classes sharing a basename within one source file retain separate canonical class identities; the reproduced collision is assigned to INC-QML-21 and remains unverified. Merged declarations retain exact accepted definition-file/location and class-ownership evidence when mapping native Qt overlays. Forward declarations retain their facts and IDs without competing with a unique complete class definition for ownership. Fresh and accepted-context representations of the same complete body retain exact source file/span and count as one body without mutating borrowed inputs; distinct complete definitions remain ambiguous. A member or function-local class occurrence with a uniquely accepted canonical callable retains a source-site containment link even when its class has no accepted Qt definition; this does not establish a native class, QObject role or QML exposure. Missing or conflicting callable evidence cannot create that link or an arbitrary class owner. An observed Qt occurrence without a callable owner retains containment by its uniquely accepted in-corpus source file, using the actual canonical file ID and original occurrence span. Missing, foreign, ambiguous or incorrectly typed file evidence creates no link; file containment leaves callable/class/target identities and unresolved status unchanged. (`REQ-QML-008-AC02`)
+2 - `Q_PROPERTY`, invokable methods, signals and `NOTIFY` references retain correct source spans and members; header/implementation pairs reuse existing canonical class/method identities. Distinct qualified classes sharing a basename within one source file retain separate canonical class identities. Merged declarations retain exact accepted definition-file/location and class-ownership evidence when mapping native Qt overlays. Forward declarations retain their facts and IDs without competing with a unique complete class definition for ownership. Fresh and accepted-context representations of the same complete body retain exact source file/span and count as one body without mutating borrowed inputs; distinct complete definitions remain ambiguous. A member or function-local class occurrence with a uniquely accepted canonical callable retains a source-site containment link even when its class has no accepted Qt definition; this does not establish a native class, QObject role or QML exposure. Missing or conflicting callable evidence cannot create that link or an arbitrary class owner. An observed Qt occurrence without a callable owner retains containment by its uniquely accepted in-corpus source file, using the actual canonical file ID and original occurrence span. Missing, foreign, ambiguous or incorrectly typed file evidence creates no link; file containment leaves callable/class/target identities and unresolved status unchanged. Native property notification references retain the canonical accepted signal
+identity and provider ownership through serialization; property handler spelling
+does not create a synthetic native signal. (`REQ-QML-008-AC02`)
 
 3 - Duplicate registrations, unsupported macro wrappers and ambiguous overloads retain reasons rather than arbitrary bridges; `Q_OBJECT`, inheritance or matching labels alone create no exposure link. (`REQ-QML-008-AC03`)
 
@@ -249,7 +256,7 @@ Cold rebuild, warm cache, manual update, and watch agree on normalized Qt/QML ou
 
 3 - Parser/grammar/config/import-root/ignore-policy changes invalidate the affected cached facts or resolution; stale output cannot be accepted solely because file content hashes match. (`REQ-QML-011-AC03`)
 
-4 - Repeated no-change updates are idempotent and preserve unrelated source facts; the final incremental graph equals a clean rebuild after every delivered mutation case. (`REQ-QML-011-AC04`)
+4 - Repeated no-change updates are idempotent and preserve unrelated source facts; the final incremental graph equals a clean rebuild after every delivered mutation case. Removing or restoring source cannot leave stale synthetic reference nodes without an accepted remaining owner. (`REQ-QML-011-AC04`)
 
 <a name="qml-012--failure-handling-and-persistence"></a>
 
@@ -261,7 +268,7 @@ Malformed input, missing parser, partial extraction, and failed resolution canno
 
 1 - Missing parser, malformed source and a forced extractor/resolver failure produce bounded, stage-specific diagnostics and an explicit incomplete status. (`REQ-QML-012-AC01`)
 
-2 - Starting from a valid persisted graph, those failures cannot replace it with a misleading empty/incomplete graph or poison a successful cache entry under existing write protections. (`REQ-QML-012-AC02`)
+2 - Starting from a valid persisted graph, those failures cannot replace it with a misleading empty/incomplete graph or poison a successful cache entry under existing write protections. Required graph, manifest, analysis-root and Qt-state publication must complete before reporting update success; a failed publication retains prior accepted products and reports failure, with explicit recovery on rollback failure. (`REQ-QML-012-AC02`)
 
 3 - Intentional deletion is distinguished from extraction failure; zero-node/shrink guards, provenance preference and documented destructive-update controls preserve their existing behavior. (`REQ-QML-012-AC03`)
 
@@ -339,9 +346,9 @@ Both integration directions are analyzed: registered or explicitly supplied C++ 
 
 **Acceptance Criteria**
 
-1 - Literal `QQmlApplicationEngine::load`/`loadFromModule`, engine URL construction, `QQmlComponent` literal construction/loadUrl followed by create and `QQuickView::setSource` fixtures link C++ loader/access sites to the correct QML component using accepted module/resource metadata; unavailable/dynamic URLs and modules retain unresolved reasons without loading an engine. Supported literal overloads preserve loader, engine and component declaration identity. Source-defined loader/QUrl wrappers, unsupported creation contexts and compilation modes cannot lend SDK semantics; resource QString convenience forms remain distinct from QUrl and absolute fromLocalFile forms. (`REQ-QML-017-AC01`)
+1 - Literal `QQmlApplicationEngine::load`/`loadFromModule`, engine URL construction, `QQmlComponent` literal construction/loadUrl followed by create and `QQuickView::setSource` fixtures link C++ loader/access sites to the correct QML component using accepted module/resource metadata; unavailable/dynamic URLs and modules retain unresolved reasons without loading an engine. Supported literal overloads preserve loader, engine and component declaration identity. Source-defined or incomplete loader/engine/URL-wrapper declarations cannot lend SDK authority merely because no complete canonical class was admitted. Source-defined loader/QUrl wrappers, unsupported creation contexts and compilation modes cannot lend SDK semantics; resource QString convenience forms remain distinct from QUrl and absolute fromLocalFile forms. (`REQ-QML-017-AC01`)
 
-2 - When the QML object provenance is established, `rootObjects`/`rootObject`, literal `objectName`/`findChild<QObject*>` lookup with recursive or direct-only search, supported `property`/`setProperty` and `QMetaObject::invokeMethod` calls resolve to the correct QML object/member and preserve access direction/source evidence, including exact canonical enclosing-method/class ownership for supported header/implementation pairs. Reflective access cannot borrow another object's lexical member; child lookup excludes siblings and honors direct-only depth using accepted parenting evidence. Native child construction requires proven non-widget QObject ancestry; a Q_OBJECT marker or shadowed QObject spelling alone supplies no construction/type-filter authority. Static QMetaObject and QQmlProperty access also requires evidenced SDK API identity; a shadowed class or alias cannot supply that authority (INC-QML-22 remains unverified). QML `id` alone is not treated as a C++ `objectName` lookup key. (`REQ-QML-017-AC02`)
+2 - When the QML object provenance is established, `rootObjects`/`rootObject`, literal `objectName`/`findChild<QObject*>` lookup with recursive or direct-only search, supported `property`/`setProperty` and `QMetaObject::invokeMethod` calls resolve to the correct QML object/member and preserve access direction/source evidence, including exact canonical enclosing-method/class ownership for supported header/implementation pairs. Reflective access cannot borrow another object's lexical member; child lookup excludes siblings and honors direct-only depth using accepted parenting evidence. Native child construction requires proven non-widget QObject ancestry; a Q_OBJECT marker or shadowed QObject spelling alone supplies no construction/type-filter authority. Static QMetaObject and QQmlProperty access also requires evidenced SDK API identity; a shadowed class or alias cannot supply that authority. QML `id` alone is not treated as a C++ `objectName` lookup key. (`REQ-QML-017-AC02`)
 
 3 - Connections from declared QML signals to C++ slots/callables, and from exposed C++ signals to QML handlers, resolve in the appropriate object scope; supported literal `setContextProperty`, `setContextObject` and initial-property exposure preserve provider/provenance facts, while conditional or dynamic exposure remains visibly uncertain. Distinct lexical engine declarations sharing a name cannot share context providers without established declaration identity and provider lifetime. Reassignment, conditional ownership, unknown aliases and expired local providers produce no guessed binding and retain the applicable identity reason. (`REQ-QML-017-AC03`)
 
@@ -365,16 +372,18 @@ Installed Qt/QML analysis supports the newly accepted project/declaration and ty
 
 5 - A clean installed optional wheel analyzes a public mixed Qt 6/QML project containing the accepted positive forms from AC01–AC04 through the production CLI, both at its project root and at an explicitly configured safe application subroot. Hand-checked facts, root boundaries and consumer results match source evidence without executing the analyzed project. Cold/warm, manual-update and watch results equal clean rebuilds after metadata, context-provider, child-member and signal edits/removal; prior initial-profile and unrelated-language evidence remains applicable or is reverified. (`REQ-QML-018-AC05`)
 
-6 - Actual parser, resolver and publication failures against that fixture produce bounded stage-specific diagnostics and preserve prior graph, manifest, analysis state and successful cache bytes, including rejected read-only destination replacement on supported Windows hosts. Missing optional parser, rejected root/path expansion and corrupt transport remain explicit failures; a corrected retry succeeds and a repeated no-change update is idempotent. Diagnostics and public fixtures contain no private source, identifiers, paths or credentials, and analysis runs no Qt application, build hook or plugin. (`REQ-QML-018-AC06`)
+6 - Actual parser, resolver and publication failures against that fixture produce bounded stage-specific diagnostics and preserve prior graph, manifest, analysis state and existing successful content-keyed source-cache bytes, including rejected read-only destination replacement on supported Windows hosts. Missing optional parser, rejected root/path expansion and corrupt transport remain explicit failures; a corrected retry succeeds and a repeated no-change update is idempotent. Diagnostics and public fixtures contain no private source, identifiers, paths or credentials, and analysis runs no Qt application, build hook or plugin. (`REQ-QML-018-AC06`)
 
 Status: **Partially implemented; not Verified**. AC02 has local passing evidence for
 empty-brace parameter defaults, `Q_UNUSED` statements and valid numeric digit
 separators under the public source-fixture profile. AC02 is locally verified for the bounded syntax and upgrade fixtures.
 Native header-dispatch assessment and the broader adoption profile remain separate
 incomplete work.
-INC-QML-23 retains the reproduced read-only Windows replacement failure under
-AC06. Existing forced replacement-failure tests do not verify that OS-specific
-boundary. Other additions require public synthetic reproductions and bounded contracts.
+INC-QML-23/25 supply actual read-only replacement and product-cohort failure
+retention/recovery evidence under AC06. Valid new source-cache entries may be
+added after successful source analysis before graph publication; they do not
+accept the graph or its checkpoint. The broader adoption fixture remains
+unverified. Other additions require public synthetic reproductions and bounded contracts.
 The initial REQ-QML-009 literal-only and REQ-QML-017 provider profiles remain unchanged
 until the corresponding INC-QML-08 behavior and evidence land together.
 
