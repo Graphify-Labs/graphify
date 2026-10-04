@@ -26,6 +26,20 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 GRAPHIFY_OUT = os.environ.get("GRAPHIFY_OUT", "graphify-out")
 
 
+def _unlink_replace_file(path: "str | Path") -> None:
+    """Consume an owned replacement file, clearing only its Windows read-only bit."""
+    try:
+        os.unlink(path)
+    except PermissionError:
+        mode = os.stat(path, follow_symlinks=False).st_mode
+        if os.name != "nt" or not stat.S_ISREG(mode) or mode & stat.S_IWRITE:
+            raise
+        # Copies preserve the source mode. Windows cannot unlink that owned
+        # read-only copy/source; never follow a link or alter its target here.
+        os.chmod(path, mode | stat.S_IWRITE)
+        os.unlink(path)
+
+
 def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
     """``os.replace(src, dst)``, falling back to a copy for a known set of
     Windows quirks (#3508) that raise even when ``src``/``dst`` are the same
@@ -47,8 +61,9 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
     or file) aside as a backup rather than deleting it outright, and only
     then renames the temp copy into ``dst``'s place -- matching replace's
     "whatever was there is gone, a plain file replaces it" semantics. If that
-    final rename fails, the backup is renamed straight back so a mid-swap
-    failure leaves the original in place rather than leaving ``dst`` missing.
+    final rename or cleanup fails, restore the source and prior destination.
+    A second OS failure during restoration is an explicit integrity failure;
+    the recovery backup is retained rather than silently discarded.
     """
     try:
         os.replace(src, dst)
@@ -56,6 +71,7 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
     except OSError as exc:
         if not isinstance(exc, PermissionError) and getattr(exc, "winerror", None) != 17:
             raise
+        replace_error = exc
     import shutil
     dst = os.fspath(dst)
     if os.path.normcase(os.path.abspath(os.fspath(src))) == os.path.normcase(os.path.abspath(dst)):
@@ -64,38 +80,62 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
         # the "back up dst" step and then crash unlinking a path that no
         # longer exists at the end.
         return
+    try:
+        destination_mode = os.stat(dst, follow_symlinks=False).st_mode
+    except FileNotFoundError:
+        destination_mode = None
+    # A fallback must not bypass a real destination rejection. On Windows a
+    # read-only file can be renamed aside but not removed: doing so previously
+    # published new bytes and then reported failure during source cleanup.
+    # lstat semantics keep direct symlink replacement distinct from its target.
+    if destination_mode is not None and (stat.S_ISDIR(destination_mode) or (
+            os.name == "nt" and stat.S_ISREG(destination_mode)
+            and not destination_mode & stat.S_IWRITE)):
+        raise replace_error
     dst_dir = os.path.dirname(dst) or "."
     fd, tmp_copy = tempfile.mkstemp(dir=dst_dir, prefix=".gfy-replace-", suffix=".tmp")
     os.close(fd)
+    backup = None
+    backup_moved = landed = source_removed = False
     try:
         shutil.copy2(src, tmp_copy)
-        backup = None
         if os.path.lexists(dst):
             bfd, backup = tempfile.mkstemp(dir=dst_dir, prefix=".gfy-replace-bak-", suffix=".tmp")
             os.close(bfd)
             os.unlink(backup)  # reserve the name only; rename needs it free on Windows
             os.rename(dst, backup)  # a plain rename moves a symlink itself, never its target
-        try:
-            os.rename(tmp_copy, dst)
-        except BaseException:
-            if backup is not None:
-                try:
-                    os.rename(backup, dst)
-                except OSError:
-                    pass  # best-effort restore; the swap failure below still propagates
-            raise
+            backup_moved = True
+        os.rename(tmp_copy, dst)
+        landed = True
+        # Keep the prior destination until both move cleanup operations have
+        # completed. A cleanup exception must not mean newly published data.
+        _unlink_replace_file(src)
+        source_removed = True
         if backup is not None:
-            try:
-                os.unlink(backup)
-            except OSError:
-                pass
+            _unlink_replace_file(backup)
     except BaseException:
+        restore_error = None
         try:
-            os.unlink(tmp_copy)
-        except OSError:
-            pass
+            if landed:
+                if source_removed:
+                    if os.path.lexists(src):
+                        raise OSError("Replacement source changed during rollback")
+                    shutil.copy2(dst, src)
+                os.rename(dst, tmp_copy)
+            if backup_moved and backup is not None:
+                os.rename(backup, dst)
+        except OSError as error:
+            restore_error = error
+        try:
+            if os.path.lexists(tmp_copy):
+                _unlink_replace_file(tmp_copy)
+        except OSError as error:
+            if restore_error is None:
+                raise OSError("Atomic replacement cleanup failed; destination restored") from error
+        if restore_error is not None:
+            recovery = "recovery backup retained" if backup and os.path.lexists(backup) else "manual recovery required"
+            raise OSError("Atomic replacement rollback failed; " + recovery) from restore_error
         raise
-    os.unlink(src)
 
 
 def _atomic_replace(path: "str | Path", write_fn) -> None:
