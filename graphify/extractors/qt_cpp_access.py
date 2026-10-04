@@ -12,6 +12,7 @@ from graphify.extractors.qt_cpp_facts import qt_metadata
 from graphify.extractors.qt_cpp_exposure import is_qt_cpp_source
 from graphify.extractors.qt_cpp_mapping import map_cpp
 from graphify.extractors.qt_cpp_identity import CppDeclarationIdentity
+from graphify.extractors.qt_cpp_type_scope import NativeTypeScope
 from graphify.extractors.qt_cpp_syntax import QtCppError, read_cpp
 from graphify.extractors.qt_cpp_variables import simple_reference, variables_at
 
@@ -30,9 +31,9 @@ def _identity_fields(identities, name, position, role):
     return fields
 
 
-def _site(facts, unit, mapping, call, identities):
+def _site(facts, unit, mapping, call, identities, types):
     args, method = call["args"], call["name"]
-    variables = variables_at(unit, mapping, call["start_byte"])
+    variables = variables_at(unit, mapping, call["start_byte"], type_scope=types)
     receiver = call["receiver"]
     receiver_type = variables.get(receiver, "")
     assigned = assigned_handle(unit, call)
@@ -95,7 +96,12 @@ def _site(facts, unit, mapping, call, identities):
         option = args[1]["text"].strip() if method == "findChild" and len(args) == 2 else "" if len(args) == 1 else "unsupported"
         depth = {"": "recursive", "Qt::FindChildrenRecursively": "recursive", "Qt::FindDirectChildrenOnly": "direct"}.get(option, "unsupported")
         callee = unit.code[call["start_byte"]:call["end_byte"]].split(b"(", 1)[0]
-        child_type_supported = bool(re.search(rb"findChild\s*<\s*(?:::)?QObject\s*\*\s*>\s*$", callee))
+        filter_type = re.search(rb"findChild\s*<\s*((?:::)?QObject)\s*\*\s*>\s*$", callee)
+        # The bounded filter is the SDK QObject pointer, not a same-spelled
+        # lexical alias or a source-defined class with different ancestry.
+        child_type_supported = bool(filter_type and
+            types.resolve(filter_type[1].decode(), call["start_byte"]) == "QObject"
+            and not types.classes.get("QObject"))
         facts.add("qml_access", method, call["span"], call["owner"].get("node_id"), **{**common, "receiver_reference": receiver,
                   **_identity_fields(identities, receiver, call["start_byte"], "receiver"),
                   "receiver_assignment_byte": last_assignment(unit, call["owner"], receiver, call["start_byte"])},
@@ -158,9 +164,10 @@ def collect_qt_cpp_access(paths, per_file, *, root: Path, accepted_nodes=None, a
             mapping.bind_classes([{"node_id": md.get("class_id", ""), "qualified_name": md.get("class_name", "")}
                                   for node in nodes if (md := qt_metadata(node)).get("kind") == "class"])
             identities = CppDeclarationIdentity(unit, mapping)
+            types = NativeTypeScope(unit, mapping)
             _component_constructors(unit, mapping, facts, identities)
             for call in calls(unit, mapping, _METHODS):
-                _site(facts, unit, mapping, call, identities)
+                _site(facts, unit, mapping, call, identities, types)
             result.setdefault("nodes", []).extend(facts.nodes)
             result.setdefault("edges", []).extend(facts.edges)
         except (QtCppError, ValueError) as error:

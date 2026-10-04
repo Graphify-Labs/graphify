@@ -9,6 +9,8 @@ from graphify.extractors.qt_cpp_mapping import map_cpp
 from graphify.extractors.qt_cpp_properties import add_properties
 from graphify.extractors.qt_cpp_registration import add_literal_registrations, add_macro_registration
 from graphify.extractors.qt_cpp_syntax import MAX_CPP_BYTES, QtCppError, lexical_code, read_cpp
+from graphify.extractors.qt_cpp_type_aliases import add_type_dependency_facts, type_dependency_source
+from graphify.extractors.qt_cpp_type_scope import NativeTypeScope
 
 _CPP = {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h"}
 _QT = re.compile(rb"\b(?:QML_[A-Z_]+|Q_[A-Z_]+|QObject|QQml\w*|QQuickView|qmlRegister\w*|signals|slots)\b")
@@ -41,12 +43,13 @@ def _failure(result, path, root, error):
                                                 "source_file": source, "message": str(error)})
 
 
-def _class_facts(mapping, facts):
+def _class_facts(mapping, facts, *, classes=(), alias_nodes=None):
     # Literal source occurrences can belong to a proven callable even when no
     # Qt class definition is admitted. This is source containment only: it must
     # not supply missing class authority, endpoint roles or QML visibility.
     callables = {node["id"] for node in mapping.nodes if node.get("_callable") is True
                  and not node.get("_callable_class")}
+    types = NativeTypeScope(mapping.unit, mapping, classes=classes, alias_nodes=alias_nodes)
 
     def source_owner(record):
         return record.get("node_id", "") if (record and record.get("status") == "resolved"
@@ -58,6 +61,9 @@ def _class_facts(mapping, facts):
         base = next((child for child in record["syntax"].named_children if child.type == "base_class_clause"), None)
         bases = [mapping.unit.text(child) for child in base.named_children
                  if child.type not in {"access_specifier"}] if base else []
+        # Construction authority needs lexical base identities, not a Q_OBJECT
+        # marker or a guessed basename. Unknown header aliases remain opaque.
+        canonical_bases = [types.resolve(name, record["span"]["start_byte"]) for name in bases]
         enclosing = mapping.owner_at(record["span"]["start_byte"])
         facts.add("class", record["name"], record["span"],
                   owner=record["node_id"] or source_owner(enclosing) or None,
@@ -65,7 +71,9 @@ def _class_facts(mapping, facts):
                   class_name=record["qualified_name"], status=record["status"],
                   is_definition=record["is_definition"],
                   is_qobject="Q_OBJECT" in macros or "QObject" in bases,
-                  source_q_object="Q_OBJECT" in macros, is_gadget="Q_GADGET" in macros, bases=bases)
+                  source_q_object="Q_OBJECT" in macros, is_gadget="Q_GADGET" in macros, bases=bases,
+                  canonical_base_names=canonical_bases,
+                  canonical_base_status="resolved" if all(canonical_bases) else "unavailable")
         add_macro_registration(mapping, facts, record)
         add_properties(mapping.unit, mapping, facts, record)
     for record in mapping.functions:
@@ -120,19 +128,33 @@ def enrich_qt_cpp(paths, per_file, *, root, accepted_nodes=None, accepted_edges=
                    and md.get("class_id") and md.get("class_name"))
     for path, result in pending:
         try:
-            if is_qt_cpp_source(path, class_names=[item["qualified_name"] for item in classes]):
+            if (is_qt_cpp_source(path, class_names=[item["qualified_name"] for item in classes])
+                    or ((units or classes) and type_dependency_source(path))):
                 unit = read_cpp(Path(path), Path(root))
                 units.append((map_cpp(unit, nodes, edges, root=Path(root)), result))
         except QtCppError as error:
             _failure(result, path, root, error)
+    # All accepted header shadows must exist before any source registration is
+    # resolved. This run-owned snapshot adds no include discovery or execution.
+    alias_nodes = list(nodes)
+    for mapping, result in units:
+        dependencies = QtFacts(mapping.unit)
+        try:
+            add_type_dependency_facts(mapping, dependencies)
+        except (QtCppError, ValueError):
+            _failure(result, mapping.unit.path, root, QtCppError("QT_CPP_LIMIT", "Type dependency facts are unavailable"))
+            continue
+        result.setdefault("nodes", []).extend(dependencies.nodes)
+        alias_nodes.extend(dependencies.nodes)
     for mapping, result in units:
         mapping.bind_classes(classes)
         facts = QtFacts(mapping.unit)
         try:
-            _class_facts(mapping, facts)
+            _class_facts(mapping, facts, classes=classes, alias_nodes=alias_nodes)
             # Forward declarations remain source facts, but only a parsed body
             # establishes a registration provider; old metadata proves neither.
-            add_literal_registrations(mapping, facts, [item for item in classes if item.get("is_definition") is True])
+            add_literal_registrations(mapping, facts, [item for item in classes if item.get("is_definition") is True],
+                                      alias_nodes=alias_nodes)
         except QtCppError as error:
             _failure(result, mapping.unit.path, root, error)
             continue

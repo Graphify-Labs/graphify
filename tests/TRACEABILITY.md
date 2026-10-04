@@ -398,3 +398,25 @@ explicit gaps; the source profile does not execute a Qt engine.
 
 Exact source/artifact commands and outcomes belong to the corresponding validation
 section. Full contribution gates run at the INC-QML-20 integration boundary.
+
+## Native alias and ancestry correction evidence (INC-QML-19)
+
+Ordinary collected cases supersede A13's opt-in probe as current bounded source
+evidence. Imported-header targets, inherited event endpoints and generic overload
+identity remain explicitly excluded or assigned to INC-QML-11/15.
+
+| Acceptance | Exact test | Evidence |
+| --- | --- | --- |
+| REQ-QML-016-AC01/AC02/AC03/AC04 | `tests/test_qt_native_alias_scope.py::test_req_qml016_connect_alias_cannot_select_unrelated_global_signal`; `tests/test_qt_native_alias_scope.py::test_req_qml016_emission_alias_cannot_select_unrelated_global_signal`; `tests/test_qt_native_alias_scope.py::test_req_qml016_block_alias_does_not_change_before_and_after_native_scope`; `tests/test_qt_native_alias_scope.py::test_direct_native_type_control_preserves_roles_and_direction`; `tests/test_qt_native_alias_scope.py::test_namespace_lookup_and_namespace_alias_keep_original_byte_spans` | Source-local alias rejection/positive controls preserve canonical roles, relation distinctions and original spans |
+| REQ-QML-008-AC01/AC03 | `tests/test_qt_native_alias_scope.py::test_req_qml008_alias_registration_cannot_export_global_class_to_qml`; `tests/test_qt_native_alias_scope.py::test_direct_registration_control_preserves_native_qml_endpoint`; `tests/test_qt_native_alias_scope.py::test_proven_alias_registration_exports_the_actual_class_and_qml_signal`; `tests/test_qt_native_alias_scope.py::test_local_alias_positive_and_rejection_profile` | Registration/QML projections select accepted aliases or retain no guessed provider |
+| REQ-QML-016-AC01–AC04; REQ-QML-008-AC01/AC03 | `tests/test_qt_native_alias_updates.py::test_alias_type_edit_and_removal_refreshes_native_qml_cold_warm_consumers`; `tests/test_qt_native_alias_updates.py::test_unprovable_alias_replaces_old_edges_without_global_name_fallback`; `tests/test_qt_native_alias_updates.py::test_bad_native_alias_input_retains_outputs_then_recovers_and_repeats`; `tests/test_qt_native_alias_updates.py::test_accepted_header_alias_cannot_resolve_outer_global_native_or_qml_endpoint`; `tests/test_qt_native_alias_updates.py::test_transitive_header_alias_owns_shadow_but_not_prior_source_use`; `tests/test_qt_native_alias_updates.py::test_included_alias_fact_corruption_rejects_provenance_instead_of_resolving_outer_type`; `tests/test_qt_native_alias_updates.py::test_fresh_alias_header_uses_borrowed_qt_context_without_mutating_it` | Real manual/watch full/cold/warm, stale-edge removal, persisted/query/affected, parse/write failure retention and retry; included alias provenance rejection and borrowed-context isolation |
+| REQ-QML-017-AC02/AC04 | `tests/test_qt_construction_authority.py::test_req_qml017_ac02_widget_and_unknown_ancestry_cannot_authorize_child_tree`; `tests/test_qt_construction_authority.py::test_req_qml017_ac04_direct_and_source_defined_qobject_chain_survives_publication`; `tests/test_qt_construction_authority.py::test_req_qml017_ac02_native_ancestry_reads_only_accepted_complete_source_facts`; `tests/test_qt_construction_authority.py::test_req_qml017_ac04_parent_mutation_spans_are_bounded_original_bytes`; `tests/test_qt_reflection_type_aliases.py::test_req_qml017_ac02_findchild_filter_rejects_shadowed_sdk_type` | Widget/unknown/corrupt/native shadow rejection; direct/derived non-widget controls, original 50/51 mutation-span boundary and unshadowed QObject filter |
+
+Exact executed source/artifact evidence is retained in validation; whole-requirement
+verification remains bounded by recorded adoption/inheritance/overload/system gaps.
+
+INC-QML-21 retains an explicit system/implementation gap for same-file qualified
+canonical classes under REQ-QML-008-AC02, REQ-QML-016-AC01/AC04 and
+REQ-QML-017-AC02/AC04. The current construction negative control proves safe
+rejection, not successful independent IDs. The increment's producer/consumer/
+update acceptance tests must be implemented with that correction.

@@ -216,3 +216,19 @@ and publication contracts. They do not introduce a logger or success warning.
 Recovery is correction of source/provenance followed by ordinary update; retries
 do not grant identity. Policy 8 forces old derived overlays to refresh. Actual
 analysis/write failures retain the previous four durable graph products.
+
+## Native type authority (INC-QML-19)
+
+The type index retains `native_type_expression_unsupported`,
+`native_type_binding_ambiguous`, `native_type_binding_conditional`,
+`native_type_alias_cycle_or_limit`, `native_type_alias_unsupported`,
+`native_type_declaration_not_visible` and `native_type_included_alias_unavailable`
+reasons. Registrations retain unavailable type evidence; event sites retain
+unresolved endpoint authority. Corrupted accepted alias/include transport raises
+`QT_METADATA` instead of selecting a global target. Existing Qt diagnostic and
+failed-publication contracts apply; no separate logger or execution is added.
+
+Construction ancestry rejection remains a source parenting-unavailable result.
+It preserves accepted registration/member facts while refusing an unproved child
+tree. A shadowed findChild filter retains `find_child_type_unsupported`. Correct
+the source/provenance and run ordinary update; policy 9 refreshes old overlays.

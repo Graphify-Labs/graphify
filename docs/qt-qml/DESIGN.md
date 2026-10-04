@@ -737,3 +737,33 @@ factory/member identities and runtime object lifetime are outside this profile.
 The continuing construction review rejects unproven/widget QObject ancestry
 without changing native member visibility. Both seams are source-authority checks
 under D17 and the existing acceptance IDs.
+
+## Lexical native types and construction ancestry (INC-QML-19)
+
+`NativeTypeScope` owns an immutable accepted-file type index. Local, class and
+namespace scopes, declaration order, simple using/typedef chains and namespace
+aliases resolve literal class spellings against accepted complete definitions.
+Unknown, duplicate, conditional, cyclic, unsupported or later declarations block
+outer lookup instead of lending a global class identity. Parameters use their
+declaration position; local variables and member pointers use their owning source
+positions. Emission, connect/disconnect and registrations share this authority.
+
+`type_alias` and literal `type_include` facts preserve original source ownership.
+`IncludedAliasShadows` walks only accepted explicit header paths, with a 128-header
+bound; it validates provenance and blocks outer fallback for unavailable imported
+aliases. It reads no new includes and does not execute preprocessing. Positive
+cross-file alias target resolution, using-namespace directives, templates and SDK
+type discovery remain excluded. Cold/full and fresh-header borrowed-context paths
+publish the same source-owned facts without mutating borrowed nodes.
+
+The native class producer adds canonical base names/status using the same lexical
+type index. Construction lookup requires complete accepted source/class identity,
+matching original spans and proven non-widget QObject ancestry; unknown external
+bases, widget subclasses, local QObject shadows or corrupted proof cannot supply
+parenting. Native member visibility remains an independent contract. The supported
+findChild QObject* filter also requires unshadowed SDK type identity.
+
+Policy 9 refreshes old derived overlays; AST schema 7 is unchanged. Alias facts
+are additive and graph persistence remains owned by existing manual/watch writers.
+The class, alias, variable, event and registration collectors each remain under
+300 physical lines. No compiler, Qt SDK or corpus execution is introduced.

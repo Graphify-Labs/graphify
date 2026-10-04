@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from graphify.extractors.qt_cpp_syntax import walk
+from graphify.extractors.qt_cpp_type_scope import NativeTypeScope
 
 
 def simple_reference(value):
@@ -27,12 +28,14 @@ def _name(unit, syntax):
     return unit.text(syntax) if syntax.type == "identifier" else ""
 
 
-def variables_at(unit, mapping, position):
+def variables_at(unit, mapping, position, *, type_scope=None):
     """Parameters/local explicit types are authoritative only within their owner."""
     owner = mapping.owner_at(position)
     if not owner:
         return {}
-    variables = {parameter["name"]: type_name(parameter["type"])
+    types = type_scope if type_scope is not None else NativeTypeScope(unit, mapping)
+    # Parameter types belong to their declaration, before any body-local alias.
+    variables = {parameter["name"]: types.resolve(type_name(parameter["type"]), owner["span"]["start_byte"], owner=owner)
                  for parameter in owner.get("parameters", []) if parameter.get("name")}
     enclosing = mapping.class_at(position)
     # A source-proven constructor callable may still lack an authorized class
@@ -57,7 +60,7 @@ def variables_at(unit, mapping, position):
         if syntax.type in {"parameter_declaration", "optional_parameter_declaration"}:
             parameter = _name(unit, syntax.child_by_field_name("declarator"))
             if parameter:
-                variables[parameter] = type_name(unit.field(syntax, "type"))
+                variables[parameter] = types.resolve(type_name(unit.field(syntax, "type")), syntax.start_byte, owner=owner)
         if syntax.type == "declaration":
             name, value = _name(unit, syntax.child_by_field_name("declarator")), unit.field(syntax, "type")
             if not name:
@@ -68,7 +71,7 @@ def variables_at(unit, mapping, position):
                 initial = unit.field(declarator, "value") if declarator else ""
                 match = re.fullmatch(r"new\s+([A-Za-z_]\w*(?:::\w+)*)\s*(?:\([^;]*\)|\{[^;]*\})?", initial)
                 declared = match[1] if match else ""
-            variables[name] = declared
+            variables[name] = types.resolve(declared, syntax.start_byte, owner=owner) if declared else ""
         elif syntax.type in {"assignment_expression", "update_expression"}:
             left = syntax.child_by_field_name("left") or syntax.child_by_field_name("argument")
             name = unit.text(left) if left else ""

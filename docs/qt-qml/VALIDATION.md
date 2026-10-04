@@ -1255,3 +1255,33 @@ Plan review keeps factory/member provider admission, inherited endpoints and
 overloads in INC-QML-08/11/15. The observed widget construction counterexample is
 assigned to INC-QML-19's canonical-base integration under the existing receiver
 acceptance IDs. No new increment is needed for these bounded scope corrections.
+
+## INC-QML-19 lexical aliases and native construction authority
+
+Ordinary collected tests promote A13, accepted-header shadows, comma-separated
+typedefs and source-local using/namespace aliases. Header targets remain
+unavailable; no preprocessing or SDK discovery is claimed. Widget/unknown-base
+construction, corrupt native proof and shadowed QObject filters keep no target.
+
+| Executed boundary | Result |
+| --- | --- |
+| Native aliases, lifecycle, existing events/registration/provider selection | 84 passed, 19.60 seconds; no skips |
+| Native construction, receiver and real lifecycle selection | 88 passed, 20.09 seconds; one existing Hypothesis warning |
+| QObject filter shadow RED → GREEN | Prior installed INC-QML-18 package: three false persisted targets, two controls pass; current source: five pass |
+| Reviewed wheel and separately installed host, pinned test dependencies | 185 passed, 43.86 seconds; no skips or failures |
+| Wheel SHA256 | `aea6cdad6126dd15e7552a5afb6800134a40b556b134f1e2df99e7912d6614a0` |
+| Reviewed source/wheel/installed Python payload | 159 modules byte-equal; zero mismatches |
+| Focused Ruff / explicit-runtime Pyright | Passing; zero errors/warnings |
+
+The reviewed staged artifact excludes pending INC-QML-20 loader changes. Package
+proof imports the installed wheel before test sources; pinned test dependencies
+are reused, with no new clean-extra/native/other-platform/hosted result. Policy 9
+refreshes old Qt overlays; AST schema 7 remains compatible. Current full
+contribution gates follow at INC-QML-20.
+
+Native class proof exposed an independent generic producer collision: global Base
+and Public::Base in one file share a canonical ID. An ordinary negative control
+retains ambiguity; separate-file qualified controls pass. INC-QML-21 plans the
+canonical producer correction rather than inventing downstream IDs. Native
+construction rejection does not claim the colliding form works. Wider adoption,
+inherited endpoints and overloads remain in INC-QML-08/11/15.

@@ -6,6 +6,7 @@ import re
 
 from graphify.extractors.qt_cpp_mapping import normalize_type
 from graphify.extractors.qt_cpp_syntax import split_arguments, walk
+from graphify.extractors.qt_cpp_type_scope import NativeTypeScope
 
 _SUPPORTED = {"qmlRegisterType", "qmlRegisterUncreatableType", "qmlRegisterSingletonType",
               "qmlRegisterSingletonInstance", "qmlRegisterAnonymousType"}
@@ -36,33 +37,10 @@ def conditional_offset(unit, byte):
                and node.start_byte <= byte < node.end_byte for node in walk(unit.tree))
 
 
-def _scope(unit, syntax):
-    scopes, parent = [], syntax.parent
-    while parent:
-        if parent.type in {"namespace_definition", "class_specifier", "struct_specifier"}:
-            name = unit.field(parent, "name")
-            if name:
-                scopes.append(name)
-        parent = parent.parent
-    return list(reversed(scopes))
-
-
-def class_target(unit, syntax, raw_type, classes):
+def class_target(unit, syntax, raw_type, classes, *, type_scope=None):
     """Qualified lexical candidates only, never a corpus-wide basename lookup."""
-    raw_type = normalize_type(raw_type).removeprefix("::")
-    if not re.fullmatch(r"[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*", raw_type):
-        return [], "class_expression_unsupported"
-    if "::" in raw_type:
-        wanted = [raw_type]
-    else:
-        scopes = _scope(unit, syntax)
-        wanted = ["::".join(scopes[:count] + [raw_type]) for count in range(len(scopes), -1, -1)]
-    for qualified in wanted:
-        matches = [record for record in classes if record["qualified_name"] == qualified]
-        if matches:
-            ids = {record["node_id"] for record in matches if record["node_id"]}
-            return sorted(ids), "" if len(ids) == 1 else "class_mapping_ambiguous_or_unavailable"
-    return [], "class_not_in_corpus"
+    scope = type_scope if type_scope is not None else NativeTypeScope(unit, classes=classes)
+    return scope.resolve_class(normalize_type(raw_type), syntax.start_byte)
 
 
 def add_macro_registration(mapping, facts, record):
@@ -105,8 +83,9 @@ def add_macro_registration(mapping, facts, record):
     facts.add("registration", name, named["span"], owner=record["node_id"] or None, **fields)
 
 
-def add_literal_registrations(mapping, facts, classes):
+def add_literal_registrations(mapping, facts, classes, *, alias_nodes=None):
     unit = mapping.unit
+    type_scope = NativeTypeScope(unit, mapping, classes=classes, alias_nodes=alias_nodes)
     for syntax in walk(unit.tree):
         if syntax.type != "call_expression":
             continue
@@ -134,7 +113,7 @@ def add_literal_registrations(mapping, facts, classes):
             uri = literal_string(args[0])
             version_args = args[1:2] if fields["anonymous"] else args[1:3]
             raw_name = "" if fields["anonymous"] else literal_string(args[3])
-            ids, reason = class_target(unit, syntax, types[0], classes)
+            ids, reason = class_target(unit, syntax, types[0], classes, type_scope=type_scope)
             if uri and raw_name is not None and all(re.fullmatch(r"\d+", arg) for arg in version_args):
                 fields.update(uri=uri, major=int(version_args[0]), minor=0 if fields["anonymous"] else int(version_args[1]),
                               class_id=ids[0] if len(ids) == 1 else "", generic_target_id=ids[0] if len(ids) == 1 else "",

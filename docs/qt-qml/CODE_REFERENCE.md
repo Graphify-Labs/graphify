@@ -293,3 +293,18 @@ Exact source, lifecycle and reviewed artifact evidence belongs to traceability.
 
 The collector, resolver and test modules stay within 300 physical lines. These
 helpers do not own persistence, execute analyzed code or establish runtime order.
+
+## Lexical native type seams
+
+- `extractors/qt_cpp_type_scope.py::NativeTypeScope` resolves literal native type
+  aliases at exact source positions; `resolve_class` requires accepted identity.
+- `extractors/qt_cpp_type_aliases.py::add_type_dependency_facts` produces original
+  alias/include facts; `IncludedAliasShadows` validates accepted header shadows.
+- `extractors/qt_cpp_variables.py::variables_at` applies the shared type index to
+  parameter/local types. Event and registration collectors consume that evidence.
+- `extractors/qt_cpp_exposure.py::_class_facts` supplies canonical base names;
+  `qt_qml_access_index.py::_native_ancestry` requires accepted non-widget ancestry
+  for child construction. Reflection filter admission uses the same type scope.
+
+Facts remain source-owned, indexes run/unit-owned and persistence caller-owned.
+Imported-header targets remain unavailable rather than falling back globally.

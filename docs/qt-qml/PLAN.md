@@ -1663,7 +1663,7 @@ INC-QML-08/11/15. Exact artifact and lifecycle outcomes belong to validation.
 
 ## INC-QML-19 — Native endpoint type and alias scope
 
-Status: **Planned; reproduced defect, no production correction**. Acceptance:
+Status: **Implemented; final local contribution gates in progress**. Acceptance:
 REQ-QML-008-AC01/AC03 and REQ-QML-016-AC01–AC04. Owners: native type/registration
 integration and endpoint maintainers. Dependency: accepted
 canonical declaration/type spelling and lexical alias characterization.
@@ -1686,6 +1686,23 @@ reviewed installed artifact and current full-suite/lint/type gates. Keep inherit
 ancestor lookup in INC-QML-11 and overload identity in INC-QML-15. Review the plan
 after completion; passing an alias fixture alone does not establish complete C++
 type analysis or Qt runtime equivalence.
+
+Source-local simple using/typedef and namespace aliases now bind to canonical
+accepted classes in lexical scope. Comma-separated typedefs retain every shadow.
+Explicit accepted-header include closure blocks an unavailable alias target from
+falling back to a global class; it does not preprocess or resolve header targets.
+Alias-only accepted headers participate in shared Qt invalidation. Conditional,
+cyclic, conflicting, corrupted and unsupported forms keep no guessed endpoint.
+
+Canonical base names also complete the continuing INC-QML-17 construction guard:
+only proven non-widget QObject ancestry can authorize a native child tree.
+Source-defined QObject shadows and unknown/widget bases remain unavailable.
+The bounded findChild QObject* filter likewise rejects lexical/native shadows.
+Policy 9 refreshes derived facts; AST schema 7 and graph relationships remain
+compatible. Exit review adds INC-QML-21 for reproduced same-file qualified class
+identity collisions. Accepted-header positive type resolution
+is explicitly excluded, and broader inheritance/overload/adoption scope remains
+INC-QML-08/11/15. INC-QML-20 follows without a pause.
 
 ## INC-QML-20 — Literal loader provenance coverage
 
@@ -1712,3 +1729,28 @@ contribution gates. Document policy/cache invalidation as applicable. loadData,
 setData, staged creation and other omitted families in the mechanism matrix are
 outside this bounded increment until explicitly accepted. Review the plan at exit;
 passing these two routes does not close all Qt/QML API gaps.
+
+## INC-QML-21 — Qualified native class identities
+
+Status: **Planned; reproduced canonical ID collision**. Acceptance:
+REQ-QML-008-AC02, REQ-QML-016-AC01/AC04 and REQ-QML-017-AC02/AC04.
+Owner: generic C++ identity/canonicalization maintainer. Dependency: characterize
+the existing generic producer, native mapping and sanitation/export ID contracts.
+
+Distinct qualified classes with the same basename in one accepted source file
+must retain separate canonical identities. A global Base and Public::Base
+currently collide, causing accepted class proof to become ambiguous. Preserve
+forward/definition/header matching and reject actually conflicting definitions;
+never reconstruct an identity in a downstream Qt resolver to bypass the producer.
+
+The matrix includes global/namespaced/nested same-basename definitions, references
+before/after definitions, repeated forward declarations, separate-file controls,
+unrelated C++/language regressions and original BOM/CRLF/Unicode spans. Verify
+source/native containment, aliases, registration, event endpoints and construction
+through build/sanitation/export/reload/query/affected and cold/warm/manual/watch.
+Require stale-node/edge removal, compatibility/migration policy, actual failed
+publication retention/retry and reviewed installed artifact evidence.
+
+This increment remains outside the completed INC-QML-17–20 correction scope.
+Current source acceptance keeps the ambiguous identity unresolved; the rejection
+does not establish successful support for the colliding class form.
