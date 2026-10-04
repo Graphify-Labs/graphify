@@ -545,3 +545,26 @@ artifact evidence belongs to traceability/validation. Current navigation/selecti
 tests pass 60 cases, including 24 independent axis/scale/view variants. The source,
 wheel and isolated installation contain 156 byte-equal Python payloads. No browser
 visual or native-device proof is inferred from the recorded camera/network harness.
+
+## D17 — Source authority precedes cross-language joins
+
+INC-QML-17–20 retain one run-owned index and the existing scratch/publication
+boundary. C++ reflection uses the receiving QObject's accepted members, not QML
+lexical fallback. Child lookup requires accepted construction-owner evidence and
+search depth; explicit or possible parenting changes retain uncertainty. This is
+separate from QQuickItem's visual parent and from runtime ownership claims.
+
+Loads, contexts and handles require source declaration identity and supported
+lexical lifetime. Native aliases require the declaration visible at the type's
+own source location. Literal constructor/loadUrl routes reuse existing component
+admission. Matching text alone grants no object, type or provider authority.
+Unknown or conflicting evidence remains unresolved rather than selecting a
+convenient global or enclosing declaration. The alternative of component-wide or
+function-wide name matching produced the reproducible wrong targets in A10–A13.
+
+The runtime remains Python and does not execute Qt/QML input. Additive source
+metadata retains original spans and existing IDs; analysis policy epochs retire
+stale derived relationships at unchanged package versions. AST schema 7 remains
+under its existing owner because accepted Qt inputs bypass that syntax cache.
+Requirements and the correction matrix define acceptance; validation and
+traceability record executed source, update, consumer and reviewed artifact proof.

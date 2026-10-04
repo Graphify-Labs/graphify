@@ -261,3 +261,21 @@ locally. The API accepts optional `fresh_ast_ids=()` and returns derived nodes/
 edges; starting node/edge-object identities authorize replacement publication
 without depending on append offsets. Exact criterion evidence and local limits
 remain in validation/traceability.
+
+## Receiver authority seams (INC-QML-17)
+
+`qml_declarations.Declarations` records construction owner/scope/kind and possible
+parenting-change spans independently of lexical and visual-parent fields.
+`QtQmlAccessIndex` validates source declaration containment, source spans, supported
+QObject construction types and component boundaries, then searches only accepted
+descendants at the requested depth. Its member interface delegates to receiver
+member traversal, including accepted native provider views, without lexical-root
+fallback. Readonly writes and unsupported type filters have explicit no-target
+outcomes. The collector retains setParent attempts and the resolver invalidates
+only an established receiver's component tree.
+
+`QtQmlBridgeIndex` assigns module bounds after accepted native provider admission;
+rejected gadgets cannot create an empty namespace that crashes a join. Existing
+scratch publication, native endpoint roles and graph direction are retained.
+Policy 7 refreshes unchanged accepted inputs; AST schema 7 remains unchanged.
+Exact source, lifecycle and reviewed artifact evidence belongs to traceability.

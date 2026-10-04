@@ -1185,3 +1185,43 @@ retained test assertions are restored keeps the local graph current.
 The increment review adds no further scope. Broader adoption, inherited endpoints
 and generic overload parity remain with INC-QML-08/11/15, and native browser/device,
 other-platform and hosted proof remain unverified system gaps.
+
+## INC-QML-17 receiver ownership and construction trees
+
+The original A10/A11 production probes reproduce five failures and one retained
+positive before correction. Ordinary collected regressions now cover receiving
+object members, accepted source/native inheritance, readonly rejection,
+recursive/direct-only QObject child lookup, duplicates, unknown/template types,
+parenting changes, corrupt construction proof and unproved template casts.
+The supported findChild type filter is exact `QObject*`; other casts remain
+explicitly unsupported. QML lexical expression lookup remains unchanged.
+
+The new native negative matrix also exposed a bounds-only native module namespace:
+a rejected gadget supplied version bounds before provider admission, causing a
+join exception. Bounds now belong only to accepted QObject providers. The plain
+gadget regression passes without weakening its no-target assertion. The existing
+reverse-update fixture now explicitly imports QtQml for its property-held QtObject;
+all original member, direction, removal and parity assertions remain intact.
+
+| Executed boundary | Result |
+| --- | --- |
+| Ordinary receiver/access/lifecycle source selection | 58 passed, 11.72 seconds; one existing Hypothesis warning |
+| Reviewed wheel, separately installed host package and reused pinned test dependencies | 98 passed, 19.03 seconds; no skips or failures |
+| Wheel SHA256 | `d2c6d9ac3d17e66cdc750af46ab138862846266bb77ecdb3aa2667087e18b363` |
+| Reviewed source/wheel/installed Python payload | 156 modules byte-equal, zero mismatches |
+| Real manual/watch lifecycle | Eight cases cover cold/warm parity, member/tree edits, stale-edge removal, policy upgrade, parse/join/actual replacement failure retention, repair and no-change repeat |
+| Focused Ruff / explicit-runtime Pyright | Passing; zero type errors/warnings |
+
+Artifact verification imports the separately installed wheel before pytest can
+prepend the reviewed test tree, then exercises real extract/build/export/CLI/watch
+and directed affected loading. It reuses the pinned test/parser dependencies;
+it is not a new core-only, clean-extra, other-platform or hosted installation lane.
+Policy 7 forces unchanged Qt inputs to refresh; AST schema 7 is unchanged.
+The index/declaration/test owners measure 194/157/224 lines, respectively, under
+their 300-line ceilings. Full current contribution gates are executed at the
+INC-QML-20 integration boundary. Final aggregate evidence does not substitute for
+the exact acceptance mappings in traceability.
+
+The plan review retains INC-QML-08/11/15 and proceeds to INC-QML-18. No additional
+increment is required by the bounded receiver correction. Dynamic Qt runtime
+parenting, arbitrary casts and unavailable platform/system proof remain explicit.

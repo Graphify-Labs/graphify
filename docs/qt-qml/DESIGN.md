@@ -633,6 +633,31 @@ full generic overload graph parity are unverified. A separate characterized
 producer/identity change must define compatibility and migration before correcting
 that ownership boundary. Native file-context parity is not evidence of that fix.
 
+## Semantic correction acceptance matrix (INC-QML-17–20)
+
+Status: implementation and local revalidation in progress. These corrections
+retain the existing extraction, scratch-join and publication owners. No corpus
+code, build hook, QML engine or plugin executes. Receiver members belong to the
+receiving object and accepted type; source construction and search depth constrain
+child lookup. Engine/provider joins require declaration identity. Native aliases
+require lexical declaration authority. Literal loaders share accepted project
+component resolution without making runtime execution claims.
+
+| Increment / acceptance | Positive boundary | Rejection and failure boundary |
+| --- | --- | --- |
+| INC-QML-17 / REQ-QML-017-AC02/AC04 | Own/inherited members, receiver-relative recursive/direct children, exact byte spans | Root lexical fallback, siblings, duplicates, dynamic options and unsupported/reparented trees cannot supply a target |
+| INC-QML-18 / REQ-QML-017-AC03/AC04 | One exact source engine/component declaration and typed provider | Disjoint/nested names, reassignment, conditional exposure, aliases and unknown lifetime cannot establish shared identity |
+| INC-QML-19 / REQ-QML-008-AC01/AC03; REQ-QML-016-AC01–AC04 | Direct native types and proved literal aliases retain canonical endpoints and distinct event mechanisms | Shadowed globals, cycles, conflicts, unsupported aliases and incompatible endpoint roles cannot satisfy a join |
+| INC-QML-20 / REQ-QML-017-AC01/AC04 | Literal engine URL constructor and component loadUrl/create retain component/root provenance | Computed URLs, unsupported overloads, duplicate/reassigned loaders and unavailable resources remain uncertain |
+
+Each correction requires raw JSON direction, query/affected, cold/warm and actual
+manual/watch edit/removal parity. Policy upgrades must reanalyze unchanged inputs;
+actual parse, join or publication failure must retain prior durable products and
+allow corrected retry. Existing atomic publication and diagnostics are authoritative;
+these helpers introduce no new persistence boundary. Reviewed wheel and full
+contribution checks are final local gates. Native Qt/browser/platform, hosted
+publication and broader API-family proof remain distinct evidence gaps.
+
 ## Temporary middle-button camera navigation (INC-QML-16)
 
 Status: **Locally verified at emitted-script and reviewed installed-artifact

@@ -1,7 +1,7 @@
 """Lexical QML declaration scopes; grouped properties are not instances."""
 from __future__ import annotations
 
-from graphify.extractors.qml_facts import FactBuilder, field, make_scope_key, text
+from graphify.extractors.qml_facts import FactBuilder, encode_metadata, field, make_scope_key, qml_metadata, span, text
 from graphify.extractors.qml_literals import literal_fields
 
 
@@ -36,6 +36,7 @@ class Declarations:
                                       component_key=component_key, type_name=field(syntax, "type_name", self.source),
                                       singleton=singleton)
                 self.object(syntax, component, component_key, "", 0)
+        self._construction_mutations()
         return file
 
     def object(self, syntax, owner, component_key, parent_scope, ordinal, context_key=""):
@@ -56,6 +57,9 @@ class Declarations:
         node = facts.add(kind, type_name if group else object_id or type_name, syntax, owner,
                          semantic_key=anchor, component_key=component_key,
                          object_scope_key=scope, parent_scope_key=parent_scope,
+                         construction_parent_scope_key=parent_scope if not group else "",
+                         construction_parent_kind=("property" if qml_metadata(owner).get("kind") == "property" else
+                                                   "binding" if context_key.startswith("binding:") else "default") if parent_scope else "root",
                          type_name=type_name, object_id=object_id)
         self.objects.append((syntax, node))
         # Component templates encapsulate their body IDs. Runtime creation
@@ -116,3 +120,38 @@ class Declarations:
         for ordinal, syntax in enumerate(objects):
             if syntax.type == "ui_object_definition":
                 self.object(syntax, owner, component, scope, ordinal, context_key=slot)
+
+    def _construction_mutations(self):
+        """Creation ownership is separate from visual parent and runtime parenting.
+
+        Qt's non-widget object creator supplies a parent for nested creations,
+        including property values. It does not instantiate Component templates.
+        Explicit parent bindings/writes make that bounded tree uncertain; retain
+        their original evidence without evaluating a binding or JavaScript.
+        """
+        mutations = {}
+        for syntax, node in self.objects:
+            component = qml_metadata(node)["component_key"]
+            initializer = syntax.child_by_field_name("initializer")
+            pending = list(initializer.named_children) if initializer else []
+            while pending:
+                child = pending.pop()
+                if child.type in {"ui_object_definition", "ui_inline_component"}:
+                    continue
+                target = child.child_by_field_name("left") or child.child_by_field_name("argument")
+                changed = child.type == "ui_binding" and field(child, "name", self.source).split(".")[-1] == "parent"
+                if child.type in {"assignment_expression", "augmented_assignment_expression", "update_expression"} and target:
+                    changed = (target.type == "identifier" and text(target, self.source) == "parent" or
+                               target.type == "member_expression" and field(target, "property", self.source) == "parent" or
+                               target.type == "subscript_expression")
+                if changed:
+                    evidence = mutations.setdefault(component, [])
+                    evidence.append(span(child))
+                    if len(evidence) > 50:
+                        raise ValueError("QML_LIMIT: construction mutation evidence exceeds supported 50")
+                pending.extend(child.named_children)
+        for _, node in self.objects:
+            md = qml_metadata(node)
+            if md["component_key"] in mutations:
+                node["metadata"]["qml"] = encode_metadata({**md, "construction_parent_dynamic": True,
+                                                          "construction_parent_mutation_spans": mutations[md["component_key"]]})

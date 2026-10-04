@@ -1587,7 +1587,7 @@ partial and INC-QML-11/15 planned; camera persistence is outside this contract.
 
 ## INC-QML-17 — Receiver-owned reflection and child lookup
 
-Status: **Planned; reproduced defects, no production correction**. Acceptance:
+Status: **Implemented; final local contribution/artifact gates in progress**. Acceptance:
 REQ-QML-017-AC02/AC04. Owner: reverse-access resolver maintainer. Dependency:
 the current access index and public A10/A11 probes in the follow-up audit.
 
@@ -1609,6 +1609,17 @@ artifacts, existing QML lexical-expression behavior preserved, unrelated-languag
 regressions and current full contribution gates. Record diagnostic reasons and any
 schema/policy invalidation before retaining old overlays. Review the plan again
 after implementation; this increment does not close INC-QML-08/11/15/18/19.
+
+The implementation separates receiver member lookup from lexical lookup and
+retains source construction evidence independently of visual-parent semantics.
+Known QtQml/QtQuick QObject types and accepted source/native QObject base chains
+authorize the bounded tree; unknown/custom parenting and templates do not.
+Recursive/direct-only options, duplicate names, source proof corruption and
+readonly writes have ordinary collected regressions. Real manual/watch member
+and tree edits, policy refresh, parse/join/replacement retention and retry pass
+eight lifecycle cases. Exact final source/artifact evidence remains in validation.
+Exit review adds no new increment: broader API, provider, ancestor and overload
+gaps already have separate recorded scope. INC-QML-18 follows without a pause.
 
 ## INC-QML-18 — Lexical engine and provider identity
 

@@ -15,7 +15,7 @@ from graphify.extractors.qt_cpp_syntax import QtCppError, read_cpp
 from graphify.extractors.qt_cpp_variables import simple_reference, variables_at
 
 _METHODS = {"load", "loadFromModule", "setSource", "create", "createWithInitialProperties", "rootObjects", "rootObject",
-            "findChild", "property", "setProperty", "invokeMethod", "read", "write", "setContextProperty", "setContextObject", "setInitialProperties"}
+            "findChild", "property", "setProperty", "setParent", "invokeMethod", "read", "write", "setContextProperty", "setContextObject", "setInitialProperties"}
 _LOADERS = {"QQmlApplicationEngine", "QQmlEngine", "QQmlComponent", "QQuickView"}
 
 
@@ -61,6 +61,11 @@ def _site(facts, unit, mapping, call):
                   engine_reference=engine, engine_type=variables.get(engine, ""),
                   exposed_name=literal_string(args[0]["text"]) if args and method == "setContextProperty" else None,
                   provider_reference=provider, provider_type=variables.get(provider, ""), operation=method)
+    elif method == "setParent":
+        # An observed parent mutation cannot establish a static QObject tree.
+        # Keep its source occurrence for conservative child-lookup rejection.
+        facts.add("qml_parent_mutation", method, call["span"], call["owner"].get("node_id"),
+                  **common, operation=method)
     elif method in {"findChild", "property", "setProperty", "invokeMethod", "read", "write"}:
         if method == "invokeMethod" or call["callee"] in {"QQmlProperty::read", "QQmlProperty::write"}:
             if method == "invokeMethod" and call["callee"] != "QMetaObject::invokeMethod":
@@ -69,9 +74,16 @@ def _site(facts, unit, mapping, call):
             name = literal_string(args[1]["text"]) if len(args) > 1 else None
         else:
             role, name = "variable", literal_string(args[0]["text"]) if args else None
+        # Only the default and exact documented enum options prove lookup depth.
+        # Computed flags and unsupported overloads must not silently recurse.
+        option = args[1]["text"].strip() if method == "findChild" and len(args) == 2 else "" if len(args) == 1 else "unsupported"
+        depth = {"": "recursive", "Qt::FindChildrenRecursively": "recursive", "Qt::FindDirectChildrenOnly": "direct"}.get(option, "unsupported")
+        callee = unit.code[call["start_byte"]:call["end_byte"]].split(b"(", 1)[0]
+        child_type_supported = bool(re.search(rb"findChild\s*<\s*(?:::)?QObject\s*\*\s*>\s*$", callee))
         facts.add("qml_access", method, call["span"], call["owner"].get("node_id"), **{**common, "receiver_reference": receiver,
                   "receiver_assignment_byte": last_assignment(unit, call["owner"], receiver, call["start_byte"])},
-                  operation=method, lookup_name=name, handle_role=role)
+                  operation=method, lookup_name=name, handle_role=role,
+                  **({"find_child_options": depth, "find_child_type_supported": child_type_supported} if method == "findChild" else {}))
 
 
 def _component_constructors(unit, mapping, facts):

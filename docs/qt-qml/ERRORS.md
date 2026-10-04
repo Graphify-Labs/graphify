@@ -179,3 +179,24 @@ products under the existing guards. Stable new reasons/codes, severity, owning
 boundary and retry behavior must be specified and tested before implementation
 claims. Native browser/device gaps have their own
 [system review procedure](VIEWER_SYSTEM_REVIEW.md), without fabricated graph errors.
+
+## Receiver-owned coverage (INC-QML-17)
+
+The reverse-access index retains successful targets only for accepted receiving
+objects and member roles. Unsupported search flags use
+`find_child_options_unsupported`; missing or rejected construction evidence uses
+`construction_parent_evidence_missing`, `construction_parent_unestablished` or
+`object_parenting_unestablished`; missing descendants retain
+`object_name_unavailable`. Duplicate accepted descendants remain ambiguous.
+Possible QML parenting changes use `component_parenting_mutated`; observed C++
+setParent attempts retain `runtime_parent_mutation` source sites and invalidate
+only an established receiver's component tree. Readonly writes retain
+`readonly_property`. These are bounded coverage reasons under the existing
+resolution contract, not new parser errors or runtime validation.
+
+Accepted member access preserves property read/write versus invokable-call
+direction and native endpoint roles. Unknown source ownership retains no guessed
+edge. Genuine parse/join failures still use the existing stage guards; an actual
+graph replacement failure preserves accepted graph, manifest, root and Qt stamp.
+Repair/retry uses the normal update/watch sequence. Policy 7 refreshes unchanged
+accepted Qt inputs; no writer, schema migration or corpus execution is introduced.

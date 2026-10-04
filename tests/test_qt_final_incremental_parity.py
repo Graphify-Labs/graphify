@@ -175,7 +175,9 @@ def access_facts(graph):
 @pytest.mark.parametrize("operation", ["manual", "watch"])
 def test_qml017_ac04_qml_member_edit_refreshes_unchanged_reverse_cpp_access(tmp_path, monkeypatch, operation):
     source = project(tmp_path)
-    source.write_text('import Public.Tools 1.0\nService { property string title: "hello"; '
+    # The property-held QtObject needs an explicit accepted builtin import;
+    # the custom module alone cannot authorize its QObject construction type.
+    source.write_text('import Public.Tools 1.0\nimport QtQml\nService { property string title: "hello"; '
         'function refresh() { fetch() } property int observed: backend.status; '
         'property QtObject child: QtObject { objectName: "details"; property int count: 1 } }\n', encoding="utf-8")
     access = tmp_path / "access.cpp"
