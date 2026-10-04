@@ -1359,8 +1359,13 @@ _CPP_CONFIG = LanguageConfig(
     # set of enumerators. Its name and body sit on the same `name`/`body` fields
     # as struct_specifier (type_identifier + enumerator_list), so it gets a node
     # and a body walk; the enumerators are emitted by _cpp_extra_walk (the C++
-    # parity of Java #1719 / Swift / Scala enums).
-    class_types=frozenset({"class_specifier", "struct_specifier", "enum_specifier"}),
+    # parity of Java #1719 / Swift / Scala enums). union_specifier is likewise a
+    # class-like container with the identical name/body fields (type_identifier +
+    # field_declaration_list), so a `union { ... }` becomes a type node with its
+    # data members instead of being dropped along with everything it declares.
+    class_types=frozenset({
+        "class_specifier", "struct_specifier", "enum_specifier", "union_specifier",
+    }),
     function_types=frozenset({"function_definition"}),
     import_types=frozenset({"preproc_include"}),
     call_types=frozenset({"call_expression"}),
