@@ -1,5 +1,10 @@
 # Executed increments
 
+The [follow-up audit](FOLLOWUP_AUDIT.md) reproduces current receiver, child-lookup,
+engine and alias false positives under existing REQ-QML-016/017 criteria.
+Historical increment results below retain their original bounded profile;
+INC-QML-17/18/19 corrections and their revalidation are not implemented.
+
 <a name="qml-00"></a>
 
 ## INC-QML-00

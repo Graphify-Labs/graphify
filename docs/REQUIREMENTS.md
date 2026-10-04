@@ -37,6 +37,17 @@ retroactively broaden the original seventeen requirements and sixty-eight criter
 
 ## Requirement catalog
 
+The [follow-up audit](qt-qml/FOLLOWUP_AUDIT.md) reproduced wrong native alias,
+reflective-member, child-lookup and engine-provider targets. REQ-QML-016-AC02/AC03/
+AC04, REQ-QML-016-AC01, REQ-QML-008-AC01/AC03 and REQ-QML-017-AC02/AC03/AC04
+are **Partially verified; new cases fail**.
+Original fixture passes remain evidence for their recorded profiles, not these
+new boundaries. INC-QML-17/18/19 own correction and revalidation; no requirement
+or criterion is renumbered and no acceptance is weakened.
+REQ-QML-017-AC01/AC04 also have reproduced literal engine-constructor and component
+loadUrl omissions, assigned to INC-QML-20. The [API mechanism matrix](qt-qml/QT_API_COVERAGE.md)
+distinguishes these omissions from explicit exclusions and generic extraction.
+
 Each criterion belongs to the requirement named in its ID. Criteria without
 executed evidence in IMPLEMENTATION.md remain **Not executed**. Verification owners
 and coverage gaps are assigned in [tests/TRACEABILITY.md](../tests/TRACEABILITY.md).
@@ -303,7 +314,7 @@ Qt C++ signals, slots, emissions and signal connections retain their meta-object
 
 1 - Fixtures using `signals`, `Q_SIGNALS`, `Q_SIGNAL`, slot access sections, `Q_SLOTS` and `Q_SLOT` retain member signatures/kinds and source spans; `emit`/`Q_EMIT` link the originating code to the declared signal without inventing immediate receiver calls. A forward declaration does not obscure the unique complete class or exact canonical header/implementation method that owns the emission. Supported source-visible inherited signals retain their declaring endpoint through multi-level base chains; incomplete or ambiguous ownership remains unresolved. (`REQ-QML-016-AC01`)
 
-2 - Member-pointer, explicit overload-selector/cast, signal-to-signal, functor/lambda and legacy `SIGNAL`/`SLOT` connect fixtures resolve the expected sender/signal/receiver/callable endpoints from typed or signature evidence, including compatible ordinary member targets and supported private-slot meta-object connections; same-name ordinary functions do not satisfy a connection by global label. (`REQ-QML-016-AC02`)
+2 - Member-pointer, explicit overload-selector/cast, signal-to-signal, functor/lambda and legacy `SIGNAL`/`SLOT` connect fixtures resolve the expected sender/signal/receiver/callable endpoints from typed or signature evidence, including compatible ordinary member targets and supported private-slot meta-object connections; same-name ordinary functions do not satisfy a connection by global label. Lexical type-alias shadowing cannot select a different global class; unsupported alias evidence remains unresolved. (`REQ-QML-016-AC02`)
 
 3 - Connection records preserve source location, sender/receiver context, literal connection type/flags and conditional registration evidence; ambiguous signatures, dynamic endpoints or unsupported expressions remain unresolved, and declared Auto/Queued/Direct forms do not imply verified runtime thread affinity or delivery order. (`REQ-QML-016-AC03`)
 
@@ -317,11 +328,11 @@ Both integration directions are analyzed: registered or explicitly supplied C++ 
 
 **Acceptance Criteria**
 
-1 - Literal `QQmlApplicationEngine::load`/`loadFromModule`, `QQmlComponent` create and `QQuickView::setSource` fixtures link C++ loader/access sites to the correct QML component using accepted module/resource metadata; unavailable/dynamic URLs and modules retain unresolved reasons without loading an engine. (`REQ-QML-017-AC01`)
+1 - Literal `QQmlApplicationEngine::load`/`loadFromModule`, engine URL construction, `QQmlComponent` literal construction/loadUrl followed by create and `QQuickView::setSource` fixtures link C++ loader/access sites to the correct QML component using accepted module/resource metadata; unavailable/dynamic URLs and modules retain unresolved reasons without loading an engine. (`REQ-QML-017-AC01`)
 
-2 - When the QML object provenance is established, `rootObjects`/`rootObject`, literal `objectName`/`findChild` lookup, supported `property`/`setProperty` and `QMetaObject::invokeMethod` calls resolve to the correct QML object/member and preserve access direction/source evidence, including exact canonical enclosing-method/class ownership for supported header/implementation pairs. QML `id` alone is not treated as a C++ `objectName` lookup key. (`REQ-QML-017-AC02`)
+2 - When the QML object provenance is established, `rootObjects`/`rootObject`, literal `objectName`/`findChild` lookup, supported `property`/`setProperty` and `QMetaObject::invokeMethod` calls resolve to the correct QML object/member and preserve access direction/source evidence, including exact canonical enclosing-method/class ownership for supported header/implementation pairs. Reflective access cannot borrow another object's lexical member; child lookup excludes siblings and honors direct-only depth using accepted parenting evidence. QML `id` alone is not treated as a C++ `objectName` lookup key. (`REQ-QML-017-AC02`)
 
-3 - Connections from declared QML signals to C++ slots/callables, and from exposed C++ signals to QML handlers, resolve in the appropriate object scope; supported literal `setContextProperty`, `setContextObject` and initial-property exposure preserve provider/provenance facts, while conditional or dynamic exposure remains visibly uncertain. (`REQ-QML-017-AC03`)
+3 - Connections from declared QML signals to C++ slots/callables, and from exposed C++ signals to QML handlers, resolve in the appropriate object scope; supported literal `setContextProperty`, `setContextObject` and initial-property exposure preserve provider/provenance facts, while conditional or dynamic exposure remains visibly uncertain. Distinct lexical engine declarations sharing a name cannot share context providers without established identity. (`REQ-QML-017-AC03`)
 
 4 - Duplicate object names, computed lookup/method names and unsupported dynamic creation produce no guessed member target; query/affected and cold/full/incremental comparisons retain both integration directions after QML members, loader metadata, C++ exposure or supported native source-ownership changes, with no evaluated QML or executed plugin code. (`REQ-QML-017-AC04`)
 

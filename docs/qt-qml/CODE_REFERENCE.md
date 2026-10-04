@@ -45,7 +45,8 @@ Revision-specific verification remains in [VALIDATION.md](VALIDATION.md).
 `extract.py` forwards explicit roots, overlays admitted scripts before aggregation,
 then joins QML project and relationship facts after generic resolution. It records
 join failures for publication rejection. Generic JS/C++ owners are preserved;
-no extractor child imports the facade. [DESIGN.md](DESIGN.md) defines the current
+Qt/QML extractor children do not import the facade. The imported Markdown
+extractor's ambient-root exception is recorded in DESIGN.md. [DESIGN.md](DESIGN.md) defines the current
 interfaces and [ERRORS.md](ERRORS.md) owns their diagnostic contracts.
 
 The Qt C++ overlay owns source-local meta-object declarations, emissions,
@@ -61,6 +62,13 @@ ordinary member-pointer receivers.
 
 
 ## Native Qt source owners
+
+Current unresolved semantic seams are `QtQmlAccessIndex.member`/`find_child`
+(INC-QML-17), `qt_context_bindings.resolve_context_bindings` and source-local receiver
+identity (INC-QML-18), and `QtEventIndex.member` plus native type/alias transport
+(INC-QML-19). `qt_cpp_access` loader admission owns the INC-QML-20 omissions.
+[FOLLOWUP_AUDIT.md](FOLLOWUP_AUDIT.md) records production evidence
+and owning acceptance; these are existing owners, not implemented new APIs.
 
 | Boundary | Implemented owner |
 | --- | --- |

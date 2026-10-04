@@ -162,3 +162,20 @@ malformed qrc under force/partial options while retaining graph, manifest, analy
 state and root marker; repaired and repeated updates succeed. Earlier policy-5
 evidence remains tied to its original revision. Continue using the installed artifact's normal
 `graphify update .` workflow after installation rather than editing graph facts.
+
+## Follow-up semantic audit
+
+The [follow-up audit](FOLLOWUP_AUDIT.md) found wrong targets labeled resolved and
+literal loaders omitted from special source facts. Successful publication or an
+absence of parser/join exceptions does not detect those semantic failures.
+INC-QML-17/18/19/20 corrections remain planned. This audit adds no diagnostic code,
+runtime failure policy or persistence bypass.
+
+For each correction, diagnostic review must distinguish an evidenced successful
+target, an unsupported/ambiguous receiver or declaration, a genuinely failed
+analysis, and failed publication/recovery. Unavailable identity retains source
+provenance and no guessed target edge; actual failures retain prior durable
+products under the existing guards. Stable new reasons/codes, severity, owning
+boundary and retry behavior must be specified and tested before implementation
+claims. Native browser/device gaps have their own
+[system review procedure](VIEWER_SYSTEM_REVIEW.md), without fabricated graph errors.

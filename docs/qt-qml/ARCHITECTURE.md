@@ -6,6 +6,12 @@ The baseline/reuse review includes [feature request #1716](https://github.com/Gr
 
 ## Objective and boundaries
 
+The [follow-up audit](FOLLOWUP_AUDIT.md) invalidates broader receiver, engine and
+type-alias scope claims for the reproduced cases at `95adbdc`. Corrective
+INC-QML-17/18/19 preserve this architecture while establishing actual object and
+declaration identity. They remain planned; bounded historical passes do not imply
+those semantic joins are correct.
+
 Extend Graphify's existing deterministic extraction pipeline so an agent can trace a QML component, its imports, property dependencies, handlers, JavaScript helpers, and explicitly exposed C++ API. Make both integration directions first-class: C++ APIs supplied to QML (REQ-QML-008), native Qt C++ signal/slot connections and emissions (REQ-QML-016), and C++ loading and accessing QML object APIs (REQ-QML-017). Keep the implementation suitable for small upstream contributions. Preserve existing public APIs, graph formats, installation behavior, and analysis of other languages.
 
 The default analysis reads source files and declared metadata. It does not instantiate QML, load plugins, run CMake or qmake, execute JavaScript, or require Qt, PySide, PyQt, libclang, a compiler, or Node.js. A locally installed Qt tool can be an optional validation oracle in development or an explicitly selected enrichment adapter later. It is never necessary for ordinary extraction.

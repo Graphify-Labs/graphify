@@ -297,12 +297,18 @@ context and `operation=invokeMethod` retain its reflective mechanism. This categ
 records source intent and does not assert successful runtime invocation or delivery.
 Qt connection flags and conditional registration are source configuration evidence.
 
-Literal loader URLs establish source components; source-local handles establish
-roots and objectName trees. QML id is never an objectName. Known context/initial
-providers are scoped to the exact loaded component, with lexical/local shadowing
-and duplicate exposures retained. All joins borrow prior corpus dictionaries
+Literal loader URLs establish source components; source-local handles model
+roots and objectName lookup. QML id is never an objectName. The follow-up audit
+found that reflective member lookup can fall back to the QML root, child lookup
+can cross the receiver subtree, and distinct same-named engines can share a
+provider. Those cases are incorrect and remain unresolved correction work in
+INC-QML-17/18. Earlier scoped-provider fixtures do not prove these boundaries.
+Duplicate exposures retain uncertainty. All joins borrow prior corpus dictionaries
 read-only. `qml_failures` and `qt_failures` both enter the publication integrity gate.
 No force/partial option can publish an incomplete Qt overlay.
+That integrity gate rejects recorded analysis failures; it does not detect a
+semantically incorrect target labeled resolved. The independent persisted-edge
+probes in [FOLLOWUP_AUDIT.md](FOLLOWUP_AUDIT.md) cover that distinction.
 
 
 INC-QML-05 activates the internally packaged metadata readers at discovery/dispatch.
@@ -530,6 +536,15 @@ graph/manifest/root/Qt state and requires a corrected retry. This is different
 from promising incompatible old-cache retention.
 
 ### Legacy file cohesion exceptions
+
+Inherited dependency exception: `graphify/extractors/markdown.py::_active_scan_root`
+imports the extraction facade and reads `_XAML_ACTIVE_EXTRACT_ROOT`, unchanged
+from imported `0b60d47`. Owner: Markdown extractor maintainer; permitted scope is
+that existing helper only, with no new consumers or ambient state. Exit: a separate
+characterized refactor passes scan root explicitly while preserving vault-link
+fallback, cache lifetime, direct-extractor behavior and parallel-worker semantics.
+Review this exception before changes to either owner; it does not apply to Qt/QML
+extractors or authorize facade imports elsewhere.
 
 | Owner/file | Current measured size / permitted ceiling | Rationale and extraction exit |
 | --- | --- | --- |

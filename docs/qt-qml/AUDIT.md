@@ -8,6 +8,10 @@ The required analysis includes Qt C++ signals, slots, signal emission and connec
 
 ## Baseline and evidence
 
+The [follow-up audit](FOLLOWUP_AUDIT.md) separately inspects implemented Qt/QML
+behavior at `95adbdc` and contribution compliance. This document retains the
+foundation baseline; its planned gaps are not current verification results.
+
 | Item | Audited baseline |
 | --- | --- |
 | Upstream | [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify) |

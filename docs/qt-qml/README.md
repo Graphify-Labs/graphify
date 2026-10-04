@@ -22,6 +22,9 @@ audited again before carrying these conclusions forward.
 | Document | Purpose |
 | --- | --- |
 | [Audit](AUDIT.md) | Observed extension points, gaps, and risks in the baseline |
+| [Follow-up audit](FOLLOWUP_AUDIT.md) | Current scope defects, public reproductions and contribution compliance |
+| [Qt API coverage](QT_API_COVERAGE.md) | Mechanism-based support, exclusions and unverified API families |
+| [Native navigation review](VIEWER_SYSTEM_REVIEW.md) | Physical browser/device acceptance procedure and evidence gap |
 | [Architecture](ARCHITECTURE.md) | Implemented boundaries, future design, support matrix, and ADRs |
 | [Design](DESIGN.md) | Implemented source-fact, resolver, Qt and publication contracts |
 | [Requirements](../REQUIREMENTS.md) | Observable acceptance criteria and status |
@@ -48,8 +51,10 @@ Qt 5.15 is later, separately verified work.
 
 Qt signals, slots, emissions and `QObject::connect` are explicit requirements,
 as is bidirectional QML/C++ integration: C++ APIs supplied to QML and C++ access
-to QML-created objects, signals, properties and methods. Each of the 17 requirements
-has four assigned acceptance criteria, with individual traceability entries.
+to QML-created objects, signals, properties and methods. The current catalog has
+21 requirements and 84 assigned acceptance criteria with individual traceability.
+Original fixture passes do not verify the scope counterexamples in the follow-up
+audit; INC-QML-17/18/19/20 are planned corrections and loader admission work.
 
 The [INC-QML-00 decision](PARSER_DECISION.md) selects the optional, pinned language-pack
 adapter. The source analysis requires no Qt runtime, compiler or JavaScript

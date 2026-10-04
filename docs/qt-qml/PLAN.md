@@ -7,6 +7,13 @@ Status: INC-QML-00 through INC-QML-07 complete for the documented bounded Qt 6/Q
 source profile. All final source, consumer, update and declared hosted artifact gates pass. Executed checks are recorded in
 [VALIDATION.md](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md).
 Commands marked proposed are future verification suggestions, not pass claims.
+The [follow-up audit](FOLLOWUP_AUDIT.md) found four semantic false positives at
+`95adbdc`. INC-QML-17/18/19 correct those cases under existing requirements.
+Affected REQ-QML-016/017 criteria are partial; their original fixture passes do
+not verify the new object/declaration boundaries. Corrections are planned.
+The [Qt API mechanism matrix](QT_API_COVERAGE.md) records supported, excluded,
+generic and omitted families. INC-QML-20 fills two reproduced literal loader
+provenance omissions; the plan does not promise individual whole-SDK semantics.
 Original work-package filenames are historical proposals; actual implemented
 tests and executable verification commands are assigned in validation and traceability.
 
@@ -1577,3 +1584,104 @@ pass. Exact outcomes, reviewed source tree, wheel identity and installed-view
 proof belong to [validation](VALIDATION.md#inc-qml-16-middle-mouse-navigation-and-overview-removal)
 and traceability. No source schema or analysis policy changes. INC-QML-08 remains
 partial and INC-QML-11/15 planned; camera persistence is outside this contract.
+
+## INC-QML-17 — Receiver-owned reflection and child lookup
+
+Status: **Planned; reproduced defects, no production correction**. Acceptance:
+REQ-QML-017-AC02/AC04. Owner: reverse-access resolver maintainer. Dependency:
+the current access index and public A10/A11 probes in the follow-up audit.
+
+Separate C++ QObject member lookup from QML lexical name lookup. Resolve reads,
+writes and reflective calls only against the evidenced receiving object and
+accepted type/inherited members. Restrict findChild to accepted receiver-relative
+QObject parenting evidence, honoring recursive/direct-only options. Unknown
+parenting, dynamic names/options and ambiguous trees remain unresolved.
+
+The acceptance matrix includes own/inherited/root members, absent child members,
+sibling rejection, recursive grandchildren, direct-only rejection, duplicate names,
+unsupported/reparented trees and original spans. Promote A10/A11 probes into normal
+regressions. Verify directed/undirected reload, query/affected, cold/warm/manual/watch
+parity and stale-edge removal after receiver/member/tree changes. Force a real
+analysis/publication failure, preserve prior products and prove repair/retry.
+
+Exit requires all affected cases passing through production and reviewed installed
+artifacts, existing QML lexical-expression behavior preserved, unrelated-language
+regressions and current full contribution gates. Record diagnostic reasons and any
+schema/policy invalidation before retaining old overlays. Review the plan again
+after implementation; this increment does not close INC-QML-08/11/15/18/19.
+
+## INC-QML-18 — Lexical engine and provider identity
+
+Status: **Planned; reproduced defect, no production correction**. Acceptance:
+REQ-QML-017-AC03/AC04, with REQ-QML-008 provider regressions. Owner: context-provider
+integration maintainer. Dependency: characterize existing source-local declaration,
+handle and assignment facts before changing transport or lookup ownership.
+
+Bind loads and context/initial-property providers to the exact engine/component
+declaration and supported lexical lifetime. Same spelling in disjoint/nested blocks
+must not merge engines. Preserve assignment, conditional and unknown-provider
+uncertainty; do not execute source to determine runtime identity.
+
+The matrix includes one-engine success, disjoint/reused names, nested shadowing,
+reassignment, conditional exposure, context aliases, multiple loads and unknown
+ownership. Promote the A12 probe into ordinary regression collection. Verify
+provider/load edits and deletion through cold/warm/full/manual/watch, JSON reload,
+query and affected, with stale-edge removal, forced failure retention and retry.
+
+Exit includes exact spans and stable identities, compatibility/cache migration
+where needed, diagnostic ownership, reviewed installed-wheel proof and full
+contribution gates. Factory/member provider admission remains INC-QML-08; this
+correction must not guess a provider merely to increase coverage. Review and update
+the plan at exit; INC-QML-17 and INC-QML-19 have independent owners.
+
+## INC-QML-19 — Native endpoint type and alias scope
+
+Status: **Planned; reproduced defect, no production correction**. Acceptance:
+REQ-QML-008-AC01/AC03 and REQ-QML-016-AC01–AC04. Owners: native type/registration
+integration and endpoint maintainers. Dependency: accepted
+canonical declaration/type spelling and lexical alias characterization.
+
+Resolve member-pointer/emission endpoints and QML registrations using evidenced
+type/alias declaration identity.
+A local alias cannot select the shadowed global class. Support only proved alias
+forms; rejected, cyclic, conditional, conflicting or unsupported aliases remain
+unresolved. Characterize same-namespace unqualified types alongside qualified
+controls without conflating conservative misses with false-positive targets.
+
+The matrix includes direct class and native-to-QML controls, local and namespace aliases, nested
+shadowing, conflicting/cyclic aliases, ordinary functions, overloaded signals and
+receiver compatibility. Promote A13 into normal regression collection. Preserve
+emission/connect/disconnect distinctions, original spans and canonical endpoints
+through build/reload/query/affected and cold/warm/manual/watch edits/removal.
+
+Exit requires failure retention/retry, policy/cache compatibility as applicable,
+reviewed installed artifact and current full-suite/lint/type gates. Keep inherited
+ancestor lookup in INC-QML-11 and overload identity in INC-QML-15. Review the plan
+after completion; passing an alias fixture alone does not establish complete C++
+type analysis or Qt runtime equivalence.
+
+## INC-QML-20 — Literal loader provenance coverage
+
+Status: **Planned; reproduced omissions, no production correction**. Acceptance:
+REQ-QML-017-AC01/AC04. Owner: native loader collector/integration maintainer.
+Dependency: lexical engine identity contract from INC-QML-18 and current loader,
+resource/module and root-handle interfaces. Characterization may proceed earlier.
+
+Admit literal QQmlApplicationEngine URL construction and QQmlComponent::loadUrl
+followed by create through the same evidenced component/root provenance as the
+existing engine.load and literal component-constructor paths. Preserve constructor
+overload distinctions; nonliteral/unsupported URL/base arguments, conditional
+loads, multiple/reassigned engines and unresolved creation remain uncertain.
+
+The matrix pairs both accepted routes with engine.load controls, computed URLs,
+conflicting sources, ignored/out-of-root paths, malformed input and constructor/
+load argument boundaries. Promote the public loader probe into ordinary test
+collection. Verify source spans, source/class/engine ownership and distinct loader
+facts through build/reload/query/affected and cold/warm/manual/watch edits/removal.
+
+Exit includes stale-edge cleanup, actual failure retention and retry, existing
+loader/module/resource regressions, reviewed installed artifact and current full
+contribution gates. Document policy/cache invalidation as applicable. loadData,
+setData, staged creation and other omitted families in the mechanism matrix are
+outside this bounded increment until explicitly accepted. Review the plan at exit;
+passing these two routes does not close all Qt/QML API gaps.
