@@ -20,7 +20,8 @@ are implemented with local source and reviewed installed-artifact validation. Mi
 cannot be supplied by a same-name header prototype; source containment alone
 does not establish a native endpoint.
 INC-QML-14 membership projection is locally complete and REQ-QML-020 is Verified
-within the bounded static profile with policy 6/schema 7. INC-QML-15 remains planned.
+within the bounded static profile with policy 6/schema 7. INC-QML-15 has bounded local overload implementation; installed integration
+remains pending.
 
 ## Ownership and dependency direction
 
@@ -635,16 +636,40 @@ lines, respectively, all below the 300-line handwritten-file ceiling. Prior
 policy-5/schema-7 proof remains historical for INC-QML-12/13. No browser, new
 hosted, other-platform or executable Qt evidence is inferred from local tests.
 
-## Planned exact overload identity (INC-QML-15)
+## Exact overload identity (INC-QML-15)
 
-The generic C++ producer can collapse multiple constructor overloads into one
-name-based node. Cold building and watch rebuilding can then retain different
-locations for its ordinary file containment edge. This behavior predates the
-constructor proof helper. Its conservative proof guard rejects conflicting spans;
-native source-file links remain exact, but complete generic overload identity and
-full generic overload graph parity are unverified. A separate characterized
-producer/identity change must define compatibility and migration before correcting
-that ownership boundary. Native file-context parity is not evidence of that fix.
+The generic producer owns versioned constructor signatures before node collapse.
+`cpp_constructor_signature` canonicalizes the admitted AST parameter shape and
+limits signatures to 64 parameters and 360 UTF-8 bytes (480 encoded bytes).
+Builtin, self-class and literal QObject types are supported; named aliases,
+templates/dependent types, function pointers, arrays, variadics and conditional
+syntax retain occurrence identity without exact join authority. Value-only CV,
+parameter names/defaults and builtin synonyms normalize; pointer/reference
+shape and pointee CV remain significant. Adding/removing another overload never
+changes an accepted constructor ID.
+
+`cpp_constructor_binding` joins one unique complete class, one exact declaration
+and one definition, preserving original byte spans and definition-file/location.
+Duplicate same signatures/bodies, corrupt transported facts and incompatible
+owners reject native class authority. Inline and out-of-line Qt mapping selects
+the exact accepted signature and occurrence span. A delegating initializer does
+not supply an inferred constructor-call target.
+
+The direct producer stamps bounded `cpp_constructor_types` on its source file:
+literal include delimiters/paths and namespace/class QObject shadows with original
+spans and source size. The corpus validator walks only admitted quoted dependencies
+(maximum 128 files, 50 entries per list); missing/corrupt/ambiguous proof rejects
+SDK signature authority. Potential local angle-include candidates also reject;
+configured compiler include search is not guessed. Existing `_signature` remains
+the ordinary-member compatibility normalizer used by `cpp_member_identity`;
+constructor identity uses the new exact owner. No second mutable cache or parser
+owner is introduced.
+
+[D20](ARCHITECTURE.md#d20--constructor-signatures-authorize-identity-and-joins)
+defines schema 10/policy 14 migration. Real manual/watch signature edits/removal,
+C++-only mismatch and header repair, original BOM/CRLF/Unicode spans, reload/query/
+affected, malformed source and actual read-only/late OS publication failure with
+retry have dedicated regression coverage. Installed integration remains pending.
 
 ## Semantic correction acceptance matrix (INC-QML-17–20)
 
@@ -885,7 +910,7 @@ under its existing owner.
 
 | Touched legacy owner/file | Measured size / ceiling | Cohesion rationale and extraction exit |
 | --- | --- | --- |
-| Generic extractor maintainer: `extractors/engine.py` | 7716 / 7730 physical lines | Narrow producer identity integration within the existing dispatcher; extract C++ ownership separately after characterization under the migration playbook. |
+| Generic extractor maintainer: `extractors/engine.py` | 7720 / 7730 physical lines | Narrow producer identity integration within the existing dispatcher; extract C++ ownership separately after characterization under the migration playbook. |
 | Generic resolver maintainer: `extractors/resolution.py` | 3981 / 4000 | One guarded class/member canonicalization seam; move that responsibility in a separate characterized increment. |
 | Shared writer maintainer: `paths.py` | 577 / 600 | Preserve one OS replace/rollback owner; separate a cohesive writer extraction after failure/ordering characterization. |
 | Update maintainer: `watch.py` | 2487 / 2550 | Cohort integration replaces existing duplicated writes and shrinks the file; separate publication orchestration only after compatibility characterization. |

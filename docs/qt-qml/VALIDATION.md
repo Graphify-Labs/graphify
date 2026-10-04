@@ -1508,3 +1508,41 @@ was lost after a header signal rename; an isolated ordinary-production regressio
 failed **1 case, 0.98 seconds**. INC-QML-28 now owns occurrence admission and its
 separate lifecycle proof. That pending gap prevents whole native criteria from
 being declared Verified on this lookup result alone.
+
+## INC-QML-15 constructor signature identity
+
+The generic producer assigns constructor signature IDs before deduplication.
+Declaration/body joins require exact signature, source-range and complete owner
+proof. Unsupported signatures retain distinct source occurrences and cannot
+borrow another accepted callable. AST schema 10 and Qt policy 14 invalidate
+earlier constructor identities; D20 defines the migration boundary.
+
+The final agent selection passed **156 cases, zero skips, 27.08 seconds** across
+constructor identity/type-authority/update, native consumer and ownership suites.
+An adjacent angle-include alias counterexample first failed **2 cases, 0.97
+seconds** and now rejects possible admitted source shadows. Peer review exposed
+qualified `void` incorrectly normalizing to an empty parameter list: the ordinary
+regression selection first recorded **3 failed, 38 passed, 2.27 seconds**. The
+correction retains the plain-void and pointer/CV distinctions. Integration-owner
+command `python -m pytest tests/test_cpp_overload_identity.py
+ tests/test_cpp_overload_type_authority.py tests/test_cpp_overload_updates.py
+ tests/test_qt_overload_consumers.py tests/test_cpp_constructor_ownership.py
+ tests/test_qt_constructor_ownership.py -q --tb=short` passed **146 cases, zero
+skips, 26.69 seconds**. Subsequent peer source-range rejection is part of this same
+exact-span contract; its final result is recorded with the frozen integration.
+
+Lifecycle checks use actual cache entries and durable products, including
+signature edits/removal, unmatched definitions repaired by header-only changes,
+parse rejection, Windows read-only replacement and repaired retry. A historical
+name-ID fixture migrates unchanged sources through both update modes. Targeted
+Ruff and Pyright pass. A broader pinned-environment compatibility run had one
+missing-YAML-oracle frontmatter failure; this is an environment diagnostic, not
+accepted source behavior. Final full gates and installed proof remain pending.
+
+The promoted source-integrity probes first failed **3 cases, 0.82 seconds**.
+The correction requires unique accepted-file size authority for every class and
+constructor, plus strict original byte/point containment for prototypes and inline
+bodies. It performs no source reread. The eight-module constructor/qualified-ID
+selection passed **172 cases, 27.61 seconds**; final integrity and qualified
+proof/update controls passed **46 cases, 3.72 seconds**, including 14 integrity
+cases and real incomplete/dynamic include controls. Targeted lint and typing pass.

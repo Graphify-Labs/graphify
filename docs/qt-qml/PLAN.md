@@ -48,7 +48,7 @@ INC-QML-13 restores source-site links for accepted utility-member occurrences an
 distinguishes internal community links from external connections. Its affected
 REQ-QML-008-AC02 and REQ-QML-019-AC02 cases are locally verified. INC-QML-14 is
 locally complete and REQ-QML-020 is Verified within its bounded static source profile.
-INC-QML-15 plans exact generic overload identity/location parity; that follow-up
+INC-QML-15 implements bounded generic constructor identity/location parity; its final artifact proof
 remains unimplemented and unverified.
 
 INC-QML-16 is **Locally complete for the emitted/installed HTML consumer profile**.
@@ -1514,7 +1514,7 @@ was required by this review. INC-QML-08 remains partial and INC-QML-11/15 planne
 
 ## INC-QML-15 — Exact constructor-overload identity and location parity
 
-Status: **Planned; not implemented or verified**. Acceptance: existing
+Status: **Implemented; local acceptance passes; artifact integration pending**. Acceptance: existing
 REQ-QML-008-AC02/AC03 and REQ-QML-011-AC01/AC04. Owner: generic C++ producer and
 canonicalization maintainer. Dependency: characterized baseline overload IDs,
 source locations, relationships and compatibility rules. No new requirement ID.
@@ -1538,7 +1538,18 @@ Exit requires exact accepted overloads and their locations to agree across
 cold/warm/full/incremental graphs, stale-edge removal, failure retention and
 corrected retry, with generic call and unrelated-language regressions. Record
 schema/policy migration, reviewed artifact proof and remaining unsupported forms.
-Current native-only source-file parity does not verify this increment.
+The producer now assigns signature IDs before graph collapse. Supported builtin,
+self and evidenced QObject signatures keep their identity when overload neighbors,
+parameter names or defaults change. Unsupported type forms keep occurrence IDs;
+they cannot authorize declaration/body joins. Source-size and containing-class
+proof reject corrupted ranges. AST schema 10 and Qt policy 14 retire earlier IDs;
+[D20](ARCHITECTURE.md#d20--constructor-signatures-authorize-identity-and-joins)
+defines migration and recovery. Local exact-owner, lifecycle and peer regression
+results are recorded in validation. Final artifact proof remains pending.
+
+The exit review found a separate generic function-name omission for reference
+returns. INC-QML-29 owns that producer correction; constructor signature admission
+does not silently widen to arbitrary C++ type equivalence.
 
 ## INC-QML-16 — Middle mouse navigation and Overview removal
 
@@ -1974,3 +1985,26 @@ missing/private/ambiguous targets, and both emission spellings. Exercise C++-onl
 and header-only edits, removal/restoration, cold/warm/manual/watch parity, failed
 publication and corrected retry through installed consumers. Preserve ordinary
 call behavior and do not infer immediate receiver delivery. Review the plan at exit.
+
+## INC-QML-29 — Reference-return callable admission
+
+Status: **Planned; reproduced during typed-provider validation**.
+Acceptance: REQ-QML-008-AC02/AC03, REQ-QML-018-AC02/AC03/AC06 and
+REQ-QML-011-AC01/AC04. Owner: generic C++ declarator producer maintainer.
+Dependency: accepted C++ grammar, original source spans and canonical member join.
+
+A valid reference-return callable retains its generic declaration or definition
+identity. The grammar's reference declarator contains a function declarator without
+a named `declarator` field; the current name walker omits that callable. Qt member
+facts then lack a canonical generic endpoint and correctly remain unresolved.
+Follow the actual declarator structure with a bounded fallback; do not infer names
+from unrelated children or broaden unsupported pointer, alias or runtime forms.
+
+Promote the public opt-in reproduction into ordinary regression coverage with the
+correction. Verify lvalue/rvalue and qualified reference returns, ordinary value
+and pointer controls, malformed/name-ambiguous rejection, exact BOM/CRLF/Unicode
+spans, direct producer/facade/JSON/query/affected and typed-provider consumers.
+Exercise C++-only edits, cold/warm/manual/watch parity, stale-edge removal, real
+publication failure, retained products and repaired retry. Refresh producer and
+derived cache epochs and prove the reviewed installed artifact. Review the plan
+at exit and retain conservative unsupported API shapes.

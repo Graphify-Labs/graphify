@@ -629,3 +629,30 @@ remain owned by their origins. INC-QML-27 maps accepted property notifications t
 real native signals and separates explicit formal parameters from legacy injection.
 The [chapter review](EXPOSURE_CHAPTER_REVIEW.md) and API inventory state exclusions.
 Bounded correctness evidence remains separate from wider adoption and hosted proof.
+
+
+## D20 — Constructor signatures authorize identity and joins
+
+INC-QML-15 assigns constructor IDs in the generic C++ producer before shared
+node deduplication. Every accepted constructor, including a singleton, uses its
+canonical class and versioned exact signature digest. Bounded builtin types,
+self-class types and evidenced literal QObject forms are admitted; names/defaults
+and value-level CV are excluded from type identity, while pointee/reference CV
+and pointer depth remain significant. Unsupported signatures keep distinct
+source occurrence IDs and cannot authorize a native declaration/body join.
+
+The alternative of splitting collapsed nodes in the Qt overlay would leave generic
+calls, source locations, cache and consumers inconsistent. `cpp_constructor_binding`
+owns one corpus join using original declaration/definition/class evidence. Source
+ASTs own bounded includes and QObject shadows; only already admitted dependencies
+participate. An angle include that could refer to admitted local source cannot
+lend SDK signature authority without a proved include search. No compiler or
+build preprocessing runs.
+
+AST schema 10 and Qt policy 14 intentionally invalidate previous constructor
+facts/derived ownership at unchanged package/source versions. Qt corpus updates
+refresh automatically under that policy. Existing generic-only graphs need a
+full `graphify update .` after upgrading; retained cache or watch state is not an
+ID migration oracle. A downgrade requires a fresh rebuild with its matching
+analyzer. Graph serialization schema and unrelated language IDs remain unchanged.
+Installed artifact and final gate evidence are recorded separately in validation.

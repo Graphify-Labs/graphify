@@ -13,7 +13,7 @@ QT_SCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
 QT_NAMED_METADATA = frozenset({"qmldir", "CMakeLists.txt"})
 # Qualified C++ identities, SDK declaration authority and native notification
 # handlers require unchanged-input updates to refresh the derived Qt layer.
-QT_POLICY_VERSION = 13  # Canonical inherited endpoints and source base access require corpus refresh.
+QT_POLICY_VERSION = 14  # Constructor signature migration refreshes unchanged native ownership.
 
 
 def is_qt_metadata(path: str | Path) -> bool:

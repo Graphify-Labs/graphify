@@ -503,3 +503,25 @@ Current adoption criterion count is seven, bringing the catalog to 85 acceptance
 criteria across 21 requirements. Earlier six-criterion counts describe the earlier
 profile. No criterion is renumbered. Runtime execution, arbitrary include search,
 Qt SDK equivalence and other platforms remain outside this bounded static proof.
+
+## Exact constructor overloads
+
+| Acceptance IDs | Exact ordinary production tests | State and boundary |
+| --- | --- | --- |
+| REQ-QML-008-AC02 | `tests/test_cpp_overload_identity.py::test_req_qml008_ac02_overload_producer_ids_spans_and_exact_declaration_merge`; `tests/test_cpp_overload_identity.py::test_req_qml008_ac02_constructor_ids_survive_overload_addition_removal_and_parameter_rename`; `tests/test_cpp_overload_identity.py::test_req_qml008_ac02_distinct_pointer_reference_and_builtin_types_never_collapse`; `tests/test_cpp_overload_type_authority.py::test_req_qml008_ac02_shadow_transport_spans_address_original_bom_crlf_unicode_bytes`; `tests/test_qt_overload_consumers.py::test_req_qml008_ac02_and_qml011_ac01_exact_overload_native_consumers` | Local producer/facade/source/export/query/affected pass; exact accepted signature and original-span profile. Installed integration pending. |
+| REQ-QML-008-AC03 | `tests/test_cpp_overload_identity.py::test_req_qml008_ac03_unsupported_signatures_keep_visible_distinct_occurrences_without_owner`; `tests/test_cpp_overload_identity.py::test_req_qml008_ac03_qualified_void_cannot_authorize_zero_argument_constructor`; `tests/test_cpp_overload_type_authority.py::test_req_qml008_ac03_angle_local_shadow_cannot_grant_sdk_constructor_identity`; `tests/test_cpp_overload_type_authority.py::test_req_qml008_ac03_include_walk_overflow_cannot_hide_sdk_shadow`; `tests/test_qt_overload_consumers.py::test_req_qml008_ac03_unknown_overload_signature_cannot_borrow_known_native_class` | Local uncertainty, duplicate/type/include/transport rejection pass. Aliases, templates, dependent/function-pointer/array/variadic signatures remain unsupported. |
+| REQ-QML-011-AC01 | `tests/test_cpp_overload_updates.py::test_req_qml011_ac01_ac04_overload_signature_edit_removal_and_repeat_parity`; `tests/test_qt_overload_consumers.py::test_req_qml008_ac02_and_qml011_ac01_exact_overload_native_consumers` | Local cold/warm/full/manual/watch, exact native ownership and canonical consumer parity pass. |
+| REQ-QML-011-AC04 | `tests/test_cpp_overload_updates.py::test_req_qml011_ac04_overload_publication_failure_retains_cohort_and_retries`; `tests/test_cpp_overload_updates.py::test_req_qml011_ac04_partial_constructor_parse_retains_accepted_identity_and_recovery`; `tests/test_cpp_overload_updates.py::test_req_qml011_ac04_schema9_name_id_fixture_migrates_unchanged_sources_to_exact_signatures` | Real OS and injected late publication failure, nonempty real cache retention, repair/repeat and modeled schema-9 name-ID fixture migration pass. This fixture models the old identity seam; it is not a replay of every old release semantic. |
+
+Former blanket overloaded-constructor rejection is superseded by this accepted
+signature profile. Existing ownership rejection tests now use duplicate equivalent
+signatures; they retain their exact-owner and corruption assertions. Delegation
+keeps the actual body owner without inventing a direct delegation call. The
+reference-return callable omission remains a separate INC-QML-29 gap under
+REQ-QML-018-AC02/AC03 until its ordinary producer regression passes.
+
+Source integrity additionally maps REQ-QML-008-AC02/AC03 to
+`tests/test_cpp_overload_source_integrity.py::test_req_qml008_ac03_out_of_file_constructor_transport_cannot_bind`
+and the exact containing-class/corrupt-file authority controls in that module.
+The fourteen collected cases pass against the production binder. Source-size
+authority does not turn incomplete SDK include evidence into type authority.

@@ -8,6 +8,7 @@ from graphify.extractors.qt_cpp_syntax import walk, source_span
 from graphify.extractors.qt_cpp_facts import qt_metadata
 from graphify.extractors.cpp_constructors import constructor_class_authorized
 from graphify.extractors.cpp_class_proof import class_fact, class_matches
+from graphify.extractors.cpp_constructor_binding import syntax_matches
 
 
 def normalize_type(value: str) -> str:
@@ -152,16 +153,24 @@ class CppMapping:
             return
         class_record = self.class_at(declaration.start_byte)
         short, class_id = name.split("::")[-1], class_record["node_id"] if class_record else ""
+        # A shared constructor label must not select a neighboring overload.
+        # Use generic producer authority with the actual original occurrence.
+        constructor_owner = (class_record["qualified_name"] if class_record and short == class_record["name"]
+                             else _qualified(self.unit, declaration, name).rsplit("::", 1)[0]
+                             if "::" in name and name.split("::")[-2] == short else "")
+        constructor = bool(constructor_owner and declaration.child_by_field_name("type") is None)
         matches = [node["id"] for node in self.nodes if _label(node) == short and node.get("_callable")
                    and ((class_id and class_id in self.parents.get(node["id"], ())) or
-                        (not class_id and self.paths[id(node)] == self.unit.relative_file and _line(node) == declarator.start_point.row + 1))]
+                        (not class_id and self.paths[id(node)] == self.unit.relative_file and _line(node) == declarator.start_point.row + 1))
+                   and (not constructor or syntax_matches(node, declaration, self.unit.source, constructor_owner))]
         # Canonical header merges retain the implementation's exact file/line.
         # That source identity is stronger than a name-only class lookup, and
         # avoids losing ownership after source_file moves back to the header.
         definition_matches = [node["id"] for node in self.nodes if _label(node) == short
                               and node.get("_callable") is True and not node.get("_callable_class")
                               and self.definition_paths[id(node)] == self.unit.relative_file
-                              and _line({"source_location": node.get("definition_location")}) == declaration.start_point.row + 1]
+                              and _line({"source_location": node.get("definition_location")}) == declaration.start_point.row + 1
+                              and (not constructor or syntax_matches(node, declaration, self.unit.source, constructor_owner, definition_site=True))]
         if not class_id and definition_matches:
             matches = definition_matches
         if not class_id and "::" in name and not definition_matches:
@@ -181,6 +190,7 @@ class CppMapping:
         record["out_of_line_constructor"] = (
             class_record is None and declaration.type == "function_definition"
             and not record["return_type"] and "::" in name and name.split("::")[-2] == short)
+        record["constructor"] = constructor
         self.functions.append(record)
 
     def owner_at(self, byte):
@@ -210,7 +220,7 @@ class CppMapping:
             # A constructor's source callable is independent of class authority.
             # Never replace a rejected/legacy constructor body with a same-name
             # header prototype after generic canonicalization declined the join.
-            if record["out_of_line_constructor"]:
+            if record["out_of_line_constructor"] or record.get("constructor"):
                 targets = [self.accepted[candidate] for candidate in record["candidates"]
                            if candidate in self.accepted]
                 if (len(targets) != 1 or not targets[0].get("metadata", {}).get("cpp_constructor")

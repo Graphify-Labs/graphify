@@ -319,3 +319,23 @@ guards and publication transaction. Executed malformed-input and real read-only
 manifest failures preserve previous products and allow repaired retry. Policy 13
 refreshes old derived ancestry. INC-QML-28 separately preserves explicitly spelled
 emission occurrences when declaration evidence is absent.
+
+
+## Constructor proof rejection (INC-QML-15)
+
+Accepted signatures retain exact constructor/source ownership without new success
+warnings. Unsupported/conditional types, duplicate bodies/signatures, invalid
+span/ID/encoded signature, missing admitted dependency and potential local angle
+include retain no canonical native owner. Generic `cpp_constructor` facts expose
+`ambiguous`, `type_authorized` and `owner_bound`; existing Qt class-binding status
+and reasons report the resulting unavailable authority. These are coverage
+outcomes, not parser exceptions. Correct source/evidence and perform ordinary
+update; retries do not grant missing type identity.
+
+Malformed source and genuine read/cache/join/write exceptions use existing stage
+contracts. Real read-only and late OS replacement failure tests preserve previous
+accepted graph products and existing successful content-keyed cache entries,
+then prove repaired retry. Schema 10/policy 14 retire old name-collapsed facts;
+[D20](ARCHITECTURE.md#d20--constructor-signatures-authorize-identity-and-joins)
+defines rebuild/downgrade behavior. No new logger, compiler execution or diagnostic
+code is introduced.

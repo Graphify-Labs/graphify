@@ -54,7 +54,12 @@ def qualified_function_id(stem, node, name, source):
         return _make_id(stem, name)
     owner, member = name.rsplit("::", 1)
     owner = "::".join(filter(None, (scope, owner)))
-    return _make_id(qualified_class_id(stem, owner), member)
+    class_id = qualified_class_id(stem, owner)
+    if (member == owner.rsplit("::", 1)[-1]
+            and node.child_by_field_name("type") is None):
+        from graphify.extractors.cpp_constructor_signature import constructor_id
+        return constructor_id(class_id, member, node, source, owner)
+    return _make_id(class_id, member)
 
 
 class CppIdentity:
@@ -80,6 +85,18 @@ class CppIdentity:
 
     def record(self, node):
         return self.records.get(node.id)
+
+    def constructor(self, node, name, parent_id):
+        """Inline constructors use the same exact owner/signature as prototypes."""
+        parent = node.parent
+        while parent and parent.type not in {"class_specifier", "struct_specifier", "translation_unit"}:
+            parent = parent.parent
+        record = self.record(parent) if parent else None
+        if (not record or record["id"] != parent_id or name != record["name"]
+                or node.child_by_field_name("type") is not None):
+            return _make_id(parent_id, name)
+        from graphify.extractors.cpp_constructor_signature import constructor_id
+        return constructor_id(parent_id, name, node, self.source, record["qualified"])
 
     def preferred(self, record):
         group = self.groups[record["qualified"]]

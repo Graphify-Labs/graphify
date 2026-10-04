@@ -1,7 +1,7 @@
 """Bounded AST constructor declarations and exact accepted class ownership.
 
-The generic producer keeps its existing IDs. This seam supplies missing header
-prototypes and source proof for the corpus join; overload collisions stay unknown.
+Constructor IDs retain exact bounded signatures before generic deduplication.
+This seam supplies prototypes and source proof; unsupported signatures stay unknown.
 """
 from __future__ import annotations
 
@@ -10,8 +10,11 @@ import binascii
 import hashlib
 import re
 
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _read_text
 from graphify.extractors.cpp_identity import CppIdentity, qualified_function_id
+from graphify.extractors.cpp_constructor_signature import constructor_id, signature_authorized, signature_fact
+from graphify.extractors.cpp_constructor_binding import id_authorized
+from graphify.extractors.cpp_constructor_type_authority import ConstructorTypeAuthority, source_facts
 
 
 def _walk(root):
@@ -127,6 +130,8 @@ def _fact(node, key):
         expected = f"{scope}::{original_owner}" if scope and original_owner else original_owner or scope
         valid = (valid and name == label and owner.split("::")[-1] == (short if original_owner else name)
                  and owner == expected)
+    if key == "cpp_constructor":
+        valid = valid and (value["ambiguous"] or signature_authorized(node, value)) and id_authorized(node, owner, value["signature"])
     return value if valid else {}
 
 
@@ -143,6 +148,7 @@ def augment_cpp_constructors(root, source, nodes, edges, path):
     """Produce bounded exact source facts; never execute or reparse the corpus."""
     if root.has_error:
         return
+    source_facts(root, source, nodes, path)
     by_id = {node["id"]: node for node in nodes}
     identities = CppIdentity(root, source, _file_stem(path))
     classes = {}
@@ -180,16 +186,15 @@ def augment_cpp_constructors(root, source, nodes, edges, path):
         if not _identifier(name):
             continue
         scope = _scope(item, source)
-        signature = _signature(declarator, source)
-        if scope is None or not signature:
+        if scope is None:
             continue
         parent = item.parent
         while parent and parent.type not in {"class_specifier", "struct_specifier", "translation_unit", "namespace_definition"}:
             parent = parent.parent
         owner_info = classes.get(parent.id) if parent else None
-        if owner_info and item.type == "declaration" and name == owner_info[1].split("::")[-1]:
+        if owner_info and name == owner_info[1].split("::")[-1]:
             owner, qualified = owner_info
-            nid = _make_id(owner["id"], name)
+            nid = constructor_id(owner["id"], name, item, source, qualified)
             if nid not in by_id:
                 node = {"id": nid, "label": f".{name}()", "file_type": "code",
                         "source_file": str(path), "source_location": f"L{item.start_point.row + 1}", "_callable": True}
@@ -198,7 +203,7 @@ def augment_cpp_constructors(root, source, nodes, edges, path):
                 edges.append({"source": owner["id"], "target": nid, "relation": "method",
                               "confidence": "EXTRACTED", "source_file": str(path),
                               "source_location": node["source_location"], "weight": 1.0})
-            role = "declaration"
+            role = "definition" if item.type == "function_definition" else "declaration"
         elif not owner_info and item.type == "function_definition" and "::" in name:
             qualified, short = name.rsplit("::", 1)
             if qualified.split("::")[-1] != short or item.child_by_field_name("body") is None:
@@ -212,61 +217,21 @@ def augment_cpp_constructors(root, source, nodes, edges, path):
             continue
         _store(by_id[nid], "cpp_constructor", {"contract_version": 1, "owner_b64": _encoded(qualified),
                "scope_b64": _encoded(scope),
-               "name_b64": _encoded(name), "signature": signature, "role": role, "span": _span(item), "ambiguous": False})
+               "name_b64": _encoded(name), "role": role, "span": _span(item),
+               "owner_bound": bool(owner_info and role == "definition"), **signature_fact(item, source, qualified)})
+    type_authority = ConstructorTypeAuthority(nodes)
+    for node in nodes:
+        fact = _fact(node, "cpp_constructor")
+        if fact:
+            fact["type_authorized"] = type_authority.authorized(node, fact)
+            if not fact["type_authorized"]:
+                fact["owner_bound"] = False
 
 
 def bind_cpp_constructors(nodes, edges):
-    """Join only unique complete classes and matching singleton constructor proof."""
-    classes = {}
-    declarations = {}
-    class_ids = {node["id"] for node in nodes if node.get("_callable_class") is True}
-    for node in nodes:
-        fact = _fact(node, "cpp_class")
-        name = _decoded(fact.get("qualified_name_b64"))
-        if name and fact.get("is_definition") is True and not fact.get("ambiguous") and node.get("_callable_class") is True:
-            classes.setdefault(name, []).append(node)
-        fact = _fact(node, "cpp_constructor")
-        if fact.get("role") == "declaration":
-            declarations.setdefault(_decoded(fact.get("owner_b64")), []).append(node)
-    for node in nodes:
-        fact = _fact(node, "cpp_constructor")
-        if fact.get("role") != "definition":
-            continue
-        fact["owner_bound"] = False
-        owners = classes.get(_decoded(fact.get("owner_b64")), [])
-        prototypes = declarations.get(_decoded(fact.get("owner_b64")), [])
-        if len(owners) != 1 or len(prototypes) != 1 or fact.get("ambiguous"):
-            continue
-        prototype = prototypes[0]
-        declaration = _fact(prototype, "cpp_constructor")
-        owner = owners[0]
-        if (declaration.get("ambiguous") or declaration.get("signature") != fact.get("signature")
-                or prototype.get("source_file") != owner.get("source_file")
-                or not any(edge.get("source") == owner["id"] and edge.get("target") == prototype["id"]
-                           and edge.get("relation") == "method" and edge.get("confidence") == "EXTRACTED"
-                           and edge.get("source_file") == owner.get("source_file")
-                           and edge.get("source_location") == prototype.get("source_location")
-                           for edge in edges)):
-            continue
-        # Definition provenance and any pre-existing real parent remain authoritative.
-        if (not any(edge.get("target") == node["id"] and edge.get("relation") == "contains"
-                    and edge.get("confidence") == "EXTRACTED" and edge.get("source_file") == node.get("source_file")
-                    for edge in edges)
-                or any(edge.get("target") == node["id"] and (edge.get("relation") == "method"
-                       or (edge.get("relation") == "contains" and edge.get("source") in class_ids))
-                       and edge.get("confidence") == "EXTRACTED" and edge.get("source") != owner["id"]
-                       for edge in edges)
-                or any(edge.get("target") == prototype["id"] and (edge.get("relation") == "method"
-                       or (edge.get("relation") == "contains" and edge.get("source") in class_ids))
-                       and edge.get("confidence") == "EXTRACTED" and edge.get("source") != owner["id"]
-                       for edge in edges)):
-            continue
-        fact["owner_bound"] = True
-        if not any(edge.get("source") == owner["id"] and edge.get("target") == node["id"]
-                   and edge.get("relation") == "method" for edge in edges):
-            edges.append({"source": owner["id"], "target": node["id"], "relation": "method",
-                          "confidence": "EXTRACTED", "context": "cpp_constructor_owner",
-                          "source_file": owner["source_file"], "source_location": prototype["source_location"], "weight": 1.0})
+    """Public constructor seam delegates to the single corpus binding owner."""
+    from graphify.extractors.cpp_constructor_binding import bind_constructors
+    bind_constructors(nodes, edges)
 
 
 def constructor_merge_allowed(group):
@@ -275,7 +240,9 @@ def constructor_merge_allowed(group):
     if any(isinstance(node.get("metadata"), dict) and "cpp_constructor" in node["metadata"] and not fact
            for node, fact in zip(group, facts)):
         return False
-    return not any(fact.get("role") == "definition" and fact.get("owner_bound") is not True for fact in facts)
+    return not (any(fact.get("ambiguous") for fact in facts)
+                or sum(fact.get("role") == "definition" for fact in facts) > 1
+                or any(fact.get("role") == "definition" and fact.get("owner_bound") is not True for fact in facts))
 
 
 def constructor_class_authorized(node):
@@ -284,4 +251,5 @@ def constructor_class_authorized(node):
     if not isinstance(metadata, dict) or "cpp_constructor" not in metadata:
         return True
     fact = _fact(node, "cpp_constructor")
-    return bool(fact and not fact["ambiguous"] and (fact["role"] == "declaration" or fact.get("owner_bound") is True))
+    return bool(fact and not fact["ambiguous"] and fact.get("type_authorized") is True
+                and (fact["role"] == "declaration" or fact.get("owner_bound") is True))

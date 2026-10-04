@@ -5464,6 +5464,10 @@ def _extract_generic(
                     ruby_method_kind = "ambiguous"
             if parent_class_nid:
                 func_nid = _make_id(parent_class_nid, sanitized_name)
+                # C++ overload identity belongs to the original constructor
+                # signature before generic deduplication loses occurrence spans.
+                if cpp_identity is not None:
+                    func_nid = cpp_identity.constructor(node, sanitized_name, parent_class_nid)
                 if config.ts_module == "tree_sitter_python":
                     func_nid = _python_underscore_salted_nid(
                         func_nid, sanitized_name, python_underscore_groups

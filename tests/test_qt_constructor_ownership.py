@@ -90,16 +90,15 @@ def test_req_qml008_ac02_constructor_spans_use_original_bom_crlf_unicode_bytes(t
         assert original[span["start_byte"]:span["end_byte"]] == expected
 
 
-@pytest.mark.parametrize("control", ["duplicate_body", "foreign_namespace", "overloaded_delegation"])
+@pytest.mark.parametrize("control", ["duplicate_body", "foreign_namespace", "duplicate_signature"])
 def test_req_qml016_ac04_constructor_conflicts_cannot_invent_a_canonical_owner(tmp_path, control):
-    """A genuine duplicate class or collapsed overload remains a visible unresolved source site."""
+    """Duplicate classes or signatures remain visible without canonical native authority."""
     header, body = HEADER, BODY
     if control == "foreign_namespace":
         header = f"namespace Other {{\n{HEADER}}}\n"
         body = BODY.replace("Backend::Backend", "Foreign::Backend::Backend")
-    elif control == "overloaded_delegation":
-        header = HEADER.replace(" explicit Backend", " Backend();\n explicit Backend")
-        body = BODY.replace("Backend::Backend(QObject *parent) : QObject(parent)", "Backend::Backend() : Backend(nullptr)")
+    elif control == "duplicate_signature":
+        header = HEADER.replace("signals:", " explicit Backend(QObject *owner);\nsignals:")
     sources = {"backend.hpp": header, "backend.cpp": body}
     if control == "duplicate_body":
         sources["duplicate.hpp"] = header
@@ -116,6 +115,24 @@ def test_req_qml016_ac04_constructor_conflicts_cannot_invent_a_canonical_owner(t
     # need native class authority to own a QML write in the same body.
     access = qt_metadata(sites(result, "qml_access")[0])
     assert access["owner_id"] == method["id"] and access["status"] == "resolved"
+
+
+def test_req_qml008_ac02_delegating_overload_keeps_exact_native_site_owner(tmp_path):
+    """Distinct signatures authorize the zero-argument body, without a guessed delegation call."""
+    header = HEADER.replace(" explicit Backend", " Backend();\n explicit Backend")
+    body = BODY.replace("Backend::Backend(QObject *parent) : QObject(parent)",
+                        "Backend::Backend() : Backend(nullptr)")
+    result = fixture(tmp_path, header, body)
+    method = constructor(result)
+    implementation = next(node for node in sites(result, "member") if node["source_file"] == "backend.cpp")
+    assert qt_metadata(implementation)["class_id"]
+    assert any(edge["target"] == method["id"] and edge["relation"] == "method" for edge in result["edges"])
+    emission = qt_metadata(sites(result, "emission")[0])
+    assert emission["owner_id"] == method["id"] and emission["status"] == "resolved" and emission["target_id"]
+    other_constructors = {node["id"] for node in result["nodes"]
+                          if node.get("metadata", {}).get("cpp_constructor") and node["id"] != method["id"]}
+    assert not any(edge["source"] == method["id"] and edge["target"] in other_constructors
+                   and edge["relation"] == "calls" for edge in result["edges"])
 
 
 @pytest.mark.parametrize("operation", ["manual", "watch"])

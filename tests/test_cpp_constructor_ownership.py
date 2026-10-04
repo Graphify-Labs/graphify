@@ -69,12 +69,12 @@ def test_req_qml008_ac02_constructor_definition_retains_id_and_exact_accepted_ow
     ("class Backend {public: Backend(double value);};", "Backend::Backend(int value) {}"),
     ("class Backend;", "Backend::Backend(int value) {}"),
     ("namespace Other {class Backend {public: Backend(int value);};}", "Foreign::Backend::Backend(int value) {}"),
-    ("class Backend {public: Backend(); Backend(int value);};", "Backend::Backend() : Backend(0) {}"),
+    ("class Backend {public: Backend(int value); Backend(const int other);};", "Backend::Backend(int value) {}"),
     ("class Backend {public: Backend(...);};", "Backend::Backend() {}"),
     ("class Backend {public: Backend(unsigned int value);};", "Backend::Backend(unsignedint value) {}"),
 ])
 def test_req_qml008_ac02_constructor_ownership_requires_complete_matching_unambiguous_proof(tmp_path, header, implementation):
-    """Wrong signatures, incomplete classes, foreign scopes and collapsed overloads cannot invent an owner."""
+    """Wrong signatures, incomplete classes, foreign scopes and duplicate signatures cannot invent an owner."""
     paths = corpus(tmp_path, header, implementation)
     result = extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False)
     definition = next(node for node in result["nodes"] if node.get("_callable")

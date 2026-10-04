@@ -351,3 +351,22 @@ Imported-header targets remain unavailable rather than falling back globally.
 Final AST schema 9 and Qt policy 12 require fresh source/derived reconstruction.
 Diagnostic and recovery contracts belong to [ERRORS.md](ERRORS.md); bounded
 acceptance, platform/artifact results and outstanding gaps belong to traceability.
+
+
+## Exact constructor source ownership (INC-QML-15)
+
+| Owner | Contract |
+| --- | --- |
+| `extractors/cpp_constructor_signature.py` | Bounded accepted parameter identity and distinct unsupported occurrence IDs before deduplication |
+| `extractors/cpp_constructor_type_authority.py` | Direct source-file include/shadow proof, original spans and immutable admitted-corpus SDK authority |
+| `extractors/cpp_constructor_binding.py` | Exact unique declaration/body/class joins and Qt source-span matching |
+| `extractors/cpp_constructors.py` | Source constructor facts and retained public compatibility seams; ordinary `_signature` remains used by ordinary-member joins |
+| `extractors/cpp_identity.py`, narrow `extractors/engine.py` hook | Canonical inline/out-of-line constructor IDs; unrelated producer IDs unchanged |
+| `extractors/qt_cpp_mapping.py` | Select the actual constructor signature/span; preserve source callable when native class authority rejects |
+| `cache.py`, `qt_incremental.py` | AST schema 10 / Qt policy 14; existing persistence/invalidation owners |
+
+The generic legacy engine measures 7,720 lines within its 7,730 ceiling. The four
+new hook lines select an existing producer owner; they add no domain logic to the
+controller. Existing specialized migration sequencing remains its extraction exit.
+New handwritten helpers and tests remain below 300 physical lines. Exact final
+measurements, exclusions and evidence belong to design and validation.
