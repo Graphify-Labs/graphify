@@ -399,3 +399,95 @@ def test_explain_double_colon_label_not_hijacked_by_a_coincidental_path_match(mo
     out = _run(monkeypatch, p, "mylib::Bar", capsys)
     assert "Ambiguous" not in out
     assert "ID:        mylib_bar" in out
+
+
+# --- case-only collision exact and ambiguity handling (#3726) ----------------
+
+
+def _write_case_collision_graph(tmp_path):
+    """Graph containing two TypeScript declarations in the same file colliding by case."""
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "a_fallliste_d2fb0e", "label": "FallListe",
+             "source_file": "src/a.ts", "source_location": "L2", "community": 0},
+            {"id": "a_fallliste_d63c2c", "label": "fallListe()",
+             "source_file": "src/a.ts", "source_location": "L5", "community": 0},
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph_collision.json"
+    p.write_text(json.dumps(graph_data))
+    return p
+
+
+def test_explain_exact_case_resolves_case_collision(monkeypatch, tmp_path, capsys):
+    """#3726: Exact-case queries for case-colliding symbols resolve to their respective distinct nodes."""
+    p = _write_case_collision_graph(tmp_path)
+
+    # Query 'FallListe' -> resolves to the interface node
+    out_if = _run(monkeypatch, p, "FallListe", capsys)
+    assert "Ambiguous" not in out_if
+    assert "ID:        a_fallliste_d2fb0e" in out_if
+    assert "Node: FallListe" in out_if
+
+    # Query 'fallListe' -> resolves to the function node
+    out_fn = _run(monkeypatch, p, "fallListe", capsys)
+    assert "Ambiguous" not in out_fn
+    assert "ID:        a_fallliste_d63c2c" in out_fn
+    assert "Node: fallListe()" in out_fn
+
+
+def test_explain_case_insensitive_collision_is_ambiguous(monkeypatch, tmp_path, capsys):
+    """#3726: Case-insensitive queries matching multiple case-only variants report ambiguity."""
+    p = _write_case_collision_graph(tmp_path)
+    out, code = _run_expect_exit(monkeypatch, p, "fallliste", capsys)
+    assert code == 1
+    assert "Ambiguous" in out
+    assert "a_fallliste_d2fb0e" in out
+    assert "a_fallliste_d63c2c" in out
+    assert "FallListe" in out
+    assert "fallListe()" in out
+    # Must not silently select either node
+    assert "Node: FallListe\n" not in out
+    assert "Node: fallListe()\n" not in out
+
+
+def test_explain_case_insensitive_non_collision_unchanged(monkeypatch, tmp_path, capsys):
+    """#3726: Non-colliding symbols still resolve under various casing."""
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "user_service", "label": "UserService",
+             "source_file": "src/service.ts", "source_location": "L1", "community": 0},
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph_user.json"
+    p.write_text(json.dumps(graph_data))
+
+    for query in ["UserService", "userservice", "USERSERVICE"]:
+        out = _run(monkeypatch, p, query, capsys)
+        assert "Ambiguous" not in out
+        assert "ID:        user_service" in out
+        assert "Node: UserService" in out
+
+
+def test_explain_same_file_overloads_not_ambiguous(monkeypatch, tmp_path, capsys):
+    """#3726: Legitimate same-label nodes in the same file (e.g. overloads/merged interfaces) are not ambiguous."""
+    graph_data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "window_merged", "label": "Window",
+             "source_file": "src/dom.ts", "source_location": "L1", "community": 0},
+            {"id": "window_element", "label": "Window",
+             "source_file": "src/dom.ts", "source_location": "L10", "community": 0},
+        ],
+        "links": [],
+    }
+    p = tmp_path / "graph_window.json"
+    p.write_text(json.dumps(graph_data))
+
+    out = _run(monkeypatch, p, "Window", capsys)
+    assert "Ambiguous" not in out
+    assert "Node: Window" in out
