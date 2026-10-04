@@ -8973,7 +8973,12 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
     if target.is_file():
         return [target] if _resolves_under_root(target, containment_root) else []
     _EXTENSIONS = set(_DISPATCH.keys())
-    from graphify.detect import _is_ignored, _is_noise_dir, _load_graphifyignore
+    from graphify.detect import (
+        _is_ignored,
+        _is_installed_graphify_file,
+        _is_noise_dir,
+        _load_graphifyignore,
+    )
     ignore_root = root if root is not None else target
     patterns = _load_graphifyignore(ignore_root)
     # Shared across all _is_ignored calls in this scan so ancestor-directory
@@ -9003,7 +9008,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
             for fname in filenames:
                 p = dp / fname
                 suffix = p.suffix
-                if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _resolves_under_root(p, containment_root):
+                if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and not _is_installed_graphify_file(p) and _resolves_under_root(p, containment_root):
                     results.append(p)
         return sorted(results)
     # Walk with symlink following + cycle detection
@@ -9024,7 +9029,7 @@ def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | N
         for fname in filenames:
             p = dp / fname
             suffix = p.suffix
-            if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and _resolves_under_root(p, containment_root):
+            if (suffix in _EXTENSIONS or suffix.lower() in _EXTENSIONS) and not _ignored(p) and not _is_installed_graphify_file(p) and _resolves_under_root(p, containment_root):
                 results.append(p)
     return sorted(results)
 

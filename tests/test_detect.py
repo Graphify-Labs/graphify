@@ -2224,6 +2224,85 @@ def test_detect_keeps_skills_graphify_source_layouts(tmp_path):
         assert any(f.endswith("/" + rel) for f in found), rel
 
 
+# Files graphify only adds its own section or entry to. They belong to the
+# user, so they stay in the corpus (how to treat graphify's section in the
+# instruction files is an open question on #4057).
+_USER_FILES_GRAPHIFY_EDITS = {
+    "AGENTS.md", "CLAUDE.md", ".claude/CLAUDE.md", "GEMINI.md", "CODEBUDDY.md",
+    ".github/copilot-instructions.md",
+    ".claude/settings.json", ".codebuddy/settings.json", ".codex/hooks.json",
+    ".gemini/settings.json", ".kilo/kilo.json", ".opencode/opencode.json",
+}
+
+
+def test_detect_skips_every_file_graphify_install_writes(tmp_path, monkeypatch):
+    """Run every project install in install.py (plus the CLI installers that
+    write into the project directly) and check that nothing graphify wrote
+    whole is indexed: skill folders, always-on rules/steering/workflow files
+    and hook plugins. A new platform that writes a new file fails here (#4057)."""
+    from graphify import install as inst
+    from graphify.extract import collect_files
+
+    proj = tmp_path / "proj"  # HOME is sandboxed by conftest
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    (proj / "app.py").write_text("def main():\n    return 1\n")
+
+    for name in [*inst._PLATFORM_CONFIG, "gemini", "cursor"]:
+        inst._project_install(name, proj)
+    inst._kilo_install(proj)         # .kilo/plugins/graphify.js
+    inst.codebuddy_install(proj)     # CODEBUDDY.md, .codebuddy/settings.json
+    inst.vscode_install(proj)        # .github/copilot-instructions.md
+
+    found = {
+        Path(f).relative_to(proj).as_posix()
+        for files in detect(proj)["files"].values()
+        for f in files
+    }
+    assert "app.py" in found
+    assert found - {"app.py"} <= _USER_FILES_GRAPHIFY_EDITS, sorted(found)
+
+    ignored = detect_mod.ignored_predicate(proj)
+    for parts in detect_mod._GRAPHIFY_INSTALLED_FILES:
+        written = proj.joinpath(*parts)
+        assert written.is_file(), f"no installer writes {written} any more"
+        assert ignored(written), written
+    collected = {p.relative_to(proj).as_posix() for p in collect_files(proj)}
+    assert "app.py" in collected
+    assert collected - {"app.py"} <= _USER_FILES_GRAPHIFY_EDITS, sorted(collected)
+
+
+def test_detect_keeps_files_named_like_graphify_installs(tmp_path):
+    """The single-file rule matches the holder dir plus the exact path, never a
+    bare graphify.md/graphify.js, and leaves the user's other rules alone."""
+    keep = [
+        "docs/graphify.md",
+        "rules/graphify.md",
+        "steering/graphify.md",
+        "src/plugins/graphify.js",
+        "plugins/graphify.js",
+        ".github/rules/graphify.md",
+        ".opencode/plugins/team.js",
+        ".kiro/steering/product.md",
+        ".agents/rules/style.md",
+        ".windsurf/rules/graphify-notes.md",
+    ]
+    for rel in keep:
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("export function f() { return 1 }\n" if rel.endswith(".js") else "# Title\n\nText.\n")
+
+    found = _all_detected(detect(tmp_path))
+    ignored = detect_mod.ignored_predicate(tmp_path)
+    for rel in keep:
+        assert any(f.endswith("/" + rel) for f in found), rel
+        assert not ignored(tmp_path / rel), rel
+
+    from graphify.extract import collect_files
+    collected = {p.relative_to(tmp_path).as_posix() for p in collect_files(tmp_path)}
+    assert {"src/plugins/graphify.js", "plugins/graphify.js", ".opencode/plugins/team.js"} <= collected
+
+
 def test_is_noise_dir_graphify_skill_needs_parent():
     """Without a parent the path shape cannot be verified, so keep the dir."""
     assert detect_mod._is_noise_dir("graphify") is False

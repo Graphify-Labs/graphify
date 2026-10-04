@@ -975,6 +975,27 @@ _JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
 # (install.py: pi -> .pi/agent/skills, kilo -> .config/kilo/skills).
 _NESTED_SKILL_HOLDERS = frozenset({(".pi", "agent"), (".config", "kilo")})
 
+# Single files `graphify install` writes whole into a project (#4057): the
+# always-on rules/steering/workflow files and the opencode/kilo hook plugins.
+# Matched on the hidden holder dir plus the exact relative path, never on the
+# bare file name, so e.g. docs/graphify.md or src/plugins/graphify.js stay.
+# Files graphify only adds a section or entry to (AGENTS.md, CLAUDE.md,
+# settings.json, ...) belong to the user and are not listed here.
+_GRAPHIFY_INSTALLED_FILES = frozenset({
+    (".agents", "rules", "graphify.md"),      # antigravity
+    (".agents", "workflows", "graphify.md"),  # antigravity
+    (".cursor", "rules", "graphify.mdc"),     # cursor
+    (".kilo", "plugins", "graphify.js"),      # kilo
+    (".kiro", "steering", "graphify.md"),     # kiro
+    (".opencode", "plugins", "graphify.js"),  # opencode
+    (".windsurf", "rules", "graphify.md"),    # devin
+})
+
+
+def _is_installed_graphify_file(path: "Path") -> bool:
+    """True for a single file `graphify install` wrote into the project (#4057)."""
+    return path.parts[-3:] in _GRAPHIFY_INSTALLED_FILES
+
 # Files a coverage tool writes into its own output dir. Any one of them is proof
 # the directory is generated: lcov (lcov.info), nyc/Istanbul (coverage-final.json,
 # clover.xml, the lcov-report/ subtree), coverage.py (coverage.xml, .coverage),
@@ -1790,7 +1811,7 @@ def ignored_predicate(
             rel_parts = path.relative_to(root).parts
         except ValueError:
             return False  # outside the scan root: detect() never considered it
-        if path.name in _SKIP_FILES:
+        if path.name in _SKIP_FILES or _is_installed_graphify_file(path):
             return True
         # Noise-dir pruning: os.walk never descends these, so anything beneath
         # one is excluded from the corpus regardless of ignore patterns.
@@ -2033,6 +2054,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 if fname in _SKIP_FILES:
                     continue
                 p = dp / fname
+                if _is_installed_graphify_file(p):
+                    continue
                 if p not in seen:
                     seen.add(p)
                     all_files.append(p)
