@@ -242,13 +242,13 @@ def _dirs(tmp_path):
     return home, cwd
 
 
-def test_grok_install_registers_claude_hook_entries(tmp_path, capsys):
+def test_grok_install_registers_grok_hook_entries(tmp_path, capsys):
     home, cwd = _dirs(tmp_path)
     _run(cwd, ["grok", "install"], home)
     data = json.loads(_hooks_file(cwd).read_text(encoding="utf-8"))
-    # Exactly Claude Code's entries (matchers Bash|Grep and Read|Glob, hook-guard,
-    # timeout 10); a user-scope install resolves the exe like the Codex hook does.
-    assert data["hooks"]["PreToolUse"] == install._claude_pretooluse_hooks(project=False)
+    # Grok-native matchers (run_terminal_command|grep, read_file|list_dir),
+    # hook-guard, timeout 10; a user-scope install resolves the exe like Codex.
+    assert data["hooks"]["PreToolUse"] == install._grok_pretooluse_hooks(project=False)
     assert ".grok/hooks/graphify.json" in capsys.readouterr().out
 
 
@@ -256,7 +256,8 @@ def test_grok_install_project_uses_bare_command(tmp_path):
     home, cwd = _dirs(tmp_path)
     _run(cwd, ["grok", "install", "--project"], home)
     groups = json.loads(_hooks_file(cwd).read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
-    assert [g["matcher"] for g in groups] == ["Bash|Grep", "Read|Glob"]
+    assert [g["matcher"] for g in groups] == [
+        "run_terminal_command|grep", "read_file|list_dir"]
     assert [g["hooks"][0]["command"] for g in groups] == [
         "graphify hook-guard search", "graphify hook-guard read"]
 

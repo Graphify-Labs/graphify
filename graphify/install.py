@@ -486,6 +486,27 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
         {"matcher": "Read|Glob",
          "hooks": [{"type": "command", "command": read_cmd, "timeout": 10}]},
     ]
+
+
+def _grok_pretooluse_hooks(project: bool = False) -> "list[dict]":
+    """graphify's Grok Build PreToolUse hooks, resolved at install time.
+
+    Same shape as ``_claude_pretooluse_hooks`` (exe resolution, quoting, timeout=10,
+    project bare-command), but matchers use Grok's native tool names:
+    ``run_terminal_command|grep`` (search) and ``read_file|list_dir`` (read).
+    Default install is non-strict, matching Claude's default Grok path.
+    """
+    exe = _resolve_graphify_exe(project=project)
+    if " " in exe and not exe.startswith('"'):
+        exe = f'"{exe}"'
+    return [
+        {"matcher": "run_terminal_command|grep",
+         "hooks": [{"type": "command", "command": f"{exe} hook-guard search", "timeout": 10}]},
+        {"matcher": "read_file|list_dir",
+         "hooks": [{"type": "command", "command": f"{exe} hook-guard read", "timeout": 10}]},
+    ]
+
+
 def _skill_registration(skill_path: str = "~/.claude/skills/graphify/SKILL.md") -> str:
     # Heading is "# graphify" (H1) to match _SKILL_REGISTRATION_MARKER, which
     # _register_always_on_block anchors its idempotent replace-or-append on.
@@ -1747,13 +1768,14 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
 def _install_grok_hook(project_dir: Path, project: bool = False) -> None:
     """Add graphify PreToolUse hooks to .grok/hooks/graphify.json (Grok Build).
 
-    Mirrors _install_codex_hook (merge, drop old graphify entries, back up), with
-    Claude Code's hook entries: Grok runs the same `graphify hook-guard` nudge
-    (it accepts hookSpecificOutput.additionalContext, unlike Codex Desktop) and
-    maps Claude matcher names (Bash -> run_terminal_command, Read -> read_file,
-    Grep -> grep, Glob -> list_dir). Grok loads every .grok/hooks/*.json, so
-    graphify uses its own file rather than a shared one. Project-scoped installs
-    emit the bare command, since the file is then committed (#3129).
+    Mirrors _install_codex_hook (merge, drop old graphify entries, back up). Grok
+    runs the same `graphify hook-guard` nudge (it accepts
+    hookSpecificOutput.additionalContext, unlike Codex Desktop) with matchers
+    using Grok's native tool names via `_grok_pretooluse_hooks` (search:
+    run_terminal_command|grep; read: read_file|list_dir). Grok loads every
+    .grok/hooks/*.json, so graphify uses its own file rather than a shared one.
+    Project-scoped installs emit the bare command, since the file is then
+    committed (#3129).
     """
     hooks_path = project_dir / ".grok" / "hooks" / "graphify.json"
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1767,9 +1789,9 @@ def _install_grok_hook(project_dir: Path, project: bool = False) -> None:
     if not isinstance(pre_tool, list):
         _refuse_to_modify(hooks_path)
     hooks["PreToolUse"] = [h for h in pre_tool if "graphify" not in str(h)]
-    hooks["PreToolUse"].extend(_claude_pretooluse_hooks(project=project))
+    hooks["PreToolUse"].extend(_grok_pretooluse_hooks(project=project))
     _write_settings_with_backup(hooks_path, existing)
-    print("  .grok/hooks/graphify.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob)")
+    print("  .grok/hooks/graphify.json  ->  PreToolUse hooks registered (run_terminal_command|grep search + read_file|list_dir)")
 
 
 def _uninstall_grok_hook(project_dir: Path) -> None:
