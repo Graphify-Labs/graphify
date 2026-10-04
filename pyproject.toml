@@ -45,7 +45,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Graphify-Labs/graphify"
+Homepage = "https://graphify.com"
+Documentation = "https://docs.graphify.com"
 Repository = "https://github.com/Graphify-Labs/graphify"
 Issues = "https://github.com/Graphify-Labs/graphify/issues"
 
