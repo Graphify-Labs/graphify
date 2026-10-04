@@ -75,10 +75,9 @@ def test_req_qml016_ac04_header_signal_base_and_site_edits_match_full_cold_warm(
 
     header.write_bytes(HEADER.replace("changed", "revised").encode())
     changed = run(tmp_path, monkeypatch, operation, [header])
-    # Current source admission removes an explicit emission whose name no
-    # longer appears in the signal inventory; INC-QML-28 owns its correction.
-    # The existing connection syntax remains observed and cannot retain targets.
-    endpoints(changed, expected=None, event_count=2)
+    # INC-QML-28 retains explicit source syntax after declaration removal;
+    # the emission and connection observations cannot retain old targets.
+    endpoints(changed, expected=None)
     parity(changed, tmp_path, "header")
     assert old_signal not in changed
     body.write_bytes(BODY.replace("changed", "revised").encode())
@@ -158,7 +157,7 @@ def test_req_qml016_ac04_readonly_ancestor_refresh_preserves_cohort_and_retry(tm
     finally:
         target.chmod(stat.S_IWRITE)
     recovered = run(tmp_path, monkeypatch, operation, [header])
-    endpoints(recovered, expected=None, event_count=2)
+    endpoints(recovered, expected=None)
     assert normalized(recovered) != normalized(initial)
     parity(recovered, tmp_path, "publication-retry")
     accepted = snapshot(output)

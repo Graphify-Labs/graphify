@@ -4,9 +4,11 @@ from __future__ import annotations
 import json
 import re
 
-from graphify.extractors.qt_cpp_syntax import source_span
+from graphify.extractors.qt_cpp_syntax import source_span, walk
 
 _CALLEE = re.compile(rb'\b(?:[A-Za-z_]\w*|this)(?:(?:::|->|\.)[A-Za-z_]\w*)*(?:\s*<[^;{}\n]*>)?\s*\(')
+_EMIT = re.compile(rb"\b(?:emit|Q_EMIT)\b(?=\s)")
+_EMIT_OVERRIDE = re.compile(rb"(?m)^[ \t]*#[ \t]*(?:define|undef)[ \t]+(emit|Q_EMIT)\b")
 
 
 def closing(code, position, opening=b"(", close=b")"):
@@ -40,15 +42,45 @@ def argument_ranges(code, start, end):
     return ranges
 
 
-def calls(unit, mapping, names):
+def _explicit_calls(unit):
+    """Prove standalone annotated calls in the accepted offset-preserving AST.
+
+    Masked source rejects strings/comments; AST ownership rejects directives,
+    unevaluated expressions and macro arguments. A local annotation override
+    blocks SDK spelling authority without executing a preprocessor.
+    """
+    positions = set()
+    overrides = {}
+    for override in _EMIT_OVERRIDE.finditer(unit.code):
+        overrides.setdefault(override[1], override.start())
+    for marker in _EMIT.finditer(unit.code):
+        if overrides.get(marker[0], len(unit.code)) < marker.start():
+            continue
+        before = marker.start() - 1
+        while before >= 0 and unit.code[before] in b" \t\r\n":
+            before -= 1
+        if unit.code[max(0, before - 1):before + 1].endswith((b".", b"->", b"::")):
+            continue
+        after = marker.end()
+        while after < len(unit.code) and unit.code[after] in b" \t\r\n":
+            after += 1
+        positions.add(after)
+    if not positions:
+        return set()
+    return {(node.start_byte, node.end_byte) for node in walk(unit.root)
+            if node.type == "call_expression" and node.start_byte in positions
+            and node.parent and node.parent.type == "expression_statement" and not node.has_error}
+
+
+def calls(unit, mapping, names, *, include_explicit=False):
     """Only executable function-body occurrences, never declaration signatures."""
+    explicit = _explicit_calls(unit) if include_explicit else set()
+    explicit_ends = {end: start for start, end in explicit}
     for match in _CALLEE.finditer(unit.code):
         left = match.group().rfind(b"(") + match.start()
         callee = unit.code[match.start():left].decode().strip()
         plain = re.sub(r"<.*>", "", callee).strip()
         name = re.split(r"::|->|\.", plain)[-1]
-        if name not in names:
-            continue
         owner = mapping.owner_at(match.start())
         body = owner.get("body") if owner else None
         if body is None or not (body.start_byte <= match.start() < body.end_byte):
@@ -56,16 +88,27 @@ def calls(unit, mapping, names):
         right = closing(unit.code, left)
         if right is None:
             continue
+        before = unit.code[max(0, match.start() - 8):match.start()].rstrip()
+        computed_receiver = not ("->" in plain or "." in plain) and before.endswith((b"->", b"."))
+        # The full accepted outer call owns annotation and source extent. A
+        # nested factory sharing its start cannot become an unknown bare signal.
+        explicit_start = explicit_ends.get(right + 1)
+        annotated = explicit_start == match.start() or (
+            explicit_start is not None and explicit_start < match.start() and computed_receiver)
+        if name not in names and not annotated:
+            continue
+        start = explicit_start if annotated and explicit_start is not None else match.start()
         args = [{"text": unit.source[a:b].decode().strip(), "code": unit.code[a:b].decode().strip(),
                  "start_byte": a, "end_byte": b, "span": source_span(unit.source, a, b)}
                 for a, b in argument_ranges(unit.code, left + 1, right) if unit.source[a:b].strip()]
         receiver = re.split(r"->|\.", plain)[-2] if "->" in plain or "." in plain else ""
-        before = unit.code[max(0, match.start() - 8):match.start()].rstrip()
-        computed_receiver = not receiver and (before.endswith(b"->") or before.endswith(b"."))
-        yield {"name": name, "callee": plain, "receiver": receiver, "args": args, "owner": owner,
+        record = {"name": name, "callee": plain, "receiver": receiver, "args": args, "owner": owner,
                "computed_receiver": computed_receiver,
-               "start_byte": match.start(), "end_byte": right + 1,
-               "span": source_span(unit.source, match.start(), right + 1)}
+               "start_byte": start, "end_byte": right + 1,
+               "span": source_span(unit.source, start, right + 1)}
+        if include_explicit:
+            record["explicit_emit"] = annotated
+        yield record
 
 
 def literal_string(expression):

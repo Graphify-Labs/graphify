@@ -525,3 +525,10 @@ Source integrity additionally maps REQ-QML-008-AC02/AC03 to
 and the exact containing-class/corrupt-file authority controls in that module.
 The fourteen collected cases pass against the production binder. Source-size
 authority does not turn incomplete SDK include evidence into type authority.
+
+## Explicit emission observations
+
+| Acceptance IDs | Exact ordinary tests | State |
+| --- | --- | --- |
+| REQ-QML-016-AC01 | `tests/test_qt_explicit_emissions.py::test_req_qml016_ac01_explicit_unknown_sites_do_not_admit_bare_calls`; `tests/test_qt_explicit_emissions.py::test_req_qml016_ac01_long_comment_crlf_bom_and_unicode_keep_original_spans`; `tests/test_qt_explicit_emissions.py::test_req_qml016_ac01_explicit_annotation_owns_emission_mechanism`; `tests/test_qt_explicit_emissions.py::test_req_qml016_ac01_override_cannot_recover_annotation_by_prefix`; `tests/test_qt_explicit_emissions.py::test_req_qml016_ac01_computed_receiver_keeps_full_explicit_source_site` | Local known/unknown/override/mechanism/original-byte source acceptance passes; computed receiver target remains unavailable. |
+| REQ-QML-016-AC04 | `tests/test_qt_explicit_emissions.py::test_req_qml016_ac04_unknown_emissions_reload_as_owned_unresolved_sites`; `tests/test_qt_explicit_emission_updates.py::test_req_qml016_ac04_header_rename_remove_restore_and_marker_edits_preserve_observations`; `tests/test_qt_explicit_emission_updates.py::test_req_qml016_ac04_failed_explicit_refresh_retains_products_and_retries`; `tests/test_qt_explicit_emission_updates.py::test_req_qml016_ac04_readonly_declaration_removal_preserves_graph_and_explicit_retry` | Actual facade/build/reload/affected, cold/warm/manual/watch and real write-failure/repaired-repeat parity pass; installed integration pending. |

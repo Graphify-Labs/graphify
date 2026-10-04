@@ -339,3 +339,15 @@ then prove repaired retry. Schema 10/policy 14 retire old name-collapsed facts;
 [D20](ARCHITECTURE.md#d20--constructor-signatures-authorize-identity-and-joins)
 defines rebuild/downgrade behavior. No new logger, compiler execution or diagnostic
 code is introduced.
+
+## Explicit source emission outcomes (INC-QML-28)
+
+An accepted annotation creates an observed emission without a success warning.
+Missing, ambiguous, private or computed receiver/endpoint evidence retains the
+site's unavailable status and existing signal-resolution reason. A local marker
+override or inert/unevaluated syntax grants no explicit role. Same-spelled APIs
+do not override an accepted emission mechanism. These are source-coverage outcomes,
+not generic parser failures. Existing QT_CPP_SYNTAX and stage-specific update/write
+errors still reject genuine failure and preserve prior accepted products. Repair
+source or declarations and retry normally; no new code or runtime delivery claim
+is introduced. Policy 15 refreshes unchanged derived sites.

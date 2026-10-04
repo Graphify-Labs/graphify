@@ -1546,3 +1546,23 @@ bodies. It performs no source reread. The eight-module constructor/qualified-ID
 selection passed **172 cases, 27.61 seconds**; final integrity and qualified
 proof/update controls passed **46 cases, 3.72 seconds**, including 14 integrity
 cases and real incomplete/dynamic include controls. Targeted lint and typing pass.
+
+## INC-QML-28 explicit source emissions
+
+The agent's event/ancestry/ownership/lifecycle selection passed **156 cases, zero
+skips, 55.82 seconds**. Initial missing-declaration admission probes failed before
+the collector opt-in. Peer regression exposed mechanism precedence and rejected
+marker recovery: the ordinary source module first recorded **6 failed, 20 passed,
+1.74 seconds**. After correction, emission/update/inherited-update/event consumer
+selection passed **46 cases, 28.81 seconds**.
+
+Computed receiver syntax then exposed a false inner-factory signal occurrence.
+Its promoted regression failed **2 cases, 26 deselected, 0.91 seconds**. Full outer
+AST extent and terminal-call authority correct it without a computed endpoint
+guess. `python -m pytest tests/test_qt_explicit_emissions.py
+ tests/test_qt_explicit_emission_updates.py tests/test_qt_signals_slots.py -q
+ --tb=short` passed **40 cases, 13.63 seconds**. Shared-scanner loader boundary,
+provider and provenance regressions additionally passed **65 cases, 5.47 seconds**.
+Ruff and targeted Pyright pass. Peer rerun excludes all 14 original constructor
+and emission counterexamples. Qt policy 15 refreshes derived observations; AST
+schema 10 is unchanged. Final installed and compatibility gates remain pending.

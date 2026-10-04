@@ -921,3 +921,20 @@ New helper and test files remain under 300 physical lines. Existing extractor
 facade ownership and dependency direction remain unchanged; children do not import
 `graphify.extract`. Plan review distinguishes corrected cases from open wider
 adoption, inherited-signal and overload support.
+
+## Explicit emission source authority (INC-QML-28)
+
+The shared call scanner keeps its default name inventory unchanged. Its explicit
+opt-in admits only source annotations proved against standalone executable AST
+call ranges and offset-preserving masked bytes. A preceding local define/undef
+blocks annotation authority without preprocessing. Observed explicit sites remain
+owned by their actual callable/file even when no signal declaration is available;
+the resolver alone supplies accepted canonical targets.
+
+Event dispatch honors explicit emission before connect/disconnect spelling. It
+does not recover rejected annotation authority from a nearby text prefix. A
+computed receiver's terminal call keeps the full outer AST range and unavailable
+receiver identity; an inner factory sharing its start cannot become an unknown
+bare signal. Known bare signal calls retain their separate inventory contract.
+This changes derived event admission only: Qt policy 15, AST schema 10 unchanged.
+Existing publication and diagnostic owners retain failure/retry ordering.

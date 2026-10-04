@@ -19,7 +19,8 @@ have local source-ownership and reviewed installed-artifact proof, including
 unchanged accepted-context body deduplication. Affected native criteria remain
 partially verified across their recorded cases. INC-QML-11 implements bounded inherited-signal lookup with local source/update
 evidence under REQ-QML-016-AC01/AC04; installed integration remains pending.
-INC-QML-28 retains the separate explicit-emission admission gap. INC-QML-12 implements bounded
+INC-QML-28 implements explicit-emission admission with local source/update evidence;
+installed integration remains pending. INC-QML-12 implements bounded
 generic out-of-line constructor canonical ownership under the same five native
 criteria used by INC-QML-10. INC-QML-13 independently preserves source-file context
 and distinguishes internal community links from external connections. Earlier method/profile passes do not establish all

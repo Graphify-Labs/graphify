@@ -370,3 +370,12 @@ new hook lines select an existing producer owner; they add no domain logic to th
 controller. Existing specialized migration sequencing remains its extraction exit.
 New handwritten helpers and tests remain below 300 physical lines. Exact final
 measurements, exclusions and evidence belong to design and validation.
+
+## Explicit event observation (INC-QML-28)
+
+`extractors/qt_cpp_calls.py::calls` owns the optional accepted AST annotation
+profile; its default inventory remains compatible. `qt_cpp_events` owns event
+mechanism dispatch and source facts, while `qt_event_index` owns endpoint lookup.
+Computed receiver identity stays unavailable. Qt policy 15 invalidates old derived
+sites; source AST schema 10 is unchanged. Both scanner/event modules and their new
+tests remain below 300 lines. No new persistence owner or diagnostic code exists.

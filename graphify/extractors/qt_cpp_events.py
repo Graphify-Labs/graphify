@@ -105,8 +105,9 @@ def _emission(facts, unit, mapping, call, types, identity):
     owner = call["owner"]
     variables = variables_at(unit, mapping, call["start_byte"], type_scope=types)
     receiver = call["receiver"] or ("" if call.get("computed_receiver") else "this")
-    prefix = unit.code[max(0, call["start_byte"] - 40):call["start_byte"]]
-    explicit = bool(re.search(rb"\b(?:emit|Q_EMIT)\s*$", prefix))
+    # The scanner owns annotation authority; a rejected local macro override
+    # cannot regain that role through an unqualified source-prefix fallback.
+    explicit = call.get("explicit_emit") is True
     if not explicit and not _qt_owner(mapping, owner) and not variables.get(receiver):
         return
     # Preserve independent typed receivers; an unbound constructor cannot infer
@@ -146,8 +147,15 @@ def collect_qt_cpp_events(paths, per_file, *, root: Path, accepted_nodes=None, a
                     facts.add("callable", function["qualified_name"], function["span"], function["node_id"],
                               generic_target_id=function["node_id"], parameter_types=function["parameter_types"],
                               callable_name=function["qualified_name"], status="resolved")
-            for call in calls(unit, mapping, {"connect", "disconnect"} | signals | local_signals):
-                if call["name"] in {"connect", "disconnect"}:
+            # Explicit accepted emission syntax survives missing declarations.
+            # The scanner's opt-in admits only those occurrences, preserving
+            # ordinary bare-call gating and every other collector's inventory.
+            for call in calls(unit, mapping, {"connect", "disconnect"} | signals | local_signals, include_explicit=True):
+                # Explicit signal syntax owns its mechanism even when a signal
+                # shares the spelling of a Qt connection API.
+                if call.get("explicit_emit") is True:
+                    _emission(facts, unit, mapping, call, types, identity)
+                elif call["name"] in {"connect", "disconnect"}:
                     _connection(facts, unit, mapping, call, types, identity)
                 else:
                     _emission(facts, unit, mapping, call, types, identity)

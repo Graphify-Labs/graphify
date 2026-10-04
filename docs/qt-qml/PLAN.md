@@ -1967,7 +1967,7 @@ confirmed additional gap without silently widening verified support.
 
 ## INC-QML-28 — Explicit emission source admission
 
-Status: **Planned; reproduced during INC-QML-11 lifecycle validation**.
+Status: **Implemented; local source/lifecycle acceptance passes; artifact integration pending**.
 Acceptance: REQ-QML-016-AC01/AC04. Owner: native event collector maintainer.
 Dependency: accepted source-site ownership and INC-QML-11 inherited endpoint lookup.
 
@@ -1985,6 +1985,15 @@ missing/private/ambiguous targets, and both emission spellings. Exercise C++-onl
 and header-only edits, removal/restoration, cold/warm/manual/watch parity, failed
 publication and corrected retry through installed consumers. Preserve ordinary
 call behavior and do not infer immediate receiver delivery. Review the plan at exit.
+
+The final scanner uses accepted standalone executable AST call ranges, masked
+original bytes and annotation override order. Annotation authority precedes a
+same-spelled connect/disconnect API; rejected tokens cannot regain authority from
+a textual prefix. Computed receivers retain the full annotated outer occurrence
+and an unavailable endpoint, without misclassifying their nested factory calls.
+Local regressions exclude each reproduced failure. Qt policy 15 refreshes derived
+facts with AST schema 10 unchanged. Exit review adds no further scanner increment;
+INC-QML-29 and the adoption consumer corrections remain separately assigned.
 
 ## INC-QML-29 — Reference-return callable admission
 
