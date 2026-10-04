@@ -31,6 +31,7 @@ from graphify.extractors.powershell import extract_powershell, extract_powershel
 from graphify.extractors.r import extract_r
 from graphify.extractors.razor import extract_razor
 from graphify.extractors.rust import extract_rust
+from graphify.extractors.salesforce_meta_xml import extract_salesforce_meta_xml
 from graphify.extractors.sln import extract_sln
 from graphify.extractors.solidity import extract_solidity
 from graphify.extractors.sql import extract_sql
@@ -66,6 +67,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "r": extract_r,
     "razor": extract_razor,
     "rust": extract_rust,
+    "salesforce_meta_xml": extract_salesforce_meta_xml,
     "sln": extract_sln,
     "solidity": extract_solidity,
     "sql": extract_sql,
