@@ -100,6 +100,10 @@ def extract_vbnet(path: Path) -> dict:
     seen_ids: set[str] = set()
     seen_edges: set[tuple[str, str, str]] = set()
     types_by_name: dict[str, str] = {}
+    # Short type/module name -> its owner_key, so a qualified call such as
+    # Helpers.Log() can be resolved back to the owner that keys `methods`
+    # (which is the namespace-qualified name, not the bare receiver token).
+    owner_by_short: dict[str, str] = {}
     methods: dict[tuple[str, str, int], list[str]] = {}
     events: dict[tuple[str, str], str] = {}
     bodies: list[tuple[Node, str, str, str]] = []
@@ -209,6 +213,7 @@ def extract_vbnet(path: Path) -> dict:
         )
         add_edge(parent_id, type_id, "contains", block)
         types_by_name[name.casefold()] = type_id
+        owner_by_short.setdefault(name.casefold(), owner_key)
 
         for clause in block.named_children:
             if clause.type not in {"inherits_clause", "implements_clause"}:
@@ -378,14 +383,24 @@ def extract_vbnet(path: Path) -> dict:
                     parts = written.split(".")
                     receiver = ".".join(parts[:-1]).casefold()
                     callee = parts[-1]
-                    known_receiver = (
+                    self_receiver = (
                         not receiver
                         or receiver in {"me", "myclass", type_name.casefold()}
                     )
-                    if known_receiver:
+                    # A self/unqualified call targets the caller's own type; a
+                    # qualified call (Helpers.Log(), OtherType.Foo()) targets the
+                    # named receiver type/module. Only these two forms can be
+                    # resolved by name — a call through a value receiver (a local
+                    # variable) has no known owner, so it is left unresolved.
+                    target_owner = None
+                    if self_receiver:
+                        target_owner = owner_key
+                    else:
+                        target_owner = owner_by_short.get(receiver.split(".")[-1])
+                    if target_owner is not None:
                         arity = len(arguments.named_children) if arguments is not None else 0
                         candidates = methods.get(
-                            (owner_key, callee.casefold(), arity), []
+                            (target_owner, callee.casefold(), arity), []
                         )
                         if len(candidates) == 1:
                             add_edge(caller_id, candidates[0], "calls", node)
@@ -394,7 +409,7 @@ def extract_vbnet(path: Path) -> dict:
                                 "caller_nid": caller_id,
                                 "callee": callee,
                                 "arity": arity,
-                                "owner": owner_key,
+                                "owner": target_owner,
                                 "is_member_call": True,
                                 "language": "vbnet",
                                 "source_file": source_file,

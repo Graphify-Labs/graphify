@@ -1564,6 +1564,7 @@ def build(
         combined["input_tokens"] += ext.get("input_tokens", 0)
         combined["output_tokens"] += ext.get("output_tokens", 0)
     _root = str(Path(root).resolve()) if root else None
+    _dedup_collapsed = 0
     if dedup and combined["nodes"]:
         # Numeric ids must be str before dedup, which keys on them and would
         # raise TypeError in _pick_winner's regex search (#2326). build_from_json
@@ -1585,6 +1586,7 @@ def build(
                     n["source_file"] = _norm_source_file(n["source_file"], _root)
                 if "definition_file" in n:
                     n["definition_file"] = _norm_source_file(n["definition_file"], _root)
+        _before_dedup = len(combined["nodes"])
         combined["nodes"], combined["edges"] = deduplicate_entities(
             combined["nodes"], combined["edges"], communities={},
             dedup_llm_backend=dedup_llm_backend, root=_root,
@@ -1593,7 +1595,28 @@ def build(
             hyperedges=combined.get("hyperedges"),
             protected_ids=protected_ids,
         )
-    return build_from_json(combined, directed=directed, root=_root)
+        _dedup_collapsed = _before_dedup - len(combined["nodes"])
+    G = build_from_json(combined, directed=directed, root=_root)
+    # CLI reads this to tell a dedup shrink from a file deletion (#3774).
+    # Popped before to_json so it is not stored in graph.json.
+    if _dedup_collapsed:
+        G.graph["_dedup_collapsed"] = _dedup_collapsed
+    return G
+
+
+def take_shrink_accounting(G) -> tuple[int, int]:
+    """Read and remove the #3774 counters.
+
+    ``build`` / ``build_merge`` stash these on ``G.graph`` for the extract
+    CLI. ``to_json`` also removes them so any other writer cannot persist
+    them into graph.json.
+    """
+    attrs = getattr(G, "graph", None)
+    if not isinstance(attrs, dict):
+        return 0, 0
+    collapsed = int(attrs.pop("_dedup_collapsed", 0) or 0)
+    pruned = int(attrs.pop("_pruned_node_count", 0) or 0)
+    return collapsed, pruned
 
 
 def _norm_label(label: str | None) -> str:
@@ -2126,8 +2149,11 @@ def build_merge(
     # this every --update collapses the graph's hyperedge set down to just the
     # changed files'. Re-extracted files' prior hyperedges are dropped (their new
     # version is already in the new chunks — replace-per-source, like
-    # nodes/edges); deleted files' are dropped via prune_set; id-dedup so a
-    # carried hyperedge never duplicates one the new chunks re-emitted. Mirrors
+    # nodes/edges); deleted files' are dropped via prune_set; (id, source_file)
+    # dedup so a carried hyperedge never duplicates one the new chunks
+    # re-emitted. The id alone is not an identity: ids are chosen per
+    # extraction, so two files can emit the same one, and keying on it let a
+    # re-extract of one file drop the other file's hyperedge (#3981). Mirrors
     # watch.py, which already preserves existing hyperedges across a rebuild.
     #
     # The carried set rides INTO build() on the base chunk rather than being
@@ -2138,8 +2164,8 @@ def build_merge(
     carried_hyperedges: list[dict] = []
     if existing_hyperedges:
         carried = carried_hyperedges
-        _new_hyperedge_ids = {
-            he.get("id")
+        _new_hyperedge_keys = {
+            (he.get("id"), _norm_source_file(he.get("source_file"), _eff_root) or None)
             for chunk in new_chunks
             for he in (chunk.get("hyperedges") or [])
             if isinstance(he, dict) and he.get("id")
@@ -2156,7 +2182,7 @@ def build_merge(
                 continue  # semantically re-extracted — replaced by the new chunk's version
             if _prune_match(sf):
                 continue  # deleted — pruned
-            if he.get("id") and he.get("id") in _new_hyperedge_ids:
+            if he.get("id") and (he.get("id"), norm or None) in _new_hyperedge_keys:
                 continue  # the new chunks re-emitted it — theirs wins
             carried.append(he)
 
@@ -2246,6 +2272,17 @@ def build_merge(
         if orphaned:
             G.remove_nodes_from(orphaned)
             n_nodes += len(orphaned)
+        # Excuse only saved nodes this prune removed (#3774). A stub minted
+        # in this run and then orphaned was never in graph.json, so counting
+        # it would hide a dedup shrink. The print below still uses n_nodes,
+        # which includes that stub.
+        _disk_ids = {
+            n.get("id") for n in _disk_nodes
+            if isinstance(n, dict) and n.get("id") is not None
+        }
+        G.graph["_pruned_node_count"] = sum(
+            1 for nid in (*to_remove, *orphaned) if nid in _disk_ids
+        )
 
         # Report only the prune entries that ACTUALLY matched something — not
         # len(prune_sources), which counted every entry as pruned-from even

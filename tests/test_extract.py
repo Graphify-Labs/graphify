@@ -1598,6 +1598,52 @@ def test_python_module_qualified_call_requires_the_import(tmp_path):
     assert bad == [], f"non-imported receiver must not link cross-file: {bad}"
 
 
+def test_python_module_call_resolves_when_same_file_imports_function_with_nested_def(tmp_path):
+    """When a file imports both a module and a function from that module, and the
+    function contains a nested def, `module.func()` calls must still resolve (#3887).
+
+    Nested functions are tracked as `contains` children of their enclosing function
+    (#3410). The module resolver must not mistake the enclosing function for an
+    imported module node, which would cause an ambiguity bailout and drop the call."""
+    services = tmp_path / "services"
+    services.mkdir()
+    (services / "__init__.py").write_text("")
+    (services / "store.py").write_text(
+        "def sort_todos(todos):\n"
+        "    def key(t):\n"
+        "        return t\n"
+        "    return sorted(todos, key=key)\n\n"
+        "def parse_todo_file(path):\n"
+        "    return path\n"
+    )
+    api = tmp_path / "api"
+    api.mkdir()
+    (api / "__init__.py").write_text("")
+    views = api / "views.py"
+    views.write_text(
+        "from services import store\n"
+        "from services.store import sort_todos\n\n"
+        "def get_archived_panel():\n"
+        "    return store.parse_todo_file(1)\n\n"
+        "def board():\n"
+        "    return sort_todos([])\n"
+    )
+    result = extract(
+        [views, services / "store.py", services / "__init__.py", api / "__init__.py"],
+        cache_root=tmp_path,
+        root=tmp_path,
+    )
+    nodes = {n["id"]: n for n in result["nodes"]}
+    edges = [
+        e for e in result["edges"]
+        if e["relation"] == "calls"
+        and "get_archived_panel" in nodes[e["source"]]["label"]
+        and "parse_todo_file" in nodes[e["target"]]["label"]
+    ]
+    assert len(edges) == 1, f"expected get_archived_panel->parse_todo_file edge, got {edges}"
+    assert edges[0]["confidence"] == "EXTRACTED"
+
+
 def test_python_from_import_alias_module_call_resolves(tmp_path):
     """`from pkg import mod as alias` must resolve `alias.func()` the same way the
     unaliased `from pkg import mod` / `mod.func()` form already does (#2082). The
@@ -2091,6 +2137,251 @@ def test_python_unresolved_receiver_never_crosses_modules(tmp_path):
     assert any("via_name" in c for c in callers), (
         f"imported-name call lost its edge: {callers}"
     )
+
+
+def _python_call_pairs(tmp_path, source):
+    """Extract one Python file and return {(caller_id, callee_id)} for calls edges."""
+    f = tmp_path / "svc.py"
+    f.write_text(source, encoding="utf-8")
+    result = extract([f], cache_root=tmp_path)
+    return {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"}
+
+
+def test_python_self_call_binds_to_own_class_not_last_declared(tmp_path):
+    """`self.save()` in Server must reach Server.save even when a later class in
+    the same file also defines save(). The file-wide name map kept only the last
+    declaration, so both classes' self-calls landed on Cache.save as EXTRACTED."""
+    calls = _python_call_pairs(tmp_path, (
+        "class Server:\n"
+        "    def save(self): return 1\n"
+        "    def flush(self): return self.save()\n"
+        "    @classmethod\n"
+        "    def make(cls): return cls.build()\n"
+        "    @classmethod\n"
+        "    def build(cls): return cls()\n"
+        "    def deferred(self):\n"
+        "        def inner():\n"
+        "            return self.save()\n"
+        "        return inner()\n\n"
+        "class Cache:\n"
+        "    def save(self): return 2\n"
+        "    def flush(self): return self.save()\n"
+        "    def build(self): return 3\n"
+    ))
+    assert ("svc_server_flush", "svc_server_save") in calls
+    assert ("svc_server_flush", "svc_cache_save") not in calls
+    assert ("svc_server_make", "svc_server_build") in calls, "cls.build() stays in the class"
+    assert ("svc_server_deferred_inner", "svc_server_save") in calls, \
+        "a nested def closes over the enclosing method's self"
+    assert ("svc_cache_flush", "svc_cache_save") in calls
+
+
+def test_python_self_call_never_binds_to_an_unrelated_class(tmp_path):
+    """Server has no ping() anywhere on its chain, so `self.ping()` must not
+    borrow Cache.ping just because it is the only ping() in the file."""
+    calls = _python_call_pairs(tmp_path, (
+        "class Server:\n"
+        "    def run(self): return self.ping()\n\n"
+        "class Cache:\n"
+        "    def ping(self): return 1\n"
+    ))
+    assert ("svc_server_run", "svc_cache_ping") not in calls
+
+
+def test_python_self_and_super_calls_walk_in_file_bases(tmp_path):
+    """Inherited methods resolve up the in-file inherits chain, nearest first;
+    `super().save()` skips the caller's own override."""
+    calls = _python_call_pairs(tmp_path, (
+        "class Base:\n"
+        "    def save(self): return 0\n"
+        "    def ping(self): return 0\n\n"
+        "class Child(Base):\n"
+        "    def save(self): return super().save()\n"
+        "    def run(self): return self.ping()\n\n"
+        "class Other:\n"
+        "    def save(self): return 9\n"
+        "    def ping(self): return 9\n"
+    ))
+    assert ("svc_child_run", "svc_base_ping") in calls
+    assert ("svc_child_run", "svc_other_ping") not in calls
+    assert ("svc_child_save", "svc_base_save") in calls
+    assert ("svc_child_save", "svc_other_save") not in calls
+
+
+def test_python_self_call_multiple_inheritance_tie_binds_nothing(tmp_path):
+    """Two bases on the same level both define m(): ordering them needs the
+    MRO, which this pass does not model, so it binds neither."""
+    calls = _python_call_pairs(tmp_path, (
+        "class A:\n"
+        "    def m(self): return 1\n\n"
+        "class B:\n"
+        "    def m(self): return 2\n\n"
+        "class C(A, B):\n"
+        "    def run(self): return self.m()\n"
+    ))
+    assert not any(src == "svc_c_run" for src, _ in calls), calls
+
+
+def test_python_self_call_to_stored_module_function_still_binds(tmp_path):
+    """A module-level callable stored on the instance is not a method of any
+    class, so the file-wide lookup that found it before still applies."""
+    calls = _python_call_pairs(tmp_path, (
+        "def handler(): return 1\n\n"
+        "class Job:\n"
+        "    def __init__(self): self.handler = handler\n"
+        "    def run(self): return self.handler()\n"
+    ))
+    assert ("svc_job_run", "svc_handler") in calls
+
+
+def _single_file_call_pairs(tmp_path, source, ext):
+    """Extract one source file and return {(caller_id, callee_id)} for calls edges."""
+    f = tmp_path / f"svc.{ext}"
+    f.write_text(source, encoding="utf-8")
+    result = extract([f], cache_root=tmp_path)
+    return {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "calls"}
+
+
+@pytest.mark.parametrize("ext", ["ts", "js"])
+def test_js_this_call_binds_to_own_class_not_last_declared(tmp_path, ext):
+    """`this.save()` in Server must reach Server.save, not the save() of a class
+    declared later in the file. An arrow function keeps the method's `this`."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "class Server {\n"
+        "  save() { return 1; }\n"
+        "  flush() { return this.save(); }\n"
+        "  later() { return [1].map(() => this.save()); }\n"
+        "}\n"
+        "class Cache {\n"
+        "  save() { return 2; }\n"
+        "  flush() { return this.save(); }\n"
+        "}\n"
+    ), ext)
+    assert ("svc_server_flush", "svc_server_save") in calls
+    assert ("svc_server_flush", "svc_cache_save") not in calls
+    assert ("svc_server_later", "svc_server_save") in calls
+    assert ("svc_cache_flush", "svc_cache_save") in calls
+
+
+@pytest.mark.parametrize("ext", ["ts", "js"])
+def test_js_this_call_to_inherited_method_keeps_its_edge(tmp_path, ext):
+    """`extends` is only known after the symbol pass, so a method the class does
+    not define itself keeps the plain lookup instead of being refused."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "class Base {\n"
+        "  ping() { return 0; }\n"
+        "}\n"
+        "class Server extends Base {\n"
+        "  run() { return this.ping(); }\n"
+        "}\n"
+    ), ext)
+    assert ("svc_server_run", "svc_base_ping") in calls
+
+
+@pytest.mark.parametrize("ext", ["ts", "js"])
+def test_js_super_call_does_not_self_loop_onto_the_overriding_method(tmp_path, ext):
+    """`super.greet()` can never mean the caller's own method. The `extends`
+    chain is unknown at this pass, so it fails closed (no edge) rather than
+    falling back to the file-wide name map and binding to the overriding
+    `greet` as a wrong self-loop."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "class Base {\n"
+        "  greet() { return 0; }\n"
+        "}\n"
+        "class Server extends Base {\n"
+        "  greet() { return super.greet(); }\n"
+        "}\n"
+    ), ext)
+    assert ("svc_server_greet", "svc_server_greet") not in calls
+
+
+def test_swift_self_calls_bind_within_own_class_chain(tmp_path):
+    """`self.save()`, a bare `save()` (implicit self) and `super.ping()` must stay
+    on Server's chain, not jump to the class the file declares last."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "class Base {\n"
+        "    func ping() -> Int { return 0 }\n"
+        "}\n"
+        "class Server: Base {\n"
+        "    func save() -> Int { return 1 }\n"
+        "    func flush() -> Int { return self.save() }\n"
+        "    func bare() -> Int { return save() }\n"
+        "    func run() -> Int { return self.ping() }\n"
+        "    func zuper() -> Int { return super.ping() }\n"
+        "}\n"
+        "class Cache {\n"
+        "    func save() -> Int { return 2 }\n"
+        "    func ping() -> Int { return 3 }\n"
+        "}\n"
+    ), "swift")
+    assert ("svc_server_flush", "svc_server_save") in calls
+    assert ("svc_server_bare", "svc_server_save") in calls
+    assert ("svc_server_run", "svc_base_ping") in calls
+    assert ("svc_server_zuper", "svc_base_ping") in calls
+    assert not any(tgt.startswith("svc_cache_") for _, tgt in calls), calls
+
+
+def test_swift_bare_call_to_free_function_and_extension_keep_their_edges(tmp_path):
+    """Implicit self only claims methods of the caller's own chain: a free
+    function, a constructor and a method reached from an extension of the same
+    type resolve exactly as before."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "func helper() -> Int { return 1 }\n"
+        "class Foo {\n"
+        "    func a() -> Int { return helper() }\n"
+        "    func make() -> Foo { return Foo() }\n"
+        "}\n"
+        "extension Foo {\n"
+        "    func b() -> Int { return a() }\n"
+        "}\n"
+    ), "swift")
+    assert ("svc_foo_a", "svc_helper") in calls
+    assert ("svc_foo_make", "svc_foo") in calls
+    assert ("svc_foo_b", "svc_foo_a") in calls
+
+
+def test_ruby_self_sends_bind_within_own_class_chain(tmp_path):
+    """`self.save`, a paren-less `save` and an inherited `self.ping` must stay on
+    Server's chain, not jump to the class the file declares last."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "class Base\n"
+        "  def ping; 0; end\n"
+        "end\n"
+        "class Server < Base\n"
+        "  def save; 1; end\n"
+        "  def flush; self.save; end\n"
+        "  def bare; save; end\n"
+        "  def run; self.ping; end\n"
+        "end\n"
+        "class Cache\n"
+        "  def save; 2; end\n"
+        "  def ping; 3; end\n"
+        "end\n"
+    ), "rb")
+    assert ("svc_server_flush", "svc_server_save") in calls
+    assert ("svc_server_bare", "svc_server_save") in calls
+    assert ("svc_server_run", "svc_base_ping") in calls
+    assert not any(tgt.startswith("svc_cache_") for _, tgt in calls), calls
+
+
+def test_ruby_implicit_self_keeps_top_level_and_mixin_edges(tmp_path):
+    """A top-level `def` and a mixed-in module method are not methods of an
+    unrelated class, so implicit-self sends to them resolve as before."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "def helper\n"
+        "  1\n"
+        "end\n"
+        "module Greet\n"
+        "  def hi; 1; end\n"
+        "end\n"
+        "class Widget\n"
+        "  include Greet\n"
+        "  def use_helper; helper; end\n"
+        "  def say; hi; end\n"
+        "end\n"
+    ), "rb")
+    assert ("svc_widget_use_helper", "svc_helper") in calls
+    assert ("svc_widget_say", "svc_greet_hi") in calls
 
 
 def test_python_qualified_call_ambiguous_class_bails(tmp_path):
@@ -2910,6 +3201,121 @@ def test_extract_bash_attributes_variable_built_invocation_to_function(tmp_path)
     invocation = next(edge for edge in result["edges"] if edge.get("context") == "script_invocation")
 
     assert invocation["source"] == deploy["id"]
+
+
+@pytest.mark.parametrize("command", ["python3 stage.py --client \"$C\"", "python stage.py"])
+def test_extract_bash_emits_invokes_for_a_non_shell_interpreter(tmp_path, command):
+    """#3802: a script run through python/python3/node is a real dependency the
+    orchestrator has on that script, same as the existing bash-runner case."""
+    stage = tmp_path / "stage.py"
+    stage.write_text("print('stage')\n", encoding="utf-8")
+    script = tmp_path / "runner.sh"
+    script.write_text(f"#!/bin/bash\n{command}\n", encoding="utf-8")
+
+    result = extract_bash(script)
+    invocation = [
+        edge for edge in result["edges"]
+        if edge.get("relation") == "invokes" and edge.get("context") == "script_invocation"
+    ]
+
+    assert invocation == [{
+        "source": _make_id(str(script)) + "__entry",
+        "target": _make_id(str(stage.resolve())),
+        "relation": "invokes",
+        "confidence": "INFERRED",
+        "source_file": str(script),
+        "source_location": "L2",
+        "weight": 1.0,
+        "context": "script_invocation",
+        "target_file": str(stage.resolve()),
+    }]
+
+
+def test_extract_bash_emits_invokes_for_a_bare_interpreter_variable(tmp_path):
+    """#3802: "$PYTHON" scripts/stage_two.py — the command word is itself an
+    unresolvable expansion, so only the file argument identifies the target."""
+    stage = tmp_path / "stage_two.py"
+    stage.write_text("print('stage two')\n", encoding="utf-8")
+    script = tmp_path / "runner.sh"
+    script.write_text(
+        '#!/bin/bash\nPYTHON="python3"\n"$PYTHON" stage_two.py\n', encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+    invocation = [
+        edge for edge in result["edges"]
+        if edge.get("relation") == "invokes" and edge.get("context") == "script_invocation"
+    ]
+
+    assert invocation == [{
+        "source": _make_id(str(script)) + "__entry",
+        "target": _make_id(str(stage.resolve())),
+        "relation": "invokes",
+        "confidence": "INFERRED",
+        "source_file": str(script),
+        "source_location": "L3",
+        "weight": 1.0,
+        "context": "script_invocation",
+        "target_file": str(stage.resolve()),
+    }]
+
+
+def test_extract_bash_invokes_targets_a_bash_entrypoint_when_the_target_is_sh(tmp_path):
+    """A non-shell interpreter running a .sh file (unusual but not impossible)
+    must still land on the target's __entry node like the native .sh path."""
+    helper = tmp_path / "helper.sh"
+    helper.write_text("#!/bin/bash\necho helper\n", encoding="utf-8")
+    script = tmp_path / "runner.sh"
+    script.write_text('#!/bin/bash\nnode ./helper.sh\n', encoding="utf-8")
+
+    result = extract_bash(script)
+    invocation = next(
+        edge for edge in result["edges"]
+        if edge.get("relation") == "invokes" and edge.get("context") == "script_invocation"
+    )
+    assert invocation["target"] == _make_id(str(helper.resolve())) + "__entry"
+
+
+def test_extract_bash_skips_invokes_for_a_non_interpreter_command(tmp_path):
+    """A plain command that happens to take a .py argument (cp, a custom
+    tool, ...) must not be mistaken for an interpreter invocation (#3802)."""
+    stage = tmp_path / "stage.py"
+    stage.write_text("print('stage')\n", encoding="utf-8")
+    script = tmp_path / "runner.sh"
+    script.write_text(
+        "#!/bin/bash\ncp stage.py /tmp/backup.py\nsome_custom_tool stage.py\n",
+        encoding="utf-8",
+    )
+
+    result = extract_bash(script)
+    assert not any(edge.get("relation") == "invokes" for edge in result["edges"])
+
+
+def test_extract_bash_variable_path_command_does_not_invoke_its_argument(tmp_path):
+    """A variable-built PATH command (`"$DIR/run.sh" stage.py`) runs run.sh with
+    stage.py as its argument; the `/` in the command word means it is not a bare
+    interpreter variable, so no spurious `invokes` edge to the argument is minted
+    (only the real .sh `calls` edge the runner path already emits)."""
+    stage = tmp_path / "stage.py"
+    stage.write_text("print('stage')\n", encoding="utf-8")
+    runner = tmp_path / "run.sh"
+    runner.write_text("#!/bin/bash\necho run\n", encoding="utf-8")
+    script = tmp_path / "caller.sh"
+    script.write_text('#!/bin/bash\nDIR="."\n"$DIR/run.sh" stage.py\n', encoding="utf-8")
+
+    result = extract_bash(script)
+    assert not any(
+        edge.get("relation") == "invokes" and edge.get("target") == _make_id(str(stage.resolve()))
+        for edge in result["edges"]
+    )
+
+
+def test_extract_bash_skips_invokes_for_a_missing_script(tmp_path):
+    script = tmp_path / "runner.sh"
+    script.write_text("#!/bin/bash\npython3 does_not_exist.py\n", encoding="utf-8")
+
+    result = extract_bash(script)
+    assert not any(edge.get("relation") == "invokes" for edge in result["edges"])
 
 
 def test_extract_bash_no_self_loops():

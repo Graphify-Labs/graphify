@@ -1154,6 +1154,39 @@ def test_scala_val_definition_field_context():
     assert ("HttpClient", "Config") in _edge_labels(r, "references", "field")
 
 
+def test_scala_enum_definition_cases_and_methods(tmp_path):
+    """A Scala 3 `enum` is a class-like container that owns cases and methods.
+    `enum_definition` was missing from the Scala class_types, so the enum type,
+    all of its cases (`case Red`, `case Add(...)`), and its methods produced no
+    nodes at all — the type vanished from the graph. The cases must each become
+    a node with a `case_of` edge (parity with Java #1719 / Kotlin #1738 / Swift).
+    """
+    f = tmp_path / "color.scala"
+    f.write_text(
+        "enum Color { case Red, Green, Blue }\n"
+        "enum Op[A] {\n"
+        "  case Add(x: Int, y: Int)\n"
+        "  case Noop\n"
+        "  def run: A = ???\n"
+        "}\n"
+    )
+    r = extract_scala(f)
+    labels = _labels(r)
+    # The enum types themselves are contained by the file.
+    contains = _edge_labels(r, "contains")
+    assert ("color.scala", "Color") in contains
+    assert ("color.scala", "Op") in contains
+    # Every case is emitted with a case_of edge back to its enum.
+    case_of = _edge_labels(r, "case_of")
+    assert ("Color", "Red") in case_of
+    assert ("Color", "Green") in case_of
+    assert ("Color", "Blue") in case_of
+    assert ("Op", "Add") in case_of
+    assert ("Op", "Noop") in case_of
+    # A method declared in the enum body is still captured.
+    assert any(_normalize_symbol_label(l) == "run" for l in labels)
+
+
 def test_scala_var_definition_field_context():
     r = extract_scala(FIXTURES / "sample.scala")
     assert ("HttpClient", "BaseClient") in _edge_labels(r, "references", "field")
@@ -1212,6 +1245,42 @@ def test_php_call_edges_have_call_context():
 def test_php_finds_static_property_access():
     r = extract_php(FIXTURES / "sample_php_static_prop.php")
     assert "uses_static_prop" in _relations(r)
+
+
+def test_php_enum_cases_have_case_of_edge(tmp_path):
+    """Each PHP 8.1 enum case must be a node with a `case_of` edge to its enum.
+
+    `enum_declaration` is in PHP's class_types, so the enum type and its methods
+    were captured, but the cases nest in the `enum_declaration_list` body as
+    `enum_case` nodes that nothing handled — so they were dropped and the enum was
+    left a caseless leaf. This brings PHP to parity with Java #1719, Scala, Swift,
+    and C++. Backed enums (`: string` with `= 'H'`) and pure enums both apply, and
+    enum methods must still be captured.
+    """
+    f = tmp_path / "suit.php"
+    f.write_text(
+        "<?php\n"
+        "enum Suit: string {\n"
+        "    case Hearts = 'H';\n"
+        "    case Spades = 'S';\n"
+        "    public function color(): string { return 'x'; }\n"
+        "}\n"
+        "enum Status {\n"
+        "    case Active;\n"
+        "    case Closed;\n"
+        "}\n"
+    )
+    r = extract_php(f)
+    assert "error" not in r
+    labels = set(_labels(r))
+    assert {"Hearts", "Spades", "Active", "Closed"} <= labels
+    case_of = _edge_labels(r, "case_of")
+    assert ("Suit", "Hearts") in case_of
+    assert ("Suit", "Spades") in case_of
+    assert ("Status", "Active") in case_of
+    assert ("Status", "Closed") in case_of
+    # The enum's method must still be present (body walk not broken by the cases).
+    assert any(l == ".color()" for l in labels)
 
 def test_php_static_prop_target_is_holding_class():
     r = extract_php(FIXTURES / "sample_php_static_prop.php")
@@ -1703,6 +1772,44 @@ def test_elixir_guarded_single_clause_is_extracted(tmp_path):
     assert "guarded_private" in labels, (
         f"single-clause guarded defp dropped: {sorted(labels)}"
     )
+
+
+def test_elixir_defmacro_and_defguard_are_extracted(tmp_path):
+    """`defmacro`/`defmacrop`/`defguard`/`defguardp` must become member nodes.
+
+    They define named, invocable members with the same head shape as `def`/`defp`
+    (a `call` head, optionally wrapped in a `when` binary_operator), but only
+    def/defp were handled — so macros and guard macros fell through to the generic
+    recursion and were dropped entirely. The member was never a node, and a call
+    to a locally-defined macro had nothing to resolve to.
+    """
+    src = tmp_path / "macros.ex"
+    src.write_text(
+        "defmodule MyMod do\n"
+        "  defmacro trace(expr) do\n"
+        "    quote do: unquote(expr)\n"
+        "  end\n"
+        "\n"
+        "  defmacrop priv_macro(x) do\n"
+        "    quote do: unquote(x)\n"
+        "  end\n"
+        "\n"
+        "  defguard is_even(x) when is_integer(x) and rem(x, 2) == 0\n"
+        "\n"
+        "  def run(x) do\n"
+        "    trace(priv_macro(x))\n"
+        "  end\n"
+        "end\n"
+    )
+    r = extract_elixir(src)
+    assert "error" not in r
+    labels = {(n.get("label") or "").rstrip("()") for n in r["nodes"]}
+    assert "trace" in labels, f"defmacro dropped: {sorted(labels)}"
+    assert "priv_macro" in labels, f"defmacrop dropped: {sorted(labels)}"
+    assert "is_even" in labels, f"defguard dropped: {sorted(labels)}"
+    # A call to a locally-defined macro now resolves to the macro's node.
+    calls = _calls(r)
+    assert ("run()", "trace()") in calls
 
 
 def test_elixir_protocol_and_impl_are_extracted(tmp_path):
@@ -3217,6 +3324,18 @@ def test_markdown_wikilink_vault_fallback(tmp_path):
         assert e["target"] in node_ids, f"link target is a ghost node: {e}"
 
 
+@pytest.mark.parametrize("separator", ["|", "\\|"])
+def test_markdown_wikilink_alias_separator(tmp_path, separator):
+    r"""Obsidian table aliases escape the pipe as ``\|``."""
+    target = tmp_path / "target.md"
+    source = tmp_path / "source.md"
+    target.write_text("# Target\n")
+    source.write_text(f"| Link |\n| --- |\n| [[target{separator}Alias]] |\n")
+    refs = [e for e in extract_markdown(source)["edges"]
+            if e["relation"] == "references"]
+    assert [e.get("target_file") for e in refs] == [str(target)]
+
+
 def test_markdown_wikilink_fallback_path_qualified(tmp_path):
     """[[folder/name]] from a subfolder matches on the full segment suffix."""
     vault = tmp_path / "vault"
@@ -3299,6 +3418,104 @@ def test_markdown_wikilink_fallback_unicode_normalization(tmp_path):
                for e in refs), f"NFD wikilink missed the NFC file: {refs}"
 
 
+def test_markdown_wikilink_index_prunes_ignored_directories(tmp_path, monkeypatch):
+    """#3822: _build_link_index must prune directories and files matched by
+    .graphifyignore/.gitignore, preventing both 50+ min directory walks on
+    large ignored trees and wikilinks erroneously resolving into ignored files."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / ".graphifyignore").write_text("bigdata/\nsecret.md\n", encoding="utf-8")
+
+    (vault / "notes").mkdir()
+    (vault / "notes" / "hub.md").write_text("# Hub\nSee [[target]] and [[secret]].\n", encoding="utf-8")
+    (vault / "notes" / "target.md").write_text("# Target\n", encoding="utf-8")
+
+    (vault / "bigdata").mkdir()
+    (vault / "bigdata" / "sub").mkdir()
+    (vault / "bigdata" / "sub" / "secret.md").write_text("# Secret in bigdata\n", encoding="utf-8")
+
+    import os
+    visited = []
+    real_walk = os.walk
+
+    def spy_walk(top, *args, **kwargs):
+        for dirpath, dirnames, filenames in real_walk(top, *args, **kwargs):
+            visited.append(os.path.relpath(dirpath, str(vault)))
+            yield dirpath, dirnames, filenames
+
+    monkeypatch.setattr(os, "walk", spy_walk)
+
+    node_ids, refs, page_id = _vault_extract(
+        vault, [vault / "notes" / "hub.md", vault / "notes" / "target.md"]
+    )
+
+    bigdata_walked = [v for v in visited if v.startswith("bigdata")]
+    assert not bigdata_walked, f"ignored directory descended during index walk: {bigdata_walked}"
+
+    hub_id = page_id(vault / "notes" / "hub.md")
+    target_id = page_id(vault / "notes" / "target.md")
+    assert any(e["source"] == hub_id and e["target"] == target_id for e in refs), f"valid target link lost: {refs}"
+    assert not any("bigdata" in e["target"] for e in refs), f"wikilink resolved into ignored path: {refs}"
+
+
+def test_markdown_wikilink_dotted_note_name(tmp_path):
+    """A dot inside a note name is not a file extension: [[note.en]] (sibling),
+    [[v1.2 release]] (vault-wide) and [[sub/deep.fr|alias]] (path-qualified)
+    resolve to the existing <name>.md like any extension-less wikilink."""
+    vault = tmp_path / "vault"
+    (vault / "log" / "sub").mkdir(parents=True)
+    (vault / "log" / "note.en.md").write_text("# Note\n")
+    (vault / "log" / "sub" / "deep.fr.md").write_text("# Deep\n")
+    (vault / "v1.2 release.md").write_text("# Release\n")
+    (vault / "log" / "entry.md").write_text(
+        "See [[note.en]], [[v1.2 release]] and [[sub/deep.fr|deep]].\n")
+    docs = [vault / "log" / "note.en.md", vault / "log" / "sub" / "deep.fr.md",
+            vault / "v1.2 release.md"]
+    node_ids, refs, page_id = _vault_extract(vault, docs + [vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    targets = {e["target"] for e in refs if e["source"] == entry_id}
+    assert targets == {page_id(d) for d in docs}, f"dotted wikilink lost: {refs}"
+    for e in refs:
+        assert e["target"] in node_ids, f"link target is a ghost node: {e}"
+
+
+def test_markdown_dotted_link_without_note_stays_skipped(tmp_path):
+    """The .md completion needs an existing note and a wikilink: [[missing.en]]
+    with no missing.en.md, [[image.png]] (an asset) and the inline
+    [text](note.en) produce no edge, exactly as before."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "log" / "image.png").write_bytes(b"\x89PNG\r\n")
+    (vault / "log" / "note.en.md").write_text("# Note\n")
+    (vault / "log" / "entry.md").write_text(
+        "See [[missing.en]], [[image.png]] and [note](note.en).\n")
+    _, refs, page_id = _vault_extract(
+        vault, [vault / "log" / "note.en.md", vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    assert [e for e in refs if e["source"] == entry_id] == [], (
+        f"a dotted link without a matching note must stay skipped: {refs}")
+
+
+def test_markdown_dotted_wikilink_literal_file_keeps_precedence(tmp_path):
+    """A literal target graphify indexes itself wins over <name>.md:
+    [[pic.png]] beside pic.png and pic.png.md stays skipped, while
+    [[thirteen.en]] beside a raw thirteen.en (a format graphify does not
+    index) still resolves to thirteen.en.md."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "log" / "pic.png").write_bytes(b"\x89PNG\r\n")
+    (vault / "log" / "pic.png.md").write_text("# Pic\n")
+    (vault / "log" / "thirteen.en").write_text("raw\n")
+    (vault / "log" / "thirteen.en.md").write_text("# Thirteen\n")
+    (vault / "log" / "entry.md").write_text("See [[pic.png]] and [[thirteen.en]].\n")
+    notes = [vault / "log" / "pic.png.md", vault / "log" / "thirteen.en.md"]
+    _, refs, page_id = _vault_extract(vault, notes + [vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    targets = {e["target"] for e in refs if e["source"] == entry_id}
+    assert targets == {page_id(vault / "log" / "thirteen.en.md")}, (
+        f"an indexed literal file must keep precedence over its .md note: {refs}")
+
+
 # ── Groovy ───────────────────────────────────────────────────────────────────
 
 
@@ -3365,6 +3582,44 @@ def test_groovy_implements_edge():
         for e in r["edges"] if e["relation"] == "implements"
     )
     assert found, "ExtendedService should have implements edge to Resettable"
+
+
+def test_groovy_enum_and_constants_are_extracted(tmp_path):
+    """A Groovy `enum` must become a type node with a `case_of` edge per member.
+
+    `enum_declaration` was absent from the Groovy config's class_types, so the
+    enum type — and every constant it declared — was dropped entirely, leaving
+    consumers with no way to see which value a branch selects.
+    """
+    src = tmp_path / "cards.groovy"
+    src.write_text(
+        "enum Suit { HEARTS, SPADES, CLUBS, DIAMONDS }\n"
+        "class Deck {}\n"
+    )
+    r = extract_groovy(src)
+    assert "error" not in r
+    labels = _labels(r)
+    assert "Suit" in labels, "enum type dropped"
+    cases = {
+        (node_id_label(r, e["source"]), node_id_label(r, e["target"]))
+        for e in r["edges"] if e["relation"] == "case_of"
+    }
+    assert {("Suit", "HEARTS"), ("Suit", "SPADES"),
+            ("Suit", "CLUBS"), ("Suit", "DIAMONDS")} <= cases
+    # constants hang off the enum, not the file
+    file_nid = next(n["id"] for n in r["nodes"] if n["label"] == "cards.groovy")
+    lab = {n["id"]: n["label"] for n in r["nodes"]}
+    assert not [
+        e for e in r["edges"]
+        if e["source"] == file_nid and lab.get(e["target"]) == "HEARTS"
+    ]
+
+
+def node_id_label(r, nid):
+    for n in r["nodes"]:
+        if n["id"] == nid:
+            return n["label"]
+    return nid
 
 
 def test_groovy_spock_finds_class():
@@ -3641,6 +3896,23 @@ def test_razor_finds_code_block_methods():
     assert any("IncrementCount" in l for l in labels)
     assert any("LoadData" in l for l in labels)
 
+def test_razor_finds_functions_block_methods(tmp_path):
+    # @functions is the Razor Pages / MVC (.cshtml) spelling of the Blazor
+    # @code block. Both compile to class members and this extractor serves both
+    # file types, but only @code was recognised, so .cshtml methods vanished.
+    page = tmp_path / "Page.cshtml"
+    page.write_text(
+        "@functions {\n"
+        "    public int Square(int x) { return x * x; }\n"
+        "    public string Greet() { return \"hi\"; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    r = extract_razor(page)
+    labels = _labels(r)
+    assert "Square" in labels
+    assert "Greet" in labels
+
 def test_razor_no_dangling_edges():
     r = extract_razor(FIXTURES / "sample.razor")
     node_ids = {n["id"] for n in r["nodes"]}
@@ -3734,6 +4006,33 @@ def test_apex_no_dangling_edges():
 
 
 # -- SystemVerilog -------------------------------------------------------------
+
+@pytest.mark.parametrize("suffix", [".v", ".sv", ".svh", ".vh"])
+def test_verilog_family_dispatch(suffix):
+    from graphify.extract import _get_extractor
+
+    assert _get_extractor(Path(f"defs{suffix}")) is extract_verilog
+
+
+@pytest.mark.parametrize("with_module", [False, True])
+def test_verilog_header_collection_and_extraction(tmp_path, with_module):
+    from graphify.extract import collect_files, extract
+
+    header = tmp_path / "defs.vh"
+    source = "`define WIDTH 8\n"
+    if with_module:
+        source += "module helper(input wire a, output wire b);\nassign b = a;\nendmodule\n"
+    header.write_text(source, encoding="utf-8")
+
+    paths = collect_files(tmp_path)
+    assert header in paths
+    result = extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False)
+    assert header.name in {node["label"] for node in result["nodes"]}
+    if with_module:
+        assert (header.name, "helper") in _edge_labels(result, "defines")
+    else:
+        assert {node["label"] for node in result["nodes"]} == {header.name}
+
 
 def test_systemverilog_no_error():
     r = extract_verilog(FIXTURES / "sample.sv")
@@ -3901,9 +4200,9 @@ def test_cpp_paired_method_decl_and_def_are_one_node():
         e["target"] for e in r["edges"]
         if e["source"] == foo and e["relation"] in ("method", "defines", "contains")
     }
-    bar_nodes = [n for n in r["nodes"] if n["id"] in method_targets and n["label"] in ("bar", "Foo::bar()")]
+    bar_nodes = [n for n in r["nodes"] if n["id"] in method_targets and n["label"] in (".bar()", "Foo::bar()")]
     # There must be exactly one node representing bar (decl and def merged).
-    bar_ids = {n["id"] for n in r["nodes"] if n["label"] in ("bar", "Foo::bar()")}
+    bar_ids = {n["id"] for n in r["nodes"] if n["label"] in (".bar()", "Foo::bar()")}
     assert len(bar_ids) == 1, f"bar decl/def should be one node, got {bar_ids}"
     assert bar_nodes, "the merged bar node should be a member of Foo"
 
@@ -3913,7 +4212,7 @@ def test_cpp_paired_merged_node_records_definition_site():
     DECLARATION. The survivor must still carry where the symbol is implemented,
     or the definition site is lost with the dropped impl node."""
     r = _corpus("cpp_paired/Foo.h", "cpp_paired/Foo.cpp", "cpp_paired/Main.cpp")
-    bars = [n for n in r["nodes"] if n["label"] in ("bar", "Foo::bar()")]
+    bars = [n for n in r["nodes"] if n["label"] in (".bar()", "Foo::bar()")]
     assert len(bars) == 1, f"bar decl/def should be one node, got {bars}"
     bar = bars[0]
     assert str(bar["source_file"]).endswith("Foo.h"), bar
@@ -4527,6 +4826,77 @@ def test_zig_enum_and_union_methods_are_extracted(tmp_path):
         for e in r["edges"] if e["relation"] == "calls"
     }
     assert (".area()", "helper()") in calls, "call from union method body dropped"
+
+
+@_needs_zig
+def test_zig_enum_members_emit_case_of_nodes(tmp_path):
+    """Each enum member must become a node with a `case_of` edge to its enum.
+
+    The enum body walk only emitted the enum's methods; its members (the
+    `container_field` nodes `red`, `north = 0`) were dropped, leaving the enum a
+    memberless leaf. Every other language with enums (Java #1719, Swift, Scala,
+    Rust) emits a node per member with a `case_of` edge; this brings Zig to
+    parity. Struct fields share the container_field shape and must stay untouched.
+    """
+    src = (
+        "const Color = enum { red, green, blue };\n"
+        "const Dir = enum(u8) { north = 0, south };\n"
+        "const Point = struct { x: i32, y: i32 };\n"
+    )
+    f = tmp_path / "colors.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    labels = set(id_to_label.values())
+    assert {"red", "green", "blue", "north", "south"} <= labels
+    case_of = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "case_of"
+    }
+    assert ("Color", "red") in case_of
+    assert ("Color", "green") in case_of
+    assert ("Color", "blue") in case_of
+    assert ("Dir", "north") in case_of
+    assert ("Dir", "south") in case_of
+    # A struct field is a container_field too, but is not an enum member and must
+    # not be emitted as a node or gain a case_of edge.
+    assert "x" not in labels
+    assert not any(src_lbl == "Point" for src_lbl, _ in case_of)
+
+
+@_needs_zig
+def test_zig_error_set_members_emit_case_of_nodes(tmp_path):
+    """A Zig error set must become a type node with a `case_of` edge per member.
+
+    `const E = error{ A, B };` parses as a `variable_declaration` whose value is
+    an `error_set_declaration`. That value node type was not recognised, so the
+    whole declaration fell through and BOTH the error type and its members were
+    dropped. An error set is a named enumeration of error values — the direct
+    parallel of a Zig enum — so emit the type plus a node + `case_of` edge per
+    member identifier, matching the enum handling (and Java #1719 / Swift / Scala).
+    """
+    src = (
+        "const FileError = error{ NotFound, PermissionDenied };\n"
+        "fn open() FileError!void { return error.NotFound; }\n"
+    )
+    f = tmp_path / "errors.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    labels = set(id_to_label.values())
+    # Pre-fix the whole `const FileError = error{...}` declaration vanished.
+    assert "FileError" in labels
+    assert {"NotFound", "PermissionDenied"} <= labels
+    case_of = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "case_of"
+    }
+    assert ("FileError", "NotFound") in case_of
+    assert ("FileError", "PermissionDenied") in case_of
 
 
 @_needs_commonlisp

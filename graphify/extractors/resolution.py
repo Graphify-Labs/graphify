@@ -622,6 +622,16 @@ def _package_entry_candidates(
     candidates.append(package_dir / "index")
     return candidates
 
+_BUILD_OUTPUT_DIRS = frozenset({"dist", "build", "target", "out", "dist-protected"})
+
+def _is_build_output_path(path: Path, package_dir: Path) -> bool:
+    """True if path points into a known build-output directory within package_dir."""
+    try:
+        rel = _resolve_cached(path).relative_to(_resolve_cached(package_dir))
+        return bool(rel.parts and rel.parts[0] in _BUILD_OUTPUT_DIRS)
+    except ValueError:
+        return False
+
 def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
     packages = _load_workspace_packages(start_dir)
     platform = _importer_platform(start_dir)
@@ -632,10 +642,17 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
             subpath = raw[len(package_name) + 1:]
         else:
             continue
+        build_fallback: Path | None = None
         for candidate in _package_entry_candidates(package_dir, subpath, platform):
             resolved = _resolve_js_import_path(candidate)
             if resolved.is_file():
-                return resolved
+                if _is_build_output_path(resolved, package_dir):
+                    if build_fallback is None:
+                        build_fallback = resolved
+                else:
+                    return resolved
+        if build_fallback is not None:
+            return build_fallback
     return None
 
 def _find_js_project_anchor(start_dir: Path) -> Path:

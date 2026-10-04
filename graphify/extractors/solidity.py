@@ -405,6 +405,71 @@ def extract_solidity(path: Path) -> dict:
                                 })
                 stack.extend(reversed(node.named_children))
 
+    # Free (file-level) functions live at source-unit scope, outside any
+    # contract/library/interface. Solidity >=0.7 allows them, but the
+    # type-declaration loop above only descends into named type declarations,
+    # so a free function — and every call it makes — was dropped entirely.
+    free_functions: dict[tuple[str, int], list[str]] = {}
+    free_bodies: list[tuple[Node, str]] = []
+    for declaration in root.named_children:
+        if declaration.type != "function_definition":
+            continue
+        name_node = declaration.child_by_field_name("name")
+        if name_node is None:
+            continue
+        name = _read_text(name_node, source)
+        parameters = [
+            child for child in declaration.named_children
+            if child.type == "parameter"
+        ]
+        signature = ",".join(
+            _read_text(child.child_by_field_name("type"), source)
+            for child in parameters
+            if child.child_by_field_name("type") is not None
+        )
+        arity = len(parameters)
+        func_id = add_node(
+            _make_id(stem, "function", name, f"{arity}:{signature}"),
+            f"{name}()",
+            declaration,
+            kind="function",
+            callable_node=True,
+        )
+        add_edge(file_id, func_id, "contains", declaration)
+        free_functions.setdefault((name, arity), []).append(func_id)
+        body = declaration.child_by_field_name("body")
+        if body is not None:
+            free_bodies.append((body, func_id))
+
+    # Resolve calls made from free-function bodies. Only an unambiguous
+    # same-file free function is linked directly; a member call (Lib.f()) is
+    # left for cross-file resolution. Contract methods stay out of scope so we
+    # never guess a relationship across a scope we cannot see (fail-closed).
+    for function_body, caller_id in free_bodies:
+        stack = [function_body]
+        while stack:
+            node = stack.pop()
+            if node.type == "call_expression":
+                callee_node = node.child_by_field_name("function")
+                if callee_node is not None:
+                    written = _read_text(callee_node, source)
+                    callee = written.split(".")[-1]
+                    arity = sum(child.type == "call_argument" for child in node.named_children)
+                    if "." not in written:
+                        candidates = free_functions.get((callee, arity), [])
+                        if len(candidates) == 1:
+                            add_edge(caller_id, candidates[0], "calls", node)
+                    elif callee:
+                        raw_calls.append({
+                            "caller_nid": caller_id,
+                            "callee": callee,
+                            "is_member_call": True,
+                            "language": "solidity",
+                            "source_file": source_file,
+                            "source_location": f"L{node.start_point[0] + 1}",
+                        })
+            stack.extend(reversed(node.named_children))
+
     clean_edges = [
         edge for edge in edges
         if edge["source"] in seen_ids

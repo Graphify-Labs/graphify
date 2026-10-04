@@ -51,6 +51,7 @@ def extract_elixir(path: Path) -> dict:
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
+    call_scope_modules: list[str] = []
 
     _IMPORT_KEYWORDS = frozenset({"alias", "import", "require", "use"})
 
@@ -192,7 +193,16 @@ def extract_elixir(path: Path) -> dict:
                     walk(child, parent_module_nid=impl_nid)
             return
 
-        if keyword in ("def", "defp"):
+        # `defmacro`/`defmacrop` (macros) and `defguard`/`defguardp` (guard
+        # macros) define named, invocable members with the exact same head shape
+        # as `def`/`defp` — a `call` head, optionally wrapped in a `when`
+        # binary_operator. They were not in this branch, so they fell through to
+        # the generic recursion and were dropped entirely: the member was never a
+        # node and a call to it (e.g. a macro invoked elsewhere) had nothing to
+        # resolve to. Handle them identically to def/defp; they are already in the
+        # call-pass _SKIP_KEYWORDS so their own keyword is never mistaken for a call.
+        if keyword in ("def", "defp", "defmacro", "defmacrop",
+                       "defguard", "defguardp"):
             func_name = None
             if arguments_node:
                 for child in arguments_node.children:
@@ -234,6 +244,10 @@ def extract_elixir(path: Path) -> dict:
             for module_name in _get_alias_modules(arguments_node):
                 tgt_nid = _make_id(module_name)
                 add_edge(file_nid, tgt_nid, "imports", line, context="import")
+                # Only import/use bring functions into scope for unqualified
+                # calls; alias/require do not.
+                if keyword in ("import", "use"):
+                    call_scope_modules.append(module_name)
             return
 
         for child in node.children:
@@ -297,6 +311,7 @@ def extract_elixir(path: Path) -> dict:
                     "is_member_call": is_member_call,
                     "source_file": str_path,
                     "source_location": f"L{node.start_point[0] + 1}",
+                    "elixir_call_scope": call_scope_modules,
                 })
         for child in node.children:
             walk_calls(child, caller_nid)

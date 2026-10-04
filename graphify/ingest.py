@@ -109,8 +109,15 @@ def _html_to_markdown(html: str, url: str) -> str:
 
 def _fetch_tweet(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
     """Fetch a tweet URL. Returns (content, filename)."""
-    # Normalize to twitter.com for oEmbed
-    oembed_url = url.replace("x.com", "twitter.com")
+    # Normalize to twitter.com for oEmbed. Rewrite the host only: a plain
+    # text replace also rewrote "x.com" wherever it appeared in the path or query.
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").rstrip(".")
+    if _host_is(host, "x.com"):
+        host = host[: -len("x.com")] + "twitter.com"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+        parts = parts._replace(netloc=netloc)
+    oembed_url = urllib.parse.urlunsplit(parts)
     oembed_api = f"https://publish.twitter.com/oembed?url={urllib.parse.quote(oembed_url)}&omit_script=true"
     try:
         data = json.loads(safe_fetch_text(oembed_api))

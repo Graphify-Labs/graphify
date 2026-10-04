@@ -1928,3 +1928,65 @@ def test_ts_paths_alias_behind_directory_reference_resolves(tmp_path: Path):
     result = _extract_for([target, importer], tmp_path)
 
     assert _has_edge(result, "src/a.ts", "src/b.ts")
+
+
+def test_workspace_main_dist_target_falls_through_to_src_index_when_built(tmp_path: Path):
+    """#3834: A workspace package declaring "main": "./dist/index.js" without exports
+    resolves to built dist/index.js if it exists on disk. Because dist/ is outside the
+    corpus (build output / ignored), the target node is absent and the edge dropped.
+    Resolution must fall through to the source entry point (src/index.ts)."""
+    _write(tmp_path / "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "main": "./dist/index.js",
+            "types": "./dist/index.d.ts",
+        }),
+    )
+    # Simulate a built package: both dist/ and src/ exist on disk
+    _write(
+        tmp_path / "packages/pkg-a/dist/index.js",
+        'export const value = "from-dist";\n',
+    )
+    _write(
+        tmp_path / "packages/pkg-a/dist/index.d.ts",
+        'export declare const value: string;\n',
+    )
+    source_target = _write(
+        tmp_path / "packages/pkg-a/src/index.ts",
+        'export const value = "ok";\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\nexport const v = value\n",
+    )
+
+    result = _extract_for([source_target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/index.ts")
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")
+
+
+def test_workspace_main_dist_target_used_when_no_source_entry_exists(tmp_path: Path):
+    """When no source entry point exists, the build artifact candidate remains the fallback."""
+    _write(tmp_path / "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "main": "./dist/index.js",
+        }),
+    )
+    dist_target = _write(
+        tmp_path / "packages/pkg-a/dist/index.js",
+        'export const value = "from-dist";\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\nexport const v = value\n",
+    )
+
+    result = _extract_for([dist_target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")

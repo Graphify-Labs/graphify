@@ -34,6 +34,32 @@ def test_classify_python():
 def test_classify_typescript():
     assert classify_file(Path("bar.ts")) == FileType.CODE
 
+@pytest.mark.parametrize("suffix", [".vh", ".VH"])
+def test_detect_verilog_headers(tmp_path, suffix):
+    header = tmp_path / f"defs{suffix}"
+    header.write_text("`define WIDTH 8\n", encoding="utf-8")
+
+    assert classify_file(header) == FileType.CODE
+    result = detect(tmp_path)
+    assert header.resolve() in {Path(path).resolve() for path in result["files"]["code"]}
+
+def test_detect_incremental_requeues_changed_verilog_header(tmp_path):
+    header = tmp_path / "defs.vh"
+    header.write_text("`define WIDTH 8\n", encoding="utf-8")
+    manifest_path = tmp_path / "graphify-out" / "manifest.json"
+
+    full = detect(tmp_path)
+    save_manifest(full["files"], manifest_path, root=tmp_path, kind="ast")
+
+    warm = detect_incremental(tmp_path, manifest_path, kind="ast")
+    assert warm["new_total"] == 0
+
+    header.write_text("`define WIDTH 16\n", encoding="utf-8")
+    changed = detect_incremental(tmp_path, manifest_path, kind="ast")
+    assert header.resolve() in {
+        Path(path).resolve() for path in changed["new_files"]["code"]
+    }
+
 def test_classify_powershell_module():
     # #1315: .psm1 modules were never indexed (CODE_EXTENSIONS gap).
     assert classify_file(Path("Utils.psm1")) == FileType.CODE
@@ -2611,14 +2637,37 @@ def test_to_absolute_from_storage_recognizes_a_foreign_platform_absolute_key(tmp
     assert _looks_absolute("src/foo.py") is False
 
 
-def test_save_manifest_relativize_step_collapses_seeded_duplicates(tmp_path):
+def test_to_absolute_from_storage_keeps_a_foreign_key_in_its_own_syntax(tmp_path):
+    """Review finding on #1964: a foreign-platform absolute key went through
+    os.path.normpath, which applies the CURRENT platform's rules -- on
+    Windows '/home/u/foo.py' became '\\\\home\\\\u\\\\foo.py', which POSIX
+    cannot read back. Dot segments must still collapse, but under the
+    key's own syntax, so every platform canonicalizes it identically."""
+    from graphify.detect import _to_absolute_from_storage
+
+    assert _to_absolute_from_storage("/home/u/foo.py", tmp_path) == "/home/u/foo.py"
+    assert _to_absolute_from_storage("/home/u/sub/../foo.py", tmp_path) == "/home/u/foo.py"
+    assert (
+        _to_absolute_from_storage("C:\\Users\\x\\sub\\..\\foo.py", tmp_path)
+        == "C:\\Users\\x\\foo.py"
+    )
+
+
+def test_save_manifest_relativize_step_collapses_seeded_duplicates(tmp_path, monkeypatch):
     """#1964: the same collapse must happen on the WRITE side too. If the
-    existing on-disk manifest already has both an absolute and a relative
-    key for a file untouched by this save (seeded through unchanged, #917),
-    the relativize step must not silently keep the stale one just because
-    it happens to iterate last."""
+    seeded rows hold two keys for a file untouched by this save (#917) that
+    relativize to the same stored key, the relativize step must not silently
+    keep the stale one just because it happens to iterate last.
+
+    load_manifest already collapses duplicates it can canonicalize, so a
+    real on-disk manifest never reaches save_manifest's own collapse with
+    both rows (the save side only sees keys that differ in ways relpath
+    normalizes but load does not, e.g. case on Windows). Stub load_manifest
+    to hand over the un-collapsed rows directly, so this test fails if the
+    save-side collapse regresses to last-wins even while load's is intact."""
     import json
-    from graphify.detect import save_manifest
+    import os
+    import graphify.detect as detect
 
     (tmp_path / "src").mkdir()
     tracked = tmp_path / "src" / "foo.py"
@@ -2626,19 +2675,23 @@ def test_save_manifest_relativize_step_collapses_seeded_duplicates(tmp_path):
     other = tmp_path / "bar.py"
     other.write_text("def y(): pass\n")
     abs_key = str(tracked.resolve())
+    # Same file, different string: relpath collapses the '..', load's
+    # canonical form would too, but the stub bypasses that.
+    dotted_key = os.path.join(str(tmp_path.resolve()), "src", "..", "src", "foo.py")
 
     manifest_path = tmp_path / "graphify-out" / "manifest.json"
     manifest_path.parent.mkdir(parents=True)
-    # Fresh (relative) entry iterates first, stale (absolute) entry last --
-    # save_manifest's own seed step must still prefer the fresher one.
-    manifest_path.write_text(json.dumps({
-        "src/foo.py": {"mtime": 2.0, "seen": 2.0, "ast_hash": "fresh", "semantic_hash": "fresh_sem"},
+    # Fresh entry iterates first, stale entry last -- save_manifest's own
+    # collapse must still prefer the fresher one.
+    seeded = {
+        dotted_key: {"mtime": 2.0, "seen": 2.0, "ast_hash": "fresh", "semantic_hash": "fresh_sem"},
         abs_key: {"mtime": 1.0, "seen": 1.0, "ast_hash": "stale", "semantic_hash": ""},
-    }))
+    }
+    monkeypatch.setattr(detect, "load_manifest", lambda *a, **kw: dict(seeded))
 
     # Save touching only a DIFFERENT file, so foo.py's row is only seeded
     # through, never freshly stamped -- isolates the relativize collapse.
-    save_manifest({"code": [str(other)]}, str(manifest_path), root=tmp_path)
+    detect.save_manifest({"code": [str(other)]}, str(manifest_path), root=tmp_path)
 
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert raw["src/foo.py"]["ast_hash"] == "fresh", (

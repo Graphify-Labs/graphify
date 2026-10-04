@@ -2,17 +2,20 @@
 from __future__ import annotations
 import fnmatch
 import json
+import ntpath
 import os
+import posixpath
 import re
 import shlex
 import stat
 import subprocess
+import sys
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Iterable
 
 from graphify.google_workspace import (
     GOOGLE_WORKSPACE_EXTENSIONS,
@@ -42,7 +45,7 @@ _MANIFEST_PATH = str(out_path("manifest.json"))
 _MTIME_COARSE_S = 2.0
 _MTIME_SUBSECOND_S = 0.05
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.vh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -552,12 +555,28 @@ def classify_file(path: Path) -> FileType | None:
     return None
 
 
+# Missing-pypdf is a process-global condition, not per-file, so warn at most
+# once per run — a corpus of many PDFs must not print the same hint N times.
+_pypdf_missing_warned = False
+
+
 def extract_pdf_text(path: Path) -> str:
     """Extract plain text from a PDF file using pypdf."""
     if not _file_within_size_cap(path):
         return ""
     try:
         from pypdf import PdfReader
+    except ImportError:
+        global _pypdf_missing_warned
+        if not _pypdf_missing_warned:
+            _pypdf_missing_warned = True
+            print(
+                "[graphify] WARNING: PDF text extraction skipped: 'pypdf' is not "
+                "installed. Install the pdf extra: uv tool install 'graphifyy[pdf]'",
+                file=sys.stderr,
+            )
+        return ""
+    try:
         reader = PdfReader(str(path))
         pages = []
         for page in reader.pages:
@@ -569,18 +588,104 @@ def extract_pdf_text(path: Path) -> str:
         return ""
 
 
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+# Content controls and custom XML wrap paragraphs and tables without changing them.
+_DOCX_WRAPPERS = frozenset({f"{_W}sdt", f"{_W}customXml"})
+# Text under these is not part of the text as the document reads: tracked deletions, text
+# moved away, the ruby guide over its base text, text boxes (read as paragraphs of their
+# own) and the fallback copy Word writes of every text box.
+_DOCX_SKIPPED = frozenset({f"{_W}del", f"{_W}moveFrom", f"{_W}rt", f"{_W}txbxContent", _MC_FALLBACK})
+# The run children python-docx's Run.text reads, each as the text it stands for.
+_DOCX_RUN_TEXT = tuple(f"{_W}{tag}" for tag in ("br", "cr", "noBreakHyphen", "ptab", "t", "tab"))
+
+
+def _docx_inside(element, stop, tags) -> bool:
+    node = element.getparent()
+    while node is not None and node is not stop:
+        if node.tag in tags:
+            return True
+        node = node.getparent()
+    return False
+
+
+def _docx_paragraph_text(p) -> str:
+    """Paragraph.text reads only the runs directly under the paragraph, so it drops tracked
+    insertions, content controls, simple fields and smart tags."""
+    return "".join(
+        str(element)
+        for element in p.iter(*_DOCX_RUN_TEXT)
+        if not _docx_inside(element, p, _DOCX_SKIPPED)
+    )
+
+
+def _docx_blocks(container):
+    """Yield the w:p and w:tbl elements of a container in document order, looking through
+    content controls and custom XML, with each text box's content after its paragraph."""
+    for child in container:
+        if child.tag == f"{_W}p":
+            yield child
+            for box in child.iter(f"{_W}txbxContent"):
+                if not _docx_inside(box, child, _DOCX_SKIPPED):
+                    yield from _docx_blocks(box)
+        elif child.tag == f"{_W}tbl":
+            yield child
+        elif child.tag in _DOCX_WRAPPERS:
+            content = child.find(f"{_W}sdtContent")
+            yield from _docx_blocks(child if content is None else content)
+
+
+def _docx_children(parent, tag: str):
+    for child in parent:
+        if child.tag == f"{_W}{tag}":
+            yield child
+        elif child.tag in _DOCX_WRAPPERS:
+            content = child.find(f"{_W}sdtContent")
+            yield from _docx_children(child if content is None else content, tag)
+
+
+def _docx_cell_markdown(tc) -> str:
+    """A cell's text on one line with pipes escaped, so it cannot break its table row."""
+    parts = []
+    for block in _docx_blocks(tc):
+        if block.tag == f"{_W}p":
+            parts.append(_docx_paragraph_text(block))
+        else:  # a nested table, flattened into the cell
+            parts.extend(
+                _docx_cell_markdown(cell)
+                for row in _docx_children(block, "tr")
+                for cell in _docx_children(row, "tc")
+            )
+    return " ".join(" ".join(part.split()) for part in parts if part.strip()).replace("|", "\\|")
+
+
 def docx_to_markdown(path: Path) -> str:
     """Convert a .docx file to markdown text using python-docx."""
     if not _zip_within_caps(path):
         return ""
     try:
         from docx import Document
-        from docx.oxml.ns import qn
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
         doc = Document(str(path))
         lines = []
-        for para in doc.paragraphs:
+        # Walk the body in document order, so a table stays under the heading it belongs to.
+        for block in _docx_blocks(doc.element.body):
+            if block.tag == f"{_W}tbl":
+                # python-docx's rows repeat a merged cell across the grid columns it spans,
+                # which keeps the header and the rows the same width.
+                rows = [[_docx_cell_markdown(cell._tc) for cell in row.cells] for row in Table(block, doc).rows]
+                if not rows:
+                    continue
+                header = "| " + " | ".join(rows[0]) + " |"
+                sep = "| " + " | ".join("---" for _ in rows[0]) + " |"
+                lines.extend([header, sep])
+                for row in rows[1:]:
+                    lines.append("| " + " | ".join(row) + " |")
+                continue
+            para = Paragraph(block, doc)
             style = para.style.name if para.style else ""
-            text = para.text.strip()
+            text = _docx_paragraph_text(block).strip()
             if not text:
                 lines.append("")
                 continue
@@ -594,16 +699,6 @@ def docx_to_markdown(path: Path) -> str:
                 lines.append(f"- {text}")
             else:
                 lines.append(text)
-        # Tables
-        for table in doc.tables:
-            rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
-            if not rows:
-                continue
-            header = "| " + " | ".join(rows[0]) + " |"
-            sep = "| " + " | ".join("---" for _ in rows[0]) + " |"
-            lines.extend([header, sep])
-            for row in rows[1:]:
-                lines.append("| " + " | ".join(row) + " |")
         return "\n".join(lines)
     except ImportError:
         return ""
@@ -2168,13 +2263,32 @@ def _looks_absolute(key: str) -> bool:
     )
 
 
+def _normpath_own_flavor(key: str) -> str:
+    """``normpath`` an absolute ``key`` under its OWN platform's syntax.
+
+    ``os.path.normpath`` applies the current platform's rules, so on Windows
+    it rewrites a POSIX key ``/home/u/foo.py`` to ``\\home\\u\\foo.py`` —
+    a string POSIX can no longer read back, since ``posixpath`` does not
+    treat ``\\`` as a separator. Pick the flavor from the key itself: a
+    drive letter or leading backslash is Windows, a leading ``/`` that the
+    current platform does not consider absolute is POSIX.
+    """
+    if Path(key).is_absolute():
+        return os.path.normpath(key)
+    if key.startswith("\\") or _DRIVE_LETTER_RE.match(key):
+        return ntpath.normpath(key)
+    return posixpath.normpath(key)
+
+
 def _to_absolute_from_storage(key: str, root: Path) -> str:
     """Inverse of :func:`_to_relative_for_storage`.
 
     Re-anchor a stored key against ``root``. Already-absolute keys
     (legacy manifests, out-of-root entries, or a foreign-platform key —
-    see :func:`_looks_absolute`) pass through unchanged so that newly-loaded
-    manifests from before this change remain readable.
+    see :func:`_looks_absolute`) are not re-anchored, so that newly-loaded
+    manifests from before this change remain readable; they are only
+    dot-segment normalized under their own platform's syntax
+    (:func:`_normpath_own_flavor`).
     Uses ``Path(root).resolve()`` so the produced absolute path matches
     what :func:`detect` returns (which also resolves the scan root).
     NFC both sides so a relative key and an NFD-resolved root still join
@@ -2192,13 +2306,15 @@ def _to_absolute_from_storage(key: str, root: Path) -> str:
     :func:`_to_relative_for_storage`'s own choice not to resolve the key.
     """
     if _looks_absolute(key):
-        return os.path.normpath(key)
+        return _normpath_own_flavor(key)
     # NFC the joined result so an NFD-resolved root + relative key lands on
     # the same form load_manifest / detect_incremental compare against.
     return _nfc(os.path.normpath(str(Path(root).resolve() / Path(key))))
 
 
-def _collapse_manifest_duplicates(items, key_fn) -> dict:
+def _collapse_manifest_duplicates(
+    items: Iterable[tuple[str, Any]], key_fn: Callable[[str], str]
+) -> dict[str, Any]:
     """Canonicalize each raw key via ``key_fn``, keeping the more recently
     observed entry when two distinct raw keys collapse to the same
     canonical one (#1964).
@@ -2220,7 +2336,7 @@ def _collapse_manifest_duplicates(items, key_fn) -> dict:
     current. Legacy scalar/partial entries (no ``seen``, or either side not
     a dict) fall back to the historical last-wins behavior, unchanged.
     """
-    result: dict = {}
+    result: dict[str, Any] = {}
     for k, v in items:
         canonical = key_fn(k)
         if canonical in result:
