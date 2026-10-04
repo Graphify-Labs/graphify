@@ -3343,9 +3343,9 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
         collects referrers from every language that names it, and the TypeScript
         referrers must still rewire onto the TypeScript class.
 
-        Deliberately narrower than a blanket family gate on the type path: a
-        corpus really can declare its own `BookStore` in one language and subclass
-        it from another (`test_extract_rewires_unique_inheritance_stub_to_real_definition`).
+        `_cross_language_candidate` is the same per-edge rule for every label
+        (#2207). A missing base stays on the stub instead of attaching to a
+        same-named type in another language.
         """
         if edge.get("relation") not in _SUPERTYPE_RELATIONS:
             return False
@@ -3362,6 +3362,21 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             return False
         target_fam = _lang_family(by_id.get(remapped_id, {}).get("source_file"))
         return target_fam is not None and target_fam != edge_fam
+
+    def _cross_language_candidate(edge: dict, remapped_id: str) -> bool:
+        """Refuse a unique candidate whose language family differs from the edge.
+
+        Unknown families are left alone, matching the function-path guard.
+        One stub can still rewire a same-family referrer.
+        """
+        edge_fam = _lang_family(edge.get("source_file"))
+        cand_fam = _lang_family(by_id.get(remapped_id, {}).get("source_file"))
+        return (
+            edge_fam is not None
+            and cand_fam is not None
+            and edge_fam != cand_fam
+        )
+
     for edge in edges:
         is_csharp_scoped_edge = (
             str(edge.get("source_file", "")).endswith((".cs", ".razor", ".cshtml"))
@@ -3373,7 +3388,7 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             if not (
                 is_csharp_scoped_edge
                 and str(by_id.get(remapped_source, {}).get("source_file", "")).endswith(".cs")
-            ):
+            ) and not _cross_language_candidate(edge, remapped_source):
                 edge["source"] = remapped_source
         target = edge.get("target")
         if target in remap:
@@ -3381,7 +3396,9 @@ def _rewire_unique_stub_nodes(nodes: list[dict], edges: list[dict]) -> None:
             if not (
                 is_csharp_scoped_edge
                 and str(by_id.get(remapped_target, {}).get("source_file", "")).endswith(".cs")
-            ) and not _names_own_builtin_base(edge, str(target), remapped_target):
+            ) and not _names_own_builtin_base(
+                edge, str(target), remapped_target
+            ) and not _cross_language_candidate(edge, remapped_target):
                 edge["target"] = remapped_target
 
     referenced = {x for e in edges for x in (e.get("source"), e.get("target"))}
