@@ -582,7 +582,10 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `AWS_*` / `~/.aws/credentials` | AWS Bedrock — standard credential chain | `--backend bedrock` (no API key, uses IAM) |
 | `GRAPHIFY_MAX_WORKERS` | AST parallelism thread count | optional — also `--max-workers` flag |
 | `GRAPHIFY_MAX_OUTPUT_TOKENS` | Raise output cap for dense corpora | optional — e.g. `32768` for large files |
-| `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, Anthropic SDK, and Bedrock backends (default: 600) | optional — also `--api-timeout` flag |
+| `GRAPHIFY_API_TIMEOUT` | Per-call timeout in seconds for HTTP, claude-cli, cursor-cli, Anthropic SDK, and Bedrock backends (default: 600) | optional — also `--api-timeout` flag |
+| `CURSOR_API_KEY` | Cursor Agent CLI auth (alternative to `cursor-agent login`) | `--backend cursor-cli` |
+| `GRAPHIFY_CURSOR_CLI_MODEL` | Default model for cursor-cli extraction when `--model` is omitted | optional — list with `cursor-agent --list-models` |
+| `GRAPHIFY_CURSOR_CLI_PARALLEL` | Allow parallel cursor-cli labeling/extract workers (default serial) | optional — set `1` to opt in |
 | `GRAPHIFY_MAX_RETRIES` | How many times to retry a rate-limited (429) request before giving up (default: 6; honors `Retry-After`) | optional — raise for strict per-org limits (e.g. kimi); `0` disables |
 | `GRAPHIFY_MAX_RETRY_DEPTH` | How deep a truncated chunk may be bisected and re-extracted (default: 3, so up to 8x sub-calls for one chunk) | optional — lower it to cap worst-case spend; `0` disables every retry (no bisection, no hollow-response retry), so a chunk costs exactly one call |
 | `GRAPHIFY_FORCE` | Force graph rebuild even with fewer nodes | optional — also `--force` flag |
@@ -794,7 +797,7 @@ graphify antigravity install       # .agents/rules + .agents/workflows (Google A
 graphify antigravity uninstall
 
 graphify extract ./docs                        # headless LLM extraction for CI (no IDE needed)
-graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock, or claude-cli
+graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock, claude-cli, or cursor-cli
 graphify extract ./docs --backend gemini --model gemini-3.1-pro-preview
 graphify extract ./docs --backend ollama       # local Ollama (set OLLAMA_BASE_URL / OLLAMA_MODEL) - no API key needed for loopback
 OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_MODEL=my-model graphify extract ./docs --backend openai   # any OpenAI-compatible server (llama.cpp, vLLM, LM Studio)
@@ -803,6 +806,7 @@ GRAPHIFY_OLLAMA_NUM_CTX=32768 graphify extract ./docs --backend ollama   # overr
 GRAPHIFY_OLLAMA_KEEP_ALIVE=0 graphify extract ./docs --backend ollama    # unload model after each chunk (saves VRAM on small GPUs)
 graphify extract ./docs --backend bedrock      # AWS Bedrock via IAM - no API key, uses AWS credential chain
 graphify extract ./docs --backend claude-cli   # route through Claude Code CLI - no API key, uses your Claude subscription
+graphify extract ./docs --backend cursor-cli   # route through Cursor Agent CLI - no API key, uses cursor-agent login / CURSOR_API_KEY
 graphify extract ./docs --backend azure        # Azure OpenAI (set AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT)
 graphify extract ./docs --max-workers 16       # AST parallelism (also GRAPHIFY_MAX_WORKERS)
 graphify extract --postgres "postgresql://user:pass@host/db"   # introspect live PostgreSQL schema directly
@@ -858,9 +862,27 @@ graphify cluster-only ./my-project --backend=gemini            # backend for com
 graphify cluster-only ./my-project --backend=gemini --model gemini-2.5-pro  # specific model
 graphify label ./my-project                                    # (re)name communities with the configured backend
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
+graphify label ./my-project --backend=cursor-cli              # name communities via Cursor Agent CLI
+graphify label ./my-project --backend=cursor-cli --model auto # optional model (see cursor-agent --list-models)
 ```
 
 > **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
+
+#### Cursor Agent CLI
+
+Use `--backend cursor-cli` to route LLM calls (community labeling and semantic extraction) through the locally installed [Cursor Agent CLI](https://cursor.com/docs/cli/overview) instead of a separate OpenAI/Anthropic API key.
+
+1. Install Cursor Agent and ensure `cursor-agent` is on your `PATH`.
+2. Authenticate with `cursor-agent login`, or set `CURSOR_API_KEY`.
+3. Run:
+
+```bash
+graphify label . --backend=cursor-cli
+# optional model selection
+graphify label . --backend=cursor-cli --model=auto
+```
+
+Graphify invokes `cursor-agent -p --output-format json --mode ask --trust` and parses the result envelope. It does not implement Cursor authentication itself.
 
 ---
 
