@@ -2149,6 +2149,88 @@ def test_detect_skips_nested_worktrees_dir(tmp_path):
     assert not any("worktrees" in f for f in code)
 
 
+# Regression tests for #4057 - graphify's own installed skill folder is not project content
+
+def _all_detected(result) -> list[str]:
+    return as_posix_list(f for files in result["files"].values() for f in files)
+
+
+def test_detect_skips_installed_graphify_skill(tmp_path):
+    """The skill `graphify install --project --platform claude` writes (SKILL.md
+    plus references/) is never indexed; the user's code and their own skills
+    in the same .claude/skills/ dir still are (#4057)."""
+    from graphify.install import _copy_skill_file
+
+    (tmp_path / "auth.py").write_text("def login():\n    return 1\n")
+    skill = _copy_skill_file("claude", project=True, project_dir=tmp_path)
+    assert (skill.parent / "references").is_dir()  # the real packaged bundle
+    mine = tmp_path / ".claude" / "skills" / "deploy" / "SKILL.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("# Deploy\n\nHow we ship this project.\n")
+
+    found = _all_detected(detect(tmp_path))
+    assert any(f.endswith("/auth.py") for f in found)
+    assert any(f.endswith("/.claude/skills/deploy/SKILL.md") for f in found)
+    assert not any("/skills/graphify/" in f for f in found), found
+
+    ignored = detect_mod.ignored_predicate(tmp_path)
+    assert ignored(skill)
+    assert not ignored(mine)
+
+
+def test_detect_skips_graphify_skill_for_every_project_platform(tmp_path):
+    """Every project-scope skill destination install.py knows about is pruned,
+    so a new platform with a new layout fails here instead of silently being
+    indexed (#4057)."""
+    from graphify.install import _PLATFORM_CONFIG, _platform_skill_destination
+
+    platforms = [*_PLATFORM_CONFIG, "gemini"]
+    for name in platforms:
+        dst = _platform_skill_destination(name, project=True, project_dir=tmp_path)
+        (dst.parent / "references").mkdir(parents=True, exist_ok=True)
+        dst.write_text("# graphify\n\nInstalled skill.\n")
+        (dst.parent / "references" / "query.md").write_text("# Query\n\nRef.\n")
+    (tmp_path / "app.py").write_text("x = 1\n")
+
+    found = _all_detected(detect(tmp_path))
+    assert any(f.endswith("/app.py") for f in found)
+    leaked = [f for f in found if "/graphify/" in f]
+    assert leaked == [], leaked
+
+
+def test_detect_keeps_skills_graphify_source_layouts(tmp_path):
+    """Only graphify's installed skill path shape is pruned, not the bare names
+    "skills" or "graphify" (#2479): graphify's own repo layout
+    (graphify/skills/<host>/references/), a top-level skills/graphify/ as
+    published by a skills repo, and similar names outside a hidden dir stay."""
+    keep = [
+        "graphify/skill.md",
+        "graphify/skills/claude/references/query.md",
+        "graphify/skills/codex/references/update.md",
+        "graphify/detect.py",
+        "skills/graphify/SKILL.md",
+        "src/skills/graphify/loader.py",
+        "docs/agent/skills/graphify/notes.md",
+        ".claude/skills/graphify-extras/SKILL.md",
+        ".claude/graphify/notes.md",
+    ]
+    for rel in keep:
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("def f():\n    return 1\n" if rel.endswith(".py") else "# Title\n\nText.\n")
+
+    found = _all_detected(detect(tmp_path))
+    for rel in keep:
+        assert any(f.endswith("/" + rel) for f in found), rel
+
+
+def test_is_noise_dir_graphify_skill_needs_parent():
+    """Without a parent the path shape cannot be verified, so keep the dir."""
+    assert detect_mod._is_noise_dir("graphify") is False
+    assert detect_mod._is_noise_dir("skills") is False
+    assert detect_mod._is_noise_dir("graphify", Path("..") / "skills") is False
+
+
 def test_detect_extra_excludes_pattern(tmp_path):
     """extra_excludes patterns exclude matching files from detect() (#947)."""
     (tmp_path / "main.py").write_text("x = 1")
