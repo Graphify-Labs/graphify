@@ -379,3 +379,12 @@ mechanism dispatch and source facts, while `qt_event_index` owns endpoint lookup
 Computed receiver identity stays unavailable. Qt policy 15 invalidates old derived
 sites; source AST schema 10 is unchanged. Both scanner/event modules and their new
 tests remain below 300 lines. No new persistence owner or diagnostic code exists.
+
+## Project and header admission (INC-QML-08a)
+
+`extractors/qml_qmake_values.py` owns original lexical statement/path coverage;
+`qml_qmake.py` produces project facts with separate build/tooling hints.
+`cpp_header.py` owns only the masked classification prefix; `extract.py::_is_cpp_header`
+delegates classification and retains dispatch ownership. This shrinks the legacy
+facade to 8,993 physical lines within its existing 9,010 ceiling. New source and
+tests remain below 300 lines. AST schema 11 / Qt policy 16 invalidate old facts.

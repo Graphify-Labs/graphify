@@ -1566,3 +1566,22 @@ provider and provenance regressions additionally passed **65 cases, 5.47 seconds
 Ruff and targeted Pyright pass. Peer rerun excludes all 14 original constructor
 and emission counterexamples. Qt policy 15 refreshes derived observations; AST
 schema 10 is unchanged. Final installed and compatibility gates remain pending.
+
+## INC-QML-08a project and header adoption
+
+The original public qmake selection failed **12 cases, 11 passed, 0.62 seconds**;
+adjacent lexical path controls then failed **2 cases, 29 passed, 0.58 seconds**.
+Final metadata/native project compatibility selection passed **176 cases, 22.96
+seconds**. Header whitespace/inert-marker regression first failed **11 cases,
+5 passed, 1.08 seconds**. The integration-owner command `python -m pytest
+ tests/test_qt_qmake_adoption.py tests/test_qt_qmake_adoption_integration.py
+ tests/test_qt_header_adoption.py tests/test_qt_header_updates.py -q --tb=short`
+passed **69 cases, zero skips, 15.54 seconds**. This includes Objective-C priority,
+plain C, optional-parser-independent classification, 256 KiB prefix, original
+BOM/CRLF/Unicode spans, actual source-dispatch switching, metadata-only updates,
+real cache retention and Windows read-only failure/repaired retry.
+
+AST schema 11 and Qt policy 16 retire older producer/derived facts. Project inputs
+and build hooks remain unexecuted. New helpers/tests remain below 300 lines; the
+facade shrinks within its existing ceiling. Installed whole-root/safe-subroot
+acceptance and final full gates remain pending under INC-QML-08c.

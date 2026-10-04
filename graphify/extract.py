@@ -6935,20 +6935,6 @@ def _is_objc_header(path: Path) -> bool:
     return any(marker in head for marker in _OBJC_HEADER_MARKERS)
 
 
-# C++-only signals. None of these are valid in a plain C header, so finding one
-# in a `.h` is a high-confidence signal the header is C++ (#1547). The C grammar
-# has no class_specifier, so a `class Foo { ... };` header routed to extract_c
-# loses the class and its method prototypes (a junk `foo_foo` node + a sourceless
-# `class` stub); routing to extract_cpp recovers the real type. Kept CONSERVATIVE:
-# a plain C header with none of these stays on extract_c. ObjC sniffing keeps
-# priority (an ObjC header can legitimately contain `::`/`class` inside an inline
-# C++ block when compiled as Objective-C++).
-_CPP_HEADER_MARKERS = (
-    b"class ", b"namespace ", b"template", b"::",
-    b"public:", b"private:", b"protected:",
-)
-
-
 def _is_objc_source(path: Path) -> bool:
     """Whether a `.m` file is Objective-C rather than MATLAB/Octave (#1702).
 
@@ -6966,16 +6952,14 @@ def _is_objc_source(path: Path) -> bool:
 def _is_cpp_header(path: Path) -> bool:
     """Whether a `.h` file is C++ rather than plain C (#1547).
 
-    Mirrors `_is_objc_header`: sniffs for a C++-only token. Used only to reroute
-    a `.h` from extract_c to extract_cpp when no ObjC marker is present (ObjC has
-    priority). Conservative by construction — a plain C header matches nothing
-    here and keeps its existing extract_c routing.
+    Visible declaration tokens in the bounded header prefix select C++, across
+    whitespace and comments between tokens. Inert literals/comments and
+    inconclusive headers retain C. Objective-C selection has priority.
     """
-    try:
-        head = path.read_bytes()[:256 * 1024]
-    except OSError:
-        return False
-    return any(marker in head for marker in _CPP_HEADER_MARKERS)
+    # Admission uses visible tokens across whitespace; strings/comments cannot
+    # select another parser. This standard-library helper needs no Qt parser.
+    from graphify.cpp_header import is_cpp_header
+    return is_cpp_header(path)
 
 
 def _get_extractor(path: Path) -> Any | None:

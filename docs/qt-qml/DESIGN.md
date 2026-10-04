@@ -938,3 +938,25 @@ receiver identity; an inner factory sharing its start cannot become an unknown
 bare signal. Known bare signal calls retain their separate inventory contract.
 This changes derived event admission only: Qt policy 15, AST schema 10 unchanged.
 Existing publication and diagnostic owners retain failure/retry ordering.
+
+## Project and header adoption (INC-QML-08a)
+
+`extractors/qml_qmake_values` owns original-position lexical statement coverage and
+literal paths; `qml_qmake` owns resulting module/source facts. Exact `$$PWD`
+prefixes use the parsed file's directory. Only `=` and `+=` are admitted. Paths
+are bounded to 384 UTF-8 bytes and scopes to 64 levels. Unrelated toolchain
+settings do not reject module facts; relevant conditions, unknown evaluation,
+PWD reassignment, expansion and root escapes do. `qt_qmake_assignment` is observed
+lexical evidence; `qt_qmake_statement` records ignored/unresolved coverage.
+Neither expands corpus discovery or supplies independent lookup authority.
+QML_IMPORT_PATH tooling hints and QMLPATHS build hints remain distinct from
+explicit analysis roots.
+
+`cpp_header` owns the existing bounded 256 KiB classification prefix. It masks
+comments, continued comments, normal/raw strings and characters before testing
+visible C++ markers. The facade retains discovery and Objective-C priority.
+Whitespace, BOM, CRLF and Unicode retain their original-byte meaning; plain C and
+inconclusive headers retain C dispatch. Classification requires no optional Qt
+parser or project execution. AST schema 11 and Qt policy 16 invalidate old source
+and derived facts at unchanged package versions. Root boundaries and persistence
+ordering are unchanged; normal retry reparses corrected metadata/source.

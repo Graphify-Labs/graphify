@@ -1078,6 +1078,13 @@ repository. Local syntax proof does not establish the full adoption profile.
 | INC-QML-08b | Resolve statically typed factory/member context providers and typed child-service API/signal chains; REQ-QML-018-AC03/AC04, safety portions of AC06 | Reproductions may proceed alongside 08a; resolved joins depend on its accepted declaration/type contracts. Exit with canonical scoped endpoints and persisted consumer evidence, including negative controls |
 | INC-QML-08c | Exercise the combined profile through a clean installed optional wheel and production updates; REQ-QML-018-AC05/AC06 | After 08a/08b. Exit with whole-project/safe-subroot source/artifact parity, failure retention/recovery, mutation/idempotency and affected platform/consumer evidence |
 
+INC-QML-08a's qmake and header source/update slice is implemented with local
+passing acceptance. AST schema 11 / Qt policy 16 invalidate prior admitted facts.
+Its exit review retains typed-provider consumer work and installed combined proof;
+INC-QML-29/30 address the separately reproduced generic and affected-query gaps.
+Exact commands, rejection/failure controls and limits belong to validation and
+traceability. This does not yet declare the complete adoption requirement Verified.
+
 Before code changes, make each suspected product failure a public minimal
 reproduction at its lowest faithful parser, reader or resolver boundary. Separate
 valid syntax unsupported by the adapter from malformed input and unresolved
@@ -2017,3 +2024,26 @@ Exercise C++-only edits, cold/warm/manual/watch parity, stale-edge removal, real
 publication failure, retained products and repaired retry. Refresh producer and
 derived cache epochs and prove the reviewed installed artifact. Review the plan
 at exit and retain conservative unsupported API shapes.
+
+## INC-QML-30 — Affected-query logical edge direction
+
+Status: **In progress; reproduced independently of reference-return admission**.
+Acceptance: REQ-QML-018-AC04/AC06, REQ-QML-017-AC04 and REQ-QML-011-AC01/AC04.
+Owner: dependency consumer maintainer. Dependency: persisted canonical source
+occurrences and direction attributes, with existing Qt source-owner promotion.
+
+Affected queries follow accepted logical dependency direction in both directed and
+undirected graphs. An undirected NetworkX tuple may place the callee first merely
+because it was inserted first; valid `_src`/`_tgt` evidence governs the reverse
+walk and outward member seeding. Missing direction retains documented legacy
+orientation. Partial, foreign or contradictory direction grants no guessed link,
+including through source-owner promotion. No new dependency edge is invented.
+
+The original pointer-factory and direct-provider production probes each missed an
+accepted context access after JSON reload. Promote those failures into ordinary
+regressions. Verify insertion-order reversal, relation/depth/site provenance,
+class/member seeding, corrupt transport, default/directed reload and actual CLI
+queries. Preserve legacy generic results and graph bytes. Source/update parity
+and existing publication failure/retry remain applicable because this is a read-only
+consumer correction. Record measured legacy growth and reviewed artifact proof;
+no AST or Qt policy change is required. Review the plan at exit.

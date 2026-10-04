@@ -351,3 +351,16 @@ not generic parser failures. Existing QT_CPP_SYNTAX and stage-specific update/wr
 errors still reject genuine failure and preserve prior accepted products. Repair
 source or declarations and retry normally; no new code or runtime delivery claim
 is introduced. Policy 15 refreshes unchanged derived sites.
+
+## qmake adoption rejection (INC-QML-08a)
+
+Supported literal metadata and header classification add no success warning.
+Relevant unevaluated metadata uses the existing QML_PROJECT_UNSUPPORTED boundary.
+New bounded reasons are `qmake_pwd_reassignment`, `qmake_scope_limit`,
+`qmake_path_limit` and `qmake_path_outside_accepted_root`. Conditional/expanded,
+unknown statement and unbalanced scope reasons remain applicable. Ignored build
+settings and observed assignments are coverage facts, not branch execution.
+Repair the source or explicitly configured safe roots and retry ordinary analysis;
+expansion does not become supported by force. Parse/root/publication failure keeps
+the existing product-cohort and successful source-cache retention contract. Header
+classification supplies no Qt semantic authority and introduces no separate code.
