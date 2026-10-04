@@ -853,10 +853,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     ignored, and a graph that is stale for the target file softens to a non-mandatory
     nudge instead of blocking or demanding.
 
-    Grok Build runs this same guard (.grok/hooks/graphify.json) and sends the
-    event with camelCase keys (toolName/toolInput/sessionId) and its own tool
-    names (read_file takes ``path``); those are read when the snake_case keys
-    are absent.
+    Grok Build runs this same guard (.grok/hooks/graphify.json) with its own
+    tool names. Its events carry Claude's snake_case keys alongside camelCase
+    ones (toolName/toolInput/sessionId), which are read only when the snake_case
+    keys are absent, and its read_file names the target ``target_file``.
     """
     from graphify.paths import out_path
     # Gemini's BeforeTool hook takes no stdin and must ALWAYS return a decision so
@@ -884,6 +884,11 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
         return
     tool_name = d.get("tool_name", d.get("toolName"))
     session_id = str(d.get("session_id", d.get("sessionId")) or "")
+    # Grok's read_file names its target `target_file` (captured from a live
+    # Grok Build 1.0.46 session); read it as Claude's `file_path` so the
+    # extension, project and staleness checks below see it.
+    if tool_name == "read_file" and not t.get("file_path") and t.get("target_file"):
+        t = {**t, "file_path": t["target_file"]}
     try:
         if kind == "search":
             cmd_str = str(t.get("command", "") or "")
@@ -997,8 +1002,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # #1840 (b): stale-for-target -> soften, never block. The target file
             # changed after the last build, or watch flagged the tree.
             stale = False
-            # Grok's read_file names its target `path`.
-            fp = str(t.get("file_path") or (t.get("path") if tool_name == "read_file" else "") or "")
+            fp = str(t.get("file_path") or "")
             if fp:
                 try:
                     stale = os.stat(fp).st_mtime > gmtime

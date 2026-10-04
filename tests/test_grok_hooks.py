@@ -5,16 +5,17 @@
 (``.codex/hooks.json``). Grok sends the hook event with camelCase keys and its
 own tool names, so the guard reads those when the snake_case keys are absent.
 
-The payloads below follow Grok Build's documented hook input schema. They were
-not captured from a live session:
-- Envelope: https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md#input
-  (``hookEventName``, ``hook_event_name``, ``sessionId``, ``cwd``,
-  ``workspaceRoot``, ``toolName``, ``toolInput``, ``toolUseId``, ...).
-- Tool input field names (``path``, ``command``, ``pattern``):
-  https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-tools/src/tool_taxonomy.rs
-- Matcher aliases (Bash -> run_terminal_command, Read -> read_file, Grep -> grep,
-  Glob -> list_dir) and CLAUDE_PROJECT_DIR being set for every hook: the same
-  10-hooks.md, "Tool Name Aliases" and "Environment Variables".
+The event shape below was captured from a live Grok Build 1.0.46 session
+(headless ``grok -p`` in a trusted throwaway repo, with a raw-stdin logging hook
+next to graphify's): every event carries Claude's snake_case keys (``tool_name``,
+``tool_input``, ``session_id``, ...) alongside camelCase ones (``toolName``,
+``toolInput``, ``sessionId``, ``toolUseId``, ``workspaceRoot``, ...). Tool inputs:
+``run_terminal_command`` takes ``command``, ``grep`` takes ``pattern``/``path``,
+``read_file`` takes ``target_file`` and ``list_dir`` takes ``target_directory``
+(xai-grok-tools ``ReadFileInput`` renames its ``path`` field to ``target_file``).
+The ``Bash|Grep`` and ``Read|Glob`` matchers fired for ``run_terminal_command``
+and ``read_file`` through Grok's Claude-name aliasing (xai-grok-hooks matcher.rs).
+The guard also still accepts a camelCase-only event.
 """
 import io
 import json
@@ -124,7 +125,7 @@ def test_grok_non_search_command_is_silent(tmp_path, monkeypatch):
 
 def test_grok_read_file_relative_path_nudges(tmp_path, monkeypatch):
     _project(tmp_path)
-    p = _grok_event("read_file", {"path": "src/a.py"}, tmp_path)
+    p = _grok_event("read_file", {"target_file": "src/a.py"}, tmp_path)
     assert _invoke("read", p, tmp_path, monkeypatch) == cli._READ_NUDGE
 
 
@@ -134,14 +135,14 @@ def test_grok_read_file_outside_project_is_ignored(tmp_path, monkeypatch):
     other = tmp_path.parent / (tmp_path.name + "-other")
     other.mkdir()
     (other / "z.py").write_text("x = 1\n", encoding="utf-8")
-    p = _grok_event("read_file", {"path": str(other / "z.py")}, tmp_path)
+    p = _grok_event("read_file", {"target_file": str(other / "z.py")}, tmp_path)
     out = _invoke("read", p, tmp_path, monkeypatch, env={"CLAUDE_PROJECT_DIR": str(tmp_path)})
     assert out == ""
 
 
 def test_grok_list_dir_of_a_directory_is_silent(tmp_path, monkeypatch):
     _project(tmp_path)
-    p = _grok_event("list_dir", {"path": "src"}, tmp_path)
+    p = _grok_event("list_dir", {"target_directory": "src"}, tmp_path)
     assert _invoke("read", p, tmp_path, monkeypatch) == ""
 
 
@@ -149,30 +150,30 @@ def test_grok_read_file_stale_target_softens(tmp_path, monkeypatch):
     f = _project(tmp_path)
     time.sleep(0.02)
     f.write_text("def foo():\n    return 2\n", encoding="utf-8")
-    p = _grok_event("read_file", {"path": str(f)}, tmp_path)
+    p = _grok_event("read_file", {"target_file": str(f)}, tmp_path)
     assert _invoke("read", p, tmp_path, monkeypatch, strict=True) == cli._READ_NUDGE_STALE
 
 
 def test_grok_strict_denies_once_per_session(tmp_path, monkeypatch):
     _project(tmp_path)
-    p = _grok_event("read_file", {"path": "src/a.py"}, tmp_path, sid="grok-s1")
+    p = _grok_event("read_file", {"target_file": "src/a.py"}, tmp_path, sid="grok-s1")
     first = _invoke("read", p, tmp_path, monkeypatch, env={"GRAPHIFY_HOOK_STRICT": "1"})
     assert first == cli._READ_DENY and _decision(first) == "deny"
     assert (tmp_path / "graphify-out" / "cache" / "hook_sessions" / "grok-s1.denied").exists()
     assert _invoke("read", p, tmp_path, monkeypatch, env={"GRAPHIFY_HOOK_STRICT": "1"}) == cli._READ_NUDGE
-    other = _grok_event("read_file", {"path": "src/a.py"}, tmp_path, sid="grok-s2")
+    other = _grok_event("read_file", {"target_file": "src/a.py"}, tmp_path, sid="grok-s2")
     assert _decision(_invoke("read", other, tmp_path, monkeypatch, strict=True)) == "deny"
 
 
 def test_grok_strict_empty_session_id_fails_open(tmp_path, monkeypatch):
     _project(tmp_path)
-    p = _grok_event("read_file", {"path": "src/a.py"}, tmp_path, sid="")
+    p = _grok_event("read_file", {"target_file": "src/a.py"}, tmp_path, sid="")
     assert _invoke("read", p, tmp_path, monkeypatch, strict=True) == cli._READ_NUDGE
 
 
 def test_grok_strict_marker_write_failure_fails_open(tmp_path, monkeypatch):
     _project(tmp_path)
-    p = _grok_event("read_file", {"path": "src/a.py"}, tmp_path)
+    p = _grok_event("read_file", {"target_file": "src/a.py"}, tmp_path)
 
     def _boom(*a, **k):
         raise PermissionError("read-only filesystem")
@@ -196,6 +197,41 @@ def test_grok_payload_through_cli_exits_zero(tmp_path):
                        input=p, cwd=tmp_path, env=env, capture_output=True, timeout=60)
     assert r.returncode == 0
     assert json.loads(r.stdout) == json.loads(cli._SEARCH_NUDGE)
+
+
+def _captured_read_event(root, target):
+    """A Grok Build 1.0.46 read_file PreToolUse event, as captured live (ids and
+    paths replaced): both key styles, ``target_file`` input."""
+    sid, tid = "01a105a1-0000-7000-a000-000000000000", "call-0000-0"
+    tool_input = {"target_file": target}
+    transcript = str(root / ".grok-session" / "updates.jsonl")
+    return {
+        "cwd": str(root), "workspaceRoot": str(root),
+        "hookEventName": "pre_tool_use", "hook_event_name": "PreToolUse",
+        "permissionMode": "bypassPermissions", "permission_mode": "bypassPermissions",
+        "sessionId": sid, "session_id": sid,
+        "timestamp": "2026-10-04T06:37:00Z",
+        "toolName": "read_file", "tool_name": "read_file",
+        "toolInput": tool_input, "tool_input": tool_input, "toolInputTruncated": False,
+        "toolUseId": tid, "tool_use_id": tid,
+        "transcriptPath": transcript, "transcript_path": transcript,
+    }
+
+
+def test_grok_captured_read_file_event_nudges(tmp_path, monkeypatch):
+    # The live run sent an absolute target_file; before the fix the guard only
+    # looked at file_path/path and stayed silent on every Grok read.
+    f = _project(tmp_path)
+    p = _captured_read_event(tmp_path, str(f))
+    assert _invoke("read", p, tmp_path, monkeypatch) == cli._READ_NUDGE
+
+
+def test_grok_captured_read_file_event_strict_denies_once(tmp_path, monkeypatch):
+    f = _project(tmp_path)
+    p = _captured_read_event(tmp_path, str(f))
+    env = {"GRAPHIFY_HOOK_STRICT": "1", "GRAPHIFY_HOOK_STRICT_TTL": "0"}
+    assert _decision(_invoke("read", p, tmp_path, monkeypatch, env=env)) == "deny"
+    assert _invoke("read", p, tmp_path, monkeypatch, env=env) == cli._READ_NUDGE
 
 
 # --- Claude Code path unchanged --------------------------------------------------
