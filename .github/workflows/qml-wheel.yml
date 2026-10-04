@@ -9,8 +9,10 @@ on:
 permissions:
   contents: read
 
+# PR revisions replace obsolete evidence; distinct non-PR groups also prevent
+# GitHub's pending-run replacement from dropping queued default-branch proof.
 concurrency:
-  group: qml-wheel-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: qml-wheel-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

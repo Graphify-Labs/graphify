@@ -515,9 +515,11 @@ and content contract of the selected operating-system profile.
 
 5 - Windows user-scope hooks preserve the selected Graphify executable through Cmd and PowerShell argument transports when legal path characters include spaces, operators, apostrophes, dollar signs, backticks and paired percent names. A PATH decoy or environment expansion cannot substitute another executable. Missing selected launchers and launcher failures return failure. A missing, inaccessible or unsafe OS-owned PowerShell executable, or an encoded command exceeding the supported Cmd transport limit, rejects hook installation with a bounded actionable reason before changing existing hook JSON or its backup. Repeated installation and uninstall retain unrelated hooks and recognize the owned command through supported status metadata. Project-scope bare invocation and POSIX literal quoting retain their existing contracts. (`REQ-CORE-001-AC05`)
 
-Status: **Correction in progress**. Existing platform behaviors are implemented;
-the Codex path invocation correction and fresh compatibility evidence belong to
-INC-CORE-01 and INC-CORE-05 in the [compatibility plan](COMPATIBILITY.md#plan-and-acceptance-matrix).
+Status: **Locally Verified for native Windows and destination decision profiles**.
+All five criteria have focused source and native consumer evidence; the full
+Windows source suite has no failures. Other kernels and actual Codex Desktop
+event delivery retain separate system boundaries. INC-CORE-01 and INC-CORE-05
+belong to the [compatibility plan](COMPATIBILITY.md#plan-and-acceptance-matrix).
 
 ### REQ-CORE-002 — Safe filesystem admission and recovery
 
@@ -533,7 +535,7 @@ existing explicit repository-root recovery contract.
 
 3 - Missing-CWD diagnostics distinguish an absent explicit repository root from failure to change to a supplied repository root. A failed supplied root is not described as unset, and diagnostic text does not expose its private absolute path. The failure returns before queue, lock or graph publication and preserves the prior graph bytes. (`REQ-CORE-002-AC03`)
 
-Status: **Implemented; fresh profile verification in progress**. Native Windows
+Status: **Native admission/recovery verified; actual POSIX proof pending**. Native Windows
 cannot establish real FIFO or deleted-current-directory evidence. The exact
 system gaps remain in [compatibility verification](COMPATIBILITY.md#verification-profiles-and-remaining-system-work).
 
@@ -548,6 +550,27 @@ portable source paths and exact source locations in extracted and saved graphs.
 
 2 - Original UTF-8 LF and CRLF source bytes produce correct portable source paths, source lines, extracted confidence and directed references through the production facade, graph assembly and JSON save/reload. Existing malformed/dynamic input handling is retained. (`REQ-CORE-003-AC02`)
 
-Status: **Implemented; focused Windows source/persistence verification passes**.
+Status: **Locally Verified for native Windows source/persistence**.
 The correction is confined to the test's platform-dependent path expectation.
 Exact evidence belongs to [traceability](../tests/TRACEABILITY.md#shared-compatibility-verification).
+
+### REQ-CORE-004 — Hosted compatibility evidence
+
+Hosted validation executes the applicable source and consumer tests with their
+required tools and disposable services, preserves the tested revision and
+dependencies, and reports failures and exclusions explicitly.
+
+**Acceptance Criteria**
+
+1 - Ubuntu Python 3.10, 3.12, 3.13 and 3.14 jobs execute the full source suite with all frozen extras, a real C preprocessor, Bash/sh, Node and a reviewed wheel input. A disposable pinned FalkorDB service admits graph commands before its persistence/idempotency tests run. Missing tools or the wrong service fail readiness; they cannot establish passing acceptance through skips. Real POSIX object, permission and deleted-directory fixtures execute where applicable. (`REQ-CORE-004-AC01`)
+
+2 - A Windows Python 3.12 job executes the assigned native hook, installer, filesystem recovery, Terraform and emitted-script regressions with real Cmd/Windows PowerShell, Git Bash/sh and Node 24.19.0. Bash forwards to the selected Python interpreter; PATH cannot substitute a global Graphify or invoke an installation fallback. Tool preflight fails before collection when a required consumer is unavailable. POSIX-only exclusions retain their separate Linux assignment. (`REQ-CORE-004-AC02`)
+
+3 - Source jobs retain the workflow/event/ref, PR source head and base, actual checkout SHA, interpreter/tool/dependency versions, pytest exit, JUnit outcomes and skip reasons. Tests preserve the checkout, tracked source/configuration and installed dependency identities. Failed pytest remains a failed job when evidence/integrity steps run; unavailable evidence is reported explicitly. Disposable test graphs and the job-owned service are removed with confirmed cleanup; failed or unconfirmed cleanup cannot establish acceptance. Fake SDK providers and public fixtures supply test data without credentials or private corpus inputs. (`REQ-CORE-004-AC03`)
+
+4 - The established push/PR/dispatch triggers and existing required/advisory gate policies remain intact. One PR event owns its validation; no equivalent full feature-push dispatch is added. Obsolete PR revisions can cancel their own workflow runs, while default-branch and explicit recovery runs retain distinct groups and cannot be cancelled by a later PR revision. Jobs use read-only repository permissions. (`REQ-CORE-004-AC04`)
+
+Status: **Implemented configuration; hosted execution unverified**. INC-CORE-06 in
+the [compatibility plan](COMPATIBILITY.md#plan-and-acceptance-matrix) owns readiness,
+workflow validation, publication and exact-revision evidence. Local passing
+tests and configuration checks do not establish hosted acceptance.

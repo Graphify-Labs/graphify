@@ -1,5 +1,14 @@
 # Qt/QML validation record
 
+This chronological record preserves evidence for each tested revision. Current
+native source and installed-consumer results are in
+[traceability](../../tests/TRACEABILITY.md#current-native-source-and-artifact-evidence--2026-10-05):
+8,818 full-suite passes with no pytest failures, plus separate setup replays.
+Older failure totals are historical checkpoints. The
+[shared compatibility procedure](../COMPATIBILITY.md#hosted-runner-proof-procedure)
+assigns remaining real Linux/service proof; its prepared CI configuration has
+not yet executed. Full typing retains 604 matched baseline errors.
+
 <a name="executed-qml-00-through-qml-03--2026-10-03"></a>
 
 ## Executed INC-QML-00 through INC-QML-03 — 2026-10-03

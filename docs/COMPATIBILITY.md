@@ -20,6 +20,19 @@ not a passing assertion.
 | INC-CORE-03 | Terraform scope and portable serialized provenance | REQ-CORE-003-AC01–AC02 | LF/CRLF source facts and directed references survive graph assembly/JSON reload without cross-directory binding |
 | INC-CORE-04 | Accurate unavailable-CWD recovery diagnostics | REQ-CORE-002-AC03 | Supplied-root change-directory failure is distinguished from an unset root; prior output retained and private paths excluded |
 | INC-CORE-05 | Native hook consumer and literal-path completion | REQ-CORE-001-AC01/AC05 | Exact Cmd and PowerShell argument transport, expansion-sensitive paths, dependency rejection and hook ownership; full-source and installed-artifact proof |
+| INC-CORE-06 | Hosted Linux evidence and native Windows compatibility lane | REQ-CORE-004-AC01–AC04 | Required tools/service and reviewed wheel admitted; workflow syntax/configuration reviewed; hosted jobs retain applicable passing results and exact revision/integrity evidence |
+
+INC-CORE-01–05 have current native source evidence below. The hook/filesystem
+corrections also have independent installed-consumer evidence. INC-CORE-02
+retains its actual POSIX filesystem gap. INC-CORE-06 addresses that
+gap and the missing Windows generic-contract CI selection; it changes test
+infrastructure, with no Graphify extraction or Qt schema change. Existing
+all-extras Ubuntu source jobs and the separate QML-wheel matrix remain the
+starting point. Configuration acceptance and hosted execution are distinct.
+Both workflows use the PR number for obsolete-PR cancellation and a distinct
+run ID for non-PR groups. The QML-wheel correction replaces its former branch-ref
+fallback, which could replace an older queued non-PR proof even when running-job
+cancellation was disabled. Its triggers, matrix and test jobs are unchanged.
 
 The environment uses Python 3.12 and `uv sync --all-extras --frozen`. This
 installs the committed dependency versions without changing the lockfile.
@@ -177,12 +190,18 @@ unsafe controls. Literal expansion-sensitive, bracket and Unicode paths are
 included. This establishes the consumer boundary; it does not establish actual
 Codex Desktop event delivery or all PowerShell versions. POSIX serialization is
 retained, with actual POSIX dispatch assigned to the Linux profile. Full-source
-and installed-artifact verification of INC-CORE-05 is in progress.
+and installed-artifact verification of INC-CORE-05 passes in the recorded native
+profiles below; actual Linux dispatch remains unverified.
 The inspected versioned source is the
 [command executor](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/hooks/src/engine/command_runner.rs)
 and [session configuration](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/core/src/session/mod.rs).
 
-## Restart checkpoint
+<a name="restart-checkpoint"></a>
+
+## Historical restart checkpoint
+
+This section records `9efa7e4`/`c1c0e6a` before the current consumer correction
+and native run. Current results are in [traceability](../tests/TRACEABILITY.md#current-native-source-and-artifact-evidence--2026-10-05).
 
 All dependency installation and focused test processes have finished. The full
 source rerun is deferred until the WSL installation restart and initialization.
@@ -205,6 +224,80 @@ changed, and update graph/evidence. Retain source and dependency fingerprints,
 exact commands and failure identities. No full-source success is claimed at this
 checkpoint.
 
+## Current native outcome
+
+Source `463ca3226c4aec4390a1e931fb1be1582059d1ca` has a full native Windows
+result of 8,818 passes, no failures and 151 skips. Exact supplemental profiles
+pass all 76 Node and seven compiler/wheel cases initially excluded for setup.
+All profiles retain source, dependencies and coverage. There are 68 distinct
+initial skips still unexecuted locally: 63 platform/capability cases, two
+other-Python-version cases, one inapplicable historical bundle branch and two
+FalkorDB service cases. Full typing retains 604 baseline errors with no added
+diagnostics. [Exact commands and artifacts](../tests/TRACEABILITY.md#current-native-source-and-artifact-evidence--2026-10-05)
+own the evidence; separate results are not combined into a fictitious full run.
+
+## Hosted runner proof procedure
+
+The hosted increment preserves the existing full Ubuntu source matrix and QML
+wheel matrix, adds a focused Windows 3.12 generic compatibility lane, and retains
+individual JUnit/skip and source/dependency evidence. A real Ubuntu runner
+supplies the POSIX kernel that the local WSL profile cannot yet provide. The
+Windows lane supplies Cmd/Windows PowerShell and Git Bash behavior; it does not
+substitute for a Linux kernel or physical browser/device interaction.
+
+Each Ubuntu source job uses the official server-only image
+`falkordb/falkordb-server:6.0.1@sha256:f4f60c62532b67f8651d0f4f50bbb4db7548717b502bd05abd80e668f2d974c6`.
+The [tagged release](https://github.com/FalkorDB/FalkorDB/releases/tag/v6.0.1)
+and [publisher's image workflow](https://github.com/FalkorDB/FalkorDB/blob/v6.0.1/.github/workflows/release-image.yml)
+establish provenance; the digest fixes the selected image. This is not a
+source-to-image build attestation. The
+[tagged source license](https://github.com/FalkorDB/FalkorDB/blob/v6.0.1/LICENSE)
+is Server Side Public License v1; Redis and base-image components retain their
+own licenses. The service is an external CI oracle, with no server code or binary
+added to Graphify's package.
+
+Setup starts one run-labeled container with only loopback port 6379 and no mounted
+storage. It requires real `GRAPH.LIST` and `GRAPH.QUERY` readiness within 45 seconds,
+deletes the probe graph and records image/module versions. The two existing
+exporter/idempotency cases and all three reviewed-wheel cases must appear exactly
+once in JUnit without skips, failures or errors. The wheel is built before source
+pytest and its hash must remain unchanged. Existing installer fixtures temporarily
+replace packaged assistant references and restore them during teardown; the
+prebuilt wheel captures source before those substitutions. Each matrix job owns
+its checkout, and post-test integrity requires restored tracked inputs and
+unchanged dependencies. Post-test checks require no retained
+test graph, and an independent cleanup step removes only the job-owned container
+and confirms absence. Failed readiness or cleanup fails the job; a new attempt
+starts with a new disposable service. No deployed-service, TLS, restart or
+database-version matrix acceptance is implied.
+
+1. Validate the workflow configuration and embedded scripts locally; confirm
+   unchanged application source/lock and passing affected local evidence. Review
+   the source/configuration change as one versioned increment.
+2. Publish the explicit feature branch and create/update its draft PR against
+   the reviewed base when publication is authorized. The PR event owns full
+   validation; do not dispatch a duplicate feature run. Re-read the remote source
+   head and base before relying on an earlier record.
+3. Read every applicable Ubuntu source, Windows compatibility and QML-wheel
+   job. Bind the workflow/event/run URL, source head, base and actual checkout
+   SHA: a PR checkout may be a synthetic integration commit. Inspect individual
+   acceptance testcases and skip reasons as well as the job conclusion.
+4. Required tool/service readiness failures, missing required testcases,
+   unintended skips, changed inputs/dependencies and failed assertions retain a
+   failed result. Preserve the original pytest failure when retention/audit
+   steps execute. Diagnose and correct deterministic failures at the lowest
+   faithful boundary, push the new reviewed SHA and let normal PR validation
+   run; report infrastructure retries separately.
+5. Verify the disposable testgraph/service cleanup record. Cancellation alone
+   does not establish cleanup; missing evidence remains outstanding. The hosted
+   runner lifecycle is an additional isolation boundary, not proof that a
+   particular cleanup step succeeded.
+
+Actual Codex event delivery, physical middle-button/browser behavior and omitted
+runtime/device profiles retain their separate system procedures. Hosted pytest
+does not repair the failed typing baseline or broaden generic-only Qt API support.
+No merge or post-merge/protected proof is included in this validation increment.
+
 ## Focused legacy ownership and size constraints
 
 New helpers/tests remain below 300 physical lines. Existing oversized files keep
@@ -220,9 +313,16 @@ their established owners and receive only the focused correction/profile changes
 | `tests/test_install_roundtrip.py` | 318 | 323 | Install-roundtrip test owner; keep installed bundle identity in one roundtrip boundary |
 | `tests/test_skill_auto_refresh.py` | 527 | 541 | Refresh test owner; split platform adaptation from refresh lifecycle only in a separate characterized move |
 | `tests/test_watch.py` | 5100 | 5104 | Watch test owner; new portable failure cases live in the focused filesystem-profile module |
+| `.github/workflows/ci.yml` | 106 | 450 | CI maintainer; full Ubuntu and focused Windows execution/evidence sequencing remain one cohesive workflow; extract a shared evidence helper when another caller needs it or further meaningful growth exceeds this ceiling |
 
 The ceilings authorize this bounded change, not routine growth. No mechanical
 extractor move, broad refactor or generated artifact edit is mixed into the fixes.
+
+The CI cohesion exception retains tool/service admission, source/dependency
+identity, test exit preservation and cleanup ordering together. Splitting these
+blocks solely to meet 300 lines would obscure their execution contract. The
+measured workflow size and local syntax checks belong to the increment's
+traceability record; 450 is a bounded ceiling, not permission for routine growth.
 
 The current branch remains the integration checkout. Delegated owners have
 disjoint installer, shell-fixture, filesystem-fixture and Terraform-test scopes;

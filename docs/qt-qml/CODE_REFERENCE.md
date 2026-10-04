@@ -22,7 +22,7 @@ Revision-specific verification remains in [VALIDATION.md](VALIDATION.md).
 | `graphify/export.py`, `graphify/exporters/` | Serialization and presentation consumers |
 | `tools/skillgen/fragments/` | Authoritative assistant instruction source; generated outputs require skillgen checks |
 | `pyproject.toml`, `uv.lock` | Python support, parser dependencies/extras, explicit packaged modules and frozen environment |
-| `.github/workflows/ci.yml` | Upstream test/skillgen matrix; add Windows evidence without weakening existing gates |
+| `.github/workflows/ci.yml` | Full Ubuntu source matrix with reviewed-wheel/disposable-service proof, focused native Windows compatibility, retained revision/integrity evidence and PR-only obsolete-run cancellation; [shared compatibility procedure](../COMPATIBILITY.md#hosted-runner-proof-procedure) owns setup, cleanup and execution gaps |
 | `tests/test_detect.py`, `tests/test_languages.py`, `tests/test_extract.py` | Detection, language and aggregate extraction regression coverage |
 | `tests/test_build.py`, `tests/test_cache.py`, `tests/test_watch.py` | Graph integrity, cache and incremental persistence regression coverage |
 

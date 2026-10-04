@@ -24,10 +24,13 @@ clears 40 of those 59 in a selective rerun, retains 19, and exposes two previous
 skipped hook portability assertions. It does not replace full-suite evidence.
 Neither aggregate test totals nor skipped cases establish acceptance.
 
-The separate [shared compatibility checkpoint](#shared-compatibility-verification)
-records `REQ-CORE-` behavior and the all-extras environment. A post-restart full
-Windows/Linux run is pending; the original full-suite evidence above remains
-historical and is not replaced by focused passing selections.
+The separate [shared compatibility verification](#shared-compatibility-verification)
+records `REQ-CORE-` behavior and the all-extras environment. The current native
+Windows full run has 8,818 passes, zero failures and 151 skips. Separate unchanged-
+source profiles pass all 76 Node and seven preprocessor/wheel cases previously
+skipped for setup. Linux/service and hosted execution remain unverified. The
+59-failure run above is historical; its failure identities are cleared in the
+current applicable Windows profile. Full typing still fails on existing errors.
 
 The chronological records below preserve checkpoint evidence. Their older pending
 statements, epochs and test totals describe the recorded revisions. Current status
@@ -46,11 +49,11 @@ remaining system procedure, ownership, size ceilings and consumer limitations.
 
 | Acceptance ID | Exact automated assignment | Checkpoint evidence and gaps |
 | --- | --- | --- |
-| REQ-CORE-001-AC01 | `tests/test_codex_hook_execution.py::test_req_core001_ac01_codex_hook_dispatches_spaced_native_launcher`; `tests/test_install.py::test_codex_hook_command_is_a_real_cli_subcommand` | Exact Cmd and Windows PowerShell 5.1 argument transports pass with a real selected launcher, failing PATH decoy and unsafe control; installed-artifact/full-source proof in progress |
+| REQ-CORE-001-AC01 | `tests/test_codex_hook_execution.py::test_req_core001_ac01_codex_hook_dispatches_spaced_native_launcher`; `tests/test_install.py::test_codex_hook_command_is_a_real_cli_subcommand` | Exact Cmd and Windows PowerShell 5.1 argument transports pass with a real selected launcher, failing PATH decoy and unsafe control; full-source and independent installed-artifact execution pass in the current native evidence below |
 | REQ-CORE-001-AC02 | `tests/test_install.py::test_hermes_skill_destination_posix_uses_home`; `tests/test_install_references.py::test_gemini_install_references_all_resolve`; `tests/test_install_roundtrip.py::test_skill_roundtrip_at_real_destination` | Exact destination and Linux/Windows contract profiles pass locally; simulated platform selection does not prove another kernel |
 | REQ-CORE-001-AC03 | `tests/test_skill_auto_refresh.py::test_every_stale_platform_is_refreshed_not_only_the_detected_one`; `tests/test_skill_auto_refresh.py::test_a_stale_gemini_skill_gets_the_warning_too` | Windows-adapted bytes and retained ambiguous shared copy pass; shared ownership isolation remains unresolved upstream |
 | REQ-CORE-001-AC04 | `tests/test_uninstall_scope.py::test_bare_call_still_removes_global`; `tests/test_uninstall_scope.py::test_remove_user_skill_opt_in_with_project_dir` | Linux/Windows scope profiles and protected shared-dir retention pass; no new uninstall policy |
-| REQ-CORE-001-AC05 | `tests/test_codex_hook_execution.py::test_req_core001_ac05_literal_expansion_characters_retain_launcher_identity`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_missing_launcher_fails_without_path_fallback`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_selected_process_failure_preserves_nonzero_exit`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_reinstall_and_uninstall_preserve_unrelated_hooks`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_unsupported_shell_rejects_before_settings_access`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_shell_inspection_failure_retains_settings_and_backup`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_command_length_boundary_retains_literal_identity` | Native Cmd/Windows PowerShell 5.1 executable identity, failure/retention and rejected serialization boundaries characterized; full-source and installed-artifact execution in progress. Synthetic length cases establish admission/retention, not a real long-path launch. Actual Codex event delivery and other PowerShell versions remain separate system gaps. |
+| REQ-CORE-001-AC05 | `tests/test_codex_hook_execution.py::test_req_core001_ac05_literal_expansion_characters_retain_launcher_identity`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_missing_launcher_fails_without_path_fallback`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_selected_process_failure_preserves_nonzero_exit`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_reinstall_and_uninstall_preserve_unrelated_hooks`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_unsupported_shell_rejects_before_settings_access`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_shell_inspection_failure_retains_settings_and_backup`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_command_length_boundary_retains_literal_identity` | Native Cmd/Windows PowerShell 5.1 executable identity, failure/retention and rejected serialization boundaries pass in full-source and independent installed-artifact execution. Synthetic length cases establish admission/retention, not a real long-path launch. Actual Codex event delivery and other PowerShell versions remain separate system gaps. |
 | REQ-CORE-002-AC01 | `tests/test_filesystem_profiles.py::test_req_core_002_ac01_detect_rejects_nonregular_stat_modes`; `tests/test_filesystem_profiles.py::test_req_core_002_ac01_stat_failures_are_unreadable`; original real fixtures in `tests/test_non_regular_files.py` | Native admission/error seams pass; actual FIFO/socket/device and privileged symlink fixtures remain capability exclusions, not passing real-object evidence |
 | REQ-CORE-002-AC02 | `tests/test_filesystem_profiles.py::test_req_core_002_ac02_unavailable_cwd_rejects_before_artifacts`; `tests/test_filesystem_profiles.py::test_req_core_002_ac02_repo_root_recovers_cwd_and_publishes_graph`; `tests/test_watch.py::test_rebuild_code_deleted_cwd_without_repo_root_returns_false`; `tests/test_watch.py::test_rebuild_code_deleted_cwd_uses_graphify_repo_root` | Native simulated lookup-failure plus real chdir/persistence pass; actual removed-CWD POSIX fixtures pending |
 | REQ-CORE-002-AC03 | `tests/test_filesystem_profiles.py::test_req_core_002_ac03_unavailable_cwd_reports_root_reason` | Missing-root/chdir-denied assertions failed before correction; all three safe diagnostic categories pass after correction |
@@ -64,12 +67,89 @@ Focused commands and results at the checkpoint:
 - `pytest tests/test_hooks.py tests/test_skillgen_input_path_injection.py -q`: 143 passed, eight pre-existing profile skips. The final affected selection plus shell-identity helpers: 37 passed, no skips. All 20 hostile-path cases include reachable unsafe controls.
 - `pytest tests/test_watch.py tests/test_non_regular_files.py tests/test_filesystem_profiles.py -q`: 198 passed, eleven profile/capability skips, one existing Hypothesis warning. Seven formerly failing impossible Windows fixtures now remain explicit system gaps; sixteen new portable cases pass.
 - `pytest tests/test_terraform.py tests/test_terraform_modules.py tests/test_extractors_registry.py::test_terraform_migrated -q`: 42 passed, one unavailable symlink skip, one existing Hypothesis warning.
-- `ruff check .`: passed. `python -m tools.skillgen --check`: all 134 artifacts match. Lockfile unchanged. Full source/platform and refreshed installed-wheel evidence remains pending after the WSL restart.
+- `ruff check .`: passed. `python -m tools.skillgen --check`: all 134 artifacts match. Lockfile unchanged. Full native source and refreshed installed-wheel evidence supersedes the restart gap in the current record below; actual Linux execution remains pending.
 
 These selections overlap and are not added into a full-suite total. Real filesystem
 capability assertions, native hook consumer execution and live-service tests remain
 separate from contract profiles and fake-provider boundaries. Full typing is a
 separate gate and is not established by Ruff or selected tests.
+
+### Current native source and artifact evidence — 2026-10-05
+
+Frozen source: `463ca3226c4aec4390a1e931fb1be1582059d1ca`, Windows x64,
+Python 3.12.14, all 197 locked source-environment distributions. The full source
+command is the isolated driver's `pytest tests/ -q --tb=short -p no:cacheprovider
+-rs --junitxml=<evidence>/full.xml`, using the explicit environment Python with
+`-I -X utf8` and canonical source imports. The profile exposes portable Git
+Bash/sh and a literal Python forwarding shim, isolates provider/home/install
+state and disables installation fallback. Pytest returns zero: **8,818 passed,
+zero failures/errors, 151 skipped, 20 warnings**, with 1,143.29 seconds wall time.
+
+The original restricted PATH excluded the already installed Node and GNU C
+preprocessor, and the reviewed-wheel variable was absent. Supplemental profiles
+retain that same source/dependency revision and execute exact skipped IDs:
+
+- Node 24.19.0: **76 passed**, zero failures/skips, 26.42 seconds.
+- GNU `cpp` 13.1.0 and reviewed wheel input: **four Fortran preprocessor and three wheel cases passed**, zero failures/skips, 4.68 seconds. This compiler is a test oracle; Graphify analysis gains no compiler or Qt SDK runtime dependency.
+
+The full-run counts are retained without adding these separate profiles. The
+remaining 68 distinct initial skips are 63 Windows/POSIX capability or fixture
+exclusions, two other-Python-version cases, one inapplicable obsolete bundle
+fallback and two unavailable FalkorDB integration cases. Skips remain exclusions,
+not passes. The hosted increment assigns applicable Linux/service cases explicitly.
+The 20 warnings are nine clustering dependency warnings, seven Solidity parser
+deprecations, two expected cache-rejection diagnostics, one Hypothesis collection
+warning and one Starlette/httpx deprecation; no warning caused a failed assertion.
+
+All three profiles retain HEAD, 667 Python-file fingerprints, source dependencies
+and original coverage bytes. The canonical source-fingerprint map SHA-256 is
+`36155c56557d2a52bb8384fa8964581de57cc22c9b5ec46703d0fb8f0916e291`.
+Full Pyright 1.1.409 with the explicit source interpreter reports **604 errors,
+zero warnings, 663 files**, exit one. Compared with immutable source `135d50b`
+under the same dependencies/configuration, all 604 diagnostic identities match:
+zero added and zero removed. The typing gate remains failed.
+
+Reviewed wheel SHA-256:
+`057c509296b9f6e25be1dd39b72f3d463f10cdccfb7a0b95836f510f016dd518`.
+All 180 packaged Python payloads match current source bytes. Relative to the
+earlier reviewed 179-module wheel, 102 differences are only LF/CRLF spelling;
+newline-normalized source and parsed syntax differ only in `install.py`,
+`watch.py` and the new `codex_hook_command.py`. Independent installed consumption
+pins all Graphify imports to its 163-distribution runtime from a neutral directory:
+**35 hook/filesystem cases pass**, with zero failures/skips. `uv pip check`
+confirms compatibility. This is complementary installed-consumer evidence,
+not a replacement for the earlier Qt/QML artifact matrix or a hosted result.
+
+### Hosted acceptance assignments
+
+The CI implementation and exact hosted execution remain separately reviewable.
+Each job's JUnit artifact and GitHub conclusion must be read for the same tested
+source/configuration revision; configuration validation alone cannot pass these
+criteria. [Hosted procedure](../docs/COMPATIBILITY.md#hosted-runner-proof-procedure)
+owns setup, revision identity, exclusions and recovery.
+
+| Acceptance ID | Exact automated job/system assignment | Current evidence |
+| --- | --- | --- |
+| REQ-CORE-004-AC01 | `.github/workflows/ci.yml::test` four Python lanes; actual fixtures in `tests/test_non_regular_files.py`, `tests/test_cpp_preprocess.py`, `tests/test_qml_wheel_artifact.py`, `tests/test_falkordb_integration.py` | Configuration implemented and locally syntax-checked; real Linux/service execution unverified |
+| REQ-CORE-004-AC02 | `.github/workflows/ci.yml::windows-compatibility`; exact CORE functions above and assigned HTML/installer/shell modules | Local source/consumer assertions pass; new hosted lane unexecuted |
+| REQ-CORE-004-AC03 | Source identity/readiness, pytest, retention, service cleanup and artifact steps in both CI source profiles; GitHub run/job/artifact read for actual checkout | Local integrity checks pass; hosted exit, retained evidence, integrity and cleanup conclusions pending |
+| REQ-CORE-004-AC04 | CI trigger/permission/concurrency configuration review and hosted procedure's PR/recovery event audit | Configuration implemented and reviewed; actual hosted sequencing/cancellation remains a system gap |
+
+Local configuration review parses both workflows with PyYAML `BaseLoader`,
+compiles each embedded Python block, checks extracted Ubuntu scripts with
+`bash -n`, and parses the Windows script through PowerShell's
+`System.Management.Automation.Language.Parser.ParseFile`. The CI workflow is
+446 physical lines within its documented 450-line cohesion ceiling. Existing
+triggers, Ubuntu matrix, skill-generation/security jobs and QML-wheel matrix/job
+selection remain intact. Both workflow concurrency groups now use distinct run
+IDs outside PR events. These are local configuration results, not hosted passes.
+
+The delivery changes only CI and documentation after the completed native run:
+all 667 Python-file fingerprints and 197 dependency versions still match the
+tested source, and original coverage bytes are preserved. `ruff check .` passes,
+`python -m tools.skillgen --check` matches all 134 artifacts, and the document
+check resolves every acceptance criterion and exact test reference. The graph
+refresh is AST-only navigation maintenance, not additional acceptance evidence.
 
 ## Individual acceptance assignments
 
