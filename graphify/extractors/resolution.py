@@ -2942,6 +2942,7 @@ def _source_stem(node: dict) -> str:
 def _merge_decl_def_classes(
     all_nodes: list[dict],
     all_edges: list[dict],
+    all_raw_calls=(),
 ) -> None:
     """Merge a class (and its methods) declared in a header with its definition in
     a sibling impl file into ONE node, for C/C++/ObjC (#1547, #1556).
@@ -2992,6 +2993,9 @@ def _merge_decl_def_classes(
     # AST constructor qualification, complete bodies and matching prototypes own
     # this join; a header collision alone cannot prove a constructor declaration.
     from graphify.extractors.cpp_constructors import bind_cpp_constructors, constructor_merge_allowed
+    from graphify.extractors.cpp_class_proof import class_body_keeper, class_merge_allowed
+    from graphify.extractors.cpp_member_identity import canonicalize_cpp_members, member_merge_allowed
+    canonicalize_cpp_members(all_nodes, all_edges, all_raw_calls)
     bind_cpp_constructors(all_nodes, all_edges)
     # Group every code node by id, recording the distinct source files involved.
     by_id: dict[str, list[dict]] = {}
@@ -3010,7 +3014,7 @@ def _merge_decl_def_classes(
     for nid, group in by_id.items():
         if len(group) < 2:
             continue
-        if not constructor_merge_allowed(group):
+        if not constructor_merge_allowed(group) or not class_merge_allowed(group) or not member_merge_allowed(group):
             continue
         # The distinct source files of this collision must form a clean sibling
         # header/impl set with exactly one header. Each file must parse as a
@@ -3045,6 +3049,9 @@ def _merge_decl_def_classes(
             if len(base_headers) > 1:
                 continue
             keeper = base_headers[0] if base_headers else min(headers, key=_source_stem)
+        # Class identity stays unchanged, but an earlier forward header cannot
+        # replace the only complete body's authoritative source file and span.
+        keeper = class_body_keeper(group, keeper)
         # The keeper is the DECLARATION, so without this the graph reports the
         # header as the symbol's only location and the definition site — the file
         # and line a reader actually wants — is discarded with the dropped node.

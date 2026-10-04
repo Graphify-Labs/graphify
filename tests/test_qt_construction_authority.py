@@ -73,13 +73,18 @@ def test_req_qml017_ac04_exact_namespace_ancestry_does_not_choose_other_file_bas
     assert len(bases) == 2 and len({md["class_id"] for md in bases}) == 2
 
 
-def test_req_qml017_ac02_ambiguous_same_file_generic_identity_cannot_supply_ancestry(tmp_path):
+def test_req_qml017_ac04_distinct_same_file_qualified_bodies_supply_only_exact_ancestry(tmp_path):
     declarations = ('class Base : public QWidget { Q_OBJECT }; '
                     'namespace Public { class Base : public QObject { Q_OBJECT }; '
                     'class Backend : public Base { Q_OBJECT QML_NAMED_ELEMENT(Owned) }; }')
     result, site, links = native(tmp_path, declarations)
-    assert not links and qt_metadata(site)["reason"] == "native_construction_ancestry_unestablished"
-    assert any(node.get("metadata", {}).get("cpp_class", {}).get("ambiguous") for node in result["nodes"])
+    assert qt_metadata(site)["status"] == "resolved" and len(links) == 1
+    bases = [qt_metadata(node) for node in result["nodes"] if qt_metadata(node).get("kind") == "class"
+             and qt_metadata(node).get("class_name") in {"Base", "Public::Base"}]
+    assert len(bases) == 2 and len({md["class_id"] for md in bases}) == 2
+    assert {md["class_name"]: md["canonical_base_names"] for md in bases} == {
+        "Base": ["QWidget"], "Public::Base": ["QObject"]}
+    assert not any(node.get("metadata", {}).get("cpp_class", {}).get("ambiguous") for node in result["nodes"])
 
 
 @pytest.mark.parametrize("alias", ["using QObject = QWidget;", "using QObject = QQuickWidget;"])

@@ -7,6 +7,7 @@ from graphify.qml_resolution_types import source_path
 from graphify.extractors.qt_cpp_syntax import walk, source_span
 from graphify.extractors.qt_cpp_facts import qt_metadata
 from graphify.extractors.cpp_constructors import constructor_class_authorized
+from graphify.extractors.cpp_class_proof import class_fact, class_matches
 
 
 def normalize_type(value: str) -> str:
@@ -112,10 +113,12 @@ class CppMapping:
             if syntax.type not in {"class_specifier", "struct_specifier"}:
                 continue
             name = unit.field(syntax, "name")
+            qualified = _qualified(unit, syntax, name)
             matches = [node["id"] for node in self.nodes if self.paths[id(node)] == unit.relative_file
-                       and _label(node) == name and _line(node) == syntax.start_point.row + 1
-                       and (node.get("_callable_class") or node.get("type") in {"class", "struct"})]
-            record = self._record(syntax, name, _qualified(unit, syntax, name), matches)
+                       and class_matches(node, qualified, syntax)]
+            record = self._record(syntax, name, qualified, matches)
+            if any(class_fact(node).get("ambiguous") for node in self.nodes if node["id"] in matches):
+                record.update(status="ambiguous", node_id="")
             record["class_id"] = record["node_id"]
             record["is_definition"] = syntax.child_by_field_name("body") is not None
             record["macros"] = [macro for macro in unit.macros if syntax.start_byte <= macro["start_byte"] < syntax.end_byte]

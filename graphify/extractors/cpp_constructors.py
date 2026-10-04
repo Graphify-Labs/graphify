@@ -11,6 +11,7 @@ import hashlib
 import re
 
 from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.cpp_identity import CppIdentity, qualified_function_id
 
 
 def _walk(root):
@@ -143,6 +144,7 @@ def augment_cpp_constructors(root, source, nodes, edges, path):
     if root.has_error:
         return
     by_id = {node["id"]: node for node in nodes}
+    identities = CppIdentity(root, source, _file_stem(path))
     classes = {}
     syntax = list(_walk(root))
     for item in syntax:
@@ -153,19 +155,19 @@ def augment_cpp_constructors(root, source, nodes, edges, path):
         scope = _scope(item, source)
         if scope is None or not _identifier(name):
             continue
-        found = [node for node in nodes if node.get("_callable_class") is True
-                 and node.get("label") == name and node.get("source_location") == f"L{item.start_point.row + 1}"]
-        if len(found) != 1:
+        record = identities.record(item)
+        owner = by_id.get(record["id"]) if record else None
+        if owner is None or owner.get("_callable_class") is not True:
             continue
-        owner = found[0]
         qualified = f"{scope}::{name}" if scope else name
         if not _identifier(qualified):
             continue
-        fact = {"contract_version": 1, "qualified_name_b64": _encoded(qualified),
-                "scope_b64": _encoded(scope),
-                "is_definition": item.child_by_field_name("body") is not None,
-                "span": _span(item), "ambiguous": False}
-        _store(owner, "cpp_class", fact)
+        if identities.preferred(record) is record:
+            fact = {"contract_version": 1, "qualified_name_b64": _encoded(qualified),
+                    "scope_b64": _encoded(scope),
+                    "is_definition": item.child_by_field_name("body") is not None,
+                    "span": _span(item), "ambiguous": identities.ambiguous(record)}
+            _store(owner, "cpp_class", fact)
         classes[item.id] = (owner, qualified)
     for item in syntax:
         if item.type not in {"declaration", "function_definition"} or item.child_by_field_name("type") is not None:
@@ -202,7 +204,7 @@ def augment_cpp_constructors(root, source, nodes, edges, path):
             if qualified.split("::")[-1] != short or item.child_by_field_name("body") is None:
                 continue
             qualified = f"{scope}::{qualified}" if scope else qualified
-            nid = _make_id(_file_stem(path), name)
+            nid = qualified_function_id(_file_stem(path), item, name, source)
             if nid not in by_id or not _identifier(qualified):
                 continue
             role = "definition"

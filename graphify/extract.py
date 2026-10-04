@@ -7698,7 +7698,7 @@ def extract(
     # still carry the raw file-stem prefix; the per-file prefix remap then diverges
     # them (foo_h vs foo_cpp), so the collapse must happen first. Collapsing here
     # also means disambiguation sees one source_file per id and won't split them.
-    _merge_decl_def_classes(all_nodes, all_edges)
+    _merge_decl_def_classes(all_nodes, all_edges, all_raw_calls)
 
     # Remap file node IDs from absolute-path-derived to the canonical
     # {parent_dir}_{stem} spec form so (a) graph.json edge endpoints are stable
