@@ -64,6 +64,12 @@ Every extractor returns:
 
 `validate.py` enforces this schema before `build()` consumes it.
 
+## Edge direction in graph.json
+
+`graph.json` is written `"directed": false`, but every link is directed: **arc order is the direction** (`source` → `target`, #563). Older canonicalized files carry it in `_src`/`_tgt` markers instead, and those win where present (#2309).
+
+A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-orders each edge's endpoints by node-list position. Load through `paths.load_node_link_graph()` (or apply `paths.restore_arc_direction()` to the raw dict first), which stamps `_src`/`_tgt` on every edge. Then read direction as `data.get("_src", u)` / `data.get("_tgt", v)`, never from `u, v`. Anything that writes graph.json back out pops the markers into arc order first, as `export.to_json()` does.
+
 ## Confidence labels
 
 | Label | Meaning |

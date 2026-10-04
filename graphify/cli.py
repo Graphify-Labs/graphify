@@ -2684,6 +2684,12 @@ def dispatch_command(cmd: str) -> None:
             out_data = _jg.node_link_data(merged, edges="links")
         except TypeError:
             out_data = _jg.node_link_data(merged)
+        # Write direction back into arc order, as to_json does (#563): the
+        # loader stamped _src/_tgt, and compose() kept them on each edge.
+        for _link in out_data.get("links", []):
+            _ts, _tt = _link.pop("_src", None), _link.pop("_tgt", None)
+            if _ts is not None and _tt is not None:
+                _link["source"], _link["target"] = _ts, _tt
         from graphify.paths import write_json_atomic
         write_json_atomic(_current_path, out_data, indent=2)
         sys.exit(0)
@@ -3081,6 +3087,8 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(graph_path.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
+        from graphify.paths import restore_arc_direction as _rad
+        _raw = _rad(_raw)
         try:
             G = _jg.node_link_graph(_raw, edges="links")
         except TypeError:

@@ -517,6 +517,7 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
         lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}', label: '{label}'}});")
     lines.append("")
     for u, v, data in G.edges(data=True):
+        u, v = data.get("_src", u), data.get("_tgt", v)
         rel = _cypher_label(
             (data.get("relation", "RELATES_TO") or "RELATES_TO").upper(),
             "RELATES_TO",
@@ -1223,6 +1224,7 @@ def to_canvas(
     # Generate edges - only between nodes both in canvas, cap at 200 highest-weight
     all_edges_weighted: list[tuple[float, str, str, str]] = []
     for u, v, edata in G.edges(data=True):
+        u, v = edata.get("_src", u), edata.get("_tgt", v)
         if u in all_canvas_nodes and v in all_canvas_nodes:
             weight = edata.get("weight", 1.0)
             relation = edata.get("relation", "")
