@@ -117,10 +117,7 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
-# Read the scan root Step 1 already captured — do not re-splice INPUT_PATH into
-# this shell string (paths with quotes/metacharacters would break or inject).
-root = Path('graphify-out/.graphify_root').read_text(encoding='utf-8').strip()
-result = detect(Path(root))
+result = detect(Path('INPUT_PATH'))
 # Write the sidecar from Python, not a shell redirect, so the same block renders
 # on PowerShell hosts without console-encoding drift (#2528).
 Path('graphify-out/.graphify_detect.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
@@ -128,7 +125,7 @@ print(f'Detected {result[\"total_files\"]} files')
 "
 ```
 
-The scan path was already captured into `graphify-out/.graphify_root` in Step 1 — do not re-substitute INPUT_PATH here. Do NOT cat or print the JSON - read it silently and present a clean summary instead:
+Replace INPUT_PATH with the actual path the user provided. Do NOT cat or print the JSON - read it silently and present a clean summary instead:
 
 ```
 Corpus: X files · ~Y words
@@ -253,7 +250,7 @@ print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files n
 "
 ```
 
-Only extract files listed in `graphify-out/.graphify_uncached.txt`. If that file is empty (all files are cached), skip Steps B1 and B2, but **still ensure `graphify-out/.graphify_semantic.json` exists before Part C**: run Step B3 as written (with no chunk files it merges just the cached results into `.graphify_semantic.json`), or — equivalently — copy/merge `graphify-out/.graphify_cached.json` into `.graphify_semantic.json` (write `{"nodes":[],"edges":[],"hyperedges":[],"input_tokens":0,"output_tokens":0}` if the cache file is missing). Do not jump straight to Part C — it reads that file unconditionally.
+Only extract files listed in `graphify-out/.graphify_uncached.txt`. If all files are cached, skip Steps B1 and B2 but still run Step B3 as written: with no chunk files it merges just the cached results, so `.graphify_semantic.json` exists for Part C (do not jump straight to Part C — it reads that file unconditionally).
 
 **Step B1 - Split into chunks**
 
@@ -291,21 +288,12 @@ Merge all chunk files into `.graphify_semantic_new.json`. In-session extraction 
 $(cat graphify-out/.graphify_python) -c "
 import json, glob
 from pathlib import Path
-from graphify.semantic_cleanup import load_validated_semantic_fragment, sanitize_semantic_fragment
 
 chunks = sorted(glob.glob('graphify-out/.graphify_chunk_*.json'))
 all_nodes, all_edges, all_hyperedges = [], [], []
 total_in, total_out = 0, 0
 for c in chunks:
-    d, errors = load_validated_semantic_fragment(Path(c))
-    if errors:
-        print(f'Skipping invalid chunk {c}: ' + '; '.join(errors[:3]))
-        try:
-            Path(c).rename(str(c) + '.invalid' if not str(c).endswith('.invalid') else c)
-        except OSError:
-            pass
-        continue
-    d = sanitize_semantic_fragment(d)
+    d = json.loads(Path(c).read_text(encoding=\"utf-8\"))
     all_nodes += d.get('nodes', [])
     all_edges += d.get('edges', [])
     all_hyperedges += d.get('hyperedges', [])
