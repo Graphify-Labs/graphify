@@ -827,6 +827,7 @@ def _reconcile_existing_graph(
     is_ignored_always: Callable[[Path], bool] | None = None,
     is_ignored_full: Callable[[Path], bool] | None = None,
     preserve_sourceless_ast: bool = False,
+    prior_import_ids: set[str] | None = None,
 ) -> tuple[dict, dict]:
     """Merge fresh extraction with preserved graph entries and evict stale sources.
 
@@ -838,6 +839,10 @@ def _reconcile_existing_graph(
     .gitignore-driven rules, honored only on a full rebuild (an explicit
     ``graphify update``) so the incremental/hook path keeps preserving a
     deliberately-graphed .gitignore'd tree (#1795).
+
+    ``prior_import_ids`` is caller-owned cleanup proof. It receives only
+    persisted source-owned imports before legacy provenance inference; inferred
+    origins are compatibility annotations and cannot authorize removal.
     """
     existing_graph_data: dict = {}
     if not existing_graph.exists():
@@ -860,6 +865,13 @@ def _reconcile_existing_graph(
     # staying fail-closed.
     existing = json.loads(existing_graph.read_text(encoding="utf-8"))
     existing_graph_data = existing
+
+    # Capture cleanup authority from persisted producer facts before legacy
+    # origin inference can turn an unmarked import into accepted AST evidence.
+    if prior_import_ids is not None:
+        from graphify.build import _EXTERNAL_STUB_RELATIONS
+        from graphify.qt_orphan_cleanup import previous_import_targets
+        prior_import_ids.update(previous_import_targets(existing, import_relations=_EXTERNAL_STUB_RELATIONS))
 
     # Backfill tier provenance on legacy items (#2334), mirroring
     # build._load_existing_graph (this reconcile path loads the raw dict
@@ -1135,9 +1147,27 @@ def _node_community_map(graph_data: dict) -> dict[str, int]:
     return out
 
 
+def _valid_publication_direction(edges, *, directed) -> bool:
+    """Reject corrupt transport before shortcuts can strip markers or accept checkpoints."""
+    from graphify.graph_direction import valid_direction_pairs
+    if valid_direction_pairs(edges, directed=directed):
+        return True
+    print("[graphify watch] error: QT_EXPORT_DIRECTION: invalid logical edge pair; prior products retained. "
+          "Re-extract or repair the graph and retry.", file=sys.stderr)
+    return False
+
+
 def _canonical_graph_for_compare(graph_data: dict) -> dict:
     canonical = dict(graph_data)
     canonical.pop("built_at_commit", None)
+    # Initial extraction and incremental reconciliation omit different empty
+    # run lists. Only their absent/empty forms are equivalent; nonempty values,
+    # malformed transport and unknown metadata remain observable differences.
+    for key in ("diagnostics", "failed_sources", "qml_failures", "qt_failures", "hyperedges"):
+        canonical.setdefault(key, [])
+    # This list describes the current extraction run, not persistent source
+    # facts. Nodes, edges and their authoritative source proof remain compared.
+    canonical.pop("extracted_sources", None)
     # A missing "directed" key means the same thing as "directed": false
     # everywhere else in the codebase (#2342's --no-cluster path only started
     # writing the key once it began inheriting it from the existing graph).
@@ -1953,6 +1983,7 @@ def _rebuild_code(
         # When the caller supplied changed_paths, also evict preserved nodes whose
         # source_file matches a path that was changed (re-extracted) or deleted —
         # otherwise the old nodes for those files would survive forever.
+        prior_import_ids: set[str] = set()
         try:
             result, existing_graph_data = _reconcile_existing_graph(
                 existing_graph,
@@ -1968,6 +1999,7 @@ def _rebuild_code(
                 is_ignored_always=_ignored_always,
                 is_ignored_full=_ignored_full,
                 preserve_sourceless_ast=complete_qt_refresh,
+                prior_import_ids=prior_import_ids if complete_qt_refresh else None,
             )
         except (RuntimeError, ValueError) as exc:
             # Existing graph present but unreadable — over the size cap
@@ -1982,7 +2014,8 @@ def _rebuild_code(
 
         from graphify.qt_orphan_cleanup import prune_stale_ast_orphans
         result = prune_stale_ast_orphans(
-            result, fresh_ids=fresh_ast_ids, complete_refresh=complete_qt_refresh)
+            result, fresh_ids=fresh_ast_ids, complete_refresh=complete_qt_refresh,
+            prior_import_ids=prior_import_ids)
 
         _relativize_source_files(result, project_root, scope=watch_root)
         # Source files re-extracted this run — their symbol sets may legitimately
@@ -2030,7 +2063,17 @@ def _rebuild_code(
             # an import to stdlib / a third-party module leaves an undeclared
             # endpoint in graph.json that every loader materialises as an
             # attribute-less phantom (#2873).
+            # Publication-created stubs are semantic placeholders from their
+            # first write, matching reconciliation without retagging authored
+            # or source-backed nodes already present in the merged extraction.
+            prior_node_count = len(candidate_graph_data["nodes"])
             _mint_external_stubs_in_data(candidate_graph_data)
+            for stub in candidate_graph_data["nodes"][prior_node_count:]:
+                stub.setdefault("_origin", "semantic")
+            if not _valid_publication_direction(
+                    ((edge["source"], edge["target"], edge) for edge in candidate_graph_data["links"]),
+                    directed=candidate_graph_data["directed"]):
+                return False
             candidate_graph_text = _json_text(candidate_graph_data)
             same_graph = False
             if existing_graph.exists():
@@ -2097,6 +2140,8 @@ def _rebuild_code(
         # update` can't silently downgrade a directed graph to undirected -
         # build_from_json defaults to directed=False otherwise.
         G = build_from_json(result, directed=bool((existing_graph_data or {}).get("directed", False)))
+        if not _valid_publication_direction(G.edges(data=True), directed=G.is_directed()):
+            return False
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
             try:

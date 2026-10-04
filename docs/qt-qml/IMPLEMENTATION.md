@@ -1,11 +1,17 @@
 # Executed increments
 
-The [follow-up audit](FOLLOWUP_AUDIT.md) reproduces current receiver, child-lookup,
-engine and alias false positives under existing REQ-QML-016/017 criteria.
-Historical increment results below retain their original bounded profile;
-INC-QML-17/18/19 corrections and their revalidation are not implemented.
+The [follow-up audit](FOLLOWUP_AUDIT.md) records receiver, descendant, engine and
+alias false positives at its inspected baseline. INC-QML-17–27 implement bounded
+corrections; INC-QML-11/15/08 and INC-QML-28–38 complete the current local adoption
+profile. Historical records retain their original revision and scope.
+Current capabilities, epochs, evidence and limits appear in the
+[final adoption delivery](#final-adoption-delivery).
 
 <a name="qml-00"></a>
+
+The increment records below retain revision-specific implementation and evidence.
+The final adoption delivery section records the current expanded profile; older
+epochs, pending statements and test totals describe their individual checkpoints.
 
 ## INC-QML-00
 
@@ -343,7 +349,7 @@ The new `graphify/extractors/qt_cpp_compat.py` is 142 physical lines;
 by the Qt integration maintainer, with upstream-coordinated behavior-preserving
 extraction of the source-cache interface as its exit condition.
 
-INC-QML-08 and REQ-QML-018 remain incomplete. Header-classification assessment,
+At the native-syntax checkpoint, INC-QML-08 and REQ-QML-018 remained incomplete. Header-classification assessment,
 bounded qmake extensions, typed factory/member providers, child-service signal
 chains and combined whole-project/safe-subroot adoption stay within the remaining
 INC-QML-08a/08b/08c work. Header discovery needs its own agreed requirement before
@@ -429,7 +435,7 @@ Python payloads match reviewed source and installation; final expanded broad
 proof passes 954 cases. This internal transport correction adds no persisted field or
 policy epoch beyond the historical INC-QML-10 policy 3/schema 6 snapshot.
 
-INC-QML-11 remains planned. Current recursive inheritance compatibility does not
+At the INC-QML-10 checkpoint, INC-QML-11 remained planned. Recursive inheritance compatibility at that revision did not
 extend member endpoint lookup beyond immediate bases; a declared grandparent
 signal needs a separate bounded lookup correction and regression/installed proof.
 This gap belongs to existing REQ-QML-016-AC01/AC04 and is not closed by ownership
@@ -467,17 +473,17 @@ The INC-QML-12/13 artifact's AST schema 7 and policy 5 invalidate stale same-ver
 facts. Its local source and
 reviewed installed-artifact verification passes; exact evidence belongs to
 VALIDATION.md and tests/TRACEABILITY.md.
-Browser/system appearance is a separate unexecuted gap. INC-QML-11 inherited
-endpoint lookup and INC-QML-08 metadata/provider adoption remain unfinished.
+Browser/system appearance is a separate unexecuted gap. At this earlier checkpoint, INC-QML-11 inherited
+endpoint lookup and INC-QML-08 metadata/provider adoption remained unfinished.
 At the INC-QML-12/13 review, INC-QML-14/REQ-QML-020 was recorded as a planned
 metadata-membership correction: indexes resolved accepted targets without general
 declaration-to-file edges. That policy-5/schema-7 artifact remains historical
 evidence for constructor/source/view corrections. INC-QML-14 is now locally
 complete as recorded below; earlier source-owner and viewer-count results
 do not complete it.
-INC-QML-15 retains the existing generic overloaded-constructor ID/location-parity
-gap. Native source-file links pass their scoped parity checks; exact generic
-overload identity remains unverified.
+At the INC-QML-12/13 checkpoint, INC-QML-15 retained the generic overloaded-constructor ID/location-parity
+gap. Native source-file links passed their scoped parity checks; exact generic
+overload identity was unverified at that revision.
 
 ## Project/resource membership projection (INC-QML-14)
 
@@ -539,5 +545,45 @@ installed static-analysis evidence, with no Qt application/build execution.
 
 No new browser, hosted, other-platform or executable Qt proof is claimed. Earlier
 INC-QML-12/13 completion and policy-5 artifact evidence remain revision-specific;
-INC-QML-08 adoption stays partial and INC-QML-11/15 remain planned. Plan review
+At that membership checkpoint, INC-QML-08 adoption was partial and INC-QML-11/15 remained planned. Plan review
 identified no additional required increment for the completed membership profile.
+
+## Final adoption delivery
+
+INC-QML-11 resolves bounded multi-level inherited signals with declaration-owned
+endpoints and conservative shadow/conflict/cycle rejection. INC-QML-15 preserves
+distinct constructor signatures, original locations and declaration/definition
+ownership through reload and updates. Explicit emit/Q_EMIT observations survive
+unavailable declarations without inventing a signal endpoint or delivery call.
+
+INC-QML-08a admits bounded current-file qmake PWD paths and source-visible C++
+header markers, retaining C/Objective-C and ambiguous-header behavior. INC-QML-08b
+uses canonical declared pointer/lvalue-reference APIs for factory/member providers
+and child-service properties, calls and QML subscriptions. Lexical shadows,
+conditional/ambiguous types, unsupported declarators and borrowed/corrupt source
+proof remain unavailable. Ordinary static analysis executes no Qt application,
+factory, build hook or plugin.
+
+INC-QML-29–38 preserve reference callables, logical dependency direction, exact
+source-file role and occurrence identity across assembly, JSON, reload, query and
+affected consumers. Integrity preflight runs before comparison shortcuts or
+publication. Removal uses accepted prior ownership proof; partial refresh cannot
+authorize orphan deletion. First minted external nodes receive semantic origin;
+an unchanged second update cannot rewrite valid bytes solely for origin backfill.
+Per-occurrence event transport remains bounded without recursive literal encoding.
+Final AST cache schema is 12 and Qt policy is 18.
+
+INC-QML-08c is locally complete for Windows x64/Python 3.12.14 with pinned parser
+0.25.2/language-pack 0.11.0. The reviewed installed wheel passes 3,024 tests with
+36 existing skips, and all 179 Python payloads match the reviewed source exactly.
+Actual installed CLI CMake/qmake whole-root/safe-subroot initial/repeat profiles
+pass, with hand-checked facts and equal graph bytes. Individual acceptance,
+failure/repair and mutation proof is in [traceability](../../tests/TRACEABILITY.md#final-adoption-delivery);
+commands and digest are in [validation](VALIDATION.md#final-adoption-delivery).
+
+The final full source suite has 8,630 passes, 59 pre-existing failures and 178 skips;
+no new failure identities appear. Full typing retains baseline errors with no
+added diagnostics. Current hosted OS/Python lanes, live service proof and native
+browser/device interaction remain unverified. Static declared API compatibility
+does not establish Qt build success, plugin availability, runtime conversion,
+overload dispatch, allocation, ordering, lifetime or thread safety.

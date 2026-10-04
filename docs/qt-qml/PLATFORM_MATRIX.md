@@ -144,3 +144,22 @@ This record covers the implementation plus corrected workflow. Documentation-onl
 follow-up commits are rechecked by the same PR workflows; the
 [live PR checks](https://github.com/SlinkyRamey/graphify/pull/5/checks) identify the
 current reviewed head. Earlier heads are not substituted for changed source.
+
+## Final local adoption profile
+
+INC-QML-11/15/08 and INC-QML-28–38 have reviewed local source and installed proof
+at index tree `9f0ae4ea75f47539df8ec8a66f1493b9e7f52b2f`. Windows x64/Python 3.12.14
+uses tree-sitter 0.25.2 and language-pack 0.11.0. The noneditable wheel SHA256 is
+`184abd15490322fd6f39b50c341a4da79b6cd19e96cd3f4fe3c68ab4c4d29a97`; all 179 Python
+payloads match the reviewed source and installation exactly. The selected installed
+suite passes 3,024 tests with 36 historical optional/platform skips; new regressions
+do not skip. Actual isolated installed CLI CMake/qmake whole-project and safe-subroot
+initial/repeat profiles pass. Source full-suite/type baseline failures remain failed
+gates. Exact commands and counts are in [validation](VALIDATION.md#final-adoption-delivery).
+
+| Current source profile | Result | Evidence boundary |
+| --- | --- | --- |
+| Local Windows x64, Python 3.12.14, pinned optional parser | Locally Verified | Source/installed bounded analysis, consumers, updates and failure recovery |
+| Twelve hosted OS/Python lanes above | Not executed for this delivery | Historical INC-QML-07 results apply only to their recorded revision |
+| Native browser/device interaction; live database service | Not executed | Emitted scripts/export guards cannot establish system interaction or service delivery |
+| Qt runtime/build/plugin execution | Outside static profile | Analysis executes no corpus or Qt SDK |

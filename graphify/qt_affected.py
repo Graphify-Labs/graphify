@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from graphify.extractors.qml_facts import qml_metadata
 from graphify.extractors.qt_cpp_facts import qt_metadata
+from graphify.graph_direction import logical_endpoints
 
 
 def _owned(node):
@@ -42,7 +43,10 @@ def owned_ancestors(graph, node_id, *, limit=256):
             continue
         edges = graph.in_edges(current, data=True) if graph.is_directed() else graph.edges(current, data=True)
         for source, target, data in edges:
-            source, target = data.get("_src", source), data.get("_tgt", target)
+            endpoints = logical_endpoints(source, target, data, directed=graph.is_directed())
+            if endpoints is None:
+                continue
+            source, target = endpoints
             if target != current or source not in graph or source in seen:
                 continue
             if data.get("relation") != "contains" or data.get("confidence") != "EXTRACTED":

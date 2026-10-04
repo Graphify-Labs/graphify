@@ -78,7 +78,19 @@ class ExpressionCollector:
             env.update({name: "" for name in bound_names(syntax.child_by_field_name("parameter"), self.source)})
         if kind == "call_expression":
             callee = syntax.child_by_field_name("function")
-            self.use("call", callee, syntax, owner, env)
+            # A literal signal.connect callback is source AST provenance. The
+            # context resolver never re-reads QML or evaluates an argument.
+            callback = {}
+            reference = qualified_name(callee, self.source) or ""
+            arguments = syntax.child_by_field_name("arguments")
+            args = [item for item in arguments.named_children if item.type != "comment"] if arguments else []
+            if reference.endswith(".connect"):
+                name = qualified_name(args[0], self.source) if len(args) == 1 else None
+                first = (name or "").split(".")[0]
+                callback = {"callback_reference": name or "", "callback_argument_count": len(args),
+                            "callback_lexical_shadowed": first in env,
+                            "callback_lexical_target_id": env.get(first, "") if name == first else ""}
+            self.use("call", callee, syntax, owner, env, **callback)
             if qualified_name(callee, self.source) is None:
                 self.scan(callee, owner, env)
             for argument in (syntax.child_by_field_name("arguments").named_children
@@ -111,14 +123,14 @@ class ExpressionCollector:
         for child in syntax.named_children:
             self.scan(child, owner, env)
 
-    def use(self, kind, target, syntax, owner, env):
+    def use(self, kind, target, syntax, owner, env, **fields):
         reference = qualified_name(target, self.source)
         first = (reference or "").split(".")[0]
         self.add(kind, syntax, owner, reference or "dynamic", reference=reference or "",
                  lexical_names=sorted(env)[:50], lexical_shadowed=first in env,
                  lexical_target_id=env.get(first, "") if reference == first else "",
                  status="dynamic" if reference is None else "pending",
-                 reason="computed_or_runtime_target" if reference is None else "")
+                 reason="computed_or_runtime_target" if reference is None else "", **fields)
 
 
 def _connection_target(syntax, source):

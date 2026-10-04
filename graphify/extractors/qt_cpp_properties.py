@@ -5,6 +5,7 @@ import re
 
 from graphify.extractors.qt_cpp_mapping import normalize_type
 from graphify.extractors.qt_cpp_registration import conditional_offset
+from graphify.extractors.qt_cpp_api_types import api_type_fields
 
 _ATTRIBUTE = re.compile(r"\b(READ|WRITE|MEMBER|RESET|NOTIFY|REVISION|DESIGNABLE|SCRIPTABLE|STORED|USER|BINDABLE|CONSTANT|FINAL|REQUIRED)\b")
 
@@ -29,7 +30,7 @@ def property_fields(macro):
     return fields
 
 
-def add_properties(unit, mapping, facts, class_record):
+def add_properties(unit, mapping, facts, class_record, *, types=None):
     """Properties are independent Qt facts; generic accessor IDs are borrowed."""
     for macro in class_record["macros"]:
         if macro["name"] != "Q_PROPERTY" or mapping.class_at(macro["start_byte"]) is not class_record:
@@ -38,6 +39,9 @@ def add_properties(unit, mapping, facts, class_record):
         if conditional_offset(unit, macro["start_byte"]):
             fields.update(status="dynamic", reason="conditional_property_declaration")
         name = fields.pop("raw_name")
+        if types is not None:
+            fields.update(api_type_fields(types, fields.get("raw_type", ""), macro["start_byte"],
+                                          conditional=conditional_offset(unit, macro["start_byte"])))
         site = facts.add("property", name, macro["span"], owner=class_record["node_id"] or None,
                          class_id=class_record["node_id"], class_name=class_record["qualified_name"],
                          generic_target_id="", **fields)

@@ -102,6 +102,45 @@ def source_facts(root, source, nodes, path):
     files[0]["metadata"] = metadata
 
 
+def valid_source_transport(value):
+    """Validate file transport without granting its incomplete record type authority.
+
+    Both constructor joins and Qt file-role consumers use the same immutable,
+    bounded include/shadow validation. This predicate reads only accepted facts.
+    """
+    if (not isinstance(value, dict) or type(value.get("contract_version")) is not int
+            or value["contract_version"] != 1 or type(value.get("complete")) is not bool
+            or type(value.get("source_size")) is not int or value["source_size"] < 0):
+        return False
+    for key in ("includes", "shadows"):
+        values = value.get(key)
+        if not isinstance(values, list) or len(values) > 50:
+            return False
+        for item in values:
+            text_key, byte_key = ("literal_b64", "end_byte") if key == "includes" else ("scope_b64", "start_byte")
+            if (not isinstance(item, dict) or _decode(item.get(text_key)) is None
+                    or type(item.get(byte_key)) is not int or item[byte_key] < 0):
+                return False
+            span = item.get("span")
+            if (not isinstance(span, dict) or any(type(span.get(field)) is not int or span[field] < 0
+                    for field in ("start_byte", "end_byte", "start_row", "end_row", "start_column", "end_column"))
+                    or not span["start_byte"] < span["end_byte"] <= value["source_size"]
+                    or span["start_row"] > span["end_row"] or item[byte_key] != span[byte_key]
+                    or (span["start_row"] == span["end_row"]
+                        and span["end_column"] - span["start_column"] != span["end_byte"] - span["start_byte"])):
+                return False
+            text = _decode(item[text_key])
+            if key == "shadows" and text and not all(part.isidentifier() for part in text.split("::")):
+                return False
+            if key == "shadows" and type(item.get("class_scope")) is not bool:
+                return False
+            if key == "includes" and (not text or "\\" in text or ":" in text or text.startswith("/") or "\0" in text
+                    or item.get("kind") not in {"quoted", "angle"}
+                    or item["kind"] == "angle" and ".." in text.split("/")):
+                return False
+    return True
+
+
 class ConstructorTypeAuthority:
     """Immutable admitted-source inventory; bounded conservative include walk."""
 
@@ -150,33 +189,7 @@ class ConstructorTypeAuthority:
         value = self._source_record(file)
         if value is None or value["complete"] is not True:
             return None
-        for key in ("includes", "shadows"):
-            values = value.get(key)
-            if not isinstance(values, list) or len(values) > 50:
-                return None
-            for item in values:
-                text_key, byte_key = ("literal_b64", "end_byte") if key == "includes" else ("scope_b64", "start_byte")
-                if (not isinstance(item, dict) or _decode(item.get(text_key)) is None
-                        or type(item.get(byte_key)) is not int or item[byte_key] < 0):
-                    return None
-                span = item.get("span")
-                if (not isinstance(span, dict) or any(type(span.get(field)) is not int or span[field] < 0
-                        for field in ("start_byte", "end_byte", "start_row", "end_row", "start_column", "end_column"))
-                        or not span["start_byte"] < span["end_byte"] <= value["source_size"]
-                        or span["start_row"] > span["end_row"] or item[byte_key] != span[byte_key]
-                        or (span["start_row"] == span["end_row"]
-                            and span["end_column"] - span["start_column"] != span["end_byte"] - span["start_byte"])):
-                    return None
-                text = _decode(item[text_key])
-                if key == "shadows" and text and not all(part.isidentifier() for part in text.split("::")):
-                    return None
-                if key == "shadows" and type(item.get("class_scope")) is not bool:
-                    return None
-                if key == "includes" and (not text or "\\" in text or ":" in text or text.startswith("/") or "\0" in text
-                        or item.get("kind") not in {"quoted", "angle"}
-                        or item["kind"] == "angle" and ".." in text.split("/")):
-                    return None
-        return value
+        return value if valid_source_transport(value) else None
 
     def authorized(self, node, fact):
         if not self.source_span_authorized(node, fact):

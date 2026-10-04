@@ -364,3 +364,83 @@ Repair the source or explicitly configured safe roots and retry ordinary analysi
 expansion does not become supported by force. Parse/root/publication failure keeps
 the existing product-cohort and successful source-cache retention contract. Header
 classification supplies no Qt semantic authority and introduces no separate code.
+
+## Typed API coverage and integrity (INC-QML-08b)
+
+Accepted static API/provider/subscription joins add no success warning. Unsupported
+declarator shapes retain `api_type_shape_unsupported` or
+`provider_type_shape_unsupported`; conditional return authority retains
+`conditional_api_type`. Missing, conflicting, cyclic and over-depth child chains
+remain unresolved/unsupported with `context_child_property_unavailable`,
+`context_child_type_unavailable_or_cycle` or `context_type_chain_limit`. Invalid
+root/provider provenance retains existing bounded identity reasons. Serialized
+type, owner, callable, source range, READ/NOTIFY and callback proof is independently
+revalidated; corrupted proof cannot restore a link merely because a target exists.
+
+Correct declarations, lexical bindings or source-backed metadata and retry normal
+analysis. Rejection grants no runtime allocation/conversion or alias authority.
+Genuine parser/resolver/publication errors retain their owning stage diagnostics
+and prior products, with corrected retry and repeat evidence. Source-cache entries
+may be added after successful extraction but do not accept graph publication.
+No new diagnostic code, logger or corpus execution is introduced.
+
+## Direction rejection and publication (INC-QML-30/31)
+
+Accepted logical pairs add no warning. Read-only affected queries ignore invalid
+complete/partial/foreign/ill-typed pairs, preserving graph bytes and source-owner
+boundaries. Typed reload leaves explicitly corrupted markers intact for rejection;
+it restores direction only when both markers are absent.
+
+JSON serialization reports the existing stable **QT_EXPORT_DIRECTION** code at
+the error severity, with bounded repair/re-extract guidance, and returns failure
+before writing. Native directed contradictions also reject; force cannot bypass
+the integrity check. The diagnostic includes no raw endpoint, path or source data.
+External Qt preflight/Cypher keep their established complete-marker interpretation
+on bidirectional storage wrappers while rejecting invalid pair membership and
+types. JSON's native directed persistence is the stricter boundary.
+
+Prior JSON bytes and the coordinated graph/HTML/report/manifest/checkpoint cohort
+remain retained on rejection. The established owning publication stage still
+reports an actual rollback or cleanup failure separately. Correct the source or
+transport and retry normally; successful extraction/cache writes alone do not
+accept publication. Real manual/watch rejection, nonempty source-cache retention,
+repair and byte-identical repeated output are ordinary regression evidence.
+
+## Initial raw-update repetition (INC-QML-32)
+
+An unchanged first-repeat run reports the existing no-change completion and
+preserves accepted graph bytes/mtime. Representation-only empty-list omissions
+add no warning. Meaningful diagnostics, malformed values and changed source facts
+remain observable; genuine parser/publication failures keep their existing owning
+codes and prior product retention. Corrected source or writable output retries
+normally. No new diagnostic, writer or rollback owner is introduced.
+
+## File-role rejection and candidate preflight (INC-QML-33/34)
+
+A malformed or foreign generic C++ file record grants no membership or containment
+endpoint. Membership retains its existing unavailable/duplicate reason; a file
+link cannot repair an unresolved native callable or type. Correct source/metadata
+and repeat normal extraction. No additional source reads or corpus execution occur.
+
+QT_EXPORT_DIRECTION also applies before raw publication and clustered no-change
+acceptance. Its error identifies invalid logical-pair transport without exposing
+the pair's arbitrary strings. The updater returns failure, retains the prior
+product cohort and existing successful AST cache entries, and accepts no candidate
+checkpoint. Force cannot bypass it. Repair/re-extract then retry normally.
+
+## Relationship and occurrence integrity (INC-QML-35–37)
+
+Unproved prior imports cannot authorize orphan retirement. Complete extraction
+may remove their deleted source edge while conserving the unproved placeholder;
+candidate integrity applies to surviving/new relationships. Still-referenced
+external endpoints remain. Cleanup emits no new warning on successful completion.
+
+A relationship inconsistent with its source mechanism grants no typed bridge.
+The graph builder rejects it before generic relationship handling, keeping the
+source occurrence and uncertainty without inventing a call or subscription.
+Corrupt Qt literal transport retains QT_METADATA/QML_RESOLUTION_FAILED handling;
+transport limits are not relaxed. Per-occurrence annotation prevents successful
+source analysis from generating recursive literal maps or false parse failures.
+Genuine parser, resolver and publication failures retain their existing bounded
+diagnostics, prior product cohort and successful AST cache entries; repair retries
+the ordinary path. Runtime Qt execution remains outside analysis.

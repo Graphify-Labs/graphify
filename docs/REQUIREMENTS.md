@@ -6,35 +6,29 @@ behavioural change, preserving established identifiers and acceptance traceabili
 Identifiers use separate `REQ-QML-` and `INC-QML-` namespaces under the
 [identifier and legacy-alias contract](qt-qml/IDENTIFIERS.md).
 
-REQ-QML-001 through REQ-QML-017 are implemented for the documented bounded Qt 6/QML
-static source profile. Source, update, consumer and artifact acceptance evidence is
-assigned individually in [tests/TRACEABILITY.md](../tests/TRACEABILITY.md).
-All seventeen requirements were Verified within the original bounded fixture profile. Final
-INC-QML-07 source and installed-artifact proof passes all declared PR workflow lanes;
-completion is not inferred from earlier CI or a skipped test.
-That evidence describes the original fixture profile. INC-QML-10 corrects native
-source ownership under existing REQ-QML-008-AC02, REQ-QML-016-AC01/AC04 and
-REQ-QML-017-AC02/AC04; new forward-declaration and header/implementation cases
-have local source-ownership and reviewed installed-artifact proof, including
-unchanged accepted-context body deduplication. Affected native criteria remain
-partially verified across their recorded cases. INC-QML-11 implements bounded inherited-signal lookup with local source/update
-evidence under REQ-QML-016-AC01/AC04; installed integration remains pending.
-INC-QML-28 implements explicit-emission admission with local source/update evidence;
-installed integration remains pending. INC-QML-12 implements bounded
-generic out-of-line constructor canonical ownership under the same five native
-criteria used by INC-QML-10. INC-QML-13 independently preserves source-file context
-and distinguishes internal community links from external connections. Earlier method/profile passes do not establish all
-constructor, inherited-member or runtime support.
-See [IMPLEMENTATION.md](qt-qml/IMPLEMENTATION.md),
-[EXPORT_MATRIX.md](qt-qml/EXPORT_MATRIX.md) and
-[PLATFORM_MATRIX.md](qt-qml/PLATFORM_MATRIX.md) for concrete limits. Generic C++
-and JavaScript remain baseline capabilities. Increment numbers are delivery stages.
+The catalog contains twenty-one requirements and eighty-five stable acceptance
+criteria. INC-QML-00–07 evidence describes the original bounded Qt 6/QML profile;
+later corrections and adoption extend that profile without renumbering it.
+Current source, update, consumer and installed evidence is assigned individually
+in [tests/TRACEABILITY.md](../tests/TRACEABILITY.md).
 
-REQ-QML-018 is **Partially implemented; not Verified**. AC02 is locally verified for bounded native syntax and upgrade fixtures;
-other adoption criteria remain unverified. Native header classification is tracked separately under AC07;
-combined adoption evidence remains pending. Additional ordinary project forms
-extend the initial fixture profile. Its seven criteria extend that profile through INC-QML-08; they do not replace or
-retroactively broaden the original seventeen requirements and sixty-eight criteria.
+INC-QML-11, INC-QML-15 and INC-QML-08a/b/c are implemented and locally complete for
+the documented Windows x64/Python 3.12 profile. Bounded inherited signals, exact
+constructor identity, qmake paths, C++ header admission, declared providers and
+child-service subscriptions have source and reviewed installed-wheel evidence.
+INC-QML-28–38 correct the additional reproduced producer, consumer, transport and
+publication failures. AST cache schema 12 and Qt policy 18 govern the final profile.
+
+All seven REQ-QML-018 criteria have passing local acceptance assignments. The
+requirement is **Implemented; locally verified for the bounded Windows profile**,
+not Verified across the full declared platform matrix. The final source run
+retains 59 pre-existing failures with no new failure identities; full typing also
+retains baseline errors. Unexecuted hosted lanes, native browser/device behavior,
+live database delivery and runtime Qt effects remain explicit gaps. See the
+[final adoption evidence](qt-qml/VALIDATION.md#final-adoption-delivery),
+[implementation limits](qt-qml/IMPLEMENTATION.md#final-adoption-delivery),
+[export contracts](qt-qml/EXPORT_MATRIX.md) and
+[platform matrix](qt-qml/PLATFORM_MATRIX.md).
 
 ## Requirement catalog
 
@@ -50,8 +44,8 @@ profile. INC-QML-21–27 implement qualified native identity, static API/loader 
 authority, retained Windows writes, coordinated product publication, orphan
 reference cleanup and native property notification handlers. Their focused source, reviewed installed-artifact and contribution-gate
 results are assigned in validation and traceability. The correction cases have
-local passing evidence; skipped/system and wider profile cases remain unverified. Broader provider adoption, inherited endpoints and overload identity
-remain INC-QML-08/11/15. Original fixture passes establish their recorded profiles,
+local passing evidence; skipped/system and wider profile cases remain unverified. Provider adoption, inherited endpoints and overload identity
+now have the bounded local source and installed evidence recorded for INC-QML-08/11/15. Original fixture passes establish their recorded profiles,
 not every SDK API or runtime effect. Baseline test/type failures remain explicit.
 
 Unsupported parenting, type, URL, overload or lifetime evidence retains an
@@ -261,7 +255,7 @@ Cold rebuild, warm cache, manual update, and watch agree on normalized Qt/QML ou
 
 3 - Parser/grammar/config/import-root/ignore-policy changes invalidate the affected cached facts or resolution; stale output cannot be accepted solely because file content hashes match. (`REQ-QML-011-AC03`)
 
-4 - Repeated no-change updates are idempotent and preserve unrelated source facts; the final incremental graph equals a clean rebuild after every delivered mutation case. Removing or restoring source cannot leave stale synthetic reference nodes without an accepted remaining owner. (`REQ-QML-011-AC04`)
+4 - Repeated no-change updates are idempotent and preserve unrelated source facts; the final incremental graph equals a clean rebuild after every delivered mutation case. Removing or restoring source cannot leave stale synthetic reference nodes without an accepted remaining owner, including generic C++ include stubs. Still-referenced external nodes and source-backed definitions remain intact. (`REQ-QML-011-AC04`)
 
 <a name="qml-012--failure-handling-and-persistence"></a>
 
@@ -373,27 +367,29 @@ Installed Qt/QML analysis supports the newly accepted project/declaration and ty
 
 3 - Literal context exposure supplied through a supported factory call or member expression resolves the statically declared API type from accepted canonical declarations and preserves provider, return/member type, owner and context evidence. Supported API hops use one object pointer or lvalue reference; source-owned root values/references use `.`, pointers use `->`, and direct address-of objects and implicit `this` retain their declaration identity. Original CV and declarator shape survive transport. Multiple pointers, pointer references, arrays, function pointers, value-return hops, opaque aliases, operator mismatches, unknown, conflicting, conditional or unsupported type/owner evidence produce no definite provider link. No factory, getter or source code executes; declared API evidence does not prove runtime conversion, allocation or const-correct invocation. (`REQ-QML-018-AC03`)
 
-4 - Supported calls, `Connections` handlers and `signal.connect(handler)` subscriptions through an exposed context provider and a typed child-service property resolve to the correct declared C++ member/signal and QML handler. Scope, lexical shadowing, ambiguity and connection direction survive graph build/reload and query/affected consumers. Affected queries use accepted logical source/target direction in directed and undirected graphs, including class-member seeding and actual source-owner propagation. Partial, foreign or contradictory direction metadata grants no dependency. Subscriptions remain distinct from ordinary calls and runtime delivery. (`REQ-QML-018-AC04`)
+4 - Supported calls, `Connections` handlers and `signal.connect(handler)` subscriptions through an exposed context provider and a typed child-service property resolve to the correct declared C++ member/signal and QML handler. Scope, lexical shadowing, ambiguity and connection direction survive graph build/reload and query/affected consumers. Source occurrence and endpoint roles authorize the relationship mechanism; changing a read into a call, borrowing another occurrence or substituting an incompatible context grants no bridge. Affected queries use accepted logical source/target direction in directed and undirected graphs, including class-member seeding and actual source-owner propagation. Partial, foreign or contradictory direction metadata grants no dependency. Subscriptions remain distinct from ordinary calls and runtime delivery. (`REQ-QML-018-AC04`)
 
 5 - A clean installed optional wheel analyzes a public mixed Qt 6/QML project containing the accepted positive forms from AC01–AC04 through the production CLI, both at its project root and at an explicitly configured safe application subroot. Hand-checked facts, root boundaries and consumer results match source evidence without executing the analyzed project. Cold/warm, manual-update and watch results equal clean rebuilds after metadata, context-provider, child-member and signal edits/removal; prior initial-profile and unrelated-language evidence remains applicable or is reverified. (`REQ-QML-018-AC05`)
 
-6 - Actual parser, resolver and publication failures against that fixture produce bounded stage-specific diagnostics and preserve prior graph, manifest, analysis state and existing successful content-keyed source-cache bytes, including rejected read-only destination replacement on supported Windows hosts. Missing optional parser, rejected root/path expansion and corrupt transport remain explicit failures; a corrected retry succeeds and a repeated no-change update is idempotent. Diagnostics and public fixtures contain no private source, identifiers, paths or credentials, and analysis runs no Qt application, build hook or plugin. (`REQ-QML-018-AC06`)
+6 - Actual parser, resolver and publication failures against that fixture produce bounded stage-specific diagnostics and preserve prior graph, manifest, analysis state and existing successful content-keyed source-cache bytes, including rejected read-only destination replacement on supported Windows hosts. Missing optional parser, rejected root/path expansion and corrupt transport remain explicit failures. JSON serialization rejects partial, foreign, ill-typed or contradictory direction markers before writing, retains previous output and reports QT_EXPORT_DIRECTION; force cannot turn invalid markers into valid-looking endpoints. A corrected retry succeeds and a repeated no-change update is idempotent from the first successful publication, including raw no-cluster output; transient extraction-run lists or absent-versus-empty diagnostic lists alone cannot rewrite accepted graph bytes or modification time. Meaningful diagnostics and source changes remain observable. Diagnostics and public fixtures contain no private source, identifiers, paths or credentials, and analysis runs no Qt application, build hook or plugin. (`REQ-QML-018-AC06`)
 
 7 - Ambiguous `.h` inputs with supported source-visible C++ declaration markers select the C++ extractor across whitespace, BOM, CRLF and Unicode forms. Comments and string literals cannot supply those markers; plain C and inconclusive headers retain existing C dispatch, and Objective-C dispatch retains its established priority. Header-only edits refresh the selected extractor's source facts through the facade and installed updates without executing the header. (`REQ-QML-018-AC07`)
 
-Status: **Partially implemented; not Verified**. AC02 has local passing evidence for
-empty-brace parameter defaults, `Q_UNUSED` statements and valid numeric digit
-separators under the public source-fixture profile. AC02 is locally verified for the bounded syntax and upgrade fixtures.
-The new AC07 header-dispatch criterion and the broader adoption profile remain
-incomplete work. INC-QML-11 and INC-QML-15 retain their existing acceptance IDs;
-their current delivery is in progress until fresh evidence closes each bounded gap.
-INC-QML-23/25 supply actual read-only replacement and product-cohort failure
-retention/recovery evidence under AC06. Valid new source-cache entries may be
-added after successful source analysis before graph publication; they do not
-accept the graph or its checkpoint. The broader adoption fixture remains
-unverified. Other additions require public synthetic reproductions and bounded contracts.
-The initial REQ-QML-009 literal-only and REQ-QML-017 provider profiles remain unchanged
-until the corresponding INC-QML-08 behavior and evidence land together.
+Status: **Implemented; all seven criteria locally verified for the bounded
+Windows x64/Python 3.12 profile**. Individual success, rejection, update and failure
+assignments appear in [traceability](../tests/TRACEABILITY.md#final-adoption-delivery).
+The reviewed installed wheel passes 3,024 selected tests; four actual installed
+CLI profiles cover CMake/qmake at whole-project and configured safe application
+roots. Repetition preserves accepted bytes; ordinary regressions additionally
+check modification times, real edits, stale-edge removal and repaired retries.
+Valid new content-keyed source-cache entries may be added after successful source
+analysis before publication; they do not accept a graph or checkpoint. Existing
+successful entries and prior products survive the tested failures.
+
+The extended provider and metadata contracts supplement the initial REQ-QML-009
+and REQ-QML-017 profiles. Wider hosted-platform verification and baseline full-suite
+and type failures remain outstanding delivery evidence; this status does not
+claim arbitrary Qt SDK, build or runtime compatibility.
 
 The added qmake distinctions follow the Qt 6.8
 [variable reference](https://doc.qt.io/qt-6.8/qmake-variable-reference.html#qml-import-path)
@@ -454,7 +450,7 @@ project code.
 
 **Acceptance Criteria**
 
-1 - Public CMake, qmake and resource fixtures project each supported literal module/source or resource-alias membership through an independent source-owned `membership_resolution` site to the uniquely accepted canonical file/component endpoint. The declaration contains its site with context `qt_membership_site`; a resolved site references the target with confidence `EXTRACTED` and context `qt_project_source` or `qt_resource_membership`. Direction, module/alias context and original span survive build, JSON reload and scoped query; raw declarations and existing loader/module lookup results remain unchanged. (`REQ-QML-020-AC01`)
+1 - Public CMake, qmake and resource fixtures project each supported literal module/source or resource-alias membership through an independent source-owned `membership_resolution` site to the uniquely accepted canonical file/component endpoint. Accepted C++ file endpoints retain their file role with valid bounded producer provenance; callable, class, foreign, malformed or unrelated semantic metadata cannot borrow that role. The declaration contains its site with context `qt_membership_site`; a resolved site references the target with confidence `EXTRACTED` and context `qt_project_source` or `qt_resource_membership`. Direction, module/alias context and original span survive build, JSON reload and scoped query; raw declarations and existing loader/module lookup results remain unchanged. (`REQ-QML-020-AC01`)
 
 2 - Missing, duplicate, conditional, generated or out-of-root targets retain explicit unresolved/unsupported site status, reason and bounded evidence without a target edge. Same-name files in different scopes remain distinct; graph projection neither reads new files nor evaluates expansions, build hooks or QML. Malformed metadata and failed joins retain existing failure diagnostics and prior durable graph/state; force cannot authorize partial membership publication. (`REQ-QML-020-AC02`)
 

@@ -25,8 +25,8 @@ CPP = '#include "backend.hpp"\nBackend::Backend() : Backend(0) { emit ready(); }
 
 
 def corpus(root):
-    """Collapsed constructor overloads cannot prove a callable/class owner."""
-    cpp = CPP + 'Backend::Backend(int count) : QObject(nullptr) { emit ready(); }\n'
+    """Duplicate equivalent constructor bodies cannot prove one source callable owner."""
+    cpp = CPP + CPP.split('\n', 1)[1]
     result = analysis(root, {"backend.hpp": HEADER, "backend.cpp": cpp})
     unknown = [node for node in sites(result, "member") + sites(result, "emission")
                if not qt_metadata(node)["owner_id"]]
@@ -36,9 +36,9 @@ def corpus(root):
 
 def test_req_qml008_ac02_unknown_native_owner_keeps_actual_file_context_after_reload(tmp_path):
     """The production facade/build/writer retain truthful source context and unknown roles."""
-    # This public overload set loses generic provenance for one definition in
-    # the producer just as an unsupported constructor in an installed corpus can.
-    cpp = CPP + 'Backend::Backend(int count) : QObject(nullptr) { emit ready(); }\n'
+    # Equivalent duplicate definitions remain ambiguous after exact overload
+    # admission; a source file link cannot turn them into accepted native owners.
+    cpp = CPP + CPP.split('\n', 1)[1]
     result = analysis(tmp_path, {"backend.hpp": HEADER, "backend.cpp": cpp})
     unknown = [node for node in sites(result, "member") + sites(result, "emission")
                if not qt_metadata(node)["owner_id"]]
@@ -97,10 +97,9 @@ def test_req_qml008_ac02_file_context_requires_unique_actual_file_role(tmp_path,
 def test_req_qml011_ac04_unowned_file_sites_refresh_and_remove_stale_links(tmp_path, monkeypatch, operation):
     """Actual full/warm/update paths preserve Qt file links and evict removed sites.
 
-    Exact generic overload identity is outside this supported profile: its
-    pre-existing name-collapsed contains edge can retain a different occurrence
-    location in full and watch graphs. Compare all nodes and every native edge;
-    supported singleton constructor tests retain full graph parity assertions.
+    Equivalent duplicate definitions keep visible source occurrences without a
+    guessed callable. Compare all nodes and every native edge; exact accepted
+    overload tests separately establish complete generic graph parity.
     """
     from tests.test_qt_final_incremental_parity import clean, endpoints, normalized, run, semantic
 

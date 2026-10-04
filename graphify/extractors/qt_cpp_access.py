@@ -17,6 +17,7 @@ from graphify.extractors.qt_cpp_loaders import (collect_loader_constructors, dec
 from graphify.extractors.qt_cpp_type_scope import NativeTypeScope
 from graphify.extractors.qt_cpp_syntax import QtCppError, read_cpp, source_span
 from graphify.extractors.qt_cpp_variables import simple_reference, type_name, variables_at
+from graphify.extractors.qt_cpp_provider_expression import provider_expression
 
 _METHODS = {"load", "loadFromModule", "loadUrl", "setSource", "create", "createWithInitialProperties", "rootObjects", "rootObject",
             "findChild", "property", "setProperty", "setParent", "invokeMethod", "read", "write", "setContextProperty", "setContextObject", "setInitialProperties"}
@@ -90,13 +91,15 @@ def _site(facts, unit, mapping, call, identities, types, component_engines):
         engine = chain[1] if chain else ""
         if not engine and receiver_type != "QQmlContext":
             return
-        provider = simple_reference(args[1 if method == "setContextProperty" else 0]["text"]) if len(args) >= (2 if method == "setContextProperty" else 1) else ""
+        expression = args[1 if method == "setContextProperty" else 0]["text"] if len(args) >= (2 if method == "setContextProperty" else 1) else ""
+        declared = provider_expression(expression, identities, types, call["start_byte"])
+        provider = declared.pop("provider_reference", "")
         facts.add("context_exposure", method, call["span"], call["owner"].get("node_id"), **common,
                   engine_reference=engine, engine_type=variables.get(engine, ""),
                   **_identity_fields(identities, engine, call["start_byte"], "engine"),
                   **_identity_fields(identities, provider, call["start_byte"], "provider"),
                   exposed_name=literal_string(args[0]["text"]) if args and method == "setContextProperty" else None,
-                  provider_reference=provider, provider_type=variables.get(provider, ""), operation=method)
+                  provider_reference=provider, provider_type=variables.get(provider, ""), operation=method, **declared)
     elif method == "setParent":
         # An observed parent mutation cannot establish a static QObject tree.
         # Keep its source occurrence for conservative child-lookup rejection.

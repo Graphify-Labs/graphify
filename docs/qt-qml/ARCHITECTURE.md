@@ -656,3 +656,45 @@ full `graphify update .` after upgrading; retained cache or watch state is not a
 ID migration oracle. A downgrade requires a fresh rebuild with its matching
 analyzer. Graph serialization schema and unrelated language IDs remain unchanged.
 Installed artifact and final gate evidence are recorded separately in validation.
+
+## D21 — Declared types lend APIs, not runtime object identity
+
+INC-QML-08b extends context exposure with bounded source-owned factory/member
+expressions and child-service API chains. The C++ producer owns original type
+spelling, position and declarator shape; one analysis-run index validates borrowed
+canonical class/member/accessor evidence. The expression's lexical root declaration
+and its engine/component association remain distinct from the returned API type.
+
+Executing factories/getters or guessing by a global class label would create
+runtime authority that source analysis cannot establish. Instead, each accepted
+pointer/lvalue-reference hop lends a declared API only. Original CV remains
+inspectable; allocation, QVariant conversion, const-correct invocation, lifetime
+and runtime alias identity are excluded. Unsupported/conditional shapes grant
+no target. Derived subscriptions keep source occurrence, native signal and QML
+handler identities distinct through reload and consumer revalidation.
+
+The run-owned bridge and provider index retain existing extraction/resolution
+ownership. Source AST schema and derived policy epochs change with producer
+contracts; persistence stays with the existing cohort owner. A separate handler
+endpoint avoids inverse graph relations collapsing onto one node pair. Native
+implicit parameters must be established before nested subscription lookup;
+nearer explicit lexical binders retain priority. No second runtime or framework
+is introduced. Version-specific evidence belongs to validation and traceability.
+
+## D22 — Logical direction requires a complete accepted endpoint pair
+
+INC-QML-30/31 share one `graph_direction` validator. Valid full markers can reverse
+undirected storage but must name the exact stored pair with exact endpoint types.
+Directed markers must agree with directed adjacency. Both markers absent retains
+legacy physical orientation; partial, foreign, ill-typed or contradictory markers
+grant no guessed dependency. Source-owner promotion follows the same rule.
+
+Trusting each marker independently or replacing malformed markers during reload
+would hide corrupted transport. JSON must validate before stripping internal
+markers and publishing endpoints. Reload restores direction from serialized
+typed edge endpoints only when both internal markers are absent; existing corrupt
+markers stay visible for rejection. The consumer and serializer preserve graph
+data, source identities and existing persistence ownership. Serialization rejects
+before product commit under QT_EXPORT_DIRECTION; force does not bypass integrity.
+No graph schema or source-cache epoch change is required. Legacy unmarked graphs
+retain their prior behavior; malformed marked graphs now fail conservatively.

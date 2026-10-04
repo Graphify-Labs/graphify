@@ -1758,6 +1758,14 @@ def _get_cpp_func_name(node, source: bytes) -> str | None:
     decl = node.child_by_field_name("declarator")
     if decl:
         return _get_cpp_func_name(decl, source)
+    if node.type == "reference_declarator":
+        # tree-sitter-cpp places a reference-return function directly beneath
+        # this wrapper without a declarator field. Only a sole actual function
+        # child can supply the name; unrelated or competing children stay opaque.
+        functions = [child for child in node.children if child.type == "function_declarator"]
+        if len(functions) == 1:
+            return _get_cpp_func_name(functions[0], source)
+        return None
     for child in node.children:
         if child.type == "identifier":
             return _read_text(child, source)

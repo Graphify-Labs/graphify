@@ -573,5 +573,9 @@ def load_node_link_graph(path_or_data):
             source, target = link["source"], link["target"]
             attributes = (graph.edges[source, target, link.get("key", 0)]
                           if graph.is_multigraph() else graph.edges[source, target])
-            attributes["_src"], attributes["_tgt"] = source, target
+            # Only an absent pair may be restored from serialized endpoints.
+            # Explicit partial/foreign markers remain visible for consumer
+            # rejection; reload must not turn corrupt transport into proof.
+            if "_src" not in attributes and "_tgt" not in attributes:
+                attributes["_src"], attributes["_tgt"] = source, target
     return graph

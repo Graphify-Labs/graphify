@@ -128,3 +128,29 @@ query/explain/affected/HTML; malformed-resource rejection, repair and repeat pas
 An earlier export or policy-5 artifact does not verify this correction. No new
 browser visual, hosted, other-platform, database-service or executable Qt proof is
 claimed; other export omissions remain those listed above.
+
+## Logical direction integrity (INC-QML-30/31/34)
+
+Affected queries and native JSON use exact logical pairs, preserving undirected
+storage reversal while rejecting contradictory directed identity. Serialization
+validates before consuming markers or writing. Raw update publication and the
+clustered no-change shortcut perform the same preflight before accepting data.
+Invalid pairs produce bounded QT_EXPORT_DIRECTION and preserve prior products;
+force cannot grant authority. Legacy unmarked graphs retain their prior behavior.
+
+External Cypher wrappers can store a complete pair independently of wrapper tuple
+order; their existing interpretation remains compatible. Partial, foreign or
+ill-typed pairs still fail before opening a database connection. Recording SDK
+tests prove that boundary; live database acceptance remains unexecuted. Exact
+production reload/query/update/writer tests and final artifact evidence belong in
+[traceability](../../tests/TRACEABILITY.md) and [validation](VALIDATION.md).
+
+## Final adoption evidence boundary
+
+The current bounded Windows source and reviewed installed profile includes
+INC-QML-11/15/08 and INC-QML-28–38. Mechanism proof and per-occurrence transport
+survive assembly/serialization/reload; typed uses/read/call/connect/disconnect
+facts retain their original endpoint roles and direction. Local installed
+acceptance, actual CMake/qmake CLI profiles and retained full-gate/platform limits
+are recorded in [final validation](VALIDATION.md#final-adoption-delivery).
+Earlier revision records do not establish whole-SDK or runtime compatibility.

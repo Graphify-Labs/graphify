@@ -1,17 +1,17 @@
 """Connect observed Qt sites to accepted source files without inventing owners."""
 from __future__ import annotations
 
-from pathlib import PurePosixPath
-
 from graphify.extractors.qt_cpp_facts import encode_qt, qt_metadata
 from graphify.qml_resolution_types import source_path
+from graphify.qt_source_file_role import generic_file_role
 
 
 def attach_qt_file_sites(results, nodes, edges, *, root, fresh_ast_ids=()):
     """Use existing canonical file IDs; borrowed semantic metadata stays unchanged.
 
     The generic producer's file role is its AST origin, code type, L1 location,
-    exact filename label and absence of callable/semantic roles. File containment
+    exact filename label and absence of callable/semantic roles. Bounded C++ file
+    transport is accepted without granting constructor/type authority. Containment
     is independent of an unavailable callable, class or runtime target. Duplicate
     or foreign file evidence cannot authorize a guessed container.
     """
@@ -21,13 +21,7 @@ def attach_qt_file_sites(results, nodes, edges, *, root, fresh_ast_ids=()):
     files = {}
     for node in nodes:
         path = source_path(node, root)
-        origin = node.get("_origin")
-        accepted_ast = origin == "ast" or (origin is None and node.get("id") in fresh_ast_ids)
-        if (path and node.get("file_type") == "code" and accepted_ast
-                and node.get("source_location") == "L1"
-                and node.get("label") == PurePosixPath(path).name
-                and not node.get("_callable") and not node.get("_callable_class")
-                and not node.get("metadata")):
+        if generic_file_role(node, path, fresh_ast_ids):
             files.setdefault(path, []).append(node["id"])
     existing = {(edge.get("source"), edge.get("target"), edge.get("context")) for edge in edges}
     added = []

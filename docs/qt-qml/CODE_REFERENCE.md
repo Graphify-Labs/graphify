@@ -348,7 +348,7 @@ Imported-header targets remain unavailable rather than falling back globally.
   native signal for a property's notifier. `qml_relationships` consumes it;
   `extractors/qml_expressions` owns explicit versus implicit handler parameters.
 
-Final AST schema 9 and Qt policy 12 require fresh source/derived reconstruction.
+At the INC-QML-21–27 checkpoint, AST schema 9 and Qt policy 12 required fresh source/derived reconstruction. Current adoption epochs are recorded in validation.
 Diagnostic and recovery contracts belong to [ERRORS.md](ERRORS.md); bounded
 acceptance, platform/artifact results and outstanding gaps belong to traceability.
 
@@ -365,7 +365,7 @@ acceptance, platform/artifact results and outstanding gaps belong to traceabilit
 | `extractors/qt_cpp_mapping.py` | Select the actual constructor signature/span; preserve source callable when native class authority rejects |
 | `cache.py`, `qt_incremental.py` | AST schema 10 / Qt policy 14; existing persistence/invalidation owners |
 
-The generic legacy engine measures 7,720 lines within its 7,730 ceiling. The four
+At the constructor checkpoint the generic engine measured 7,720 lines; the final reference-return hook measures 7,728 within its 7,730 ceiling. The four
 new hook lines select an existing producer owner; they add no domain logic to the
 controller. Existing specialized migration sequencing remains its extraction exit.
 New handwritten helpers and tests remain below 300 physical lines. Exact final
@@ -388,3 +388,95 @@ tests remain below 300 lines. No new persistence owner or diagnostic code exists
 delegates classification and retains dispatch ownership. This shrinks the legacy
 facade to 8,993 physical lines within its existing 9,010 ceiling. New source and
 tests remain below 300 lines. AST schema 11 / Qt policy 16 invalidate old facts.
+
+## Typed provider seams (INC-QML-08b)
+
+- `extractors/qt_cpp_api_shape.py`, `qt_cpp_api_types.py` and
+  `qt_cpp_provider_expression.py` produce original declaration/API expression facts.
+- `extractors/qt_cpp_identity.py::declared_type_binding` supplies original root
+  shape under the existing lexical lifetime/reassignment owner.
+- `qt_declared_provider.py::DeclaredProviderIndex` owns one run's canonical
+  class/member/shape/accessor validation; it opens no corpus files.
+- `qt_context_paths.py` owns finite child API traversal and consumer revalidation.
+- `qt_context_subscriptions.py` owns derived subscription/handler endpoint sites
+  and ordering of native implicit versus explicit/local lexical binders.
+- `qt_qml_callback_proof.py` validates the original scoped callback and source
+  ownership independently at the consumer boundary, using the existing QML index.
+- Existing `qt_context_bindings` and `qt_qml_projection` remain their integration
+  and consumer boundaries; build, serialization and persistence owners are unchanged.
+
+All new helpers and tests retain the 300-line ceiling. Full type/shape proof is
+independent of display sanitation. Diagnostic contracts and static runtime
+exclusions belong to ERRORS and D21; exact artifact evidence belongs to validation.
+
+## Direction consumers (INC-QML-30)
+
+`graph_direction.logical_endpoints` owns accepted pair validation.
+`affected.affected_nodes` owns query traversal and its per-call undirected index;
+`qt_affected.owned_ancestors` owns bounded source promotion. `paths.load_node_link_graph`
+owns typed reload and preserves invalid explicit markers for rejection. No mutable
+run state, producer schema or persistence owner moves to the helper.
+
+The legacy dependency consumer grows from 329 to 346 physical lines, with a
+permitted ceiling of 346; the loader grows from 577 to 581, ceiling 581. Owner:
+dependency consumer maintainer. Reason: this focused correction preserves the
+existing traversal/reload interfaces and ordering. Exit: separately characterize
+and extract the complete traversal/index or typed-load responsibility under the
+incremental refactoring contract. The helper, Qt consumer and new tests remain
+below 300 lines. No unrelated extraction is included in this correction.
+
+## JSON direction publication (INC-QML-31)
+
+`export.to_json` owns native direction preflight before JSON writes;
+`qt_export.logical_endpoints` preserves the external compatibility/rejection
+interface around the shared validator. Product staging/rollback remains in
+`publication.ProductPublication`; neither helper reads source or mutates the graph.
+The legacy exporter grows from 1,369 to 1,373 physical lines, with a permitted
+ceiling of 1,373. Owner: export maintainer. Reason: validation belongs to the existing
+JSON loop and changes no other format's owner. Exit: separately characterize and
+extract the complete JSON serializer while preserving write/idempotence contracts.
+The 118-line Qt transport helper and both new test modules remain below 300 lines.
+
+## Initial update comparison (INC-QML-32)
+
+`watch._canonical_graph_for_compare` owns the bounded raw-update representation
+normalization. The existing watch controller grows from 2,487 to 2,495 lines,
+within its existing 2,550-line ceiling. Owner: update maintainer. Reason: the
+existing comparison seam receives one focused policy block; orchestration and
+publication ordering stay unchanged. Exit: separately characterize and extract
+the complete comparison responsibility under the incremental refactoring contract.
+The new 156-line repeat suite exercises production rather than duplicating its
+normalization rules.
+
+## File-role and early direction boundaries (INC-QML-33/34)
+
+`qt_source_file_role.py` (32 lines) owns `generic_file_role`; normalized paths and
+unique node selection remain with membership/containment. The constructor-type
+owner is 236 lines after extracting `valid_source_transport`; its complete-record
+authority gate remains separate. `graph_direction.py` (29 lines) owns logical
+pairs and iterable candidate preflight. Watch owns diagnostic/comparison ordering.
+
+Watch grows from 2,487 through 2,495 (first-repeat comparison) to 2,511 physical
+lines (early direction preflight), within its existing 2,550 ceiling. Owner:
+incremental integration maintainer. The focused extraction exit remains comparison
+and publication orchestration with unchanged ordering, retention and checkpoint
+characterization. No forwarding layer, writer or ambient project state is added.
+
+## Final adoption projection and publication owners
+
+`qt_orphan_cleanup.py` (89 lines) owns exact prior import proof and pure retirement;
+the updater captures proof before provenance inference. `qt_qml_event_access.py`
+(115 lines) owns per-occurrence annotation and canonical partial-role upgrades.
+`qt_qml_projection.py` (185 lines) owns typed-candidate selection and source-backed
+operation/relationship proof. Source facts remain with their extractors; indexes
+remain run-owned; no helper owns a writer, persistent cache or ambient root.
+
+The legacy builder grows from 2,469 to 2,475 physical lines, with a permitted
+ceiling of 2,475. Owner: graph assembly maintainer. Its six-line effective growth
+places typed bridge validation before generic relation admission. Extract typed
+admission with characterization when the upstream assembly boundary is split;
+an unrelated mechanical extraction is outside this correction. Watch grows through
+2,526 (prior ownership) to 2,532 (first minted origin), below the existing 2,550
+ceiling and extraction exit. All new handwritten production/tests remain below
+300 lines. Current epochs are AST schema 12 and Qt policy 18; older epoch records
+describe their own source/artifact checkpoints.

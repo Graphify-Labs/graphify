@@ -342,19 +342,23 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         if cid is not None and _labels:
             node["community_name"] = _labels.get(cid, f"Community {cid}")
         node["norm_label"] = _strip_diacritics(node.get("label", "")).lower()
+    from graphify.qt_export import logical_endpoints
     for link in data["links"]:
         if "confidence_score" not in link:
             conf = link.get("confidence", "EXTRACTED")
             link["confidence_score"] = _CONFIDENCE_SCORE_DEFAULTS.get(conf, 1.0)
-        # Restore original edge direction. Undirected NetworkX storage may
-        # canonicalize endpoint order, flipping `calls` and other directional
-        # edges in graph.json. The build path stashes the true endpoints in
-        # _src/_tgt for exactly this purpose (#563).
-        true_src = link.pop("_src", None)
-        true_tgt = link.pop("_tgt", None)
-        if true_src is not None and true_tgt is not None:
-            link["source"] = true_src
-            link["target"] = true_tgt
+        # Undirected storage may reverse accepted endpoints (#563). Validate
+        # the complete marker pair before consuming it; partial/foreign markers
+        # cannot become new serialized endpoints or disappear into legacy data.
+        try:
+            source, target = logical_endpoints(link["source"], link["target"], link, directed=G.is_directed())
+        except ValueError:
+            print("[graphify] error: QT_EXPORT_DIRECTION: invalid logical edge pair; JSON was not written. "
+                  "Re-extract or repair the graph and retry.", file=sys.stderr)
+            return False
+        link.pop("_src", None)
+        link.pop("_tgt", None)
+        link["source"], link["target"] = source, target
     # Canonicalize the key order WITHIN each node/link dict. node_link_data always
     # appends the node key (`id`) at the end, so a node whose `id` was an inline
     # attribute on a cold build (position varies) lands last after a read-rebuild

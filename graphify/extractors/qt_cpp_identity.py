@@ -120,6 +120,19 @@ class CppDeclarationIdentity:
             return "", position
         return self.unit.field(declaration, "type"), declaration.start_byte
 
+    def declared_type_binding(self, name, position):
+        """API roots retain original declarator shape without changing SDK lookup."""
+        from graphify.extractors.qt_cpp_api_shape import declared_spelling
+        owner = self.mapping.owner_at(position)
+        record, _ = self._select(name, position, owner)
+        if record is None:
+            return "", position
+        declarator = record["syntax"]
+        declaration = declarator.parent
+        if declaration is None or declaration.type not in _DECLARATIONS:
+            return "", position
+        return declared_spelling(self.unit, declaration, declarator, _identifier(declarator)), declaration.start_byte
+
     def resolve(self, name, position):
         """Return a portable 64-hex ID or explicit uncertainty, never a name fallback."""
         if not isinstance(name, str) or not re.fullmatch(r"this|[A-Za-z_]\w*", name):

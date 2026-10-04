@@ -6,6 +6,7 @@ from pathlib import Path, PurePosixPath
 
 from graphify.extractors.qml_project_read import literal_path
 from graphify.qml_resolution_types import Resolution, answer, fact_edge, fact_node, qml_metadata, source_path
+from graphify.qt_source_file_role import generic_file_role
 
 _CONTEXTS = {"qt_membership_site", "qt_project_source", "qt_resource_membership"}
 
@@ -48,8 +49,7 @@ def _file_role(node, path, fresh_ids):
         return False
     if metadata.get("kind") == "file":
         return node.get("type") == "file" and node.get("label") == PurePosixPath(path).name
-    return (not node.get("metadata") and node.get("file_type") == "code"
-            and node.get("source_location") == "L1" and node.get("label") == PurePosixPath(path).name)
+    return generic_file_role(node, path, fresh_ids)
 
 
 def _target(index, path, fresh_ids):

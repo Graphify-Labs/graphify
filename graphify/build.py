@@ -1381,10 +1381,16 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # bind to a same-named node in another language. The extraction spec forbids
         # this for `calls`; it is equally invalid for `imports`/`references` (a
         # Python `import time` must not bind to a `time.ts`, #1749).
+        # Typed Qt/QML bridges also use `uses` for property access, emissions and
+        # loading. Validate their source mechanism before the generic relation
+        # gate so changing a relation cannot bypass endpoint/source authority.
+        from graphify.qt_qml_projection import allows_qt_qml_edge, is_typed_qt_qml_edge
+        if is_typed_qt_qml_edge(G.nodes[src], G.nodes[tgt], attrs) and not allows_qt_qml_edge(
+                G.nodes[src], G.nodes[tgt], attrs, source_id=src, target_id=tgt, nodes=G.nodes):
+            continue
         _edge_rel = attrs.get("relation")
         if _edge_rel in ("calls", "imports", "imports_from", "references"):
             from graphify.qml_projection import allows_qml_script_edge
-            from graphify.qt_qml_projection import allows_qt_qml_edge
             qml_script_edge = allows_qml_script_edge(G.nodes[src], G.nodes[tgt], attrs, target_id=tgt)
             qt_qml_edge = allows_qt_qml_edge(G.nodes[src], G.nodes[tgt], attrs,
                                             source_id=src, target_id=tgt, nodes=G.nodes)

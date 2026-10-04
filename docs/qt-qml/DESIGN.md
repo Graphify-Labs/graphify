@@ -960,3 +960,171 @@ inconclusive headers retain C dispatch. Classification requires no optional Qt
 parser or project execution. AST schema 11 and Qt policy 16 invalidate old source
 and derived facts at unchanged package versions. Root boundaries and persistence
 ordering are unchanged; normal retry reparses corrected metadata/source.
+
+## Declared provider and child-service APIs (INC-QML-08b)
+
+`qt_cpp_api_shape` preserves CV, indirection and member operators.
+`qt_cpp_api_types` records declaration-position targets for returns, public fields
+and properties. `CppDeclarationIdentity.declared_type_binding` retains root
+spelling without changing older normalized callers. The access collector carries
+exact root identity and at most eight literal call/field steps. One object pointer
+or lvalue reference supplies an API hop; root values/references require dot access,
+pointers arrow access. Direct address-of and implicit this retain source proof.
+Unsupported shapes, cycles, conditions, duplicate members or missing canonical
+callables grant no target. Helpers do not reread source, evaluate getters or own
+persistence.
+
+`DeclaredProviderIndex` validates borrowed canonical class/member/type evidence.
+`qt_context_paths` follows accepted child-property/accessor chains and independently
+checks serialized endpoints. Member facts require the actual generic callable
+role and original class/member span; property READ accessors require exact owner,
+file, annotation span/name and zero arity. NOTIFY consumers repeat the producer's
+real property/signal/accessor proof. Canonical target existence alone supplies no
+authority. Type evidence stays distinct from bounded display values.
+
+`qt_context_subscriptions` projects source-owned Connections and literal
+signal.connect callbacks after provider resolution. A `context_handler_endpoint`
+separates inverse contains/reference pairs. Native implicit handler binders precede
+nested callback/provider lookup; explicit function/arrow formals and nearer local
+JavaScript declarations retain their lexical authority. Notifications follow the
+real NOTIFY signal. Cold/warm and manual/watch production updates rederive the
+complete overlay after relevant C++, QML or metadata changes. D21 records the
+static API/runtime identity distinction; final epochs and installed proof belong
+to validation.
+
+`qt_qml_callback_proof` independently validates the original call, callback,
+component/object scope, owner and source spans. Connections endpoints must be the
+actual source handler. Literal signal.connect callbacks use the existing QML
+index; captured local JavaScript binders retain precedence. A sibling function's
+existing ID cannot replace that source correspondence after serialization.
+
+## Logical dependency direction (INC-QML-30)
+
+`graph_direction.logical_endpoints` validates the complete stored endpoint pair.
+Both absent markers retain legacy orientation; one absent, foreign, wrong-type or
+contradictory directed marker rejects the edge. Complete undirected markers may
+reverse physical insertion order. Exact endpoint types prevent boolean/integer
+identity coercion. The validator reads metadata without changing the graph.
+
+`affected.affected_nodes` builds one accepted incoming index for undirected
+graphs; directed graphs retain native adjacency. The same validator governs
+outward class/member seeding and `qt_affected.owned_ancestors` source promotion.
+Depth, relation filters and source-site provenance keep their existing contracts.
+`paths.load_node_link_graph` restores typed direction only when both markers are
+absent; explicit corrupt transport remains visible for consumer rejection.
+This consumer correction changes neither source facts nor cache epochs. Existing
+publication owners and failure/recovery ordering remain unchanged.
+
+## JSON direction rejection (INC-QML-31)
+
+`export.to_json` validates every physical/logical pair before consuming private
+markers or writing. Native directed graphs require the same directed pair;
+undirected graphs permit its complete accepted reversal. Partial, foreign or
+ill-typed markers return failure with QT_EXPORT_DIRECTION before the destination
+is touched, including under force. Serialization leaves the input graph unchanged.
+
+`qt_export.logical_endpoints` delegates to the shared pair validator and preserves
+its existing bounded ValueError contract. External database/Cypher exports retain
+the established complete logical-marker interpretation for bidirectional storage
+wrappers; they still reject partial, foreign and ill-typed pairs before connection
+or file output. That external interpretation does not authorize contradictory
+native-directed JSON. Existing coordinated publication stages restore the prior
+product cohort on serializer rejection; repaired retry and repeated publication
+use the normal path. No source facts, policy epoch or writer ownership changes.
+
+## Initial raw-update comparison (INC-QML-32)
+
+`watch._canonical_graph_for_compare` retains comparison ownership. It normalizes
+only missing-versus-empty diagnostics, failed-source, QML/Qt-failure and hyperedge
+lists. Nonempty lists and wrong-type values still differ. The extraction-run
+`extracted_sources` list is transient comparison provenance; authoritative source
+facts remain compared in their nodes/edges. Unknown metadata remains observable.
+The function copies its input and owns no mutable run/cache/persistence state.
+
+The first accepted raw graph survives an unchanged second manual/watch update
+without a byte or mtime rewrite. Genuine source edits and existing publication
+failure/recovery still use the owning writer and cohort stages. Clustered topology
+comparison is a separate contract. This correction adds no schema/policy epoch.
+
+## Shared generic C++ file-role proof (INC-QML-33)
+
+Previously, membership and source containment each required an empty generic
+file metadata record. The constructor producer now retains bounded include/shadow
+proof on that canonical node. `qt_source_file_role.generic_file_role` owns the
+shared predicate: exact AST/fresh origin, source label/location and non-callable
+file role, followed by the exact accepted constructor transport. Each caller
+still owns normalized source paths and unique endpoint selection.
+
+`cpp_constructor_type_authority.valid_source_transport` extracts the existing
+immutable transport checks after their characterization. Inputs are accepted
+dictionaries; output is a boolean. The predicate reads no source, stores no state,
+and owns no cache or persistence. Constructor authority still requires a complete
+record separately. An incomplete valid file can contain source sites without
+becoming a constructor or SDK type proof. Consumers import this focused validator;
+extractor children do not import the extractor facade. File IDs, fact ownership,
+join ordering, graph writers and cache epochs remain unchanged. Foreign,
+duplicate, semantic or malformed nodes cannot borrow file identity.
+
+## Candidate direction preflight (INC-QML-34)
+
+`graph_direction.valid_direction_pairs` consumes explicit edge tuples and their
+native directed flag through the established logical-pair validator. Watch owns
+the bounded failure diagnostic and invokes it before raw comparison/publication
+and before clustered topology comparison. Neither an equal topology nor force
+can authorize a partial, foreign, ill-typed or contradictory candidate. The
+validator does not mutate candidates, publish data or accept analysis checkpoints.
+Existing cohort/cache retention and repaired retry remain with their original
+owners. External database wrapper interpretation remains separately documented.
+
+## Exact prior import ownership and external cleanup (INC-QML-35)
+
+The reconciliation caller captures `prior_import_ids` from the original persisted
+graph before any origin inference. `qt_orphan_cleanup.previous_import_targets`
+uses the builder's supplied canonical import family, exact source-owned AST
+import/context/confidence, valid direction and unique owner/target identity.
+An inferred or backfilled AST origin cannot grant historical ownership.
+
+The pure cleanup owner retires only accepted prior import endpoints matching the
+generated external shape, absent from fresh output and every surviving ordinary
+or hyperedge reference, during a complete successful Qt refresh. Missing/semantic
+origin is the legacy external shape; foreign/AST origin, source/location,
+metadata presence, callable roles, wrong type/label and unrelated IDs block
+retirement. View attributes do not invent source ownership. Borrowed inputs,
+source-backed facts and still-referenced nodes remain unchanged. The caller owns
+the per-run proof set, extraction, reconciliation and publication; the helper
+reads no source, executes nothing and owns no cache or persistent state.
+
+## Relationship mechanism authority (INC-QML-36)
+
+The Qt/QML projection repeats original occurrence ownership, file/location/span,
+status, lexical admission and native endpoint roles. It accepts the exact
+operation-to-relation/context mapping, including reads, calls, aliases, signal
+emissions, subscriptions, loads and reverse reflection. Complete endpoint IDs
+cannot repair an altered operation, flow, endpoint role or borrowed occurrence.
+The builder selects existing typed bridge producers independently of their
+relation/context/confidence and validates before its generic relation branch;
+`uses` cannot bypass proof. Context-binding ownership/exposure remains with its
+separate contract. Generic language relationships remain unchanged.
+
+## Per-occurrence event annotation (INC-QML-37)
+
+`resolve_qml_event_access` retains fresh-result mutation ownership. Each accepted
+site creates a local node/edge collection before adding it to the run's aggregate.
+`update_qt` rebuilds bounded literal transport without recursively transporting
+`raw_values`. Canonical source-owned role nodes and same-occurrence partial native
+edges receive the final bridge annotation, so deduplication cannot preserve the
+older incomplete context. IDs, original spans and independent occurrences survive.
+The event resolver reads accepted facts only; source/graph/cache publication
+owners and runtime exclusions are unchanged. Qt policy 18 triggers same-package
+derived refresh. These corrections implement the existing source-authority and
+publication decisions D17/D19; no competing ownership or runtime is introduced.
+
+## First raw external-stub publication (INC-QML-38)
+
+The canonical builder mint remains append-only. The updater records the node-list
+length immediately before minting and stamps only its newly appended placeholders
+with the established semantic origin. Existing/source-backed/AST/manual/semantic
+nodes retain their own fields and origin. Subsequent legacy provenance inference
+remains compatible, and comparison continues to observe origins rather than
+discarding them. Writer/cohort/checkpoint ordering remains unchanged. This is
+publication-created placeholder state, with no source parser/cache schema change.

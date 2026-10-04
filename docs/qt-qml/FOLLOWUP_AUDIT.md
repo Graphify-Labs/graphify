@@ -260,3 +260,15 @@ the two-namespace ambiguity control passes while a 51-namespace case fails befor
 the guard correction. These are concrete acceptance corrections, not claims that
 every Qt runtime mechanism is modeled. Final validation and plan review record
 implemented cases, artifact evidence and remaining broader scope separately.
+
+## Adoption correction closure
+
+The baseline audit's typed-factory exclusion probe records the old supported
+profile; it is not current acceptance for the subsequently admitted bounded
+declared provider form. INC-QML-11/15/08 and INC-QML-28–38 now have passing local
+source/installed correction evidence, with ordinary collected positive and
+rejection regressions replacing that old expectation. Preserve opt-in probes as
+revision-specific findings, not release tests. The final profile, remaining
+hosted/system gaps and baseline full-suite/type exceptions are recorded in
+[validation](VALIDATION.md#final-adoption-delivery) and
+[traceability](../../tests/TRACEABILITY.md#final-adoption-delivery).

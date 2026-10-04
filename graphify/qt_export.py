@@ -5,6 +5,8 @@ import hashlib
 import json
 import re
 
+from graphify.graph_direction import logical_endpoints as accepted_endpoints
+
 
 def has_qt_qml(graph) -> bool:
     return any(_typed(data) for _, data in graph.nodes(data=True)) or any(
@@ -38,12 +40,12 @@ def export_properties(data, *, preserve_metadata=False) -> dict:
     return result
 
 
-def logical_endpoints(source, target, data):
-    """Markers may orient the current pair, never authorize a different endpoint."""
-    src, tgt = data.get("_src", source), data.get("_tgt", target)
-    if {src, tgt} != {source, target}:
-        raise ValueError("QT_EXPORT_DIRECTION: markers do not name the accepted edge pair")
-    return src, tgt
+def logical_endpoints(source, target, data, *, directed=False):
+    """Exports share consumer pair validation while retaining their stable rejection code."""
+    endpoints = accepted_endpoints(source, target, data, directed=directed)
+    if endpoints is None:
+        raise ValueError("QT_EXPORT_DIRECTION: invalid logical edge pair; re-extract or repair the graph")
+    return endpoints
 
 
 def edge_properties(source, target, data, *, preserve_metadata=False) -> dict:
@@ -65,6 +67,8 @@ def preflight_qt_payload(graph) -> None:
     for _, data in graph.nodes(data=True):
         export_properties(data, preserve_metadata=True)
     for source, target, data in graph.edges(data=True):
+        # External exports honor complete logical pairs on bidirectional storage
+        # wrappers. JSON separately checks native directed identity when persisted.
         src, tgt = logical_endpoints(source, target, data)
         edge_properties(src, tgt, data, preserve_metadata=True)
 

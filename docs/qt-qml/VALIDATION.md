@@ -1585,3 +1585,312 @@ AST schema 11 and Qt policy 16 retire older producer/derived facts. Project inpu
 and build hooks remain unexecuted. New helpers/tests remain below 300 lines; the
 facade shrinks within its existing ceiling. Installed whole-root/safe-subroot
 acceptance and final full gates remain pending under INC-QML-08c.
+
+## INC-QML-08b and INC-QML-29 declared APIs
+
+Pointer-shape ordinary regressions first recorded **16 failed, 14 passed, 3.91
+seconds**. The corrected declared provider/consumer/update selection passed **194
+cases, 55.51 seconds**, with final original-byte shape controls **38 passed, 4.70
+seconds**. Independent source/consumer review then found missing authoritative
+member/accessor proof and legacy native parameter ordering. Promoted ordinary
+integrity/implicit tests first recorded **21 failed, 5 passed, 4.12 seconds**.
+
+The frozen adoption/provider/native/QML/combined/affected-direction selection
+passed **268 cases, 67.51 seconds**. Final proof/implicit/update command `python
+ -m pytest tests/test_qt_declared_proof_integrity.py
+ tests/test_qt_context_implicit_subscriptions.py tests/test_qt_typed_provider_updates.py
+ -q --tb=short` passed **46 cases, 32.74 seconds**, including six added
+default/directed NOTIFY reload and C++-only parameter retirement/repair controls.
+Peer rerun passed all **20 cases, 3.02 seconds**, excluding its fifteen original
+failures while retaining five explicit-handler/local-callback controls. Targeted
+Ruff/Pyright pass with zero added diagnostics in those helpers/tests.
+
+Reference-return canonical admission first failed **1 case, 0.94 seconds** at
+missing generic target. The eight-line generic declarator correction and promoted
+ordinary tests passed **22 cases, zero skips, 16.58 seconds**. Broader generic,
+constructor, native and adoption selection passed **288 cases, 4 skipped, 32.62
+seconds**. Those four existing preprocessor skips require unavailable host cpp;
+they are not acceptance. Engine typing retains 33 existing diagnostics overall,
+with none in the changed helper boundary. The legacy engine measures 7,728 lines
+within its 7,730 ceiling. New helpers/tests remain below 300 lines.
+
+08b/29 share a reviewable canonical endpoint integration: AST schema 12 and Qt
+policy 17 retire old declaration/callback/generic facts. Return references lend
+declared APIs without proving QVariant conversion, allocation, const-correct
+invocation or runtime identity. Installed final integration remains pending;
+undirected affected omission is separately reproduced and assigned to INC-QML-30.
+
+## INC-QML-30 affected-query direction
+
+Two actual pointer-factory/direct-provider probes first failed after production
+JSON reload (**2 failed, 1.18 seconds**). Expanded direction/member cases recorded
+19 failures with four controls; source-owner promotion added four failures with
+three controls. On-disk corrupted-marker reload recorded **8 failed, 1.49 seconds**.
+The correction validates source direction at traversal, member seeding, source
+promotion and reload without changing graph data.
+
+`python -m pytest tests/test_qt_affected_direction.py
+ tests/test_qt_affected_direction_updates.py tests/test_affected_member_seed.py
+ tests/test_affected_cli.py tests/test_qt_affected_consumers.py
+ tests/test_qt_affected_definitions.py tests/test_js_dynamic_import_affected.py
+ tests/test_qt_native_property_notify.py tests/test_qt_native_notify_updates.py
+ -q --tb=short` passed **146 cases, zero skips, 36.43 seconds**. Both graph modes,
+reversed insertion, legacy unmarked orientation, parallel mechanisms, corrupted
+identity, depth/cycles, CLI provenance and actual manual/watch stale-edge repair
+pass. Ruff and targeted Pyright pass for all six touched source/test files.
+Installed integration and the separate INC-QML-31 serialization correction remain
+pending; a consumer pass cannot prove a serializer preserved rejected transport.
+
+## Callback source correspondence
+
+The promoted ordinary callback module first recorded **17 failures** before
+correction; an adjacent borrowed-handler span case also failed before its fix.
+Actual raw/build/JSON/reload tests reject a substituted same-component callback,
+borrowed scope/owner/span/form/arity, and a QML function displacing a captured
+local JavaScript declaration. Qualified and own-object callback controls retain
+their source lookup. The final 17-module adopted/native/QML/combined/affected
+selection passed **310 cases, zero skips, 73.38 seconds**. Ruff and explicit-runtime
+targeted Pyright pass for the complete owned slice. The source validator is 110
+lines; projection 83 and callback tests 104 remain within their ceilings.
+
+## INC-QML-31 JSON direction integrity
+
+The direct production-writer regression first recorded **33 failed, 2.16 seconds**:
+the old writer returned success and committed invalid transport. The final direct
+and real clustered-update selection passes all **53 new cases, 5.90 seconds**.
+Actual default/directed native JSON/reload/affected, generic graph variants,
+preflight before external connection, prior byte retention, source proof and
+repaired repeat cover the same serializer path. Four clustered manual/watch
+cases retain seven durable products and existing nonempty AST cache bytes exactly
+on rejection. Corrected output matches clean source contracts; presentation-only
+community labels are excluded only from the clustered-versus-unclustered oracle.
+
+`python -m pytest tests/test_qt_json_direction.py
+ tests/test_qt_json_direction_updates.py tests/test_qt_export_matrix.py
+ tests/test_qt_qml_export_consumers.py tests/test_export.py tests/test_atomic_writes.py
+ tests/test_export_idempotent_writes.py tests/test_cli_export.py
+ tests/test_js_dynamic_import_affected.py tests/test_python_import_resolution.py
+ tests/test_typescript_enum_members.py tests/test_qt_affected_direction.py
+ tests/test_qt_affected_direction_updates.py -q --tb=short -rs` passed **307 cases,
+4 skipped, 59.24 seconds**. Skips are existing optional matplotlib SVG, Windows
+POSIX-mode equality and unavailable symlink setup/creation controls. No new case
+skips. Ruff passes; targeted pinned typing retains three existing optional
+matplotlib import diagnostics outside the changed lines. Final full typing and
+installed evidence are recorded separately. No source/Qt epoch advances here.
+
+## Final broad gate reproduction
+
+The first expanded reviewed optional wheel matched all **178 Python payloads**
+byte-for-byte but its suite recorded **20 failed, 2,506 passed, 36 skipped,
+491.84 seconds**. Seven failures exposed valid C++ file provenance rejected by
+the old membership guard. Thirteen containment fixtures assumed newly supported
+constructor overloads lose generic ownership. Their fixture now uses equivalent
+duplicate bodies, preserving every original rejection/containment assertion;
+that faithful selection isolates **5 failed, 8 passed** before INC-QML-33.
+These results are failed integration evidence and are superseded only by a fresh
+reviewed artifact after correction.
+
+The concurrent full source run recorded **83 failed, 8,092 passed, 178 skipped,
+3 warnings, 958.87 seconds**. Its 24 additional failures include those twenty and
+four clustered source-oracle tests collected before their final test freeze.
+Those four compared presentation community labels with an unclustered cold
+oracle; the final independent installed run passes all four with exact source
+contracts retained. A fresh complete source run is required after the new consumer
+corrections. Neither the old artifact nor this failed run establishes acceptance.
+
+## INC-QML-32 first-publication repeat
+
+An additional isolated installed CLI check produced correct public Qt facts but
+rewrote its unchanged second raw graph. The promoted ordinary suite first
+recorded **15 failed, 32 passed, 8.20 seconds**: ten actual CMake/qmake,
+whole-root/subroot and generic Python manual/watch repeat cases plus five
+missing-versus-empty comparison cases. The narrow correction passed **47 cases,
+14.14 seconds** with bytes/mtime, real edits and replacement rejection/recovery.
+Ruff passes; new tests have zero targeted type diagnostics. Legacy watch typing
+retains separately recorded baseline diagnostics outside the changed seam.
+
+## INC-QML-33 file provenance compatibility
+
+The unchanged membership cases initially recorded seven failures. Correcting the
+obsolete containment overload fixture without weakening its assertions isolated
+five further valid file-role failures. Shared transport/file-role correction passes
+`python -m pytest tests/test_qt_cpp_file_roles.py tests/test_qt_project_membership.py
+ tests/test_qt_project_membership_updates.py tests/test_qt_source_file_containment.py
+ tests/test_cpp_overload_type_authority.py tests/test_cpp_overload_source_integrity.py
+ tests/test_cpp_constructor_ownership.py tests/test_cpp_overload_identity.py
+ tests/test_cpp_qualified_identity.py tests/test_cpp_qualified_proof.py -q --tb=short`:
+**300 passed, zero skipped, 28.41 seconds** on the pinned Python/parser environment.
+Eighty new cases cover both joins, legacy/current/incomplete/fresh/reloaded proof,
+33 corruption forms and separate constructor authority. Ruff and targeted Pyright
+pass. An additional real C++ deletion probe reproduces orphan include-stub retention;
+INC-QML-35 owns its correction. It is not passing lifecycle evidence yet.
+
+## INC-QML-34 preflight before comparison
+
+The actual builder/deduper-seam suite first recorded **64 failed, 4 passed,
+30.86 seconds**. The corrected preflight passes **68 cases, zero skipped,
+57.08 seconds**. Raw/clustered and manual/watch profiles reject partial/foreign,
+ill-typed, collapsed and native-directed contradictory markers before shortcuts
+or writers; force does not bypass integrity. Prior product bytes/mtime and real
+successful cache entries remain unchanged, candidates are not mutated, and a
+repaired retry/repeat succeeds before a genuine source edit publishes. Ruff and
+targeted helper/test Pyright pass. The unchanged INC-QML-32 regressions remain
+separate; fresh full-source and installed integration gates follow source freeze.
+
+## INC-QML-35 prior import proof
+
+The initial real C++ deletion reproduction records **2 failed, 3.32 seconds**.
+Expanded source-proof controls also reproduce two origin-laundering failures;
+the updater now captures original persisted proof before provenance inference.
+`python -m pytest tests/test_qt_cpp_file_role_updates.py tests/test_qt_orphan_cleanup.py
+ tests/test_qt_orphan_import_proof.py -q --tb=short` passes **97 cases, zero skips,
+37.06 seconds** on the pinned environment. Forty-two lifecycle and 43 focused
+prior-proof cases preserve connected, semantic, foreign and source-backed roles,
+ordinary/hyperedge references, exact corrupted-marker conservatism, real Windows
+read-only rejection, nonempty successful cache entries and repaired repeat.
+Ruff and focused Pyright pass. Watch is 2,526 lines before INC-QML-38; the pure
+cleanup owner is 89 lines, with new tests 258 and 144 lines.
+
+## INC-QML-37 repeated event transport
+
+The promoted ordinary suite records **28 failed, 3.95 seconds** before correction:
+one site recursively encodes literal maps, two fail later metadata decoding,
+and three or more fail extraction. Its first narrow encoder fix exposes stale
+native role direction; complete per-site/canonical-role correction passes
+**28 cases, 9.51 seconds**. The final suite adds two actual Windows publication
+rejection/retry cases. `python -m pytest tests/test_qt_cross_event_occurrences.py
+ tests/test_qt_access_providers.py tests/test_qt_event_incremental_consumers.py
+ tests/test_qt_events_boundaries.py tests/test_qml_cpp_access.py
+ tests/test_qt_qml_export_consumers.py tests/test_qt_cpp_upgrade_invalidation.py
+ -q --tb=short -rs` passes **69 cases, zero skips, 21.71 seconds**.
+Ruff and explicitly bound targeted Pyright pass. The event owner is 115 lines
+and the ordinary regression module 175, within the 300-line source ceiling.
+AST schema remains 12; Qt policy 18 refreshes derived events without changing
+the package version or executing the analyzed project. Final artifact proof follows.
+
+## INC-QML-36 source mechanism integrity
+
+Independent review first accepts a property-read edge relabeled `calls` at the
+projection boundary. Expanded ordinary cases record **88 failed, 46 passed**
+before correction, including the separately corrected repeated event transport.
+Actual builder assertions also reproduce a `uses` bypass of its generic relation
+gate. The new module covers **166 cases across 18 mechanisms**. The final command
+`python -m pytest tests/test_qt_bridge_mechanism_integrity.py
+ tests/test_qt_loader_providers.py tests/test_qt_loader_boundaries.py
+ tests/test_qt_loader_updates.py tests/test_qt_receiver_boundaries.py
+ tests/test_qt_native_notify_updates.py tests/test_build.py -q --tb=short`
+passes **394 cases, zero skips, one existing Hypothesis warning, 63.12 seconds**.
+The context/native/callback/proof/combined compatibility selection separately
+passes **304 cases, zero skips, 50.11 seconds**, with that existing warning.
+Ruff and scoped projection/test Pyright pass. Build grows 2,469 to 2,475 lines;
+projection/new tests are 185/188 lines. The source/test snapshot is frozen for
+fresh full-source and reviewed installed-artifact proof.
+
+The outer-metadata watch probe performs four actual raw updates against string/
+list metadata on a prior generic C++ file, using a sibling QML edit or C++ deletion.
+Fresh extraction reconstructs the valid file transport or removes the deleted
+file without using the malformed record as authority. All four return success
+and expose no injected diagnostic string. This is watch evidence only; no manual
+result is inferred from an incomplete setup. No further increment is needed there.
+
+## INC-QML-38 first external-stub origin
+
+The truly cold first-repeat suite records **22 failed, 6.99 seconds**, then
+**22 passed, zero skips, 8.92 seconds** after stamping only newly minted stubs.
+Independent peer execution also passes **22, zero skips, 8.99 seconds**.
+`python -m pytest tests/test_qt_publication_stub_origin.py tests/test_qt_initial_repeat.py
+ tests/test_qt_update_direction_integrity.py tests/test_qt_cpp_file_role_updates.py
+ tests/test_qt_orphan_cleanup.py tests/test_qt_orphan_import_proof.py
+ tests/test_external_stub_endpoints.py tests/test_publication.py
+ tests/test_qt_product_publication.py tests/test_atomic_writes.py -q --tb=short -rs`
+passes **308 cases, 4 existing platform skips, 146.05 seconds**. New cases do not
+skip. The failure is an injected OSError at the production replacement boundary;
+INC-QML-35 supplies complementary actual Windows read-only rejection. Previous
+products/nonempty cache bytes, repair and first-repeat bytes/mtime are checked.
+Ruff and targeted new-test Pyright pass. Watch is 2,532 lines; new tests 168.
+No source schema/policy or comparison semantics changes here.
+
+## Final adoption delivery
+
+This proof closes local INC-QML-11, INC-QML-15, INC-QML-08a/b/c and the reproduced
+INC-QML-28–38 corrections. Reviewed index tree:
+`9f0ae4ea75f47539df8ec8a66f1493b9e7f52b2f`; final documentation closure does not change
+the verified Python source/test payload. Profile: Windows x64, Python 3.12.14,
+tree-sitter 0.25.2, tree-sitter-language-pack 0.11.0, pytest 9.1.1 in the pinned
+installed harness; canonical source pytest 9.0.3, PyYAML 6.0.3. Source fixtures are
+Qt 6 CMake/qmake inputs; no Qt SDK, corpus execution or model API is used.
+
+### Reviewed installed artifact
+
+`uv build --wheel --offline --project REVIEWED_INDEX --out-dir ARTIFACT_DIRECTORY`
+builds `graphifyy-0.9.74-py3-none-any.whl`, SHA256
+`184abd15490322fd6f39b50c341a4da79b6cd19e96cd3f4fe3c68ab4c4d29a97`. A fresh
+environment installs this noneditable wheel and pinned optional parser. The
+isolated `-I -X utf8` driver imports the installed package before loading selected
+tests from the reviewed index and asserts its installed path. All **179 Python
+modules match byte-for-byte** between reviewed source, wheel and installation.
+The selected compatibility/adoption suite executes **3,024 passed, 36 skipped,
+649.07 seconds**. Newly added regressions do not skip; historical optional/platform
+skips remain explicit and cannot establish their criteria. The selection extends
+the prior compatibility list with every current Qt/QML, generic C++, affected and
+Objective-C test module. Main-guard execution preserves the Windows process-pool
+production boundary. This is offline local artifact proof, not hosted delivery.
+
+From a neutral temporary directory outside ignored paths, actual
+`python -I -X utf8 -m graphify update ROOT --no-cluster` runs without mocks or a
+source checkout import. Each profile has initial and unchanged-repeat exit 0,
+hand-checked expected facts and byte-identical graph JSON:
+
+| Build metadata | Scope | Nodes | Edges | Initial/repeat |
+| --- | --- | --- | --- | --- |
+| CMake | Whole project | 102 | 125 | Passed / Passed |
+| CMake | Configured safe application subroot | 100 | 124 | Passed / Passed |
+| qmake | Whole project | 113 | 136 | Passed / Passed |
+| qmake | Configured safe application subroot | 111 | 135 | Passed / Passed |
+
+Ordinary installed lifecycle regressions additionally exercise actual manual/watch
+edits, cold/warm versus clean rebuilds, source removal, accepted-cache retention,
+failure repair and bytes/mtime idempotency. Actual Windows read-only destination
+denial supplements injected resolver/writer failures. The earlier failed artifact
+and 83-failure preclosure source runs remain historical failed evidence, superseded
+by this fresh corrected payload; they are not counted as passes.
+
+### Full contribution gates and retained exceptions
+
+`uv run --no-sync python -m pytest tests -q --tb=short`, with UTF-8 environment,
+executes **8,630 passed, 59 failed, 178 skipped, three warnings, 1,096.87 seconds**.
+Every failed node ID equals the recorded pre-work baseline
+`5c0f2cab8bd8c14a7cb139c90997025b58f1c81c`: added **0**, resolved **0**. The baseline
+run had 7,558 passes, the same 59 failures and 178 skips. The gate exits 1; no
+assertion is weakened or skip treated as passing. Existing parser-backend and
+Windows portability exceptions retain their earlier individual records.
+
+`ruff check .` passes. Explicitly bound full Pyright remains failed: canonical
+`pyright --pythonpath .venv/Scripts/python.exe --outputjson` reports **645 errors,
+four warnings**; pinned Python reports **644 errors, six warnings**. Against
+recorded baseline `1128205820590132be140d03be4230bb8d6bec57`, diagnostic multisets
+ignore line shifts and show **zero added**, with two/three removed respectively.
+Focused new owners/tests pass targeted typing. A default invocation through the
+unavailable system Python alias is environment-only output and not proof.
+
+`uv lock --check --offline` passes (210 packages). `python -m tools.skillgen
+--check` passes for 134 generated artifacts; audit-coverage, schema-singleton,
+monolith-roundtrip and always-on-roundtrip validators execute separately and pass.
+Final document checks verify local links/anchors, exact test functions, privacy
+patterns and assignments for all 85 stable criteria; no private corpus or machine
+path is retained. Source/test freeze precedes full-source and installed execution.
+
+### Navigation graph and delivery limits
+
+`uv run --no-sync graphify update .` completes AST-only refresh: **22,121 nodes,
+48,476 edges, 1,119 communities**; HTML aggregates 1,119 communities and 3,405
+cross-community edges. Optional backend warnings and the deliberate partial Luau
+fixture remain visible. The graph is navigation material, not correctness proof.
+Scoped queries use the explicit graph path and a 1,500-token budget. Its historical
+commit metadata does not claim an exact final commit binding for working-tree code.
+
+Current source has not been pushed, merged, deployed or run in the twelve hosted
+OS/Python lanes. Earlier hosted results do not verify this changed source. Native
+browser/device and live database procedures remain unexecuted; no Qt runtime
+behavior is inferred. The local implementation/acceptance scope is complete, while
+global platform and release gates retain these explicit limitations.

@@ -7,10 +7,11 @@ import re
 from graphify.extractors.qt_cpp_facts import QtFacts, qt_metadata
 from graphify.extractors.qt_cpp_mapping import map_cpp
 from graphify.extractors.qt_cpp_properties import add_properties
-from graphify.extractors.qt_cpp_registration import add_literal_registrations, add_macro_registration
+from graphify.extractors.qt_cpp_registration import add_literal_registrations, add_macro_registration, conditional_offset
 from graphify.extractors.qt_cpp_syntax import MAX_CPP_BYTES, QtCppError, lexical_code, read_cpp
 from graphify.extractors.qt_cpp_type_aliases import add_type_dependency_facts, type_dependency_source
 from graphify.extractors.qt_cpp_type_scope import NativeTypeScope
+from graphify.extractors.qt_cpp_api_types import add_api_fields, return_fields
 
 _CPP = {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h"}
 _QT = re.compile(rb"\b(?:QML_[A-Z_]+|Q_[A-Z_]+|QObject|QQml\w*|QQuickView|qmlRegister\w*|signals|slots)\b")
@@ -82,6 +83,7 @@ def _class_facts(mapping, facts, *, classes=(), alias_nodes=None):
                   generic_target_id=record["node_id"], class_id=record["node_id"],
                   class_name=record["qualified_name"], status=record["status"],
                   is_definition=record["is_definition"],
+                  api_declaration_conditional=conditional_offset(mapping.unit, record["span"]["start_byte"]),
                   is_qobject="Q_OBJECT" in macros or "QObject" in bases,
                   source_q_object="Q_OBJECT" in macros, is_gadget="Q_GADGET" in macros, bases=bases,
                   canonical_base_names=canonical_bases,
@@ -90,7 +92,8 @@ def _class_facts(mapping, facts, *, classes=(), alias_nodes=None):
                   canonical_base_access_status="resolved" if len(base_access) == len(bases)
                   and all(value in {"public", "protected", "private"} for value in base_access) else "unavailable")
         add_macro_registration(mapping, facts, record)
-        add_properties(mapping.unit, mapping, facts, record)
+        add_properties(mapping.unit, mapping, facts, record, types=types)
+        add_api_fields(mapping, facts, record, types)
     for record in mapping.functions:
         if not record["class_name"]:
             continue
@@ -105,7 +108,8 @@ def _class_facts(mapping, facts, *, classes=(), alias_nodes=None):
                   signature=record["signature"], parameter_types=record["parameter_types"],
                   parameter_names=[item["name"] for item in record["parameters"]],
                   revisions=revisions,
-                  return_type=record["return_type"], roles=record["roles"], access=record["access"], status=record["status"])
+                  return_type=record["return_type"], roles=record["roles"], access=record["access"], status=record["status"],
+                  **return_fields(mapping.unit, record, types))
 
 
 def enrich_qt_cpp(paths, per_file, *, root, accepted_nodes=None, accepted_edges=None):
