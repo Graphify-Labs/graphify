@@ -1894,3 +1894,37 @@ OS/Python lanes. Earlier hosted results do not verify this changed source. Nativ
 browser/device and live database procedures remain unexecuted; no Qt runtime
 behavior is inferred. The local implementation/acceptance scope is complete, while
 global platform and release gates retain these explicit limitations.
+
+## Pre-INC-QML-00 failure attribution
+
+The immutable imported upstream source is
+`0b60d47e6cd9338c51143f39f35b6c45c8453385`, before INC-QML-00 commit
+`2f0fdcee314c408652993bc62341a6d92ed5d99f`. All thirteen test modules containing
+the current 59 failures exist at that upstream revision and are byte-identical
+after checkout newline normalization. Their existence alone does not establish
+that they failed during the original foundation run.
+
+The foundation run above exercised six files and directly recorded only two of
+these failures: the Windows deleted-current-directory watch cases. The later
+`1128205` and `5c0f2ca` comparisons therefore cannot substitute for pre-increment
+execution evidence.
+
+A retrospective replay exports the immutable upstream revision with `git archive`
+into an ignored source artifact, without changing the canonical checkout or
+branch. An isolated `python -I -X utf8` driver prepends that archive, verifies the
+imported `graphify` package belongs to it, then executes exactly the 59 failed
+node IDs using `pytest -q --tb=short -p no:cacheprovider`. The current canonical
+Windows x64/Python 3.12.14 environment is retained; no dependency is installed or
+source/test assertion changed. Result: **59 failed, 7.16 seconds**, with all 59
+failure identities matching and zero unmatched identities. This is a selective
+replay of old source, not a historical full-suite run or a claim that every
+failure had already been observed during foundation setup.
+
+The replay retains 29 unavailable shell/hook cases, seven Windows filesystem
+fixture limitations, fourteen missing optional OpenAI/Solidity/Visual-Basic
+dependencies, eight installer/assistant-skill assertions and one Terraform graph
+expectation. Thus all 59 reproduce without the Qt/QML implementation on the
+current host. Shell-security cases stop before the missing shell starts; they
+establish neither successful security acceptance nor an injection vulnerability.
+The full contribution gate remains failed, and this attribution does not remove
+its baseline exceptions or fill unexecuted platform evidence.
