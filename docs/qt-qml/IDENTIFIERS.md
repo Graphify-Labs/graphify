@@ -27,6 +27,11 @@ not advance together. Extend this catalog when retiring or migrating an ID;
 never transfer an alias to unrelated behavior. Document identifiers do not change
 runtime schemas or parser contracts.
 
+Shared assistant/filesystem/Terraform compatibility uses the independent
+`REQ-CORE-NNN`, `REQ-CORE-NNN-ACNN` and `INC-CORE-NN` namespaces defined in the
+[compatibility plan](../COMPATIBILITY.md). The Qt/QML counters and aliases above
+remain unchanged; shared contribution-gate follow-up is not another Qt feature.
+
 The twenty-one requirements comprise eighty-five criteria. The initial seventeen
 requirements/sixty-eight criteria and seven `REQ-QML-018` adoption criteria retain
 separate support/evidence profiles. REQ-QML-019 adds four HTML-view criteria.

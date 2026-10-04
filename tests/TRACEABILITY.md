@@ -1,4 +1,4 @@
-# Qt/QML acceptance traceability
+# Acceptance traceability
 
 Current criterion IDs use `REQ-QML-`; completion increments use `INC-QML-`.
 [Legacy aliases](../docs/qt-qml/IDENTIFIERS.md) retain earlier evidence identity.
@@ -24,12 +24,50 @@ clears 40 of those 59 in a selective rerun, retains 19, and exposes two previous
 skipped hook portability assertions. It does not replace full-suite evidence.
 Neither aggregate test totals nor skipped cases establish acceptance.
 
+The separate [shared compatibility checkpoint](#shared-compatibility-verification)
+records `REQ-CORE-` behavior and the all-extras environment. A post-restart full
+Windows/Linux run is pending; the original full-suite evidence above remains
+historical and is not replaced by focused passing selections.
+
 The chronological records below preserve checkpoint evidence. Their older pending
 statements, epochs and test totals describe the recorded revisions. Current status
 and proof are in the final matrix and [validation](../docs/qt-qml/VALIDATION.md#final-adoption-delivery).
 See [implementation limits](../docs/qt-qml/IMPLEMENTATION.md#final-adoption-delivery),
 [export contracts](../docs/qt-qml/EXPORT_MATRIX.md) and
 [platform matrix](../docs/qt-qml/PLATFORM_MATRIX.md).
+
+## Shared compatibility verification
+
+The Windows x64/Python 3.12 checkpoint installs all extras from the unchanged
+lock with `uv sync --all-extras --frozen`; `uv pip check` reports 197 compatible
+packages. Tree-sitter remains 0.25.2, HCL 1.2.0 and language-pack 0.11.0.
+The [compatibility plan](../docs/COMPATIBILITY.md) records profile setup, exact
+remaining system procedure, ownership, size ceilings and consumer limitations.
+
+| Acceptance ID | Exact automated assignment | Checkpoint evidence and gaps |
+| --- | --- | --- |
+| REQ-CORE-001-AC01 | `tests/test_codex_hook_execution.py::test_req_core001_ac01_codex_hook_dispatches_spaced_native_launcher`; `tests/test_install.py::test_codex_hook_command_is_a_real_cli_subcommand` | Real Cmd launcher, failing PATH decoy and unsafe control pass; actual PowerShell/percent-path consumer proof pending INC-CORE-05 |
+| REQ-CORE-001-AC02 | `tests/test_install.py::test_hermes_skill_destination_posix_uses_home`; `tests/test_install_references.py::test_gemini_install_references_all_resolve`; `tests/test_install_roundtrip.py::test_skill_roundtrip_at_real_destination` | Exact destination and Linux/Windows contract profiles pass locally; simulated platform selection does not prove another kernel |
+| REQ-CORE-001-AC03 | `tests/test_skill_auto_refresh.py::test_every_stale_platform_is_refreshed_not_only_the_detected_one`; `tests/test_skill_auto_refresh.py::test_a_stale_gemini_skill_gets_the_warning_too` | Windows-adapted bytes and retained ambiguous shared copy pass; shared ownership isolation remains unresolved upstream |
+| REQ-CORE-001-AC04 | `tests/test_uninstall_scope.py::test_bare_call_still_removes_global`; `tests/test_uninstall_scope.py::test_remove_user_skill_opt_in_with_project_dir` | Linux/Windows scope profiles and protected shared-dir retention pass; no new uninstall policy |
+| REQ-CORE-002-AC01 | `tests/test_filesystem_profiles.py::test_req_core_002_ac01_detect_rejects_nonregular_stat_modes`; `tests/test_filesystem_profiles.py::test_req_core_002_ac01_stat_failures_are_unreadable`; original real fixtures in `tests/test_non_regular_files.py` | Native admission/error seams pass; actual FIFO/socket/device and privileged symlink fixtures remain capability exclusions, not passing real-object evidence |
+| REQ-CORE-002-AC02 | `tests/test_filesystem_profiles.py::test_req_core_002_ac02_unavailable_cwd_rejects_before_artifacts`; `tests/test_filesystem_profiles.py::test_req_core_002_ac02_repo_root_recovers_cwd_and_publishes_graph`; `tests/test_watch.py::test_rebuild_code_deleted_cwd_without_repo_root_returns_false`; `tests/test_watch.py::test_rebuild_code_deleted_cwd_uses_graphify_repo_root` | Native simulated lookup-failure plus real chdir/persistence pass; actual removed-CWD POSIX fixtures pending |
+| REQ-CORE-002-AC03 | `tests/test_filesystem_profiles.py::test_req_core_002_ac03_unavailable_cwd_reports_root_reason` | Missing-root/chdir-denied assertions failed before correction; all three safe diagnostic categories pass after correction |
+| REQ-CORE-003-AC01 | `tests/test_terraform_modules.py::test_same_named_directories_and_cross_file_references_stay_separate` | Both LF/CRLF cases pass exact four identities/references and exclude cross-directory targets |
+| REQ-CORE-003-AC02 | `tests/test_terraform_modules.py::test_same_named_directories_and_cross_file_references_stay_separate`; `tests/test_terraform_modules.py::test_raw_extractor_scopes_ids_by_full_directory` | Production extraction, directed build and JSON reload pass portable paths, locations and scope; Terraform production unchanged |
+
+Focused commands and results at the checkpoint:
+
+- `pytest tests/test_install.py tests/test_install_references.py tests/test_install_roundtrip.py tests/test_skill_auto_refresh.py tests/test_uninstall_scope.py tests/test_codex_hook_execution.py -q`: 243 passed, five native symlink skips. Strengthened exact-launcher/subcommand follow-up: two passed.
+- `pytest tests/test_hooks.py tests/test_skillgen_input_path_injection.py -q`: 143 passed, eight pre-existing profile skips. The final affected selection plus shell-identity helpers: 37 passed, no skips. All 20 hostile-path cases include reachable unsafe controls.
+- `pytest tests/test_watch.py tests/test_non_regular_files.py tests/test_filesystem_profiles.py -q`: 198 passed, eleven profile/capability skips, one existing Hypothesis warning. Seven formerly failing impossible Windows fixtures now remain explicit system gaps; sixteen new portable cases pass.
+- `pytest tests/test_terraform.py tests/test_terraform_modules.py tests/test_extractors_registry.py::test_terraform_migrated -q`: 42 passed, one unavailable symlink skip, one existing Hypothesis warning.
+- `ruff check .`: passed. `python -m tools.skillgen --check`: all 134 artifacts match. Lockfile unchanged. Full source/platform and refreshed installed-wheel evidence remains pending after the WSL restart.
+
+These selections overlap and are not added into a full-suite total. Real filesystem
+capability assertions, native hook consumer execution and live-service tests remain
+separate from contract profiles and fake-provider boundaries. Full typing is a
+separate gate and is not established by Ruff or selected tests.
 
 ## Individual acceptance assignments
 

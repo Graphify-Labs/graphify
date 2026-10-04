@@ -480,3 +480,12 @@ an unrelated mechanical extraction is outside this correction. Watch grows throu
 ceiling and extraction exit. All new handwritten production/tests remain below
 300 lines. Current epochs are AST schema 12 and Qt policy 18; older epoch records
 describe their own source/artifact checkpoints.
+
+## Shared compatibility checkpoint
+
+The [compatibility plan](../COMPATIBILITY.md) owns the installer command,
+filesystem-fixture transport and unavailable-CWD diagnostic follow-up. Installation
+retains hook publication ownership; watcher recovery retains ordering and its
+2,550-line ceiling. Portable shell/test helpers and the Terraform regression do
+not change Qt resolution interfaces, AST schema 12 or Qt policy 18. Platform and
+consumer proof gaps remain distinct from the final Qt adoption artifact.

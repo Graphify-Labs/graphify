@@ -1,12 +1,16 @@
 # Graphify requirements
 
-This is the canonical product requirements document. Current entries cover the
-Qt/QML support extension. Add or update product requirements here with the
+This is the canonical product requirements document. Entries cover the
+Qt/QML support extension and shared assistant/analysis compatibility. Add or update product requirements here with the
 behavioural change, preserving established identifiers and acceptance traceability.
 Identifiers use separate `REQ-QML-` and `INC-QML-` namespaces under the
 [identifier and legacy-alias contract](qt-qml/IDENTIFIERS.md).
+Shared compatibility requirements use `REQ-CORE-NNN` and criteria
+`REQ-CORE-NNN-ACNN`; delivery uses `INC-CORE-NN`. These independent counters
+preserve every Qt/QML identity. The [compatibility plan](COMPATIBILITY.md)
+defines their scope and evidence boundaries.
 
-The catalog contains twenty-one requirements and eighty-five stable acceptance
+The Qt/QML catalog contains twenty-one requirements and eighty-five stable acceptance
 criteria. INC-QML-00–07 evidence describes the original bounded Qt 6/QML profile;
 later corrections and adoption extend that profile without renumbering it.
 Current source, update, consumer and installed evidence is assigned individually
@@ -490,3 +494,58 @@ those system results. Exact evidence and limitations belong to
 [INC-QML-16](qt-qml/PLAN.md#inc-qml-16--middle-mouse-navigation-and-overview-removal)
 and traceability.
 The existing HTML publication and canonical graph contracts remain authoritative.
+
+## Shared compatibility requirements
+
+### REQ-CORE-001 — Installed assistant contracts
+
+Installed assistant hooks invoke the Graphify CLI through the intended executable
+identity. Skill installation, refresh and uninstall honor the existing destination
+and content contract of the selected operating-system profile.
+
+**Acceptance Criteria**
+
+1 - A Codex hook installed from an executable path containing spaces reaches that exact executable and passes `hook-check` as the CLI subcommand. Literal path quoting follows the supported consumer shell; executable identity and argument boundaries are verified by actual dispatch, with a nonmatching executable rejected by the regression. (`REQ-CORE-001-AC01`)
+
+2 - Hermes and Gemini user installations use their platform-owned destinations and include resolvable skill references. POSIX and Windows profiles use their documented home/data and Gemini/shared-agents locations; project installation retains its separate scope. (`REQ-CORE-001-AC02`)
+
+3 - Refresh writes the correct platform-adapted skill bytes for each uniquely owned stale installed destination and preserves unrelated content. Ambiguous shared Gemini/agents copies retain their bytes and stamp; version checking with automatic refresh disabled reports the actual matching destination/installer. An already current installation is unchanged. Shared-directory ownership isolation remains outside the implemented contract. (`REQ-CORE-001-AC03`)
+
+4 - Uninstall observes the established global/project scope and explicit user-skill opt-in. Protected shared-agent content is retained according to the current platform contract; missing installations remain a safe no-op. (`REQ-CORE-001-AC04`)
+
+Status: **Correction in progress**. Existing platform behaviors are implemented;
+the Codex path invocation correction and fresh compatibility evidence belong to
+[INC-CORE-01](COMPATIBILITY.md#plan-and-acceptance-matrix).
+
+### REQ-CORE-002 — Safe filesystem admission and recovery
+
+Source discovery accepts regular files, rejects nonregular or inaccessible inputs
+without blocking, and handles an unavailable working directory through the
+existing explicit repository-root recovery contract.
+
+**Acceptance Criteria**
+
+1 - Regular files and supported links to them are accepted; directories, FIFOs, sockets, devices, broken links and stat failures are rejected without opening or executing the input. Real fixtures run where the platform/account can create them; portable mode/error tests supplement, and do not replace, actual filesystem evidence. (`REQ-CORE-002-AC01`)
+
+2 - A missing current directory without an explicit repository root returns failure with the existing diagnostic before queue/lock/graph side effects. A valid explicit repository root restores the working directory and publishes the correct source graph. Failed recovery leaves a clear failure result; simulated OS-failure tests and actual POSIX deleted-directory fixtures retain distinct evidence. (`REQ-CORE-002-AC02`)
+
+3 - Missing-CWD diagnostics distinguish an absent explicit repository root from failure to change to a supplied repository root. A failed supplied root is not described as unset, and diagnostic text does not expose its private absolute path. The failure returns before queue, lock or graph publication and preserves the prior graph bytes. (`REQ-CORE-002-AC03`)
+
+Status: **Implemented; fresh profile verification in progress**. Native Windows
+cannot establish real FIFO or deleted-current-directory evidence. The exact
+system gaps remain in [compatibility verification](COMPATIBILITY.md#verification-profiles-and-remaining-system-work).
+
+### REQ-CORE-003 — Portable Terraform scope and provenance
+
+Terraform analysis preserves distinct directory-scoped declarations and emits
+portable source paths and exact source locations in extracted and saved graphs.
+
+**Acceptance Criteria**
+
+1 - Same-named variables and outputs in four distinct directories, including punctuation-colliding directory spellings, retain distinct identities and exactly the expected references to their own directory's variable. No reference binds another directory's same-named declaration. (`REQ-CORE-003-AC01`)
+
+2 - Original UTF-8 LF and CRLF source bytes produce correct portable source paths, source lines, extracted confidence and directed references through the production facade, graph assembly and JSON save/reload. Existing malformed/dynamic input handling is retained. (`REQ-CORE-003-AC02`)
+
+Status: **Implemented; focused Windows source/persistence verification passes**.
+The correction is confined to the test's platform-dependent path expectation.
+Exact evidence belongs to [traceability](../tests/TRACEABILITY.md#shared-compatibility-verification).

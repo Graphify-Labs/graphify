@@ -19,6 +19,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import sys
@@ -1686,6 +1687,16 @@ def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     existing = _read_settings_for_merge(hooks_path)
 
     graphify_exe = _resolve_graphify_exe(project=project)
+    # Keep spaced/operator paths one argument in Windows Cmd or POSIX sh.
+    # Project scope remains the portable bare command. POSIX quoting also
+    # protects literal quotes and command-substitution characters. Windows
+    # PowerShell sessions and percent-expansion paths remain an explicit
+    # INC-CORE-05 consumer gap; this quotation proves only the bounded Cmd case.
+    if os.name == "nt":
+        if re.search(r"[\s&|<>()^]", graphify_exe):
+            graphify_exe = f'"{graphify_exe}"'
+    else:
+        graphify_exe = shlex.quote(graphify_exe)
     hook_entry = {
         "hooks": {
             "PreToolUse": [

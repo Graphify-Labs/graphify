@@ -1345,12 +1345,19 @@ def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
         return True
 
     repo_root = os.environ.get("GRAPHIFY_REPO_ROOT", "").strip()
+    # Keep recovery order unchanged, but retain the supplied root's safe failure
+    # category if CWD lookup also fails. Raw paths and OS exception bodies may
+    # contain private repository details and do not belong in this diagnostic.
+    root_failure = (
+        "GRAPHIFY_REPO_ROOT does not name an available directory."
+        if repo_root else "GRAPHIFY_REPO_ROOT is not set."
+    )
     if repo_root and Path(repo_root).is_dir():
         try:
             os.chdir(repo_root)
             return True
         except OSError:
-            pass
+            root_failure = "GRAPHIFY_REPO_ROOT could not be entered."
 
     try:
         Path.cwd()
@@ -1358,7 +1365,7 @@ def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
     except FileNotFoundError:
         print(
             "[graphify watch] Rebuild failed: current working directory "
-            "no longer exists and GRAPHIFY_REPO_ROOT is not set."
+            f"no longer exists and {root_failure}"
         )
         return False
 

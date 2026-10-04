@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from pathlib import Path
 import pytest
 from graphify.hooks import install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER
+from tests.shell_portability import resolve_shell_path
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
@@ -705,8 +706,12 @@ def test_uv_tool_env_rescues_hook_when_pin_and_launcher_fail(tmp_path):
     mine = _tool_venv(home, "graphifyy", "bin/python", ok=True)
     res = _detect_run(tmp_path, home, stub_bin)
     assert res.returncode == 0, res.stderr
-    assert f"RESOLVED={mine}" in res.stdout, res.stdout + res.stderr
-    assert f"RESOLVED={other}" not in res.stdout
+    # MSYS reports its mount spelling; compare the complete native file identity
+    # and retain rejection of the earlier same-basename sibling tool environment.
+    assert res.stdout.startswith("RESOLVED="), res.stdout + res.stderr
+    resolved = resolve_shell_path(res.stdout.removeprefix("RESOLVED=").strip())
+    assert resolved == mine.resolve()
+    assert resolved != other.resolve()
     assert "could not locate" not in res.stderr
 
 
@@ -759,7 +764,12 @@ def test_shebang_parse_requires_leading_hash_bang(tmp_path):
     launcher.chmod(0o755)
     res = _detect_run(tmp_path, home, stub_bin)
     assert res.returncode == 0, res.stderr
-    assert f"RESOLVED={mine}" in res.stdout, res.stdout + res.stderr
+    # The successful fallback must be this exact tool env, never the launcher
+    # decoy, even when the shell maps its full path through an MSYS mount.
+    assert res.stdout.startswith("RESOLVED="), res.stdout + res.stderr
+    resolved = resolve_shell_path(res.stdout.removeprefix("RESOLVED=").strip())
+    assert resolved == mine.resolve()
+    assert resolved != decoy.resolve()
     assert "fakepy" not in res.stdout
 
 

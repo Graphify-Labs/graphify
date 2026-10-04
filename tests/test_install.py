@@ -1435,7 +1435,7 @@ def test_hermes_skill_destination_posix_uses_home():
     from graphify.__main__ import _platform_skill_destination
     with patch("graphify.__main__.platform.system", return_value="Linux"):
         dst = _platform_skill_destination("hermes", project=False)
-    assert str(dst).endswith(".hermes/skills/graphify/SKILL.md"), dst
+    assert dst == Path.home() / ".hermes" / "skills" / "graphify" / "SKILL.md", dst
 
 
 def _cli_dispatched_commands() -> set[str]:
@@ -1458,7 +1458,7 @@ def _cli_dispatched_commands() -> set[str]:
     return names
 
 
-def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
+def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path, monkeypatch):
     """#2165: the PreToolUse command in .codex/hooks.json must be a command the CLI
     dispatches, so a renamed subcommand can never leave a permanently dead hook.
 
@@ -1467,9 +1467,13 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
     an unrecognized one exits non-zero and would break every Bash tool call.
     """
     import json
+    import shlex
 
     from graphify.install import _install_codex_hook
 
+    # Resolve a path with spaces deterministically; the ambient launcher may
+    # happen to live at a one-word path and hide an unquoted hook executable.
+    monkeypatch.setattr("shutil.which", lambda _name: "C:/installed tools/graphify.exe")
     _install_codex_hook(tmp_path)
     hooks = json.loads((tmp_path / ".codex" / "hooks.json").read_text(encoding="utf-8"))
 
@@ -1486,7 +1490,7 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
 
     for entry in entries:
         # command is "<abs exe path> <subcommand> [args...]"
-        parts = entry["command"].split()
+        parts = shlex.split(entry["command"])
         subcommand = parts[1] if len(parts) > 1 else ""
         assert subcommand in dispatched, (
             f"codex hook registers {subcommand!r}, which the CLI does not dispatch "

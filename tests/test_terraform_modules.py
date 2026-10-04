@@ -66,19 +66,39 @@ def test_environment_application_base_topology_and_source_provenance(tmp_path):
     assert len(_module_edges(result)) == 2
 
 
-def test_same_named_directories_and_cross_file_references_stay_separate(tmp_path):
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
+def test_same_named_directories_and_cross_file_references_stay_separate(tmp_path, line_ending):
+    """Portable provenance and scoped references survive original UTF-8 bytes and JSON."""
     for directory in ("dev/app", "prod/app", "a-b/app", "a_b/app"):
-        _write(tmp_path, f"{directory}/main.tf", 'variable "name" {}\n')
-        _write(tmp_path, f"{directory}/use.tf", 'output "name" { value = var.name }\n')
+        for file, body in (("main.tf", 'variable "name" {}'),
+                           ("use.tf", 'output "name" { value = var.name }')):
+            # Write exact bytes rather than letting the host translate CRLF.
+            source = f"# café{line_ending}{body}{line_ending}".encode("utf-8")
+            _write(tmp_path, f"{directory}/{file}", "").write_bytes(source)
     result = _extract(tmp_path)
     _assert_integrity(result)
     variables = [n for n in result["nodes"] if n["label"] == "var.name"]
     assert len({n["id"] for n in variables}) == 4
+    references = [e for e in result["edges"] if e["relation"] == "references"]
+    assert len(references) == 4
+    # Facade source paths are POSIX on every host. Native str(Path(...)) uses
+    # backslashes on Windows and would reject correct portable graph facts.
+    from graphify.export import to_json
+    from graphify.paths import load_node_link_graph
+    graph_path = tmp_path / "roundtrip.json"
+    to_json(build_from_json(result, root=tmp_path, directed=True), {}, str(graph_path), force=True)
+    restored = load_node_link_graph(json.loads(graph_path.read_text(encoding="utf-8")))
+    assert restored.is_directed()
     for variable in variables:
-        source = str(Path(variable["source_file"]).parent / "use.tf")
+        source = (Path(variable["source_file"]).parent / "use.tf").as_posix()
         output = _node(result, "output.name", source)
-        assert any(e["source"] == output["id"] and e["target"] == variable["id"]
-                   for e in result["edges"])
+        edge = next(e for e in references if e["source"] == output["id"])
+        assert edge["target"] == variable["id"]
+        assert edge["source_file"] == source
+        assert edge["source_location"] == output["source_location"] == "L2"
+        assert edge["confidence"] == "EXTRACTED"
+        assert restored.has_edge(output["id"], variable["id"])
+        assert restored.edges[output["id"], variable["id"]]["source_file"] == source
 
 
 def test_raw_extractor_scopes_ids_by_full_directory(tmp_path):

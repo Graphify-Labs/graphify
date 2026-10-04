@@ -3,6 +3,10 @@
 Use `INC-QML-` for delivery increments and `REQ-QML-` for requirements/criteria.
 The [identifier catalog](IDENTIFIERS.md) retains every prior ID as a permanent alias.
 
+Shared installer, shell-fixture, filesystem-profile and Terraform verification
+continues separately under [INC-CORE-01–03](../COMPATIBILITY.md). These contribution
+gate corrections do not expand the Qt/QML language profile or advance its counter.
+
 Status: **INC-QML-11, INC-QML-15 and INC-QML-08a/b/c are implemented and locally
 complete for the bounded Windows x64/Python 3.12 profile**. INC-QML-28–38 close
 additional reproduced defects discovered during that development. The final
