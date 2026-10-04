@@ -586,6 +586,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `CURSOR_API_KEY` | Cursor Agent CLI auth (alternative to `cursor-agent login`) | `--backend cursor-cli` |
 | `GRAPHIFY_CURSOR_CLI_MODEL` | Default model for cursor-cli extraction when `--model` is omitted | optional — list with `cursor-agent --list-models` |
 | `GRAPHIFY_CURSOR_CLI_PARALLEL` | Allow parallel cursor-cli labeling/extract workers (default serial) | optional — set `1` to opt in |
+| `GRAPHIFY_CURSOR_CLI_TRUST` | Pass `--trust` to cursor-agent (default off; isolates via temp `--workspace`) | optional — set `1` if headless hangs on a workspace prompt |
 | `GRAPHIFY_MAX_RETRIES` | How many times to retry a rate-limited (429) request before giving up (default: 6; honors `Retry-After`) | optional — raise for strict per-org limits (e.g. kimi); `0` disables |
 | `GRAPHIFY_MAX_RETRY_DEPTH` | How deep a truncated chunk may be bisected and re-extracted (default: 3, so up to 8x sub-calls for one chunk) | optional — lower it to cap worst-case spend; `0` disables every retry (no bisection, no hollow-response retry), so a chunk costs exactly one call |
 | `GRAPHIFY_FORCE` | Force graph rebuild even with fewer nodes | optional — also `--force` flag |
@@ -882,7 +883,7 @@ graphify label . --backend=cursor-cli
 graphify label . --backend=cursor-cli --model=auto
 ```
 
-Graphify invokes `cursor-agent -p --output-format json --mode ask --trust` and parses the result envelope. It does not implement Cursor authentication itself.
+Graphify invokes `cursor-agent -p --output-format json --mode ask` with an isolated temp `--workspace` (so the agent does not inherit your project cwd) and parses the result envelope. `--trust` is **off** by default; set `GRAPHIFY_CURSOR_CLI_TRUST=1` only if headless runs hang on a workspace prompt. Graphify does not implement Cursor authentication itself.
 
 ---
 

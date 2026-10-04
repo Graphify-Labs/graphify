@@ -133,15 +133,25 @@ def test_falls_back_to_agent_when_cursor_agent_missing(monkeypatch):
     assert run.call_args.args[0][0] == "agent"
 
 
-def test_argv_shape_includes_print_json_ask_trust(fake_cursor):
+def test_argv_shape_includes_print_json_ask_isolated_workspace(fake_cursor, monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_CURSOR_CLI_TRUST", raising=False)
     llm._call_cursor_cli("dummy", max_tokens=8192)
     argv = fake_cursor.call_args.args[0]
     assert "-p" in argv
     assert argv[argv.index("--output-format") + 1] == "json"
     assert argv[argv.index("--mode") + 1] == "ask"
-    assert "--trust" in argv
+    assert "--workspace" in argv
+    workspace = argv[argv.index("--workspace") + 1]
+    assert "graphify-cursor-" in workspace
+    assert "--trust" not in argv  # opt-in only
     assert "--force" not in argv
     assert "--yolo" not in argv
+
+
+def test_trust_flag_opt_in_via_env(fake_cursor, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_CURSOR_CLI_TRUST", "1")
+    llm._call_cursor_cli("dummy", max_tokens=8192)
+    assert "--trust" in fake_cursor.call_args.args[0]
 
 
 def test_model_flag_from_argument(fake_cursor):
@@ -259,7 +269,8 @@ def test_raises_on_garbage_envelope():
             llm._call_cursor_cli("dummy", max_tokens=8192)
 
 
-def test_call_llm_success_returns_result_text():
+def test_call_llm_success_returns_result_text(monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_CURSOR_CLI_TRUST", raising=False)
     envelope = dict(_ENVELOPE, result='{"0": "Authentication"}')
     completed = MagicMock(returncode=0, stdout=json.dumps(envelope), stderr="")
     with patch("shutil.which", return_value="/fake/bin/cursor-agent"), \
@@ -269,7 +280,8 @@ def test_call_llm_success_returns_result_text():
     argv = run.call_args.args[0]
     assert "-p" in argv
     assert "--mode" in argv and argv[argv.index("--mode") + 1] == "ask"
-    assert "--trust" in argv
+    assert "--workspace" in argv
+    assert "--trust" not in argv
     assert argv[argv.index("--model") + 1] == "auto"
     assert run.call_args.kwargs["input"] == "label these"
 

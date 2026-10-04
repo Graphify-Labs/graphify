@@ -224,9 +224,11 @@ BACKENDS: dict[str, dict] = {
     },
     "cursor-cli": {
         # Routes through the locally-installed Cursor Agent CLI (`cursor-agent`
-        # or `agent`) using `-p --output-format json --mode ask --trust`.
-        # Authenticates via `cursor-agent login` or CURSOR_API_KEY — no separate
-        # OpenAI/Anthropic key. Never resolve the editor `cursor` binary.
+        # or `agent`) using `-p --output-format json --mode ask` in an isolated
+        # temp workspace. Authenticates via `cursor-agent login` or
+        # CURSOR_API_KEY — no separate OpenAI/Anthropic key. Never resolve the
+        # editor `cursor` binary. Set GRAPHIFY_CURSOR_CLI_TRUST=1 to pass
+        # `--trust` when headless runs hang on a workspace prompt.
         "default_model": "auto",
         "pricing": {"input": 0.0, "output": 0.0},
         "temperature": 0,
@@ -1977,6 +1979,37 @@ def _cursor_cli_raise_process_error(proc, *, cli_error: str = "") -> None:
     raise RuntimeError(f"cursor-agent -p exited {proc.returncode}: {detail[:500]}")
 
 
+def _cursor_cli_trust_enabled() -> bool:
+    """True when the caller opted into ``--trust`` for headless workspace prompts."""
+    return os.environ.get("GRAPHIFY_CURSOR_CLI_TRUST", "").strip() == "1"
+
+
+def _cursor_cli_print_args(
+    cursor_cmd: str,
+    *,
+    workspace: str,
+    extra: list[str] | None = None,
+) -> list[str]:
+    """Build the shared headless argv for labeling and extraction.
+
+    Always uses ``--mode ask`` (read-only) and an isolated ``--workspace`` so
+    corpus text is not evaluated against the caller's project tree. ``--trust``
+    is opt-in via ``GRAPHIFY_CURSOR_CLI_TRUST=1`` — defaulting it on would
+    auto-approve the workspace while stdin may contain untrusted corpus content.
+    """
+    args = [
+        cursor_cmd, "-p",
+        "--output-format", "json",
+        "--mode", "ask",
+        "--workspace", workspace,
+    ]
+    if _cursor_cli_trust_enabled():
+        args.append("--trust")
+    if extra:
+        args.extend(extra)
+    return args
+
+
 def _call_cursor_cli(
     user_message: str,
     max_tokens: int = 8192,
@@ -1988,11 +2021,14 @@ def _call_cursor_cli(
     """Call Cursor via the locally-installed Cursor Agent CLI (`cursor-agent -p`).
 
     Routes through the user's Cursor subscription / ``CURSOR_API_KEY`` instead of
-    a separate provider API key. Uses ``--mode ask`` (read-only) and ``--trust``
-    for non-interactive scripting. Images are passed by absolute path with
-    ``--add-dir``, matching the claude-cli path-based vision pattern.
+    a separate provider API key. Uses ``--mode ask`` (read-only) and an isolated
+    temp ``--workspace`` so the agent does not inherit the caller's cwd. Images
+    are passed by absolute path with ``--add-dir``, matching the claude-cli
+    path-based vision pattern. Set ``GRAPHIFY_CURSOR_CLI_TRUST=1`` if headless
+    runs hang on a workspace trust prompt.
     """
     import subprocess
+    import tempfile
 
     cursor_cmd = _resolve_cursor_cli_cmd()
 
@@ -2014,29 +2050,26 @@ def _call_cursor_cli(
         + "preamble, no markdown fences.\n\n"
         + user_message
     )
-    cli_args = [
-        cursor_cmd, "-p",
-        "--output-format", "json",
-        "--mode", "ask",
-        "--trust",
-        *add_dir_args,
-    ]
     # Prefer an explicit model argument; else GRAPHIFY_CURSOR_CLI_MODEL. When
     # neither is set, omit --model so Cursor uses its default (currently Auto).
     cli_model = (model or os.environ.get("GRAPHIFY_CURSOR_CLI_MODEL", "")).strip()
-    if cli_model:
-        cli_args.extend(["--model", cli_model])
-    proc = subprocess.run(
-        cli_args,
-        input=combined_message,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=_resolve_api_timeout(),
-        check=False,
-        **_no_window_kwargs(),
-    )
+    with tempfile.TemporaryDirectory(prefix="graphify-cursor-") as tmp:
+        cli_args = _cursor_cli_print_args(
+            cursor_cmd, workspace=tmp, extra=add_dir_args,
+        )
+        if cli_model:
+            cli_args.extend(["--model", cli_model])
+        proc = subprocess.run(
+            cli_args,
+            input=combined_message,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_resolve_api_timeout(),
+            check=False,
+            **_no_window_kwargs(),
+        )
     cli_error = _cursor_cli_error(proc.stdout)
     if proc.returncode != 0:
         _cursor_cli_raise_process_error(proc, cli_error=cli_error)
@@ -3236,27 +3269,24 @@ def _call_llm(
 
     if backend == "cursor-cli":
         import subprocess
+        import tempfile
 
         cursor_cmd = _resolve_cursor_cli_cmd()
-        cli_args = [
-            cursor_cmd, "-p",
-            "--output-format", "json",
-            "--mode", "ask",
-            "--trust",
-        ]
-        if model is not None:
-            cli_args.extend(["--model", mdl])
-        proc = subprocess.run(
-            cli_args,
-            input=prompt,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_resolve_api_timeout(),
-            check=False,
-            **_no_window_kwargs(),
-        )
+        with tempfile.TemporaryDirectory(prefix="graphify-cursor-") as tmp:
+            cli_args = _cursor_cli_print_args(cursor_cmd, workspace=tmp)
+            if model is not None:
+                cli_args.extend(["--model", mdl])
+            proc = subprocess.run(
+                cli_args,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_resolve_api_timeout(),
+                check=False,
+                **_no_window_kwargs(),
+            )
         cli_error = _cursor_cli_error(proc.stdout)
         if proc.returncode != 0:
             _cursor_cli_raise_process_error(proc, cli_error=cli_error)
