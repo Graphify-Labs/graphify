@@ -1,7 +1,8 @@
 """Resolve literal C++ access to accepted QML source, never instantiate components."""
 from __future__ import annotations
 
-from graphify.extractors.qt_cpp_facts import qt_edge, qt_metadata, scope_owner, update_qt
+from graphify.extractors.qt_cpp_facts import qt_edge, qt_metadata, update_qt
+from graphify.extractors.qt_cpp_identity import source_reference_key
 from graphify.qml_resolution_types import Resolution
 from graphify.qml_resolution_types import qml_metadata
 from graphify.qt_qml_access_index import QtQmlAccessIndex
@@ -24,13 +25,17 @@ def resolve_qt_qml_access(per_file, all_nodes, all_edges, *, root, project_index
                    key=lambda pair: (pair[0]["source_file"], qt_metadata(pair[0]).get("span", {}).get("start_byte", -1)))
     for site, result in sites:
         metadata, edges = qt_metadata(site), []
-        owner, receiver = scope_owner(metadata), metadata.get("receiver_reference")
         kind, operation = metadata["kind"], metadata.get("operation")
-        key = (owner, receiver)
+        key = source_reference_key(metadata)
         context = "qt_cpp_qml_load"
         if kind == "qml_load":
-            resolution = index.load(metadata)
-            index.loads.setdefault(key, []).append(resolution)
+            if key:
+                resolution = index.load(metadata)
+                index.loads.setdefault(key, []).append(resolution)
+            else:
+                status = metadata.get("receiver_identity_status")
+                resolution = Resolution(status if status in {"dynamic", "ambiguous", "unsupported"} else "unavailable",
+                                        reason=metadata.get("receiver_identity_reason") or "loader_declaration_unestablished")
         elif kind == "qml_root":
             loads = index.loads.get(key, [])
             if len(loads) != 1 or not loads[0].target_id:
@@ -77,8 +82,9 @@ def resolve_qt_qml_access(per_file, all_nodes, all_edges, *, root, project_index
         if resolution.target_id:
             relation = "calls" if operation == "invokeMethod" and index.qml.md(resolution.target_id).get("kind") == "function" else "uses"
             edges.append(qt_edge(site, resolution.target_id, relation, context, bridge_direction="cpp_to_qml"))
-            if metadata.get("assigned_handle") and kind in {"qml_root", "qml_access"}:
-                index.handles[(owner, metadata["assigned_handle"])] = (resolution.target_id, metadata.get("assignment_byte", -1), bool(metadata.get("conditional")))
+            assigned = source_reference_key(metadata, "assigned")
+            if assigned and kind in {"qml_root", "qml_access"}:
+                index.handles[assigned] = (resolution.target_id, metadata.get("assignment_byte", -1), bool(metadata.get("conditional")))
         known = {(edge["source"], edge["target"], edge.get("context")) for edge in result.get("edges", [])}
         additions = [edge for edge in edges if (edge["source"], edge["target"], edge.get("context")) not in known]
         result.setdefault("edges", []).extend(additions)

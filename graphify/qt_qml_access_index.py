@@ -1,7 +1,7 @@
 """Accepted component, objectName and source-local handle lookup for Qt access."""
 from __future__ import annotations
 
-from graphify.extractors.qt_cpp_facts import scope_owner
+from graphify.extractors.qt_cpp_identity import source_reference_key
 from graphify.qml_resolution import build_qml_index
 from graphify.qml_resolution_types import Resolution, answer, qml_metadata, source_path
 from graphify.qt_project_index import QtProjectIndex
@@ -184,10 +184,12 @@ class QtQmlAccessIndex:
         return result if kind in supported else Resolution("unavailable", reason="member_role_mismatch")
 
     def handle(self, metadata, reference=None):
-        key = (scope_owner(metadata), reference if reference is not None else metadata.get("receiver_reference"))
-        entry = self.handles.get(key)
+        key = source_reference_key(metadata)
+        entry = self.handles.get(key) if key else None
         if entry is None:
-            return Resolution("unavailable", reason="qml_handle_unestablished")
+            status = metadata.get("receiver_identity_status")
+            return Resolution(status if status in {"dynamic", "ambiguous", "unsupported"} else "unavailable",
+                              reason=metadata.get("receiver_identity_reason") or "qml_handle_unestablished")
         target, assignment, condition = entry
         if condition or assignment != metadata.get("receiver_assignment_byte", -1):
             return Resolution("dynamic", reason="conditional_or_reassigned_handle")

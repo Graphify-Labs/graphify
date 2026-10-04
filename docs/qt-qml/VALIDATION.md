@@ -1225,3 +1225,33 @@ the exact acceptance mappings in traceability.
 The plan review retains INC-QML-08/11/15 and proceeds to INC-QML-18. No additional
 increment is required by the bounded receiver correction. Dynamic Qt runtime
 parenting, arbitrary casts and unavailable platform/system proof remain explicit.
+
+## INC-QML-18 declaration identities and provider lifetime
+
+The original disjoint-engine probe failed three exposure cases before the
+correction. Ordinary collected source tests now cover exact local/parameter/auto
+declarations, disjoint/nested shadows, conditional/deferred uses, writes, duplicate
+declarations, expired providers, precise/mixed rejection diagnostics and original
+BOM/Unicode/CRLF spans. Existing QML/native connection controls remain passing.
+
+| Executed boundary | Result |
+| --- | --- |
+| Engine/provider/access source selection | 47 passed, 12.40 seconds; no skips |
+| Reviewed wheel and separately installed host package, pinned test dependencies | 105 passed, 28.73 seconds; no skips or failures |
+| Wheel SHA256 | `ed3e4b28a0bec54f95de455b7e5d88a8c2038c6974ec3e6ebfcb0acb816c74e7` |
+| Reviewed source/wheel/installed Python payload | 157 modules byte-equal; zero mismatches |
+| Lifecycle | Real manual/watch engine/load/provider edits and metadata/QML-only refresh remove stale bindings; forced malformed analysis preserves four products and repair/repeat succeeds; directed reload/query/explain/affected retains endpoints |
+| Focused Ruff / explicit-runtime Pyright | Passing; zero type errors/warnings |
+
+The reviewed artifact contains INC-QML-18 only, while disjoint native-alias work
+remains unstaged. It imports the separately installed package before pytest adds
+the reviewed test sources. The package lane reuses pinned test/parser dependencies;
+no new clean-extra, native Qt, other-platform or hosted result is claimed. Policy
+8 refreshes prior derived overlays; AST schema 7 remains unchanged. Full current
+contribution gates run at INC-QML-20. Query rendering asserts public labels and
+locations; exact persisted/affected endpoint IDs remain independently checked.
+
+Plan review keeps factory/member provider admission, inherited endpoints and
+overloads in INC-QML-08/11/15. The observed widget construction counterexample is
+assigned to INC-QML-19's canonical-base integration under the existing receiver
+acceptance IDs. No new increment is needed for these bounded scope corrections.

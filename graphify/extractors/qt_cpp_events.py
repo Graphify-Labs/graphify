@@ -10,6 +10,7 @@ from graphify.extractors.qt_cpp_event_patterns import connection_flags, endpoint
 from graphify.extractors.qt_cpp_exposure import is_qt_cpp_source
 from graphify.extractors.qt_cpp_facts import QtFacts, owner_scope, qt_metadata, update_qt
 from graphify.extractors.qt_cpp_mapping import map_cpp
+from graphify.extractors.qt_cpp_identity import CppDeclarationIdentity
 from graphify.extractors.qt_cpp_syntax import QtCppError, read_cpp
 from graphify.extractors.qt_cpp_variables import simple_reference, variables_at
 
@@ -33,7 +34,7 @@ def _qt_owner(mapping, owner):
     return any(any(macro["name"] == "Q_OBJECT" for macro in record.get("macros", [])) for record in classes)
 
 
-def _connection(facts, unit, mapping, call):
+def _connection(facts, unit, mapping, call, identity):
     owner, args = call["owner"], call["args"]
     if call.get("computed_receiver") or ("::" in call["callee"] and call["callee"] != "QObject::" + call["name"]):
         return
@@ -59,11 +60,15 @@ def _connection(facts, unit, mapping, call):
     if form == "dynamic" and callable_reference:
         form = "functor" if variables.get(callable_reference) else "function"
     sender = simple_reference(args[0]["text"]) if args else ""
+    sender_identity = identity.resolve(sender, call["start_byte"])
+    receiver_identity = identity.resolve(receiver, call["start_byte"])
     site = facts.add(call["name"], call["name"], call["span"], owner.get("node_id"),
         owner_class=owner.get("class_name") or "", owner_status=owner.get("status") or "unavailable",
         owner_scope_key=owner_scope(unit, owner),
         sender_reference=sender, sender_type=variables.get(sender, ""), signal=signal,
+        sender_declaration_id=sender_identity["declaration_id"],
         receiver_reference=receiver, receiver_type=variables.get(receiver, ""), receiver=receiver_endpoint,
+        receiver_declaration_id=receiver_identity["declaration_id"],
         context_reference=context, context_type=variables.get(context, ""), callable_form=form,
         callable_reference=callable_reference, callable_type=variables.get(callable_reference, ""),
         assigned_handle=assigned_handle(unit, call),
@@ -83,7 +88,7 @@ def _connection(facts, unit, mapping, call):
         update_qt(site, lambda_id=target["id"])
 
 
-def _emission(facts, unit, mapping, call):
+def _emission(facts, unit, mapping, call, identity):
     owner = call["owner"]
     variables = variables_at(unit, mapping, call["start_byte"])
     receiver = call["receiver"] or ("" if call.get("computed_receiver") else "this")
@@ -99,6 +104,7 @@ def _emission(facts, unit, mapping, call):
     facts.add("emission", call["name"], call["span"], owner.get("node_id"),
               owner_class=owner.get("class_name") or "", receiver_reference=receiver,
               owner_scope_key=owner_scope(unit, owner),
+              receiver_declaration_id=identity.resolve(receiver, call["start_byte"])["declaration_id"],
               receiver_type=receiver_type,
               member_name=call["name"], argument_count=len(call["args"]), explicit_emit=explicit,
               conditional=conditional_at(unit, call["start_byte"]), status="pending", reason="")
@@ -119,6 +125,7 @@ def collect_qt_cpp_events(paths, per_file, *, root: Path, accepted_nodes=None, a
             mapping, facts = map_cpp(unit, nodes, edges, root=Path(root)), QtFacts(unit)
             mapping.bind_classes([{"node_id": md.get("class_id", ""), "qualified_name": md.get("class_name", "")}
                                   for node in nodes if (md := qt_metadata(node)).get("kind") == "class"])
+            identity = CppDeclarationIdentity(unit, mapping)
             local_signals = {f["name"] for f in mapping.functions if "signal" in f.get("roles", [])}
             for function in mapping.functions:
                 if not function.get("class_name") and function.get("node_id"):
@@ -127,9 +134,9 @@ def collect_qt_cpp_events(paths, per_file, *, root: Path, accepted_nodes=None, a
                               callable_name=function["qualified_name"], status="resolved")
             for call in calls(unit, mapping, {"connect", "disconnect"} | signals | local_signals):
                 if call["name"] in {"connect", "disconnect"}:
-                    _connection(facts, unit, mapping, call)
+                    _connection(facts, unit, mapping, call, identity)
                 else:
-                    _emission(facts, unit, mapping, call)
+                    _emission(facts, unit, mapping, call, identity)
             known = {node["id"] for node in result.get("nodes", [])}
             result.setdefault("nodes", []).extend(node for node in facts.nodes if node["id"] not in known)
             result.setdefault("edges", []).extend(facts.edges)

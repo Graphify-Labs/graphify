@@ -14,6 +14,7 @@ def _qml_endpoint(index, metadata, prefix):
     if expression.get("form") != "legacy":
         return Resolution("unsupported", reason="qml_endpoint_requires_literal_meta_signature")
     handle = index.handle({**metadata, "receiver_reference": metadata.get(prefix + "_reference"),
+                           "receiver_declaration_id": metadata.get(prefix + "_declaration_id"),
                            "receiver_assignment_byte": metadata.get(prefix + "_assignment_byte", -1)})
     if not handle.target_id:
         return handle

@@ -200,3 +200,19 @@ edge. Genuine parse/join failures still use the existing stage guards; an actual
 graph replacement failure preserves accepted graph, manifest, root and Qt stamp.
 Repair/retry uses the normal update/watch sequence. Policy 7 refreshes unchanged
 accepted Qt inputs; no writer, schema migration or corpus execution is introduced.
+
+## Declaration identity rejection (INC-QML-18)
+
+Engine/provider/handle identity is owned by the accepted C++ syntax index. Its
+`status` and `reason` fields distinguish missing declarations, unsupported
+expressions, duplicate declarations, conditional/deferred ownership and observed
+reassignment. The context adapter propagates a precise role identity failure;
+mixed initial-property failures retain the aggregate unavailable reason instead
+of falsely attributing all rejected entries to one cause. Expired source provider
+lifetime cannot create a binding.
+
+These bounded source-site diagnostics use existing Qt metadata transport, severity
+and publication contracts. They do not introduce a logger or success warning.
+Recovery is correction of source/provenance followed by ordinary update; retries
+do not grant identity. Policy 8 forces old derived overlays to refresh. Actual
+analysis/write failures retain the previous four durable graph products.

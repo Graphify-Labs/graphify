@@ -1623,7 +1623,7 @@ gaps already have separate recorded scope. INC-QML-18 follows without a pause.
 
 ## INC-QML-18 — Lexical engine and provider identity
 
-Status: **Planned; reproduced defect, no production correction**. Acceptance:
+Status: **Implemented; final local contribution gates in progress**. Acceptance:
 REQ-QML-017-AC03/AC04, with REQ-QML-008 provider regressions. Owner: context-provider
 integration maintainer. Dependency: characterize existing source-local declaration,
 handle and assignment facts before changing transport or lookup ownership.
@@ -1644,6 +1644,22 @@ where needed, diagnostic ownership, reviewed installed-wheel proof and full
 contribution gates. Factory/member provider admission remains INC-QML-08; this
 correction must not guess a provider merely to increase coverage. Review and update
 the plan at exit; INC-QML-17 and INC-QML-19 have independent owners.
+
+The declaration index now owns engine, component, provider and handle identity.
+Exact source declarations and bounded lexical lifetime replace function/name keys;
+event endpoints transport the selected handle declaration independently. Missing,
+reassigned, conditional or ambiguous identities cannot supply a binding. Provider
+expiry and mixed initial-property rejection have collected source regressions.
+Policy 8 invalidates prior derived Qt results at the same package version.
+
+Exit review assigns a further INC-QML-17 construction guard to INC-QML-19
+integration, where canonical native base identities become available: registered
+native types require a proven non-widget QObject ancestry. Qt widget creation has a
+different parent policy, so a Q_OBJECT marker alone cannot prove a child tree.
+This remains the existing receiver acceptance scope. Included-header alias shadows
+extend INC-QML-19's matrix; no new increment is required by these corrections.
+Factory/member identity, inherited endpoints and generic overloads remain in
+INC-QML-08/11/15. Exact artifact and lifecycle outcomes belong to validation.
 
 ## INC-QML-19 — Native endpoint type and alias scope
 

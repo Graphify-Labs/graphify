@@ -712,3 +712,28 @@ installed viewer scripts retain canonical/RAW facts, checked startup, source
 inspectors and clean release/blur/retry camera behavior. Current exact outcomes
 belong to traceability/validation. No native browser visual/device, new hosted or
 other-platform result is claimed.
+
+## Declaration identity and provider lifetime (INC-QML-18)
+
+`CppDeclarationIdentity` is an immutable per-accepted-file syntax index. Source
+path, original declaration span and enclosing lexical scopes own a portable
+SHA256 identity. The index accepts bounded local/parameter/auto declarations and
+accepted `this` owners; duplicate declarations, writes, deferred/conditional
+ownership and computed/member/factory expressions retain rejection reasons.
+Display names never replace an absent identity.
+
+The access collector carries receiver/assigned/engine/provider identities and
+provider lexical end offsets. Loads and handles use source-owner plus declaration
+identity keys. Context exposure requires one load of that engine/component and
+a provider whose lexical lifetime contains the load. Event collectors transport
+both native endpoint declaration IDs; the cross-language adapter selects the
+correct endpoint before resolving its QML handle. Mutable loads/handles remain
+owned by one analysis-run access index; source facts belong to their producer.
+
+Original spans, graph IDs and graph persistence ownership remain unchanged.
+Policy 8 refreshes prior Qt overlays; AST schema 7 stays compatible. Parse/join/
+write failure retention follows existing publication owners. Native execution,
+factory/member identities and runtime object lifetime are outside this profile.
+The continuing construction review rejects unproven/widget QObject ancestry
+without changing native member visibility. Both seams are source-authority checks
+under D17 and the existing acceptance IDs.

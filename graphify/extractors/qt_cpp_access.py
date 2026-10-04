@@ -11,6 +11,7 @@ from graphify.extractors.qt_cpp_facts import QtFacts, owner_scope
 from graphify.extractors.qt_cpp_facts import qt_metadata
 from graphify.extractors.qt_cpp_exposure import is_qt_cpp_source
 from graphify.extractors.qt_cpp_mapping import map_cpp
+from graphify.extractors.qt_cpp_identity import CppDeclarationIdentity
 from graphify.extractors.qt_cpp_syntax import QtCppError, read_cpp
 from graphify.extractors.qt_cpp_variables import simple_reference, variables_at
 
@@ -19,7 +20,17 @@ _METHODS = {"load", "loadFromModule", "setSource", "create", "createWithInitialP
 _LOADERS = {"QQmlApplicationEngine", "QQmlEngine", "QQmlComponent", "QQuickView"}
 
 
-def _site(facts, unit, mapping, call):
+def _identity_fields(identities, name, position, role):
+    """Semantic joins use exact declarations; display spellings remain provenance."""
+    value = identities.resolve(name, position)
+    fields = {role + "_declaration_id": value["declaration_id"],
+              role + "_identity_status": value["status"], role + "_identity_reason": value["reason"]}
+    if role == "provider":
+        fields["provider_scope_end"] = value["scope_span"].get("end_byte", -1)
+    return fields
+
+
+def _site(facts, unit, mapping, call, identities):
     args, method = call["args"], call["name"]
     variables = variables_at(unit, mapping, call["start_byte"])
     receiver = call["receiver"]
@@ -31,7 +42,9 @@ def _site(facts, unit, mapping, call):
               "assignment_byte": last_assignment(unit, call["owner"], assigned, call["start_byte"]),
               "receiver_assignment_byte": last_assignment(unit, call["owner"], receiver, call["start_byte"]),
               "conditional": conditional_at(unit, call["start_byte"]), "status": "pending", "reason": "",
-              "bridge_direction": "cpp_to_qml"}
+              "bridge_direction": "cpp_to_qml",
+              **_identity_fields(identities, receiver, call["start_byte"], "receiver"),
+              **_identity_fields(identities, assigned, call["start_byte"], "assigned")}
     if method in {"load", "loadFromModule", "setSource", "create", "createWithInitialProperties", "rootObjects", "rootObject", "setInitialProperties"}:
         if receiver_type.rsplit("::", 1)[-1] not in _LOADERS:
             return
@@ -47,6 +60,7 @@ def _site(facts, unit, mapping, call):
                 values.update(status="dynamic", reason="computed_initial_properties")
             for item in values["properties"]:
                 item["provider_type"] = variables.get(item["provider_reference"], "")
+                item.update(_identity_fields(identities, item["provider_reference"], call["start_byte"], "provider"))
         facts.add("qml_load" if method in {"load", "loadFromModule", "setSource"} else "qml_root" if method in {"rootObjects", "rootObject", "create", "createWithInitialProperties"} else "initial_properties", method, call["span"], call["owner"].get("node_id"), **values)
     elif method in {"setContextProperty", "setContextObject"}:
         # Only direct engine.rootContext() chains or a typed QQmlContext receiver
@@ -59,6 +73,8 @@ def _site(facts, unit, mapping, call):
         provider = simple_reference(args[1 if method == "setContextProperty" else 0]["text"]) if len(args) >= (2 if method == "setContextProperty" else 1) else ""
         facts.add("context_exposure", method, call["span"], call["owner"].get("node_id"), **common,
                   engine_reference=engine, engine_type=variables.get(engine, ""),
+                  **_identity_fields(identities, engine, call["start_byte"], "engine"),
+                  **_identity_fields(identities, provider, call["start_byte"], "provider"),
                   exposed_name=literal_string(args[0]["text"]) if args and method == "setContextProperty" else None,
                   provider_reference=provider, provider_type=variables.get(provider, ""), operation=method)
     elif method == "setParent":
@@ -81,12 +97,13 @@ def _site(facts, unit, mapping, call):
         callee = unit.code[call["start_byte"]:call["end_byte"]].split(b"(", 1)[0]
         child_type_supported = bool(re.search(rb"findChild\s*<\s*(?:::)?QObject\s*\*\s*>\s*$", callee))
         facts.add("qml_access", method, call["span"], call["owner"].get("node_id"), **{**common, "receiver_reference": receiver,
+                  **_identity_fields(identities, receiver, call["start_byte"], "receiver"),
                   "receiver_assignment_byte": last_assignment(unit, call["owner"], receiver, call["start_byte"])},
                   operation=method, lookup_name=name, handle_role=role,
                   **({"find_child_options": depth, "find_child_type_supported": child_type_supported} if method == "findChild" else {}))
 
 
-def _component_constructors(unit, mapping, facts):
+def _component_constructors(unit, mapping, facts, identities):
     for match in re.finditer(rb"\bQQmlComponent\s+([A-Za-z_]\w*)\s*\(", unit.code):
         owner = mapping.owner_at(match.start())
         if not owner or owner.get("body") is None:
@@ -97,10 +114,13 @@ def _component_constructors(unit, mapping, facts):
         if right is None:
             continue
         args = argument_ranges(unit.code, left + 1, right)
+        engine = simple_reference(unit.source[args[0][0]:args[0][1]].decode()) if args else ""
         facts.add("qml_load", "QQmlComponent", source_span(unit.source, match.start(), right + 1), owner.get("node_id"),
                   receiver_reference=match[1].decode(), receiver_type="QQmlComponent", operation="component_constructor",
+                  **_identity_fields(identities, match[1].decode(), left, "receiver"),
+                  **_identity_fields(identities, engine, left, "engine"),
                   owner_scope_key=owner_scope(unit, owner),
-                  engine_reference=simple_reference(unit.source[args[0][0]:args[0][1]].decode()) if args else "",
+                  engine_reference=engine,
                   literal_url=literal_string(unit.source[args[1][0]:args[1][1]].decode()) if len(args) > 1 else None,
                   assigned_handle="", conditional=conditional_at(unit, match.start()), status="pending", reason="", bridge_direction="cpp_to_qml")
     for match in re.finditer(rb"\bQQmlProperty\s+([A-Za-z_]\w*)\s*\(", unit.code):
@@ -116,6 +136,8 @@ def _component_constructors(unit, mapping, facts):
         receiver = simple_reference(unit.source[args[0][0]:args[0][1]].decode()) if args else ""
         facts.add("qml_access", "QQmlProperty", source_span(unit.source, match.start(), right + 1), owner.get("node_id"),
                   receiver_reference=receiver, operation="QQmlProperty", receiver_type="", assigned_handle=match[1].decode(), assignment_byte=-1,
+                  **_identity_fields(identities, receiver, match.end() - 1, "receiver"),
+                  **_identity_fields(identities, match[1].decode(), match.end() - 1, "assigned"),
                   owner_scope_key=owner_scope(unit, owner),
                   receiver_assignment_byte=last_assignment(unit, owner, receiver, match.start()),
                   lookup_name=literal_string(unit.source[args[1][0]:args[1][1]].decode()) if len(args) > 1 else None,
@@ -135,9 +157,10 @@ def collect_qt_cpp_access(paths, per_file, *, root: Path, accepted_nodes=None, a
             mapping, facts = map_cpp(unit, nodes, edges, root=Path(root)), QtFacts(unit)
             mapping.bind_classes([{"node_id": md.get("class_id", ""), "qualified_name": md.get("class_name", "")}
                                   for node in nodes if (md := qt_metadata(node)).get("kind") == "class"])
-            _component_constructors(unit, mapping, facts)
+            identities = CppDeclarationIdentity(unit, mapping)
+            _component_constructors(unit, mapping, facts, identities)
             for call in calls(unit, mapping, _METHODS):
-                _site(facts, unit, mapping, call)
+                _site(facts, unit, mapping, call, identities)
             result.setdefault("nodes", []).extend(facts.nodes)
             result.setdefault("edges", []).extend(facts.edges)
         except (QtCppError, ValueError) as error:

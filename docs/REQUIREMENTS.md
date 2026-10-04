@@ -50,7 +50,7 @@ distinguishes these omissions from explicit exclusions and generic extraction.
 
 INC-QML-17–20 apply the existing acceptance IDs to receiver ownership, exact
 engine/provider declarations, lexical native aliases and literal loader
-provenance. INC-QML-17 has passing local source, update and reviewed installed-artifact evidence; INC-QML-18–20 and final full contribution gates remain in progress. Unsupported
+provenance. INC-QML-17/18 have local source and lifecycle evidence. Reviewed installed-artifact evidence is recorded per increment; INC-QML-19/20 and final full contribution gates remain in progress. Unsupported
 parenting, type or lifetime evidence must retain an unresolved source site;
 neither a matching name nor successful graph publication establishes a target.
 The [correction acceptance matrix](qt-qml/DESIGN.md#semantic-correction-acceptance-matrix-inc-qml-1720)
@@ -341,7 +341,7 @@ Both integration directions are analyzed: registered or explicitly supplied C++ 
 
 2 - When the QML object provenance is established, `rootObjects`/`rootObject`, literal `objectName`/`findChild<QObject*>` lookup with recursive or direct-only search, supported `property`/`setProperty` and `QMetaObject::invokeMethod` calls resolve to the correct QML object/member and preserve access direction/source evidence, including exact canonical enclosing-method/class ownership for supported header/implementation pairs. Reflective access cannot borrow another object's lexical member; child lookup excludes siblings and honors direct-only depth using accepted parenting evidence. QML `id` alone is not treated as a C++ `objectName` lookup key. (`REQ-QML-017-AC02`)
 
-3 - Connections from declared QML signals to C++ slots/callables, and from exposed C++ signals to QML handlers, resolve in the appropriate object scope; supported literal `setContextProperty`, `setContextObject` and initial-property exposure preserve provider/provenance facts, while conditional or dynamic exposure remains visibly uncertain. Distinct lexical engine declarations sharing a name cannot share context providers without established identity. (`REQ-QML-017-AC03`)
+3 - Connections from declared QML signals to C++ slots/callables, and from exposed C++ signals to QML handlers, resolve in the appropriate object scope; supported literal `setContextProperty`, `setContextObject` and initial-property exposure preserve provider/provenance facts, while conditional or dynamic exposure remains visibly uncertain. Distinct lexical engine declarations sharing a name cannot share context providers without established declaration identity and provider lifetime. Reassignment, conditional ownership, unknown aliases and expired local providers produce no guessed binding and retain the applicable identity reason. (`REQ-QML-017-AC03`)
 
 4 - Duplicate object names, computed lookup/method names and unsupported dynamic creation produce no guessed member target; query/affected and cold/full/incremental comparisons retain both integration directions after QML members, loader metadata, C++ exposure or supported native source-ownership changes, with no evaluated QML or executed plugin code. (`REQ-QML-017-AC04`)
 

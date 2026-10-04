@@ -383,3 +383,18 @@ Full contribution gates are pending the INC-QML-20 integration boundary.
 Existing QML scope/declaration/identity, loader, provider and reverse-update tests
 also pass against that reviewed wheel. Factory providers, inherited native signal
 ancestors and generic overload identity retain their separately recorded gaps.
+
+## Declaration identity correction evidence (INC-QML-18)
+
+These ordinary collected regressions replace A12's opt-in reproduction as current
+acceptance evidence. Native/system lifetime and broader provider adoption remain
+explicit gaps; the source profile does not execute a Qt engine.
+
+| Acceptance | Exact production-boundary test | Observable evidence |
+| --- | --- | --- |
+| REQ-QML-017-AC03; REQ-QML-008-AC01 | `tests/test_qt_engine_identity.py::test_req_qml017_ac03_disjoint_same_named_engines_cannot_share_provider`; `tests/test_qt_engine_identity.py::test_req_qml017_ac03_same_engine_positive_retains_persisted_provider`; `tests/test_qt_engine_identity.py::test_req_qml017_ac03_nested_engine_shadow_does_not_receive_outer_provider`; `tests/test_qt_engine_identity.py::test_req_qml017_ac03_local_provider_lifetime_cannot_supply_later_load`; `tests/test_qt_engine_identity.py::test_req_qml017_ac03_engine_and_provider_parameters_have_exact_identity` | Disjoint/nested engines and expired providers have no persisted binding; exact local/parameter positive controls retain component and native property endpoints |
+| REQ-QML-017-AC03/AC04 | `tests/test_qt_engine_identity.py::test_req_qml017_ac03_rejected_identity_preserves_precise_source_diagnostic`; `tests/test_qt_engine_identity.py::test_req_qml017_ac03_initial_properties_report_only_shared_identity_failure`; `tests/test_qt_engine_identity.py::test_req_qml017_ac04_writes_and_duplicate_declarations_fail_closed`; `tests/test_qt_engine_identity.py::test_req_qml017_ac04_conditional_and_deferred_lifetimes_have_no_identity`; `tests/test_qt_engine_identity.py::test_req_qml017_ac04_missing_or_corrupted_transport_cannot_fall_back_to_name` | Source-owned rejection reasons, mixed initial properties and corrupted transport never authorize a name-based fallback |
+| REQ-QML-017-AC04 | `tests/test_qt_engine_identity.py::test_req_qml017_ac04_auto_and_explicit_handles_keep_declaration_identity`; `tests/test_qt_engine_identity.py::test_req_qml017_ac04_ids_are_portable_with_original_unicode_bom_crlf_spans`; `tests/test_qt_engine_identity_updates.py::test_req_qml017_ac04_engine_scope_changes_remove_stale_provider_links`; `tests/test_qt_engine_identity_updates.py::test_req_qml017_ac04_malformed_identity_source_retains_products_and_retries`; `tests/test_qt_engine_identity_updates.py::test_req_qml017_ac04_directed_query_affected_and_reload_keep_scoped_provider` | Original byte spans, portable IDs, persisted endpoint/query/affected, cold/warm/manual/watch removal, forced malformed retention, repair and repeat |
+
+Exact source/artifact commands and outcomes belong to the corresponding validation
+section. Full contribution gates run at the INC-QML-20 integration boundary.

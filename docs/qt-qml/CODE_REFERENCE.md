@@ -279,3 +279,17 @@ rejected gadgets cannot create an empty namespace that crashes a join. Existing
 scratch publication, native endpoint roles and graph direction are retained.
 Policy 7 refreshes unchanged accepted inputs; AST schema 7 remains unchanged.
 Exact source, lifecycle and reviewed artifact evidence belongs to traceability.
+
+## Declaration-owned integration seams
+
+- `extractors/qt_cpp_identity.py::CppDeclarationIdentity` owns per-unit source
+  declaration and bounded lexical lifetime evidence.
+- `extractors/qt_cpp_identity.py::source_reference_key` validates transport before
+  indexing loads, root handles or providers; it has no name fallback.
+- `qt_context_bindings.py::resolve_context_bindings` pairs exact engine/component
+  declarations and typed provider declarations within supported source lifetime.
+- `qt_qml_event_access.py::_qml_endpoint` selects sender/receiver declaration
+  identity before cross-language handle lookup.
+
+The collector, resolver and test modules stay within 300 physical lines. These
+helpers do not own persistence, execute analyzed code or establish runtime order.
