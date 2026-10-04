@@ -18,6 +18,7 @@ from graphify.paths import (
     os_replace_with_fallback,
     write_text_atomic,
 )
+from graphify.publication import ProductPublication
 
 logger = logging.getLogger(__name__)
 _PENDING_FILENAME = ".pending_changes"
@@ -825,6 +826,7 @@ def _reconcile_existing_graph(
     deleted_source_identities: set[str],
     is_ignored_always: Callable[[Path], bool] | None = None,
     is_ignored_full: Callable[[Path], bool] | None = None,
+    preserve_sourceless_ast: bool = False,
 ) -> tuple[dict, dict]:
     """Merge fresh extraction with preserved graph entries and evict stale sources.
 
@@ -1024,6 +1026,7 @@ def _reconcile_existing_graph(
                 and (
                     (
                         not node.get("source_file")
+                        and not preserve_sourceless_ast
                         and (full_rebuild or not code_files)
                     )
                     or (
@@ -1889,6 +1892,14 @@ def _rebuild_code(
         # gate reports them unchanged forever and only deleting graphify-out/
         # recovers. Mirrors the extract CLI's _stamped_manifest_files handling.
         _failed_ast_sources = set(result.get("failed_sources") or [])
+        # A complete accepted Qt refresh may retire stale generic placeholders
+        # only after reconciliation exposes every surviving edge/hyperedge.
+        fresh_ast_ids = {node["id"] for node in result.get("nodes", [])}
+        complete_qt_refresh = bool(
+            qt_state.has_qt and not _failed_ast_sources
+            and {Path(path).resolve() for path in extract_targets}
+            == {Path(path).resolve() for path in code_files if path not in semantic_doc_files}
+        )
 
         def _ast_manifest_files() -> dict[str, list[str]]:
             """detected["files"] minus this run's failed AST sources (#2543).
@@ -1918,6 +1929,22 @@ def _rebuild_code(
                 for ftype, flist in detected["files"].items()
             }
 
+        def _stage_analysis_products(publication: ProductPublication) -> None:
+            """Prepare existing serializers against old seeded bytes, never accepted paths."""
+            from graphify.detect import save_manifest
+            publication.stage(".graphify_root").write_text(
+                _graphify_root_marker_value(watch_path), encoding="utf-8")
+            save_manifest(
+                _ast_manifest_files(), manifest_path=str(publication.stage("manifest.json")),
+                kind="ast", root=watch_root,
+                scan_corpus={f for files in detected["files"].values() for f in files},
+                clear_ast=_failed_ast_sources or None,
+            )
+            if not _failed_ast_sources:
+                commit_qt_analysis(publication.stage(".qt_analysis.json").parent, qt_state)
+
+        accepted_products = ("graph.json", ".graphify_root", "manifest.json", ".qt_analysis.json")
+
         # Preserve semantic nodes/edges from a previous full run.
         # AST-only rebuild replaces nodes for changed files; everything else is kept.
         # Filter by node ID membership in the new AST output, not by file_type —
@@ -1940,6 +1967,7 @@ def _rebuild_code(
                 deleted_source_identities=deleted_source_identities,
                 is_ignored_always=_ignored_always,
                 is_ignored_full=_ignored_full,
+                preserve_sourceless_ast=complete_qt_refresh,
             )
         except (RuntimeError, ValueError) as exc:
             # Existing graph present but unreadable — over the size cap
@@ -1951,6 +1979,10 @@ def _rebuild_code(
             # graph".
             print(f"error: {exc}", file=sys.stderr)
             return False
+
+        from graphify.qt_orphan_cleanup import prune_stale_ast_orphans
+        result = prune_stale_ast_orphans(
+            result, fresh_ids=fresh_ast_ids, complete_refresh=complete_qt_refresh)
 
         _relativize_source_files(result, project_root, scope=watch_root)
         # Source files re-extracted this run — their symbol sets may legitimately
@@ -2034,43 +2066,14 @@ def _rebuild_code(
                     return False
                 from graphify.export import backup_if_protected as _backup
                 _backup(out)
-                # Atomic replace via tmp file, matching the clustered path: a
-                # crash mid-write must not leave a truncated graph.json.
-                # os_replace_with_fallback, not a plain Path.replace (#2689):
-                # this function just read existing_graph a few lines up, and
-                # on a VMware HGFS shared folder a replace over a destination
-                # read earlier in the same process raises PermissionError
-                # even on the same drive.
-                graph_tmp = out / ".graph.tmp.json"
-                graph_tmp.write_text(candidate_graph_text, encoding="utf-8")
-                os_replace_with_fallback(graph_tmp, existing_graph)
-
-            # Write the scan root only after the candidate graph is accepted,
-            # so a refused shrink cannot mismatch graph and marker. See
-            # _graphify_root_marker_value for why this isn't always the raw
-            # caller-supplied value (#3375).
-            (out / ".graphify_root").write_text(
-                _graphify_root_marker_value(watch_path), encoding="utf-8"
-            )
-
-            try:
-                from graphify.detect import save_manifest
-                # detected["files"] is a FULL detect of the watched root, so
-                # pass it as the scan corpus too: rows for files that left the
-                # scan but still exist on disk (newly excluded) are pruned
-                # instead of surviving as phantom "deleted" entries (#1908).
-                # Failed AST sources are dropped from the stamped set and
-                # their prior hashes blanked (#2543).
-                save_manifest(
-                    _ast_manifest_files(), manifest_path=str(out / "manifest.json"),
-                    kind="ast", root=watch_root,
-                    scan_corpus={f for _fl in detected["files"].values() for f in _fl},
-                    clear_ast=_failed_ast_sources or None,
-                )
-                if not _failed_ast_sources:
-                    commit_qt_analysis(out, qt_state)
-            except Exception:
-                pass
+            # Prepare all acceptance products before the first replacement;
+            # an exception restores their old bytes rather than accepting a
+            # graph whose manifest or Qt fingerprint was never committed.
+            with ProductPublication(out, accepted_products, replace=os_replace_with_fallback) as publication:
+                if not same_graph:
+                    publication.stage("graph.json").write_text(candidate_graph_text, encoding="utf-8")
+                _stage_analysis_products(publication)
+                publication.commit()
 
             if same_graph:
                 print("[graphify watch] No code-graph changes detected (--no-cluster); outputs left untouched.")
@@ -2104,20 +2107,9 @@ def _rebuild_code(
             except Exception:
                 same_topology = False
             if same_topology:
-                try:
-                    from graphify.detect import save_manifest
-                    # Full-scan save: prune excluded-but-alive rows (#1908);
-                    # leave failed AST sources unstamped (#2543).
-                    save_manifest(
-                        _ast_manifest_files(), manifest_path=str(out / "manifest.json"),
-                        kind="ast", root=watch_root,
-                        scan_corpus={f for _fl in detected["files"].values() for f in _fl},
-                        clear_ast=_failed_ast_sources or None,
-                    )
-                    if not _failed_ast_sources:
-                        commit_qt_analysis(out, qt_state)
-                except Exception:
-                    pass
+                with ProductPublication(out, accepted_products, replace=os_replace_with_fallback) as publication:
+                    _stage_analysis_products(publication)
+                    publication.commit()
                 html_action = _reconcile_graph_html(out, existing_graph_data)
                 if html_action == "rendered":
                     print(
@@ -2241,7 +2233,6 @@ def _rebuild_code(
         no_change = same_graph and same_report
         if no_change:
             graph_tmp.unlink(missing_ok=True)
-            print("[graphify watch] No code-graph changes detected; graph.json/GRAPH_REPORT.md left untouched.")
         else:
             if not _check_shrink(
                 force, existing_graph_data, candidate_graph_data,
@@ -2251,62 +2242,31 @@ def _rebuild_code(
                 failed_sources=failed_sources,
             ):
                 return False
-            from graphify.exporters.html import _HTML_STALE_MARKER
-            # Mark before graph.json advances so an interruption cannot leave a
-            # previous visualization looking current to the fast path.
-            (out / _HTML_STALE_MARKER).touch()
             from graphify.export import backup_if_protected as _backup
             _backup(out)
-            # os_replace_with_fallback, not a plain Path.replace (#2689): this
-            # function read existing_graph a few lines up for the same_graph
-            # comparison, and on a VMware HGFS shared folder a replace over a
-            # destination read earlier in the same process raises
-            # PermissionError even on the same drive.
-            os_replace_with_fallback(graph_tmp, existing_graph)
-            write_text_atomic(report_path, report)
-            # Keep the membership signatures in step with the labels we just wrote.
-            # Skipping this was the other half of the stale-label bug: labels.json
-            # advanced every rebuild while the sidecar kept describing an older
-            # clustering, so the guard above had nothing accurate to check against.
-            #
-            # Each write is atomic, so a kill mid-write can never publish a
-            # half-written sidecar (a torn one would be unparseable, which the
-            # guard reads as "no saved signatures" and falls back to the
-            # count heuristic).
-            #
-            # Labels go down BEFORE the signatures, and that order matters. The
-            # guard above compares the SAVED signatures against ones recomputed
-            # from the current clustering — not against the labels. So publishing
-            # signatures first and crashing would leave a sidecar that already
-            # describes the new clustering sitting beside the OLD labels: the
-            # guard recomputes the same signatures, finds them equal, reports
-            # nothing stale, and silently keeps names that describe a clustering
-            # that no longer exists. Writing labels first keeps the sidecar
-            # trailing, which the guard sees as a mismatch and re-labels.
-            write_text_atomic(labels_file, labels_json)
-            write_text_atomic(
-                sig_file, json.dumps({str(k): v for k, v in cur_sigs.items()}))
-
-        # See _graphify_root_marker_value for why this isn't always the raw
-        # caller-supplied value (#3375).
-        (out / ".graphify_root").write_text(
-            _graphify_root_marker_value(watch_path), encoding="utf-8"
-        )
-
+        # The graph, report and labeling sidecars share publication ownership.
+        # Keep stale-marker-before-graph and label-before-signature ordering for
+        # crash recovery; ordinary exceptions roll back the entire cohort.
+        from graphify.exporters.html import _HTML_STALE_MARKER
+        products = (*accepted_products, "GRAPH_REPORT.md", labels_file.name,
+                    sig_file.name, _HTML_STALE_MARKER)
         try:
-            from graphify.detect import save_manifest
-            # Full-scan save: prune excluded-but-alive rows (#1908);
-            # leave failed AST sources unstamped (#2543).
-            save_manifest(
-                _ast_manifest_files(), manifest_path=str(out / "manifest.json"),
-                kind="ast", root=watch_root,
-                scan_corpus={f for _fl in detected["files"].values() for f in _fl},
-                clear_ast=_failed_ast_sources or None,
-            )
-            if not _failed_ast_sources:
-                commit_qt_analysis(out, qt_state)
-        except Exception:
-            pass
+            with ProductPublication(out, products, replace=os_replace_with_fallback) as publication:
+                if not no_change:
+                    import shutil
+                    publication.stage(_HTML_STALE_MARKER).touch()
+                    shutil.copyfile(graph_tmp, publication.stage("graph.json"))
+                    graph_tmp.unlink(missing_ok=True)
+                    write_text_atomic(publication.stage("GRAPH_REPORT.md"), report)
+                    write_text_atomic(publication.stage(labels_file.name), labels_json)
+                    write_text_atomic(publication.stage(sig_file.name),
+                                      json.dumps({str(k): v for k, v in cur_sigs.items()}))
+                _stage_analysis_products(publication)
+                publication.commit()
+        finally:
+            graph_tmp.unlink(missing_ok=True)
+        if no_change:
+            print("[graphify watch] No code-graph changes detected; graph.json/GRAPH_REPORT.md left untouched.")
 
         # Reconcile from the persisted graph. The stale marker was written
         # before graph.json advanced, so a failed or interrupted atomic render

@@ -165,5 +165,9 @@ def inspect_qt_analysis(root: Path, out: Path, accepted_paths, *, excludes=(), g
 
 
 def commit_qt_analysis(out: Path, state: QtAnalysisState) -> None:
-    """Publication owner calls this after successful graph and manifest writes."""
+    """Prepare the candidate stamp for its owner's accepted product cohort.
+
+    Manual/watch publication supplies its staging directory and commits the stamp
+    with graph/root/manifest products; writing this candidate alone accepts no run.
+    """
     save_qt_fingerprint(out, state.fingerprint, has_qt=state.current_has_qt)
