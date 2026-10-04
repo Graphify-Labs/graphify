@@ -100,6 +100,26 @@ class CppDeclarationIdentity:
                declaration.start_byte, declaration.end_byte, scope.start_byte, scope.end_byte]
         return hashlib.sha256(json.dumps(key, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
+    def type_binding(self, name, position):
+        """Original declaration spelling owns type authority, before use-site aliases.
+
+        A normalized variable type loses an explicit global qualifier. Resolve
+        its source binding instead of treating that display spelling as a new
+        type expression at the later call site.
+        """
+        # Runtime lifetime/assignment uncertainty is reported separately by
+        # resolve(); it must not erase the observed SDK operation itself.
+        if name == "this":
+            return "", position
+        owner = self.mapping.owner_at(position)
+        record, _ = self._select(name, position, owner)
+        if record is None:
+            return "", position
+        declaration = record["syntax"].parent
+        if declaration is None or declaration.type not in _DECLARATIONS:
+            return "", position
+        return self.unit.field(declaration, "type"), declaration.start_byte
+
     def resolve(self, name, position):
         """Return a portable 64-hex ID or explicit uncertainty, never a name fallback."""
         if not isinstance(name, str) or not re.fullmatch(r"this|[A-Za-z_]\w*", name):

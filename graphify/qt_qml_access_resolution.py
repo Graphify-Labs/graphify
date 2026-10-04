@@ -54,6 +54,10 @@ def resolve_qt_qml_access(per_file, all_nodes, all_edges, *, root, project_index
             if handle.target_id:
                 index.mark_parent_mutation(handle.target_id)
             resolution = Resolution("dynamic", reason="runtime_parent_mutation")
+        elif kind == "qml_access" and metadata.get("reflection_supported") is False:
+            # A valid QObject handle cannot lend SDK authority to a source
+            # reflection class. Rejection must precede member/handle seeding.
+            resolution = Resolution("unsupported", reason="reflection_api_type_unestablished")
         elif kind == "qml_access":
             if metadata.get("handle_role") == "root":
                 loads = index.loads.get(key, [])

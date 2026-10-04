@@ -22,6 +22,7 @@ _CONDITIONAL = {"if_statement", "switch_statement", "for_statement", "while_stat
 class TypeLookup:
     name: str = ""
     reason: str = ""
+    source_declared: bool = False
 
 
 class NativeTypeScope:
@@ -159,7 +160,7 @@ class NativeTypeScope:
                 if condition:
                     return TypeLookup(reason="native_type_binding_conditional")
                 if kind in {"class_specifier", "struct_specifier", "namespace_definition"}:
-                    result = TypeLookup(target)
+                    result = TypeLookup(target, source_declared=True)
                 else:
                     identity = (node.start_byte, node.end_byte)
                     if identity in seen or len(seen) >= 32:
@@ -167,12 +168,17 @@ class NativeTypeScope:
                     if not _NAME.fullmatch(target):
                         return TypeLookup(reason="native_type_alias_unsupported")
                     result = self._lookup(target, node.start_byte - 1, scope, seen | {identity})
-                return TypeLookup(result.name + separator + tail, result.reason) if result.name else result
+                return TypeLookup(result.name + separator + tail, result.reason, result.source_declared) if result.name else result
             if scope and scope[-1][0] == "class" and self.bindings.get((scope, head)):
                 return TypeLookup(reason="native_type_declaration_not_visible")
             candidate = self._qualified(scope, head)
+            # Included source declarations block SDK fallback even without a
+            # complete mapped body. Native target lookup still requires the
+            # existing accepted complete-class inventory; this adds no provider.
+            if self.included.class_declared(scope, head, byte):
+                return TypeLookup(candidate + separator + tail, source_declared=True)
             if (not scope or scope[-1][0] != "block") and (candidate in self.classes or candidate in self.namespaces):
-                return TypeLookup(candidate + separator + tail)
+                return TypeLookup(candidate + separator + tail, source_declared=True)
         # A later local alias cannot authorize an earlier use. Retaining an
         # unshadowed external spelling preserves SDK input for its own guards.
         if any(self.bindings.get((scope, head)) for scope in choices):
@@ -181,6 +187,16 @@ class NativeTypeScope:
 
     def resolve(self, raw_type, byte, *, owner=None):
         return self.lookup(raw_type, byte, owner=owner).name
+
+    def sdk_type(self, raw_type, byte, expected):
+        """Authorize an external SDK type, never a same-spelled source declaration.
+
+        Source-body identity is deliberately unnecessary for rejection: a forward
+        declaration or unmapped class still shadows the SDK spelling. Absolute
+        lookup bypasses local aliases but retains global source shadowing.
+        """
+        result = self.lookup(raw_type, byte)
+        return result.name == expected and not result.reason and not result.source_declared
 
     def callable_shadow(self, name, byte, *, absolute=False):
         """Visible source callables cannot inherit SDK type-conversion semantics."""

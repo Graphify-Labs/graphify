@@ -7,9 +7,15 @@ from pathlib import Path
 from graphify.extractors.qt_cpp_calls import argument_ranges, closing, conditional_at, literal_string
 from graphify.extractors.qt_cpp_facts import owner_scope
 from graphify.extractors.qt_cpp_syntax import source_span
-from graphify.extractors.qt_cpp_variables import simple_reference, variables_at
+from graphify.extractors.qt_cpp_variables import simple_reference, type_name, variables_at
 
 _MODES = {"QQmlComponent::PreferSynchronous", "QQmlComponent::Asynchronous"}
+
+
+def declared_sdk_type(identities, types, name, position, expected):
+    """Receiver declarations retain global/alias authority independently of display."""
+    spelling, declared_at = identities.type_binding(name, position)
+    return bool(spelling and types.sdk_type(type_name(spelling), declared_at, expected))
 
 
 def loader_operation_owner(receiver_type, operation):
@@ -34,7 +40,7 @@ def literal_loader_arguments(receiver_type, operation, args, *, types=None, posi
     if len(args) == 1:
         return True
     return (operation == "loadUrl" and len(args) == 2 and args[1]["text"].strip() in _MODES
-            and (types is None or types.resolve("QQmlComponent", position) == "QQmlComponent"))
+            and (types is None or types.sdk_type("QQmlComponent", position, "QQmlComponent")))
 
 
 def literal_creation_arguments(operation, args):
@@ -59,7 +65,7 @@ def literal_url_expression(expression, *, types=None, identities=None, position=
         # return another URL despite having a literal written argument.
         for wrapper in re.findall(r"(?<![\w:])((?:::)?(?:QUrl|QString|QLatin1String|QByteArray|QStringLiteral))(?=\s*(?:::fromLocalFile|\())", expression):
             name = wrapper.removeprefix("::")
-            if types.resolve(wrapper, position) != name or types.classes.get(name):
+            if not types.sdk_type(wrapper, position, name):
                 return None
             if (not wrapper.startswith("::") and identities is not None
                     and identities.resolve(name, position)["status"] in {"resolved", "dynamic", "ambiguous"}):
@@ -104,7 +110,7 @@ def collect_loader_constructors(unit, mapping, facts, identities, types):
                 for start, end in argument_ranges(unit.code, match.end(), right)]
         raw_kind, name = match[1].decode(), match[2].decode()
         kind = raw_kind.removeprefix("::")
-        if types.resolve(raw_kind, match.start()) != kind or types.classes.get(kind):
+        if not types.sdk_type(raw_kind, match.start(), kind):
             continue
         identity = identities.resolve(name, right + 1)
         variables = variables_at(unit, mapping, right + 1)
@@ -122,7 +128,8 @@ def collect_loader_constructors(unit, mapping, facts, identities, types):
                 "engine_identity_status": engine_identity.get("status", "unavailable"),
                 "engine_identity_reason": engine_identity.get("reason", "component_engine_unestablished"),
                 "component_engine_supported": engine_identity.get("status") == "resolved"
-                    and engine_kind in {"QQmlEngine", "QQmlApplicationEngine"} and not types.classes.get(engine_kind),
+                    and engine_kind in {"QQmlEngine", "QQmlApplicationEngine"}
+                    and declared_sdk_type(identities, types, engine, match.start(), engine_kind),
             }
         if (component and (len(args) < 2 or len(args) == 2 and args[1] in {"nullptr", "0"})
                 or not component and (not args or len(args) == 1 and args[0] in {"nullptr", "0"})):
@@ -134,11 +141,11 @@ def collect_loader_constructors(unit, mapping, facts, identities, types):
             tail = args[2:]
             overload = not tail or tail == ["nullptr"] or tail == ["0"] or (
                 tail[0] in _MODES and (len(tail) == 1 or tail[1:] in (["nullptr"], ["0"]))
-                and types.resolve("QQmlComponent", match.start()) == "QQmlComponent")
+                and types.sdk_type("QQmlComponent", match.start(), "QQmlComponent"))
             engine_kind = variables.get(engine, "")
             engine_ok = (engine_identity.get("status") == "resolved"
                          and engine_kind in {"QQmlEngine", "QQmlApplicationEngine"}
-                         and not types.classes.get(engine_kind))
+                         and declared_sdk_type(identities, types, engine, match.start(), engine_kind))
         else:
             overload = len(args) == 1 or len(args) == 2 and args[1] in {"nullptr", "0"}
             engine_ok = True

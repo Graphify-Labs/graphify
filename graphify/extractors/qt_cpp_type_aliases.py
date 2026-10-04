@@ -11,7 +11,10 @@ import posixpath
 import re
 
 from graphify.extractors.qt_cpp_facts import qt_metadata
+from graphify.extractors.cpp_class_proof import class_fact
+from graphify.extractors.cpp_constructors import _decoded
 from graphify.extractors.qt_cpp_syntax import MAX_CPP_BYTES, QtCppError, lexical_code, walk
+from graphify.qml_resolution_types import source_path
 
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
 _QUALIFIED = re.compile(r"[A-Za-z_]\w*(?:::[A-Za-z_]\w*)*")
@@ -91,14 +94,44 @@ def _accepted(node):
     return file, md
 
 
+def _class_shadow(node, unit):
+    """Generic source declarations can block SDK fallback without defining it.
+
+    Complete-body/Qt provider admission remains separate. A forward or ambiguous
+    class spelling must still shadow an external SDK name in an included header.
+    No extra header is admitted, opened, reparsed or executed by this lookup.
+    """
+    metadata = node.get("metadata")
+    if not isinstance(metadata, dict) or "cpp_class" not in metadata:
+        return None
+    fact = class_fact(node)
+    # Direct extraction may use absolute in-root paths and has no origin stamp;
+    # the aggregate supplies portable paths and explicit AST origin. Normalize
+    # only already-accepted provenance against this unit's verified scan root.
+    root = unit.path.resolve().parents[len(PurePosixPath(unit.relative_file).parts) - 1]
+    file = source_path(node, root)
+    if (not fact or not file or node.get("_origin") not in {None, "ast"}
+            or node.get("file_type") != "code"):
+        raise ValueError("QT_METADATA: invalid included native class provenance")
+    qualified = _decoded(fact["qualified_name_b64"])
+    scope, _, name = qualified.rpartition("::")
+    return file, (scope, name)
+
+
 class IncludedAliasShadows:
     """Immutable accepted dependency snapshot, with bounded include graph walks."""
 
     def __init__(self, unit, nodes):
         self.unit = unit
         self.aliases, self.includes = defaultdict(set), defaultdict(set)
+        self.classes = defaultdict(set)
         paths = set()
         for node in nodes:
+            shadow = _class_shadow(node, unit)
+            if shadow is not None:
+                file, spelling = shadow
+                paths.add(file)
+                self.classes[file].add(spelling)
             record = _accepted(node)
             if record is None:
                 continue
@@ -121,7 +154,7 @@ class IncludedAliasShadows:
                 return target
         return ""
 
-    def blocks(self, scope, name, byte):
+    def _contains(self, inventory, scope, name, byte):
         key = scope[-1][1] if scope and scope[-1][0] != "block" else "" if not scope else None
         if key is None:
             return False
@@ -134,7 +167,15 @@ class IncludedAliasShadows:
             seen.add(file)
             if len(seen) > 128:
                 raise QtCppError("QT_CPP_LIMIT", "Type dependency walk exceeds 128 accepted headers")
-            if (key, name) in self.aliases[file]:
+            if (key, name) in inventory[file]:
                 return True
             pending.extend(self._target(file, literal) for literal in self.includes[file])
         return False
+
+    def blocks(self, scope, name, byte):
+        """Imported aliases retain no compiler-expanded native target authority."""
+        return self._contains(self.aliases, scope, name, byte)
+
+    def class_declared(self, scope, name, byte):
+        """A source class is a shadow, independently of whether its body maps."""
+        return self._contains(self.classes, scope, name, byte)

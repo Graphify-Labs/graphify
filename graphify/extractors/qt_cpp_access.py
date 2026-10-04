@@ -12,11 +12,11 @@ from graphify.extractors.qt_cpp_facts import qt_metadata
 from graphify.extractors.qt_cpp_exposure import is_qt_cpp_source
 from graphify.extractors.qt_cpp_mapping import map_cpp
 from graphify.extractors.qt_cpp_identity import CppDeclarationIdentity
-from graphify.extractors.qt_cpp_loaders import (collect_loader_constructors, literal_creation_arguments,
+from graphify.extractors.qt_cpp_loaders import (collect_loader_constructors, declared_sdk_type, literal_creation_arguments,
     literal_loader_arguments, literal_url_expression, loader_operation_owner)
 from graphify.extractors.qt_cpp_type_scope import NativeTypeScope
-from graphify.extractors.qt_cpp_syntax import QtCppError, read_cpp
-from graphify.extractors.qt_cpp_variables import simple_reference, variables_at
+from graphify.extractors.qt_cpp_syntax import QtCppError, read_cpp, source_span
+from graphify.extractors.qt_cpp_variables import simple_reference, type_name, variables_at
 
 _METHODS = {"load", "loadFromModule", "loadUrl", "setSource", "create", "createWithInitialProperties", "rootObjects", "rootObject",
             "findChild", "property", "setProperty", "setParent", "invokeMethod", "read", "write", "setContextProperty", "setContextObject", "setInitialProperties"}
@@ -48,12 +48,19 @@ def _site(facts, unit, mapping, call, identities, types, component_engines):
               **_identity_fields(identities, receiver, call["start_byte"], "receiver"),
               **_identity_fields(identities, assigned, call["start_byte"], "assigned")}
     if method in {"load", "loadFromModule", "loadUrl", "setSource", "create", "createWithInitialProperties", "rootObjects", "rootObject", "setInitialProperties"}:
-        if not loader_operation_owner(receiver_type, method) or types.classes.get(receiver_type):
+        # A reassignment loses runtime identity, but its declared SDK type still
+        # identifies the observed API occurrence. Resolution keeps that uncertainty.
+        if not receiver_type:
+            spelling, declared_at = identities.type_binding(receiver, call["start_byte"])
+            receiver_type = types.resolve(type_name(spelling), declared_at) if spelling else ""
+        # Incomplete source declarations are not external SDK authority either.
+        if (not loader_operation_owner(receiver_type, method)
+                or not declared_sdk_type(identities, types, receiver, call["start_byte"], receiver_type.removeprefix("::"))):
             return
         loading = method in {"load", "loadFromModule", "loadUrl", "setSource"}
         supported = (literal_loader_arguments(receiver_type, method, args, types=types, position=call["start_byte"])
                      if loading else literal_creation_arguments(method, args))
-        values = {**common, "operation": method,
+        values = {**common, "receiver_type": receiver_type, "operation": method,
                   "loader_supported": supported, "loader_reason": "" if supported else "loader_overload_unestablished",
                   "literal_url": literal_url_expression(args[0]["text"], types=types, identities=identities, position=call["start_byte"]) if args and method in {"load", "loadUrl", "setSource"} else None,
                   "module_uri": literal_string(args[0]["text"]) if args and method == "loadFromModule" else None,
@@ -96,9 +103,20 @@ def _site(facts, unit, mapping, call, identities, types, component_engines):
         facts.add("qml_parent_mutation", method, call["span"], call["owner"].get("node_id"),
                   **common, operation=method)
     elif method in {"findChild", "property", "setProperty", "invokeMethod", "read", "write"}:
-        if method == "invokeMethod" or call["callee"] in {"QQmlProperty::read", "QQmlProperty::write"}:
-            if method == "invokeMethod" and call["callee"] != "QMetaObject::invokeMethod":
+        reflection = {}
+        qualifier = call["callee"].rsplit("::", 1)[0] if "::" in call["callee"] else ""
+        sdk = "QMetaObject" if method == "invokeMethod" else "QQmlProperty"
+        if method == "invokeMethod" or qualifier.rsplit("::", 1)[-1] == "QQmlProperty":
+            if qualifier.rsplit("::", 1)[-1] != sdk:
                 return
+            # The shared call scanner starts at an identifier. Restore an
+            # explicit global qualifier before lexical lookup and source proof.
+            if unit.code[max(0, call["start_byte"] - 2):call["start_byte"]] == b"::":
+                qualifier = "::" + qualifier
+                call = {**call, "start_byte": call["start_byte"] - 2,
+                        "span": source_span(unit.source, call["start_byte"] - 2, call["end_byte"])}
+            reflection = {"reflection_type": qualifier,
+                          "reflection_supported": types.sdk_type(qualifier, call["start_byte"], sdk)}
             receiver, role = handle_argument(args[0]["text"] if args else "")
             name = literal_string(args[1]["text"]) if len(args) > 1 else None
         else:
@@ -117,13 +135,13 @@ def _site(facts, unit, mapping, call, identities, types, component_engines):
         facts.add("qml_access", method, call["span"], call["owner"].get("node_id"), **{**common, "receiver_reference": receiver,
                   **_identity_fields(identities, receiver, call["start_byte"], "receiver"),
                   "receiver_assignment_byte": last_assignment(unit, call["owner"], receiver, call["start_byte"])},
-                  operation=method, lookup_name=name, handle_role=role,
+                  operation=method, lookup_name=name, handle_role=role, **reflection,
                   **({"find_child_options": depth, "find_child_type_supported": child_type_supported} if method == "findChild" else {}))
 
 
-def _component_constructors(unit, mapping, facts, identities):
+def _component_constructors(unit, mapping, facts, identities, types):
     # Property wrappers remain separate from component load construction.
-    for match in re.finditer(rb"\bQQmlProperty\s+([A-Za-z_]\w*)\s*\(", unit.code):
+    for match in re.finditer(rb"(?<![\w:])((?:::)?(?:[A-Za-z_]\w*::)*QQmlProperty)\s+([A-Za-z_]\w*)\s*\(", unit.code):
         owner = mapping.owner_at(match.start())
         if not owner or owner.get("body") is None:
             continue
@@ -135,9 +153,11 @@ def _component_constructors(unit, mapping, facts, identities):
         args = argument_ranges(unit.code, match.end(), right)
         receiver = simple_reference(unit.source[args[0][0]:args[0][1]].decode()) if args else ""
         facts.add("qml_access", "QQmlProperty", source_span(unit.source, match.start(), right + 1), owner.get("node_id"),
-                  receiver_reference=receiver, operation="QQmlProperty", receiver_type="", assigned_handle=match[1].decode(), assignment_byte=-1,
+                  receiver_reference=receiver, operation="QQmlProperty", receiver_type="", assigned_handle=match[2].decode(), assignment_byte=-1,
                   **_identity_fields(identities, receiver, match.end() - 1, "receiver"),
-                  **_identity_fields(identities, match[1].decode(), match.end() - 1, "assigned"),
+                  **_identity_fields(identities, match[2].decode(), match.end() - 1, "assigned"),
+                  reflection_type=match[1].decode(),
+                  reflection_supported=types.sdk_type(match[1].decode(), match.start(), "QQmlProperty"),
                   owner_scope_key=owner_scope(unit, owner),
                   receiver_assignment_byte=last_assignment(unit, owner, receiver, match.start()),
                   lookup_name=literal_string(unit.source[args[1][0]:args[1][1]].decode()) if len(args) > 1 else None,
@@ -160,7 +180,7 @@ def collect_qt_cpp_access(paths, per_file, *, root: Path, accepted_nodes=None, a
             identities = CppDeclarationIdentity(unit, mapping)
             types = NativeTypeScope(unit, mapping)
             component_engines = collect_loader_constructors(unit, mapping, facts, identities, types)
-            _component_constructors(unit, mapping, facts, identities)
+            _component_constructors(unit, mapping, facts, identities, types)
             for call in calls(unit, mapping, _METHODS):
                 _site(facts, unit, mapping, call, identities, types, component_engines)
             result.setdefault("nodes", []).extend(facts.nodes)
