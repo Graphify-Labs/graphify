@@ -273,7 +273,10 @@ database-version matrix acceptance is implied.
 
 1. Validate the workflow configuration and embedded scripts locally; confirm
    unchanged application source/lock and passing affected local evidence. Review
-   the source/configuration change as one versioned increment.
+   GitHub expression scopes with actionlint as well as YAML/native syntax: the
+   first hosted run rejected `runner.temp` in job-level `env`. Resolve evidence
+   directories from `RUNNER_TEMP` within the step. Review the source/configuration
+   change as one versioned increment.
 2. Publish the explicit feature branch and create/update its draft PR against
    the reviewed base when publication is authorized. The PR event owns full
    validation; do not dispatch a duplicate feature run. Re-read the remote source

@@ -66,7 +66,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      GRAPHIFY_PROOF_DIRECTORY: ${{ runner.temp }}/graphify-source-results
       GRAPHIFY_FALKORDB_IMAGE: falkordb/falkordb-server:6.0.1@sha256:f4f60c62532b67f8651d0f4f50bbb4db7548717b502bd05abd80e668f2d974c6
       GRAPHIFY_FALKORDB_CONTAINER: graphify-falkor-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
       FALKORDB_HOST: localhost
@@ -98,6 +97,7 @@ jobs:
         # host mounts or retained database volumes enter the test boundary.
         timeout-minutes: 5
         run: |
+          export GRAPHIFY_PROOF_DIRECTORY="$RUNNER_TEMP/graphify-source-results"
           mkdir -p "$GRAPHIFY_PROOF_DIRECTORY"
           uv pip freeze --python .venv/bin/python > "$GRAPHIFY_PROOF_DIRECTORY/dependencies.txt"
           uv build --wheel --python .venv/bin/python --out-dir "$GRAPHIFY_PROOF_DIRECTORY/wheel"
@@ -177,6 +177,7 @@ jobs:
 
       - name: Run tests
         run: |
+          export GRAPHIFY_PROOF_DIRECTORY="$RUNNER_TEMP/graphify-source-results"
           set +e
           uv run --frozen --no-sync python -X utf8 -m pytest tests/ -q --tb=short -rs \
             --junitxml="$GRAPHIFY_PROOF_DIRECTORY/tests.xml" | tee "$GRAPHIFY_PROOF_DIRECTORY/tests.log"
@@ -188,6 +189,7 @@ jobs:
       - name: Verify source and dependency retention
         if: always()
         run: |
+          export GRAPHIFY_PROOF_DIRECTORY="$RUNNER_TEMP/graphify-source-results"
           uv pip freeze --python .venv/bin/python > "$GRAPHIFY_PROOF_DIRECTORY/dependencies-after.txt"
           uv run --frozen --no-sync python - <<'PY'
           import hashlib, json, os, subprocess, xml.etree.ElementTree as ET
@@ -240,6 +242,7 @@ jobs:
         # Cleanup has its own always step so failed setup, pytest, or integrity
         # cannot leave the job-owned service running. No shared containers prune.
         run: |
+          export GRAPHIFY_PROOF_DIRECTORY="$RUNNER_TEMP/graphify-source-results"
           mkdir -p "$GRAPHIFY_PROOF_DIRECTORY"
           python3 - <<'PY'
           import json, os, subprocess

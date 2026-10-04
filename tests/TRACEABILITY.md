@@ -139,17 +139,35 @@ Local configuration review parses both workflows with PyYAML `BaseLoader`,
 compiles each embedded Python block, checks extracted Ubuntu scripts with
 `bash -n`, and parses the Windows script through PowerShell's
 `System.Management.Automation.Language.Parser.ParseFile`. The CI workflow is
-446 physical lines within its documented 450-line cohesion ceiling. Existing
+449 physical lines within its documented 450-line cohesion ceiling. Existing
 triggers, Ubuntu matrix, skill-generation/security jobs and QML-wheel matrix/job
 selection remain intact. Both workflow concurrency groups now use distinct run
 IDs outside PR events. These are local configuration results, not hosted passes.
 
-The delivery changes only CI and documentation after the completed native run:
-all 667 Python-file fingerprints and 197 dependency versions still match the
+At first publication `3b005d3`, the delivery changes only CI and documentation
+after the completed native run: all 667 Python-file fingerprints and 197 dependency versions match the
 tested source, and original coverage bytes are preserved. `ruff check .` passes,
 `python -m tools.skillgen --check` matches all 134 artifacts, and the document
 check resolves every acceptance criterion and exact test reference. The graph
 refresh is AST-only navigation maintenance, not additional acceptance evidence.
+
+The first hosted source head `3b005d3` produced
+[CI admission failure 37244260265](https://github.com/SlinkyRamey/graphify/actions/runs/37244260265)
+before creating any jobs: job-level `env` cannot reference `runner.temp`.
+Resolving the evidence directory inside each Ubuntu script from `RUNNER_TEMP`
+preserves the same artifact location and also admits the independent cleanup
+step after failed setup. Official checksum-verified actionlint 1.7.12 rejects
+the original configuration with that context error and accepts both corrected
+workflows with zero diagnostics, without suppressions. This semantic check
+complements YAML/Python/native shell syntax; ShellCheck and Pyflakes were not
+installed for the actionlint run. No Linux/service pass is inferred from the
+admission failure or local correction.
+
+At the same source head,
+[QML wheel run 37244275402](https://github.com/SlinkyRamey/graphify/actions/runs/37244275402)
+passes all four Ubuntu artifact lanes but fails the installed native-module
+smoke assertion in all four Windows and all four macOS lanes. These are current
+failed gates under investigation, not skips or passing platform acceptance.
 
 ## Individual acceptance assignments
 
