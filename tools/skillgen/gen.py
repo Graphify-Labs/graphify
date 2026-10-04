@@ -205,6 +205,12 @@ _TRAE_PRETOOLUSE_NOTE = (
     "rebuild on tool use. Run `/graphify --update` manually after code changes if "
     "the graph needs refreshing.\n"
 )
+_GROK_PRETOOLUSE_NOTE = (
+    "\n> **Note:** `graphify grok install` also registers PreToolUse hooks in "
+    "`.grok/hooks/graphify.json` (the same `graphify hook-guard` nudges as Claude "
+    "Code). Grok runs project hooks, AGENTS.md and project skills only in a trusted "
+    "folder: run `grok --trust` once, or `/hooks-trust` in a session.\n"
+)
 _AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
     "trae": {
         "heading_suffix": " (Trae)",
@@ -233,14 +239,14 @@ _AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
     "grok": {
         # Grok Build reads AGENTS.md; `graphify grok install` writes the skill
         # ($GROK_HOME/skills, or .grok/skills with --project) plus the AGENTS.md
-        # section, exactly like `graphify amp install`. Grok DOES have
-        # PreToolUse hooks, so no trae-style "no PreToolUse" caveat; graphify simply
-        # does not wire one for Grok yet.
+        # section, exactly like `graphify amp install`, plus Claude Code's
+        # PreToolUse hooks in .grok/hooks/graphify.json (installed the way the
+        # Codex hook is).
         "heading_suffix": "",
         "host_display": "Grok Build",
         "install_block": "graphify grok install",
-        "uninstall_block": "graphify grok uninstall  # remove the section",
-        "pretooluse_note": "",
+        "uninstall_block": "graphify grok uninstall  # remove the section and the hooks",
+        "pretooluse_note": _GROK_PRETOOLUSE_NOTE,
     },
 }
 # The prose file name the lean-core hooks pointer names, per hooks variant.

@@ -1744,6 +1744,77 @@ def _uninstall_codex_hook(project_dir: Path) -> None:
     existing["hooks"]["PreToolUse"] = filtered
     hooks_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
     print(f"  .codex/hooks.json  ->  PreToolUse hook removed")
+def _install_grok_hook(project_dir: Path, project: bool = False) -> None:
+    """Add graphify PreToolUse hooks to .grok/hooks/graphify.json (Grok Build).
+
+    Mirrors _install_codex_hook (merge, drop old graphify entries, back up), with
+    Claude Code's hook entries: Grok runs the same `graphify hook-guard` nudge
+    (it accepts hookSpecificOutput.additionalContext, unlike Codex Desktop) and
+    maps Claude matcher names (Bash -> run_terminal_command, Read -> read_file,
+    Grep -> grep, Glob -> list_dir). Grok loads every .grok/hooks/*.json, so
+    graphify uses its own file rather than a shared one. Project-scoped installs
+    emit the bare command, since the file is then committed (#3129).
+    """
+    hooks_path = project_dir / ".grok" / "hooks" / "graphify.json"
+    hooks_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing = _read_settings_for_merge(hooks_path)
+
+    hooks = existing.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        _refuse_to_modify(hooks_path)
+    pre_tool = hooks.setdefault("PreToolUse", [])
+    if not isinstance(pre_tool, list):
+        _refuse_to_modify(hooks_path)
+    hooks["PreToolUse"] = [h for h in pre_tool if "graphify" not in str(h)]
+    hooks["PreToolUse"].extend(_claude_pretooluse_hooks(project=project))
+    _write_settings_with_backup(hooks_path, existing)
+    print("  .grok/hooks/graphify.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob)")
+
+
+def _uninstall_grok_hook(project_dir: Path) -> None:
+    """Remove graphify PreToolUse hooks from .grok/hooks/graphify.json.
+
+    Mirrors _uninstall_codex_hook, except that a file left with no hooks is
+    deleted (it is graphify's own file, and Grok loads every .json there) along
+    with its graphify-only .graphify-bak, and the then-empty .grok/hooks and
+    .grok directories are pruned.
+    """
+    hooks_path = project_dir / ".grok" / "hooks" / "graphify.json"
+    if not hooks_path.exists():
+        return
+    try:
+        existing = json.loads(hooks_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+    if not isinstance(existing, dict) or not isinstance(existing.get("hooks"), dict):
+        return
+    pre_tool = existing["hooks"].get("PreToolUse", [])
+    filtered = [h for h in pre_tool if "graphify" not in str(h)]
+    existing["hooks"]["PreToolUse"] = filtered
+    if not filtered:
+        del existing["hooks"]["PreToolUse"]
+    if existing == {"hooks": {}}:
+        hooks_path.unlink()
+        # The install-time .graphify-bak of graphify's own file goes too, unless
+        # it holds something other than graphify hooks (then it is the user's).
+        backup = hooks_path.with_name(hooks_path.name + ".graphify-bak")
+        try:
+            old = json.loads(backup.read_text(encoding="utf-8-sig"))
+            old_pre = old["hooks"]["PreToolUse"]
+            if set(old) == {"hooks"} and set(old["hooks"]) == {"PreToolUse"} \
+                    and all("graphify" in str(h) for h in old_pre):
+                backup.unlink()
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        for d in (hooks_path.parent, hooks_path.parent.parent):
+            try:
+                d.rmdir()
+            except OSError:
+                break
+    else:
+        hooks_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    print("  .grok/hooks/graphify.json  ->  PreToolUse hooks removed")
 def _agents_install(project_dir: Path, platform: str, project: bool = False) -> None:
     """Write the graphify section to the local AGENTS.md for always-on platforms."""
     target = (project_dir or Path(".")) / "AGENTS.md"
@@ -1764,6 +1835,8 @@ def _agents_install(project_dir: Path, platform: str, project: bool = False) -> 
 
     if platform == "codex":
         _install_codex_hook(project_dir or Path("."), project=project)
+    elif platform == "grok":
+        _install_grok_hook(project_dir or Path("."), project=project)
     elif platform == "opencode":
         _install_opencode_plugin(project_dir or Path("."))
     elif platform == "kilo":
@@ -1836,11 +1909,13 @@ def _print_grok_trust_hint() -> None:
     print("Grok Build loads project AGENTS.md, skills, and hooks only in a trusted folder.")
     print("Trust this project once: run `grok --trust` here, or `/hooks-trust` in a session.")
 def _grok_uninstall(project_dir: Path | None = None) -> None:
-    """User-scope Grok Build uninstall: remove the skill and the AGENTS.md section."""
+    """User-scope Grok Build uninstall: remove the skill, the AGENTS.md section and
+    the .grok/hooks/graphify.json hooks."""
     removed = _remove_skill_file("grok")
     if removed:
         print("skill removed")
     _agents_uninstall(project_dir or Path("."), platform="grok")
+    _uninstall_grok_hook(project_dir or Path("."))
 def _project_install(platform_name: str, project_dir: Path | None = None, strict: bool = False) -> None:
     """Install platform skill/config files in the current project."""
     project_dir = project_dir or Path(".")
@@ -1903,6 +1978,8 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _agents_uninstall(project_dir, platform=platform_name)
         if platform_name == "codex":
             _uninstall_codex_hook(project_dir)
+        elif platform_name == "grok":
+            _uninstall_grok_hook(project_dir)
     elif platform_name == "antigravity":
         _antigravity_uninstall(project_dir, project=True)
     elif platform_name == "devin":
@@ -2105,6 +2182,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     _remove_skill_file("grok")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
+    _uninstall_grok_hook(pd)
 
     # Git hook
     try:

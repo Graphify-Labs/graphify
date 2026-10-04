@@ -6,7 +6,7 @@ user-global skill at ``$GROK_HOME/skills/graphify/SKILL.md`` (default
 ``## graphify`` AGENTS.md section in the current directory; ``--project`` (on
 either command) writes ``./.grok/skills/graphify/SKILL.md`` plus the AGENTS.md
 section instead. ``graphify grok uninstall [--project]`` removes them.
-No hook is wired for Grok in this change.
+The PreToolUse hook file is covered in tests/test_grok_hooks.py.
 """
 import os
 import sys
@@ -106,7 +106,7 @@ def test_grok_install_writes_global_skill_and_agents_md(tmp_path, capsys):
     home, cwd = _dirs(tmp_path)
     _run(cwd, ["grok", "install"], home)
     assert (home / ".grok" / "skills" / "graphify" / "SKILL.md").exists()
-    assert not (cwd / ".grok").exists()  # global skill, like `graphify amp install`
+    assert not (cwd / ".grok" / "skills").exists()  # global skill, like `graphify amp install`
     agents = (cwd / "AGENTS.md").read_text(encoding="utf-8")
     assert agents.count("## graphify") == 1
     out = capsys.readouterr().out

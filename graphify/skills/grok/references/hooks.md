@@ -28,6 +28,8 @@ graphify grok install
 
 This writes a `## graphify` section to the local `AGENTS.md` that instructs Grok Build to check the graph before answering codebase questions and rebuild it after code changes. No manual `/graphify` needed in future sessions.
 
+> **Note:** `graphify grok install` also registers PreToolUse hooks in `.grok/hooks/graphify.json` (the same `graphify hook-guard` nudges as Claude Code). Grok runs project hooks, AGENTS.md and project skills only in a trusted folder: run `grok --trust` once, or `/hooks-trust` in a session.
+
 ```bash
-graphify grok uninstall  # remove the section
+graphify grok uninstall  # remove the section and the hooks
 ```
