@@ -31,7 +31,15 @@ def _handler(lookup, site):
     # Keep that inferred signal distinct from the property and its subscriptions.
     if reference.endswith("Changed"):
         prop = lookup.resolve(site, reference[:-7])
-        if prop.status == "resolved" and index.md(prop.target_id).get("kind") == "property" and not index.md(prop.target_id).get("qt_native"):
+        if prop.status == "resolved" and index.md(prop.target_id).get("kind") == "property":
+            metadata = index.md(prop.target_id)
+            if metadata.get("qt_native"):
+                # Qt exposes on<Property>Changed even when the actual native
+                # NOTIFY signal has another name. Its source accessor supplies
+                # the endpoint; pure-QML inferred signals remain separate.
+                notify = index.native_index.property_notify(prop.target_id, metadata.get("provider_id"))
+                return Resolution(notify.status, notify.target_id, notify.reason,
+                                  tuple(dict.fromkeys(prop.evidence + notify.evidence)), notify.candidates)
             return Resolution("resolved", prop.target_id, "property_notify_signal", prop.evidence)
     return result
 
@@ -46,6 +54,10 @@ def _implicit_handler_parameter(lookup, site, cache):
         node = index.nodes[owner]
         ancestor = qml_metadata(node)
         if ancestor.get("kind") == "handler":
+            # This authoritative source flag survives bounded display metadata;
+            # explicit function/arrow formals never inherit signal names.
+            if ancestor.get("implicit_parameters") is not True:
+                return False
             if owner not in cache:
                 signal = _handler(lookup, node)
                 cache[owner] = (index.md(signal.target_id).get("parameter_names") or []

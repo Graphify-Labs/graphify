@@ -201,11 +201,15 @@ def _handler(declarations, collector, syntax, owner, name, body, object_syntax, 
     legacy = any(child.type == "ui_binding" and field(child, "name", collector.source).startswith("on")
                  and field(child, "name", collector.source)[2:3].isupper()
                  for child in initializer.named_children) if initializer else False
+    # Only legacy code blocks inherit signal declaration names. Function and
+    # arrow handlers bind their own formals, which need not use those names.
+    implicit_parameters = function is None and body is not None and body.type == "statement_block"
     handler = collector.add("handler", syntax, owner, name, reference=signal,
                             connection_target=target, connection_supplied=supplied,
                             connections=connections, attached_prefix=name[:-len(short)].rstrip("."),
+                            implicit_parameters=implicit_parameters,
                             disabled_reason="connections_mixed_handler_styles" if connections and function and legacy else "")
-    env = _signal_parameters(declarations, owner, signal, target)
+    env = _signal_parameters(declarations, owner, signal, target) if implicit_parameters else {}
     if function:
         collector.function_body(function, handler, env)
     else:

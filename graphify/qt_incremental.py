@@ -11,9 +11,9 @@ QT_METADATA_SUFFIXES = frozenset({".qmltypes", ".cmake", ".pro", ".pri", ".qrc"}
 QT_CPP_SUFFIXES = frozenset({".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx"})
 QT_SCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
 QT_NAMED_METADATA = frozenset({"qmldir", "CMakeLists.txt"})
-# Literal loader overload and URL authority change derived Qt facts;
-# unchanged-input updates must refresh the accepted Qt analysis layer.
-QT_POLICY_VERSION = 10
+# Qualified C++ identities, SDK declaration authority and native notification
+# handlers require unchanged-input updates to refresh the derived Qt layer.
+QT_POLICY_VERSION = 12
 
 
 def is_qt_metadata(path: str | Path) -> bool:
