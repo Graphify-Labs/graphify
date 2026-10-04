@@ -231,6 +231,15 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".agents" / "skills" / "graphify" / "SKILL.md"
 
+    if platform_name == "grok":
+        # Grok Build discovers skills from ./.grok/skills (walked up to the repo
+        # root) and $GROK_HOME/skills (default ~/.grok/skills).
+        if project:
+            return (project_dir or Path(".")) / ".grok" / "skills" / "graphify" / "SKILL.md"
+        grok_home = os.environ.get("GROK_HOME")
+        base = Path(grok_home).expanduser() if grok_home else Path.home() / ".grok"
+        return base / "skills" / "graphify" / "SKILL.md"
+
     if platform_name in ("antigravity", "antigravity-windows"):
         if project:
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
@@ -618,6 +627,14 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_dst": Path(".pi") / "agent" / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "pi",
+    },
+    "grok": {
+        # Grok Build (xAI). Global: $GROK_HOME/skills or ~/.grok/skills; project:
+        # ./.grok/skills (both resolved in _platform_skill_destination).
+        "skill_file": "skill-grok.md",
+        "skill_dst": Path(".grok") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "grok",
     },
     "codebuddy": {
         # Reuses claude's split bundle (shares skill.md).
@@ -1757,7 +1774,9 @@ def _agents_install(project_dir: Path, platform: str, project: bool = False) -> 
         f"{platform.capitalize()} will now check the knowledge graph before answering"
     )
     print("codebase questions and rebuild it after code changes.")
-    if platform not in ("codex", "opencode", "kilo"):
+    if platform == "grok":
+        _print_grok_trust_hint()
+    if platform not in ("codex", "opencode", "kilo", "grok"):
         print()
         print("Note: unlike Claude Code, there is no PreToolUse hook equivalent for")
         print(
@@ -1804,6 +1823,24 @@ def _agents_platform_uninstall(project_dir: Path | None = None) -> None:
     if removed:
         print("skill removed")
     _agents_uninstall(project_dir or Path("."), platform="agents")
+def _grok_install(project_dir: Path | None = None) -> None:
+    """User-scope Grok Build install: skill into $GROK_HOME/skills (default
+    ~/.grok/skills) + AGENTS.md. Mirrors _amp_install; `--project` goes through
+    _project_install like amp/agents/codex."""
+    _copy_skill_file("grok")
+    _agents_install(project_dir or Path("."), "grok")
+def _print_grok_trust_hint() -> None:
+    """Grok Build skips project AGENTS.md, project skills, and project hooks in an
+    untrusted folder (folder trust, ~/.grok/trusted_folders.toml)."""
+    print()
+    print("Grok Build loads project AGENTS.md, skills, and hooks only in a trusted folder.")
+    print("Trust this project once: run `grok --trust` here, or `/hooks-trust` in a session.")
+def _grok_uninstall(project_dir: Path | None = None) -> None:
+    """User-scope Grok Build uninstall: remove the skill and the AGENTS.md section."""
+    removed = _remove_skill_file("grok")
+    if removed:
+        print("skill removed")
+    _agents_uninstall(project_dir or Path("."), platform="grok")
 def _project_install(platform_name: str, project_dir: Path | None = None, strict: bool = False) -> None:
     """Install platform skill/config files in the current project."""
     project_dir = project_dir or Path(".")
@@ -1820,7 +1857,7 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
     elif platform_name == "kiro":
         _kiro_install(project_dir)
         _print_project_git_add_hint([project_dir / ".kiro"])
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes", "grok"):
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_install(project_dir, platform_name, project=True)
         hint_paths = [_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"]
@@ -1861,7 +1898,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _cursor_uninstall(project_dir)
     elif platform_name == "kiro":
         _kiro_uninstall(project_dir)
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes", "grok"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_uninstall(project_dir, platform=platform_name)
         if platform_name == "codex":
@@ -2064,6 +2101,8 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # The generic agents platform's user-scope skill lives at ~/.agents/skills,
     # which neither the AGENTS.md cleanup nor amp's removal reaches.
     _remove_skill_file("agents")
+    # Grok Build's user-scope skill lives at $GROK_HOME/skills (default ~/.grok/skills).
+    _remove_skill_file("grok")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
 
@@ -2267,6 +2306,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "devin",
     "droid",
     "gemini",
+    "grok",
     "hermes",
     "install",
     "kilo",
@@ -2493,6 +2533,21 @@ def dispatch_install_cli(cmd: str) -> bool:
                 _remove_skill_file("pi")
         else:
             print("Usage: graphify pi [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "grok":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("grok", Path("."))
+            else:
+                _grok_install(Path("."))
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("grok", Path("."))
+            else:
+                _grok_uninstall(Path("."))
+        else:
+            print("Usage: graphify grok [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "amp":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

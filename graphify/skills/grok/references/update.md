@@ -61,9 +61,9 @@ print('code_only:', code_only)
 "
 ```
 
-@@SEM_UPDATE_CODE_ONLY@@
+If `code_only` is True: print `[graphify update] Code-only changes detected - skipping semantic extraction (no LLM needed)`, run only Step 3A (AST) on the changed files, skip Step 3B entirely (no semantic extraction), then go straight to merge and Steps 4–8.
 
-@@SEM_UPDATE_VIDEO@@
+If `code_only` is False (any changed file is a doc/paper/image/video): **first, if any changed file is in `new_files['video']`, run `references/transcribe.md` (Step 2.5) on those files, then rewrite `.graphify_detect.json` to move the resulting transcript paths into `files['document']` and drop `files['video']`** — otherwise raw `.mp4/.mp3` paths are fed to semantic extraction as unreadable media (#1392). Then run the full Steps 3A–3C pipeline as normal.
 
 
 If no new files exist (only deletions), create an empty extraction so the merge step can prune:

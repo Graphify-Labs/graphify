@@ -60,6 +60,7 @@ def _sandbox_home(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(home))              # Windows ntpath.expanduser
     monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)     # escape hatch that bypasses Path.home
+    monkeypatch.delenv("GROK_HOME", raising=False)             # same for Grok Build ($GROK_HOME/skills)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     return home
