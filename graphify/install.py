@@ -44,6 +44,7 @@ except Exception:
 
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
 from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
+from graphify.codex_hook_command import HookCommandError, codex_hook_command
 
 
 def _skill_lock_path(skill_dir: Path) -> Path:
@@ -1681,28 +1682,24 @@ def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     A project-scoped install emits the bare command, since .codex/hooks.json is
     then committed and an installing machine's path is wrong there (#3129).
     """
+    # Validate native transport before touching settings. A missing OS consumer
+    # must retain the prior hook JSON rather than publish an ambiguous fallback.
+    try:
+        command = codex_hook_command(_resolve_graphify_exe(project=project), windows=os.name == "nt")
+    except HookCommandError as error:
+        print(f"[graphify] cannot install Codex hook: {error}", file=sys.stderr)
+        sys.exit(1)
     hooks_path = project_dir / ".codex" / "hooks.json"
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
-
     existing = _read_settings_for_merge(hooks_path)
-
-    graphify_exe = _resolve_graphify_exe(project=project)
-    # Keep spaced/operator paths one argument in Windows Cmd or POSIX sh.
-    # Project scope remains the portable bare command. POSIX quoting also
-    # protects literal quotes and command-substitution characters. Windows
-    # PowerShell sessions and percent-expansion paths remain an explicit
-    # INC-CORE-05 consumer gap; this quotation proves only the bounded Cmd case.
-    if os.name == "nt":
-        if re.search(r"[\s&|<>()^]", graphify_exe):
-            graphify_exe = f'"{graphify_exe}"'
-    else:
-        graphify_exe = shlex.quote(graphify_exe)
     hook_entry = {
         "hooks": {
             "PreToolUse": [
                 {
                     "matcher": "Bash",
-                    "hooks": [{"type": "command", "command": f"{graphify_exe} hook-check"}],
+                    # Codex's native status field keeps encoded hooks visibly
+                    # owned by graphify for existing reinstall/uninstall rules.
+                    "hooks": [{"type": "command", "command": command, "statusMessage": "graphify hook-check"}],
                 }
             ]
         }
@@ -1718,7 +1715,7 @@ def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     hooks["PreToolUse"].extend(hook_entry["hooks"]["PreToolUse"])
     _write_settings_with_backup(hooks_path, existing)
     print(
-        f"  .codex/hooks.json  ->  PreToolUse hook registered ({graphify_exe} hook-check"
+        "  .codex/hooks.json  ->  PreToolUse hook registered (graphify hook-check"
         " - intentional no-op; Codex Desktop rejects additionalContext on PreToolUse,"
         " so graph guidance comes from AGENTS.md)"
     )

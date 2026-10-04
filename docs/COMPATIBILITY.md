@@ -19,7 +19,7 @@ not a passing assertion.
 | INC-CORE-02 | Explicit filesystem profiles with native failure-path protection | REQ-CORE-002-AC01–AC02 | Native classification/recovery assertions pass; actual unsupported FIFO/socket/symlink/deleted-CWD fixtures retain a separately recorded POSIX execution gap |
 | INC-CORE-03 | Terraform scope and portable serialized provenance | REQ-CORE-003-AC01–AC02 | LF/CRLF source facts and directed references survive graph assembly/JSON reload without cross-directory binding |
 | INC-CORE-04 | Accurate unavailable-CWD recovery diagnostics | REQ-CORE-002-AC03 | Supplied-root change-directory failure is distinguished from an unset root; prior output retained and private paths excluded |
-| INC-CORE-05 | Native hook consumer and literal-path completion | REQ-CORE-001-AC01 | Exact Cmd and PowerShell consumer dispatch, including expansion-sensitive path rejection/handling; full-source and installed-artifact proof |
+| INC-CORE-05 | Native hook consumer and literal-path completion | REQ-CORE-001-AC01/AC05 | Exact Cmd and PowerShell argument transport, expansion-sensitive paths, dependency rejection and hook ownership; full-source and installed-artifact proof |
 
 The environment uses Python 3.12 and `uv sync --all-extras --frozen`. This
 installs the committed dependency versions without changing the lockfile.
@@ -73,6 +73,16 @@ outstanding until that environment is available; package installation or Bash
 alone cannot establish POSIX kernel behavior. No operating-system security policy
 is changed to manufacture a passing fixture.
 
+After the installation restart, WSL 3.0.1.0 is present but no distribution is
+registered. Ubuntu download succeeds; registration fails with
+`HCS_E_HYPERV_NOT_INSTALLED`. Windows reports firmware virtualization disabled,
+although the processor supports virtualization and second-level address
+translation. Optional-component and boot settings cannot be verified from the
+non-elevated session. Linux execution remains pending until the firmware/WSL
+profile is available; no Linux passes are inferred from the Windows seam tests.
+[Microsoft's troubleshooting procedure](https://learn.microsoft.com/en-us/windows/wsl/troubleshooting#installation-issues)
+describes the firmware and Virtual Machine Platform prerequisites.
+
 Prepare the native environment from the repository root:
 
 ```powershell
@@ -109,6 +119,44 @@ dependency versions and remaining skips separate from native Windows evidence.
 
 ## Architecture and diagnostic impact
 
+### DEC-CORE-01 — Windows hook literal transport
+
+Codex's versioned native runner accepts one command string and may select Cmd or
+PowerShell. A quoted executable token needs different invocation syntax in those
+shells; Cmd additionally expands percent names inside quotes. A user-scope hook
+therefore wraps the selected literal Graphify path in a UTF-16LE encoded
+PowerShell payload, launched through the OS-owned Windows PowerShell executable.
+The payload invokes the literal path and propagates failure/exit status. Paths
+never become source in the outer consumer shell. POSIX uses its existing literal
+quoting; project hooks retain the existing portable bare invocation.
+
+The serializer owns transport, installation owns JSON merging/publication, and
+the native consumer owns shell execution. This uses an existing Windows OS shell;
+Graphify extraction and runtime remain Python, with no corpus execution. An
+unavailable shell or unsafe OS-executable token rejects publication before
+reading/writing hooks. Bounded diagnostics omit private paths and exception
+bodies. Status metadata supported by Codex identifies the owned hook for existing
+installation/uninstall matching; the encoded payload is not decoded by that
+matcher. Native shell dispatch, failure, repeated installation and retention
+assertions characterize the contract.
+
+Encoded Windows commands are limited to 8,000 characters. The current Cmd
+executable, `/C` and outer quotation must also fit within its documented
+[8,191-character complete-command limit](https://learn.microsoft.com/en-us/troubleshoot/windows-client/shell-experience/command-line-string-limitation).
+This is conservative transport admission, not a claim that every such path exists
+or can launch. An oversized command or failed OS-shell inspection rejects before
+settings access, retains the existing hook file and rolling backup, and reports
+an actionable reason without the private path or exception body. Shorter
+installation paths and restored OS-shell access are the respective recovery steps.
+
+Bare user-scope commands, a launcher script and per-shell path quoting were
+considered. Bare commands change the accepted executable identity policy; a
+script introduces another persisted artifact and working-directory authority;
+per-shell quoting cannot represent one string identically for both consumers.
+The encoded transport keeps the selected executable contract and fails safely
+when its OS dependency is unavailable. Actual Codex event delivery remains a
+system boundary separate from the versioned runner argument-transport tests.
+
 Production corrections cover the Codex command's literal executable invocation
 and the unavailable-CWD failure reason. Installation still owns hook JSON publication and its existing
 diagnostics; fixtures own shell/path transport. There is no new parser, logger,
@@ -122,13 +170,14 @@ terminal before persistence; retry is safe after restoring an accessible root.
 Messages name the failed stage and omit private path/exception bodies. This uses
 the existing console error owner and introduces no Qt diagnostic code or logger.
 
-Codex command verification currently covers the native Cmd shell dispatch boundary
-and the POSIX serialization branch. Installed Codex 0.160.0's versioned executor
-defaults to Cmd on Windows but can inherit PowerShell from the session. Actual
-PowerShell hook dispatch and Windows percent-expansion paths remain unverified;
-quoted spaces alone do not establish literal identity for every Windows shell.
-INC-CORE-05 retains those adjacent findings for correction after the environment
-restart. Its acceptance is pending; the partial Cmd fix is a checkpoint.
+Codex command verification covers actual native Cmd and Windows PowerShell 5.1
+execution using the argument transports of the installed Codex 0.160.0 runner.
+The fixture selects the real Graphify launcher, excludes a PATH decoy and checks
+unsafe controls. Literal expansion-sensitive, bracket and Unicode paths are
+included. This establishes the consumer boundary; it does not establish actual
+Codex Desktop event delivery or all PowerShell versions. POSIX serialization is
+retained, with actual POSIX dispatch assigned to the Linux profile. Full-source
+and installed-artifact verification of INC-CORE-05 is in progress.
 The inspected versioned source is the
 [command executor](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/hooks/src/engine/command_runner.rs)
 and [session configuration](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/core/src/session/mod.rs).
@@ -163,10 +212,10 @@ their established owners and receive only the focused correction/profile changes
 
 | File | Before | Checkpoint ceiling | Owner and extraction exit |
 | --- | --- | --- | --- |
-| `graphify/install.py` | 2559 | 2570 | Install maintainer; extract hook serialization in a separate characterized increment |
+| `graphify/install.py` | 2559 | 2570 | Install maintainer; Codex serialization now belongs to the focused `codex_hook_command` module; other assistant serializers remain installer-owned |
 | `graphify/watch.py` | 2532 | 2550 | Watch maintainer; existing documented extraction path and persistence ordering retained |
 | `tests/test_hooks.py` | 1590 | 1600 | Hook test owner; new shell identity transport is already a focused helper, unrelated hook cases stay in place |
-| `tests/test_install.py` | 1617 | 1621 | Install test owner; future hook cases belong to the new focused execution module |
+| `tests/test_install.py` | 1617 | 1640 | Install test owner; encoded-command expectations adapt two existing contract tests; new consumer and failure cases belong to the focused execution module |
 | `tests/test_install_references.py` | 548 | 553 | Install-reference test owner; separate platform destination characterization before extracting responsibilities |
 | `tests/test_install_roundtrip.py` | 318 | 323 | Install-roundtrip test owner; keep installed bundle identity in one roundtrip boundary |
 | `tests/test_skill_auto_refresh.py` | 527 | 541 | Refresh test owner; split platform adaptation from refresh lifecycle only in a separate characterized move |

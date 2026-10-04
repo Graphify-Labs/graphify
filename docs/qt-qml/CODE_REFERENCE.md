@@ -14,6 +14,7 @@ Revision-specific verification remains in [VALIDATION.md](VALIDATION.md).
 | `graphify/resolver_registry.py` | Post-extraction cross-file resolver activation; Qt context and exact metadata filenames must activate resolution after QML-only, C++-only or metadata-only changes |
 | `graphify/cache.py` | Persistent generic per-file cache; Qt source/metadata and native syntax in an explicit Qt context bypass reads/writes under `qt_incremental` policy |
 | `graphify/watch.py` | Manual update/watch rebuild, watched-file admission, incremental extraction and persistence guards |
+| `graphify/install.py`, `graphify/codex_hook_command.py` | Installer owns hook JSON merging/publication; focused serializer owns literal Codex command transport and rejects unsupported Windows shell/command boundaries before settings access; [shared compatibility decision](../COMPATIBILITY.md#dec-core-01--windows-hook-literal-transport) |
 | `graphify/build.py` | Graph merge/provenance and simple graph construction; independent source sites/endpoint-role facts retain distinct Qt mechanisms |
 | `graphify/paths.py` | `load_node_link_graph` restores contract-versioned QML edge orientation from serialized endpoints on undirected reload |
 | `graphify/__main__.py`, `graphify/cli.py` | CLI dispatch/facade and query/explain/path/affected implementation entry points |

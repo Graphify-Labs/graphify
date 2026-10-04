@@ -1467,7 +1467,9 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path, monkeypatch):
     an unrecognized one exits non-zero and would break every Bash tool call.
     """
     import json
+    import re
     import shlex
+    import base64
 
     from graphify.install import _install_codex_hook
 
@@ -1481,7 +1483,7 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path, monkeypatch):
         h
         for group in hooks["hooks"]["PreToolUse"]
         for h in group["hooks"]
-        if "graphify" in h.get("command", "")
+        if "graphify" in h.get("command", "") or h.get("statusMessage") == "graphify hook-check"
     ]
     assert entries, "codex install must register a graphify PreToolUse hook"
 
@@ -1489,9 +1491,15 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path, monkeypatch):
     assert "hook-check" in dispatched, "sanity: parser must find known commands"
 
     for entry in entries:
-        # command is "<abs exe path> <subcommand> [args...]"
+        # Native Windows transports its literal invocation to OS PowerShell;
+        # execution tests separately prove both outer consumer argument forms.
         parts = shlex.split(entry["command"])
-        subcommand = parts[1] if len(parts) > 1 else ""
+        if "-EncodedCommand" in parts:
+            script = base64.b64decode(parts[-1]).decode("utf-16-le")
+            match = re.search(r"'\s+([a-z-]+);", script)
+            subcommand = match.group(1) if match else ""
+        else:
+            subcommand = parts[1] if len(parts) > 1 else ""
         assert subcommand in dispatched, (
             f"codex hook registers {subcommand!r}, which the CLI does not dispatch "
             f"(#2165). Known commands: {sorted(dispatched)}"
@@ -1580,7 +1588,14 @@ def test_user_profile_install_still_resolves_absolute_path(tmp_path, monkeypatch
     commands = _hook_commands((project / _PROJECT_HOOK_FILES[platform]).read_text(encoding="utf-8"))
     assert commands, f"{platform} install registered no hook command"
     for command in commands:
-        assert command.startswith("C:/Users/installer/graphify.EXE "), command
+        if platform == "codex" and os.name == "nt":
+            import base64
+
+            # The outer shell never receives the selected machine path as text.
+            script = base64.b64decode(command.split()[-1]).decode("utf-16-le")
+            assert "& 'C:/Users/installer/graphify.EXE' hook-check;" in script
+        else:
+            assert command.startswith("C:/Users/installer/graphify.EXE "), command
 
 
 @pytest.mark.parametrize("platform", sorted(_PROJECT_HOOK_FILES))

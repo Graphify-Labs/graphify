@@ -505,7 +505,7 @@ and content contract of the selected operating-system profile.
 
 **Acceptance Criteria**
 
-1 - A Codex hook installed from an executable path containing spaces reaches that exact executable and passes `hook-check` as the CLI subcommand. Literal path quoting follows the supported consumer shell; executable identity and argument boundaries are verified by actual dispatch, with a nonmatching executable rejected by the regression. (`REQ-CORE-001-AC01`)
+1 - A Codex hook installed from an executable path containing spaces reaches that exact executable and passes `hook-check` as the CLI subcommand. Literal path transport preserves executable identity and argument boundaries through the supported consumer shells, with a nonmatching executable rejected by the regression. (`REQ-CORE-001-AC01`)
 
 2 - Hermes and Gemini user installations use their platform-owned destinations and include resolvable skill references. POSIX and Windows profiles use their documented home/data and Gemini/shared-agents locations; project installation retains its separate scope. (`REQ-CORE-001-AC02`)
 
@@ -513,9 +513,11 @@ and content contract of the selected operating-system profile.
 
 4 - Uninstall observes the established global/project scope and explicit user-skill opt-in. Protected shared-agent content is retained according to the current platform contract; missing installations remain a safe no-op. (`REQ-CORE-001-AC04`)
 
+5 - Windows user-scope hooks preserve the selected Graphify executable through Cmd and PowerShell argument transports when legal path characters include spaces, operators, apostrophes, dollar signs, backticks and paired percent names. A PATH decoy or environment expansion cannot substitute another executable. Missing selected launchers and launcher failures return failure. A missing, inaccessible or unsafe OS-owned PowerShell executable, or an encoded command exceeding the supported Cmd transport limit, rejects hook installation with a bounded actionable reason before changing existing hook JSON or its backup. Repeated installation and uninstall retain unrelated hooks and recognize the owned command through supported status metadata. Project-scope bare invocation and POSIX literal quoting retain their existing contracts. (`REQ-CORE-001-AC05`)
+
 Status: **Correction in progress**. Existing platform behaviors are implemented;
 the Codex path invocation correction and fresh compatibility evidence belong to
-[INC-CORE-01](COMPATIBILITY.md#plan-and-acceptance-matrix).
+INC-CORE-01 and INC-CORE-05 in the [compatibility plan](COMPATIBILITY.md#plan-and-acceptance-matrix).
 
 ### REQ-CORE-002 — Safe filesystem admission and recovery
 
