@@ -18,7 +18,10 @@ def test_warm_source_results_match_and_reassigned_handle_loses_target(tmp_path):
     changed = analysis(tmp_path, {**sources, "access.cpp": source.replace('root->property', 'root = factory(); root->property')})
     access = sites(changed, "qml_access")[0]
     assert qt_metadata(access)["status"] == "dynamic"
-    assert qt_metadata(access)["reason"] == "conditional_or_reassigned_handle"
+    # Declaration identity now rejects the observed write before the older
+    # handle-assignment check; retain its more precise reason and no target.
+    assert qt_metadata(access)["reason"] == "reassigned_declaration"
+    assert qt_metadata(access)["receiver_declaration_id"] == ""
     assert not [edge for edge in changed["edges"] if edge["source"] == access["id"] and edge["relation"] in {"uses", "calls"}]
 
 

@@ -2,8 +2,10 @@
 
 Date: 4 October 2026. Inspected implementation:
 `95adbdc165f44a96bf275a7870bb1da4d82a5bea`, on the existing feature branch.
-This is a findings-only audit. Production behavior, schema, analysis policy and
-installed artifacts are unchanged. Corrective increments are planned, not executed.
+The baseline audit was findings-only. Its original observations and reproduction
+results remain historical evidence. INC-QML-17–20 subsequently correct the bounded
+receiver, engine, alias and loader forms; current dispositions and new gaps below
+are separate from the original snapshot.
 The [foundation audit](AUDIT.md) retains A01–A09; findings below continue that sequence.
 
 ## Graph navigation and independent evidence
@@ -106,14 +108,15 @@ The [Qt API mechanism matrix](QT_API_COVERAGE.md) reviews the official combined
 function/macro index as a family checklist. It distinguishes semantic support,
 conservative exclusion, generic extraction and omitted/unverified mechanisms.
 Complete Qt API coverage is not claimed. Literal engine URL construction and
-component loadUrl are reproduced loader omissions, planned in INC-QML-20 under
-REQ-QML-017-AC01/AC04; they retain unresolved targets rather than wrong-target links.
+component loadUrl were reproduced omissions at the baseline under
+REQ-QML-017-AC01/AC04. INC-QML-20 corrects their bounded literal forms.
 
 Multi-level inherited-signal lookup remains INC-QML-11. Typed factory/member
 providers and child-service chains remain INC-QML-08; the factory control here
 correctly remains unavailable. Exact generic constructor-overload identity remains
 INC-QML-15. Same-namespace unqualified native types can remain unavailable while
-fully qualified controls resolve; this conservative gap belongs to INC-QML-19.
+fully qualified controls resolved at the baseline. INC-QML-19 adds bounded lexical
+type authority; same-file qualified canonical collisions remain INC-QML-21.
 None is closed by a readable graph, successful parsing or passing persistence checks.
 
 The confirmed wrong edges survive reload. Cold/warm/manual/watch parity for the new
@@ -125,8 +128,9 @@ the [navigation review procedure](VIEWER_SYSTEM_REVIEW.md).
 ## Reproduction and validation
 
 The opt-in probes under `tests/audit/probe_*.py` preserve correct assertions against
-the current defective implementation. Their filenames deliberately keep diagnostic
-failures outside default pytest collection during this findings-only audit. They
+the inspected audit baseline. Their filenames deliberately keep diagnostic
+probes outside default pytest collection. Corrections have ordinary collected
+regressions; the newer static-reflection shadow probe remains a failing finding. They
 are not passing regressions or release evidence. Move the cases into ordinary
 automatically collected tests with each correction; do not xfail or weaken them.
 
@@ -195,3 +199,49 @@ Whitespace checks pass. The final graph refresh after probe additions contains
 not acceptance evidence. Missing unrelated optional grammars and the intentional
 Luau partial fixture remain explicit baseline limitations. No model/API labeling
 was invoked.
+
+## Correction disposition and exit review
+
+| Finding/profile | Current disposition |
+| --- | --- |
+| A10/A11 receiver and descendant ownership | INC-QML-17 ordinary source/lifecycle and installed-wheel cases pass; accepted native construction ancestry is completed with INC-QML-19 |
+| A12 declaration/provider identity | INC-QML-18 exact lexical engine/provider cases pass; INC-QML-20 verifies component loadUrl engine association |
+| A13 lexical native aliases | INC-QML-19 ordinary endpoint/registration/lifecycle and installed-wheel cases pass; imported-header targets remain conservatively unavailable |
+| Literal engine-constructor and component loadUrl omissions | INC-QML-20 ordinary provenance/provider/lifecycle cases pass within the documented literal profile |
+
+### A14 — Qualified classes collide in a single source file
+
+A global Base and Public::Base share a canonical generic C++ class ID in one
+accepted file. Native construction retains ambiguity instead of fabricating an
+identity. INC-QML-21 owns the producer correction under REQ-QML-008-AC02,
+REQ-QML-016-AC01/AC04 and REQ-QML-017-AC02/AC04. Separate-file positive controls
+do not prove the colliding form works.
+
+### A15 — P1: Shadowed static reflection API names lend SDK semantics
+
+Aliases or source-defined global/namespace QMetaObject and QQmlProperty classes
+still authorize invoke/read/write/property-handle targets as though they were
+SDK APIs. The receiver is correctly owned, but API identity is unproved. The
+excluded opt-in `tests/audit/probe_qt_reflection_type_shadowing.py` exercises
+production build and directed/undirected reload: twelve rejection assertions fail
+and two unshadowed controls pass (2.27 seconds). No malformed-span, provenance or
+direction assertion fails before the false-target assertion.
+
+INC-QML-22 owns this correction under REQ-QML-017-AC02/AC04 and must promote the
+probe into normal regression collection. A failing/excluded probe is findings
+evidence, not release acceptance. Ordinary discovery excludes audit probes.
+
+### A16 — P1: Read-only Windows replacement can clobber before failure
+
+`tests/test_atomic_writes.py::test_write_text_atomic_refuses_a_readonly_destination_without_leaking_a_temp`
+fails on both the original `1128205` baseline and the correction source. The
+shared writer's fallback renames the read-only destination aside, publishes new
+bytes, then raises during displaced-file cleanup. Reported failure no longer
+means the prior destination survived. INC-QML-23 owns this pre-existing shared
+persistence correction under REQ-QML-018-AC06. Loader tests' forced replacement
+failure retention remains valid for its narrower boundary.
+
+The full contribution gate also exposes unavailable Windows fixtures/dependencies
+and unchanged platform expectations. Exact baseline comparison and current
+correction evidence are recorded in [validation](VALIDATION.md); no gate is
+weakened to treat those results as successful.

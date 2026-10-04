@@ -63,12 +63,12 @@ ordinary member-pointer receivers.
 
 ## Native Qt source owners
 
-Current unresolved semantic seams are `QtQmlAccessIndex.member`/`find_child`
-(INC-QML-17), `qt_context_bindings.resolve_context_bindings` and source-local receiver
-identity (INC-QML-18), and `QtEventIndex.member` plus native type/alias transport
-(INC-QML-19). `qt_cpp_access` loader admission owns the INC-QML-20 omissions.
-[FOLLOWUP_AUDIT.md](FOLLOWUP_AUDIT.md) records production evidence
-and owning acceptance; these are existing owners, not implemented new APIs.
+The corrected semantic seams are `QtQmlAccessIndex.member`/`find_child`
+(INC-QML-17), declaration-owned context/provider joins (INC-QML-18), shared native
+type/alias authority (INC-QML-19), and bounded loader admission (INC-QML-20).
+[FOLLOWUP_AUDIT.md](FOLLOWUP_AUDIT.md) preserves baseline findings and current
+dispositions. Same-file canonical IDs, static reflection API shadows and failed
+Windows replacement retention remain INC-QML-21/22/23.
 
 | Boundary | Implemented owner |
 | --- | --- |
@@ -308,3 +308,17 @@ helpers do not own persistence, execute analyzed code or establish runtime order
 
 Facts remain source-owned, indexes run/unit-owned and persistence caller-owned.
 Imported-header targets remain unavailable rather than falling back globally.
+
+## Literal loader seams
+
+- `extractors/qt_cpp_loaders.py::collect_loader_constructors` produces original
+  constructor load facts and component declaration-owned engine associations.
+- `literal_url_expression`, `literal_loader_arguments` and
+  `literal_creation_arguments` admit bounded SDK URL/overload forms.
+- `NativeTypeScope.callable_shadow` exposes source callable authority without
+  lending QUrl constructor semantics to a same-named function.
+- `extractors/qt_cpp_access.py::collect_qt_cpp_access` integrates loadUrl and
+  constructor facts with existing declaration/handle ownership.
+- `QtQmlAccessIndex.load` and `resolve_cpp_qml_access` reject unsupported loader/
+  root forms before selecting a source component. Context providers retain the
+  exact associated engine; no new persistence owner or graph mechanism is added.

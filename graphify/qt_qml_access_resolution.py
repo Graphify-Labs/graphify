@@ -38,7 +38,10 @@ def resolve_qt_qml_access(per_file, all_nodes, all_edges, *, root, project_index
                                         reason=metadata.get("receiver_identity_reason") or "loader_declaration_unestablished")
         elif kind == "qml_root":
             loads = index.loads.get(key, [])
-            if len(loads) != 1 or not loads[0].target_id:
+            # Creation-context rejection precedes otherwise valid source loading.
+            if metadata.get("loader_supported") is False:
+                resolution = Resolution("unsupported", reason=metadata.get("loader_reason") or "loader_overload_unestablished")
+            elif len(loads) != 1 or not loads[0].target_id:
                 resolution = Resolution("ambiguous" if len(loads) > 1 else "unavailable", reason="unique_source_loader_unestablished")
             elif operation == "rootObjects" and not metadata.get("single_root_selection"):
                 resolution = Resolution("unsupported", reason="root_list_requires_static_selection")

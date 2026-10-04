@@ -41,6 +41,9 @@ class QtQmlAccessIndex:
                 self.names.setdefault(key, set()).update(self.qml.objects.get((path, metadata.get("component_key"), metadata.get("object_scope_key")), []))
 
     def load(self, metadata):
+        # Literal text alone cannot authorize a rejected SDK overload/owner.
+        if metadata.get("loader_supported") is False:
+            return Resolution("unsupported", reason=metadata.get("loader_reason") or "loader_overload_unestablished")
         if metadata.get("conditional"):
             return Resolution("dynamic", reason="conditional_component_load")
         if metadata.get("operation") == "loadFromModule":

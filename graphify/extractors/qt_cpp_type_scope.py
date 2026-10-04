@@ -182,6 +182,15 @@ class NativeTypeScope:
     def resolve(self, raw_type, byte, *, owner=None):
         return self.lookup(raw_type, byte, owner=owner).name
 
+    def callable_shadow(self, name, byte, *, absolute=False):
+        """Visible source callables cannot inherit SDK type-conversion semantics."""
+        if self.mapping is None:
+            return False
+        scopes = self._at(byte, self.mapping.owner_at(byte))
+        names = {name} if absolute else {name} | {
+            scope[1] + "::" + name for scope in scopes if scope[0] != "block"}
+        return any(record.get("qualified_name") in names for record in self.mapping.functions)
+
     def resolve_class(self, raw_type, byte, *, owner=None):
         result = self.lookup(raw_type, byte, owner=owner)
         ids = sorted(self.classes.get(result.name, ())) if result.name else []

@@ -301,8 +301,9 @@ Literal loader URLs establish source components; source-local handles model
 roots and objectName lookup. QML id is never an objectName. The follow-up audit
 found that reflective member lookup can fall back to the QML root, child lookup
 can cross the receiver subtree, and distinct same-named engines can share a
-provider. Those cases are incorrect and remain unresolved correction work in
-INC-QML-17/18. Earlier scoped-provider fixtures do not prove these boundaries.
+provider at the audit baseline. INC-QML-17/18 correct those bounded ownership
+and declaration forms; the ordinary regressions and installed artifacts prove
+them independently. Static reflection API shadows remain INC-QML-22.
 Duplicate exposures retain uncertainty. All joins borrow prior corpus dictionaries
 read-only. `qml_failures` and `qt_failures` both enter the publication integrity gate.
 No force/partial option can publish an incomplete Qt overlay.
@@ -767,3 +768,47 @@ Policy 9 refreshes old derived overlays; AST schema 7 is unchanged. Alias facts
 are additive and graph persistence remains owned by existing manual/watch writers.
 The class, alias, variable, event and registration collectors each remain under
 300 physical lines. No compiler, Qt SDK or corpus execution is introduced.
+
+## Literal loaders and component engine ownership (INC-QML-20)
+
+`qt_cpp_loaders` owns bounded literal URL and direct-constructor admission.
+The access collector passes source-position type/declaration indexes, then
+publishes original-byte qml_load facts. Only exact unshadowed supported SDK
+types authorize special loading/root semantics. Parent-only engine/component
+constructors are not loads. A component's engine-only constructor records an
+association keyed by component declaration identity; later loadUrl uses that
+exact engine for root/context-provider joins. Assignment, conditional creation,
+factory results or unknown engine identity supply no guessed binding.
+
+Supported URL/mode/creation overloads are checked independently of literal text.
+QUrl wrappers need accepted SDK identity, including rejection of same-spelled
+callables. Absolute literal fromLocalFile input becomes a file URI; resource,
+relative, computed or nested forms remain unavailable. QString colon-resource
+convenience paths and QUrl validation have different semantics. Explicit global
+SDK names can bypass a namespace shadow, but cannot bypass a source-defined
+global class. No URL or analyzed engine is evaluated. Qt 6.8
+[engine](https://doc.qt.io/qt-6.8/qqmlapplicationengine.html),
+[component](https://doc.qt.io/qt-6.8/qqmlcomponent.html) and
+[fromLocalFile](https://doc.qt.io/qt-6.8/qurl.html#fromLocalFile) contracts define
+the bounded profile; they do not establish general overload/runtime equivalence.
+
+The existing access index resolves accepted resources/modules, and the resolver
+requires one supported source loader before admitting a created/root handle.
+Producer facts remain file-owned, association/type indexes unit-owned, and
+manual/watch persistence caller-owned. Policy 10 refreshes derived Qt overlays;
+AST schema 7 is unchanged. loadData/setData, staged creation, arbitrary SDK
+subclasses and dynamic contexts remain outside this increment.
+
+The acceptance matrix covers literal provenance, provider identity, false SDK
+authority, real source/resource/member edits and removal, full/cold/warm/manual/
+watch parity, persisted/query/affected orientation, parse/replace failure retention
+and repaired retry/idempotency. Existing diagnostic expectations now assert the
+precise declaration-identity reason; no target/retention assertion is weakened.
+
+| Legacy touched owner/file | Current size / permitted ceiling | Rationale and exit |
+| --- | --- | --- |
+| Language-fixture maintainer: `tests/test_languages.py` | 5117 / 5120 physical lines | One QML facade/original-span case follows CONTRIBUTING's language admission convention. Existing multi-language ownership is preserved. Extract per-language fixtures through a separate characterized change that keeps discovery and unrelated-language contracts. |
+
+Every new handwritten loader/probe/test module remains below 300 physical lines.
+The unchanged atomic writer's read-only Windows failure remains INC-QML-23;
+passing forced replacement-failure tests is narrower evidence.

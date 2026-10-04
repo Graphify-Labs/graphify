@@ -168,7 +168,7 @@ evidence remains tied to its original revision. Continue using the installed art
 The [follow-up audit](FOLLOWUP_AUDIT.md) found wrong targets labeled resolved and
 literal loaders omitted from special source facts. Successful publication or an
 absence of parser/join exceptions does not detect those semantic failures.
-INC-QML-17/18/19/20 corrections remain planned. This audit adds no diagnostic code,
+INC-QML-17–20 now have bounded source/artifact correction evidence. The original audit added no diagnostic code,
 runtime failure policy or persistence bypass.
 
 For each correction, diagnostic review must distinguish an evidenced successful
@@ -232,3 +232,26 @@ Construction ancestry rejection remains a source parenting-unavailable result.
 It preserves accepted registration/member facts while refusing an unproved child
 tree. A shadowed findChild filter retains `find_child_type_unsupported`. Correct
 the source/provenance and run ordinary update; policy 9 refreshes old overlays.
+
+## Literal loader rejection and recovery (INC-QML-20)
+
+Successful literal routes retain resolved source ownership, with no claim of
+runtime object creation. Unsupported constructor identity/arguments retain
+`loader_constructor_identity_or_overload_unestablished`; method/root overloads
+retain `loader_overload_unestablished`. Missing component engine authority retains
+`component_engine_unestablished`. Conditional loads use `conditional_component_load`,
+unknown URL expressions `computed_url`, and absent/duplicate source selection
+`unique_source_loader_unestablished`. Existing declaration/lifetime reasons remain
+more precise than a generic provider failure. These are bounded resolution
+status/reason fields, not new exception codes or a separate logger.
+
+The owning collector/index/resolver preserves original source context and no
+guessed target. Correct the source/configuration and use ordinary update; policy
+10 retires old derived facts. Actual parse/join/write exceptions use existing
+stage diagnostics and publication guards. Manual/watch tests force parse and
+replace failure, preserve the four prior products and prove repaired retry.
+
+Full Windows testing found an unchanged atomic-write exception: a read-only
+destination may be replaced before displaced-file cleanup raises. INC-QML-23
+retains that integrity/recovery gap under REQ-QML-018-AC06. Prior generic retention
+statements describe the executed failure profiles, not this failing OS boundary.

@@ -8,8 +8,9 @@ The baseline/reuse review includes [feature request #1716](https://github.com/Gr
 
 The [follow-up audit](FOLLOWUP_AUDIT.md) invalidates broader receiver, engine and
 type-alias scope claims for the reproduced cases at `95adbdc`. Corrective
-INC-QML-17/18/19 preserve this architecture while establishing actual object and
-declaration identity. They remain planned; bounded historical passes do not imply
+INC-QML-17–20 preserve this architecture while establishing actual object,
+declaration, type and literal-loader authority. They have bounded local evidence;
+historical and correction passes do not imply
 those semantic joins are correct.
 
 Extend Graphify's existing deterministic extraction pipeline so an agent can trace a QML component, its imports, property dependencies, handlers, JavaScript helpers, and explicitly exposed C++ API. Make both integration directions first-class: C++ APIs supplied to QML (REQ-QML-008), native Qt C++ signal/slot connections and emissions (REQ-QML-016), and C++ loading and accessing QML object APIs (REQ-QML-017). Keep the implementation suitable for small upstream contributions. Preserve existing public APIs, graph formats, installation behavior, and analysis of other languages.
@@ -568,3 +569,16 @@ stale derived relationships at unchanged package versions. AST schema 7 remains
 under its existing owner because accepted Qt inputs bypass that syntax cache.
 Requirements and the correction matrix define acceptance; validation and
 traceability record executed source, update, consumer and reviewed artifact proof.
+
+## Literal loader integration and remaining authority gaps
+
+INC-QML-20 extends the existing native access collector, without a second runtime
+or writer. Source declaration identity owns each loader and component-to-engine
+association; the accepted resource/module index supplies the QML target. URL
+wrappers and overloads require bounded SDK authority. Policy 10 invalidates old
+derived overlays; source AST schema 7 and graph relationship contracts are intact.
+
+INC-QML-21/22 remain distinct producer/API authority corrections. INC-QML-23
+addresses an unchanged shared Windows persistence failure discovered by full
+validation. Local correction acceptance and repository gate status are separate
+evidence boundaries, recorded in validation and traceability.

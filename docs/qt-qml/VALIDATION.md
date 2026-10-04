@@ -1285,3 +1285,68 @@ retains ambiguity; separate-file qualified controls pass. INC-QML-21 plans the
 canonical producer correction rather than inventing downstream IDs. Native
 construction rejection does not claim the colliding form works. Wider adoption,
 inherited endpoints and overloads remain in INC-QML-08/11/15.
+
+## INC-QML-20 literal loader correction and contribution gates
+
+Source review includes direct literal engine URL construction, component loadUrl/
+create, exact component-owned context engine identity and bounded SDK URL/mode/
+creation authority. Ordinary cases supersede the original loader audit probe.
+Final rejection tests exposed ten further false-positive wrapper/mode cases and
+three unsupported explicit-global controls before correction; all thirteen then
+pass. Source-defined wrappers are not evaluated to inspect their return value.
+
+| Executed boundary | Result |
+| --- | --- |
+| Final loader/provider/lifecycle/reverse-access/source-state/language selection | 99 passed, 21.70 seconds, no skips |
+| Final overload/URL/mode wrapper module | 49 passed, 2.89 seconds |
+| Reviewed staged wheel and separately installed host | 370 passed, 67.37 seconds; no skips/failures |
+| Wheel SHA256 | `bdd78e676c3311af15c348be8e4db1658651d0a9969a97ff9794b5de412e854d` |
+| Reviewed source/wheel/installed Python payload | 160 modules byte-equal; zero mismatches |
+| Full contribution command `uv run --no-sync pytest tests -q --tb=short` | 72 failed, 7,148 passed, 177 skipped, 3 warnings; 572.27 seconds |
+| UTF-8 module-entry production recovery selection | 29 passed, 2 skipped, 1 existing warning; 7.77 seconds |
+| Remaining exact 60 failure cases, current / original `1128205` baseline | 60 failed / 60 failed, identical failing case sets; 6.33 / 6.81 seconds |
+| Full Ruff, reviewed source | Passing |
+| Full Pyright canonical command, original comparison | 647 errors/4 warnings on baseline and correction source; all 651 diagnostics shared, zero added/removed |
+| Focused changed-file Pyright | Passing, zero errors/warnings |
+| Generated assistant contracts | 134 artifacts match; coverage, schema singleton and both round trips pass |
+| Lockfile `uv lock --check --offline` | Passing, 210 packages |
+
+The installed-wheel selection imports installed production before staged tests;
+it reuses pinned test dependencies and does not establish clean-extra, native Qt,
+other-platform or hosted proof. An initial artifact invocation referenced a
+nonexistent parser-test filename and collected no tests; the corrected command
+uses the actual parser-probe module. Its first isolated child lacked tree-sitter;
+the reviewed host then installed the pinned offline parser dependencies. The
+terminal 370-case run is acceptance; the environment failure remains recorded.
+Package source is frozen before later follow-up development, so the wheel does
+not include INC-QML-21/22/23. No parser/dependency/package contract changed.
+
+The full pytest console command exposes Windows spawn entry-point and cp1252
+issues. The faithful recovery uses `PYTHONUTF8=1` and `uv run --no-sync python -m
+pytest -q` for exact process-pool, source-state, Unicode and language cases.
+Two symlink checks remain explicitly skipped on this host. The one changed
+diagnostic assertion now expects `reassigned_declaration` and an empty receiver
+declaration ID; its no-target assertion is preserved. Loader lifecycle recovery
+assertions bind idempotency to the repaired products, not an obsolete source mtime.
+
+The remaining sixty failures reproduce individually on the original source with
+the same Python runtime and `-X utf8 -m pytest -p no:cacheprovider --tb=short`:
+29 unavailable bash/sh cases, five unavailable FIFO/Unix-socket/symlink fixtures,
+two deleted-working-directory Windows fixtures, fourteen missing OpenAI/Solidity/
+Visual-Basic dependencies, eight unchanged installer/platform expectations, one
+Terraform Windows path expectation and one actual read-only replacement defect.
+No assertion or required check is removed or weakened. Baseline equality is
+compatibility evidence, not a successful full gate. INC-QML-23 owns the real
+read-only retention defect; absent shells/dependencies are separate limitations.
+
+Full typing also remains a failing gate. The baseline and correction comparison
+uses identical basic-mode Python 3.10 project configuration and Pyright 1.1.409;
+diagnostics compare relative file, severity, rule and message, allowing line shifts.
+Explicit pinned-runtime checks likewise add no diagnostic. The final frozen
+source check analyzes 585 files: 647 errors/4 warnings, 20.67 seconds; all 651
+diagnostics match the original baseline, with zero added or removed. Local
+diagnostic files and original-source archives remain ignored.
+
+INC-QML-21/22/23 are separately scoped after the exit review. Broader adoption,
+inherited event lookup and overload identity remain INC-QML-08/11/15; bounded
+loader success does not imply every Qt SDK API or runtime effect is modeled.

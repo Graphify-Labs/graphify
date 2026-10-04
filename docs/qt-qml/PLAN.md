@@ -10,7 +10,8 @@ Commands marked proposed are future verification suggestions, not pass claims.
 The [follow-up audit](FOLLOWUP_AUDIT.md) found four semantic false positives at
 `95adbdc`. INC-QML-17/18/19 correct those cases under existing requirements.
 Affected REQ-QML-016/017 criteria are partial; their original fixture passes do
-not verify the new object/declaration boundaries. Corrections are planned.
+not verify every expanded boundary. INC-QML-17–20 have bounded local correction
+evidence; INC-QML-21/22/23 proceed as separate follow-ups.
 The [Qt API mechanism matrix](QT_API_COVERAGE.md) records supported, excluded,
 generic and omitted families. INC-QML-20 fills two reproduced literal loader
 provenance omissions; the plan does not promise individual whole-SDK semantics.
@@ -1587,7 +1588,7 @@ partial and INC-QML-11/15 planned; camera persistence is outside this contract.
 
 ## INC-QML-17 — Receiver-owned reflection and child lookup
 
-Status: **Implemented; final local contribution/artifact gates in progress**. Acceptance:
+Status: **Implemented; bounded local source/artifact evidence, baseline contribution-gate failures retained**. Acceptance:
 REQ-QML-017-AC02/AC04. Owner: reverse-access resolver maintainer. Dependency:
 the current access index and public A10/A11 probes in the follow-up audit.
 
@@ -1623,7 +1624,7 @@ gaps already have separate recorded scope. INC-QML-18 follows without a pause.
 
 ## INC-QML-18 — Lexical engine and provider identity
 
-Status: **Implemented; final local contribution gates in progress**. Acceptance:
+Status: **Implemented; bounded local source/artifact evidence, baseline contribution-gate failures retained**. Acceptance:
 REQ-QML-017-AC03/AC04, with REQ-QML-008 provider regressions. Owner: context-provider
 integration maintainer. Dependency: characterize existing source-local declaration,
 handle and assignment facts before changing transport or lookup ownership.
@@ -1663,7 +1664,7 @@ INC-QML-08/11/15. Exact artifact and lifecycle outcomes belong to validation.
 
 ## INC-QML-19 — Native endpoint type and alias scope
 
-Status: **Implemented; final local contribution gates in progress**. Acceptance:
+Status: **Implemented; bounded local source/artifact evidence, baseline contribution-gate failures retained**. Acceptance:
 REQ-QML-008-AC01/AC03 and REQ-QML-016-AC01–AC04. Owners: native type/registration
 integration and endpoint maintainers. Dependency: accepted
 canonical declaration/type spelling and lexical alias characterization.
@@ -1706,7 +1707,7 @@ INC-QML-08/11/15. INC-QML-20 follows without a pause.
 
 ## INC-QML-20 — Literal loader provenance coverage
 
-Status: **Planned; reproduced omissions, no production correction**. Acceptance:
+Status: **Implemented; bounded local source/artifact evidence, baseline contribution-gate failures retained**. Acceptance:
 REQ-QML-017-AC01/AC04. Owner: native loader collector/integration maintainer.
 Dependency: lexical engine identity contract from INC-QML-18 and current loader,
 resource/module and root-handle interfaces. Characterization may proceed earlier.
@@ -1729,6 +1730,19 @@ contribution gates. Document policy/cache invalidation as applicable. loadData,
 setData, staged creation and other omitted families in the mechanism matrix are
 outside this bounded increment until explicitly accepted. Review the plan at exit;
 passing these two routes does not close all Qt/QML API gaps.
+
+Literal engine URL constructors and component loadUrl/create now retain
+source-owned load facts. An engine-only component constructor supplies its exact
+engine association without creating a second load. Loader/root overload, URL
+wrapper, conditional and source-defined SDK-name rejection have collected tests;
+context providers join only that established engine. Policy 10 refreshes derived
+Qt facts; AST schema 7 and the persistence owner remain unchanged.
+
+Exit review retains INC-QML-21 and adds INC-QML-22 for static reflection shadows,
+plus INC-QML-23 for the pre-existing Windows read-only replacement defect found
+by full contribution testing. Exact local/package results and unchanged baseline
+gate failures are recorded in validation. No hosted or other-platform proof is
+claimed, and INC-QML-08/11/15 remain open.
 
 ## INC-QML-21 — Qualified native class identities
 
@@ -1754,3 +1768,47 @@ publication retention/retry and reviewed installed artifact evidence.
 This increment remains outside the completed INC-QML-17–20 correction scope.
 Current source acceptance keeps the ambiguous identity unresolved; the rejection
 does not establish successful support for the colliding class form.
+
+## INC-QML-22 — Static reflection API identity
+
+Status: **Planned; reproduced false-positive targets**. Acceptance:
+REQ-QML-017-AC02/AC04. Owner: native access collector/type-authority maintainer.
+Dependency: the source-local declaration/type authority introduced by INC-QML-18/19.
+
+Apply SDK class identity to QMetaObject::invokeMethod, QQmlProperty::read/write
+and QQmlProperty handles. A local alias, global source class or namespace class
+with the SDK name currently creates a wrong persisted QML target. Preserve the
+unshadowed SDK controls and exact receiver-owned access semantics.
+
+The retained opt-in probe has twelve failing rejection cases and two passing
+controls. Promote it into ordinary regression collection with the correction.
+Verify original spans, SDK-qualified and source-shadowed forms, handle lifetime,
+directed/undirected reload, query/affected, cold/warm/manual/watch stale-edge
+removal and failed publication/retry. Preserve unrelated C++ and native-event
+contracts, refresh policy if necessary and prove a reviewed installed artifact.
+
+This increment remains outside INC-QML-17–20. Receiver ownership is corrected;
+passing receiver tests does not verify the identity of the static API itself.
+
+## INC-QML-23 — Failed Windows replacement retention
+
+Status: **Planned; reproduced pre-existing persistence defect**. Acceptance:
+REQ-QML-018-AC06, with REQ-QML-011-AC04 and REQ-QML-013-AC03 regression review.
+Owner: shared atomic-write/persistence maintainer. Dependency: characterize the
+existing rename/replace/cleanup ordering and caller-owned product publication.
+
+On Windows, replacing an existing read-only destination can publish new bytes
+and then fail while deleting the displaced read-only file. A reported failure
+must preserve the prior accepted destination and leave no leaked temporary file.
+Preserve the existing public writer interface and product publication ownership.
+
+The existing strict atomic-write test fails on both baseline and correction
+revisions. Correct this shared boundary separately, using actual OS read-only
+files, supported replace/rename fallback paths, cleanup failure and permission
+recovery. Exercise manual/watch graph, manifest, stamp and cache retention,
+corrected retry and repeat idempotency; include unrelated writer/platform
+regressions and installed-artifact evidence. Document diagnostic and rollback
+ordering and any unavoidable multi-product atomicity limits.
+
+This increment remains outside INC-QML-17–20. Forced replacement failures already
+pass in the loader tests; they do not close this actual read-only OS boundary.
