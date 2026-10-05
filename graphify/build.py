@@ -874,13 +874,17 @@ def _doc_twin_remap(nodes: list) -> dict[str, str]:
     return remap
 
 
-def build_from_json(extraction: dict, *, directed: bool = False, root: str | Path | None = None) -> nx.Graph:
+def build_from_json(extraction: dict, *, directed: bool = False, root: str | Path | None = None,
+                    dedup: bool = True) -> nx.Graph:
     """Build a NetworkX graph from an extraction dict.
 
     directed=True produces a DiGraph that preserves edge direction (source→target).
     directed=False (default) produces an undirected Graph for backward compatibility.
     root: if given, absolute source_file paths from semantic subagents are made
         relative to root so all nodes share a consistent path key (#932).
+    dedup=False preserves distinct non-AST IDs rather than coalescing nodes by
+        file and label. AST/semantic and document-file twin reconciliation
+        remain enabled.
     """
     _root = str(Path(root).resolve()) if root else None
     # NetworkX <= 3.1 serialised edges as "links"; remap to "edges" for compatibility.
@@ -1158,6 +1162,8 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if key in _loc_collisions:
             continue  # ambiguous key: no safe canonical winner, leave ghost intact
         if key in _loc_nodes and _loc_nodes[key] != nid:
+            if not dedup and G.nodes[_loc_nodes[key]].get("_origin") != "ast":
+                continue
             _noloc_nodes[key] = nid
         elif key not in _loc_nodes:
             # Spec-conformant method ghost omitting class segment / leading dot
@@ -1599,7 +1605,7 @@ def build(
             protected_ids=protected_ids,
         )
         _dedup_collapsed = _before_dedup - len(combined["nodes"])
-    G = build_from_json(combined, directed=directed, root=_root)
+    G = build_from_json(combined, directed=directed, root=_root, dedup=dedup)
     # CLI reads this to tell a dedup shrink from a file deletion (#3774).
     # Popped before to_json so it is not stored in graph.json.
     if _dedup_collapsed:

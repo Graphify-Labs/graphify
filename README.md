@@ -860,6 +860,12 @@ graphify label ./my-project                                    # (re)name commun
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
 ```
 
+`--no-dedup` also skips coalescing distinct non-AST nodes solely because they
+share a file and label. The Python equivalents are `build(chunks, dedup=False)`,
+`build_merge(chunks, graph_path, dedup=False)`, and
+`build_from_json(extraction, dedup=False)`. AST/semantic twins still reconcile to
+the canonical AST node, and document-file twin reconciliation remains enabled.
+
 > **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
 
 ---
