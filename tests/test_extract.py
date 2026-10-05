@@ -3149,6 +3149,26 @@ def test_extract_bash_emits_source_imports_from(tmp_path):
     assert import_edges[0].get("context") == "import"
 
 
+@pytest.mark.parametrize("source_form", ["source ./helpers.sh", ". ./helpers.sh"])
+def test_extract_bash_source_forms_are_imports_not_invokes(tmp_path, source_form):
+    """#4081: sourcing a shell file is an import, not script execution."""
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("# helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(f"#!/bin/bash\n{source_form}\n", encoding="utf-8")
+
+    result = extract_bash(script)
+    import_edges = [edge for edge in result["edges"] if edge["relation"] == "imports_from"]
+    invocation_edges = [
+        edge for edge in result["edges"]
+        if edge.get("relation") == "invokes" and edge.get("context") == "script_invocation"
+    ]
+
+    assert import_edges
+    assert import_edges[0]["target"] == _make_id(str(helpers.resolve()))
+    assert invocation_edges == []
+
+
 def test_extract_bash_source_via_variable_path_resolves_to_real_file(tmp_path):
     """`source "${DIR}/lib/x.sh"` (the `dirname "${BASH_SOURCE[0]}"` idiom) must
     resolve to the real file node relative to the script dir — never emit a dead
