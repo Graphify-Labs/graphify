@@ -123,6 +123,21 @@ def test_cpp_union_specifier_is_extracted(tmp_path):
     assert "Anon" not in labels
 
 
+def test_cpp_union_member_function_is_a_method(tmp_path):
+    """A union's method declaration must not become a data field."""
+    source = tmp_path / "value.hpp"
+    source.write_text("union Value { int i; int get() const; };\n", encoding="utf-8")
+    result = extract_cpp(source)
+    assert result.get("parse_errors") is None
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    relationships = {(labels.get(e["source"]), labels.get(e["target"]), e["relation"])
+                     for e in result["edges"]}
+    assert ("Value", ".get()", "method") in relationships
+    assert ("Value", "i", "defines") in relationships
+    assert ("Value", "get", "defines") not in relationships
+    assert "get" not in labels.values()
+
+
 def test_nested_cpp_class_is_extracted(tmp_path):
     # A nested type is a field_declaration whose `type` field IS the
     # class_specifier; the member-variable branch used to consume it and return
