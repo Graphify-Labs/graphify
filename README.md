@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/logo.png" width="300" height="140" alt="Graphify"/></a>
+  <a href="https://graphify.com"><img src="https://raw.githubusercontent.com/Graphify-Labs/graphify/v8/docs/graphify-logo.png" width="480" height="252" alt="Graphify"/></a>
 </p>
 
 <p align="center">
@@ -16,15 +16,19 @@
 
 <p align="center">
   <a href="https://pypi.org/project/graphifyy/"><img src="https://img.shields.io/pypi/v/graphifyy" alt="PyPI"/></a>
+  <a href="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml"><img src="https://github.com/Graphify-Labs/graphify/actions/workflows/ci.yml/badge.svg?branch=v8" alt="CI"/></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
-  <a href="https://discord.gg/2DDrEgvZb4"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
+  <a href="https://smithery.ai/servers/graphify/graphify"><img src="https://img.shields.io/badge/Smithery-MCP%20server-5c4ee5?style=flat&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iI2ZmZiI+PHBhdGggZD0iTTEyIDJMMiA3djEwbDEwIDUgMTAtNVY3eiIvPjwvc3ZnPg==" alt="Smithery"/></a>
+  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
   <a href="https://www.ycombinator.com/companies/graphify-labs"><img src="https://img.shields.io/badge/Y%20Combinator-S26-F0652F?style=flat&logo=ycombinator&logoColor=white" alt="YC S26"/></a>
 </p>
 
 <p align="center">
-  <b>Early access to the graphify platform is open before the public v1 launch: <a href="https://app.graphify.com/login">app.graphify.com</a></b>
+  <b>Try the graphify platform free for 14 days: <a href="https://app.graphify.com/login">app.graphify.com</a></b>
 </p>
 
 Type `/graphify` in your AI coding assistant and it maps your entire project (code, docs, PDFs, images, videos) into a **knowledge graph** you can **query instead of grepping** through files.
@@ -159,6 +163,8 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 > **Official package:** The PyPI package is `graphifyy` (double-y). Other `graphify*` packages on PyPI are not affiliated. The CLI command is still `graphify`.
 
+The official source repository is [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify).
+
 **Step 1 — install the package:**
 
 ```bash
@@ -255,7 +261,7 @@ Codex users also need `multi_agent = true` under `[features]` in `~/.codex/confi
 | `neo4j` | Neo4j push support | `uv tool install "graphifyy[neo4j]"` |
 | `falkordb` | FalkorDB push support | `uv tool install "graphifyy[falkordb]"` |
 | `svg` | SVG graph export | `uv tool install "graphifyy[svg]"` |
-| `leiden` | Leiden community detection (Python < 3.13 only) | `uv tool install "graphifyy[leiden]"` |
+| `leiden` | Leiden community detection (graspologic on Python < 3.13; native backend on 3.13+) | `uv tool install "graphifyy[leiden]"` |
 | `ollama` | Ollama local inference | `uv tool install "graphifyy[ollama]"` |
 | `openai` | OpenAI / OpenAI-compatible APIs | `uv tool install "graphifyy[openai]"` |
 | `gemini` | Google Gemini API | `uv tool install "graphifyy[gemini]"` |
@@ -339,7 +345,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 
 | Type | Extensions |
 |------|-----------|
-| Code (37 tree-sitter grammars) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .ml .mli .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`, `.ml`/`.mli` requires `uv tool install graphifyy[ocaml]`; `.mts`/`.cts` reuse the TypeScript grammar, `.cc`/`.cxx` and CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
+| Code (37 tree-sitter grammars) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .ml .mli .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .vh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`, `.ml`/`.mli` requires `uv tool install graphifyy[ocaml]`; `.mts`/`.cts` reuse the TypeScript grammar, `.cc`/`.cxx` and CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
 | Salesforce Apex | `.cls .trigger` (regex-based; classes, interfaces, enums, methods, triggers, SOQL/DML edges) |
 | Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install graphifyy[terraform]`) |
 | OCaml | `.ml .mli` (requires `uv tool install graphifyy[ocaml]`) |
@@ -354,6 +360,21 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 | Images | `.png .jpg .webp .gif` |
 | Video / Audio | `.mp4 .mov .mp3 .wav` and more (requires `uv tool install graphifyy[video]`) |
 | YouTube / URLs | any video URL (requires `uv tool install graphifyy[video]`) |
+
+Terraform module calls with a literal local `source` (`./...` or `../...`) link
+to a directory module node through an `EXTRACTED` `module_source` edge. Each
+directory node contains its scanned `.tf` files, so nested calls expose paths
+such as environment → application → base → resource. Scan the common repository
+root to include both callers and implementations. Paths resolve relative to the
+calling module, and excluded or out-of-root files are never loaded implicitly.
+
+Remote sources and source expressions are not resolved; `.tfvars`, generic
+`.hcl`, and `.tf.json` files do not define module-source targets. References to
+`module.app.output` still target the module call rather than its implementation's
+output. The graph represents source configuration, not evaluated Terraform
+instances. Incremental Terraform changes reconcile the scanned `.tf` corpus,
+reusing cached syntax for unchanged files. After upgrading an existing graph,
+run `graphify update .` once to regenerate Terraform IDs and topology.
 
 Code is extracted **locally with no API calls** (AST via tree-sitter). Everything else goes through your AI assistant's model API.
 
@@ -429,15 +450,21 @@ dist/
 
 ## Team setup
 
-`graphify-out/` is meant to be committed to git so everyone on the team starts with a map.
+For users building a team graph, the `graphify-out/` directory is gitignored by default. If your team wants to share a graph, you should **explicitly force-add only the queryable products** so your teammates can consume them:
 
-**Recommended `.gitignore` additions:**
-```
-graphify-out/cost.json        # local only
-# graphify-out/cache/         # optional: commit for speed, skip to keep repo small
+*(Note: If you are contributing to the Graphify repository itself, do not commit your local `graphify-out/` at all unless it's a specific test fixture).*
+
+**Recommended git commands to share a graph (you only need to force-add once; git will track future changes normally):**
+```bash
+git add -f graphify-out/graph.json
+git add -f graphify-out/GRAPH_REPORT.md
+# git add -f graphify-out/wiki/         # optional: if using the wiki export
+# git add -f graphify-out/obsidian/     # optional: if using the Obsidian export
 ```
 
 > `manifest.json` is now portable — keys are stored as relative paths and re-anchored on load, so committing it is safe and avoids a full rebuild on first checkout.
+
+The remaining `graphify-out/` files stay machine-local and should **not** be force-added: `.graphify_root` and `.graphify_python` (absolute paths to this machine's scan root and interpreter), `.graphify_analysis.json`, the AST cache under `graphify-out/cache/`, and the `needs_update` flag. A teammate who pulls the shared `graph.json` can query it immediately; running `graphify update` re-anchors the committed `manifest.json` and rebuilds only what changed on their machine.
 
 ### Recommended workflow
 
@@ -485,6 +512,19 @@ python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0
 ```
 
 The MCP server gives your assistant structured access: `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
+
+### One-click install (VS Code · Smithery)
+
+Prefer not to edit MCP config by hand? Register the graphify MCP server in one step. Run `/graphify` first so a `graphify-out/graph.json` exists in the workspace; the server reads it on launch.
+
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_graphify_MCP-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=graphify&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22--from%22%2C%22graphifyy%5Bmcp%5D%22%2C%22graphify-mcp%22%5D%7D)
+
+The button adds a `graphify` server that launches with `uvx --from "graphifyy[mcp]" graphify-mcp` (no API key, no prior install). Or install via [Smithery](https://smithery.ai/servers/graphify/graphify) for Claude, Cursor, VS Code, and other clients:
+
+```bash
+# pick your client (claude, cursor, vscode, windsurf, ...)
+npx -y @smithery/cli install graphify/graphify --client claude
+```
 
 ### Shared HTTP server
 
@@ -553,6 +593,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_QUERY_LOG` | Enable the query log and write it to this path instead of the default | optional — off unless this or `_ENABLE` is set |
 | `GRAPHIFY_QUERY_LOG_DISABLE` | Set to `1` to force the query log off (wins over the enable vars) | optional |
 | `GRAPHIFY_QUERY_LOG_RESPONSES` | When the log is enabled, also record full subgraph responses (off by default) | optional |
+| `GRAPHIFY_NO_AUTO_REFRESH` | Set to `1` to stop the CLI from refreshing installed skills that are older than the package after an upgrade | optional — refresh is on by default |
 | `GRAPHIFY_MAX_GRAPH_BYTES` | Override the 512 MiB graph.json size cap — e.g. `700MB`, `2GB`, or plain bytes | optional — useful for very large corpora |
 | `GRAPHIFY_MAX_CONTEXTS` | Maximum number of non-default project graphs retained by one multi-project MCP server | optional — default: `8`; invalid values use `8`, and values below `1` use `1` |
 | `GRAPHIFY_LLM_TEMPERATURE` | Override LLM temperature for semantic extraction — e.g. `0.7`, or `none` to omit | optional — auto-omitted for o1/o3/o4/gpt-5 reasoning models |
@@ -648,10 +689,10 @@ ANTHROPIC_API_KEY=sk-... graphify extract ./docs --backend claude
 ```
 
 **Skill version mismatch warning in your IDE**
-Your installed graphify version is different from the skill file. Update:
+Your installed graphify version is different from the skill file. After an upgrade, the first `graphify` command refreshes every installed skill that is older than the package, on all platforms at once, and keeps a locally edited `SKILL.md` as `SKILL.md.bak`. Set `GRAPHIFY_NO_AUTO_REFRESH=1` to turn this off. A skill it can't refresh safely keeps the warning: one newer than the package, or a directory that two installers share (for example Copilot and `graphify vscode install`). Reinstall that platform by hand:
 ```bash
 uv tool upgrade graphifyy
-graphify install  # overwrites the skill file
+graphify install --platform <name>  # overwrites the skill file
 ```
 
 **Claude Code prompt cache invalidated after every `graphify extract`**
@@ -825,6 +866,7 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 
 ## Learn more
 
+- [docs.graphify.com](https://docs.graphify.com) — full documentation: guides, command reference, and integrations
 - [How it works](docs/how-it-works.md) — the extraction pipeline, community detection, confidence scoring, benchmarks
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module breakdown, how to add a language
 - [Optional integrations](docs/docker-mcp-sqlite.md) — Docker MCP Toolkit + SQLite
@@ -834,7 +876,7 @@ graphify label ./my-project --backend=openai --model gpt-4o   # force a specific
 
 ## graphify Enterprise
 
-[**graphify Enterprise**](https://graphify.com) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working context: meetings, files, docs, and code, updating continuously in the background.
+[**graphify Enterprise**](https://graphify.com/enterprise) is the always-on layer built on top of graphify — it applies the same graph approach to your entire working context: meetings, files, docs, and code, updating continuously in the background.
 
 Built for people and teams whose work lives across hundreds of conversations and documents they can never fully reconstruct.
 
@@ -842,88 +884,27 @@ Built for people and teams whose work lives across hundreds of conversations and
 
 ---
 
-<details>
-<summary>Contributing</summary>
+## Contributing
 
-### Development setup
+Contributions are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the development setup, the test and CI-parity commands, the git workflow, and what makes a strong contribution (worked examples and extraction bug reports are the most useful). Architecture and how to add a language: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-The project uses [uv](https://docs.astral.sh/uv/) for dev workflow. Install it once, then:
+New here? Say hi on [Discord](https://discord.gg/XDnKVpzdXB) or in [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
 
-```bash
-git clone https://github.com/safishamsi/graphify.git
-cd graphify
-git checkout v8                        # active development branch
+---
 
-# Create the project venv and install graphify + all extras + the dev group
-# (pytest). uv installs the dev dependency group by default; pass --no-dev to
-# skip it.
-uv sync --all-extras
-```
+## Contributors
 
-Verify the editable install:
-```bash
-uv run graphify --version
-uv run python -c "import graphify; print(graphify.__file__)"
-```
+<a href="https://github.com/Graphify-Labs/graphify/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Graphify-Labs/graphify" alt="graphify contributors" />
+</a>
 
-### Running tests
+Made with [contrib.rocks](https://contrib.rocks).
 
-```bash
-uv run pytest tests/ -q                # run the full suite
-uv run pytest tests/test_extract.py -q # one module
-uv run pytest tests/ -q -k "python"    # filter by name
-```
+---
 
-### CI parity checks
+## Translations
 
-The authoritative CI commands live in [`.github/workflows/`](.github/workflows/).
-For local CI-style verification, use Python 3.10 or 3.12 and run:
-
-```bash
-uv sync --all-extras --frozen
-uv run --frozen pytest tests/ -q --tb=short
-uv run --frozen python -m tools.skillgen --check
-uv run --frozen python -m tools.skillgen --audit-coverage
-uv run --frozen python -m tools.skillgen --schema-singleton
-uv run --frozen python -m tools.skillgen --monolith-roundtrip
-uv run --frozen python -m tools.skillgen --always-on-roundtrip
-uv run --frozen graphify --help
-uv run --frozen graphify install
-```
-
-Ruff is useful as an additional local check (`uv run --frozen ruff check .`),
-but is not currently a blocking CI job. Pyright is also local/advisory unless it
-is added to CI later. The Bandit and pip-audit CI steps currently use
-`continue-on-error`, so their findings are advisory rather than blocking.
-
-> macOS note: the test suite includes both `sample.f90` and `sample.F90` fixtures. These collide on case-insensitive HFS+ / APFS file systems. Run on Linux or in a Docker container if you need to test both Fortran variants simultaneously.
-
-> Windows note: the native Windows test suite exercises symbolic links, long
-> paths, POSIX permissions, path separators, and UTF-8 filesystem behavior.
-> Enable Windows Developer Mode to allow unprivileged symbolic-link creation, or
-> run the tests from an elevated shell. Enable the Windows `LongPathsEnabled`
-> policy before relying on long-path tests. Restart affected shells or applications
-> after changing either setting. For exact parity with the blocking GitHub Actions
-> test matrix, run the suite in WSL or Linux; CI currently runs on Ubuntu with
-> Python 3.10 and 3.12. Pyright is available as a local advisory check, but it is
-> not currently a blocking CI job.
-
-### Git workflow
-
-- Active development happens on the `v8` branch.
-- Commit style: `fix: <description>` / `feat: <description>` / `docs: <description>`
-- Before opening a PR, run `uv run pytest tests/ -q` and confirm it passes.
-- Add a fixture file to `tests/fixtures/` and tests to `tests/test_languages.py` for any new language extractor.
-
-### What to contribute
-
-**Worked examples** are the most useful contribution. Run `/graphify` on a real corpus, save the output to `worked/{slug}/`, write an honest `review.md` covering what the graph got right and wrong, and open a PR.
-
-**Extraction bugs** — open an issue with the input file, the cache entry (`graphify-out/cache/`), and what was missed or wrong.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for module responsibilities and how to add a language.
-
-</details>
+The README is available in 32 languages. Use the language switcher at the top of this file to read it in yours, or browse [`docs/translations/`](docs/translations/). To improve a translation or add a new one, open a pull request against the matching file there.
 
 ---
 
@@ -931,7 +912,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for module responsibilities and how to ad
 
 <p align="center">
   <a href="https://graphify.com"><img src="https://img.shields.io/badge/Website-graphify.com-4c1?style=flat&logo=googlechrome&logoColor=white" alt="Website"/></a>
-  <a href="https://discord.gg/2DDrEgvZb4"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
+  <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://x.com/graphify"><img src="https://img.shields.io/badge/X-graphify-000000?logo=x&logoColor=white" alt="X"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://github.com/sponsors/safishamsi"><img src="https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors" alt="Sponsor"/></a>

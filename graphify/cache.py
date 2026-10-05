@@ -17,6 +17,7 @@ from pathlib import Path
 # absolute path ("/shared/graphify-out"). Single source of truth in graphify.paths
 # (#1423); re-exported here as _GRAPHIFY_OUT for the existing call sites.
 from graphify.paths import GRAPHIFY_OUT as _GRAPHIFY_OUT
+from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
 
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the version that wrote them: keying purely on file
@@ -35,7 +36,7 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 2
+_AST_CACHE_SCHEMA = 5  # Python receiver-shadow facts in persisted raw calls.
 
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()
@@ -204,6 +205,14 @@ _stat_index_root: Path | None = None
 # (cache_root, #1774) — the two differ under --out and must not be conflated.
 _stat_index_anchor: Path | None = None
 _stat_index_dirty: bool = False
+_stat_index_atexit_registered: bool = False
+# The resolved on-disk path for the CURRENTLY bound root, captured at bind
+# time (#3989). A mid-process root switch must flush the OUTGOING root to
+# the file it was actually loaded from, not wherever the live _GRAPHIFY_OUT
+# happens to point by the time the switch is detected — a caller following
+# the documented one-root-per-call pattern (set _GRAPHIFY_OUT, then call)
+# has already moved it on to the NEW root before the switch is noticed.
+_stat_index_path: Path | None = None
 
 
 # Filesystem mtime granularity, in nanoseconds. A stat signature only proves a
@@ -327,8 +336,31 @@ def _stat_index_file(root: Path) -> Path:
 
 def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
     global _stat_index, _stat_index_root, _stat_index_anchor, _stat_index_dirty
+    global _stat_index_atexit_registered, _stat_index_path
+    new_root = Path(cache_root if cache_root is not None else root).resolve()
     if _stat_index_root is not None:
-        return
+        if _stat_index_root == new_root:
+            return
+        # A later call in the same process named a DIFFERENT cache root
+        # (#3989): the index was bound to the first root ever seen and never
+        # re-bound, so every root after the first served (on read) whatever
+        # the first root's file happened to contain, and (on write/exit)
+        # deposited its own freshly-computed entries into the FIRST root's
+        # file instead of its own — silently poisoning one project's
+        # stat-index.json with paths from a completely different project.
+        # Flush the outgoing root's own pending entries to its own file
+        # before switching, then load the new root fresh, so each root's
+        # file only ever holds that root's own entries.
+        warnings.warn(
+            f"stat index switched from cache root {str(_stat_index_root)!r} to "
+            f"{str(new_root)!r} within one process; each root's "
+            "stat-index.json now only reflects its own files, but library "
+            "callers crossing project roots in one process should still use "
+            "a fresh process per root to avoid losing the fastpath (#3989).",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        _flush_stat_index()
     # _stat_index_root determines the cache FILE location, so honoring an
     # explicit cache_root keeps detect()'s word-count cache under the requested
     # --out dir instead of polluting the scanned corpus with a stray
@@ -336,9 +368,10 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
     # in-memory keys stay absolute, but the on-disk index stores in-anchor keys
     # relative so a moved/cloned corpus still hits (#2199) — same load/save
     # re-anchoring the detect manifest uses.
-    _stat_index_root = Path(cache_root if cache_root is not None else root).resolve()
+    _stat_index_root = new_root
     _stat_index_anchor = Path(root).resolve()
     p = _stat_index_file(_stat_index_root)
+    _stat_index_path = p
     _stat_index = {}
     if p.exists():
         try:
@@ -356,14 +389,23 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
                         _stat_index[_stat_key_to_absolute(k, _stat_index_anchor)] = v
         except (json.JSONDecodeError, OSError):
             _stat_index = {}
-    atexit.register(_flush_stat_index)
+    _stat_index_dirty = False
+    if not _stat_index_atexit_registered:
+        atexit.register(_flush_stat_index)
+        _stat_index_atexit_registered = True
 
 
 def _flush_stat_index() -> None:
     global _stat_index_dirty, _stat_index_root
     if not _stat_index_dirty or _stat_index_root is None:
         return
-    p = _stat_index_file(_stat_index_root)
+    # Use the path captured when this root was bound (#3989), not a fresh
+    # _stat_index_file(_stat_index_root) call: a mid-process root switch runs
+    # this to flush the OUTGOING root, by which point a caller following the
+    # documented set-_GRAPHIFY_OUT-then-call pattern has already pointed
+    # _GRAPHIFY_OUT at the NEW root, and re-deriving here would flush the old
+    # root's entries into the new root's file instead of its own.
+    p = _stat_index_path if _stat_index_path is not None else _stat_index_file(_stat_index_root)
     # Build the on-disk form (#2199): prune entries whose file is gone (the
     # index otherwise grows without bound), then store in-anchor keys as
     # forward-slash relative paths so the index survives a corpus move/clone.
@@ -399,7 +441,7 @@ def _flush_stat_index() -> None:
         try:
             os.write(fd, json.dumps(on_disk, separators=(",", ":")).encode())
             os.close(fd)
-            os.replace(tmp, p)
+            _os_replace_with_fallback(tmp, p)
         except Exception:
             try:
                 os.close(fd)
@@ -1126,14 +1168,7 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     try:
         os.write(fd, json.dumps(on_disk).encode())
         os.close(fd)
-        try:
-            os.replace(tmp_path, entry)
-        except PermissionError:
-            # Windows: os.replace can fail with WinError 5 if the target is
-            # briefly locked. Fall back to copy-then-delete.
-            import shutil
-            shutil.copy2(tmp_path, entry)
-            os.unlink(tmp_path)
+        _os_replace_with_fallback(tmp_path, entry)
     except Exception:
         try:
             os.close(fd)
@@ -1496,6 +1531,31 @@ def save_semantic_cache(
     if allowed_source_files is not None:
         allowed_paths = {source_path(path) for path in allowed_source_files}
 
+    def _recover_group_path(fpath: str) -> tuple[Path, Path]:
+        """Return ``(cache_path, resolved_path)`` for one ``by_file`` group,
+        recovering an unresolvable ``source_file`` via an unambiguous
+        basename match against ``allowed_paths`` when one is available (#2973).
+
+        The adaptive-retry split path (``llm.py``'s bisect-and-retry on a
+        chunk that overflowed a weak/local backend's context) sometimes
+        re-prompts with a reduced file subset and loses track of which of
+        the original chunk's files a given node came from, so its
+        ``source_file`` never resolves to a real path at all. Recovering it
+        against the known-good, already-dispatched allowlist -- and ONLY
+        when the basename is unambiguous there -- lets that group's nodes
+        and edges reach the cache instead of silently vanishing on every
+        incremental run. A genuinely bogus or ambiguous basename still
+        falls through unrecovered to the existing skip behavior below.
+        """
+        cache_path = source_path(fpath)
+        resolved = resolved_source_path(fpath)
+        if not resolved.is_file() and allowed_paths is not None:
+            candidates = [ap for ap in allowed_paths if ap.name == cache_path.name]
+            if len(candidates) == 1:
+                cache_path = candidates[0]
+                resolved = candidates[0]
+        return cache_path, resolved
+
     partial_paths = None
     if partial_source_files is not None:
         partial_paths = {source_path(path) for path in partial_source_files}
@@ -1512,9 +1572,9 @@ def save_semantic_cache(
 
     def group_skipped(fpath: str) -> bool:
         """Mirror the write-loop skip condition for one source_file group."""
-        p = resolved_source_path(fpath)
+        cache_path, p = _recover_group_path(fpath)
         return not p.is_file() or (
-            allowed_paths is not None and source_path(fpath) not in allowed_paths
+            allowed_paths is not None and cache_path not in allowed_paths
         )
 
     # Dangling-reference pruning (#1916). A node group is skipped by the write
@@ -1571,9 +1631,26 @@ def save_semantic_cache(
     saved = 0
     skipped_not_file = 0
     for fpath, result in by_file.items():
-        cache_path = source_path(fpath)
-        p = resolved_source_path(fpath)
+        cache_path, p = _recover_group_path(fpath)
         if p.is_file():
+            if cache_path != source_path(fpath):
+                # #2973: recovery only redirected the WRITE KEY. Each item in
+                # this group still carries the original unresolvable
+                # source_file string, and _semantic_entry_matches_path
+                # rejects an entry on read if any item's source_file doesn't
+                # match the path it was loaded under -- so leaving the old
+                # value in place would write a "successful" entry that can
+                # never actually be read back, silently reproducing the same
+                # loss this recovery exists to fix.
+                corrected = _normalize_value(str(cache_path))
+                result = {
+                    **result,
+                    "nodes": [{**n, "source_file": corrected} for n in result["nodes"]],
+                    "edges": [{**e, "source_file": corrected} for e in result["edges"]],
+                    "hyperedges": [
+                        {**h, "source_file": corrected} for h in result["hyperedges"]
+                    ],
+                }
             if allowed_paths is not None and cache_path not in allowed_paths:
                 warnings.warn(
                     "semantic cache skipped out-of-scope source_file "

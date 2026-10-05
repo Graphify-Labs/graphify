@@ -432,6 +432,13 @@ def _vis_nodes_from_html(content: str) -> list:
     return json.loads(m.group(1).replace("<\\/", "</"))
 
 
+def _vis_edges_from_html(content: str) -> list:
+    """Extract the RAW_EDGES JSON array embedded in the generated HTML."""
+    m = re.search(r"const RAW_EDGES = (\[.*?\]);", content, re.DOTALL)
+    assert m, "RAW_EDGES not found in HTML"
+    return json.loads(m.group(1).replace("<\\/", "</"))
+
+
 def test_to_html_annotated_node_gets_learning_status_and_ring():
     """A node with an overlay entry gets learning_status + learning_stale fields,
     a status-colored ring (border), and a Lesson line in its hover title."""
@@ -492,6 +499,72 @@ def test_to_html_unannotated_identical_to_pre_feature():
         cb = b.read_text().replace("b.html", "X.html")
     assert ca == cb
     assert "learning_status" not in ca
+
+
+def test_to_html_tooltips_preserve_special_characters_without_html_entities(tmp_path):
+    """Issue #3664: Node and edge hover tooltips (vis-network title) must preserve
+    raw characters (&, ', ", <, >) without HTML entity escaping (&amp;, &#x27;, etc.)
+    because vis-network renders title via innerText rather than innerHTML."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label="B-Roll & Filming", source_file="src/a.py", community=0)
+    G.add_node("n2", label="Anna's content batching schedule", source_file="src/b.py", community=0)
+    G.add_node("n3", label='<Widget prop="value" & count > 0>', source_file="src/c.py", community=0)
+    G.add_edge("n1", "n2", relation="reviews & approves", confidence="EXTRACTED")
+    G.add_edge("n2", "n3", relation="calls <indirect>", confidence="INFERRED")
+
+    labels = {0: "Team A & Team B"}
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["n1", "n2", "n3"]}, str(out), community_labels=labels)
+    content = out.read_text(encoding="utf-8")
+
+    nodes = {n["id"]: n for n in _vis_nodes_from_html(content)}
+    assert nodes["n1"]["title"] == "B-Roll & Filming"
+    assert "&amp;" not in nodes["n1"]["title"]
+
+    assert nodes["n2"]["title"] == "Anna's content batching schedule"
+    assert "&#x27;" not in nodes["n2"]["title"]
+    assert "&#39;" not in nodes["n2"]["title"]
+
+    assert nodes["n3"]["title"] == '<Widget prop="value" & count > 0>'
+    for entity in ("&lt;", "&gt;", "&quot;", "&amp;"):
+        assert entity not in nodes["n3"]["title"]
+
+    edges = _vis_edges_from_html(content)
+    edge_map = {(e["from"], e["to"]): e for e in edges}
+    e1 = edge_map[("n1", "n2")]
+    assert e1["title"] == "reviews & approves [EXTRACTED]"
+    assert "&amp;" not in e1["title"]
+
+    e2 = edge_map[("n2", "n3")]
+    assert e2["title"] == "calls <indirect> [INFERRED]"
+    assert "&lt;" not in e2["title"]
+    assert "&gt;" not in e2["title"]
+
+    # In contrast, legend items are injected into innerHTML and MUST remain HTML-escaped.
+    assert "Team A &amp; Team B" in content
+
+
+def test_to_html_learning_overlay_tooltip_preserves_special_characters(tmp_path):
+    """Issue #3664: Node with learning overlay preserves special characters in both
+    the label and lesson text without HTML entity escaping."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n1", label="Anna's & Bob's <Pipeline>", source_file="src/a.py", community=0)
+    overlay = {
+        "n1": {"status": "contested", "uses": 2, "neg": 1, "stale": True}
+    }
+
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["n1"]}, str(out), learning_overlay=overlay)
+    content = out.read_text(encoding="utf-8")
+
+    nodes = {n["id"]: n for n in _vis_nodes_from_html(content)}
+    title = nodes["n1"]["title"]
+    assert "Anna's & Bob's <Pipeline>\n" in title
+    assert "Lesson: contested (useful 2 / dead-end 1) [code changed — re-verify]" in title
+    for entity in ("&amp;", "&#x27;", "&#39;", "&lt;", "&gt;"):
+        assert entity not in title
 
 
 def test_to_canvas_file_paths_relative_to_vault():
@@ -1087,3 +1160,216 @@ console.log(bad);
         proc = subprocess.run([node, str(js)], capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "0", f"geometry violations: {proc.stdout.strip()}"
+
+
+def test_to_html_pins_vis_network_version_for_tooltip_xss_boundary():
+    """Tooltip `title` is passed to vis-network as a STRING and rendered via
+    Popup.setText -> innerText (verified in the 9.1.6 bundle), so tooltips are
+    intentionally NOT html-escaped (#3664/#3686). That safety rests on the pin:
+    if vis-network is bumped, the innerText rendering path (the #1838 stored-XSS
+    boundary) must be re-verified. This guard fails CI on a silent bump."""
+    G = make_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out))
+        content = out.read_text()
+        assert "vis-network@9.1.6" in content, (
+            "vis-network pin changed — re-verify Popup.setText renders a string "
+            "title via innerText (not innerHTML) before updating this pin, or the "
+            "un-escaped tooltip (#3686) reopens the #1838 stored-XSS boundary"
+        )
+
+
+def test_to_html_spiral_seed_uses_a_real_map_index():
+    """#3699: the Fermat-spiral seed positions reference `i`, so the node map
+    MUST bind an index (`RAW_NODES.map((n, i) => ...)`). Without it the emitted
+    JS throws `ReferenceError: i is not defined` and graph.html fails to render
+    at every graph size. Guards against the free-`i` regression."""
+    G = make_graph()
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out))
+        content = out.read_text()
+        if "Math.sqrt(i)" in content:  # spiral seed present
+            assert "RAW_NODES.map((n, i)" in content, (
+                "spiral seed references `i` but the node map has no index param "
+                "-> ReferenceError: i is not defined (#3699)"
+            )
+
+
+def test_to_html_canonical_node_schema_mapping(tmp_path):
+    """#3914: nodesDS and showInfo must use canonical un-prefixed field names
+    matching RAW_NODES and Graphify's node schema (file_type, source_file,
+    community_name, degree), eliminating the underscore-prefixed mapping."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n_sample", label="SampleNode", file_type="code", source_file="src/sample.py")
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["n_sample"]}, str(out), community_labels={0: "Core"})
+    content = out.read_text(encoding="utf-8")
+
+    # RAW_NODES carries canonical un-prefixed fields
+    nodes = {n["id"]: n for n in _vis_nodes_from_html(content)}
+    assert nodes["n_sample"]["file_type"] == "code"
+    assert nodes["n_sample"]["source_file"] == "src/sample.py"
+    assert nodes["n_sample"]["community_name"] == "Core"
+    assert "degree" in nodes["n_sample"]
+
+    # nodesDS dataset mapping must preserve canonical field names
+    assert "file_type: n.file_type" in content
+    assert "source_file: n.source_file" in content
+    assert "community_name: n.community_name" in content
+    assert "degree: n.degree" in content
+
+    # nodesDS must not contain old underscore-prefixed mappings
+    assert "_file_type: n.file_type" not in content
+    assert "_source_file: n.source_file" not in content
+    assert "_community_name: n.community_name" not in content
+    assert "_degree: n.degree" not in content
+    assert "_community: n.community" not in content
+
+    # showInfo must consume canonical fields directly
+    assert "n.file_type" in content
+    assert "n.source_file" in content
+    assert "n.community_name" in content
+    assert "n.degree" in content
+    assert "n._file_type" not in content
+    assert "n._source_file" not in content
+    assert "n._community_name" not in content
+    assert "n._degree" not in content
+
+
+def _run_node_info_harness(html_content: str, target_node_id: str) -> str:
+    """Helper to execute graph.html's client script in Node.js and return #info-content innerHTML."""
+    import re
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if node is None:
+        import pytest
+        pytest.skip("node not available")
+
+    m = re.search(r"<script>(.*?)</script>\s*<script>", html_content, re.DOTALL)
+    assert m, "vis script block not found in html"
+    script = m.group(1)
+
+    harness = f"""
+const mockElem = () => ({{
+  innerHTML: '',
+  style: {{}},
+  appendChild: () => {{}},
+  addEventListener: () => {{}},
+  classList: {{ add: () => {{}}, remove: () => {{}} }},
+  prepend: () => {{}},
+}});
+
+const doc = {{
+  elements: {{
+    'info-content': mockElem(),
+    'graph': mockElem(),
+    'search': mockElem(),
+    'search-results': mockElem(),
+    'select-all-cb': Object.assign(mockElem(), {{ checked: true }}),
+    'legend': mockElem()
+  }},
+  getElementById(id) {{
+    return this.elements[id] || (this.elements[id] = mockElem());
+  }},
+  createElement() {{ return mockElem(); }},
+  addEventListener() {{}},
+  querySelectorAll() {{ return []; }}
+}};
+
+class MockDataSet {{
+  constructor(items) {{
+    this.map = new Map();
+    items.forEach(it => this.map.set(it.id, it));
+  }}
+  get(id) {{ return this.map.get(id); }}
+  update() {{}}
+}}
+
+const vis = {{
+  DataSet: MockDataSet,
+  Network: class {{
+    constructor() {{}}
+    once() {{}}
+    on() {{}}
+    getConnectedNodes() {{ return []; }}
+    focus() {{}}
+    selectNodes() {{}}
+  }}
+}};
+
+const document = doc;
+const window = {{}};
+
+{script}
+
+showInfo('{target_node_id}');
+console.log('OUTPUT:' + doc.getElementById('info-content').innerHTML);
+"""
+    proc = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"Node script failed ({proc.returncode}): {proc.stderr}"
+    m_out = re.search(r"OUTPUT:(.*)", proc.stdout)
+    assert m_out, f"OUTPUT not found in stdout: {proc.stdout}"
+    return m_out.group(1)
+
+
+def test_to_html_show_info_runtime_renders_node_fields(tmp_path):
+    """#3914: Execute showInfo in Node.js for a normal node.
+    Type: code and Source: src/sample.py must be rendered into info-content,
+    not Type: unknown or Source: -."""
+    import networkx as nx
+    G = nx.Graph()
+    G.add_node("n_sample", label="SampleNode", file_type="code", source_file="src/sample.py")
+    G.add_node("n_other", label="OtherNode", file_type="document", source_file="doc/readme.md")
+    G.add_edge("n_sample", "n_other", relation="references", confidence="EXTRACTED")
+
+    out = tmp_path / "graph.html"
+    to_html(G, {0: ["n_sample", "n_other"]}, str(out), community_labels={0: "Core"})
+    content = out.read_text(encoding="utf-8")
+
+    info_html = _run_node_info_harness(content, "n_sample")
+    assert '<div class="field"><b>SampleNode</b></div>' in info_html
+    assert '<div class="field">Type: code</div>' in info_html
+    assert '<div class="field">Community: Core</div>' in info_html
+    assert '<div class="field">Source: src/sample.py</div>' in info_html
+    assert '<div class="field">Degree: 1</div>' in info_html
+    assert "Type: unknown" not in info_html
+    assert "Source: -" not in info_html
+
+
+def test_to_html_aggregated_community_nodes_runtime(tmp_path):
+    """#3914: Execute showInfo in Node.js for an aggregated community node.
+    Community meta-nodes have no file_type/source_file and must not display
+    misleading Type: unknown or Source: -; they must display community name
+    and member count."""
+    import networkx as nx
+    meta = nx.Graph()
+    meta.add_node("0", label="Core Systems")
+    meta.add_node("1", label="UI Layer")
+    meta.add_edge("0", "1", relation="cross-community", confidence="AGGREGATED")
+
+    out = tmp_path / "graph.html"
+    to_html(
+        meta,
+        {0: ["0"], 1: ["1"]},
+        str(out),
+        community_labels={0: "Core Systems", 1: "UI Layer"},
+        member_counts={0: 25, 1: 10},
+    )
+    content = out.read_text(encoding="utf-8")
+
+    nodes = _vis_nodes_from_html(content)
+    assert any(n.get("member_count") == 25 for n in nodes)
+
+    info_html = _run_node_info_harness(content, "0")
+    assert '<div class="field"><b>Core Systems</b></div>' in info_html
+    assert '<div class="field">Community: Core Systems</div>' in info_html
+    assert '<div class="field">Members: 25</div>' in info_html
+    assert '<div class="field">Degree: 1</div>' in info_html
+    assert "Type: unknown" not in info_html
+    assert "Source: -" not in info_html

@@ -2,17 +2,20 @@
 from __future__ import annotations
 import fnmatch
 import json
+import ntpath
 import os
+import posixpath
 import re
 import shlex
 import stat
 import subprocess
+import sys
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Iterable
 
 from graphify.google_workspace import (
     GOOGLE_WORKSPACE_EXTENSIONS,
@@ -41,7 +44,7 @@ _MANIFEST_PATH = str(out_path("manifest.json"))
 _MTIME_COARSE_S = 2.0
 _MTIME_SUBSECOND_S = 0.05
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.vh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -183,6 +186,13 @@ _GENERIC_KEYWORD_PATTERNS = [
 # stays excluded — see _is_prose_note.
 _PROSE_EXTS = frozenset({".md", ".markdown", ".rst", ".org", ".adoc", ".tex"})
 
+# Bare PLURAL "tokens" in a prose file (TOKENS.md) reads as a design-token
+# reference doc, not a credential dump — unlike every other generic keyword's
+# plural (secrets.md, passwords.md, credentials.md still read as dumps) and
+# unlike the singular "token.md", which stays excluded (#3527). Scoped to
+# prose extensions only: "tokens.txt" is still a plausible secret store.
+_BARE_PLURAL_TOKENS = re.compile(r'(?<![a-zA-Z0-9])tokens(?![a-zA-Z])', re.IGNORECASE)
+
 # Data/serialization extensions that commonly ARE secret stores when their name
 # hits a generic keyword (credentials.json, secrets.yaml, token.toml) or they sit
 # in an ambiguous sensitive dir (secrets/db.json). These stay subject to the
@@ -208,10 +218,14 @@ def _is_prose_note(path: Path) -> bool:
     """A prose/note file (.md/.rst/...) whose stem is a multi-word topic slug is
     exempt from the generic-keyword drop (#2106). A stem that IS exactly a bare
     keyword (secrets / token / passwords) is NOT exempt — that still reads as a
-    credential dump."""
+    credential dump. The one exception is bare plural "tokens" (TOKENS.md),
+    which reads as a design-token reference doc rather than a secret store
+    (#3527)."""
     if path.suffix.lower() not in _PROSE_EXTS:
         return False
     stem = Path(path.name).stem.lstrip('.') or Path(path.name).stem
+    if _BARE_PLURAL_TOKENS.fullmatch(stem):
+        return True
     return not any(p.fullmatch(stem) for p in _GENERIC_KEYWORD_PATTERNS)
 
 
@@ -537,12 +551,28 @@ def classify_file(path: Path) -> FileType | None:
     return None
 
 
+# Missing-pypdf is a process-global condition, not per-file, so warn at most
+# once per run — a corpus of many PDFs must not print the same hint N times.
+_pypdf_missing_warned = False
+
+
 def extract_pdf_text(path: Path) -> str:
     """Extract plain text from a PDF file using pypdf."""
     if not _file_within_size_cap(path):
         return ""
     try:
         from pypdf import PdfReader
+    except ImportError:
+        global _pypdf_missing_warned
+        if not _pypdf_missing_warned:
+            _pypdf_missing_warned = True
+            print(
+                "[graphify] WARNING: PDF text extraction skipped: 'pypdf' is not "
+                "installed. Install the pdf extra: uv tool install 'graphifyy[pdf]'",
+                file=sys.stderr,
+            )
+        return ""
+    try:
         reader = PdfReader(str(path))
         pages = []
         for page in reader.pages:
@@ -554,18 +584,104 @@ def extract_pdf_text(path: Path) -> str:
         return ""
 
 
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+# Content controls and custom XML wrap paragraphs and tables without changing them.
+_DOCX_WRAPPERS = frozenset({f"{_W}sdt", f"{_W}customXml"})
+# Text under these is not part of the text as the document reads: tracked deletions, text
+# moved away, the ruby guide over its base text, text boxes (read as paragraphs of their
+# own) and the fallback copy Word writes of every text box.
+_DOCX_SKIPPED = frozenset({f"{_W}del", f"{_W}moveFrom", f"{_W}rt", f"{_W}txbxContent", _MC_FALLBACK})
+# The run children python-docx's Run.text reads, each as the text it stands for.
+_DOCX_RUN_TEXT = tuple(f"{_W}{tag}" for tag in ("br", "cr", "noBreakHyphen", "ptab", "t", "tab"))
+
+
+def _docx_inside(element, stop, tags) -> bool:
+    node = element.getparent()
+    while node is not None and node is not stop:
+        if node.tag in tags:
+            return True
+        node = node.getparent()
+    return False
+
+
+def _docx_paragraph_text(p) -> str:
+    """Paragraph.text reads only the runs directly under the paragraph, so it drops tracked
+    insertions, content controls, simple fields and smart tags."""
+    return "".join(
+        str(element)
+        for element in p.iter(*_DOCX_RUN_TEXT)
+        if not _docx_inside(element, p, _DOCX_SKIPPED)
+    )
+
+
+def _docx_blocks(container):
+    """Yield the w:p and w:tbl elements of a container in document order, looking through
+    content controls and custom XML, with each text box's content after its paragraph."""
+    for child in container:
+        if child.tag == f"{_W}p":
+            yield child
+            for box in child.iter(f"{_W}txbxContent"):
+                if not _docx_inside(box, child, _DOCX_SKIPPED):
+                    yield from _docx_blocks(box)
+        elif child.tag == f"{_W}tbl":
+            yield child
+        elif child.tag in _DOCX_WRAPPERS:
+            content = child.find(f"{_W}sdtContent")
+            yield from _docx_blocks(child if content is None else content)
+
+
+def _docx_children(parent, tag: str):
+    for child in parent:
+        if child.tag == f"{_W}{tag}":
+            yield child
+        elif child.tag in _DOCX_WRAPPERS:
+            content = child.find(f"{_W}sdtContent")
+            yield from _docx_children(child if content is None else content, tag)
+
+
+def _docx_cell_markdown(tc) -> str:
+    """A cell's text on one line with pipes escaped, so it cannot break its table row."""
+    parts = []
+    for block in _docx_blocks(tc):
+        if block.tag == f"{_W}p":
+            parts.append(_docx_paragraph_text(block))
+        else:  # a nested table, flattened into the cell
+            parts.extend(
+                _docx_cell_markdown(cell)
+                for row in _docx_children(block, "tr")
+                for cell in _docx_children(row, "tc")
+            )
+    return " ".join(" ".join(part.split()) for part in parts if part.strip()).replace("|", "\\|")
+
+
 def docx_to_markdown(path: Path) -> str:
     """Convert a .docx file to markdown text using python-docx."""
     if not _zip_within_caps(path):
         return ""
     try:
         from docx import Document
-        from docx.oxml.ns import qn
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
         doc = Document(str(path))
         lines = []
-        for para in doc.paragraphs:
+        # Walk the body in document order, so a table stays under the heading it belongs to.
+        for block in _docx_blocks(doc.element.body):
+            if block.tag == f"{_W}tbl":
+                # python-docx's rows repeat a merged cell across the grid columns it spans,
+                # which keeps the header and the rows the same width.
+                rows = [[_docx_cell_markdown(cell._tc) for cell in row.cells] for row in Table(block, doc).rows]
+                if not rows:
+                    continue
+                header = "| " + " | ".join(rows[0]) + " |"
+                sep = "| " + " | ".join("---" for _ in rows[0]) + " |"
+                lines.extend([header, sep])
+                for row in rows[1:]:
+                    lines.append("| " + " | ".join(row) + " |")
+                continue
+            para = Paragraph(block, doc)
             style = para.style.name if para.style else ""
-            text = para.text.strip()
+            text = _docx_paragraph_text(block).strip()
             if not text:
                 lines.append("")
                 continue
@@ -579,16 +695,6 @@ def docx_to_markdown(path: Path) -> str:
                 lines.append(f"- {text}")
             else:
                 lines.append(text)
-        # Tables
-        for table in doc.tables:
-            rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
-            if not rows:
-                continue
-            header = "| " + " | ".join(rows[0]) + " |"
-            sep = "| " + " | ".join("---" for _ in rows[0]) + " |"
-            lines.extend([header, sep])
-            for row in rows[1:]:
-                lines.append("| " + " | ".join(row) + " |")
         return "\n".join(lines)
     except ImportError:
         return ""
@@ -827,7 +933,7 @@ def _is_regular_file(path: Path) -> bool:
 _SKIP_DIRS = {
     "venv", ".venv",  # "env"/".env"/"*_env" are gated on venv markers below (#2058)
     "node_modules", "__pycache__", ".git",
-    "dist", "build", "target", "out",
+    "dist", "build", "target",  # bare "out" is gated on build-output evidence below (#3347)
     "site-packages", "lib64",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".tox", ".nox", ".eggs", "*.egg-info",  # nox is tox's successor, same .nox/ venv shape (#1804)
@@ -865,6 +971,31 @@ _SKIP_FILES = {
 # unconditionally pruned above; only the ambiguous bare name is gated here.
 _JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
 
+# Platforms whose project-scope skills dir is one level below the hidden dir
+# (install.py: pi -> .pi/agent/skills, kilo -> .config/kilo/skills).
+_NESTED_SKILL_HOLDERS = frozenset({(".pi", "agent"), (".config", "kilo")})
+
+# Single files `graphify install` writes whole into a project (#4057): the
+# always-on rules/steering/workflow files and the opencode/kilo hook plugins.
+# Matched on the hidden holder dir plus the exact relative path, never on the
+# bare file name, so e.g. docs/graphify.md or src/plugins/graphify.js stay.
+# Files graphify only adds a section or entry to (AGENTS.md, CLAUDE.md,
+# settings.json, ...) belong to the user and are not listed here.
+_GRAPHIFY_INSTALLED_FILES = frozenset({
+    (".agents", "rules", "graphify.md"),      # antigravity
+    (".agents", "workflows", "graphify.md"),  # antigravity
+    (".cursor", "rules", "graphify.mdc"),     # cursor
+    (".kilo", "plugins", "graphify.js"),      # kilo
+    (".kiro", "steering", "graphify.md"),     # kiro
+    (".opencode", "plugins", "graphify.js"),  # opencode
+    (".windsurf", "rules", "graphify.md"),    # devin
+})
+
+
+def _is_installed_graphify_file(path: "Path") -> bool:
+    """True for a single file `graphify install` wrote into the project (#4057)."""
+    return path.parts[-3:] in _GRAPHIFY_INSTALLED_FILES
+
 # Files a coverage tool writes into its own output dir. Any one of them is proof
 # the directory is generated: lcov (lcov.info), nyc/Istanbul (coverage-final.json,
 # clover.xml, the lcov-report/ subtree), coverage.py (coverage.xml, .coverage),
@@ -894,6 +1025,60 @@ def _has_coverage_artifacts(d: "Path") -> bool:
         for name in _COVERAGE_ARTIFACT_DIRS:
             if (d / name).is_dir():
                 return True
+    except OSError:
+        pass
+    return False
+
+
+# Files only a compiler/bundler writes. Any one of them inside an ``out/``
+# tree is proof the directory is generated output rather than source.
+_BUILD_OUTPUT_SUFFIXES = (
+    ".class", ".jar", ".o", ".obj", ".exe", ".dll", ".pyc",
+    ".js.map", ".css.map", ".d.ts",
+)
+
+
+def _has_build_output_markers(d: "Path") -> bool:
+    """True only when *d* holds evidence a build tool generated it.
+
+    ``out`` is a mainstream SOURCE convention in hexagonal / ports-and-adapters
+    codebases — ``adapter/out/`` and ``port/out/`` hold the entire outbound
+    layer (persistence adapters, entities, outbound ports) — so pruning it by
+    name alone silently drops an architectural layer from the graph: 196 of
+    655 .java files on the #3347 corpus, exit code 0, no warning. Prune only
+    on real generated-output evidence, mirroring the ``env``/``coverage``/
+    ``snapshots`` gating (#1666/#2058/#2339): the IntelliJ ``out/production``
+    layout, a Next.js static-export ``_next/`` tree, or compiled artifacts in
+    the top two directory levels. An ``out`` that cannot be verified is kept —
+    the same keep-on-doubt bias every other gated name has.
+    """
+    try:
+        if (d / "production").is_dir():  # IntelliJ IDEA compile output layout
+            return True
+        if (d / "_next").is_dir():      # `next export` static-site output
+            return True
+        subdirs: list = []
+        with os.scandir(d) as it:
+            for entry in it:
+                if entry.is_file() and entry.name.lower().endswith(_BUILD_OUTPUT_SUFFIXES):
+                    return True
+                if entry.is_dir():
+                    subdirs.append(entry.path)
+        # Probe one more level across EVERY subdirectory (a wide TS outDir may
+        # keep its compiled files only under later-sorted module dirs), bounded
+        # by total entries scanned rather than by subdirectory count so a
+        # pathological tree still costs O(1)-ish.
+        budget = 4000
+        for sub in subdirs:
+            if budget <= 0:
+                break
+            with os.scandir(sub) as it:
+                for entry in it:
+                    budget -= 1
+                    if entry.is_file() and entry.name.lower().endswith(_BUILD_OUTPUT_SUFFIXES):
+                        return True
+                    if budget <= 0:
+                        break
     except OSError:
         pass
     return False
@@ -938,6 +1123,14 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
         if parent is None:
             return False  # cannot verify; keep a possibly-real code dir
         return _has_coverage_artifacts(parent / part)
+    if part == "out":
+        # Ambiguous: compiler/bundler output (IntelliJ, `next export`, a TS
+        # outDir) OR the outbound layer of a hexagonal codebase
+        # (adapter/out/, port/out/). Prune only on actual build-output
+        # evidence (#3347).
+        if parent is None:
+            return False  # cannot verify; keep a possibly-real code dir
+        return _has_build_output_markers(parent / part)
     if part == "snapshots":
         # Prune only when it looks like an actual JS/Vitest snapshot dir.
         if parent is None:
@@ -960,6 +1153,21 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
     # worktrees/ nested inside a dotted dir (e.g. .claude/worktrees/, .git/worktrees/)
     if part == "worktrees" and parent is not None and parent.name.startswith("."):
         return True
+    # graphify's own skill folder, as `graphify install --project` writes it
+    # (#4057): <hidden dir>/skills/graphify/ (.claude, .codex, .agents, ...),
+    # .pi/agent/skills/graphify/, .config/kilo/skills/graphify/ and
+    # .aider/graphify/. Matched on the whole path shape rather than the bare
+    # names "skills"/"graphify" (#2479), so graphify's own source tree
+    # (graphify/skills/<host>/), a top-level skills/graphify/ and the user's
+    # other skills under .claude/skills/ are still indexed.
+    if part == "graphify" and parent is not None:
+        if parent.name == ".aider":
+            return True
+        if parent.name == "skills":
+            holder = parent.parent
+            if holder.name.startswith(".") and holder.name != "..":
+                return True
+            return (holder.parent.name, holder.name) in _NESTED_SKILL_HOLDERS
     return False
 
 
@@ -1603,7 +1811,7 @@ def ignored_predicate(
             rel_parts = path.relative_to(root).parts
         except ValueError:
             return False  # outside the scan root: detect() never considered it
-        if path.name in _SKIP_FILES:
+        if path.name in _SKIP_FILES or _is_installed_graphify_file(path):
             return True
         # Noise-dir pruning: os.walk never descends these, so anything beneath
         # one is excluded from the corpus regardless of ignore patterns.
@@ -1846,6 +2054,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 if fname in _SKIP_FILES:
                     continue
                 p = dp / fname
+                if _is_installed_graphify_file(p):
+                    continue
                 if p not in seen:
                     seen.add(p)
                     all_files.append(p)
@@ -1906,7 +2116,15 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     skipped_sensitive.append(str(p) + f" [Google Workspace export failed: {exc}]")
                     continue
                 if md_path:
-                    if _ignored_for_scan(md_path):
+                    # #3504: the sidecar lands under converted_dir, which the
+                    # documented .gitignore advice puts inside a gitignored
+                    # graphify-out/ -- an ignore check here would reject the
+                    # tool's own output for the same reason it should be
+                    # gitignored in the first place, silently dropping the
+                    # source document from the corpus. The ignore check exists
+                    # to keep USER files out of the scan, not to filter output
+                    # this same pass just produced from an already-admitted file.
+                    if _ignored_for_scan(md_path) and not md_path.is_relative_to(converted_dir):
                         continue
                     files[ftype].append(str(md_path))
                     total_words += _wc(md_path)
@@ -1917,7 +2135,10 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             if p.suffix.lower() in OFFICE_EXTENSIONS:
                 md_path = convert_office_file(p, converted_dir, root=root)
                 if md_path:
-                    if _ignored_for_scan(md_path):
+                    # #3504: see the matching comment in the Google Workspace
+                    # branch above -- same sidecar-under-a-gitignored-output-dir
+                    # trap, same exemption.
+                    if _ignored_for_scan(md_path) and not md_path.is_relative_to(converted_dir):
                         continue
                     files[ftype].append(str(md_path))
                     total_words += _wc(md_path)
@@ -2063,23 +2284,117 @@ def _to_relative_for_storage(key: str, root: Path) -> str:
     return rel.replace(os.sep, "/")
 
 
+_DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _looks_absolute(key: str) -> bool:
+    """True if ``key`` is absolute under ANY platform's path syntax, not
+    just the current one.
+
+    ``Path.is_absolute()`` only recognizes the CURRENT platform's own
+    syntax: a POSIX-style ``/abs/path`` key loaded on Windows (or a
+    ``C:\\...``/UNC key loaded on POSIX) is wrongly judged relative, and
+    :func:`_to_absolute_from_storage` then joins it onto ``root`` instead of
+    leaving it alone — silently producing a nonsense path rather than the
+    unreachable-but-at-least-recognizable foreign one (#1964 review: a
+    manifest genuinely can move between platforms, per this module's own
+    "mix of call sites/versions" scope).
+    """
+    return (
+        Path(key).is_absolute()
+        or key.startswith(("/", "\\"))
+        or bool(_DRIVE_LETTER_RE.match(key))
+    )
+
+
+def _normpath_own_flavor(key: str) -> str:
+    """``normpath`` an absolute ``key`` under its OWN platform's syntax.
+
+    ``os.path.normpath`` applies the current platform's rules, so on Windows
+    it rewrites a POSIX key ``/home/u/foo.py`` to ``\\home\\u\\foo.py`` —
+    a string POSIX can no longer read back, since ``posixpath`` does not
+    treat ``\\`` as a separator. Pick the flavor from the key itself: a
+    drive letter or leading backslash is Windows, a leading ``/`` that the
+    current platform does not consider absolute is POSIX.
+    """
+    if Path(key).is_absolute():
+        return os.path.normpath(key)
+    if key.startswith("\\") or _DRIVE_LETTER_RE.match(key):
+        return ntpath.normpath(key)
+    return posixpath.normpath(key)
+
+
 def _to_absolute_from_storage(key: str, root: Path) -> str:
     """Inverse of :func:`_to_relative_for_storage`.
 
     Re-anchor a stored key against ``root``. Already-absolute keys
-    (legacy manifests, out-of-root entries) pass through unchanged so
-    that newly-loaded manifests from before this change remain readable.
+    (legacy manifests, out-of-root entries, or a foreign-platform key —
+    see :func:`_looks_absolute`) are not re-anchored, so that newly-loaded
+    manifests from before this change remain readable; they are only
+    dot-segment normalized under their own platform's syntax
+    (:func:`_normpath_own_flavor`).
     Uses ``Path(root).resolve()`` so the produced absolute path matches
     what :func:`detect` returns (which also resolves the scan root).
     NFC both sides so a relative key and an NFD-resolved root still join
     to the same string form the rest of the manifest path uses (#2221).
+
+    The joined result is lexically normalized (``os.path.normpath``, not
+    ``.resolve()``) so a stray ``..``/``.`` segment collapses to the same
+    string an equivalent absolute key would use — otherwise two keys for
+    the same file (one absolute, one relative-with-dot-segments, the kind
+    of mismatch a foreign tool or an older graphify version can leave
+    behind, per this function's own caller) fail to canonicalize to the
+    same value and the duplicate collapse this function exists for misses
+    them (#1964 review). Only the key's own dot segments are normalized,
+    never symlinks — ``normpath`` never touches the filesystem, matching
+    :func:`_to_relative_for_storage`'s own choice not to resolve the key.
     """
-    p = Path(key)
-    if p.is_absolute():
-        return str(p)
+    if _looks_absolute(key):
+        return _normpath_own_flavor(key)
     # NFC the joined result so an NFD-resolved root + relative key lands on
     # the same form load_manifest / detect_incremental compare against.
-    return _nfc(str(Path(root).resolve() / p))
+    return _nfc(os.path.normpath(str(Path(root).resolve() / Path(key))))
+
+
+def _collapse_manifest_duplicates(
+    items: Iterable[tuple[str, Any]], key_fn: Callable[[str], str]
+) -> dict[str, Any]:
+    """Canonicalize each raw key via ``key_fn``, keeping the more recently
+    observed entry when two distinct raw keys collapse to the same
+    canonical one (#1964).
+
+    A manifest written across a mix of graphify versions/call sites — some
+    passing ``root`` to relativize keys, some not (an outdated installed
+    skill runbook, for one) — can end up with both an absolute and a
+    relative key for the same file, each carrying different data. A plain
+    dict comprehension over such a manifest silently keeps whichever raw
+    key happens to iterate last, an artifact of on-disk JSON key order that
+    has nothing to do with which entry is actually current — so a fresher
+    hash could be discarded in favor of a stale one purely because of how
+    the keys happened to accumulate, letting detect_incremental() call a
+    genuinely changed file unchanged.
+
+    Ties are broken by each entry's own ``seen`` timestamp (when present on
+    both sides and they disagree) rather than iteration order, since that
+    field exists specifically to record when an entry was last confirmed
+    current. Legacy scalar/partial entries (no ``seen``, or either side not
+    a dict) fall back to the historical last-wins behavior, unchanged.
+    """
+    result: dict[str, Any] = {}
+    for k, v in items:
+        canonical = key_fn(k)
+        if canonical in result:
+            prev = result[canonical]
+            prev_seen = prev.get("seen") if isinstance(prev, dict) else None
+            new_seen = v.get("seen") if isinstance(v, dict) else None
+            if (
+                isinstance(prev_seen, (int, float))
+                and isinstance(new_seen, (int, float))
+                and new_seen < prev_seen
+            ):
+                continue
+        result[canonical] = v
+    return result
 
 
 def load_manifest(
@@ -2105,8 +2420,10 @@ def load_manifest(
     if not isinstance(raw, dict):
         return raw
     if root is None:
-        return {_nfc(k): v for k, v in raw.items()}
-    return {_nfc(_to_absolute_from_storage(k, root)): v for k, v in raw.items()}
+        return _collapse_manifest_duplicates(raw.items(), _nfc)
+    return _collapse_manifest_duplicates(
+        raw.items(), lambda k: _nfc(_to_absolute_from_storage(k, root))
+    )
 
 
 def save_manifest(
@@ -2313,10 +2630,15 @@ def save_manifest(
         # their absolute form so the manifest round-trips on the saving
         # machine even when not every entry can be portably encoded.
         # NFC after relativize so on-disk keys match what load_manifest
-        # re-anchors and compares against (#2221).
-        manifest = {_nfc(_to_relative_for_storage(k, root)): v for k, v in manifest.items()}
+        # re-anchors and compares against (#2221). A seeded absolute key and
+        # a seeded relative key for the same file collapse here too (#1964)
+        # -- _collapse_manifest_duplicates keeps whichever is more recently
+        # seen instead of whichever the dict comprehension iterates last.
+        manifest = _collapse_manifest_duplicates(
+            manifest.items(), lambda k: _nfc(_to_relative_for_storage(k, root))
+        )
     else:
-        manifest = {_nfc(k): v for k, v in manifest.items()}
+        manifest = _collapse_manifest_duplicates(manifest.items(), _nfc)
 
     # Avoid rewriting manifest.json when the serialized payload is identical (#2838).
     manifest_p = Path(manifest_path)
@@ -2372,6 +2694,7 @@ def detect_incremental(
     kind: str = "semantic",
     extra_excludes: list[str] | None = None,
     gitignore: bool = True,
+    cache_root: Path | None = None,
 ) -> dict:
     """Like detect(), but returns only new or modified files since the last run.
 
@@ -2394,6 +2717,13 @@ def detect_incremental(
     symlinked sub-trees are scanned consistently between full and incremental
     runs. ``None`` (default) does not follow symlinked directories; callers must
     opt in explicitly, and resolved targets outside the scan root are skipped.
+
+    ``cache_root`` is forwarded to :func:`detect`'s own word-count cache the
+    same way the fresh-scan (non-incremental) call site already does. Without
+    it, an incremental run with a ``--out`` destination outside the scan root
+    falls back to anchoring the cache at the scan root itself, leaking
+    ``graphify-out/cache/stat-index.json`` there even though the fresh-scan
+    path stays clean (#3847).
     """
     full = detect(
         root,
@@ -2401,6 +2731,7 @@ def detect_incremental(
         google_workspace=google_workspace,
         extra_excludes=extra_excludes,
         gitignore=gitignore,
+        cache_root=cache_root,
     )
     # Pass ``root`` so a manifest written with relative keys (post-#777) is
     # re-anchored to the absolute form the rest of this function compares

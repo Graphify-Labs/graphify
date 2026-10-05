@@ -304,3 +304,84 @@ def test_merge_graphs_community_offset_is_byte_reproducible(tmp_path):
     assert _run(["merge-graphs", str(a), str(b), "--out", str(out1)], tmp_path).returncode == 0
     assert _run(["merge-graphs", str(a), str(b), "--out", str(out2)], tmp_path).returncode == 0
     assert out1.read_bytes() == out2.read_bytes(), "same-order merge is not byte-reproducible"
+
+
+def test_merge_graphs_previous_restores_the_real_merged_community(tmp_path):
+    """#3858: each input numbers its own communities from 0, so a fresh merge's
+    `community` field is per-source ids with no relation to the previous
+    MERGED clustering a labels sidecar was built against. --previous restores
+    the real previous merged community (by node id), not the per-source one,
+    so a later cluster-only run's label-reuse remap aligns correctly."""
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    _write_with_communities(a, [("a0", 0), ("a1", 1)])
+    _write_with_communities(b, [("b0", 0), ("b1", 1)])
+
+    # A previous merged output, from before alpha's source gained a node: the
+    # real merged clustering the labels sidecar was actually written against.
+    previous = tmp_path / "previous-merged.json"
+    _write_with_communities(previous, [
+        ("alpha::a0", 7), ("alpha::a1", 7), ("beta::b0", 12), ("beta::b1", 13),
+    ])
+
+    out = tmp_path / "merged.json"
+    r = _run(
+        ["merge-graphs", str(a), str(b), "--out", str(out), "--previous", str(previous)],
+        tmp_path,
+    )
+    assert r.returncode == 0, r.stderr
+    data = json.loads(out.read_text())
+    by_id = {n["id"]: n for n in data["nodes"]}
+    # The real previous merged community wins, not the fresh per-source offset.
+    assert by_id["alpha::a0"]["community"] == 7
+    assert by_id["alpha::a1"]["community"] == 7
+    assert by_id["beta::b0"]["community"] == 12
+    assert by_id["beta::b1"]["community"] == 13
+    # The per-source partition stays available for anything that wants it.
+    assert by_id["beta::b0"]["local_community"] == 0
+    assert by_id["beta::b1"]["local_community"] == 1
+
+
+def test_merge_graphs_previous_drops_community_for_a_new_node(tmp_path):
+    """A node that did not exist in the previous merge has no real previous
+    community to restore, and must not keep the fresh per-source offset
+    either — a stale/invented community id is worse than none (cluster-only
+    already handles a node with no community)."""
+    a = tmp_path / "alpha" / "graphify-out" / "graph.json"
+    b = tmp_path / "beta" / "graphify-out" / "graph.json"
+    _write_with_communities(a, [("a0", 0), ("a1", 1)])
+    _write_with_communities(b, [("b0", 0)])
+
+    previous = tmp_path / "previous-merged.json"
+    _write_with_communities(previous, [("alpha::a0", 7), ("alpha::a1", 7)])
+
+    out = tmp_path / "merged.json"
+    r = _run(
+        ["merge-graphs", str(a), str(b), "--out", str(out), "--previous", str(previous)],
+        tmp_path,
+    )
+    assert r.returncode == 0, r.stderr
+    data = json.loads(out.read_text())
+    by_id = {n["id"]: n for n in data["nodes"]}
+    assert by_id["alpha::a0"]["community"] == 7
+    assert "community" not in by_id["beta::b0"]
+
+
+def test_merge_graphs_previous_malformed_json_errors_gracefully(tmp_path):
+    """A malformed --previous file must fail with a clear message and exit 1,
+    not crash with an uncaught JSONDecodeError traceback."""
+    a = tmp_path / "r1" / "graphify-out" / "graph.json"
+    b = tmp_path / "r2" / "graphify-out" / "graph.json"
+    _write(a, directed=False, multigraph=False, node_id="x")
+    _write(b, directed=False, multigraph=False, node_id="y")
+    out = tmp_path / "merged.json"
+    previous = tmp_path / "previous.json"
+    previous.write_text("{ not valid json ,,, ")
+
+    r = _run(
+        ["merge-graphs", str(a), str(b), "--out", str(out), "--previous", str(previous)],
+        tmp_path,
+    )
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "--previous file is not readable JSON" in r.stderr
+    assert "Traceback" not in r.stderr

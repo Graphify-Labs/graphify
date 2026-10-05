@@ -182,3 +182,24 @@ def test_unknown_relation_is_treated_as_specific():
                   [_edge("references"), _edge("custom_rel")]):
         G = build_from_json(_extraction(order))
         assert _relation(G) == "custom_rel", f"order {[e['relation'] for e in order]}"
+
+
+def test_same_relation_collision_preserves_extracted_over_inferred():
+    """An EXTRACTED AST edge must not be downgraded by a later INFERRED edge."""
+    for order in (
+        [
+            _edge("calls", confidence="EXTRACTED", confidence_score=1.0, source_file="a.py", source_location="L724"),
+            _edge("calls", confidence="INFERRED", confidence_score=0.95, source_file="note.md", source_location=None),
+        ],
+        [
+            _edge("calls", confidence="INFERRED", confidence_score=0.95, source_file="note.md", source_location=None),
+            _edge("calls", confidence="EXTRACTED", confidence_score=1.0, source_file="a.py", source_location="L724"),
+        ],
+    ):
+        G = build_from_json(_extraction(order))
+        d = edge_data(G, "a", "b")
+        assert d.get("relation") == "calls"
+        assert d.get("confidence") == "EXTRACTED"
+        assert d.get("confidence_score") == 1.0
+        assert d.get("source_file") == "a.py"
+        assert d.get("source_location") == "L724"

@@ -94,6 +94,48 @@ def test_self_loops_dropped_after_merge():
     assert result_edges == []
 
 
+def test_preexisting_self_loops_preserved_after_unrelated_merge():
+    # #3809: Pre-existing self-loops (e.g. recursive calls, self-referencing FKs)
+    # must survive entity deduplication even when an unrelated merge occurs.
+    # Only self-loops created by the merge itself should be dropped.
+    nodes = [
+        {"id": "walk", "label": "walk()", "source_file": "src/tree.py", "file_type": "code"},
+        {"id": "categories", "label": "categories", "source_file": "schema.sql", "file_type": "code"},
+        {"id": "cache", "label": "Cache", "source_file": "docs/guide.md", "file_type": "concept"},
+        {"id": "cache_2", "label": "cache", "source_file": "docs/guide.md", "file_type": "concept"},
+    ]
+    edges = [
+        {"source": "walk", "target": "walk", "relation": "calls"},
+        {"source": "categories", "target": "categories", "relation": "references"},
+        # An edge between the duplicate concepts that collapses upon merge
+        {"source": "cache_2", "target": "cache", "relation": "references"},
+    ]
+    _, result_edges = deduplicate_entities(nodes, edges, communities={})
+
+    loops = [(e["source"], e["target"], e.get("relation")) for e in result_edges if e["source"] == e["target"]]
+    assert ("walk", "walk", "calls") in loops
+    assert ("categories", "categories", "references") in loops
+    # The collapsed edge cache_2 -> cache must NOT produce a self-loop
+    assert len(loops) == 2
+
+
+def test_preexisting_self_loop_on_merged_node_rewires_to_winner():
+    # If a merged node itself had a pre-existing self-loop, the self-loop
+    # is rewired to the winner, not dropped.
+    nodes = [
+        {"id": "cache", "label": "Cache", "source_file": "docs/guide.md", "file_type": "concept"},
+        {"id": "cache_2", "label": "cache", "source_file": "docs/guide.md", "file_type": "concept"},
+    ]
+    edges = [
+        {"source": "cache_2", "target": "cache_2", "relation": "references"},
+    ]
+    _, result_edges = deduplicate_entities(nodes, edges, communities={})
+    assert len(result_edges) == 1
+    assert result_edges[0]["source"] == "cache"
+    assert result_edges[0]["target"] == "cache"
+
+
+
 def test_community_boost_aids_merge():
     # Two nodes in same community with score in 0.75-0.85 zone get boosted
     nodes = _make_nodes("AuthManager", "Auth Manager")
@@ -523,6 +565,62 @@ def test_absolute_source_path_still_defines_id(capsys):
     assert len(result_nodes) == 1
     assert result_nodes[0]["label"] == "make-batch-fixtures agent"
     assert "WARNING" not in capsys.readouterr().err
+
+
+# ── #3352: non-Latin source paths must still define their own id ─────────────
+# _id_prefixes reimplemented id slugification with an ASCII-only regex instead
+# of the canonical normalize_id every real extractor mints an id with, so a
+# path segment made of Korean, CJK, or Cyrillic characters collapsed to
+# nothing instead of being preserved. The reconstructed prefix then never
+# matched the id actually minted for that file, so the defining page lost the
+# definer-wins tiebreak to a page that merely references the same entity.
+
+def test_id_prefixes_preserves_non_latin_segments():
+    from graphify.dedup import _id_prefixes
+    prefixes = _id_prefixes("concepts/작업 단위 폴더 + README 진입점 컨벤션.md")
+    assert "concepts_작업_단위_폴더_readme_진입점_컨벤션" in prefixes
+    assert "작업_단위_폴더_readme_진입점_컨벤션" in prefixes
+
+
+_KOREAN_DEFINING = {
+    "id": "concepts_작업_단위_폴더_readme_진입점_컨벤션",
+    "label": "README 진입점 컨벤션", "file_type": "concept",
+    "source_file": "concepts/작업 단위 폴더 + README 진입점 컨벤션.md",
+}
+_KOREAN_REFERENCING = {
+    "id": "concepts_작업_단위_폴더_readme_진입점_컨벤션",
+    "label": "README 진입점 컨벤션", "file_type": "concept",
+    "source_file": "concepts/LLM Schema - CLAUDE.md를 가이드로 활용하기.md",
+}
+
+
+def test_defines_id_recognizes_a_non_latin_path():
+    assert _defines_id(_KOREAN_DEFINING)
+    assert not _defines_id(_KOREAN_REFERENCING)
+
+
+@pytest.mark.parametrize("nodes", [
+    [_KOREAN_DEFINING, _KOREAN_REFERENCING],
+    [_KOREAN_REFERENCING, _KOREAN_DEFINING],
+], ids=["definition-first", "reference-first"])
+def test_korean_defining_file_wins_over_referencing_file(nodes):
+    """The issue's own repro shape: the page that defines a concept must keep
+    its own node instead of losing it to a page that merely mentions it."""
+    result_nodes, _ = deduplicate_entities(list(nodes), [], communities={})
+
+    assert len(result_nodes) == 1
+    assert result_nodes[0]["source_file"] == (
+        "concepts/작업 단위 폴더 + README 진입점 컨벤션.md"
+    )
+
+
+def test_id_prefixes_ascii_path_unchanged():
+    """Negative control: an ordinary ASCII path's reconstructed prefixes must
+    be identical to what the old ASCII only regex produced."""
+    from graphify.dedup import _id_prefixes
+    assert _id_prefixes("docs/v1/api/README.md") == {
+        "readme", "api_readme", "v1_api_readme", "docs_v1_api_readme",
+    }
 
 
 def test_same_file_relabel_is_noted(capsys):
@@ -1248,24 +1346,22 @@ def test_reads_as_file_entity_helper():
 
 
 def test_dedup_merges_crossfile_document_entity_variants():
-    """The reported bug (#296): case/prefix variants of one entity, extracted
-    from three different notes and typed `document` by extension, must collapse
-    to a single node."""
+    """Unstamped document nodes that share a label stay one node per file.
+
+    The exact pass calls the same cross-file block as the fuzzy pass (#3094).
+    Three notes no longer collapse to one node.
+    """
     nodes = [
         {"id": "journal_2024_03_0%d_cyrilxbt" % i, "label": variant,
          "file_type": "document", "source_file": "journal/2024-03-0%d.md" % i}
         for i, variant in enumerate(_CYRIL_VARIANTS, start=1)
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
-    assert len(result_nodes) == 1, (
-        "cross-file `document` entity variants did not merge -- the #296 gate "
-        "widening is not reaching Pass 1's cross-file residue"
-    )
+    assert len(result_nodes) == 3
 
 
 def test_dedup_merges_crossfile_rationale_entity_variants():
-    """`rationale` rides the same gate as `document` (#296): entity nodes of
-    that type, provably not their files' own nodes, merge on an exact label."""
+    """Unstamped rationale nodes that share a label stay one node per file (#3094)."""
     nodes = [
         {"id": "svc_alpha_py_retention_window", "label": "Retention Window",
          "file_type": "rationale", "source_file": "svc/alpha.py"},
@@ -1273,7 +1369,7 @@ def test_dedup_merges_crossfile_rationale_entity_variants():
          "file_type": "rationale", "source_file": "svc/beta.py"},
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
-    assert len(result_nodes) == 1
+    assert len(result_nodes) == 2
 
 
 def test_dedup_never_merges_a_files_own_node_away():
@@ -1336,10 +1432,11 @@ def test_dedup_crossfile_entity_merge_keeps_the_provenance_gate():
 
 
 def test_dedup_crossfile_fuzzy_fileanchored_block_is_untouched():
-    """#296 widens only the exact-normalization pass. Pass 2's fuzzy
-    `_crossfile_fileanchored_blocked` is unchanged, so near-identical (not
-    identical) document labels in different files still stay distinct -- the
-    #1284 guard keeps doing its job on entity nodes too."""
+    """Pass 2 still refuses near-identical document labels in different files.
+
+    The exact pass now calls the same block (#3094). This pair is not an exact
+    label match, so only the fuzzy pass can see it, and the block keeps both nodes.
+    """
     nodes = [
         {"id": "docs_a_guide", "label": "Getting Started Installation Guide",
          "file_type": "document", "source_file": "docs/a.md"},
@@ -1348,6 +1445,75 @@ def test_dedup_crossfile_fuzzy_fileanchored_block_is_untouched():
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
     assert len(result_nodes) == 2
+
+
+def _doc(node_id, label, source_file, file_type="document"):
+    return {
+        "id": node_id,
+        "label": label,
+        "file_type": file_type,
+        "source_file": source_file,
+        "source_location": None,
+    }
+
+
+def test_exact_pass_keeps_unstamped_documents_across_files(tmp_path, capsys):
+    """The 0.9.66 script: five unstamped document nodes, three source files."""
+    from graphify.build import build_merge
+
+    extraction = {"nodes": [
+        _doc("a_decisions", "Decisions", "Sessions/session-A.md"),
+        _doc("b_decisions", "Decisions", "Sessions/session-B.md"),
+        _doc("c_decisions", "Decisions", "Sessions/session-C.md"),
+        _doc("a_open_items", "Open items", "Sessions/session-A.md"),
+        _doc("b_open_items", "Open items", "Sessions/session-B.md"),
+    ], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+    graph = build_merge(
+        [extraction],
+        graph_path=tmp_path / "missing.json",
+        dedup=True,
+    )
+    files = {data.get("source_file") for _, data in graph.nodes(data=True)}
+    assert graph.number_of_nodes() == 5
+    assert files == {
+        "Sessions/session-A.md",
+        "Sessions/session-B.md",
+        "Sessions/session-C.md",
+    }
+    assert "Deduplicated" not in capsys.readouterr().out
+
+
+def test_exact_pass_still_merges_same_file_document_duplicate():
+    nodes = [
+        _doc("a1", "Decisions", "Sessions/session-A.md"),
+        _doc("a2", "Decisions", "Sessions/session-A.md"),
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_exact_pass_still_merges_crossfile_concepts():
+    nodes = [
+        _doc("c1", "Decisions", "Sessions/session-A.md", file_type="concept"),
+        _doc("c2", "Decisions", "Sessions/session-B.md", file_type="concept"),
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_exact_pass_merges_concepts_beside_a_blocked_document():
+    """A document winner must not leave the two concept nodes unjoined."""
+    nodes = [
+        _doc("a", "Decisions", "Sessions/session-A.md"),
+        _doc("c1", "Decisions", "Sessions/session-B.md", file_type="concept"),
+        _doc("c2", "Decisions", "Sessions/session-C.md", file_type="concept"),
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    kinds = sorted(node["file_type"] for node in result_nodes)
+    ids = {node["id"] for node in result_nodes}
+    assert len(result_nodes) == 2
+    assert kinds == ["concept", "document"]
+    assert "a" in ids
 
 
 def test_dedup_never_merges_repeated_headings_across_files():
