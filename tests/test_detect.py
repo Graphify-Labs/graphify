@@ -3652,6 +3652,67 @@ def test_detect_incremental_exclusion_stable_across_runs(tmp_path):
     assert inc2["excluded_files"] == []
 
 
+# ── #3785: Multi-directory manifest scoping and out-of-root deletion filter ──
+
+def test_detect_incremental_subfolder_ignores_out_of_root_manifest_entries(tmp_path):
+    """#3785: detect_incremental() on a subfolder must ignore manifest entries
+    belonging to other subdirectories or parent directories, neither reporting
+    them as deleted nor as excluded."""
+    workspace = tmp_path / "workspace"
+    sub_a = workspace / "workflows"
+    sub_b = workspace / "experts"
+    sub_a.mkdir(parents=True)
+    sub_b.mkdir(parents=True)
+
+    wf_file = sub_a / "workflow.py"
+    exp_file = sub_b / "expert.py"
+    wf_file.write_text("def run(): pass\n", encoding="utf-8")
+    exp_file.write_text("def consult(): pass\n", encoding="utf-8")
+
+    manifest_path = str(workspace / "graphify-out" / "manifest.json")
+
+    # Step 1: Workspace root or sibling subfolder is graphed
+    full = detect(workspace)
+    save_manifest(full["files"], manifest_path=manifest_path, root=workspace)
+
+    # Step 2: Incremental update on subfolder A only
+    inc_a = detect_incremental(sub_a, manifest_path=manifest_path)
+    assert inc_a["deleted_files"] == [], f"Unexpected false deletions: {inc_a['deleted_files']}"
+    assert inc_a["excluded_files"] == [], f"Unexpected false exclusions: {inc_a['excluded_files']}"
+
+
+def test_detect_incremental_cross_subfolder_shared_manifest(tmp_path):
+    """#3785: Sequential runs on distinct subfolders against a shared manifest
+    must preserve each other's entries so neither run clobbers the other or
+    reports false deletions."""
+    workspace = tmp_path / "workspace"
+    sub_a = workspace / "workflows"
+    sub_b = workspace / "experts"
+    sub_a.mkdir(parents=True)
+    sub_b.mkdir(parents=True)
+
+    (sub_a / "workflow.py").write_text("def run(): pass\n", encoding="utf-8")
+    (sub_b / "expert.py").write_text("def consult(): pass\n", encoding="utf-8")
+
+    manifest_path = str(workspace / "graphify-out" / "manifest.json")
+
+    # Run 1: Graph sub_b
+    full_b = detect(sub_b)
+    save_manifest(full_b["files"], manifest_path=manifest_path, root=sub_b)
+
+    # Run 2: Incremental update on sub_a
+    inc_a = detect_incremental(sub_a, manifest_path=manifest_path)
+    assert inc_a["deleted_files"] == []
+    assert inc_a["excluded_files"] == []
+    save_manifest(inc_a["files"], manifest_path=manifest_path, root=sub_a)
+
+    # Run 3: Incremental update on sub_b must still find its files unchanged
+    inc_b2 = detect_incremental(sub_b, manifest_path=manifest_path)
+    assert inc_b2["deleted_files"] == []
+    assert inc_b2["excluded_files"] == []
+    assert inc_b2["new_files"]["code"] == []
+
+
 # ── #2838: manifest seen timestamps preserved for unchanged entries ──
 
 def test_save_manifest_unchanged_file_preserves_seen(tmp_path):

@@ -22,7 +22,7 @@ from graphify.google_workspace import (
     convert_google_workspace_file,
     google_workspace_enabled,
 )
-from graphify.paths import GRAPHIFY_OUT, out_path
+from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
 
 
 class FileType(str, Enum):
@@ -2397,6 +2397,27 @@ def _collapse_manifest_duplicates(
     return result
 
 
+def _manifest_storage_anchor(manifest_path: str | Path | None, root: Path | None) -> Path | None:
+    """When a manifest lives under <repo>/graphify-out/manifest.json and root
+    is a subfolder of <repo>, stored relative keys are anchored to <repo> (#3785)."""
+    if root is None or not manifest_path:
+        return root
+    try:
+        mp = Path(manifest_path).resolve()
+        if mp.parent.name in ("graphify-out", GRAPHIFY_OUT_NAME):
+            manifest_base = mp.parent.parent
+            root_resolved = Path(root).resolve()
+            if root_resolved != manifest_base:
+                try:
+                    root_resolved.relative_to(manifest_base)
+                    return manifest_base
+                except ValueError:
+                    pass
+    except (OSError, RuntimeError):
+        pass
+    return root
+
+
 def load_manifest(
     manifest_path: str = _MANIFEST_PATH,
     *,
@@ -2421,8 +2442,9 @@ def load_manifest(
         return raw
     if root is None:
         return _collapse_manifest_duplicates(raw.items(), _nfc)
+    anchor = _manifest_storage_anchor(manifest_path, root) or root
     return _collapse_manifest_duplicates(
-        raw.items(), lambda k: _nfc(_to_absolute_from_storage(k, root))
+        raw.items(), lambda k: _nfc(_to_absolute_from_storage(k, anchor))
     )
 
 
@@ -2624,18 +2646,10 @@ def save_manifest(
             "semantic_hash": sem_h,
         }
         manifest[key] = entry
-    if root is not None:
-        # Persist in portable form: forward-slash relative paths. Keys outside
-        # ``root`` (out-of-tree symlinked corpora, --include sources) keep
-        # their absolute form so the manifest round-trips on the saving
-        # machine even when not every entry can be portably encoded.
-        # NFC after relativize so on-disk keys match what load_manifest
-        # re-anchors and compares against (#2221). A seeded absolute key and
-        # a seeded relative key for the same file collapse here too (#1964)
-        # -- _collapse_manifest_duplicates keeps whichever is more recently
-        # seen instead of whichever the dict comprehension iterates last.
+    storage_root = _manifest_storage_anchor(manifest_path, root) if root is not None else None
+    if storage_root is not None:
         manifest = _collapse_manifest_duplicates(
-            manifest.items(), lambda k: _nfc(_to_relative_for_storage(k, root))
+            manifest.items(), lambda k: _nfc(_to_relative_for_storage(k, storage_root))
         )
     else:
         manifest = _collapse_manifest_duplicates(manifest.items(), _nfc)
@@ -2813,10 +2827,32 @@ def detect_incremental(
     # current scan was EXCLUDED (ignore rules / --exclude changed) and must
     # not be reported as deleted. Mirrors the watch-side excluded-vs-deleted
     # distinction (#1795).
+    try:
+        root_res: Path | None = Path(root).resolve() if root is not None else None
+    except (OSError, RuntimeError):
+        root_res = Path(root) if root is not None else None
+
+    def _in_root(path_str: str) -> bool:
+        if root_res is None:
+            return True
+        p = Path(path_str)
+        try:
+            p.relative_to(root_res)
+            return True
+        except ValueError:
+            pass
+        try:
+            p.resolve().relative_to(root_res)
+            return True
+        except (ValueError, OSError, RuntimeError):
+            return False
+
     current_files = {_nfc(f) for flist in full["files"].values() for f in flist}
     deleted_files: list[str] = []
     excluded_files: list[str] = []
     for f in manifest:
+        if not _in_root(f):
+            continue
         if _nfc(f) in current_files:
             continue
         try:
