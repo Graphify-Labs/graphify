@@ -9,6 +9,7 @@ now raises/exits 1; the default computed root and partial matches stay exit 0.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -111,3 +112,19 @@ def test_tree_cli_partial_match_root_succeeds(tmp_path):
     r = _run(["tree", "--root", "pkg"], tmp_path)
     assert r.returncode == 0, r.stderr
     assert (tmp_path / "graphify-out" / "GRAPH_TREE.html").exists()
+
+
+def test_emit_html_escapes_script_data_sequences_in_embedded_json():
+    """#4124: an unclosed `<!--` followed by `<script` in the embedded JSON kept the
+    real `</script>` from closing the data block. No `<` may reach it verbatim."""
+    from graphify.tree_html import emit_html
+
+    tree = {"name": "root", "children": [
+        {"name": "An unclosed <!-- opener"},
+        {"name": "Then a <script setup> heading"},
+    ]}
+    html = emit_html(tree, title="t", header="h")
+    m = re.search(r"const initialJsonData = (.*?);\n", html)
+    assert m, "initialJsonData not found in HTML"
+    assert "<" not in m.group(1)
+    assert json.loads(m.group(1)) == tree

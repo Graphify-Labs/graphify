@@ -613,9 +613,11 @@ def to_html(
         n = member_counts.get(cid, len(communities.get(cid, []))) if member_counts else len(communities.get(cid, []))
         legend_data.append({"cid": cid, "color": color, "label": lbl, "count": n})
 
-    # Escape </script> sequences so embedded JSON cannot break out of the script tag
+    # Escape every "<" so embedded JSON cannot break out of the script tag: besides
+    # "</script", an unclosed "<!--" followed by "<script" keeps the real </script>
+    # from closing the element (#4124). JSON/JS decode < back to "<".
     def _js_safe(obj) -> str:
-        return json.dumps(obj).replace("</", "<\\/")
+        return json.dumps(obj).replace("<", "\\u003c")
 
     nodes_json = _js_safe(vis_nodes)
     edges_json = _js_safe(vis_edges)
