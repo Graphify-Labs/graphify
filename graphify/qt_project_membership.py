@@ -122,6 +122,17 @@ def _remove_owned_edges(edges, site_id):
                 and (edge.get("source") == site_id or edge.get("target") == site_id))]
 
 
+def _accepted_input_source(path: Path | str, root: Path) -> str | None:
+    """Compare physical input identity without rewriting stored lexical provenance."""
+    # The facade canonicalizes its root before joining source facts. Platform
+    # aliases (Windows short names or a symlinked temporary-directory parent)
+    # must identify the same accepted file, while outside-root targets still fail.
+    try:
+        return Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def resolve_project_memberships(results, nodes, edges, *, root: Path, project_index,
                                 fresh_ast_ids=()):
     """Append fresh source-owned sites and replace stale derived scratch records.
@@ -140,7 +151,7 @@ def resolve_project_memberships(results, nodes, edges, *, root: Path, project_in
     derived_nodes, derived_edges = [], []
     for _, path, result, declaration, metadata in sorted(declarations, key=lambda item: item[0]):
         file = source_path(declaration, Path(root))
-        if (file is None or file != source_path({"source_file": str(path)}, Path(root))
+        if (file is None or file != _accepted_input_source(path, root)
                 or declaration["id"] not in project_index.nodes):
             raise ValueError("QML_METADATA: membership declaration source is not accepted")
         span = _span(metadata)

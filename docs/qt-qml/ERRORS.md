@@ -17,7 +17,7 @@ relative/bounded; messages omit source content and dependency exception details.
 | QML_ROOT_MISMATCH | error | Unsafe scoped-ID subfolder rebase | Update absolute project root |
 | QML_ROOT | error | Source is outside explicit root | Use an accepted source within the scan root |
 | QML_RESOLUTION_FAILED | error | Project join raises | Correct join failure, retry; graph publication is rejected |
-| QML_METADATA | rejection prefix | Invalid literal-transport map, field type, base64 or UTF-8 | Re-extract valid source facts; joins surface the failure as QML_RESOLUTION_FAILED |
+| QML_METADATA | rejection prefix | Invalid literal-transport map, field type, base64/UTF-8 or rejected membership declaration/input identity | Restore readable accepted input and re-extract valid source facts; joins surface the failure as QML_RESOLUTION_FAILED |
 | QML-META-001 | error | Malformed/unsupported qmldir directive | Correct directive to supported literal subset |
 | QML-META-002 | error | Metadata read/root/size failure | Restore readable in-root metadata |
 | QML-RESOLVE-001 | coverage | Unavailable/ambiguous/dynamic lookup site | Supply supported corpus evidence; no guessed edge is emitted |
@@ -144,7 +144,23 @@ are successful view states, not HTML publication failures.
 
 ## Project-membership coverage (INC-QML-14)
 
-Status: **Locally complete; Verified within the bounded static source profile**.
+INC-QML-39 compares supplied input identity inside the canonical root. Valid
+short-path and parent-directory aliases no longer cause a false join failure.
+Foreign/conflicting input identity retains the bounded `QML_METADATA` rejection
+and owning `QML_RESOLUTION_FAILED` publication guard. Persistent path-resolution
+failure is bounded at the membership helper, but the pipeline diagnostic handler
+can resolve it again and expose the backend exception. INC-QML-41 owns that
+reproduced diagnostic gap; complete bounded failure annotation is not yet verified.
+Rejected updates preserve prior graph/manifest/root/Qt-state products; restore accessible,
+matching accepted inputs before retrying. Path metadata resolution neither opens
+new source content nor expands the corpus. The membership helper omits raw OS
+exception bodies; INC-QML-41 must preserve that boundary through publication.
+
+The initial INC-QML-14 profile is locally verified. INC-QML-39 adds accepted
+input-alias coverage; focused/broader source regressions pass. A fresh artifact
+reproduces the separate facade gap assigned to INC-QML-40; complete installed alias
+and current hosted proof remain pending. Current Qt policy 18 and AST schema 12 are unchanged
+by this correction.
 `membership_resolution` sites retain the
 source declaration, original span, bounded evidence/candidates and status/reason.
 Missing, duplicate, conditional, generated or out-of-root targets retain ordinary
@@ -155,8 +171,8 @@ reading a new path or executing a build/QML/plugin to obtain a target.
 Invalid metadata/transport or unexpected projection failure uses the existing
 reader diagnostics or `QML_RESOLUTION_FAILED` pipeline guard. No new parser code,
 logger or publication bypass is introduced. Prior durable products remain subject
-to the normal failure-retention boundary, including force. Qt policy 6 with AST
-schema 7 unchanged has local same-version refresh, failed-refresh retention,
+to the normal failure-retention boundary, including force. The initial
+INC-QML-14 Qt policy 6 with AST schema 7 has local same-version refresh, failed-refresh retention,
 corrected retry and repeat proof. The reviewed installed public fixture rejects
 malformed qrc under force/partial options while retaining graph, manifest, analysis
 state and root marker; repaired and repeated updates succeed. Earlier policy-5

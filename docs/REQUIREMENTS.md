@@ -269,7 +269,7 @@ Malformed input, missing parser, partial extraction, and failed resolution canno
 
 **Acceptance Criteria**
 
-1 - Missing parser, malformed source and a forced extractor/resolver failure produce bounded, stage-specific diagnostics and an explicit incomplete status. (`REQ-QML-012-AC01`)
+1 - Missing parser, malformed source and a forced extractor/resolver failure produce bounded, stage-specific diagnostics and an explicit incomplete status. Persistent input-identity failure cannot escape diagnostic construction or disclose the backend exception body; every affected Qt/QML source receives `QML_RESOLUTION_FAILED`, with safe relative context where available and explicit unavailable context otherwise. (`REQ-QML-012-AC01`)
 
 2 - Starting from a valid persisted graph, those failures cannot replace it with a misleading empty/incomplete graph or poison a successful cache entry under existing write protections. Required graph, manifest, analysis-root and Qt-state publication must complete before reporting update success; a failed publication retains prior accepted products and reports failure, with explicit recovery on rollback failure. (`REQ-QML-012-AC02`)
 
@@ -454,23 +454,31 @@ project code.
 
 **Acceptance Criteria**
 
-1 - Public CMake, qmake and resource fixtures project each supported literal module/source or resource-alias membership through an independent source-owned `membership_resolution` site to the uniquely accepted canonical file/component endpoint. Accepted C++ file endpoints retain their file role with valid bounded producer provenance; callable, class, foreign, malformed or unrelated semantic metadata cannot borrow that role. The declaration contains its site with context `qt_membership_site`; a resolved site references the target with confidence `EXTRACTED` and context `qt_project_source` or `qt_resource_membership`. Direction, module/alias context and original span survive build, JSON reload and scoped query; raw declarations and existing loader/module lookup results remain unchanged. (`REQ-QML-020-AC01`)
+1 - Public CMake, qmake and resource fixtures project each supported literal module/source or resource-alias membership through an independent source-owned `membership_resolution` site to the uniquely accepted canonical file/component endpoint. Accepted C++ file endpoints retain their file role with valid bounded producer provenance; callable, class, foreign, malformed or unrelated semantic metadata cannot borrow that role. The declaration contains its site with context `qt_membership_site`; a resolved site references the target with confidence `EXTRACTED` and context `qt_project_source` or `qt_resource_membership`. Direction, module/alias context and original span survive build, JSON reload and scoped query; raw declarations and existing loader/module lookup results remain unchanged. Canonical spelling and real contained input aliases, including Windows short paths and parent-directory aliases, accept the same source declaration and produce identical membership identity/provenance. (`REQ-QML-020-AC01`)
 
-2 - Missing, duplicate, conditional, generated or out-of-root targets retain explicit unresolved/unsupported site status, reason and bounded evidence without a target edge. Same-name files in different scopes remain distinct; graph projection neither reads new files nor evaluates expansions, build hooks or QML. Malformed metadata and failed joins retain existing failure diagnostics and prior durable graph/state; force cannot authorize partial membership publication. (`REQ-QML-020-AC02`)
+2 - Missing, duplicate, conditional, generated or out-of-root targets retain explicit unresolved/unsupported site status, reason and bounded evidence without a target edge. Same-name files in different scopes remain distinct; graph projection neither reads new files nor evaluates expansions, build hooks or QML. Malformed metadata and failed joins retain existing failure diagnostics and prior durable graph/state; force cannot authorize partial membership publication. Canonical input comparison still rejects a foreign input or conflicting declaration identity; an alias cannot authorize out-of-corpus membership or rewrite stored source facts. (`REQ-QML-020-AC02`)
 
-3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. (`REQ-QML-020-AC03`)
+3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. Canonical and real alias profiles agree through cold/warm extraction, full/manual/watch updates and source removal; repaired retry and no-change repeats preserve accepted output. (`REQ-QML-020-AC03`)
 
-Status: **Locally Verified for the bounded static source profile**. All three
-criteria have production, lifecycle/consumer and reviewed installed-artifact
+Status: **Implemented bounded profile; full canonical-alias verification remains open**.
+The earlier canonical-spelling cases have production, lifecycle/consumer and reviewed installed-artifact
 evidence assigned in [traceability](../tests/TRACEABILITY.md#project-membership-projection).
-The two new source/lifecycle suites contribute 37 passing cases to the final
-reviewed-wheel selection. Qt policy epoch 6 with AST cache schema 7 unchanged
-refreshes earlier same-version graphs. Raw facts and existing module/resource
+The initial two source/lifecycle suites contribute 37 passing cases to their
+recorded reviewed-wheel selection. Current Qt policy 18 and AST cache schema 12
+retain existing refresh and producer ownership. Raw facts and existing module/resource
 lookups remain unchanged; static membership does not establish runtime component
 use. Browser, new hosted, other-platform and executable Qt proof are not claimed.
 [INC-QML-14](qt-qml/PLAN.md#inc-qml-14--explicit-project-membership-relationships)
 owns this additional behavior and its evidence; source containment and viewer
 counts do not establish completion.
+
+INC-QML-39 adds canonical input-alias acceptance after a reproduced installed
+smoke failure. The frozen broader Qt/QML source profile passes 2,259 cases with
+nine symlink-capability skips. A fresh source-identical artifact passes ordinary
+QML/core smoke but fails a near-root alias through the shared facade; INC-QML-40
+owns that distinct correction. INC-QML-41 owns the reproduced persistent-path
+diagnostic escape. Full installed/hosted acceptance remains open; earlier
+canonical-spelling evidence does not close these expanded contracts.
 
 ### REQ-QML-021 — Middle mouse graph navigation
 

@@ -16,11 +16,11 @@ updates. All seven REQ-QML-018 criteria have individual local acceptance evidenc
 See [final validation](VALIDATION.md#final-adoption-delivery) and
 [traceability](../../tests/TRACEABILITY.md#final-adoption-delivery).
 
-The full source run has 8,630 passes, 59 failures and 178 skips. Its exact failure
+The earlier full source run has 8,630 passes, 59 failures and 178 skips. Its exact failure
 identities equal the pre-work baseline; no new failures were added. Full typing
 also retains baseline errors with no added diagnostic identities. These are
-failed contribution gates, not passing release evidence. Current changes have
-not been published or run through the twelve hosted OS/Python lanes. Local
+failed contribution gates, not passing release evidence. At that checkpoint,
+changes had not been published or run through the twelve hosted OS/Python lanes. Local
 completion does not fill those cells or establish native browser/device, live
 database or Qt runtime proof.
 
@@ -28,6 +28,15 @@ The later [Windows dependency follow-up](VALIDATION.md#windows-shell-and-optiona
 installs portable Bash and locked optional packages without product changes.
 Its selective rerun clears 40 of the original 59 failures, retains 19, and exposes
 two previously skipped hook path assertions. No full-suite gate is inferred.
+
+The current [native compatibility evidence](../../tests/TRACEABILITY.md#current-native-source-and-artifact-evidence--2026-10-05)
+at `463ca322` has 8,818 passes and no pytest failures, with separate setup replays.
+[Draft PR 6](https://github.com/SlinkyRamey/graphify/pull/6) publishes the adoption
+branch against the reviewed INC-QML-07 base. Its first hosted revision passes
+four Ubuntu wheel lanes but rejects CI configuration before job admission and
+fails eight Windows/macOS installed-smoke lanes. INC-CORE-06 corrects workflow
+admission; INC-QML-39 corrects the reproduced canonical input-alias mismatch.
+These failures remain unmet current hosted gates until corrected evidence exists.
 
 INC-QML-00–07 hosted results remain evidence for their recorded original profile.
 INC-QML-09/13/16 implement community presentation and middle mouse navigation;
@@ -2243,9 +2252,100 @@ the retained baseline failures and unexecuted hosted lanes prevent an all-green
 release claim. Source/installed commands and artifact digest are recorded in
 [validation](VALIDATION.md#final-adoption-delivery).
 
-No further reproduced implementation defect remains open in this delivery scope.
-INC-QML-39 is the next available identity if a new reproducible gap is found;
-it is not an invented work package. Publication must recheck upstream/PR overlap,
+At the recorded local adoption checkpoint, no further reproduced implementation
+defect remained open. The subsequent hosted run reproduces the path-alias gap
+allocated to INC-QML-39 below. Publication must recheck upstream/PR overlap,
 run the affected hosted matrix and retain or resolve documented contribution-gate
 exceptions. Native interaction, live service proof and excluded dynamic Qt forms
 remain explicit evidence or scope limitations, not silently completed increments.
+
+## INC-QML-39 — Canonical accepted-input identity
+
+Status: **Implemented; local source passes, complete artifact/hosted acceptance pending**.
+
+Acceptance: REQ-QML-020-AC01–AC03, with existing corpus/failure guards
+REQ-QML-004-AC04 and REQ-QML-012-AC01/AC02. Dependency: the implemented project
+membership projection and reviewed installed-wheel profile.
+
+Accepted input paths can name the same file through a Windows short path or a
+parent-directory alias. Membership admission must compare canonical contained
+input identity against its source declaration while retaining the existing
+lexical provenance and literal lookup contracts. No file-content reader, corpus
+discovery, facade/cache/persistence owner or second runtime changes. Existing
+conflict/outside-root rejection and publication diagnostics remain authoritative.
+
+The first hosted installed-module smoke fails on Windows and macOS. A real
+Windows short-path reproduction fails
+the unchanged installed smoke assertion; canonical spelling succeeds. Correct
+the owning comparison, then retain real alias/canonical success, foreign/conflict
+rejection, cold/warm/full/update equality, stale membership removal and prior-
+product retention evidence. A real parent-directory symlink supplies the portable
+alias fixture where the platform permits it; unavailable capability remains an
+explicit exclusion with hosted platform proof still required.
+The same alias mechanism is a hypothesis for macOS until corrected hosted proof
+confirms it. Focused source tests pass 48 cases with seven symlink-capability
+skips; the broader frozen Qt/QML source selection passes 2,259 with nine skips.
+A fresh source-identical wheel passes ordinary QML/core smoke, but a near-root
+Windows temporary-directory alias exposes the separate facade provenance gap
+assigned to INC-QML-40. Complete installed/hosted alias acceptance remains open.
+
+Exit: ordinary regressions reject the original defect and pass the correction;
+fresh installed smoke passes without relaxed assertions or fixture normalization;
+the affected Qt/QML and unrelated-language boundaries pass; all applicable hosted
+lanes execute and retain current revision, source/dependency and cleanup evidence.
+Preserve Qt policy 18 and AST schema 12 because accepted fact/graph contracts and
+refresh ownership are unchanged. The installed proof and failure review reproduce
+the separate INC-QML-40/41 gaps below; no speculative increment is allocated.
+
+## INC-QML-40 — Canonical facade source provenance
+
+Status: **Planned correction; source and installed counterexamples reproduced**.
+
+Acceptance: REQ-QML-020-AC01/AC03 and REQ-QML-004-AC04. Dependency: INC-QML-39.
+Owner: existing extractor-facade source-file normalization boundary.
+
+The facade compares an absolute source path lexically against its canonical
+root before applying the external-file policy. A real near-root short alias
+therefore publishes traversal provenance for contained C++ sources; the native
+type validator correctly rejects it. Canonicalize input identity before the
+containment decision, keeping true external-file policy, endpoint remapping,
+source spans, lexical facts and native provenance rejection intact. Reuse the
+existing per-source resolution cache; add no corpus reader or alternate owner.
+
+Cover a real near-root Windows short path and portable parent symlink, canonical
+versus alias generic/Python/C++/QML IDs, edges and source ranges, unchanged native
+smoke, actual cold/warm and update parity, and true external controls. Do not
+relax traversal guards or depend on the external helper's basename fallback.
+The facade is oversized legacy code (9,009 lines before this correction); record
+a bounded cohesion exception and preserve the separate migration playbook.
+
+Exit: focused shared-boundary and alias regressions, fresh installed consumption
+and applicable hosted lanes pass without fixture normalization. Record artifact
+identity and review the plan again. Current policy 18/schema 12 remain unless
+durable compatibility review establishes a distinct invalidation need.
+
+## INC-QML-41 — Failure-safe join diagnostics
+
+Status: **Planned correction; direct/manual/watch counterexamples reproduced**.
+
+Acceptance: REQ-QML-012-AC01/AC02 and REQ-QML-020-AC02. Dependency: the existing
+Qt/QML join/publication guards. Owner: `qt_qml_pipeline` diagnostic construction.
+
+If an accepted input's filesystem identity fails persistently, membership rejects
+it, but diagnostic construction resolves it again and can rethrow the raw backend
+exception. Direct joins stop with partial diagnostics; manual/watch reject and
+retain durable products but print that exception body. Diagnostic construction
+must remain bounded, annotate all affected sources with `QML_RESOLUTION_FAILED`,
+retain safe relative context where available, and use an explicit unavailable
+context when necessary. No new diagnostic code, lookup authority, graph-write
+ordering or persistence owner is introduced.
+
+Cover OSError and alias-loop RuntimeError at the real accepted input after facts
+and index exist, through direct joins and manual/watch writers. Assert bounded
+diagnostics, no raw body, complete failure annotation, unchanged prior graph,
+manifest, analysis stamp and root marker, corrected retry and repeat. Include
+normal contained context and alias/outside-root fallback without private paths.
+
+Exit: ordinary regressions fail before and pass after the correction; source,
+installed and current hosted boundaries retain accurate failure/cleanup evidence.
+Review the plan and allocate further work only for another reproduced gap.

@@ -242,26 +242,30 @@ DESIGN.md; tests and exact commands belong to validation/traceability.
 
 ## Project-membership seams (INC-QML-14)
 
-Status: **Locally complete; Verified within the bounded static source profile**.
+The initial INC-QML-14 profile is locally verified. INC-QML-39 extends accepted
+input identity; focused and broader local source regressions pass. A fresh
+artifact reproduces the separate INC-QML-40 facade gap; complete installed alias
+and current hosted proof remain pending. Qt policy 18 and AST schema 12 are current.
 The owners below implement
 REQ-QML-020-AC01–AC03 without a new parser or persistence pipeline.
 
 | Owner | Correction responsibility |
 | --- | --- |
-| `graphify/qt_project_membership.py::resolve_project_memberships` | Independent source-owned membership sites; literal/unique accepted canonical targets; no reads, corpus expansion or mutation of borrowed facts |
+| `graphify/qt_project_membership.py::resolve_project_memberships` | Independent source-owned membership sites; literal/unique accepted canonical targets; canonical contained input identity admits real path aliases without rewriting lexical provenance, reading target content, expanding the corpus or mutating borrowed facts |
 | `graphify/qt_project_index.py::QtProjectIndex` | Existing accepted module/source/resource evidence and lookup behavior; projection does not change the index's runtime-uncertainty boundary |
 | `graphify/qt_qml_pipeline.py::resolve_qt_qml` | Narrow post-canonicalization helper hook, scratch publication and existing resolver failure guard |
-| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Policy-6 same-package refresh; AST schema 7 remains under the existing cache owner |
+| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Historical INC-QML-14 policy-6/schema-7 refresh; current policy 18/schema 12 retain the same owners and are unchanged by INC-QML-39 |
 | `tests/test_qt_project_membership.py` | Public literal, ambiguity, source/span, direction and immutable-input production regressions; exact executed coverage belongs to traceability |
 | `tests/test_qt_project_membership_updates.py` | Real CLI/watch changes, policy upgrade, prior-product retention/repair/repeat, aggregate inspection and replacement publication without borrowed mutation |
+| `tests/test_qt_project_membership_aliases.py` | Real Windows short-path and parent-symlink admission; unchanged installed-smoke assertions, canonical/cold/warm/full/manual/watch equality, foreign/conflicting transport rejection and durable retention/recovery |
 
 Declaration-to-site `contains` uses `qt_membership_site`; a resolved site's
 `references` uses `qt_project_source` or `qt_resource_membership` with confidence
 `EXTRACTED`. Unresolved status/reason retains the source attempt without a guessed
-endpoint. The helper, source test, pipeline and lifecycle test measure
-187/283/85/267 physical lines, each below 300. Actual CLI/watch refresh,
-prior-product retention, consumer and reviewed installed-artifact evidence pass
-locally. The API accepts optional `fresh_ast_ids=()` and returns derived nodes/
+endpoint. The helper, original source test, pipeline, lifecycle test and alias
+test measure 198/283/85/267/222 physical lines, each below 300. Initial INC-QML-14
+CLI/watch, retention, consumer and reviewed-artifact evidence is recorded
+separately from INC-QML-39 proof. The API accepts optional `fresh_ast_ids=()` and returns derived nodes/
 edges; starting node/edge-object identities authorize replacement publication
 without depending on append offsets. Exact criterion evidence and local limits
 remain in validation/traceability.

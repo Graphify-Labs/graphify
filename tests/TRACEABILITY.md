@@ -25,8 +25,8 @@ skipped hook portability assertions. It does not replace full-suite evidence.
 Neither aggregate test totals nor skipped cases establish acceptance.
 
 The separate [shared compatibility verification](#shared-compatibility-verification)
-records `REQ-CORE-` behavior and the all-extras environment. The current native
-Windows full run has 8,818 passes, zero failures and 151 skips. Separate unchanged-
+records `REQ-CORE-` behavior and the all-extras environment. The recorded native
+Windows full run at `463ca32` has 8,818 passes, zero failures and 151 skips. Separate unchanged-
 source profiles pass all 76 Node and seven preprocessor/wheel cases previously
 skipped for setup. Linux/service and hosted execution remain unverified. The
 59-failure run above is historical; its failure identities are cleared in the
@@ -168,6 +168,76 @@ At the same source head,
 passes all four Ubuntu artifact lanes but fails the installed native-module
 smoke assertion in all four Windows and all four macOS lanes. These are current
 failed gates under investigation, not skips or passing platform acceptance.
+
+### Canonical accepted-input identity — INC-QML-39
+
+The first hosted smoke failure is reproduced locally with a real Windows
+short-path alias. Canonical spelling passes; the unchanged installed smoke
+fails through the shortened spelling before the correction. The membership
+boundary now compares canonical contained input identity against the accepted
+declaration. Stored lexical provenance, literal lookup, Qt policy 18 and AST
+schema 12 retain their contracts. This local reproduction explains the Windows
+failure; matching macOS temporary-directory aliases remain a hypothesis until
+the corrected hosted lane passes.
+
+| Acceptance ID | Exact automatically collected assignment | Evidence and limits |
+| --- | --- | --- |
+| REQ-QML-020-AC01 | `tests/test_qt_project_membership_aliases.py::test_req_qml020_ac01_real_parent_alias_preserves_smoke_and_cold_warm_identity` | Unchanged native smoke, canonical/alias/reanchored identity, immutable source bytes and warm unrelated Python cache; real Windows short path passes, portable parent symlink requires host capability |
+| REQ-QML-020-AC02 | `tests/test_qt_project_membership_aliases.py::test_req_qml020_ac02_path_alias_cannot_authorize_foreign_source`; `tests/test_qt_project_membership_aliases.py::test_req_qml020_ac02_input_resolution_failure_is_bounded_and_preserves_facts`; `tests/test_qt_project_membership_aliases.py::test_req_qml020_ac02_conflicting_transport_retains_durable_products_and_recovers` | Outside-root/conflicting input and OSError/RuntimeError reject boundedly without changing facts; real manual/watch publication preserves graph, manifest, stamp and root marker, then recovers and repeats |
+| REQ-QML-020-AC03 | `tests/test_qt_project_membership_aliases.py::test_req_qml020_ac03_alias_updates_remove_stale_membership_and_match_full_rebuild` | Real manual/watch build-declaration removal retires its stale site/edges, matches canonical full rebuild and repeats idempotently |
+
+Before the production correction, the alias selection records five failures,
+two passing rejection controls and seven unavailable-symlink skips. After the
+correction, alias plus existing project-membership/lifecycle selections pass
+48 cases with seven capability skips and one existing Hypothesis warning.
+The seven skips are real directory-symlink capability exclusions on this Windows
+host; they do not establish portable alias acceptance. The production owner is
+198 physical lines; the new test module is 222, within the 300-line ceiling.
+The frozen broader source selection passes 2,259 cases with nine capability
+skips, two warnings and zero failures/errors in 527.19 seconds wall time. Its
+command uses the isolated source interpreter with all `tests/test_qml_*.py` and
+`tests/test_qt_*.py` files except the separately assigned wheel-artifact module,
+then `-q --tb=short -p no:cacheprovider -rs --junitxml=REPORT`. All 668 Python-file
+fingerprints, 197 dependencies and original coverage bytes remain unchanged;
+the source-map digest is
+`c2ad0bc662ab2780385766dd22fc56d0bf6a4f5cb059e4e960d61979b60878d4`.
+The nine skips are the seven new and two pre-existing real-symlink exclusions.
+The two warnings are existing Hypothesis collection and Starlette/httpx notices.
+This selection overlaps earlier runs and is not added to their totals.
+
+Fresh wheel SHA-256
+`f6a3c7befa8cae62ef70a6d89649b64cdc409fb25056d2ee383166c7fe8be522`
+contains 180 Python payloads identical to source, changing only the membership
+owner relative to the preceding core-05 wheel. Ordinary QML and core-only smoke
+pass in clean constrained installed environments; every loaded production module
+comes from the independent installation. A near-root real Windows temporary
+short alias fails with `QT_CPP_LIMIT`: shared facade normalization publishes
+traversal source provenance for contained C++ files. The same case fails in fresh
+source with and without the offline guard. INC-QML-40 owns this separate defect;
+the native traversal rejection is correct and is retained. Complete installed
+alias acceptance and corrected hosted proof remain outstanding.
+Existing REQ-QML-004-AC04 and
+REQ-QML-012-AC01/AC02 containment/failure assignments remain applicable; no
+new corpus reader, persistence owner or diagnostic code is introduced.
+
+On the frozen 198/222-line production/test payload, Ruff 0.15.14 passes and
+targeted Pyright 1.1.409 reports zero errors/warnings. A fresh whole-project
+comparison uses the same Python 3.12.14, 197 dependencies and typing configuration
+for current source and immutable `135d50b`: both report 604 errors, zero warnings,
+with exactly 604 shared diagnostic identities and zero added/removed. Current
+source analyzes 664 files in 24.022 seconds; baseline analyzes 658 in 22.615.
+Both whole-project commands exit one. The expanded alias coverage adds no typing
+diagnostic; it does not pass the existing whole-project typing gate.
+
+The failure-boundary review separately reproduces persistent OSError and
+RuntimeError at the accepted CMake input after source/index creation, through
+direct joins and manual/watch writers. Diagnostic construction resolves the
+failed input again and rethrows its raw body, leaving later sources unannotated.
+Manual exits one and watch returns false; graph/manifest/stamp/root-marker bytes,
+repair and no-change repeat pass. The six opt-in probes fail the bounded-body
+acceptance assertion. INC-QML-41 owns ordinary regression promotion and correction
+for REQ-QML-012-AC01/AC02 and REQ-QML-020-AC02. This is a diagnostic gap; no data
+loss is inferred.
 
 ## Individual acceptance assignments
 

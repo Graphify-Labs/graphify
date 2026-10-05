@@ -1,13 +1,45 @@
 # Qt/QML validation record
 
-This chronological record preserves evidence for each tested revision. Current
-native source and installed-consumer results are in
+This chronological record preserves evidence for each tested revision. Recorded
+native source and installed-consumer results at `463ca32` are in
 [traceability](../../tests/TRACEABILITY.md#current-native-source-and-artifact-evidence--2026-10-05):
 8,818 full-suite passes with no pytest failures, plus separate setup replays.
 Older failure totals are historical checkpoints. The
 [shared compatibility procedure](../COMPATIBILITY.md#hosted-runner-proof-procedure)
-assigns remaining real Linux/service proof; its prepared CI configuration has
-not yet executed. Full typing retains 604 matched baseline errors.
+assigns remaining real Linux/service proof. The first CI configuration failed
+admission before creating jobs; the optional-wheel workflow passed Ubuntu and
+failed Windows/macOS native smoke. The workflow correction passes actionlint;
+the reproduced input-alias correction and its outstanding proof are assigned in
+[INC-QML-39 traceability](../../tests/TRACEABILITY.md#canonical-accepted-input-identity--inc-qml-39).
+Full typing retains 604 matched baseline errors at the recorded source revision.
+
+## Canonical accepted-input follow-up — 2026-10-05
+
+INC-QML-39 corrects membership admission for real contained aliases without
+changing lexical fact provenance, Qt policy 18 or AST schema 12. The unchanged
+installed smoke fails before the correction under a real Windows short path.
+Ordinary collected alias/membership/lifecycle tests pass 48 cases with seven
+symlink-capability skips; the broader frozen Qt/QML selection passes **2,259,
+zero failures/errors, nine symlink skips**, in 527.19 seconds wall time.
+Source fingerprints, all 197 dependencies and original coverage bytes remain
+unchanged. Exact commands, source-map and wheel digests, rejection/failure
+assignments and limitations are in
+[traceability](../../tests/TRACEABILITY.md#canonical-accepted-input-identity--inc-qml-39).
+
+A clean source-identical wheel passes ordinary QML and core-only smoke, but a
+near-root temporary short alias fails the native provenance guard after shared
+facade normalization misclassifies its C++ source as external. Fresh source
+reproduces it with and without the offline guard; INC-QML-40 owns this separate
+correction. Do not infer complete artifact alias acceptance from the ordinary
+smoke or broader source selection.
+
+Six direct/manual/watch probes also reproduce a persistent path-resolution
+diagnostic escape. Updates reject and retain graph, manifest, analysis stamp and
+root marker, but diagnostic construction exposes the raw backend body and leaves
+later sources unannotated. INC-QML-41 owns ordinary regression promotion and
+correction. The current failed hosted gates remain open until corrected runs pass.
+Targeted Ruff/Pyright pass; fresh whole-project Pyright remains 604 exactly
+matched baseline errors, with none added or removed.
 
 <a name="executed-qml-00-through-qml-03--2026-10-03"></a>
 

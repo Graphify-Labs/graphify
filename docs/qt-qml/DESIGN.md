@@ -590,6 +590,13 @@ its own scratch/per-file site mechanisms; borrowed declaration/context dictionar
 remain immutable. The pipeline publishes through starting node identities and
 edge-object identities, explicitly including fresh same-ID membership replacements.
 Replacing a borrowed site cannot shift append offsets or publish unrelated context.
+The admission comparison resolves each already supplied input against the
+canonical root, so short paths and parent-directory aliases cannot reject the
+same contained file. This identity check does not rewrite lexical source facts,
+literal lookup values or the shared `source_path` helper. Foreign input and
+declaration/input conflicts still fail the owning metadata guard. Resolving path
+identity reads filesystem path metadata, not target source content or new corpus
+inputs. INC-QML-39 retains the current Qt policy 18 and AST schema 12.
 The helper and its focused test
 module stay below 300 physical lines. Reader syntax, corpus admission, existing
 indexes and graph persistence remain in their existing owners.

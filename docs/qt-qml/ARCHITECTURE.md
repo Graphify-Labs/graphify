@@ -501,13 +501,19 @@ immutable, including when a refreshed decision replaces old derived context.
 
 `qt_project_membership.py` owns projection; `qt_qml_pipeline.py` owns invocation
 and failure isolation. Existing CLI/watch writers retain publication ordering
-and prior-output failure policy. Qt policy 6 invalidates prior derived graphs at
-the same package version; AST schema 7 and producer fact contracts are unchanged.
+and prior-output failure policy. Its accepted-input comparison uses canonical
+contained path identity, including short-path and parent-directory aliases,
+while stored lexical provenance remains immutable. Canonical identity cannot
+authorize a foreign declaration or expand the accepted corpus. INC-QML-39
+corrects this comparison without a new index, reader or persistence owner.
+The initial projection's Qt policy 6 invalidated prior derived graphs at the same
+package version while preserving AST schema 7. INC-QML-39 retains current policy
+18 and AST schema 12; producer fact contracts are unchanged.
 INC-QML-14 implements this bounded literal membership profile. Exact local
 producer, lifecycle, consumer and installed-artifact evidence belongs to
 requirements, plan and
 traceability. HTML clustering consumes persisted edges and adds no synthetic
-membership. Exact overload identity remains the separate planned INC-QML-15.
+membership. Exact overload identity remains the separate INC-QML-15 contract.
 
 ## D16 — Middle-button input owns only the temporary camera
 
