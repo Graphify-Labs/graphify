@@ -34,11 +34,20 @@ def test_cmake_scope_limit_and_source_file_growth_are_rejected(tmp_path, monkeyp
     path = tmp_path / "CMakeLists.txt"
     path.write_bytes(b"x" * (MAX_PROJECT_BYTES + 1))
     original_stat = Path.stat
+    # Understate only the size so the real post-read growth guard is exercised;
+    # native spelling admission still needs the actual mode and file identity.
     def changed_stat(self, *args, **kwargs):
+        actual = original_stat(self, *args, **kwargs)
         if self == path:
-            return SimpleNamespace(st_size=1)
-        return original_stat(self, *args, **kwargs)
+            fields = {name: getattr(actual, name) for name in dir(actual) if name.startswith("st_")}
+            return SimpleNamespace(**(fields | {"st_size": 1}))
+        return actual
     monkeypatch.setattr(Path, "stat", changed_stat)
+    actual, understated = original_stat(path), path.stat()
+    assert understated.st_size == 1
+    assert all(getattr(understated, name) == getattr(actual, name)
+               for name in dir(actual) if name.startswith("st_") and name != "st_size")
+    assert path.samefile(path)
     assert extract_cmake(path, root=tmp_path)["diagnostics"][0]["reason"] == "metadata_size_limit"
 
 

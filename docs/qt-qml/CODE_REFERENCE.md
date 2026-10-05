@@ -620,3 +620,19 @@ readers. The existing physical identity boundary admits inputs; the fact source
 retains each separately walked contained alias and original-byte location.
 Policy 22 refreshes earlier canonical-only derived products. Exact profile
 evidence belongs to traceability, with the reproduced earlier failure retained.
+
+## Runner and metadata fixture seams — INC-QML-51/52
+
+`tests/qml_ci.py` owns optional/core installs, neutral isolated smokes and
+source/artifact selection. Its platform guard executes only the trusted selection
+expression with real temporary filenames, preserving all install and offline
+assertions. Native source selection includes `test_upstream_qt_` alongside the
+existing QML/Qt prefixes; Linux wheel selection remains artifact-only.
+No production graph, cache or parser ownership changes.
+
+The metadata growth fixture owns its size-race simulation. Physical input
+identity remains owned by `source_identity`; the shared metadata reader owns
+bounded read completion. The fixture must preserve actual non-size stat fields
+when reporting a smaller pre-read size, so its existing rejection assertions
+exercise the read boundary rather than unsupported native identity. Exact
+before/after and hosted outcomes belong to traceability.

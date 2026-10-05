@@ -2755,5 +2755,60 @@ membership/alias/short-name compatibility passes 133 cases with 23 explicit
 platform/capability exclusions before the final missing-context correction;
 the six corrected native cases pass again afterward. The independent final
 profile and distributable proof are recorded in traceability. No additional
-reproduced implementation gap remains at this local checkpoint. INC-QML-51
-remains unallocated; the normal integrated runner result is the exit gate.
+reproduced implementation gap remains at this local checkpoint. The first
+integrated runner subsequently exposes INC-QML-51/52 below; its failed result
+is retained and does not establish the integrated hosted exit gate.
+
+## INC-QML-51 — Platform selection guard integration
+
+Status: **Corrected and locally verified; corrected hosted proof pending**.
+Owner: optional-wheel validation maintainer. Dependency: INC-QML-49.
+At source dbc4859 the native runner correctly includes `test_upstream_qt_`
+alongside QML/Qt source tests, but its existing guard requires the previous
+literal two-prefix expression. macOS and Windows lanes report this exact
+assertion failure; isolated installed QML/core smokes succeed.
+
+| Acceptance IDs | Scenario and required observable result |
+| --- | --- |
+| REQ-QML-001-AC01/AC03; REQ-QML-014-AC01/AC03 | Execute the actual trusted runner selection against temporary files: native selection includes QML/Qt/joint tests, sorts them and excludes unrelated files; artifact-only mode selects its one artifact module |
+| REQ-QML-014-AC04; REQ-CORE-004-AC03 | Preserve optional/core, isolated offline and no-skip/xfail assertions; retain the original failed guard and exact corrected test and hosted lane results |
+
+Scope/diagnostics: correct the guard, preserving runner behaviour and the
+install/smoke boundaries. No runtime, dependency, cache, schema, persisted graph
+or diagnostic contract changes. This test reads trusted repository code and
+executes only its selection expression; corpus files remain inert empty inputs.
+Local reproduction is one passed/one failed platform test. The corrected
+platform tests both pass, with Ruff/Pyright reporting zero diagnostics. The
+fixture reverses actual file enumeration only at its owned glob boundary,
+requiring production sorting even on a host whose directory is already sorted.
+Separate
+artifact tests require their reviewed wheel input; an absent input is a skip,
+not artifact acceptance. Exit with corrected normal-PR lane evidence and review
+the plan for further reproduced failures.
+
+## INC-QML-52 — Native metadata-growth fixture identity
+
+Status: **Corrected and locally verified; corrected hosted proof pending**.
+Owner: metadata regression maintainer. Dependency: INC-QML-50's actual native
+source identity admission. Windows source lanes report a second failure in
+`test_cmake_scope_limit_and_source_file_growth_are_rejected`: its fake stat
+retains only size, so native admission rejects missing identity before the
+oversized-byte read it intends to test. POSIX does not use that native boundary.
+
+| Acceptance IDs | Scenario and required observable result |
+| --- | --- |
+| REQ-QML-002-AC03; REQ-QML-012-AC01/AC04 | Preserve actual regular-file identity while understating reported size; real oversized bytes still produce metadata_size_limit after native admission, and deep syntax still produces cmake_scope_limit |
+| REQ-QML-014-AC02/AC03/AC04 | Retain both original rejection assertions, reproduce the native fixture failure before correction and run corrected native versions plus normal hosted source profiles |
+
+Scope/diagnostics: fix only the stat fixture seam; retain production identity,
+containment, bounded-read and safe diagnostic contracts. No bypass or relaxed
+expected diagnostic is permitted. Root owns documentation and Git integration;
+the metadata regression maintainer owns the one disjoint test file. Exit with
+individual corrected hosted outcomes and unchanged runtime/dependency/coverage
+identities. Native Python 3.10.21/3.12.14/3.13.15/3.14.7 each pass all 35 metadata
+boundary cases with zero failures or skips after the actual native 3.14 failure
+is retained. Original scope/read-size assertions remain unchanged; actual
+non-size stat and same-file witnesses prove native admission reaches that boundary.
+The changed fixture is 99 lines, below the 300-line ceiling. No runtime or
+dependency change is required. Review subsequent failures; INC-QML-53 remains
+unallocated.

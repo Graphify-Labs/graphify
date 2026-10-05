@@ -73,7 +73,8 @@ using [tests/qml_ci.py](../../tests/qml_ci.py). For every declared OS/Python pai
    rejects network and child-process activity during analysis; record optional
    parser success, core parser-absence diagnostics and unchanged Python behavior.
 4. Run the built-artifact contracts with `GRAPHIFY_QML_TEST_WHEEL` pointing at that
-   wheel. Windows/macOS also run every `test_qml_*.py` and `test_qt_*.py`; Ubuntu
+   wheel. Windows/macOS also run every `test_qml_*.py`, `test_qt_*.py` and
+   `test_upstream_qt_*.py`; Ubuntu
    runs the full source suite in the main CI job and artifact contracts here.
    The wheel environment has `[qml,watch]`; MCP/SVG tests may skip there when their
    extras are absent. The main Ubuntu CI installs all extras and exercises those

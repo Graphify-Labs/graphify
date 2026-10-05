@@ -1314,7 +1314,7 @@ owners and upstream migration sequencing:
 | Cache maintainer: `graphify/cache.py` | 1826 / 1840 | One epoch seam; stat-index rebinding remains upstream-owned. Separate a cohesive cache extraction after characterization |
 | CLI maintainer: `graphify/cli.py` | 5079 / 5090 | Preserve upstream dispatch and exact endpoint selection; separate characterized path-command ownership before further growth |
 | Export maintainer: `graphify/export.py` | 1402 / 1410 | Original parallel links feed existing direction validation and writer; separate a cohesive serializer only after preservation/failure characterization |
-| CI maintainer: `.github/workflows/ci.yml` | 474 / 510 | Extend existing native/source case selection and proof in the same workflow; extract shared evidence collection if another workflow requires it or further growth exceeds this ceiling |
+| CI maintainer: `.github/workflows/ci.yml` | 485 / 510 | Extend existing native/source case selection and proof in the same workflow; extract shared evidence collection if another workflow requires it or further growth exceeds this ceiling |
 | Upstream fixture maintainer: `tests/test_extract.py` | 5453 / 5460 | Keep the existing isolated subprocess and extraction assertions; separate incremental-context characterization before a test-module extraction |
 
 These ceilings apply to the measured integration, not routine growth. Incoming

@@ -1443,3 +1443,97 @@ workspace. All prior PRs and the verified 65103f8 branch are preserved. No
 upstream PR, merge, deployment or default-branch update is performed. Terminal
 current head/base/checkout identities, cases, artifacts and cleanup remain the
 hosted exit gate under REQ-CORE-004-AC01–AC04.
+
+### First integrated hosted checkpoint — dbc4859
+
+Draft [PR 7](https://github.com/SlinkyRamey/graphify/pull/7) binds source
+`dbc4859f454f9478ac9596559a75efef5f10664d`, base
+`35adf432b9d50f6f3d530ab5d7ec316819ef081c` and actual synthetic checkout
+`db0b4dd0829082dca1e222bc90a85571871fb4bd`.
+[CI 37287514274](https://github.com/SlinkyRamey/graphify/actions/runs/37287514274)
+fails the stale platform selector guard in Python 3.14; the other three full
+Linux jobs are cancelled, so those profiles remain incomplete.
+The completed Linux 3.14 profile reports 9,354 passed, one failed and 121 skipped;
+all 34 joint cases, 40 applicable alias cases, sixteen real POSIX link/`..`
+controls and five service/wheel cases pass individually. All four retained
+Linux wheel payloads match the 185 reviewed source modules, and every disposable
+service container is confirmed absent, including the cancelled lanes. The
+cancelled suites have no completed JUnit/pytest-exit/integrity evidence.
+[Wheel matrix 37287514235](https://github.com/SlinkyRamey/graphify/actions/runs/37287514235)
+exposes the same guard in native source lanes and a distinct native metadata
+fixture seam. INC-QML-51/52 own their corrections; this is a failed integration
+checkpoint, not hosted release acceptance.
+All four macOS source lanes report one failed, 2,360 passed and 64 skipped;
+each Windows source lane reports two failed, 2,404 passed and nineteen skipped.
+The four Ubuntu wheel lanes each pass three artifact tests. All 24 isolated
+optional/core installed smokes pass. Those wheel jobs retain no per-case JUnit,
+wheel-digest or source/dependency artifact; native platform tests import the
+checkout and remain source evidence distinct from the installed smokes.
+
+The [native Windows job](https://github.com/SlinkyRamey/graphify/actions/runs/37287514274/job/111689834160)
+passes 923 cases with 37 explicit exclusions and pytest exit zero. All 34 joint
+integration, 43 followed-metadata alias, six native failure/recovery and exact
+INC-CORE-10 cases pass individually. The exclusions retain 21 previous cases
+plus sixteen actual POSIX link/`..` controls. Artifact 11335540466's API digest
+and downloaded ZIP SHA-256 both equal
+`1ce081338cf8963694e37b52b66a949c3149c3ceae3a7ca43b2b158e2815868c`.
+The retained preflight proves both admitted Bash/sh consumers, Python 3.12.10
+and Node 24.19.0; checkout, tracked inputs and all 197 dependencies are unchanged.
+The skill job passes all five validators and 134 artifact checks. Advisory
+security has an API-success conclusion but both raw commands return exit one:
+Bandit reports four high, eight medium and 112 low findings; pip-audit reports
+fifteen raw vulnerability rows across three packages. These are failed advisory
+commands, not a clean security scan.
+
+### Platform selection guard correction — INC-QML-51
+
+Affected assignments: REQ-QML-001-AC01/AC03, REQ-QML-014-AC01/AC03/AC04 and
+REQ-CORE-004-AC03 map to
+`tests/test_qml_platform_matrix.py::test_wheel_runner_keeps_optional_core_and_isolated_offline_smoke_boundaries`.
+The original production runner correctly admits the new upstream/Qt modules;
+its guard incorrectly requires the former two-prefix literal. Local original
+platform execution reports one passed/one failed test. Corrected execution of
+both platform tests passes on native Python 3.12.14, with zero Ruff/Pyright
+diagnostics. The guard now compiles only the trusted runner's actual selection
+expression and exercises real temporary files in native and artifact-only
+modes, retaining every install/isolation/offline assertion. It rejects unrelated
+language modules, runner helpers and wrong extensions; deterministic selected
+names include the joint regression prefix.
+The owned glob seam reverses actual fixture entries; stable ordering therefore
+depends on the production sort rather than the host's directory enumeration.
+
+Executed command:
+
+```text
+python -X utf8 -m pytest tests/test_qml_platform_matrix.py tests/test_qml_wheel_artifact.py -q --tb=short --junitxml=platform.xml
+```
+
+Without the reviewed-wheel variable this command passes two tests and explicitly
+skips three artifact tests; that run is guard evidence only. The retained reviewed
+wheel procedure and corrected hosted revision own artifact acceptance.
+The same command with the final reviewed-wheel variable passes all five tests
+without skips. The wheel remains byte-identical to the runtime checkpoint;
+these corrections change test evidence only.
+
+### Native metadata-growth fixture correction — INC-QML-52
+
+REQ-QML-002-AC03, REQ-QML-012-AC01/AC04 and REQ-QML-014-AC02/AC03/AC04 map to
+`tests/test_qt_metadata_boundaries.py::test_cmake_scope_limit_and_source_file_growth_are_rejected`.
+The original fake stat carries only size and causes native identity admission
+to reject before the intended read-growth boundary. Correcting the stat witness
+must retain native mode/device/inode and every available non-size stat field;
+the original cmake_scope_limit and metadata_size_limit assertions remain
+authoritative. The original ordinary case fails on native Python 3.14.7 with
+native_source_spelling_unavailable before the intended read boundary. After
+the fixture correction all 35 module cases pass without skips on native
+3.10.21, 3.12.14, 3.13.15 and 3.14.7. The fixture checks its understated size,
+every real non-size stat field and actual same-file identity, retaining the
+original two rejection assertions. It measures 99 physical lines. Source
+runtime, dependencies and original coverage are unchanged; corrected hosted
+outcomes remain pending.
+
+Executed per-interpreter command:
+
+```text
+python -X utf8 -m pytest tests/test_qt_metadata_boundaries.py -q --tb=short --junitxml=metadata.xml
+```

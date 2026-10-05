@@ -642,7 +642,7 @@ application/device procedures are outside this runner-profile verification.
 
 INC-QML-49 retains existing externally observable requirements while integrating
 upstream package 0.9.76. Schema 13 retires incompatible prior AST entries; Qt
-policy 21, semantic cache ownership, logical edge mechanisms and corpus bounds
+policy 22, semantic cache ownership, logical edge mechanisms and corpus bounds
 remain authoritative. Exact named Qt metadata and installed-source exclusion
 must coexist; original parallel links retain validated Qt direction through
 serialization and qualified path queries. These are REQ-QML-002, REQ-QML-003,
@@ -668,3 +668,21 @@ fixture under REQ-CORE-004-AC02. The isolated child retains required Windows hom
 and system fields so the extraction assertions execute; source/provider scope
 and production behaviour remain unchanged. The exact native/Linux case and
 unchanged inputs require current integration-run evidence.
+
+INC-QML-51 corrects the platform runner guard under REQ-QML-001-AC01/AC03,
+REQ-QML-014-AC01/AC03/AC04 and REQ-CORE-004-AC03. Native source lanes admit QML,
+Qt and joint upstream/Qt tests while the Linux wheel lane selects only its
+artifact contracts. The guard executes the actual trusted selection expression
+against a temporary corpus, checking admitted and excluded files in both modes;
+optional/core installation and isolated offline assertions remain required.
+The original guard fails at integration source dbc4859 because it expects the
+former two-prefix spelling. Local correction and all three reviewed-artifact
+contracts pass; hosted acceptance remains pending for the corrected revision.
+
+INC-QML-52 corrects the metadata-growth fixture under REQ-QML-002-AC03 and
+REQ-QML-012-AC01/AC04. Native file identity remains authoritative before bounded
+metadata reads; a simulated understated size must retain the real stat identity
+so oversized bytes reach and fail the intended metadata-size boundary. The
+scope-limit and size-limit rejection assertions remain unchanged. All 35 metadata
+boundary cases pass on native Python 3.10/3.12/3.13/3.14 after the correction;
+exact corrected hosted evidence remains pending.

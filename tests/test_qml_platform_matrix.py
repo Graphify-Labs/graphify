@@ -5,6 +5,7 @@ import ast
 from itertools import product
 from pathlib import Path
 import re
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -24,7 +25,7 @@ def test_advertised_twelve_lanes_equal_actual_wheel_workflow():
     assert declared == actual
 
 
-def test_wheel_runner_keeps_optional_core_and_isolated_offline_smoke_boundaries():
+def test_wheel_runner_keeps_optional_core_and_isolated_offline_smoke_boundaries(tmp_path, monkeypatch):
     # Characterize the shipped CI runner rather than replace it with a mock CLI.
     runner = (ROOT / "tests/qml_ci.py").read_text(encoding="utf-8")
     smoke = (ROOT / "tests/qml_installed_smoke.py").read_text(encoding="utf-8")
@@ -36,7 +37,34 @@ def test_wheel_runner_keeps_optional_core_and_isolated_offline_smoke_boundaries(
     assert 'interpreter(extra), "-I", smoke' in runner
     assert 'interpreter(core), "-I", smoke, "--core-only"' in runner
     assert '"GRAPHIFY_QML_TEST_WHEEL"' in runner or "GRAPHIFY_QML_TEST_WHEEL=" in runner
-    assert 'path.name.startswith(("test_qml_", "test_qt_"))' in runner
+    # Execute only the trusted runner's selection expression against real files.
+    # This preserves native joint-case admission and Linux artifact isolation
+    # without invoking builds, installs or the runner's subprocess boundary.
+    selection = next(node.value for node in ast.walk(tree)
+                     if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == "tests"
+                             for target in node.targets))
+    expression = compile(ast.Expression(selection), "qml_ci.py selection", "eval")
+    corpus = tmp_path / "tests"
+    corpus.mkdir()
+    selected = ["test_qml_wheel_artifact.py", "test_qml_contract.py",
+                "test_qt_contract.py", "test_upstream_qt_contract.py"]
+    for name in [*reversed(selected), "test_python_contract.py", "qml_ci.py",
+                 "test_upstream_other.py", "test_qt_contract.txt"]:
+        (corpus / name).write_text("", encoding="utf-8")
+    # A real filesystem may already enumerate alphabetically. Reverse only its
+    # actual fixture entries so the production sort must establish stable order.
+    original_glob = Path.glob
+    def unsorted_glob(self, pattern):
+        entries = original_glob(self, pattern)
+        if self == corpus and pattern == "test_*.py":
+            return iter(sorted(entries, key=lambda path: path.name, reverse=True))
+        return entries
+    monkeypatch.setattr(Path, "glob", unsorted_glob)
+    for arguments, expected in [([], sorted(f"tests/{name}" for name in selected)),
+                                (["--artifact-only"], ["tests/test_qml_wheel_artifact.py"])]:
+        actual = eval(expression, {"root": tmp_path, "sys": SimpleNamespace(argv=arguments)})
+        assert [Path(path).as_posix() for path in actual] == expected
     assert '"socket.connect"' in smoke and '"subprocess.Popen"' in smoke
     assert "sys.addaudithook(offline_guard)" in smoke
     assert "QML_PARSER_MISSING" in smoke
