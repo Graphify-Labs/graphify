@@ -2271,7 +2271,7 @@ remain explicit evidence or scope limitations, not silently completed increments
 
 ## INC-QML-39 — Canonical accepted-input identity
 
-Status: **Implemented; local source passes, complete artifact/hosted acceptance pending**.
+Status: **Verified for the recorded source, installed and hosted input-alias profiles**.
 
 Acceptance: REQ-QML-020-AC01–AC03, with existing corpus/failure guards
 REQ-QML-004-AC04 and REQ-QML-012-AC01/AC02. Dependency: the implemented project
@@ -2309,7 +2309,7 @@ the separate INC-QML-40/41 gaps below; no speculative increment is allocated.
 
 ## INC-QML-40 — Canonical facade source provenance
 
-Status: **Implemented; local source/installed proof passes, hosted proof pending**.
+Status: **Verified for the recorded source, installed and hosted facade-alias profiles**.
 
 Acceptance: REQ-QML-020-AC01/AC03 and REQ-QML-004-AC04. Dependency: INC-QML-39.
 Owner: existing extractor-facade source-file normalization boundary.
@@ -2350,7 +2350,7 @@ diagnostic gap; no further reproduced gap is allocated at this checkpoint.
 
 ## INC-QML-41 — Failure-safe join diagnostics
 
-Status: **Implemented; local source/installed proof passes, hosted proof pending**.
+Status: **Verified for the recorded source, installed and hosted join-failure profiles**.
 
 Acceptance: REQ-QML-012-AC01/AC02 and REQ-QML-020-AC02. Dependency: the existing
 Qt/QML join/publication guards. Owner: `qt_qml_pipeline` diagnostic construction.
@@ -2389,7 +2389,7 @@ open evidence/gate limitations, not passing acceptance.
 
 ## INC-QML-42 — Distinct discovered symlink provenance
 
-Status: **Implemented; source/installed checkpoint passes, corrected hosted proof pending**.
+Status: **Verified for the recorded source, installed and hosted discovered-source profiles**.
 Owner: extractor-facade source normalization. Acceptance: REQ-QML-020-AC01/AC02/AC03
 and the existing unrelated-language provenance contract. Dependency: INC-QML-40.
 
@@ -2424,7 +2424,7 @@ actual NTFS short-leaf spelling; those contracts are not closed by this checkpoi
 
 ## INC-QML-43 — Nearby Windows alias fixture portability
 
-Status: **Implemented fixture correction; local/installed proof passes, hosted proof pending**.
+Status: **Verified for the recorded local, installed and hosted native fixture profiles**.
 Owner: facade-alias acceptance fixture. Acceptance: REQ-QML-020-AC01/AC02/AC03.
 Dependency: INC-QML-40. No Graphify runtime or analysis epoch change.
 
@@ -2450,7 +2450,7 @@ coverage. INC-QML-44/45 capture the adjacent gaps discovered in the exit review.
 
 ## INC-QML-44 — Shared physical-source watch invalidation
 
-Status: **Implemented; source/installed verification passes, corrected hosted proof pending**.
+Status: **Verified for the recorded source, installed and hosted co-owner profiles**.
 Owner: watch accepted-input invalidation. Acceptance: REQ-QML-011-AC01/AC03/AC04,
 REQ-QML-020-AC03 and relevant REQ-QML-012 diagnostic/retention criteria.
 
@@ -2470,7 +2470,7 @@ failure/retention and source/installed/hosted evidence. Review the plan again.
 
 ## INC-QML-45 — Canonical NTFS short-leaf input spelling
 
-Status: **Implemented; source/installed verification passes, corrected hosted proof pending**.
+Status: **Verified for the recorded source, installed and hosted native spelling profiles**.
 Owner: extractor input spelling. Acceptance: REQ-QML-020-AC01/AC02/AC03 and
 relevant REQ-QML-011/012 update/diagnostic criteria.
 
@@ -2518,7 +2518,7 @@ unexecuted hosted check, typing gate or native device/system procedure.
 
 ## INC-QML-46 — Explicit followed-directory upgrade fixture profile
 
-Status: **Implemented; local source/installed verification passes, corrected hosted proof pending**.
+Status: **Verified for the recorded source, installed and hosted discovery profiles**.
 Owner: manual discovery option and Qt policy-upgrade acceptance fixture.
 Acceptance: REQ-QML-020-AC03 and REQ-QML-011-AC01/AC03/AC04.
 Dependency: INC-QML-42/44/45.
@@ -2551,7 +2551,7 @@ increment only for a separately reproduced gap.
 
 ## INC-QML-47 — Native entry-spelling fixture expectation
 
-Status: **Corrected; local source/installed verification passes, corrected hosted proof pending**.
+Status: **Verified for the recorded source, installed and hosted native fixture profiles**.
 Owner: membership alias warm-cache fixture. Acceptance: REQ-QML-020-AC01/AC02/AC03.
 Dependency: INC-QML-45.
 
@@ -2612,7 +2612,7 @@ identity, service cleanup, exclusions and remaining delivery limits.
 
 ## INC-QML-48 — Portable partial-setup cleanup fault injection
 
-Status: **Implemented fixture correction; four-version native profile passes, corrected hosted proof pending**.
+Status: **Verified for the recorded four-version native and hosted cleanup profiles**.
 Acceptance: REQ-QML-012-AC02 and REQ-QML-018-AC06. Owner: product-publication test
 maintainer. Dependency: INC-QML-25; hosted discovery follows INC-QML-46/47.
 
@@ -2656,3 +2656,19 @@ report zero diagnostics; whole-project typing's 604 baseline errors remain.
 Production, dependencies and original coverage bytes are unchanged. Graph refresh,
 requirements/links/references and 297-line test ceiling checks pass. No further
 reproduced local gap appears; corrected hosted proof remains the exit condition.
+
+Hosted exit review at source `10cb15a`: all four full Linux jobs, focused native
+Windows and all twelve optional-wheel jobs pass on actual checkout `6974373`.
+Every assigned co-owner/remap/discovery case plus the exact corrected cleanup
+case and five live-service/wheel cases passes individually on all four Linux
+versions. Native shell admission and uploaded-report retention pass, with actual
+API archive integrity and unchanged source/dependency proof. Installed QML/core
+smokes pass in every optional-wheel lane; that workflow's platform suites remain
+source profiles without per-case JUnit or retained wheel-digest artifacts.
+The [verified checkpoint](../../tests/TRACEABILITY.md#verified-hosted-runner-checkpoint--10cb15a)
+owns exact identities, outcomes and limits. The configuration/runtime/test content
+is unchanged by this documentation completion. Earlier pending-hosted checkpoint
+descriptions are historical; their assigned corrected profiles now pass. No new
+reproduced defect is found, so INC-QML-49 remains unallocated. Baseline typing,
+advisory security and physical application/device procedures remain explicit
+gaps; no merge or deployment is performed.

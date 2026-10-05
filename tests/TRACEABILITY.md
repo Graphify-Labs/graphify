@@ -55,8 +55,8 @@ remaining system procedure, ownership, size ceilings and consumer limitations.
 | REQ-CORE-001-AC03 | `tests/test_skill_auto_refresh.py::test_every_stale_platform_is_refreshed_not_only_the_detected_one`; `tests/test_skill_auto_refresh.py::test_a_stale_gemini_skill_gets_the_warning_too` | Windows-adapted bytes and retained ambiguous shared copy pass; shared ownership isolation remains unresolved upstream |
 | REQ-CORE-001-AC04 | `tests/test_uninstall_scope.py::test_bare_call_still_removes_global`; `tests/test_uninstall_scope.py::test_remove_user_skill_opt_in_with_project_dir` | Linux/Windows scope profiles and protected shared-dir retention pass; no new uninstall policy |
 | REQ-CORE-001-AC05 | `tests/test_codex_hook_execution.py::test_req_core001_ac05_literal_expansion_characters_retain_launcher_identity`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_missing_launcher_fails_without_path_fallback`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_selected_process_failure_preserves_nonzero_exit`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_reinstall_and_uninstall_preserve_unrelated_hooks`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_unsupported_shell_rejects_before_settings_access`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_shell_inspection_failure_retains_settings_and_backup`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_command_length_boundary_retains_literal_identity` | Native Cmd/Windows PowerShell 5.1 executable identity, failure/retention and rejected serialization boundaries pass in full-source and independent installed-artifact execution. Synthetic length cases establish admission/retention, not a real long-path launch. Actual Codex event delivery and other PowerShell versions remain separate system gaps. |
-| REQ-CORE-002-AC01 | `tests/test_filesystem_profiles.py::test_req_core_002_ac01_detect_rejects_nonregular_stat_modes`; `tests/test_filesystem_profiles.py::test_req_core_002_ac01_stat_failures_are_unreadable`; original real fixtures in `tests/test_non_regular_files.py` | Native admission/error seams pass; actual FIFO/socket/device and privileged symlink fixtures remain capability exclusions, not passing real-object evidence |
-| REQ-CORE-002-AC02 | `tests/test_filesystem_profiles.py::test_req_core_002_ac02_unavailable_cwd_rejects_before_artifacts`; `tests/test_filesystem_profiles.py::test_req_core_002_ac02_repo_root_recovers_cwd_and_publishes_graph`; `tests/test_watch.py::test_rebuild_code_deleted_cwd_without_repo_root_returns_false`; `tests/test_watch.py::test_rebuild_code_deleted_cwd_uses_graphify_repo_root` | Native simulated lookup-failure plus real chdir/persistence pass; actual removed-CWD POSIX fixtures pending |
+| REQ-CORE-002-AC01 | `tests/test_filesystem_profiles.py::test_req_core_002_ac01_detect_rejects_nonregular_stat_modes`; `tests/test_filesystem_profiles.py::test_req_core_002_ac01_stat_failures_are_unreadable`; original real fixtures in `tests/test_non_regular_files.py` | Native admission/error seams and hosted real FIFO/socket cases pass at the verified 10cb15a checkpoint below; privileged device/link fixtures retain explicit capability exclusions |
+| REQ-CORE-002-AC02 | `tests/test_filesystem_profiles.py::test_req_core_002_ac02_unavailable_cwd_rejects_before_artifacts`; `tests/test_filesystem_profiles.py::test_req_core_002_ac02_repo_root_recovers_cwd_and_publishes_graph`; `tests/test_watch.py::test_rebuild_code_deleted_cwd_without_repo_root_returns_false`; `tests/test_watch.py::test_rebuild_code_deleted_cwd_uses_graphify_repo_root` | Native simulated lookup-failure and real chdir/persistence pass; actual removed-CWD POSIX cases pass individually in all four 10cb15a Linux lanes below |
 | REQ-CORE-002-AC03 | `tests/test_filesystem_profiles.py::test_req_core_002_ac03_unavailable_cwd_reports_root_reason` | Missing-root/chdir-denied assertions failed before correction; all three safe diagnostic categories pass after correction |
 | REQ-CORE-003-AC01 | `tests/test_terraform_modules.py::test_same_named_directories_and_cross_file_references_stay_separate` | Both LF/CRLF cases pass exact four identities/references and exclude cross-directory targets |
 | REQ-CORE-003-AC02 | `tests/test_terraform_modules.py::test_same_named_directories_and_cross_file_references_stay_separate`; `tests/test_terraform_modules.py::test_raw_extractor_scopes_ids_by_full_directory` | Production extraction, directed build and JSON reload pass portable paths, locations and scope; Terraform production unchanged |
@@ -131,10 +131,10 @@ owns setup, revision identity, exclusions and recovery.
 
 | Acceptance ID | Exact automated job/system assignment | Current evidence |
 | --- | --- | --- |
-| REQ-CORE-004-AC01 | `.github/workflows/ci.yml::test` four Python lanes; actual fixtures in `tests/test_non_regular_files.py`, `tests/test_cpp_preprocess.py`, `tests/test_qml_wheel_artifact.py`, `tests/test_falkordb_integration.py` | Hosted `f699b0f`: all assigned Linux/service/wheel regressions pass individually; three full suites pass, Python 3.10 has one cleanup-fixture failure. Full four-lane acceptance remains open |
-| REQ-CORE-004-AC02 | `.github/workflows/ci.yml::windows-compatibility`; exact CORE functions above and assigned HTML/installer/shell modules | Hosted `f699b0f`: 836 passes, 21 explicit skips, zero failures. All original shell failures and revised admission cases pass individually; retained consumer report remains AC03 work |
-| REQ-CORE-004-AC03 | Source identity/readiness, pytest, retention, service cleanup and artifact steps in both CI source profiles; GitHub run/job/artifact read for actual checkout | Retained native artifact proves revision, JUnit and unchanged source/dependencies; f699b0f omits the consumer report, assigned to INC-CORE-09. Per-lane cleanup/integrity evidence is recorded at its checkpoint |
-| REQ-CORE-004-AC04 | CI trigger/permission/concurrency configuration review and hosted procedure's PR/recovery event audit | Normal PR events own both workflows; no duplicate dispatch. All four `f699b0f` source lanes finish; earlier matrix cancellations remain historical incomplete evidence |
+| REQ-CORE-004-AC01 | `.github/workflows/ci.yml::test` four Python lanes; actual fixtures in `tests/test_non_regular_files.py`, `tests/test_cpp_preprocess.py`, `tests/test_qml_wheel_artifact.py`, `tests/test_falkordb_integration.py` | Hosted `10cb15a`: all four full jobs pass; required Linux/service/wheel regressions and exact corrected cleanup case individually pass. Explicit platform/baseline skips retain their assignments |
+| REQ-CORE-004-AC02 | `.github/workflows/ci.yml::windows-compatibility`; exact CORE functions above and assigned HTML/installer/shell modules | Hosted `10cb15a`: 836 passes, 21 explicit skips, zero failures. All original shell failures and revised admission cases individually pass with retained consumer identity proof |
+| REQ-CORE-004-AC03 | Source identity/readiness, pytest, retention, service cleanup and artifact steps in both CI source profiles; GitHub run/job/artifact read for actual checkout | Hosted `10cb15a`: all five API-digest-verified source archives retain identity/JUnit/integrity; native report includes exact two-shell consumer identities. Four real services/test graphs are confirmed removed |
+| REQ-CORE-004-AC04 | CI trigger/permission/concurrency configuration review and hosted procedure's PR/recovery event audit | Normal PR events own both workflows; no duplicate dispatch. All four `10cb15a` source lanes finish successfully; earlier matrix cancellations remain historical incomplete evidence |
 
 Local configuration review parses both workflows with PyYAML `BaseLoader`,
 compiles each embedded Python block, checks extracted Ubuntu scripts with
@@ -490,8 +490,77 @@ diagnostic sets are empty. Whole-project typing remains a failed baseline gate.
 Document checks resolve all 99 criteria and exact references; AST-only graph
 refresh completes. Production, dependency/wheel, error-catalog and architecture
 contracts are unchanged, so no new artifact payload or schema is introduced.
-Corrected four-lane hosted execution and retained-report transport remain pending
-for the next normal PR event; local counts and skips cannot establish those passes.
+Corrected four-lane hosted execution and retained-report transport pass at the
+verified checkpoint below. Local counts and skips alone do not establish them.
+
+### Verified hosted runner checkpoint — 10cb15a
+
+[CI 37257724886](https://github.com/SlinkyRamey/graphify/actions/runs/37257724886)
+and [QML 37257724896](https://github.com/SlinkyRamey/graphify/actions/runs/37257724896)
+are terminal successful normal PR attempt-one runs. Source
+`10cb15a028312f21a169760e5f059a8f4ddfbfba`, base
+`f61827f42378f6e7feff05a1cb4cbbcab1736ca8` and actual tested checkout
+`697437305a9f8959ed6022fad3c676b4714caa0e` match API parent inspection, all source
+identities and job logs. These results verify recorded profiles; they do not
+promise unexecuted device events, unrestricted Qt SDK semantics or later revisions.
+
+| Executed profile | Passed | Explicit skips | Failures/errors |
+| --- | --- | --- | --- |
+| Full Ubuntu Python 3.10.22 | 9,008 | 111 | 0 |
+| Full Ubuntu Python 3.12.3/3.13.16/3.14.8, each | 9,007 | 112 | 0 |
+| Native Windows Python 3.12 | 836 | 21 | 0 |
+| Four Windows QML source lanes, each | 2,323 | 3 | 0 |
+| Four macOS QML source lanes, each | 2,271 | 55 | 0 |
+| Four Ubuntu QML artifact lanes, each | 3 | 0 | 0 |
+
+All 40 assigned Linux cases (the prior 39 plus
+`tests/test_publication.py::test_inc25_partial_setup_cleanup_fault_retains_safe_recovery_evidence`)
+and the exact two live FalkorDB/three wheel cases are individually present and
+passed in every source lane. Each complete job also passes end-to-end installation.
+All four archive digests match the API. Every 182-payload wheel matches the tested
+Git blobs; source/configuration, dependencies and wheel bytes are retained.
+Dependency counts are 185/195/174/174 for Python 3.10/3.12/3.13/3.14. Both test
+graphs are deleted and every pinned job-owned service is confirmed absent, with
+zero mounts and verified image/readiness identity.
+
+Native artifact `11323730916` SHA-256
+`98e8645f9fd208b6502c62ea687fa83c81b48c6e190d9698ce62b85ffe1977b4`
+matches its API digest and contains the actual 412-byte `shell-consumers.json`.
+Both admitted Git Bash/sh executables identify the selected checkout Python and
+Node 24.19.0, agreeing with the real preflight's same-file checks and job/profile
+identity. All 18 helper, 33 former shell-failure, seven CLI and five tool-selection
+cases pass individually; 197 dependencies, source inputs and checkout stay
+unchanged. Retained JUnit, pytest exit, archive identity and upload completion
+close INC-CORE-09's evidence gap; a workflow literal is not that proof.
+
+All twelve optional-wheel jobs and all 24 isolated installed QML/core smokes pass.
+Its platform suites remain source profiles with logs rather than per-case JUnit,
+wheel-digest/source attestation or dependency-integrity artifacts. Skip contracts
+are unchanged: Windows has two optional MCP cases and one optional SVG case;
+macOS additionally has 28 Windows-readonly and 24 Windows-native-alias cases.
+Windows/macOS Python 3.10 each retain two existing warnings. Parser/dependency
+identities and grouped skips are retained in job logs; unavailable evidence is
+not converted into individual-case or isolated-origin claims.
+
+All five skill validators/134 generated artifacts pass. Advisory security
+continues to report four High/eight Medium/109 Low Bandit findings and nine unique
+pip-audit package/advisory identities across three packages; both scans exit one
+under the existing advisory policy. Local full typing retains 604 matched baseline
+errors with zero added/removed, while the changed test's diagnostic set is empty.
+These contribution/system limits remain distinct from the passing test profiles.
+
+Published test Git blob `66dec42c98e1d1f52d736e36cb369e3f5acf5000` has LF SHA-256
+`285a9561f3262e3f75f77e893132bfcc3fb59d5a00ea6ed019b2a2e75a795886`;
+the native tested file has SHA-256
+`27f0b19efc055039b1b71339432fb8c2d396de4aa8de9a440c6610cdd313953d`.
+Only two CRLF endings differ. All 682 tracked Python files match tested content
+exactly or by CRLF-to-LF normalization, with no unmatched file. Production Git
+payloads are unchanged from `f699b0f`. CI blob
+`66a508759924cb222adee7010156a092c2f2b37a` and QML-workflow blob
+`fc432d5a747483f1dcb10de88e768eda91ef1b44` bind the tested configuration.
+This completion edits documentation only; later review revisions retain their
+own normal PR validation and recorded SHA. No new reproduced defect appears in
+the exit review; INC-QML-49 remains unallocated and no merge/deployment occurs.
 
 ### Manual discovery and native fixture contracts — INC-QML-46/47
 

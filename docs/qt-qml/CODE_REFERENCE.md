@@ -245,7 +245,9 @@ DESIGN.md; tests and exact commands belong to validation/traceability.
 The initial INC-QML-14 profile is locally verified. INC-QML-39 extends accepted
 input identity; focused and broader local source regressions pass. A fresh
 artifact initially reproduced the separate INC-QML-40 facade gap; its correction
-now passes fresh installed alias smoke. Current hosted proof remains pending.
+now passes fresh installed alias smoke. The applicable corrected source/native
+profiles pass at the [verified hosted checkpoint](../../tests/TRACEABILITY.md#verified-hosted-runner-checkpoint--10cb15a),
+with explicit capability exclusions and optional-wheel evidence limits.
 Qt policy 21 and AST schema 12 are current under D23/D24.
 The owners below implement
 REQ-QML-020-AC01–AC03 without a new parser or persistence pipeline.
@@ -255,7 +257,7 @@ REQ-QML-020-AC01–AC03 without a new parser or persistence pipeline.
 | `graphify/qt_project_membership.py::resolve_project_memberships` | Independent source-owned membership sites; literal/unique accepted canonical targets; canonical contained input identity admits real path aliases without rewriting lexical provenance, reading target content, expanding the corpus or mutating borrowed facts |
 | `graphify/qt_project_index.py::QtProjectIndex` | Existing accepted module/source/resource evidence and lookup behavior; projection does not change the index's runtime-uncertainty boundary |
 | `graphify/qt_qml_pipeline.py::resolve_qt_qml` | Narrow post-canonicalization helper hook, scratch publication and existing resolver failure guard |
-| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Historical INC-QML-14 policy-6/schema-7 refresh; current policy 19/schema 12 retain the same owners and refresh prior native/Qt source-alias provenance at unchanged package/source versions |
+| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Historical INC-QML-14 policy-6/schema-7 refresh; current policy 21/schema 12 retain the same owners and refresh prior native/Qt source-alias and physical co-owner provenance at unchanged package/source versions |
 | `tests/test_qt_project_membership.py` | Public literal, ambiguity, source/span, direction and immutable-input production regressions; exact executed coverage belongs to traceability |
 | `tests/test_qt_project_membership_updates.py` | Real CLI/watch changes, policy upgrade, prior-product retention/repair/repeat, aggregate inspection and replacement publication without borrowed mutation |
 | `tests/test_qt_project_membership_aliases.py` | Real Windows short-path and parent-symlink admission; unchanged installed-smoke assertions, canonical/cold/warm/full/manual/watch equality, foreign/conflicting transport rejection and durable retention/recovery |

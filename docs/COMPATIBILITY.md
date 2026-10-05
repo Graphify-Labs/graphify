@@ -25,10 +25,10 @@ not a passing assertion.
 | INC-CORE-08 | Preserve admitted shell identity at native process launch | REQ-CORE-004-AC02/AC03 | Actual Python subprocesses execute the selected absolute Bash/sh file, preserve literal/security assertions and reject missing shells; corrected normal PR results retain exact identity and outcomes |
 | INC-CORE-09 | Retain native shell consumer identity evidence | REQ-CORE-004-AC03 | The actual uploaded job artifact includes and verifies both shells' executable, Python and Node identities for the reviewed checkout; omitted or inconsistent evidence cannot establish acceptance |
 
-INC-CORE-01–05 have current native source evidence below. The hook/filesystem
-corrections also have independent installed-consumer evidence. INC-CORE-02
-retains its actual POSIX filesystem gap. INC-CORE-06 addresses that
-gap and the missing Windows generic-contract CI selection; it changes test
+INC-CORE-01–05 have native source evidence below. The hook/filesystem corrections
+also have independent installed-consumer evidence. INC-CORE-06 closes the former
+POSIX filesystem gap and the missing Windows generic-contract CI selection at
+the [verified hosted checkpoint](../tests/TRACEABILITY.md#verified-hosted-runner-checkpoint--10cb15a); it changes test
 infrastructure, with no Graphify extraction or Qt schema change. Existing
 all-extras Ubuntu source jobs and the separate QML-wheel matrix remain the
 starting point. Configuration acceptance and hosted execution are distinct.
@@ -313,7 +313,7 @@ are retained individually and never counted as passing acceptance.
 
 ## Deterministic Windows tool selection — INC-CORE-07
 
-Status: **Implemented correction; native regression passes, corrected hosted proof pending**.
+Status: **Verified for the recorded local and hosted native tool-selection profiles**.
 Owner: CI Windows environment admission. Acceptance: REQ-CORE-004-AC02/AC03.
 Dependency: INC-CORE-06. The hosted Windows image exposes multiple Node
 applications. PowerShell's `Get-Command -CommandType Application` returns all
@@ -346,7 +346,7 @@ another reproduced gap.
 
 ## Native shell process identity — INC-CORE-08
 
-Status: **Implemented; local consumer/configuration verification passes, corrected hosted proof pending**.
+Status: **Verified for the recorded local and hosted native shell-consumer profiles**.
 Owner: shared shell test transport and native CI admission. Acceptance:
 REQ-CORE-004-AC02/AC03. Dependency: INC-CORE-07.
 
@@ -388,7 +388,7 @@ skip identities and limits belong to
 
 ## Native consumer evidence retention — INC-CORE-09
 
-Status: **Reproduced omission; upload correction prepared, hosted retention proof pending**.
+Status: **Verified native artifact retention at source 10cb15a**.
 Owner: native compatibility artifact publication. Acceptance: REQ-CORE-004-AC03.
 Dependency: INC-CORE-08. Source `f699b0f` passes all 836 native cases with 21
 explicit exclusions, but its uploaded artifact omits `shell-consumers.json`.
@@ -424,6 +424,17 @@ the real service; a literal workflow assertion cannot prove upload completion.
 No new secret or disposable service is introduced; existing runner/artifact
 retention and cleanup own recovery. Exit with exact retained-report proof and
 review all remaining jobs for another reproduced gap.
+
+The corrected normal PR native job passes 836 tests with 21 explicit exclusions.
+Artifact `11323730916` includes the real two-shell report; downloaded archive
+SHA-256 `98e8645f9fd208b6502c62ea687fa83c81b48c6e190d9698ce62b85ffe1977b4`
+matches GitHub's API digest. Both admitted Git Bash/sh executables report the
+selected checkout interpreter and Node 24.19.0, agreeing with the actual same-file
+preflight, source import and job identity. JUnit, pytest exit, 197 unchanged
+dependencies and unchanged checkout/tracked inputs accompany the report.
+All current Linux and optional-wheel jobs also pass; exact profiles and remaining
+contribution/system limits belong to the verified checkpoint. No additional
+compatibility increment is allocated by this exit review.
 
 ## Focused legacy ownership and size constraints
 

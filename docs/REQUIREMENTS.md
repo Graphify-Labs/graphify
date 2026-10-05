@@ -279,9 +279,9 @@ Malformed input, missing parser, partial extraction, and failed resolution canno
 
 4 - Oversized/deep/hostile source and metadata fixtures terminate under documented bounds, disclose no credentials or machine-private paths, and execute no analyzed instructions. (`REQ-QML-012-AC04`)
 
-Status: **Implemented bounded profile; current local diagnostic/retention proof
-passes, hosted proof pending**. INC-QML-48 corrects the Python 3.10 cleanup-fault
-fixture's injection boundary; corrected hosted acceptance remains open.
+Status: **Verified for the recorded bounded source, installed and hosted diagnostic/retention profiles**.
+INC-QML-48 corrects the Python 3.10 cleanup-fault fixture's injection boundary;
+its exact regression passes all four hosted Linux interpreters.
 INC-QML-41 adds persistent-identity failure coverage
 for AC01/AC02: complete failure records and safe context, exact prior-product
 retention, repaired retry and byte-stable repeat. A diagnostic label is at most
@@ -290,8 +290,9 @@ context is the empty `source_file` string and grants no lookup authority.
 INC-QML-44/45 add distinct pre-extraction watch/native admission rejection codes,
 actual cache/product retention, repaired retry and bounded lexical-context tests.
 The combined installed profile passes all 59 new cases without skips; eleven
-older file-symlink cases retain actual capability exclusions. Hosted proof is
-still separate from these local results.
+older file-symlink cases retain actual capability exclusions. The
+[verified hosted checkpoint](../tests/TRACEABILITY.md#verified-hosted-runner-checkpoint--10cb15a)
+records separate source/platform outcomes and their exclusions.
 Exact assignments and capability exclusions are in
 [traceability](../tests/TRACEABILITY.md#failure-safe-join-diagnostics--inc-qml-41).
 
@@ -478,7 +479,7 @@ project code.
 
 3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. Canonical and real alias profiles agree through cold/warm extraction, full/manual/watch updates and source removal; repaired retry and no-change repeats preserve accepted output. Existing policy-18/19/20 native/Qt products refresh under policy 21 at unchanged package/source versions; a failed upgrade retains prior products and repaired retry/repeat completes the same accepted graph. (`REQ-QML-020-AC03`)
 
-Status: **Implemented bounded profile; full canonical-alias verification remains open**.
+Status: **Verified for the recorded bounded source, installed and hosted membership/alias profiles**.
 The earlier canonical-spelling cases have production, lifecycle/consumer and reviewed installed-artifact
 evidence assigned in [traceability](../tests/TRACEABILITY.md#project-membership-projection).
 The initial two source/lifecycle suites contribute 37 passing cases to their
@@ -486,10 +487,17 @@ recorded reviewed-wheel selection. The INC-QML-39 checkpoint uses Qt policy 18
 and AST schema 12; INC-QML-40's accepted compatibility decision advances policy
 19 while retaining schema 12, refresh and producer ownership. Raw facts and existing module/resource
 lookups remain unchanged; static membership does not establish runtime component
-use. Browser, new hosted, other-platform and executable Qt proof are not claimed.
+use. The [verified hosted checkpoint](../tests/TRACEABILITY.md#verified-hosted-runner-checkpoint--10cb15a)
+records the applicable Linux and native Windows cases and optional-wheel profiles.
+Skips, browser/device procedures and executable Qt application proof remain separate;
+passing installed smokes do not establish artifact-origin proof for every source case.
 [INC-QML-14](qt-qml/PLAN.md#inc-qml-14--explicit-project-membership-relationships)
 owns this additional behavior and its evidence; source containment and viewer
 counts do not establish completion.
+
+The following historical checkpoints preserve the sequence of reproduced failures
+and their corrections. Their pending-hosted statements are superseded by the
+verified checkpoint above, without converting capability skips into passes.
 
 INC-QML-39 adds canonical input-alias acceptance after a reproduced installed
 smoke failure. The frozen broader Qt/QML source profile passes 2,259 cases with
@@ -583,9 +591,12 @@ existing explicit repository-root recovery contract.
 
 3 - Missing-CWD diagnostics distinguish an absent explicit repository root from failure to change to a supplied repository root. A failed supplied root is not described as unset, and diagnostic text does not expose its private absolute path. The failure returns before queue, lock or graph publication and preserves the prior graph bytes. (`REQ-CORE-002-AC03`)
 
-Status: **Native admission/recovery verified; actual POSIX proof pending**. Native Windows
-cannot establish real FIFO or deleted-current-directory evidence. The exact
-system gaps remain in [compatibility verification](COMPATIBILITY.md#verification-profiles-and-remaining-system-work).
+Status: **Native and hosted POSIX admission/recovery verified for recorded available capabilities**.
+The four full Linux lanes retain real FIFO/socket and deleted-current-directory
+case outcomes in the [verified hosted checkpoint](../tests/TRACEABILITY.md#verified-hosted-runner-checkpoint--10cb15a).
+Privileged device/link capabilities remain explicit exclusions; Windows mode/error
+tests do not replace those real-object procedures. Remaining system limits belong
+to [compatibility verification](COMPATIBILITY.md#verification-profiles-and-remaining-system-work).
 
 ### REQ-CORE-003 — Portable Terraform scope and provenance
 
@@ -618,7 +629,11 @@ dependencies, and reports failures and exclusions explicitly.
 
 4 - The established push/PR/dispatch triggers and existing required/advisory gate policies remain intact. One PR event owns its validation; no equivalent full feature-push dispatch is added. Obsolete PR revisions can cancel their own workflow runs, while default-branch and explicit recovery runs retain distinct groups and cannot be cancelled by a later PR revision. Jobs use read-only repository permissions. (`REQ-CORE-004-AC04`)
 
-Status: **Implemented configuration; hosted source/evidence corrections pending**. INC-CORE-06–09 in
+Status: **Verified for the recorded hosted source/native runner profiles**. INC-CORE-06–09 in
 the [compatibility plan](COMPATIBILITY.md#plan-and-acceptance-matrix) owns readiness,
 workflow validation, publication and exact-revision evidence. Local passing
-tests and configuration checks do not establish hosted acceptance.
+tests and configuration checks do not establish hosted acceptance. The
+[verified checkpoint](../tests/TRACEABILITY.md#verified-hosted-runner-checkpoint--10cb15a)
+binds actual jobs, archives, individual required cases, integrity and cleanup to
+their tested source/base/checkout. Baseline typing, advisory security and separate
+application/device procedures are outside this runner-profile verification.

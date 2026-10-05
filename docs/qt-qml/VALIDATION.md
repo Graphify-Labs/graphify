@@ -1,7 +1,16 @@
 # Qt/QML validation record
 
-This chronological record preserves evidence for each tested revision. Recorded
-native source and installed-consumer results at `463ca32` are in
+This chronological record preserves evidence for each tested revision. Current
+hosted results at `10cb15a` are in the
+[verified runner checkpoint](../../tests/TRACEABILITY.md#verified-hosted-runner-checkpoint--10cb15a):
+all four full Linux jobs, native Windows and twelve optional-wheel lanes pass,
+with exact revision binding. Source/native jobs retain artifact, individual-case,
+integrity and cleanup evidence; optional-wheel lanes retain logs, installed smoke
+outcomes and platform source-profile counts, without per-case artifact attestation.
+Earlier failure and pending-hosted statements describe their original checkpoints. Baseline typing,
+advisory security and separate application/device procedures remain distinct.
+
+Recorded native source and installed-consumer results at `463ca32` are in
 [traceability](../../tests/TRACEABILITY.md#current-native-source-and-artifact-evidence--2026-10-05):
 8,818 full-suite passes with no pytest failures, plus separate setup replays.
 Older failure totals are historical checkpoints. The
