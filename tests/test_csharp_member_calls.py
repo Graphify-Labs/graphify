@@ -279,6 +279,62 @@ def test_this_field_receiver_resolves(tmp_path):
     assert (commit, cache_save) not in calls
 
 
+def test_null_conditional_field_receiver_resolves(tmp_path):
+    """#3797: `_s?.Save()` is a conditional_access_expression, not a
+    member_access_expression. It used to fall through to the raw-text split,
+    which typed the receiver as `_s?` (nothing), so the call was dropped."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Server { public bool Save() => true; }\n"
+            "public class Cache  { public bool Save() => false; }\n"
+            "public class Repo {\n"
+            "    private Server _s = new Server();\n"
+            "    public bool? Commit() { return _s?.Save(); }\n"
+            "}\n"
+        )
+    })
+    commit = _find(r, ".Commit()", "commit")
+    server_save = _find(r, ".Save()", "server")
+    cache_save = _find(r, ".Save()", "cache")
+    assert (commit, server_save) in calls, "_s?.Save() must resolve like _s.Save()"
+    assert (commit, cache_save) not in calls
+
+
+def test_null_conditional_this_field_receiver_resolves(tmp_path):
+    """`this._s?.Save()`: the condition is the same this-field access a plain
+    `this._s.Save()` carries, so it types the same way."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Server { public bool Save() => true; }\n"
+            "public class Cache  { public bool Save() => false; }\n"
+            "public class Repo {\n"
+            "    private Server _s = new Server();\n"
+            "    public bool? Commit() { return this._s?.Save(); }\n"
+            "}\n"
+        )
+    })
+    commit = _find(r, ".Commit()", "commit")
+    server_save = _find(r, ".Save()", "server")
+    cache_save = _find(r, ".Save()", "cache")
+    assert (commit, server_save) in calls
+    assert (commit, cache_save) not in calls
+
+
+def test_null_conditional_cross_file_receiver_resolves(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "Server.cs": (
+            "public class Server { public bool Save() => true; }\n"
+            "public class Cache  { public bool Save() => false; }\n"
+        ),
+        "Repo.cs": (
+            "public class Repo { private Server _s = new Server(); "
+            "public bool? Commit() { return _s?.Save(); } }\n"
+        ),
+    })
+    assert any("commit" in s and "server_save" in t for s, t in calls)
+    assert not any("commit" in s and "cache_save" in t for s, t in calls)
+
+
 def test_base_receiver_resolves_to_base_class_method(tmp_path):
     calls, r = _calls(tmp_path, {
         "Base.cs": "public class BaseSvc { public bool Ping() => true; }\n",

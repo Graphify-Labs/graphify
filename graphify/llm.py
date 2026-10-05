@@ -28,6 +28,9 @@ from graphify.file_slice import (
 # `_read_files` truncates each file at this many characters before joining into
 # the user message. Token estimates use the same cap so packing matches reality.
 _FILE_CHAR_CAP = 20_000
+# Warn at most once per run when a file exceeds _FILE_CHAR_CAP, so corpora with
+# multiple oversized files do not spam stderr (#3773).
+_file_truncation_warned = False
 # `_read_files` wraps each file in an `<untrusted_source path=... sha256=...>`
 # delimiter block (see issue #1210); this is roughly the per-file overhead in
 # characters that wrapper adds (open tag + 64-char sha + close tag + newlines).
@@ -630,6 +633,14 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
             continue
         # Whole files are still capped (covers non-splittable large files like
         # code); slices are already bounded to the cap, so the cap is a no-op.
+        if len(content) > _FILE_CHAR_CAP:
+            global _file_truncation_warned
+            if not _file_truncation_warned:
+                _file_truncation_warned = True
+                print(
+                    f"[graphify] WARNING: file {rel} exceeds {_FILE_CHAR_CAP} characters and was truncated",
+                    file=sys.stderr,
+                )
         parts.append(_wrap_untrusted(rel, content[:_FILE_CHAR_CAP]))
     return "\n\n".join(parts)
 
@@ -1459,7 +1470,13 @@ def _call_openai_compat(
             # heuristic) + 400 for the system prompt, then add output headroom.
             num_ctx = auto_num_ctx
         keep_alive = os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", "30m")
-        kwargs["extra_body"] = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
+        # Merge, don't assign: GRAPHIFY_DISABLE_THINKING may have set extra_body
+        # above, and replacing it here made the flag silently inert on ollama (#3988).
+        kwargs["extra_body"] = {
+            **kwargs.get("extra_body", {}),
+            "options": {"num_ctx": num_ctx},
+            "keep_alive": keep_alive,
+        }
     resp = client.chat.completions.create(**kwargs)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
@@ -3326,9 +3343,10 @@ def _label_batch_with_retry(
     can't be split further (a single community, or ``depth >= max_depth``) and
     still won't parse, the parse error is **re-raised**: ``label_communities``
     catches it per batch and skips that batch (its communities stay unlabeled),
-    re-raising only if every batch fails. Any non-parse exception (network,
-    missing config, programming bug) propagates unchanged — those are never
-    split-retried.
+    re-raising only if every batch fails. A batch that was split keeps every
+    name it and its halves obtained, and re-raises only when none of it could
+    be labeled. Any non-parse exception (network, missing config, programming
+    bug) propagates unchanged — those are never split-retried.
     """
     prompt = (
         "You are naming clusters in a knowledge graph. For each community below, "
@@ -3353,7 +3371,7 @@ def _label_batch_with_retry(
 
     try:
         text = _call_llm(prompt, **call_kwargs)
-        return _parse_label_response(text, batch_cids)
+        parsed = _parse_label_response(text, batch_cids)
     except (json.JSONDecodeError, ValueError) as exc:
         # Parse failure. If we can still split, retry each half on a smaller
         # prompt (smaller output → less likely to truncate/mangle). At the base
@@ -3366,18 +3384,37 @@ def _label_batch_with_retry(
                 file=sys.stderr,
             )
             raise
-        mid = len(batch_cids) // 2
-        left = _label_batch_with_retry(
-            batch_cids[:mid], batch_lines[:mid],
-            backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
-            usage_out=usage_out,
-        )
-        right = _label_batch_with_retry(
-            batch_cids[mid:], batch_lines[mid:],
-            backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
-            usage_out=usage_out,
-        )
-        return left | right
+        parsed = {}
+    if len(parsed) == len(batch_cids) or len(batch_cids) <= 1 or depth >= max_depth:
+        return parsed
+    # Salvage can produce a valid partial map from a truncated JSON object.
+    # Keep those names, but retry only the missing ids in smaller batches so a
+    # reasoning model's completion cap cannot silently turn 3/16 labels into
+    # an apparent success (#3671). After a parse failure nothing was kept, so
+    # every id is missing and this is the plain split-and-retry (#1278).
+    missing = [
+        (cid, line) for cid, line in zip(batch_cids, batch_lines) if cid not in parsed
+    ]
+    mid = max(1, len(missing) // 2)
+    failure: Exception | None = None
+    for half in (missing[:mid], missing[mid:]):
+        if not half:
+            continue
+        # The retries run outside the try above: a half that still won't parse
+        # must neither re-split this whole batch (asking again for the ids it
+        # already named) nor discard what this batch and the other half named.
+        try:
+            parsed |= _label_batch_with_retry(
+                [cid for cid, _ in half], [line for _, line in half],
+                backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+                usage_out=usage_out,
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            failure = failure or exc
+    # Nothing named at all: re-raise, so the caller still skips the batch.
+    if not parsed and failure is not None:
+        raise failure
+    return parsed
 
 
 def label_communities(
@@ -3533,6 +3570,14 @@ def generate_community_labels(
             max_concurrency=max_concurrency, batch_size=batch_size,
             usage_out=usage_out,
         )
+        placeholders = _placeholder_community_labels(communities)
+        named = sum(labels.get(cid) != placeholder for cid, placeholder in placeholders.items())
+        if named < len(communities) and not quiet:
+            print(
+                f"[graphify label] warning: labeled {named} of {len(communities)} "
+                f"communities; {len(communities) - named} kept structural fallback names.",
+                file=sys.stderr,
+            )
         return labels, "llm"
     except Exception as exc:
         if not quiet:

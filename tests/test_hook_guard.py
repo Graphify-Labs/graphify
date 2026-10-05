@@ -182,6 +182,36 @@ def test_read_nudges_source_outside_custom_output_dir(tmp_path, monkeypatch):
     assert "graphify query" in out
 
 
+@pytest.mark.parametrize("file_path", [
+    "tools/graphify/notes.md",
+    "tools/graphify/helper.py",
+    ".codex/skills/graphify/SKILL.md",
+    r"tools\graphify\helper.py",
+])
+def test_read_nudges_when_nested_out_name_matches_directory(file_path, tmp_path, monkeypatch):
+    # #3959: when GRAPHIFY_OUT is a nested path whose last segment is a common name
+    # (e.g. artifacts/graphify), paths containing graphify/ outside the output directory
+    # must still be nudged and not falsely suppressed.
+    out = _invoke("read", {"tool_input": {"file_path": file_path}},
+                  tmp_path, monkeypatch, graph=True, out_name="artifacts/graphify")
+    assert "graphify query" in out, f"{file_path} should nudge"
+
+
+@pytest.mark.parametrize("tool_input", [
+    {"file_path": "artifacts/graphify/GRAPH_REPORT.md"},
+    {"file_path": "artifacts/graphify/report.py"},
+    {"pattern": "artifacts/graphify/**/*.py"},
+    {"pattern": "*.py", "path": "artifacts/graphify"},
+    {"pattern": "graphify/*.py", "path": "artifacts"},
+])
+def test_read_nested_output_dir_silences_own_output(tool_input, tmp_path, monkeypatch):
+    # #3959: files and globs inside the nested output dir must remain silent.
+    out = _invoke("read", {"tool_input": tool_input},
+                  tmp_path, monkeypatch, graph=True, out_name="artifacts/graphify")
+    assert out.strip() == "", f"{tool_input!r} should be silent"
+
+
+
 # --------------------------------------------------------------------------- #
 # fail-open: malformed / empty stdin never crashes or blocks
 # --------------------------------------------------------------------------- #
@@ -281,3 +311,49 @@ def test_read_nudge_em_dash_survives_utf8(tmp_path):
     text = r.stdout.decode("utf-8")   # raises if not valid UTF-8
     payload = json.loads(text)
     assert "—" in payload["hookSpecificOutput"]["additionalContext"]  # em dash preserved
+
+
+# --------------------------------------------------------------------------- #
+# #4040: reminders name the effective graph.json when GRAPHIFY_OUT is customized
+# --------------------------------------------------------------------------- #
+def _ctx(out):
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_custom_out_read_nudge_names_effective_graph(tmp_path, monkeypatch):
+    out = _invoke("read", {"tool_name": "Read", "tool_input": {"file_path": "src/app.py"}},
+                  tmp_path, monkeypatch, out_name="artifacts/graphify")
+    assert "artifacts/graphify/graph.json" in _ctx(out)
+    assert "graphify-out/" not in _ctx(out)
+
+
+def test_custom_out_stale_nudge_names_effective_graph(tmp_path, monkeypatch):
+    target = tmp_path / "src" / "app.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("x = 1\n", encoding="utf-8")
+    g = tmp_path / "artifacts" / "graphify" / "graph.json"
+    g.parent.mkdir(parents=True)
+    g.write_text("{}", encoding="utf-8")
+    os.utime(g, (1, 1))
+    out = _invoke("read", {"tool_name": "Read", "tool_input": {"file_path": str(target)}},
+                  tmp_path, monkeypatch, graph=False, out_name="artifacts/graphify")
+    assert "STALE" in _ctx(out)
+    assert "artifacts/graphify/graph.json" in _ctx(out)
+    assert "graphify-out/" not in _ctx(out)
+
+
+def test_custom_out_search_nudge_names_effective_graph(tmp_path, monkeypatch):
+    out = _invoke("search", {"tool_name": "Bash", "tool_input": {"command": "grep -rn x ."}},
+                  tmp_path, monkeypatch, out_name="artifacts/graphify")
+    assert "artifacts/graphify/graph.json" in _ctx(out)
+    assert "graphify-out/" not in _ctx(out)
+
+
+@pytest.mark.parametrize("kind,payload,const", [
+    ("read", {"tool_name": "Read", "tool_input": {"file_path": "src/app.py"}}, "_READ_NUDGE"),
+    ("search", {"tool_name": "Bash", "tool_input": {"command": "grep -rn x ."}}, "_SEARCH_NUDGE"),
+])
+def test_default_out_nudge_is_byte_identical(kind, payload, const, tmp_path, monkeypatch):
+    from graphify import cli
+    out = _invoke(kind, payload, tmp_path, monkeypatch)
+    assert out == getattr(cli, const)

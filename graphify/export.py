@@ -21,6 +21,7 @@ from graphify.paths import (
     stem_filename_budget,
     write_json_atomic,
     write_text_atomic,
+    write_text_atomic_if_changed,
 )
 
 from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
@@ -268,7 +269,11 @@ def existing_graph_node_count(path: "str | Path"):
     return len(nodes) if isinstance(nodes, list) else MALFORMED_GRAPH
 
 
-def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
+def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None, original_links: "list[dict] | None" = None) -> bool:
+    # Drop #3774 accounting before any write. Extract pops these first; every
+    # other caller of to_json (the documented build_merge persist path) does not.
+    from graphify.build import take_shrink_accounting
+    take_shrink_accounting(G)
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -341,6 +346,30 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         if cid is not None and _labels:
             node["community_name"] = _labels.get(cid, f"Community {cid}")
         node["norm_label"] = _strip_diacritics(node.get("label", "")).lower()
+    if original_links is not None:
+        # A simple Graph keeps one edge per node pair, so re-deriving the link
+        # list from G after a reload-and-recluster (cluster-only/label) would
+        # silently drop a second edge on a pair that stayed connected by
+        # another (e.g. an `imports` and a `calls` edge between the same two
+        # nodes, #3999). Community is purely a node attribute, so clustering
+        # never needs to add or remove an edge; write back every original
+        # link verbatim instead, dropping only one whose endpoint no longer
+        # exists in G. This also sidesteps any endpoint-order canonicalization
+        # undirected storage would otherwise apply when deriving from G.
+        #
+        # The endpoint-existence filter below assumes original_links carry the
+        # SAME ids as G's post-load nodes. That holds because build_from_json
+        # rewrites a legacy node id to its canonical stem (_semantic_id_remap /
+        # _doc_twin_remap) IN PLACE on the shared link dicts the caller then
+        # passes here, so a remapped endpoint already matches node_ids rather
+        # than being silently dropped (regression-tested in test_cli_export.py:
+        # test_cluster_only_preserves_parallel_edges_across_an_id_remap).
+        node_ids = {n["id"] for n in data["nodes"]}
+        data["links"] = [
+            dict(link) for link in original_links
+            if isinstance(link, dict)
+            and link.get("source") in node_ids and link.get("target") in node_ids
+        ]
     for link in data["links"]:
         if "confidence_score" not in link:
             conf = link.get("confidence", "EXTRACTED")
@@ -725,13 +754,20 @@ def to_obsidian(
 
     def _owned_write(rel_name: str, content: str) -> bool:
         """Write a graphify-owned file, refusing to overwrite a pre-existing file
-        graphify didn't create. Returns True if written."""
+        graphify didn't create. Returns True if the note is owned/current (whether
+        or not it was physically written).
+
+        The disk write is skipped when the content is byte-identical to what is
+        already there (#3060) — an export re-runs on every graph.json change, and
+        rewriting an unchanged note churns disk and fires inotify / re-index /
+        sync for nothing. The note is still recorded in ``_written`` so it stays
+        owned and is neither pruned as stale nor dropped from the manifest."""
         target = out / rel_name
         if target.exists() and rel_name not in _owned:
             _skipped.append(rel_name)
             return False
         target.parent.mkdir(parents=True, exist_ok=True)
-        write_text_atomic(target, content)
+        write_text_atomic_if_changed(target, content)
         _written.append(rel_name)
         return True
 

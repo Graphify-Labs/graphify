@@ -93,9 +93,11 @@ def _strip_jsonc(text: str) -> str:
     return stripped
 
 def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[str, list[str]]:
-    """Recursively read path aliases from a tsconfig, following extends chains.
+    """Recursively read path aliases from a tsconfig, following extends chains
+    and `references` project links (the solution-file layout, #3745).
 
-    Child config paths override parent. Circular extends are detected via seen set.
+    Child config paths override parent. Circular extends/references are detected
+    via seen set.
     npm package configs (e.g. @tsconfig/svelte) are skipped since they're not on disk.
     Handles JSONC (comments + trailing commas) which is the default tsconfig format
     for SvelteKit, NestJS, Vite, T3, Astro, etc. (#700).
@@ -143,6 +145,33 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
             extended_path = extended_path.with_suffix(".json")
         if extended_path.exists():
             aliases.update(_read_tsconfig_aliases(extended_path, extended_path.parent, seen))
+
+    # `references` — the solution-file / `tsc -b` layout (Vite, React, many
+    # monorepos): the root tsconfig.json is a solution file (`"files": []` with
+    # `references: [{path: ...}]`) that carries no `paths` of its own; every
+    # compilerOptions.paths block lives in a referenced project config
+    # (tsconfig.app.json, tsconfig.node.json, …). `extends` is not involved, so
+    # without following references the walk-up finds the solution file, sees no
+    # paths and no extends, and stops — every alias import then silently gets no
+    # edge (#3745). Merge each referenced config like an additional parent (the
+    # referencing config's own `paths` below still override), guarded by the same
+    # `seen` set that already protects extends against cycles. A reference `path`
+    # may name a directory (resolved to its tsconfig.json, per `tsc -b`) or a file.
+    references = data.get("references")
+    if isinstance(references, list):
+        for ref in references:
+            if not isinstance(ref, dict):
+                continue
+            ref_path = ref.get("path")
+            if not isinstance(ref_path, str) or not ref_path:
+                continue
+            referenced = _resolve_cached(base_dir / ref_path)
+            if referenced.is_dir():
+                referenced = referenced / "tsconfig.json"
+            elif not referenced.suffix:
+                referenced = referenced.with_suffix(".json")
+            if referenced.exists():
+                aliases.update(_read_tsconfig_aliases(referenced, referenced.parent, seen))
 
     # tsconfig `paths` are resolved relative to `baseUrl` (itself relative to
     # the tsconfig's directory), not the tsconfig directory directly. Honoring
@@ -212,7 +241,9 @@ def _find_js_config(start_dir: Path) -> "tuple[Path, Path] | None":
 def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
     """Walk up from start_dir to find tsconfig/jsconfig.json and return compilerOptions.paths aliases.
 
-    Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
+    Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included,
+    and `references` so a Vite/`tsc -b` solution-file root reaches the per-project
+    `paths` (#3745).
     Returns a dict mapping alias patterns to ordered resolved target patterns;
     wildcard tokens remain intact for substitution during resolution (#927).
     Result is cached by config path string. The cache has no mtime/content
@@ -591,6 +622,16 @@ def _package_entry_candidates(
     candidates.append(package_dir / "index")
     return candidates
 
+_BUILD_OUTPUT_DIRS = frozenset({"dist", "build", "target", "out", "dist-protected"})
+
+def _is_build_output_path(path: Path, package_dir: Path) -> bool:
+    """True if path points into a known build-output directory within package_dir."""
+    try:
+        rel = _resolve_cached(path).relative_to(_resolve_cached(package_dir))
+        return bool(rel.parts and rel.parts[0] in _BUILD_OUTPUT_DIRS)
+    except ValueError:
+        return False
+
 def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
     packages = _load_workspace_packages(start_dir)
     platform = _importer_platform(start_dir)
@@ -601,10 +642,17 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
             subpath = raw[len(package_name) + 1:]
         else:
             continue
+        build_fallback: Path | None = None
         for candidate in _package_entry_candidates(package_dir, subpath, platform):
             resolved = _resolve_js_import_path(candidate)
             if resolved.is_file():
-                return resolved
+                if _is_build_output_path(resolved, package_dir):
+                    if build_fallback is None:
+                        build_fallback = resolved
+                else:
+                    return resolved
+        if build_fallback is not None:
+            return build_fallback
     return None
 
 def _find_js_project_anchor(start_dir: Path) -> Path:
@@ -794,7 +842,20 @@ def _resolve_js_import_target(raw: str, str_path: str) -> "tuple[str, Path | Non
     # producing a confident (EXTRACTED) cross-language phantom imports_from edge
     # (#1638). The ref-namespaced target has no node, so build drops it as an
     # external reference — the correct outcome for a third-party import.
-    return _make_id("ref", raw), None
+    #
+    # Namespace on the PACKAGE root, not the raw specifier (#3595): a package
+    # subpath import ("next/image") named the whole specifier, so it minted
+    # "ref:next/image" while package.json's own dependency node for the same
+    # package is "ref:next" (json_config.py keys that node off the bare
+    # dependency name). The two could never match, so every subpath import
+    # dangled even though the bare package import resolved fine. A scoped
+    # package's root is its first two segments ("@scope/pkg"); anything else
+    # is its first segment alone.
+    if raw.startswith("@"):
+        package_root = "/".join(raw.split("/")[:2])
+    else:
+        package_root = raw.split("/")[0]
+    return _make_id("ref", package_root), None
 
 def _resolve_c_include_path(raw: str, str_path: str) -> "Path | None":
     """Resolve a quoted #include path to a real file on disk.
@@ -1104,6 +1165,7 @@ def _apply_symbol_resolution_facts(
     edges: list[dict],
     root: Path,
     facts: _SymbolResolutionFacts,
+    resolution_context_nodes: list[dict] | None = None,
 ) -> None:
     """Apply language-provided import/export/use facts to graph edges."""
     if not (
@@ -1127,6 +1189,30 @@ def _apply_symbol_resolution_facts(
     # name to a class/interface member (#3436). Track those keys separately
     # and never let a member shadow a same-named top-level symbol.
     member_symbol_keys: set[tuple[Path, str]] = set()
+
+    if resolution_context_nodes:
+        _fresh_node_ids = {n.get("id") for n in nodes if n.get("id")}
+        _fresh_paths = {_resolve_cached(p) for p in paths}
+        for node in resolution_context_nodes:
+            nid = node.get("id")
+            if not nid or nid in _fresh_node_ids:
+                continue
+            source_path = _js_source_path(str(node.get("source_file", "")), root)
+            if source_path is None or source_path in _fresh_paths:
+                continue
+            raw_label = str(node.get("label", "")).strip()
+            label = raw_label.strip("()").lstrip(".")
+            if not label:
+                continue
+            key = (source_path, label)
+            if raw_label.startswith("."):
+                if key in symbol_nodes:
+                    continue
+                member_symbol_keys.add(key)
+            else:
+                member_symbol_keys.discard(key)
+            symbol_nodes[key] = str(nid)
+
     for node in nodes:
         source_path = _js_source_path(str(node.get("source_file", "")), root)
         if source_path is None:
@@ -1420,6 +1506,18 @@ def _apply_symbol_resolution_facts(
         )
 
     # #1146: emit file-to-file imports_from edges for package-form submodule imports.
+    # #3777: retract provisional `imports_from` AST edges whose package ID coincided
+    # with a same-named sibling module file (e.g. `from nettacker import logger`
+    # emitting a provisional edge to `nettacker.py`).
+    provisional_by_loc: dict[tuple[Path, str], list[dict]] = {}
+    for edge in edges:
+        if edge.get("relation") == "imports_from" and edge.get("context") == "import":
+            src = _js_source_path(str(edge.get("source_file", "")), root)
+            loc = edge.get("source_location")
+            if src is not None and loc:
+                provisional_by_loc.setdefault((src, loc), []).append(edge)
+
+    retracted_edge_ids: set[int] = set()
     for from_path, to_path, line, local_name in facts.module_imports:
         try:
             from_rel = from_path.relative_to(root)
@@ -1428,10 +1526,64 @@ def _apply_symbol_resolution_facts(
             continue
         source_id = _make_id(_file_stem(from_rel))
         target_id = _make_id(_file_stem(to_rel))
+
+        from_canon = _resolve_cached(from_path)
+        pkg_dir = to_path.parent
+        candidate_targets: set[str] = set()
+        try:
+            pkg_rel = pkg_dir.relative_to(root)
+            candidate_targets.add(_make_id(".".join(pkg_rel.parts)))
+            candidate_targets.add(_make_id(_file_stem(pkg_rel)))
+            candidate_targets.add(_make_id(str(pkg_rel)))
+        except ValueError:
+            pass
+        candidate_targets.add(_make_id(str(pkg_dir)))
+        candidate_targets.add(_make_id(str(pkg_dir.with_suffix(".py"))))
+        try:
+            from_rel_parent = from_path.parent.relative_to(root)
+            candidate_targets.add(_make_id(str(from_rel_parent.with_suffix(".py"))))
+        except ValueError:
+            pass
+        # Deliberately NOT adding the package `__init__.py` id form: since #3729,
+        # a legitimate `from pkg import sub` resolves its provisional edge to the
+        # real `pkg/__init__.py` node, which is a correct package-dependency edge
+        # (the package's __init__ runs on import) and must survive alongside the
+        # submodule edge we add below. Only the *module-file* collision ids
+        # (`pkg` / `pkg.py`, the #3777 phantom) are retraction candidates.
+
+        loc_str = f"L{line}"
+        loc_candidates = [
+            e for e in provisional_by_loc.get((from_canon, loc_str), [])
+            if id(e) not in retracted_edge_ids
+        ]
+        matched_edge = None
+        for edge in loc_candidates:
+            if edge.get("target") in candidate_targets:
+                matched_edge = edge
+                break
+        # Retract ONLY on a genuine module-collision candidate match. The old
+        # `len(loc_candidates) == 1` blind fallback over-retracted: since #3729 a
+        # legitimately-resolved `from pkg import sub` edge (target `pkg/__init__.py`)
+        # is the sole edge at its line and is NOT a collision, so the fallback
+        # would wrongly drop it. A real #3777 phantom always matches by its
+        # module-file id above, so no fallback is needed (#3784 follow-up).
+
+        if matched_edge is not None:
+            retracted_edge_ids.add(id(matched_edge))
+            existing_edges.discard((
+                str(matched_edge.get("source")),
+                str(matched_edge.get("target")),
+                str(matched_edge.get("relation")),
+                str(matched_edge.get("context") or ""),
+            ))
+
         add_edge(
             source_id, target_id, "imports_from", "submodule_import", line, from_path,
             local_alias=local_name if local_name != to_path.stem else None,
         )
+
+    if retracted_edge_ids:
+        edges[:] = [e for e in edges if id(e) not in retracted_edge_ids]
 
     # #2262 producer guard: never emit a `calls` use-edge from a source id
     # that owns no node. All node appends (ensure_symbol_node, declarations,
@@ -2194,6 +2346,56 @@ def _probe_python_module_candidate(candidate: Path) -> Path | None:
     return None
 
 
+# Cache: scan root (resolved str) → dotted namespace prefix or ""
+_SCAN_ROOT_NAMESPACE_CACHE: dict[str, str] = {}
+
+def _infer_scan_root_namespace(root: Path) -> str:
+    """Infer the dotted Python package namespace of the scan root.
+
+    Walks upward from `root` collecting ancestor directory names as long as each
+    ancestor contains an ``__init__.py``. Stops at the first ancestor without one
+    (the true package boundary). Returns the dotted namespace prefix that should
+    be stripped from absolute imports that reference the scan root's own modules.
+
+    Example: root = /repo/Company/Apps/Jobs/Team, and Company/, Apps/, Jobs/
+    each contain __init__.py → returns "Company.Apps.Jobs.Team".
+
+    Returns "" when root is already at or above the package boundary.
+
+    Cached per resolved root path string; cleared when resolution caches are
+    cleared (extract() resets caches per run).
+    """
+    key = str(_resolve_cached(root))
+    cached_ns = _SCAN_ROOT_NAMESPACE_CACHE.get(key)
+    if cached_ns is not None:
+        return cached_ns
+
+    parts: list[str] = []
+    current = _resolve_cached(root)
+    # Include root's own name in the namespace
+    parts.append(current.name)
+    parent = current.parent
+
+    while parent != current:  # stop at filesystem root
+        if not (parent / "__init__.py").is_file():
+            break
+        parts.append(parent.name)
+        current = parent
+        parent = parent.parent
+
+    if len(parts) <= 1:
+        # Root itself is the package boundary (or root IS the top-level package).
+        # Only return a namespace if the root's PARENT has __init__.py (meaning
+        # root is nested inside a package chain).
+        _SCAN_ROOT_NAMESPACE_CACHE[key] = ""
+        return ""
+
+    parts.reverse()
+    namespace = ".".join(parts)
+    _SCAN_ROOT_NAMESPACE_CACHE[key] = namespace
+    return namespace
+
+
 def _resolve_python_module_path(module_name: str, current_path: Path, root: Path, level: int) -> Path | None:
     if level > 0:
         base = current_path.parent
@@ -2212,6 +2414,25 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
     hit = _probe_python_module_candidate(root / rel)
     if hit is not None:
         return hit
+
+    # NEW: Scan-root namespace projection (#3843).
+    # When the scan root is nested inside a package hierarchy
+    # (e.g., root = Team/, namespace = Company.Apps.Jobs.Team),
+    # an import like "Company.Apps.Jobs.Team.lib" fails the probe above
+    # because root/Company/Apps/Jobs/Team/lib doesn't exist. Strip the
+    # namespace prefix and re-probe relative to root.
+    ns = _infer_scan_root_namespace(root)
+    if ns and (module_name == ns or module_name.startswith(ns + ".")):
+        stripped = module_name[len(ns) + 1:] if module_name != ns else ""
+        if stripped:
+            hit = _probe_python_module_candidate(root / stripped.replace(".", "/"))
+            if hit is not None:
+                return hit
+        else:
+            hit = _probe_python_module_candidate(root)
+            if hit is not None:
+                return hit
+
     for anc in current_path.parents:
         try:
             anc.relative_to(root)
@@ -2263,6 +2484,19 @@ def _resolve_python_namespace_dir(module_name: str, current_path: Path, root: Pa
     hit = _namespace(root / rel)
     if hit is not None:
         return hit
+
+    # NEW: Scan-root namespace projection (#3843).
+    ns = _infer_scan_root_namespace(root)
+    if ns and (module_name == ns or module_name.startswith(ns + ".")):
+        stripped = module_name[len(ns) + 1:] if module_name != ns else ""
+        if stripped:
+            hit = _namespace(root / stripped.replace(".", "/"))
+            if hit is not None:
+                return hit
+        else:
+            hit = _namespace(root)
+            if hit is not None:
+                return hit
     for anc in current_path.parents:
         try:
             anc.relative_to(root)
@@ -2299,7 +2533,9 @@ def _collect_python_symbol_resolution_facts(
     paths: list[Path],
     root: Path,
     facts: _SymbolResolutionFacts,
+    ambiguous_python_modules: set[str] | None = None,
 ) -> None:
+    ambiguous_python_modules = ambiguous_python_modules or set()
     py_paths = [path for path in paths if path.suffix == ".py"]
     if not py_paths:
         return
@@ -2319,6 +2555,8 @@ def _collect_python_symbol_resolution_facts(
             if module is None:
                 continue
             level, module_name = module
+            if level == 0 and _make_id(module_name) in ambiguous_python_modules:
+                continue
             target_path = _resolve_python_module_path(module_name, path, root, level)
             if target_path is not None:
                 # #1146: `from pkg import submod` — if the target is a package
@@ -2342,6 +2580,15 @@ def _collect_python_symbol_resolution_facts(
                     sub_pkg = pkg_dir / imported_name / "__init__.py"
                     submodule = sub_py if sub_py.is_file() else (sub_pkg if sub_pkg.is_file() else None)
                     if submodule is not None:
+                        imported_module = (
+                            f"{module_name}.{imported_name}"
+                            if module_name else imported_name
+                        )
+                        if (
+                            level == 0
+                            and _make_id(imported_module) in ambiguous_python_modules
+                        ):
+                            continue
                         facts.module_imports.append((path, submodule, line, local_name))
                         continue
                 if target_path is None:
@@ -2386,17 +2633,29 @@ def _augment_symbol_resolution_edges(
     nodes: list[dict],
     edges: list[dict],
     root: Path,
+    ambiguous_python_modules: set[str] | None = None,
+    resolution_context_nodes: list[dict] | None = None,
 ) -> None:
     facts = _SymbolResolutionFacts()
     _collect_js_symbol_resolution_facts(paths, facts)
-    _collect_python_symbol_resolution_facts(paths, root, facts)
-    _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
+    _collect_python_symbol_resolution_facts(
+        paths, root, facts,
+        ambiguous_python_modules=ambiguous_python_modules,
+    )
+    if resolution_context_nodes:
+        _apply_symbol_resolution_facts(
+            paths, nodes, edges, root, facts,
+            resolution_context_nodes=resolution_context_nodes,
+        )
+    else:
+        _apply_symbol_resolution_facts(paths, nodes, edges, root, facts)
 
 def _resolve_cross_file_imports(
     per_file: list[dict],
     paths: list[Path],
     all_nodes: list[dict] | None = None,
     all_edges: list[dict] | None = None,
+    ambiguous_python_modules: set[str] | None = None,
 ) -> list[dict]:
     """
     Two-pass import resolution: turn file-level imports into class-level edges.
@@ -2416,6 +2675,7 @@ def _resolve_cross_file_imports(
         import tree_sitter_python  # noqa: F401  (availability check only)
     except ImportError:
         return []
+    ambiguous_python_modules = ambiguous_python_modules or set()
 
     # Pass 1: _file_stem(path) → {ClassName: node_id}
     # Keyed by directory-qualified stem (e.g. "auth_models") to avoid collisions
@@ -2506,6 +2766,7 @@ def _resolve_cross_file_imports(
             # importing file's directory; absolute imports fall back to the
             # bare-stem secondary index (first-writer-wins when names collide).
             target_fq: str | None = None
+            absolute_module: str | None = None
             for child in node.children:
                 if child.type == "relative_import":
                     prefix_text = ""
@@ -2527,6 +2788,9 @@ def _resolve_cross_file_imports(
                     break
                 if child.type == "dotted_name" and target_fq is None:
                     dotted_name = _text(child)
+                    absolute_module = dotted_name
+                    if _make_id(dotted_name) in ambiguous_python_modules:
+                        return
                     dotted_as_path = "/".join(dotted_name.split("."))
                     if dotted_as_path in stem_to_entities:
                         target_fq = dotted_as_path
@@ -2564,6 +2828,12 @@ def _resolve_cross_file_imports(
                         imported_name = _text(name_node)
                         local_name = _text(alias_node) if alias_node is not None else imported_name
                 if not imported_name or not local_name:
+                    continue
+                if (
+                    absolute_module is not None
+                    and _make_id(f"{absolute_module}.{imported_name}")
+                    in ambiguous_python_modules
+                ):
                     continue
                 tgt_nid = stem_to_entities[target_fq].get(imported_name)
                 if tgt_nid:
