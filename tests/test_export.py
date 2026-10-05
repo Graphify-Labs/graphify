@@ -1086,6 +1086,31 @@ def test_to_json_allows_ast_growth_that_keeps_semantic_ids(tmp_path):
     assert {"rationale_kept", "rationale_lost"} <= {n["id"] for n in written["nodes"]}
 
 
+def test_to_json_rewrites_the_same_integer_node_ids(tmp_path):
+    """An unstamped integer id that is still in the graph is not a lost semantic node."""
+    import networkx as nx
+
+    G = nx.Graph()
+    G.add_nodes_from([(1, {}), (2, {}), (3, {})])
+    G.add_edges_from([(1, 2, {}), (1, 3, {}), (2, 3, {})])
+    p = tmp_path / "racecar"
+    assert to_json(G, {}, str(p), force=False) is True
+    assert to_json(G, {}, str(p), force=False) is True
+    assert {n["id"] for n in json.loads(p.read_text(encoding="utf-8"))["nodes"]} == {1, 2, 3}
+
+
+def test_to_json_refuses_a_missing_integer_semantic_id(tmp_path):
+    """A saved integer id that the new graph dropped is still refused when the total grows."""
+    import networkx as nx
+
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({"nodes": [{"id": 4}], "links": []}), encoding="utf-8")
+    G = nx.Graph()
+    G.add_nodes_from([(1, {}), (2, {}), (3, {})])
+    assert to_json(G, {}, str(p), force=False) is False
+    assert json.loads(p.read_text(encoding="utf-8"))["nodes"] == [{"id": 4}]
+
+
 def test_to_json_fails_safe_on_corrupt_existing(tmp_path):
     """A non-empty but unparseable existing graph.json (corrupt or mid-write)
     must NOT be silently overwritten — we can't verify the new graph isn't a

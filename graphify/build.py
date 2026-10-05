@@ -82,10 +82,9 @@ def _lost_saved_semantic_nodes(
     ]
     doc_remap = _doc_twin_remap(rewritten)
 
-    def _still_there(node_id: str) -> bool:
-        if node_id in new_ids:
-            return True
-        renamed = doc_remap.get(stem_remap.get(node_id, node_id), stem_remap.get(node_id, node_id))
+    def _renamed_present(node_id: str) -> bool:
+        renamed = stem_remap.get(node_id, node_id)
+        renamed = doc_remap.get(renamed, renamed)
         return renamed in new_ids
 
     lost: list[dict] = []
@@ -93,7 +92,9 @@ def _lost_saved_semantic_nodes(
         if not isinstance(node, dict) or _is_ast_tier(node):
             continue
         node_id = node.get("id")
-        if isinstance(node_id, str) and _still_there(node_id):
+        if node_id in new_ids:
+            continue
+        if isinstance(node_id, str) and _renamed_present(node_id):
             continue
         source = _norm_source_file(node.get("source_file"))
         if source and source in deleted:
