@@ -5056,6 +5056,22 @@ def _extract_generic(
                             if target_nid != class_nid:
                                 add_edge(class_nid, target_nid, "references",
                                          cp_line, context=ctx)
+                # Class-level context bounds (`class Foo[A: Ordering]`, also on
+                # traits and enums) are the same typeclass dependency as the
+                # method-level case (#2046), so they get the same `type_bound`
+                # context, attributed to the class (#4080).
+                for c in node.children:
+                    if c.type != "type_parameters":
+                        continue
+                    bound_refs: list[tuple[str, str]] = []
+                    _scala_collect_context_bounds(c, source, bound_refs)
+                    for ref_name, role in bound_refs:
+                        ctx = ("generic_arg" if role == "generic_arg"
+                               else "type_bound")
+                        target_nid = ensure_named_node(ref_name, line)
+                        if target_nid != class_nid:
+                            add_edge(class_nid, target_nid, "references",
+                                     line, context=ctx)
 
             # C#: a primary constructor (`class Foo(IBar bar)`, C# 12+) declares
             # its dependencies on the type declaration itself rather than in a
