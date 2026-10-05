@@ -1781,6 +1781,23 @@ def test_resolve_single_node_shared_by_get_node_and_get_neighbors():
     assert "No node matching" in err
 
 
+def test_resolve_single_node_ignores_fuzzy_matches_but_keeps_same_file_precedence():
+    from graphify.serve import _resolve_single_node
+
+    G = nx.Graph()
+    G.add_node("file", label="Auth", source_file="auth.py", source_location="L1")
+    G.add_node("method", label="Auth", source_file="auth.py", source_location="L20")
+    G.add_node("prefix", label="Authorizer", source_file="other.py")
+
+    nid, err = _resolve_single_node(G, "Auth")
+    assert err is None
+    assert nid == "file"
+
+    nid, err = _resolve_single_node(G, "Autho")
+    assert nid is None
+    assert err == "No node matching 'Autho' found."
+
+
 # --- rationale attribute scoring (#2293) ---
 
 _FAB_RATIONALE = (

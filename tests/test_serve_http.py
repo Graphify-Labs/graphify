@@ -386,6 +386,25 @@ def test_pr_tool_failure_sets_iserror(tmp_path, monkeypatch):
         assert "gh" in result["content"][0]["text"].lower()
 
 
+def test_list_prs_reports_missing_repository_as_tool_error(tmp_path, monkeypatch):
+    import graphify.prs as prs_mod
+
+    def _no_repo(*_args, **_kwargs):
+        raise RuntimeError("could not detect repository; pass repo=")
+
+    monkeypatch.setattr(prs_mod, "_detect_default_branch", _no_repo)
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        resp = client.post("/mcp", headers=headers, json={
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "list_prs", "arguments": {}},
+        })
+        result = resp.json()["result"]
+        assert result.get("isError") is True, result
+        assert "could not detect repository; pass repo=" in result["content"][0]["text"]
+
+
 def test_normal_tool_result_is_not_iserror(tmp_path):
     """A successful tool result must not be marked isError."""
     app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
@@ -402,8 +421,8 @@ def _ambiguous_graph_file(tmp_path: Path) -> str:
     graph = {
         "directed": True,
         "nodes": [
-            {"id": "a", "label": "extract", "community": 0, "source_file": "a/x.py"},
-            {"id": "b", "label": "extract", "community": 0, "source_file": "b/y.py"},
+            {"id": "a", "label": "extract", "community": 0, "source_file": "a/x.py", "source_location": "L427"},
+            {"id": "b", "label": "extract", "community": 0, "source_file": "b/y.py", "source_location": "L19"},
             {"id": "u", "label": "unique_helper", "community": 0, "source_file": "c/z.py"},
         ],
         "edges": [
@@ -424,8 +443,12 @@ def test_get_node_and_get_neighbors_agree_on_ambiguous_label(tmp_path):
         headers = _init_session(client)
         node = _call_tool(client, headers, "get_node", {"label": "extract"}, rid=2)
         neighbors = _call_tool(client, headers, "get_neighbors", {"label": "extract"}, rid=3)
-        assert node.startswith("Ambiguous:"), node
-        assert neighbors.startswith("Ambiguous:"), neighbors
+        assert node == neighbors
+        assert node.startswith("Ambiguous: 'extract' matches 2 nodes"), node
+        assert "Retry with path::symbol" in node
         # A unique label still resolves cleanly on get_node.
         unique = _call_tool(client, headers, "get_node", {"label": "unique_helper"}, rid=4)
         assert "Node: unique_helper" in unique, unique
+        # Prefix matches must not silently resolve to an arbitrary node.
+        missing = _call_tool(client, headers, "get_node", {"label": "extr"}, rid=5)
+        assert missing == "No node matching 'extr' found."
