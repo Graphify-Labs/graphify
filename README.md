@@ -126,6 +126,7 @@ What you get out of the box:
 | LOCOMO (n=300) | recall@10 | **0.497** | mem0 0.048, supermemory 0.149 |
 | LOCOMO (n=300) | QA accuracy | 45.3% | supermemory 49.7%, mem0 27.3% |
 | LongMemEval-S (n=50) | QA accuracy | **76%** | tied with dense RAG |
+| ERPNext cross-tool (n=6) | key-fact coverage | **82.0%** | grep/read baseline 70.8% |
 | Graph build | LLM credits | **0** | per-token for most systems |
 
 Every system ran on the same harness with the same model and budgets, scored by a judge blind-validated against a second judge (90.6% agreement, Cohen's kappa 0.81). Full per-system tables, the code-intelligence result, and reproduction commands: **[BENCHMARKS.md](./BENCHMARKS.md)**.
