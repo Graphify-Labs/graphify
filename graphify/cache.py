@@ -36,7 +36,10 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 5  # Python receiver-shadow facts in persisted raw calls.
+# The integrated producer carries both Qt API/callback/reference-callable facts
+# and upstream Python receiver-shadow facts. Neither schema-12 Qt entries nor
+# schema-5 upstream entries establish that combined transport contract.
+_AST_CACHE_SCHEMA = 13
 
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()

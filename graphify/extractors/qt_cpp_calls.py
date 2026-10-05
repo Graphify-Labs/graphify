@@ -1,0 +1,139 @@
+"""Bounded literal/call syntax over comment/string-masked accepted C++ bytes."""
+from __future__ import annotations
+
+import json
+import re
+
+from graphify.extractors.qt_cpp_syntax import source_span, walk
+
+_CALLEE = re.compile(rb'\b(?:[A-Za-z_]\w*|this)(?:(?:::|->|\.)[A-Za-z_]\w*)*(?:\s*<[^;{}\n]*>)?\s*\(')
+_EMIT = re.compile(rb"\b(?:emit|Q_EMIT)\b(?=\s)")
+_EMIT_OVERRIDE = re.compile(rb"(?m)^[ \t]*#[ \t]*(?:define|undef)[ \t]+(emit|Q_EMIT)\b")
+
+
+def closing(code, position, opening=b"(", close=b")"):
+    depth = 0
+    for index in range(position, min(len(code), position + 100_000)):
+        token = code[index:index + 1]
+        if token == opening:
+            depth += 1
+        elif token == close:
+            depth -= 1
+            if not depth:
+                return index
+    return None
+
+
+def argument_ranges(code, start, end):
+    """Separators in nested selectors, lambdas and initializer maps are not arguments."""
+    depths, ranges, begin = [0, 0, 0, 0], [], start
+    pairs = {40: (0, 1), 41: (0, -1), 91: (1, 1), 93: (1, -1),
+             123: (2, 1), 125: (2, -1), 60: (3, 1), 62: (3, -1)}
+    for index in range(start, end):
+        token = code[index]
+        if token in pairs:
+            slot, change = pairs[token]
+            depths[slot] = max(0, depths[slot] + change)
+        if token == 44 and not any(depths):
+            ranges.append((begin, index))
+            begin = index + 1
+    if begin < end:
+        ranges.append((begin, end))
+    return ranges
+
+
+def _explicit_calls(unit):
+    """Prove standalone annotated calls in the accepted offset-preserving AST.
+
+    Masked source rejects strings/comments; AST ownership rejects directives,
+    unevaluated expressions and macro arguments. A local annotation override
+    blocks SDK spelling authority without executing a preprocessor.
+    """
+    positions = set()
+    overrides = {}
+    for override in _EMIT_OVERRIDE.finditer(unit.code):
+        overrides.setdefault(override[1], override.start())
+    for marker in _EMIT.finditer(unit.code):
+        if overrides.get(marker[0], len(unit.code)) < marker.start():
+            continue
+        before = marker.start() - 1
+        while before >= 0 and unit.code[before] in b" \t\r\n":
+            before -= 1
+        if unit.code[max(0, before - 1):before + 1].endswith((b".", b"->", b"::")):
+            continue
+        after = marker.end()
+        while after < len(unit.code) and unit.code[after] in b" \t\r\n":
+            after += 1
+        positions.add(after)
+    if not positions:
+        return set()
+    return {(node.start_byte, node.end_byte) for node in walk(unit.root)
+            if node.type == "call_expression" and node.start_byte in positions
+            and node.parent and node.parent.type == "expression_statement" and not node.has_error}
+
+
+def calls(unit, mapping, names, *, include_explicit=False):
+    """Only executable function-body occurrences, never declaration signatures."""
+    explicit = _explicit_calls(unit) if include_explicit else set()
+    explicit_ends = {end: start for start, end in explicit}
+    for match in _CALLEE.finditer(unit.code):
+        left = match.group().rfind(b"(") + match.start()
+        callee = unit.code[match.start():left].decode().strip()
+        plain = re.sub(r"<.*>", "", callee).strip()
+        name = re.split(r"::|->|\.", plain)[-1]
+        owner = mapping.owner_at(match.start())
+        body = owner.get("body") if owner else None
+        if body is None or not (body.start_byte <= match.start() < body.end_byte):
+            continue
+        right = closing(unit.code, left)
+        if right is None:
+            continue
+        before = unit.code[max(0, match.start() - 8):match.start()].rstrip()
+        computed_receiver = not ("->" in plain or "." in plain) and before.endswith((b"->", b"."))
+        # The full accepted outer call owns annotation and source extent. A
+        # nested factory sharing its start cannot become an unknown bare signal.
+        explicit_start = explicit_ends.get(right + 1)
+        annotated = explicit_start == match.start() or (
+            explicit_start is not None and explicit_start < match.start() and computed_receiver)
+        if name not in names and not annotated:
+            continue
+        start = explicit_start if annotated and explicit_start is not None else match.start()
+        args = [{"text": unit.source[a:b].decode().strip(), "code": unit.code[a:b].decode().strip(),
+                 "start_byte": a, "end_byte": b, "span": source_span(unit.source, a, b)}
+                for a, b in argument_ranges(unit.code, left + 1, right) if unit.source[a:b].strip()]
+        receiver = re.split(r"->|\.", plain)[-2] if "->" in plain or "." in plain else ""
+        record = {"name": name, "callee": plain, "receiver": receiver, "args": args, "owner": owner,
+               "computed_receiver": computed_receiver,
+               "start_byte": start, "end_byte": right + 1,
+               "span": source_span(unit.source, start, right + 1)}
+        if include_explicit:
+            record["explicit_emit"] = annotated
+        yield record
+
+
+def literal_string(expression):
+    """Decode only a literal or supported literal wrapper; never execute C++/QML."""
+    value = expression.strip()
+    for _ in range(4):
+        wrapper = re.fullmatch(r'(?:QStringLiteral|QLatin1String|QString|QByteArray|QUrl|QUrl::fromLocalFile)\s*\((.*)\)', value, re.S)
+        if wrapper:
+            value = wrapper[1].strip()
+        else:
+            break
+    if not re.fullmatch(r'(?:u8|u|U|L)?"(?:[^"\\]|\\.)*"', value, re.S):
+        return None
+    try:
+        decoded = json.loads(value[value.index('"'):])
+    except ValueError:
+        return None
+    return decoded if isinstance(decoded, str) and len(decoded.encode()) <= 256 else None
+
+
+def conditional_at(unit, position):
+    """Source conditions are evidence, not a claim that a branch executes."""
+    from graphify.extractors.qt_cpp_syntax import walk
+    for syntax in walk(unit.root):
+        if syntax.type in {"if_statement", "switch_statement", "conditional_expression", "preproc_if", "preproc_ifdef"}:
+            if syntax.start_byte <= position < syntax.end_byte:
+                return True
+    return False

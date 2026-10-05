@@ -6,6 +6,10 @@ Load this only when the user passed `--update` or `--cluster-only`. A first-time
 
 Use when you've added or modified files since the last run. Only re-extracts changed files - saves tokens and time.
 
+[Qt/QML] For a Qt/QML corpus, run `graphify update` in the recorded interpreter with the trusted `graphify-out/.graphify_root` scan root, then stop this manual merge procedure. The production updater refreshes unchanged consumers after C++/metadata changes, checks parser/import/ignore configuration and commits its analysis stamp after successful publication. Include `.qml`, `.qmltypes`, `qmldir`, `CMakeLists.txt`, `.cmake`, `.pro`, `.pri`, `.qrc` and Qt C++ sources when identifying this branch.
+
+[Qt/QML] Preserve unsupported/partial diagnostics and prior graph, manifest and report output. Never use force or an empty extraction to bypass a Qt integrity failure. Configured import roots select accepted providers; they do not authorize additional source discovery.
+
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import sys, json

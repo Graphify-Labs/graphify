@@ -1,4 +1,4 @@
-"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML, Robot Framework."""
+"""Language extractor contracts, including the optional Qt 6 QML source profile."""
 from __future__ import annotations
 from pathlib import Path
 import pytest
@@ -5247,3 +5247,23 @@ def test_kotlin_bracketed_annotations_emits_multiple_attribute_edges(tmp_path):
     refs = _edge_labels(result, "references", "attribute")
     assert ("Foo", "Inject") in refs
     assert ("Foo", "VisibleForTesting") in refs
+
+
+def test_qml_language_facade_preserves_source_declarations_and_spans():
+    """REQ-QML-001/003: the optional language facade keeps real QML source facts."""
+    from graphify.extract import extract_qml
+    from graphify.qml_resolution_types import qml_metadata
+    source = FIXTURES / "qml/parser_probe/Main.qml"
+    result = extract_qml(source, root=source.parent)
+    if any(item.get("code") == "QML_PARSER_UNAVAILABLE" for item in result.get("diagnostics", [])):
+        pytest.skip("QML parser not installed (optional [qml] extra)")
+    assert not result.get("error"), result.get("diagnostics")
+    original = source.read_bytes()
+    expected = {("signal", "activated"): b"signal activated(int value, string label)",
+                ("function", "bump"): b"function bump(step: int): int"}
+    for (kind, name), prefix in expected.items():
+        matches = [qml_metadata(node) for node in result["nodes"]
+                   if qml_metadata(node).get("kind") == kind and qml_metadata(node).get("raw_name") == name]
+        assert len(matches) == 1
+        span = matches[0]["span"]
+        assert original[span["start_byte"]:span["end_byte"]].startswith(prefix)

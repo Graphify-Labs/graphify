@@ -468,7 +468,7 @@ def test_collect_files_from_dir():
     from graphify.extract import _DISPATCH
     files = collect_files(FIXTURES)
     supported = set(_DISPATCH.keys())
-    assert all(f.suffix in supported for f in files)
+    assert all(f.suffix in supported or f.name in {"qmldir", "CMakeLists.txt"} for f in files)
     assert len(files) > 0
 
 
@@ -545,7 +545,11 @@ def _legacy_collect_files(target, *, root=None):
 
 
 def test_collect_files_parity_with_legacy_on_fixtures():
-    assert collect_files(FIXTURES) == _legacy_collect_files(FIXTURES)
+    files = collect_files(FIXTURES)
+    # The extension-only legacy oracle predates exact-name QML metadata.
+    assert [path for path in files if path.name not in {"qmldir", "CMakeLists.txt"}] == _legacy_collect_files(FIXTURES)
+    assert [path for path in files if path.name == "qmldir"] == [
+        FIXTURES / "qml" / "parser_probe" / "qmldir"]
 
 
 def test_collect_files_parity_with_legacy_synthetic(tmp_path):
@@ -5416,8 +5420,11 @@ def test_python_external_calls_survive_real_incremental_context(tmp_path):
     (tmp_path / "ext_b.py").write_text("import requests as rq\n\ndef fetch_b():\n    return rq.post('/b')\n")
     (tmp_path / "helper.py").write_text("def other():\n    return 1\n")
     (tmp_path / "local_caller.py").write_text("import helper\n\ndef fetch_local():\n    return helper.get()\n")
+    # The native subprocess needs Windows home/system fields; HOME alone is
+    # POSIX-only. Inherit sandboxed paths while keeping provider state excluded.
     env = {k: v for k, v in os.environ.items()
-           if k in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE"}}
+           if k in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE",
+                    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "SYSTEMROOT", "TEMP", "TMP"}}
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
 
     def run():

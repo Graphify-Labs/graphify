@@ -1679,6 +1679,8 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
+        # Resolve exact IDs and qualified source::symbol names before scoring;
+        # the selected graph still retains Qt logical direction for traversal.
         src_nid, src_scored, src_err = _resolve_path_endpoint(G, source_label)
         tgt_nid, tgt_scored, tgt_err = _resolve_path_endpoint(G, target_label)
         for _label, _nid, _err in (
@@ -1760,6 +1762,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
         hops = len(path_nodes) - 1
         segments = []
+        path_edges = []
         from graphify.build import edge_datas
         for i in range(len(path_nodes) - 1):
             u, v = path_nodes[i], path_nodes[i + 1]
@@ -1779,6 +1782,7 @@ def dispatch_command(cmd: str) -> None:
                     for d in edge_datas(G, a, b):
                         (fwd if d.get("_src", a) == u else bwd).append(d)
             datas = fwd or bwd
+            path_edges.extend(datas)
             forward = bool(fwd)
             rels = sorted({d.get("relation") for d in datas if d.get("relation")})
             rel = "/".join(rels) if rels else "related"
@@ -1791,6 +1795,10 @@ def dispatch_command(cmd: str) -> None:
             else:
                 segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
         print(f"Shortest path ({hops} hops):\n  " + " ".join(segments))
+        from graphify.path_provenance import path_provenance
+        evidence = path_provenance([G.nodes[nid] for nid in path_nodes], path_edges)
+        if evidence:
+            print(evidence.lstrip("\n"))
         from graphify import querylog
         querylog.log_query(
             kind="path",
@@ -2488,6 +2496,7 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "update":
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
         no_cluster = False
+        follow_symlinks = False
         args = sys.argv[2:]
         watch_arg: str | None = None
         for a in args:
@@ -2496,6 +2505,9 @@ def dispatch_command(cmd: str) -> None:
                 continue
             if a == "--no-cluster":
                 no_cluster = True
+                continue
+            if a == "--follow-symlinks":
+                follow_symlinks = True
                 continue
             if a.startswith("-"):
                 print(f"error: unknown update option: {a}", file=sys.stderr)
@@ -2527,7 +2539,10 @@ def dispatch_command(cmd: str) -> None:
         # Interactive CLI: block on the per-repo lock rather than skip, so the
         # user sees their explicit `graphify update` complete instead of
         # exiting silently when a hook-driven rebuild happens to be running.
-        ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
+        # Discovery remains opt-in; the existing watch owner checks containment
+        # and publishes the same accepted graph/state cohort for either profile.
+        ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster,
+                           follow_symlinks=follow_symlinks, block_on_lock=True)
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
             if not (
@@ -3732,6 +3747,26 @@ def dispatch_command(cmd: str) -> None:
                     existing_graph_path, target, _seen_files, detection=detection
                 )
 
+        # QML scope resolution needs unchanged component/metadata facts too.
+        # Until dependency-directed invalidation is implemented, rebuild the
+        # live code corpus on QML (including deletion) or QML-JS input changes.
+        from graphify.qml_safety import (
+            QmlSafetyError, qml_refresh_required, require_complete_qml,
+        )
+        from graphify.qt_analysis_state import inspect_qt_analysis, commit_qt_analysis
+        try:
+            qt_state = inspect_qt_analysis(target, graphify_out, files_by_type.get("code", []),
+                                          excludes=_effective_excludes or (), gitignore=_effective_gitignore)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
+        if incremental_mode and ((qt_state.has_qt and qt_state.changed) or qml_refresh_required(
+            files_by_type.get("code", []),
+            [*code_files, *deleted_files, *excluded_files, *graph_stale_sources],
+        )):
+            code_files = [Path(p) for p in files_by_type.get("code", [])]
+            print("[graphify extract] Qt/QML inputs changed; refreshing the live code corpus.")
+
         semantic_files = doc_files + paper_files + image_files
         # --code-only: index code (pure local AST, no key) and skip the semantic
         # (doc/paper/image) pass entirely, so a mixed repo doesn't hard-fail when no
@@ -3934,7 +3969,7 @@ def dispatch_command(cmd: str) -> None:
             # graphify-out/ dir into a project that asked for external output.
             # `root` stays the scanned project so source_file/ids relativize
             # against it; conflating the two basenamed every node (#1941).
-            ast_kwargs: dict = {"cache_root": out_root, "root": target}
+            ast_kwargs: dict = {"cache_root": out_root, "root": target, "qml_import_roots": qt_state.import_roots, "refresh_native": qt_state.has_qt}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
             # #2437/#2438 (the `graphify update` twin of watch's #2406 fix): an
@@ -4088,6 +4123,14 @@ def dispatch_command(cmd: str) -> None:
                     sys.exit(1)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
                 _extraction_incomplete = True  # the whole AST pass was lost
+            # An incomplete QML scope cannot replace a prior contribution even
+            # when total node counts increase or a force/partial flag is used.
+            # Reject before semantic work, graph reconciliation, or publication.
+            try:
+                require_complete_qml(ast_result, code_files, operation="extract", root=target)
+            except QmlSafetyError as exc:
+                print(f"[graphify extract] error: {exc}", file=sys.stderr)
+                sys.exit(1)
         stages.mark("AST extract")
 
         # Semantic extraction on docs/papers/images. Check cache first.
@@ -4451,6 +4494,8 @@ def dispatch_command(cmd: str) -> None:
                 )
                 try:
                     _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
+                    if not _cleared_ast:
+                        commit_qt_analysis(graphify_out, qt_state)
                 except Exception as exc:
                     print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
                 stages.total()
@@ -4574,6 +4619,8 @@ def dispatch_command(cmd: str) -> None:
             try:
                 if has_path:
                     _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
+                    if not _cleared_ast:
+                        commit_qt_analysis(graphify_out, qt_state)
             except Exception as exc:
                 print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
             if global_merge:
@@ -4786,6 +4833,8 @@ def dispatch_command(cmd: str) -> None:
         try:
             if has_path:
                 _save_manifest(_manifest_files, manifest_path=str(manifest_path), kind="both", root=target, scan_corpus=_scan_corpus, clear_semantic=_cleared_semantic, clear_ast=_cleared_ast or None)
+                if not _cleared_ast:
+                    commit_qt_analysis(graphify_out, qt_state)
         except Exception as exc:
             print(f"[graphify extract] warning: could not write manifest: {exc}", file=sys.stderr)
 

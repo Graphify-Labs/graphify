@@ -9,6 +9,8 @@ from graphify.paths import write_text_atomic
 import json
 import networkx as nx
 from graphify.security import sanitize_label
+from graphify.qt_html import edge_fields, edge_title, semantic_fields, semantic_title
+from graphify.qt_export import has_qt_qml
 
 
 MAX_NODES_FOR_VIZ = 5_000
@@ -149,6 +151,7 @@ function esc(s) {{
 
 // Build vis datasets
 const nodesDS = new vis.DataSet(RAW_NODES.map((n, i) => ({{
+  ...n,
   id: n.id, label: n.label, color: n.color, size: n.size,
   font: n.font, title: n.title,
   // Fermat/golden-angle spiral seed positions (#3699): spreading nodes out
@@ -160,9 +163,12 @@ const nodesDS = new vis.DataSet(RAW_NODES.map((n, i) => ({{
   community: n.community, community_name: n.community_name,
   source_file: n.source_file, file_type: n.file_type, degree: n.degree,
   member_count: n.member_count,
+  qt_qml: n.qt_qml,
+  source_location: n.source_location,
 }})));
 
 const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
+  ...e,
   id: i, from: e.from, to: e.to,
   label: '',
   title: e.title,
@@ -219,8 +225,25 @@ function showInfo(nodeId) {{
   html += `<div class="field">Community: ${{esc(n.community_name || '')}}</div>`;
   if (!isMetaNode) {{
     html += `<div class="field">Source: ${{esc(n.source_file || '-')}}</div>`;
+    if (n.qt_qml && typeof n.qt_qml === 'object' && !Array.isArray(n.qt_qml)) {{
+      // Only the bounded public projection is displayed; opaque transport and
+      // provider data remain in RAW_NODES for faithful source-fact retention.
+      html += `<div class="field">Location: ${{esc(n.source_location || '-')}}</div>`;
+      Object.entries(n.qt_qml).forEach(([contract, fields]) => {{
+        if (!fields || typeof fields !== 'object' || Array.isArray(fields)) return;
+        Object.entries(fields).forEach(([key, value]) => {{
+          html += `<div class="field">${{esc(contract.toUpperCase())}} ${{esc(key.replace(/_/g, ' '))}}: ${{esc(Array.isArray(value) ? value.join(', ') : value)}}</div>`;
+        }});
+      }});
+    }}
   }} else if (n.member_count !== undefined && n.member_count !== null) {{
     html += `<div class="field">Members: ${{esc(n.member_count)}}</div>`;
+    // Membership links need source-edge counts; aggregate degree alone cannot
+    // describe internal relationships. Caller-supplied counts may be unknown.
+    const internalKnown = Number.isInteger(n.internal_source_edges);
+    const externalKnown = Number.isInteger(n.external_source_edges);
+    html += `<div class="field">Internal source edges: ${{esc(internalKnown ? n.internal_source_edges : 'unavailable')}}</div>`;
+    html += `<div class="field">External source edges: ${{esc(externalKnown ? n.external_source_edges : 'unavailable')}}</div>`;
   }}
   html += `<div class="field">Degree: ${{n.degree}}</div>`;
   if (neighborIds.length) {{
@@ -278,7 +301,8 @@ searchInput.addEventListener('input', () => {{
   const q = searchInput.value.toLowerCase().trim();
   searchResults.innerHTML = '';
   if (!q) {{ searchResults.style.display = 'none'; return; }}
-  const matches = RAW_NODES.filter(n => n.label.toLowerCase().includes(q)).slice(0, 20);
+  const matches = RAW_NODES.filter(n => n.label.toLowerCase().includes(q) ||
+    JSON.stringify(n.qt_qml || '').toLowerCase().includes(q)).slice(0, 20);
   if (!matches.length) {{ searchResults.style.display = 'none'; return; }}
   searchResults.style.display = 'block';
   matches.forEach(n => {{
@@ -443,11 +467,23 @@ def to_html(
             meta = _nx.Graph()
             for cid, members in communities.items():
                 meta.add_node(str(cid), label=(community_labels or {}).get(cid, f"Community {cid}"))
-            edge_counts = _Counter()
+            edge_counts, internal_counts, external_counts = _Counter(), _Counter(), _Counter()
             for u, v in G.edges():
                 cu, cv = node_to_community.get(u), node_to_community.get(v)
-                if cu is not None and cv is not None and cu != cv:
+                if cu is None or cv is None:
+                    continue
+                # Each source edge counts once, including parallel/directed
+                # edges and loops. Boundary edges belong to both communities;
+                # internal membership never invents an aggregate self-link.
+                if cu == cv:
+                    internal_counts[cu] += 1
+                else:
+                    external_counts[cu] += 1
+                    external_counts[cv] += 1
                     edge_counts[(min(cu, cv), max(cu, cv))] += 1
+            for cid in communities:
+                meta.nodes[str(cid)].update(internal_source_edges=internal_counts[cid],
+                                            external_source_edges=external_counts[cid])
             for (cu, cv), w in edge_counts.items():
                 meta.add_edge(str(cu), str(cv), weight=w,
                               relation=f"{w} cross-community edges", confidence="AGGREGATED")
@@ -480,6 +516,10 @@ def to_html(
                         "nodes": comm_ids,
                     })
                 meta.graph["hyperedges"] = remapped
+            # Community aggregation drops occurrence-level evidence. State that
+            # omission in the actual artifact instead of implying full Qt detail.
+            if has_qt_qml(G):
+                meta.graph["qt_qml_source_details_omitted"] = True
             written = to_html(meta, meta_communities, output_path,
                               community_labels=community_labels, member_counts=mc)
             if not written:
@@ -552,6 +592,16 @@ def to_html(
         }
         if member_counts:
             node["member_count"] = member_counts.get(cid, len(communities.get(cid, [])))
+            if not data.get("file_type") and not data.get("source_file"):
+                # Only nonnegative integer source counts may become inspector
+                # facts; booleans, malformed strings and missing data stay unknown.
+                for field in ("internal_source_edges", "external_source_edges"):
+                    value = data.get(field)
+                    if type(value) is int and value >= 0:
+                        node[field] = value
+        # Project bounded human-readable Qt/QML fields while retaining the
+        # complete source contract and user attributes, without editing G.
+        node.update(semantic_fields(data))
         # Conditional learning fields — only present for annotated nodes, so
         # un-annotated output keeps the exact pre-feature node dict shape.
         entry = learning_overlay.get(str(node_id)) if learning_overlay else None
@@ -582,6 +632,7 @@ def to_html(
             if stale:
                 lesson += " [code changed — re-verify]"
             node["title"] = f"{label}\n{sanitize_label(lesson)}"
+        node["title"] += semantic_title(node)
         vis_nodes.append(node)
 
     # Build edges list. Restore original edge direction from _src/_tgt
@@ -598,11 +649,12 @@ def to_html(
             "from": true_src,
             "to": true_tgt,
             "label": relation,
-            "title": sanitize_label(f"{relation} [{confidence}]"),
+            "title": sanitize_label(f"{relation} [{confidence}]") + edge_title(data),
             "dashes": confidence != "EXTRACTED",
             "width": 2 if confidence == "EXTRACTED" else 1,
             "color": {"opacity": 0.7 if confidence == "EXTRACTED" else 0.35},
             "confidence": confidence,
+            **edge_fields(data),
         })
 
     # Build community legend data
@@ -623,6 +675,8 @@ def to_html(
     hyperedges_json = _js_safe(getattr(G, "graph", {}).get("hyperedges", []))
     title = _html.escape(sanitize_label(_html_document_title(output_path)))
     stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
+    if G.graph.get("qt_qml_source_details_omitted"):
+        stats += "<br>Qt/QML source details are omitted in this community view."
 
     html = f"""<!DOCTYPE html>
 <html lang="en">

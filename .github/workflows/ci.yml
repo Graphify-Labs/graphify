@@ -4,8 +4,25 @@ on:
   push:
     branches: ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "main"]
   pull_request:
-    branches: ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "main"]
+    branches: ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "main", "codex/qml-*"]
   workflow_dispatch:
+
+# Checkout/tests/security scanning need no repository mutation permissions.
+permissions:
+  contents: read
+
+# Obsolete PR revisions share one group. Push/dispatch runs have distinct IDs,
+# so later commits cannot cancel required default-branch evidence, even queued.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GRAPHIFY_PROOF_EVENT: ${{ github.event_name }}
+  GRAPHIFY_PROOF_WORKFLOW: ${{ github.workflow }}
+  GRAPHIFY_PROOF_REF: ${{ github.ref }}
+  GRAPHIFY_PROOF_SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+  GRAPHIFY_PROOF_BASE: ${{ github.event.pull_request.base.sha || '' }}
 
 jobs:
   skillgen-check:
@@ -48,6 +65,11 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    env:
+      GRAPHIFY_FALKORDB_IMAGE: falkordb/falkordb-server:6.0.1@sha256:f4f60c62532b67f8651d0f4f50bbb4db7548717b502bd05abd80e668f2d974c6
+      GRAPHIFY_FALKORDB_CONTAINER: graphify-falkor-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+      FALKORDB_HOST: localhost
+      FALKORDB_PORT: "6379"
     strategy:
       matrix:
         python-version: ["3.10", "3.12", "3.13", "3.14"]
@@ -70,13 +92,369 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras --frozen
 
+      - name: Prepare reviewed wheel and disposable graph service
+        # One isolated service per hosted source job; no browser, credentials,
+        # host mounts or retained database volumes enter the test boundary.
+        timeout-minutes: 5
+        run: |
+          export GRAPHIFY_PROOF_DIRECTORY="$RUNNER_TEMP/graphify-source-results"
+          mkdir -p "$GRAPHIFY_PROOF_DIRECTORY"
+          uv pip freeze --python .venv/bin/python > "$GRAPHIFY_PROOF_DIRECTORY/dependencies.txt"
+          uv build --wheel --python .venv/bin/python --out-dir "$GRAPHIFY_PROOF_DIRECTORY/wheel"
+          docker run --detach --name "$GRAPHIFY_FALKORDB_CONTAINER" \
+            --publish 127.0.0.1:6379:6379 --pull always \
+            --label graphify.ci.run="$GITHUB_RUN_ID" "$GRAPHIFY_FALKORDB_IMAGE" \
+            > "$GRAPHIFY_PROOF_DIRECTORY/container-id.txt"
+          uv run --frozen --no-sync python - <<'PY'
+          import hashlib, json, os, platform, shutil, subprocess, time
+          from pathlib import Path
+          from falkordb import FalkorDB
+          from redis.backoff import NoBackoff
+          from redis.retry import Retry
+          p = Path(os.environ['GRAPHIFY_PROOF_DIRECTORY'])
+          proof = {key: os.environ.get(key, '') for key in (
+              'GRAPHIFY_PROOF_EVENT', 'GRAPHIFY_PROOF_WORKFLOW', 'GRAPHIFY_PROOF_REF',
+              'GRAPHIFY_PROOF_SOURCE_HEAD', 'GRAPHIFY_PROOF_BASE', 'ImageOS', 'ImageVersion')}
+          proof.update(checkout_sha=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+                       python=platform.python_version(), platform=platform.platform())
+          assert os.geteuid() != 0, 'Permission acceptance requires the non-root hosted user'
+          for tool in ('bash', 'sh', 'node', 'cpp'):
+              assert shutil.which(tool), f'Required source-test consumer unavailable: {tool}'
+          proof['node_version'] = subprocess.check_output(['node', '--version'], text=True).strip()
+          proof['cpp_version'] = subprocess.check_output(['cpp', '--version'], text=True).splitlines()[0]
+          proof['bash_version'] = subprocess.check_output(['bash', '--version'], text=True).splitlines()[0]
+          proof['git_version'] = subprocess.check_output(['git', '--version'], text=True).strip()
+          import graphify
+          assert Path(graphify.__file__).resolve().is_relative_to(Path.cwd() / 'graphify')
+          proof['production_import'] = str(Path(graphify.__file__).resolve())
+          wheels = list((p / 'wheel').glob('*.whl'))
+          assert len(wheels) == 1, 'Exactly one reviewed source wheel is required'
+          wheel = wheels[0].resolve()
+          proof['wheel'] = dict(name=wheel.name, sha256=hashlib.sha256(wheel.read_bytes()).hexdigest())
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as environment:
+              environment.write(f'GRAPHIFY_QML_TEST_WHEEL={wheel}\n')
+          image = json.loads(subprocess.check_output(['docker', 'image', 'inspect', os.environ['GRAPHIFY_FALKORDB_IMAGE']], text=True))[0]
+          proof['service_image'] = dict(reference=os.environ['GRAPHIFY_FALKORDB_IMAGE'],
+                                       image_id=image['Id'], architecture=image['Architecture'], repo_digests=image['RepoDigests'])
+          container = json.loads(subprocess.check_output(['docker', 'inspect', os.environ['GRAPHIFY_FALKORDB_CONTAINER']], text=True))[0]
+          assert not container['Mounts'], 'Disposable graph service must have no mounted storage'
+          proof['service_container'] = dict(id=container['Id'], mounted_storage_count=len(container['Mounts']))
+          (p / 'identity.json').write_text(json.dumps(proof, indent=2), encoding='utf-8')
+          deadline, ready, client = time.monotonic() + 45, False, None
+          while time.monotonic() < deadline:
+              try:
+                  # Construction itself probes INFO server in the SDK; keep it
+                  # inside the startup deadline rather than racing first boot.
+                  client = FalkorDB(host='localhost', port=6379, socket_connect_timeout=1,
+                                    socket_timeout=1, retry=Retry(NoBackoff(), 0))
+                  assert client.connection.execute_command('GRAPH.LIST') == []
+                  ready = True
+                  break
+              except Exception:
+                  if client is not None:
+                      client.connection.close()
+                  time.sleep(.5)
+          assert ready, 'FalkorDB GRAPH.LIST readiness unavailable within the bounded deadline'
+          probe = client.select_graph('graphify_ci_probe')
+          try:
+              assert probe.query('RETURN 1', timeout=1000).result_set == [[1]]
+          finally:
+              probe.delete()
+          assert client.connection.execute_command('GRAPH.LIST') == [], 'Readiness graph cleanup failed'
+          modules = []
+          for value in client.connection.module_list():
+              # RESP2 may expose alternating pairs; retain only safe public
+              # module identity, never its arguments or filesystem path.
+              module = value if isinstance(value, dict) else dict(zip(value[::2], value[1::2]))
+              module = {(key.decode() if isinstance(key, bytes) else key): val for key, val in module.items()}
+              modules.append({key: (val.decode() if isinstance(val, bytes) else val) for key, val in module.items() if key in ('name', 'ver')})
+          proof['service_ready'] = dict(graph_list=True, graph_query=True, probe_deleted=True,
+                                       redis_version=client.connection.info('server')['redis_version'],
+                                       modules=modules)
+          client.connection.close()
+          (p / 'identity.json').write_text(json.dumps(proof, indent=2), encoding='utf-8')
+          PY
+
       - name: Run tests
-        run: uv run --frozen pytest tests/ -q --tb=short
+        run: |
+          export GRAPHIFY_PROOF_DIRECTORY="$RUNNER_TEMP/graphify-source-results"
+          set +e
+          uv run --frozen --no-sync python -X utf8 -m pytest tests/ -q --tb=short -rs \
+            --junitxml="$GRAPHIFY_PROOF_DIRECTORY/tests.xml" | tee "$GRAPHIFY_PROOF_DIRECTORY/tests.log"
+          outcomes=("${PIPESTATUS[@]}")
+          printf '%s\n' "${outcomes[0]}" > "$GRAPHIFY_PROOF_DIRECTORY/pytest-exit.txt"
+          if [ "${outcomes[0]}" -ne 0 ]; then exit "${outcomes[0]}"; fi
+          exit "${outcomes[1]}"
+
+      - name: Verify source and dependency retention
+        if: always()
+        run: |
+          export GRAPHIFY_PROOF_DIRECTORY="$RUNNER_TEMP/graphify-source-results"
+          uv pip freeze --python .venv/bin/python > "$GRAPHIFY_PROOF_DIRECTORY/dependencies-after.txt"
+          uv run --frozen --no-sync python - <<'PY'
+          import hashlib, json, os, subprocess, xml.etree.ElementTree as ET
+          from pathlib import Path
+          from falkordb import FalkorDB
+          from redis.backoff import NoBackoff
+          from redis.retry import Retry
+          p = Path(os.environ['GRAPHIFY_PROOF_DIRECTORY'])
+          identity = json.loads((p / 'identity.json').read_text(encoding='utf-8'))
+          paths = ['graphify', 'tests', 'tools', 'uv.lock', 'pyproject.toml', '.github/workflows']
+          proof = dict(checkout_unchanged=identity['checkout_sha'] == subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+                       tracked_inputs_unchanged=subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--', *paths]).returncode == 0,
+                       dependencies_unchanged=(p / 'dependencies.txt').read_bytes() == (p / 'dependencies-after.txt').read_bytes(),
+                       wheel_unchanged=identity['wheel']['sha256'] == hashlib.sha256(Path(os.environ['GRAPHIFY_QML_TEST_WHEEL']).read_bytes()).hexdigest())
+          # Read the existing production tests' outcomes; readiness alone cannot
+          # make an auto-skipped live service or wheel case accepted evidence.
+          required = {
+              'tests.test_falkordb_integration': {'test_push_to_falkordb_creates_expected_graph', 'test_push_to_falkordb_is_idempotent'},
+              'tests.test_qml_wheel_artifact': {'test_qml001_ac01_built_wheel_contains_adapter_and_optional_extra_metadata',
+                  'test_qml001_ac01_ac03_built_artifact_production_import_and_parser_boundary[qml]',
+                  'test_qml001_ac01_ac03_built_artifact_production_import_and_parser_boundary[core]'}}
+          cases = list(ET.parse(p / 'tests.xml').iter('testcase'))
+          for module, expected in required.items():
+              selected = [case for case in cases if case.get('classname') == module]
+              proof[module] = len(selected) == len(expected) and {case.get('name') for case in selected} == expected and all(not any(case.find(tag) is not None for tag in ('skipped', 'failure', 'error')) for case in selected)
+          # Joint producer/consumer cases must execute, not merely collect;
+          # retained JUnit binds their complete reviewed matrix to this checkout.
+          integrated = {'tests.test_upstream_qt_cache_integration': 6,
+                        'tests.test_upstream_qt_discovery_integration': 11,
+                        'tests.test_upstream_qt_export_integration': 10,
+                        'tests.test_upstream_qt_path_integration': 3,
+                        'tests.test_upstream_qt_shared_integration': 4}
+          for module, count in integrated.items():
+              selected = [case for case in cases if case.get('classname') == module]
+              proof[module] = len(selected) == count and all(not any(case.find(tag) is not None for tag in ('skipped', 'failure', 'error')) for case in selected)
+          client = None
+          proof['test_graphs_deleted'] = False
+          try:
+              client = FalkorDB(host='localhost', port=6379, socket_connect_timeout=1,
+                                socket_timeout=2, retry=Retry(NoBackoff(), 0))
+              remaining = [value.decode('utf-8') if isinstance(value, bytes) else value
+                           for value in client.connection.execute_command('GRAPH.LIST')]
+              proof['test_graphs_deleted'] = remaining == []
+              # Failed fixture cleanup cannot pass the gate. Dispose of its
+              # bounded public test graph before the container is removed.
+              for name in ('graphify_test', 'graphify_ci_probe'):
+                  if name in remaining:
+                      client.select_graph(name).delete()
+          except Exception:
+              proof['test_graphs_deleted'] = False
+          finally:
+              if client is not None:
+                  client.connection.close()
+          (p / 'integrity.json').write_text(json.dumps(proof, indent=2), encoding='utf-8')
+          assert all(proof.values()), 'Source/dependency preservation or required artifact/service acceptance failed'
+          PY
+
+      - name: Remove disposable graph service
+        if: always()
+        # Cleanup has its own always step so failed setup, pytest, or integrity
+        # cannot leave the job-owned service running. No shared containers prune.
+        run: |
+          export GRAPHIFY_PROOF_DIRECTORY="$RUNNER_TEMP/graphify-source-results"
+          mkdir -p "$GRAPHIFY_PROOF_DIRECTORY"
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          name = os.environ['GRAPHIFY_FALKORDB_CONTAINER']
+          listed = subprocess.check_output(['docker', 'ps', '--all', '--quiet', '--filter', f'name=^/{name}$'], text=True).strip()
+          if listed:
+              label = subprocess.check_output(['docker', 'inspect', '--format', '{{ index .Config.Labels "graphify.ci.run" }}', name], text=True).strip()
+              assert label == os.environ['GITHUB_RUN_ID'], 'Refuse cleanup of an unowned service'
+              subprocess.run(['docker', 'rm', '--force', '--volumes', name], check=True)
+          absent = not subprocess.check_output(['docker', 'ps', '--all', '--quiet', '--filter', f'name=^/{name}$'], text=True).strip()
+          Path(os.environ['GRAPHIFY_PROOF_DIRECTORY'], 'service-cleanup.json').write_text(json.dumps(dict(container_absent=absent)), encoding='utf-8')
+          assert absent, 'Disposable service cleanup unconfirmed'
+          PY
+
+      - name: Retain source test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ubuntu-source-python-${{ matrix.python-version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/graphify-source-results/
+          retention-days: 14
+          if-no-files-found: warn
 
       - name: Verify install works end-to-end
         run: |
           uv run --frozen graphify --help
           uv run --frozen graphify install
+
+  windows-compatibility:
+    # Ubuntu owns complete source regression and real POSIX objects. This lane
+    # covers the generic native Windows contracts omitted by the QML wheel job.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          # Same interpreter used by the reviewed local emitted-script proof.
+          node-version: "24.19.0"
+          package-manager-cache: false
+      - name: Install all locked optional test dependencies
+        run: uv sync --all-extras --frozen
+      - name: Verify native Windows compatibility
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $proofDirectory = Join-Path $env:RUNNER_TEMP 'graphify-compat-results'
+          New-Item -ItemType Directory -Path $proofDirectory -Force | Out-Null
+          $proofPython = (Resolve-Path '.venv/Scripts/python.exe').Path
+          # Hosted PATH can expose multiple copies; retain its first application.
+          $proofUv = (Get-Command uv -CommandType Application | Select-Object -First 1).Source
+          $proofNode = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+          $nodeDirectory = Split-Path -Path $proofNode -Parent
+          $gitDirectory = Join-Path $env:ProgramFiles 'Git/usr/bin'
+          $gitCommandDirectory = Join-Path $env:ProgramFiles 'Git/cmd'
+          foreach ($name in @('bash.exe', 'sh.exe', 'cygpath.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $gitDirectory $name) -PathType Leaf)) {
+              throw "The hosted Git for Windows shell component is unavailable: $name"
+            }
+          }
+          & $proofUv pip check --python $proofPython
+          if ($LASTEXITCODE -ne 0) { throw 'The locked test environment is incompatible' }
+          & $proofUv pip freeze --python $proofPython | Set-Content (Join-Path $proofDirectory 'dependencies.txt') -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'Initial dependency evidence unavailable' }
+          $productionImport = (& $proofPython -c 'import graphify; print(graphify.__file__)')
+          if ($LASTEXITCODE -ne 0 -or [IO.Path]::GetFullPath($productionImport) -ne (Resolve-Path 'graphify/__init__.py').Path) {
+            throw 'The source test interpreter imported a different Graphify checkout'
+          }
+          $productionImport | Set-Content (Join-Path $proofDirectory 'production-import.txt') -Encoding utf8
+          $checkoutSha = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $checkoutSha -notmatch '^[a-f0-9]{40}$') { throw 'Initial checkout revision unavailable' }
+          $identity = [ordered]@{
+            workflow = $env:GRAPHIFY_PROOF_WORKFLOW; event = $env:GRAPHIFY_PROOF_EVENT
+            ref = $env:GRAPHIFY_PROOF_REF; source_head = $env:GRAPHIFY_PROOF_SOURCE_HEAD
+            base_sha = $env:GRAPHIFY_PROOF_BASE; checkout_sha = $checkoutSha
+            image_os = $env:ImageOS; image_version = $env:ImageVersion
+            python = (& $proofPython --version); git = (git --version)
+            node = (& $proofNode --version)
+            cmd = $env:COMSPEC; windows_powershell = (Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe')
+            windows_powershell_version = (& (Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe') -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()')
+            bash = (& (Join-Path $gitDirectory 'bash.exe') --version | Select-Object -First 1)
+          }
+          $identity | ConvertTo-Json | Set-Content (Join-Path $proofDirectory 'identity.json') -Encoding utf8
+          # Bash blocks call python3. Forward to the exact proof interpreter,
+          # reject installer fallback, and expose only this process-local PATH.
+          $shimDirectory = Join-Path $env:RUNNER_TEMP 'graphify-compat-bin'
+          New-Item -ItemType Directory -Path $shimDirectory -Force | Out-Null
+          $shim = @'
+          #!/bin/sh
+          if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
+            echo "pip installation is disabled in validation" >&2; exit 86
+          fi
+          exec "$GRAPHIFY_TEST_PYTHON" "$@"
+          '@
+          [IO.File]::WriteAllText((Join-Path $shimDirectory 'python3'), $shim.Replace("`r`n", "`n") + "`n", [Text.UTF8Encoding]::new($false))
+          $env:GRAPHIFY_TEST_PYTHON = $proofPython
+          $env:GRAPHIFY_TEST_UV = $proofUv
+          $env:PATH = @($shimDirectory, $gitDirectory, $gitCommandDirectory, $nodeDirectory, (Join-Path $env:SystemRoot 'System32')) -join ';'
+          $env:PYTHONUTF8 = '1'
+          $env:GRAPHIFY_NO_AUTO_REFRESH = '1'
+          $env:GRAPHIFY_NO_TIPS = '1'
+          $env:UV_OFFLINE = '1'
+          $env:UV_TOOL_DIR = Join-Path $proofDirectory 'isolated-tools'
+          $env:UV_TOOL_BIN_DIR = Join-Path $proofDirectory 'isolated-tool-bin'
+          $env:PIP_NO_INDEX = '1'
+          $env:PIP_TARGET = Join-Path $proofDirectory 'isolated-pip'
+          $env:APPDATA = Join-Path $proofDirectory 'isolated-appdata'
+          $env:COVERAGE_FILE = Join-Path $proofDirectory '.coverage'
+          foreach ($name in @('BASH_ENV', 'ENV', 'PYTHONHOME', 'PYTEST_ADDOPTS')) {
+            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+          }
+          foreach ($name in @('uv', 'pip', 'graphify')) {
+            if (Get-Command $name -CommandType Application -ErrorAction SilentlyContinue) {
+              throw "Validation PATH unexpectedly exposes an installer or launcher: $name"
+            }
+          }
+          # Use the ordinary Python transport: native bare-name search can launch
+          # the System32 WSL stub even when PATH lookup admits real Git Bash.
+          $consumerProof = @'
+          import json, os, subprocess, sys
+          from pathlib import Path
+          from tests.shell_portability import select_shell_executable
+          admitted = {}
+          for name in ('bash', 'sh'):
+              executable = select_shell_executable(name)
+              assert Path(executable).samefile(Path(sys.argv[1], name + '.exe')), 'Wrong shell installation'
+              proof = {'executable': executable}
+              for consumer, command, expected in (
+                  ('python', "python3 -c 'import sys; print(sys.executable)'", os.environ['GRAPHIFY_TEST_PYTHON']),
+                  ('node', "node -p 'process.execPath'", sys.argv[2]),
+              ):
+                  actual = subprocess.check_output([executable, '-c', command], text=True).strip()
+                  assert Path(actual).samefile(expected), 'Wrong consumer executable'
+                  proof[consumer] = actual
+              admitted[name] = proof
+          print(json.dumps(admitted))
+          '@
+          & $proofPython -c $consumerProof $gitDirectory $proofNode |
+            Set-Content (Join-Path $proofDirectory 'shell-consumers.json') -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'The admitted native shell consumer cannot execute' }
+          if ((& $proofNode --version) -ne 'v24.19.0') { throw 'The reviewed Node.js test interpreter was not selected' }
+          $selection = @(
+            'tests/test_filesystem_profiles.py', 'tests/test_source_input_admission.py', 'tests/test_source_identity_remap_owners.py',
+            'tests/test_install.py', 'tests/test_install_references.py', 'tests/test_install_roundtrip.py',
+            'tests/test_skill_auto_refresh.py', 'tests/test_uninstall_scope.py', 'tests/test_settings_merge.py',
+            'tests/test_hooks.py', 'tests/test_skillgen_input_path_injection.py', 'tests/test_shell_portability_helpers.py',
+            'tests/test_watch.py', 'tests/test_source_alias_provenance.py', 'tests/test_qt_update_discovery_profile.py', 'tests/test_watch_physical_coowners.py', 'tests/test_watch_coowner_admission.py', 'tests/test_non_regular_files.py', 'tests/test_terraform.py',
+            'tests/test_terraform_modules.py', 'tests/test_extractors_registry.py::test_terraform_migrated', 'tests/test_ci_windows_tools.py'
+            # The merged upstream cache/discovery/consumer contracts also run
+            # under this admitted native interpreter, with retained case proof.
+            'tests/test_upstream_qt_cache_integration.py', 'tests/test_upstream_qt_discovery_integration.py',
+            'tests/test_upstream_qt_export_integration.py', 'tests/test_upstream_qt_path_integration.py',
+            'tests/test_upstream_qt_shared_integration.py', 'tests/test_qt_followed_metadata_alias.py',
+            'tests/test_extract.py::test_python_external_calls_survive_real_incremental_context'
+            'tests/test_qt_source_identity_admission.py'
+          )
+          & $proofPython -X utf8 -m pytest @selection -q --tb=short -p no:cacheprovider -rs "--junitxml=$proofDirectory/tests.xml" 2>&1 |
+            Tee-Object -FilePath (Join-Path $proofDirectory 'tests.log')
+          $testExit = $LASTEXITCODE
+          $testExit | Set-Content (Join-Path $proofDirectory 'pytest-exit.txt') -Encoding utf8
+          $auditExit = 0
+          try {
+            & $proofUv pip freeze --python $proofPython | Set-Content (Join-Path $proofDirectory 'dependencies-after.txt') -Encoding utf8
+            if ($LASTEXITCODE -ne 0) { throw 'Final dependency evidence unavailable' }
+            $before = Get-Content -LiteralPath (Join-Path $proofDirectory 'dependencies.txt')
+            $after = Get-Content -LiteralPath (Join-Path $proofDirectory 'dependencies-after.txt')
+            $dependencyRetained = -not (Compare-Object $before $after)
+            $currentHead = git rev-parse HEAD
+            if ($LASTEXITCODE -ne 0 -or $currentHead -notmatch '^[a-f0-9]{40}$') { throw 'Final checkout revision unavailable' }
+            $headRetained = $currentHead -eq $identity.checkout_sha
+            git diff --quiet HEAD -- graphify tests tools uv.lock pyproject.toml .github/workflows
+            $inputsRetained = $LASTEXITCODE -eq 0
+            $integrity = [ordered]@{dependencies_unchanged=$dependencyRetained; checkout_unchanged=$headRetained; tracked_inputs_unchanged=$inputsRetained}
+            $integrity | ConvertTo-Json | Set-Content (Join-Path $proofDirectory 'integrity.json') -Encoding utf8
+            if (-not ($dependencyRetained -and $headRetained -and $inputsRetained)) { throw 'Proof inputs changed' }
+          } catch {
+            Write-Host 'Source/dependency preservation proof failed; review the retained integrity evidence.'
+            $auditExit = 1
+          }
+          if ($testExit -ne 0) { exit $testExit }
+          exit $auditExit
+      - name: Retain native compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-compat-python-3.12-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/graphify-compat-results/identity.json
+            ${{ runner.temp }}/graphify-compat-results/shell-consumers.json
+            ${{ runner.temp }}/graphify-compat-results/production-import.txt
+            ${{ runner.temp }}/graphify-compat-results/dependencies*.txt
+            ${{ runner.temp }}/graphify-compat-results/tests.*
+            ${{ runner.temp }}/graphify-compat-results/pytest-exit.txt
+            ${{ runner.temp }}/graphify-compat-results/integrity.json
+          retention-days: 14
+          if-no-files-found: warn
 
   security-scan:
     # The dev deps include bandit and pip-audit. Run them in CI so a new

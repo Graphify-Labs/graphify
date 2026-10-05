@@ -57,6 +57,9 @@ def test_skill_roundtrip_at_real_destination(platform, project, tmp_path, monkey
     home.mkdir()
     project_dir.mkdir()
     monkeypatch.chdir(project_dir)
+    # Hermes owns LOCALAPPDATA on Windows. Keep that native destination in the
+    # same isolated user profile as Path.home instead of the outer home fixture.
+    monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
 
     with patch("graphify.__main__.Path.home", return_value=home):
         dst = mainmod._platform_skill_destination(
@@ -65,9 +68,11 @@ def test_skill_roundtrip_at_real_destination(platform, project, tmp_path, monkey
         # Sanity: a user-scope install must not write under the project dir, and
         # vice versa, so the two scopes never collide in this test.
         if project:
-            assert str(dst).startswith(str(project_dir))
+            assert dst.is_relative_to(project_dir)
         else:
-            assert str(dst).startswith(str(home))
+            assert dst.is_relative_to(home)
+            if platform == "hermes" and mainmod.platform.system() == "Windows":
+                assert dst == home / "AppData" / "Local" / "hermes" / "skills" / "graphify" / "SKILL.md"
 
         returned = mainmod._copy_skill_file(
             platform, project=project, project_dir=project_dir

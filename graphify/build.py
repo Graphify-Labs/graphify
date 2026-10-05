@@ -148,6 +148,7 @@ def mint_external_stubs_in_data(data: dict) -> None:
 # edge (#1547/#1556) is dropped. Kept local to build.py (not imported from extract.py,
 # which imports build.py — a cycle) and deliberately mirrors extract._LANG_FAMILY_BY_EXT.
 _EDGE_LANG_FAMILY: dict[str, str] = {
+    ".qml": "qml",
     ".py": "py", ".pyi": "py",
     ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "js",
     ".ts": "js", ".tsx": "js", ".mts": "js", ".cts": "js",
@@ -1383,8 +1384,19 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # bind to a same-named node in another language. The extraction spec forbids
         # this for `calls`; it is equally invalid for `imports`/`references` (a
         # Python `import time` must not bind to a `time.ts`, #1749).
+        # Typed Qt/QML bridges also use `uses` for property access, emissions and
+        # loading. Validate their source mechanism before the generic relation
+        # gate so changing a relation cannot bypass endpoint/source authority.
+        from graphify.qt_qml_projection import allows_qt_qml_edge, is_typed_qt_qml_edge
+        if is_typed_qt_qml_edge(G.nodes[src], G.nodes[tgt], attrs) and not allows_qt_qml_edge(
+                G.nodes[src], G.nodes[tgt], attrs, source_id=src, target_id=tgt, nodes=G.nodes):
+            continue
         _edge_rel = attrs.get("relation")
         if _edge_rel in ("calls", "imports", "imports_from", "references"):
+            from graphify.qml_projection import allows_qml_script_edge
+            qml_script_edge = allows_qml_script_edge(G.nodes[src], G.nodes[tgt], attrs, target_id=tgt)
+            qt_qml_edge = allows_qt_qml_edge(G.nodes[src], G.nodes[tgt], attrs,
+                                            source_id=src, target_id=tgt, nodes=G.nodes)
             src_ext = Path(G.nodes[src].get("source_file") or "").suffix.lower()
             tgt_ext = Path(G.nodes[tgt].get("source_file") or "").suffix.lower()
             src_fam = _EDGE_LANG_FAMILY.get(src_ext)
@@ -1395,13 +1407,14 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 if (
                     attrs.get("confidence") == "INFERRED"
                     and src_ext and tgt_ext and src_fam != tgt_fam
+                    and not (qml_script_edge or qt_qml_edge)
                 ):
                     continue
             else:
                 # imports/references: drop only when BOTH endpoints are known code
                 # languages of different families, so a config->code reference
                 # (unknown ext, e.g. a manifest) is never mistaken for a phantom.
-                if src_fam is not None and tgt_fam is not None and src_fam != tgt_fam:
+                if src_fam is not None and tgt_fam is not None and src_fam != tgt_fam and not (qml_script_edge or qt_qml_edge):
                     continue
         # A file-level import or re-export cannot carry useful connectivity when
         # both endpoints resolve to the same node.  This most often happens when

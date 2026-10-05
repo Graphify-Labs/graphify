@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from pathlib import Path
 import pytest
 from graphify.hooks import install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER
+from tests.shell_portability import resolve_shell_path, select_shell_executable
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
@@ -717,7 +718,7 @@ def _detect_run(tmp_path, home, stub_bin, env_extra=None):
         env.update(env_extra)
     env["PATH"] = str(stub_bin) + os.pathsep + env["PATH"]
     return subprocess.run(
-        ["sh", script.name], capture_output=True, text=True,
+        [select_shell_executable("sh"), script.name], capture_output=True, text=True,
         cwd=str(tmp_path), env=env,
     )
 
@@ -769,8 +770,12 @@ def test_uv_tool_env_rescues_hook_when_pin_and_launcher_fail(tmp_path):
     mine = _tool_venv(home, "graphifyy", "bin/python", ok=True)
     res = _detect_run(tmp_path, home, stub_bin)
     assert res.returncode == 0, res.stderr
-    assert f"RESOLVED={mine}" in res.stdout, res.stdout + res.stderr
-    assert f"RESOLVED={other}" not in res.stdout
+    # MSYS reports its mount spelling; compare the complete native file identity
+    # and retain rejection of the earlier same-basename sibling tool environment.
+    assert res.stdout.startswith("RESOLVED="), res.stdout + res.stderr
+    resolved = resolve_shell_path(res.stdout.removeprefix("RESOLVED=").strip())
+    assert resolved == mine.resolve()
+    assert resolved != other.resolve()
     assert "could not locate" not in res.stderr
 
 
@@ -823,7 +828,12 @@ def test_shebang_parse_requires_leading_hash_bang(tmp_path):
     launcher.chmod(0o755)
     res = _detect_run(tmp_path, home, stub_bin)
     assert res.returncode == 0, res.stderr
-    assert f"RESOLVED={mine}" in res.stdout, res.stdout + res.stderr
+    # The successful fallback must be this exact tool env, never the launcher
+    # decoy, even when the shell maps its full path through an MSYS mount.
+    assert res.stdout.startswith("RESOLVED="), res.stdout + res.stderr
+    resolved = resolve_shell_path(res.stdout.removeprefix("RESOLVED=").strip())
+    assert resolved == mine.resolve()
+    assert resolved != decoy.resolve()
     assert "fakepy" not in res.stdout
 
 
@@ -879,10 +889,10 @@ def _shell_verdict(pattern: str, candidate: str, tmp_path) -> str:
         encoding="utf-8",
         newline="\n",
     )
-    # Invoke by bare filename from cwd: a Windows absolute path in argv would
-    # hit the same backslash mangling the script contents just avoided.
+    # Keep the script basename in argv to preserve Windows payload bytes;
+    # launch the admitted absolute shell identity to avoid native shadowing.
     result = subprocess.run(
-        ["bash", script.name],
+        [select_shell_executable("bash"), script.name],
         capture_output=True, text=True, cwd=str(tmp_path),
     )
     # Fail loudly on a malformed case snippet instead of returning "" and
@@ -974,7 +984,7 @@ def test_shell_verdict_delivers_the_payload_bash_unmodified(payload, tmp_path):
         encoding="utf-8", newline="\n",
     )
     result = subprocess.run(
-        ["bash", script.name], capture_output=True, text=True, cwd=str(tmp_path),
+        [select_shell_executable("bash"), script.name], capture_output=True, text=True, cwd=str(tmp_path),
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == payload, (
@@ -1017,7 +1027,7 @@ def test_checkout_hook_skips_same_head_noop_at_runtime():
 
     def run(prev, new, flag):
         # sh -c CMD name arg1 arg2 arg3  ->  $0=name $1=prev $2=new $3=flag
-        return subprocess.run(["sh", "-c", prefix, "hook", prev, new, flag],
+        return subprocess.run([select_shell_executable("sh"), "-c", prefix, "hook", prev, new, flag],
                               capture_output=True, text=True)
 
     # branch switch (flag=1), SAME head -> short-circuit, sentinel not reached
@@ -1067,9 +1077,9 @@ def test_worktree_guard_runs_on_primary_skips_linked(tmp_path):
     _git("worktree", "add", "-q", str(linked), "-b", "feature", cwd=primary)
 
     snippet = _worktree_guard_snippet()
-    r_primary = subprocess.run(["sh", "-c", snippet], cwd=primary,
+    r_primary = subprocess.run([select_shell_executable("sh"), "-c", snippet], cwd=primary,
                                capture_output=True, text=True)
-    r_linked = subprocess.run(["sh", "-c", snippet], cwd=linked,
+    r_linked = subprocess.run([select_shell_executable("sh"), "-c", snippet], cwd=linked,
                               capture_output=True, text=True)
     assert "RAN" in r_primary.stdout, "guard wrongly skipped the primary checkout"
     assert "RAN" not in r_linked.stdout, "guard failed to skip the linked worktree"
@@ -1307,7 +1317,7 @@ def test_baked_viz_limit_yields_to_an_explicit_per_run_override(tmp_path):
     # prove the shell semantics: an explicit env value survives the export line
     line = 'export GRAPHIFY_VIZ_NODE_LIMIT="${GRAPHIFY_VIZ_NODE_LIMIT:-100}"'
     out = subprocess.run(
-        ["sh", "-c", f'GRAPHIFY_VIZ_NODE_LIMIT=7; {line}; echo "$GRAPHIFY_VIZ_NODE_LIMIT"'],
+        [select_shell_executable("sh"), "-c", f'GRAPHIFY_VIZ_NODE_LIMIT=7; {line}; echo "$GRAPHIFY_VIZ_NODE_LIMIT"'],
         capture_output=True, text=True, check=True,
     )
     assert out.stdout.strip() == "7"
@@ -1506,7 +1516,7 @@ def _emitted_hook_run(repo: Path, script: str, args: list[str], env_extra: dict[
         env.pop(key, None)
     env.update(env_extra)
     return subprocess.run(
-        ["sh", str(hook), *args], capture_output=True, text=True, cwd=str(repo), env=env,
+        [select_shell_executable("sh"), str(hook), *args], capture_output=True, text=True, cwd=str(repo), env=env,
     )
 
 

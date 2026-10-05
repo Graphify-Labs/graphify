@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.shell_portability import resolve_shell_path, select_shell_executable
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILL_MD = REPO_ROOT / "graphify" / "skill.md"
 
@@ -56,16 +58,8 @@ def step1_script() -> str:
 
 
 def _run_step1(script: str, input_path_value: str, cwd: Path) -> subprocess.CompletedProcess:
-    if sys.platform == "win32":
-        if len(input_path_value) > 2 and input_path_value[1] == ":":
-            drive = input_path_value[0].lower()
-            rest = input_path_value[2:].replace("\\", "/")
-            input_path_value = f"/mnt/{drive}{rest}"
-        else:
-            def _conv(m: re.Match) -> str:
-                clean_path = m.group(2).replace("\\", "/")
-                return f"/mnt/{m.group(1).lower()}/{clean_path}"
-            input_path_value = re.sub(r"([A-Za-z]):[\\/]([^\s\"'`;#|)\n]+)", _conv, input_path_value)
+    # Admit the shell explicitly; the heredoc preserves Python stdin payload bytes.
+    # Preserve the fixture's native spelling; Windows alone does not imply WSL.
     substituted = script.replace("INPUT_PATH", input_path_value).replace("\r\n", "\n")
     if sys.platform == "win32":
         # On Windows, writing to a temp script file avoids CreateProcess quote-escaping
@@ -73,12 +67,12 @@ def _run_step1(script: str, input_path_value: str, cwd: Path) -> subprocess.Comp
         script_file = cwd / "_run_step1.sh"
         script_file.write_text(substituted, encoding="utf-8", newline="\n")
         return subprocess.run(
-            ["bash", "_run_step1.sh"],
+            [select_shell_executable("bash"), "_run_step1.sh"],
             cwd=cwd, capture_output=True, text=True,
             env={**os.environ, "PATH": os.environ.get("PATH", "")},
         )
     return subprocess.run(
-        ["bash", "-c", substituted],
+        [select_shell_executable("bash"), "-c", substituted],
         cwd=cwd, capture_output=True, text=True,
         env={**os.environ, "PATH": os.environ.get("PATH", "")},
     )
@@ -133,14 +127,21 @@ def test_step1_does_not_execute_hostile_input_path(
     """A hostile INPUT_PATH containing shell metacharacters must never execute."""
     script = _extract_step1_bash_block(skill_file)
     sentinel = tmp_path / f"PWNED_{attack_name}_{skill_file.replace('.', '_')}"
-    malicious = payload_fn(sentinel)
+    # Relative sentinels are reachable by the actual shell on every host. A
+    # Windows backslash path can otherwise make a vulnerable control look safe.
+    malicious = payload_fn(sentinel.name)
 
-    _run_step1(script, malicious, cwd=tmp_path)
+    result = _run_step1(script, malicious, cwd=tmp_path)
 
     assert not sentinel.exists(), (
         f"hostile {attack_name} inside substituted INPUT_PATH for {skill_file} "
         f"must never execute as shell code"
     )
+    assert result.returncode != 0, "a hostile nonexistent path must be rejected"
+    assert (tmp_path / "graphify-out" / ".graphify_python").is_file()
+    assert not (tmp_path / "graphify-out" / ".graphify_root").exists()
+    _run_step1("true INPUT_PATH\n", malicious, cwd=tmp_path)
+    assert sentinel.is_file(), "unsafe control must reach the same sentinel"
 
 
 # --- Backwards-compatible legacy test entry points ---------------------------
@@ -150,28 +151,38 @@ def test_step1_does_not_execute_a_command_substitution_in_input_path(tmp_path: P
     """A malicious path containing $(...) must never run as shell code."""
     script = _extract_step1_bash_block()
     sentinel = tmp_path / "PWNED"
-    malicious = f"$(touch {sentinel})"
+    malicious = f"$(touch {sentinel.name})"
 
-    _run_step1(script, malicious, cwd=tmp_path)
+    result = _run_step1(script, malicious, cwd=tmp_path)
 
     assert not sentinel.exists(), (
         "a $(...) command substitution inside the substituted INPUT_PATH "
         "must never execute"
     )
+    assert result.returncode != 0, "a hostile nonexistent path must be rejected"
+    assert (tmp_path / "graphify-out" / ".graphify_python").is_file()
+    assert not (tmp_path / "graphify-out" / ".graphify_root").exists()
+    _run_step1("true INPUT_PATH\n", malicious, cwd=tmp_path)
+    assert sentinel.is_file(), "unsafe control must reach the same sentinel"
 
 
 def test_step1_does_not_execute_a_semicolon_separated_command_in_input_path(tmp_path: Path):
     """A malicious path using `;` to chain a second command must never run."""
     script = _extract_step1_bash_block()
     sentinel = tmp_path / "PWNED2"
-    malicious = f"nonexistent; touch {sentinel} #"
+    malicious = f"nonexistent; touch {sentinel.name} #"
 
-    _run_step1(script, malicious, cwd=tmp_path)
+    result = _run_step1(script, malicious, cwd=tmp_path)
 
     assert not sentinel.exists(), (
         "a semicolon-separated command inside the substituted INPUT_PATH "
         "must never execute"
     )
+    assert result.returncode != 0, "a hostile nonexistent path must be rejected"
+    assert (tmp_path / "graphify-out" / ".graphify_python").is_file()
+    assert not (tmp_path / "graphify-out" / ".graphify_root").exists()
+    _run_step1("true INPUT_PATH\n", malicious, cwd=tmp_path)
+    assert sentinel.is_file(), "unsafe control must reach the same sentinel"
 
 
 # --- Legitimate path handling & non-existent path failure ---------------------
@@ -186,22 +197,14 @@ def test_step1_still_resolves_a_legitimate_path(tmp_path: Path, skill_file: str)
 
     result = _run_step1(script, str(project), cwd=tmp_path)
 
+    assert result.returncode == 0, result.stderr
     marker = tmp_path / "graphify-out" / ".graphify_root"
     assert marker.exists(), (
         f"a legitimate path must still be resolved and written for {skill_file}; "
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
     marker_content = marker.read_text(encoding="utf-8").strip()
-    if sys.platform == "win32" and project.drive:
-        drive_letter = project.drive[0].lower()
-        if marker_content.startswith(f"/mnt/{drive_letter}/"):
-            resolved_marker = Path(f"{drive_letter.upper()}:{marker_content[6:]}").resolve()
-        elif marker_content.startswith(f"/{drive_letter}/"):
-            resolved_marker = Path(f"{drive_letter.upper()}:{marker_content[2:]}").resolve()
-        else:
-            resolved_marker = Path(marker_content).resolve()
-    else:
-        resolved_marker = Path(marker_content).resolve()
+    resolved_marker = resolve_shell_path(marker_content, shell="bash")
     assert resolved_marker == project.resolve()
     assert marker_content.endswith("my project with spaces")
 

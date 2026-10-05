@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, cast
 import unicodedata
 
 import networkx as nx
+
+from graphify.graph_direction import logical_endpoints
 
 
 DEFAULT_AFFECTED_RELATIONS = (
@@ -206,13 +208,28 @@ def affected_nodes(
     # otherwise. The member nodes are seeds only (not reported as hits), and
     # `method`/`contains` stay out of the general relation-filtered walk, so this
     # adds no forward noise anywhere else.
+    directed = graph.is_directed()
+    incoming_by_target = defaultdict(list)
     if hasattr(graph, "out_edges"):
-        member_edges = graph.out_edges(seed, data=True)
+        member_edges = cast(nx.DiGraph, graph).out_edges(seed, data=True)
     else:
-        member_edges = (
-            (s, t, d) for s, t, d in graph.edges(data=True) if s == seed
-        )
+        # Index accepted logical pairs once. Undirected adjacency iteration
+        # cannot recover direction; rescanning every edge per BFS node is also
+        # unnecessary. Directed graphs retain their efficient native indexes.
+        member_edges = []
+        for source, target, data in graph.edges(data=True):
+            endpoints = logical_endpoints(source, target, data, directed=False)
+            if endpoints is None:
+                continue
+            source, target = endpoints
+            incoming_by_target[target].append((source, target, data))
+            if source == seed:
+                member_edges.append((source, target, data))
     for _s, member, data in member_edges:
+        endpoints = logical_endpoints(_s, member, data, directed=directed)
+        if endpoints is None or endpoints[0] != seed:
+            continue
+        _s, member = endpoints
         if str(data.get("relation", "")) not in ("method", "contains"):
             continue
         member = str(member)
@@ -225,14 +242,14 @@ def affected_nodes(
         if current_depth >= depth:
             continue
         if hasattr(graph, "in_edges"):
-            incoming = graph.in_edges(current, data=True)
+            incoming = cast(nx.DiGraph, graph).in_edges(current, data=True)
         else:
-            incoming = (
-                (source, target, data)
-                for source, target, data in graph.edges(data=True)
-                if target == current
-            )
+            incoming = incoming_by_target.get(current, ())
         for source, _target, data in incoming:
+            endpoints = logical_endpoints(source, _target, data, directed=directed)
+            if endpoints is None or endpoints[1] != current:
+                continue
+            source, _target = endpoints
             relation = str(data.get("relation", ""))
             if relation not in relation_set:
                 continue
@@ -251,6 +268,17 @@ def affected_nodes(
             )
             hits.append(hit)
             queue.append((source, current_depth + 1))
+            # Versioned source occurrences carry the dependency; their actual
+            # extracted owners are affected at the same dependency distance.
+            from graphify.qt_affected import owned_ancestors
+            for owner, ownership in owned_ancestors(graph, source):
+                if owner in seen:
+                    continue
+                seen.add(owner)
+                hits.append(AffectedHit(owner, current_depth + 1, relation,
+                    via_file=str(data.get("source_file") or "") or None,
+                    via_location=str(data.get("source_location") or "") or None))
+                queue.append((owner, current_depth + 1))
 
     return hits
 
