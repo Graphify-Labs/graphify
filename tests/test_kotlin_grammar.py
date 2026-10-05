@@ -753,3 +753,41 @@ def test_kotlin_annotation_class_literal(tmp_path):
              if e["relation"] == "references" and e.get("context") == "attribute"}
     assert (order, customer) in attrs
     assert (order, order_line) in attrs
+
+
+def _attr_target_labels(r, source_id):
+    labels = {n["id"]: n["label"] for n in r["nodes"]}
+    return {labels.get(e["target"]) for e in r["edges"]
+            if e["relation"] == "references" and e.get("context") == "attribute"
+            and e["source"] == source_id}
+
+
+def test_kotlin_annotation_class_literal_fq_name_strips_to_tail(tmp_path):
+    """`com.example.Customer::class` references `Customer`, not the FQ text (#4079)."""
+    r = _extract(tmp_path, {
+        "Order.kt": (
+            '@Ann(target = com.example.Customer::class)\n'
+            'class Order\n'
+            'class Customer\n'
+        ),
+    })
+    order = _find(r, "Order")
+    customer = _find(r, "Customer")
+    attrs = _edges(r, "references")
+    assert (order, customer) in attrs
+    assert "com.example.Customer" not in _attr_target_labels(r, order)
+
+
+def test_kotlin_annotation_class_literal_builtin_is_filtered(tmp_path):
+    """`String::class` in an annotation argument emits no edge to `String` (#4079)."""
+    r = _extract(tmp_path, {
+        "Order.kt": (
+            '@Ann(target = String::class)\n'
+            'class Order\n'
+        ),
+    })
+    order = _find(r, "Order")
+    targets = _attr_target_labels(r, order)
+    assert "Ann" in targets, "the annotation itself is still referenced"
+    assert "String" not in targets
+    assert not any(n["label"] == "String" for n in r["nodes"])
