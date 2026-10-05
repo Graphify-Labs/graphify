@@ -1,11 +1,15 @@
 """Token-reduction benchmark - measures how much context graphify saves vs naive full-corpus approach."""
 from __future__ import annotations
+import json
 import sys
 import networkx as nx
 
 from graphify.build import edge_data
 from graphify.serve import _query_terms
 from graphify.paths import default_graph_json as _default_graph_json
+
+from graphify.serve import _query_graph_text
+from graphify.token_usage import Tokenizer
 
 
 _CHARS_PER_TOKEN = 4  # standard approximation
@@ -150,3 +154,76 @@ def print_benchmark(result: dict) -> None:
     for p in result["per_question"]:
         print(f"    [{p['reduction']}x] {p['question'][:55]}")
     print()
+
+
+def benchmark_queries(
+    graph_path: str,
+    cases: list[dict],
+    *,
+    tokenizer: Tokenizer | None = None,
+    max_nodes: int = 80,
+    token_budget: int = 2_000,
+) -> dict:
+    """Measure evidence recall and retrieval tokens against explicit expectations.
+
+    This complements the historical corpus-reduction estimate. Expected node
+    labels and relation names make correctness independently auditable, while
+    the structured query packet reports exact counts only when the caller
+    supplies the tokenizer for the model being benchmarked.
+    """
+
+    from graphify.paths import load_node_link_graph
+
+    graph = load_node_link_graph(graph_path)
+    results: list[dict] = []
+    for case in cases:
+        question = str(case.get("question", ""))
+        raw = _query_graph_text(
+            graph,
+            question,
+            response_format="evidence_json",
+            max_nodes=max_nodes,
+            token_budget=token_budget,
+            graph_path=graph_path,
+            tokenizer=tokenizer,
+        )
+        payload = json.loads(raw)
+        actual_nodes = {str(node.get("label", "")) for node in payload.get("nodes", [])}
+        actual_relations = {
+            str(edge.get("relation", "")) for edge in payload.get("edges", [])
+        }
+        expected_nodes = {str(value) for value in case.get("expected_nodes", [])}
+        expected_relations = {
+            str(value) for value in case.get("expected_relations", [])
+        }
+        missing_nodes = sorted(expected_nodes - actual_nodes)
+        missing_relations = sorted(expected_relations - actual_relations)
+        expected_count = len(expected_nodes) + len(expected_relations)
+        found_count = expected_count - len(missing_nodes) - len(missing_relations)
+        correctness = 1.0 if expected_count == 0 else found_count / expected_count
+        results.append({
+            "question": question,
+            "correctness": round(correctness, 4),
+            "missing_nodes": missing_nodes,
+            "missing_relations": missing_relations,
+            "usage": payload["usage"],
+            "coverage": payload["coverage"],
+        })
+
+    average = (
+        sum(case["correctness"] for case in results) / len(results)
+        if results else 0.0
+    )
+    return {
+        "graph_path": str(graph_path),
+        "cases": results,
+        "average_correctness": round(average, 4),
+        "total_evidence_tokens": sum(
+            case["usage"]["evidence_tokens"] for case in results
+        ),
+        "token_count_exact": bool(results) and all(
+            case["usage"]["token_count_exact"] for case in results
+        ),
+        "model_input_tokens": 0,
+        "model_output_tokens": 0,
+    }

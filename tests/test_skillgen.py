@@ -336,18 +336,19 @@ def test_codex_uses_compact_extraction_windows_uses_verbose():
     assert "(compact)" not in windows_refs["extraction-spec.md"]
 
 
-def test_every_platform_query_has_expansion_and_fallback():
-    """#1325: the unified query reference ships BOTH the vocab-expansion step and
-    the inline NetworkX fallback to every platform (previously split so no host
-    got both — Claude had expansion but no fallback; the rest the reverse)."""
+def test_every_platform_query_uses_bounded_evidence_before_expansion():
+    """Every host gets the cheap deterministic query path before recovery work."""
     for key in ("claude", "codex", "windows", "opencode"):
         core, refs = _platform_artifacts(key)
-        # Core stub mentions both the vocab-expansion step and the inline fallback.
-        assert "expand the question against the graph's own vocabulary" in core
-        assert "NetworkX traversal" in core
-        # The query reference carries expansion, fallback, and path/explain.
         q = refs["query.md"]
-        assert "Constrained query expansion" in q
+
+        assert '--format evidence-json --max-nodes 80 --budget 1000' in core
+        assert '--format evidence-json --max-nodes 80 --budget 1000' in q
+        assert "`none`" in q and "`synthesize`" in q and "`reason`" in q
+        assert q.index("Bounded evidence fast path") < q.index("Constrained query expansion")
+        assert "only when the fast path returns `reason`" in q
+        assert "coverage.truncated" in q
+        assert "narrower follow-up" in q
         assert "If the CLI is unavailable" in q
         assert "## For /graphify path" in q
         assert "## For /graphify explain" in q

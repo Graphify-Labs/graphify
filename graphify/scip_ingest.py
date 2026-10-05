@@ -84,7 +84,22 @@ def ingest_scip_json(
     for document in documents:
         if not isinstance(document, dict):
             continue
-        doc_path = _coerce_str(document.get("relative_path"), source_file)
+        # ``scip print --json`` uses protobuf lowerCamelCase, while Graphify's
+        # original simplified interchange used snake_case. Accept both and
+        # attach official document-level occurrences to their symbol records.
+        doc_path = _coerce_str(
+            document.get("relative_path", document.get("relativePath")),
+            source_file,
+        )
+        occurrence_by_symbol: dict[str, list[dict]] = {}
+        document_occurrences = document.get("occurrences", [])
+        if isinstance(document_occurrences, list):
+            for occurrence in document_occurrences:
+                if not isinstance(occurrence, dict):
+                    continue
+                occurrence_symbol = _coerce_str(occurrence.get("symbol"), "")
+                if occurrence_symbol:
+                    occurrence_by_symbol.setdefault(occurrence_symbol, []).append(occurrence)
         doc_language = _coerce_str(document.get("language"), language)
         symbols = document.get("symbols", [])
         if not isinstance(symbols, list):
@@ -95,6 +110,11 @@ def ingest_scip_json(
             symbol_id = _coerce_str(symbol.get("symbol"), "")
             if not symbol_id:
                 continue
+            normalized_symbol = dict(symbol)
+            if "display_name" not in normalized_symbol and "displayName" in normalized_symbol:
+                normalized_symbol["display_name"] = normalized_symbol["displayName"]
+            if not isinstance(normalized_symbol.get("occurrences"), list):
+                normalized_symbol["occurrences"] = occurrence_by_symbol.get(symbol_id, [])
             node_id = _make_scip_node_id(symbol_id, doc_path)
             per_doc_index.setdefault((symbol_id, doc_path), node_id)
             # Dedupe node_ids in the global index — duplicate symbol records
@@ -109,7 +129,7 @@ def ingest_scip_json(
                     "symbol_id": symbol_id,
                     "doc_path": doc_path,
                     "language": doc_language,
-                    "raw": symbol,
+                    "raw": normalized_symbol,
                 }
             )
 
@@ -288,11 +308,11 @@ def _scip_relation_for(rel: dict[str, Any]) -> str:
     Flags are accepted only when the value is exactly ``True`` — protects
     against truthy-but-misleading values like ``"false"`` in external JSON.
     """
-    if _is_true(rel.get("is_implementation")):
+    if _is_true(rel.get("is_implementation", rel.get("isImplementation"))):
         return "scip_impl"
-    if _is_true(rel.get("is_type_definition")):
+    if _is_true(rel.get("is_type_definition", rel.get("isTypeDefinition"))):
         return "scip_typed"
-    if _is_true(rel.get("is_definition")):
+    if _is_true(rel.get("is_definition", rel.get("isDefinition"))):
         return "scip_def"
     return "scip_ref"
 

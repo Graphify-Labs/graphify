@@ -253,6 +253,57 @@ def test_ingest_multiple_documents() -> None:
     assert paths == {"a.py", "b.py"}
 
 
+def test_ingest_accepts_official_protobuf_json_document_occurrences() -> None:
+    """Dropping official SCIP compatibility must lose definition locations."""
+    symbol = "scip-typescript npm app 1.0 src/cache.ts/load()."
+    doc = {
+        "documents": [{
+            "relativePath": "src/cache.ts",
+            "language": "typescript",
+            "occurrences": [{
+                "range": [4, 0, 4, 4],
+                "symbol": symbol,
+                "symbolRoles": 1,
+            }],
+            "symbols": [{
+                "symbol": symbol,
+                "kind": "Method",
+                "displayName": "load",
+                "relationships": [],
+            }],
+        }],
+    }
+
+    result = ingest_scip_json(doc)
+
+    assert result["nodes"][0]["source_file"] == "src/cache.ts"
+    assert result["nodes"][0]["source_location"] == "L4"
+    assert result["nodes"][0]["label"] == "load"
+
+
+def test_ingest_accepts_official_camel_case_relationship_flags() -> None:
+    """A protobuf JSON implementation relation must not degrade to a reference."""
+    target = "scip-java maven app 1.0 Target#"
+    source = "scip-java maven app 1.0 Impl#"
+    doc = {
+        "documents": [{
+            "relativePath": "src/Impl.java",
+            "symbols": [
+                {
+                    "symbol": source,
+                    "displayName": "Impl",
+                    "relationships": [{"symbol": target, "isImplementation": True}],
+                },
+                {"symbol": target, "displayName": "Target", "relationships": []},
+            ],
+        }],
+    }
+
+    result = ingest_scip_json(doc)
+
+    assert result["edges"][0]["relation"] == "scip_impl"
+
+
 # ---------------------------------------------------------------------------
 # Reference/definition resolution — relationship → edge mapping
 # ---------------------------------------------------------------------------

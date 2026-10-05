@@ -1,0 +1,1005 @@
+"""Behavioral tests for bounded Clang semantic call enrichment."""
+
+from pathlib import Path
+import json
+import shutil
+
+from graphify.clang_enrichment import (
+    ClangSemanticEnricher,
+    ProcessResult,
+    run_clang_command,
+)
+import pytest
+from graphify.semantic_adapters import SemanticEnrichmentService
+
+
+def _graph_with_pending_cpp_call() -> dict:
+    return {
+        "nodes": [
+            {
+                "id": "src_main_c",
+                "label": "main.C",
+                "file_type": "code",
+                "source_file": "src/main.C",
+                "source_location": "L1",
+            },
+            {
+                "id": "process",
+                "label": "process()",
+                "file_type": "code",
+                "source_file": "src/main.C",
+                "source_location": "L8",
+                "metadata": {
+                    "unresolved_calls": [{
+                        "callee": "run",
+                        "receiver_type": "Worker",
+                        "lang": "cpp",
+                        "line": "L10",
+                    }],
+                },
+            },
+            {
+                "id": "worker",
+                "label": "Worker",
+                "file_type": "code",
+                "source_file": "include/worker.h",
+                "source_location": "L1",
+            },
+            {
+                "id": "worker_run",
+                "label": ".run()",
+                "file_type": "code",
+                "source_file": "include/worker.h",
+                "source_location": "L2",
+            },
+        ],
+        "edges": [
+            {"source": "src_main_c", "target": "process", "relation": "contains"},
+            {"source": "worker", "target": "worker_run", "relation": "method"},
+        ],
+    }
+
+
+def _clang_ast() -> dict:
+    return {
+        "id": "tu",
+        "kind": "TranslationUnitDecl",
+        "inner": [
+            {
+                "id": "worker_decl",
+                "kind": "CXXRecordDecl",
+                "name": "Worker",
+                "loc": {"file": "include/worker.h", "line": 1},
+                "inner": [{
+                    "id": "run_decl",
+                    "kind": "CXXMethodDecl",
+                    "name": "run",
+                    "loc": {"file": "include/worker.h", "line": 2},
+                }],
+            },
+            {
+                "id": "process_decl",
+                "kind": "FunctionDecl",
+                "name": "process",
+                "loc": {"file": "src/main.C", "line": 8},
+                "inner": [{
+                    "kind": "CompoundStmt",
+                    "inner": [{
+                        "kind": "CXXMemberCallExpr",
+                        "range": {
+                            "begin": {"file": "src/main.C", "line": 10},
+                            "end": {"file": "src/main.C", "line": 10},
+                        },
+                        "inner": [{
+                            "kind": "MemberExpr",
+                            "name": "run",
+                            "referencedMemberDecl": "run_decl",
+                        }],
+                    }],
+                }],
+            },
+        ],
+    }
+
+
+def test_clang_adds_only_compiler_confirmed_edge_between_grounded_nodes(tmp_path: Path):
+    """Removing exact AST validation must make this unresolved call disappear."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// parsed by the injected compiler boundary\n", encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["nodes"] == _graph_with_pending_cpp_call()["nodes"]
+    assert result["edges"][-1] == {
+        "source": "process",
+        "target": "worker_run",
+        "relation": "calls",
+        "context": "compiler_resolved_call",
+        "confidence": "EXTRACTED",
+        "confidence_score": 1.0,
+        "source_file": "src/main.C",
+        "source_location": "L10",
+        "weight": 1.0,
+        "semantic_provider": "clang",
+    }
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_member_call_uses_callee_instead_of_nested_argument_member(tmp_path: Path):
+    """An argument member access must not replace the outer call target."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// nested member-call fixture\n", encoding="utf-8")
+    ast = _clang_ast()
+    call = ast["inner"][1]["inner"][0]["inner"][0]
+    call["inner"].append({
+        "kind": "CallExpr",
+        "inner": [{
+            "kind": "MemberExpr",
+            "name": "inspect",
+            "referencedMemberDecl": "inspect_decl",
+        }],
+    })
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        return ProcessResult(returncode=0, stdout=ast, stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+    assert result["edges"][-1]["target"] == "worker_run"
+
+
+@pytest.mark.parametrize(
+    ("operator_name", "graph_label"),
+    [
+        ("operator()", ".operator()()"),
+        ("operator[]", ".operator[]()"),
+        ("operator+", ".operator+()"),
+        ("operator bool", ".operator bool()"),
+        ("operator void (*)()", ".operator void (*)()()"),
+    ],
+)
+def test_clang_confirms_cpp_operators_without_stripping_symbol_syntax(
+    tmp_path: Path,
+    operator_name: str,
+    graph_label: str,
+):
+    """Graph label decoration must remain distinct from C++ operator syntax."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// call-operator fixture\n", encoding="utf-8")
+    extraction = _graph_with_pending_cpp_call()
+    extraction["nodes"][1]["metadata"]["unresolved_calls"][0]["callee"] = operator_name
+    extraction["nodes"][3]["label"] = graph_label
+    ast = _clang_ast()
+    ast["inner"][0]["inner"][0]["name"] = operator_name
+    ast["inner"][1]["inner"][0]["inner"][0]["inner"][0]["name"] = operator_name
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        return ProcessResult(returncode=0, stdout=ast, stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(extraction)
+
+    assert result["edges"][-1]["target"] == "worker_run"
+    assert result["edges"][-1]["semantic_provider"] == "clang"
+
+
+def test_clang_prefers_compile_database_but_drops_executable_plugin_flags(tmp_path: Path):
+    """Ignoring the compile DB or forwarding plugin flags must break this boundary."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    build = tmp_path / "build"
+    build.mkdir()
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(build),
+        "file": str(source),
+        "arguments": [
+            "g++", "-I../include", "-DMODE=1", "-fplugin=evil.so",
+            "-fpass-plugin=evil-pass.so",
+            "-Xclang=-load", "-Xclang=evil-frontend-plugin.so",
+            "-cc1", "-fcas-plugin-path", "evil-cas-plugin.so",
+            "-fcas-plugin-path=other-cas-plugin.so",
+            "-c", str(source), "-o", "main.o",
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert cwd == build
+        assert "-DMODE=1" in command
+        assert "-I../include" in command
+        assert not any(
+            arg.startswith((
+                "-fplugin", "-fpass-plugin", "-Xclang=", "-fcas-plugin-path",
+            ))
+            for arg in command
+        )
+        assert "-cc1" not in command and "evil-cas-plugin.so" not in command
+        assert "-c" not in command and "-o" not in command and "main.o" not in command
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+    assert result["semantic_enrichment"]["clang"]["compile_database_translation_units"] == 1
+
+
+def test_clang_compile_database_drops_response_file_values(tmp_path: Path):
+    """Allowed options cannot smuggle a second argument stream through @files."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// response-file fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "clang++", "-I", "@include-flags.rsp",
+            "-D", "@definition-flags.rsp", "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert not any(argument.startswith("@") for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("directory", "bad\0directory"),
+        ("file", "bad\0source.C"),
+    ],
+)
+def test_clang_malformed_compile_database_paths_use_safe_fallback(
+    tmp_path: Path,
+    field: str,
+    value: str,
+):
+    """One malformed metadata path cannot abort enrichment for the repository."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// malformed compile-db fixture\n", encoding="utf-8")
+    entry = {
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": ["clang++", "-DMODE=1", "-c", str(source)],
+    }
+    entry[field] = value
+    (tmp_path / "compile_commands.json").write_text(
+        json.dumps([entry]),
+        encoding="utf-8",
+    )
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert cwd == tmp_path
+        assert "-fsyntax-only" in command
+        assert not any("\0" in argument for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    report = result["semantic_enrichment"]["clang"]
+    assert report["analyzer_runs"] == 1
+    assert report["compile_database_translation_units"] == 0
+    assert report["resolved_calls"] == 1
+
+
+def test_clang_resolves_relative_directory_from_compile_database_location(tmp_path: Path):
+    """Relative working directories are anchored beside the database file."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "compile_commands.json").write_text(json.dumps([{
+        "directory": ".",
+        "file": "../src/main.C",
+        "arguments": ["g++", "-I../include", "-c", "../src/main.C"],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert cwd == build
+        assert "-I../include" in command
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+    assert result["semantic_enrichment"]["clang"]["compile_database_translation_units"] == 1
+
+
+def test_clang_compile_database_drops_virtual_filesystem_overlays(tmp_path: Path):
+    """Repository compile flags must not redirect Clang's filesystem reads."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "clang-cl",
+            "/clang:-DMODE=1",
+            "/clang:-ivfsoverlay",
+            "/clang:/tmp/wrapped-overlay.yaml",
+            "-vfsoverlay=/tmp/joined-overlay.yaml",
+            "-ivfsoverlay",
+            "/tmp/overlay.yaml",
+            "/c",
+            str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "/clang:-DMODE=1" in command
+        assert not any("overlay" in argument for argument in command)
+        assert not any("vfsoverlay" in argument for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang-cl",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_compile_database_drops_joined_output_options(tmp_path: Path):
+    """Attached output paths must not create files during semantic parsing."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "g++", "-DMODE=1", "-omain.o", "-MFdeps.d", "-MTtarget",
+            "-MQquoted", "-MJcompile.json", "--serialize-diagnostics=diag.dia",
+            "-dependency-file=deps2.d", "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "-DMODE=1" in command
+        assert not any(argument.startswith((
+            "-o", "-MF", "-MT", "-MQ", "-MJ",
+            "--serialize-diagnostics=", "-dependency-file=",
+        )) for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_compile_database_drops_output_aliases_but_keeps_objc_include(tmp_path: Path):
+    """Output aliases must not consume a parse-affecting Objective-C include path."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "clang++", "--output", "main.o", "--output=other.o",
+            "-objc-isystem", "sdk/include", "-DMODE=1", "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "--output" not in command
+        assert not any(argument.startswith("--output=") for argument in command)
+        assert "main.o" not in command
+        objc_index = command.index("-objc-isystem")
+        assert command[objc_index + 1] == "sdk/include"
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_run_clang_command_stops_when_ast_output_exceeds_limit(tmp_path: Path):
+    """Compiler output must be stopped while it is produced, not after it fills a file."""
+    executable = shutil.which("python") or shutil.which("python3")
+    assert executable is not None
+    command = (
+        executable,
+        "-c",
+        "import sys, time; sys.stdout.write('x' * 4096); sys.stdout.flush(); time.sleep(10)",
+    )
+
+    result = run_clang_command(command, tmp_path, 5.0, max_stdout_bytes=1024)
+
+    assert result.stdout == ""
+    assert "exceeded 1 KiB" in result.stderr
+
+
+def test_run_clang_command_preserves_ast_when_only_stderr_exceeds_limit(tmp_path: Path):
+    """Oversized diagnostics must not be mislabeled as JSON AST overflow."""
+    executable = shutil.which("python") or shutil.which("python3")
+    assert executable is not None
+    script = (
+        "import os\n"
+        "for _ in range(128): os.write(2,b'e'*1024)\n"
+        "os.write(1,b'{\"kind\":\"TranslationUnitDecl\"}')"
+    )
+
+    result = run_clang_command((executable, "-c", script), tmp_path, 5.0)
+
+    assert result.returncode == 0
+    assert result.stdout == {"kind": "TranslationUnitDecl"}
+    assert "stderr exceeded 32 KiB" in result.stderr
+    assert "JSON AST exceeded" not in result.stderr
+
+
+def test_clang_compile_database_drops_llvm_backend_escape_hatches(tmp_path: Path):
+    """Repository flags must not reach LLVM's native plugin option parser."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "g++", "-mllvm=-load=evil.so", "-mllvm", "-load=other.so",
+            "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert not any(argument.startswith("-mllvm") for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_compile_database_drops_forwarded_and_secondary_tool_options(tmp_path: Path):
+    """Syntax confirmation must not execute repository-selected compiler helpers."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "g++", "-B", "evil-tools", "-Xpreprocessor", "-load=evil.so",
+            "--offload-arch-tool=evil-detector", "-MMD", "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "evil-tools" not in command
+        assert "-Xpreprocessor" not in command
+        assert not any(argument.startswith("--offload-arch-tool") for argument in command)
+        assert "-MMD" not in command
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_cl_passthrough_cannot_forward_executable_plugin_options(tmp_path: Path):
+    """The clang-cl passthrough must enforce the same plugin boundary."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "clang-cl",
+            "/clang:-fno-delayed-template-parsing",
+            "/clang:-fplugin=evil.so",
+            "/clang:-Xclang",
+            "/clang:-load",
+            "/clang:-Xclang",
+            "/clang:evil-frontend-plugin.so",
+            "/c",
+            str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "/clang:-fno-delayed-template-parsing" in command
+        assert not any("plugin" in argument or argument.endswith("evil.so") for argument in command)
+        assert not any(argument.startswith("/clang:-Xclang") for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang-cl",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_compile_database_drops_serialized_ast_inputs(tmp_path: Path):
+    """Semantic confirmation must parse source instead of repository-supplied AST files."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "g++", "-include-pch", "evil.pch", "-include-pch=other.pch",
+            "-fmodule-file=evil.pcm", "-fprebuilt-module-path=evil-modules",
+            "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "evil.pch" not in command
+        assert not any(argument.startswith("-include-pch") for argument in command)
+        assert not any(argument.startswith("-fmodule-file") for argument in command)
+        assert not any(argument.startswith("-fprebuilt-module-path") for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_compile_database_skips_a_compiler_cache_launcher(tmp_path: Path):
+    """A launcher and its compiler argv must not become extra Clang inputs."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": ["ccache", "/usr/bin/g++", "-DMODE=1", "-c", str(source)],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "/usr/bin/g++" not in command
+        assert "-DMODE=1" in command
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_compile_database_skips_launcher_options_before_compiler(tmp_path: Path):
+    """Launcher configuration and the wrapped compiler are not Clang inputs."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [
+            "ccache", "--config-path", "/tmp/ccache.conf",
+            "/usr/bin/g++", "-DMODE=1", "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "--config-path" not in command
+        assert "/tmp/ccache.conf" not in command
+        assert "/usr/bin/g++" not in command
+        assert "-DMODE=1" in command
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_failure_cannot_confirm_edges_from_a_partial_ast(tmp_path: Path):
+    """A diagnostic AST is not compiler confirmation when Clang exits non-zero."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// failing translation unit\n", encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        return ProcessResult(returncode=1, stdout=_clang_ast(), stderr="compile failed")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["parsed_translation_units"] == 0
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 0
+    assert not any(edge.get("semantic_provider") == "clang" for edge in result["edges"])
+
+
+def test_clang_rejects_explicit_external_declaration_provenance(tmp_path: Path):
+    """An external AST declaration must not confirm an in-repository target."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// external declaration fixture\n", encoding="utf-8")
+    ast = _clang_ast()
+    ast["inner"][0]["inner"][0]["loc"]["file"] = "/opt/external/worker.h"
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        return ProcessResult(returncode=0, stdout=ast, stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 0
+    assert not any(
+        edge.get("semantic_provider") == "clang"
+        for edge in result["edges"]
+    )
+
+
+def test_clang_compile_database_drops_configuration_file_options(tmp_path: Path):
+    """Repository config files must not restore executable compiler plugins."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// compile-db fixture\n", encoding="utf-8")
+    build = tmp_path / "build"
+    build.mkdir()
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(build),
+        "file": str(source),
+        "arguments": [
+            "g++",
+            "--config", "unsafe.cfg",
+            "--config=also-unsafe.cfg",
+            "--config-system-dir", "system-configs",
+            "--config-user-dir=user-configs",
+            "-DMODE=1",
+            "-c", str(source),
+        ],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert cwd == build
+        assert "-DMODE=1" in command
+        assert not any(argument.startswith("--config") for argument in command)
+        assert not {"unsafe.cfg", "system-configs"} & set(command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["clang++", "-wrapper", "./attacker", "-DMODE=1"],
+        ["clang++", "-Wp,-plugin,./attacker.so", "-DMODE=1"],
+        ["clang++", "-Wa,-I,./attacker", "-DMODE=1"],
+    ],
+)
+def test_clang_compile_database_drops_external_tool_forwarding(
+    tmp_path: Path,
+    arguments: list[str],
+):
+    """Compile metadata cannot choose helpers or forward opaque option streams."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// hostile compile database\n", encoding="utf-8")
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": [*arguments, "-c", str(source)],
+    }]), encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert "-DMODE=1" in command
+        assert "-wrapper" not in command
+        assert "./attacker" not in command
+        assert not any(argument.startswith(("-Wp,", "-Wa,")) for argument in command)
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_windows_compile_command_preserves_backslashes_and_spaces():
+    """Windows command parsing must follow CommandLineToArgvW quoting rules."""
+    from graphify.clang_enrichment import split_windows_commandline
+
+    assert split_windows_commandline(
+        'clang++ -I"C:\\Program Files\\SDK" -DNAME=\\"value\\" "src\\main.C"'
+    ) == [
+        "clang++",
+        "-IC:\\Program Files\\SDK",
+        '-DNAME="value"',
+        "src\\main.C",
+    ]
+
+
+def test_installed_clang_smoke_confirms_real_cpp_call(tmp_path: Path):
+    """Exercise the real compiler boundary when Clang is available locally."""
+    executable = shutil.which("clang++") or shutil.which("clang")
+    if executable is None:
+        pytest.skip("Clang is not installed")
+    include = tmp_path / "include"
+    source_dir = tmp_path / "src"
+    include.mkdir()
+    source_dir.mkdir()
+    (include / "worker.h").write_text(
+        "class Worker { public: void run() {} };\n",
+        encoding="utf-8",
+    )
+    source = source_dir / "main.C"
+    source.write_text(
+        '#include "worker.h"\n'
+        "void process() {\n"
+        "  Worker worker;\n"
+        "  worker.run();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    graph = _graph_with_pending_cpp_call()
+    graph["nodes"][1]["source_location"] = "L2"
+    graph["nodes"][1]["metadata"]["unresolved_calls"][0]["line"] = "L4"
+    graph["nodes"][2]["source_file"] = "include/worker.h"
+    graph["nodes"][2]["source_location"] = "L1"
+    graph["nodes"][3]["source_file"] = "include/worker.h"
+    graph["nodes"][3]["source_location"] = "L1"
+    (tmp_path / "compile_commands.json").write_text(json.dumps([{
+        "directory": str(tmp_path),
+        "file": str(source),
+        "arguments": ["clang++", "-I", str(include), "-std=c++17", "-c", str(source)],
+    }]), encoding="utf-8")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable=executable,
+        runner=run_clang_command,
+    ).enrich(graph)
+
+    assert any(
+        edge.get("source") == "process"
+        and edge.get("target") == "worker_run"
+        and edge.get("semantic_provider") == "clang"
+        for edge in result["edges"]
+    )
+
+
+def test_semantic_service_runs_compiler_enrichers_before_artifact_merge(tmp_path: Path):
+    """Disconnecting executable enrichers from extraction must lose the call edge."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// service fixture\n", encoding="utf-8")
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    clang = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    )
+    result = SemanticEnrichmentService(tmp_path, enrichers=(clang,)).enrich(
+        _graph_with_pending_cpp_call(),
+    )
+
+    assert any(
+        edge.get("source") == "process"
+        and edge.get("target") == "worker_run"
+        and edge.get("semantic_provider") == "clang"
+        for edge in result["edges"]
+    )
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+    assert result["semantic_enrichment"]["artifacts_loaded"] == 0
+
+
+def test_semantic_service_activates_explicitly_selected_clang(tmp_path: Path):
+    """Selecting Clang must not require a prebuilt SCIP artifact."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// automatic service fixture\n", encoding="utf-8")
+
+    def locator(name: str) -> str | None:
+        return "/tools/clang++" if name == "clang++" else None
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = SemanticEnrichmentService(
+        tmp_path,
+        enabled_adapters=("clang",),
+        executable_locator=locator,
+        process_runner=runner,
+    ).enrich(_graph_with_pending_cpp_call())
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_clang_fallback_infers_unambiguous_repository_include_root(tmp_path: Path):
+    """Dropping inferred include roots must prevent repository headers from resolving."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text('#include <api/worker.h>\n', encoding="utf-8")
+    header = tmp_path / "include" / "api" / "worker.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("struct Worker { void run(); };\n", encoding="utf-8")
+    graph = _graph_with_pending_cpp_call()
+    for node in graph["nodes"]:
+        if node["id"] in {"worker", "worker_run"}:
+            node["source_file"] = "include/api/worker.h"
+    ast = _clang_ast()
+    worker_decl = ast["inner"][0]
+    worker_decl["loc"]["file"] = "include/api/worker.h"
+    worker_decl["inner"][0]["loc"]["file"] = "include/api/worker.h"
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        assert f"-I{tmp_path / 'include'}" in command
+        return ProcessResult(returncode=0, stdout=ast, stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich(graph)
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+
+
+def test_real_clang_confirms_a_repository_member_call(tmp_path: Path):
+    """Actual Clang JSON shape must resolve the same edge as the contract fixture."""
+    executable = shutil.which("clang++") or shutil.which("clang")
+    if executable is None:
+        pytest.skip("Clang is not installed")
+    include = tmp_path / "include"
+    include.mkdir()
+    (include / "worker.h").write_text(
+        "struct Worker { void run(); };\n",
+        encoding="utf-8",
+    )
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text(
+        '#include "worker.h"\n\nvoid process(Worker& worker) {\n  worker.run();\n}\n',
+        encoding="utf-8",
+    )
+    graph = {
+        "nodes": [
+            {
+                "id": "process", "label": "process()", "file_type": "code",
+                "source_file": "src/main.C", "source_location": "L3",
+                "metadata": {"unresolved_calls": [{
+                    "callee": "run", "receiver_type": "Worker", "lang": "cpp", "line": "L4",
+                }]},
+            },
+            {
+                "id": "worker", "label": "Worker", "file_type": "code",
+                "source_file": "include/worker.h", "source_location": "L1",
+            },
+            {
+                "id": "worker_run", "label": ".run()", "file_type": "code",
+                "source_file": "include/worker.h", "source_location": "L1",
+            },
+        ],
+        "edges": [{"source": "worker", "target": "worker_run", "relation": "method"}],
+    }
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable=executable,
+        runner=run_clang_command,
+    ).enrich(graph)
+
+    assert result["semantic_enrichment"]["clang"]["resolved_calls"] == 1
+    assert result["edges"][-1]["semantic_provider"] == "clang"
+
+
+def test_clang_upgrades_inferred_call_in_merged_node_link_graph(tmp_path: Path):
+    """Compiler proof should strengthen, rather than duplicate, a merge-time edge."""
+    source = tmp_path / "src" / "main.C"
+    source.parent.mkdir()
+    source.write_text("// merged graph fixture\n", encoding="utf-8")
+    merged = _graph_with_pending_cpp_call()
+    merged["links"] = merged.pop("edges")
+    merged["links"].append({
+        "source": "process",
+        "target": "worker_run",
+        "relation": "calls",
+        "context": "cross_partition",
+        "confidence": "INFERRED",
+        "confidence_score": 0.8,
+        "source_location": "L10",
+        "_partition_call": True,
+    })
+    merged.update({"directed": False, "multigraph": False, "graph": {"name": "merged"}})
+
+    def runner(command: tuple[str, ...], cwd: Path, timeout: float) -> ProcessResult:
+        return ProcessResult(returncode=0, stdout=_clang_ast(), stderr="")
+
+    result = ClangSemanticEnricher(
+        tmp_path,
+        executable="/tools/clang++",
+        runner=runner,
+    ).enrich_node_link(merged)
+
+    calls = [edge for edge in result["links"] if edge.get("relation") == "calls"]
+    assert len(calls) == 1
+    assert calls[0]["confidence"] == "EXTRACTED"
+    assert calls[0]["semantic_provider"] == "clang"
+    assert calls[0]["previous_context"] == "cross_partition"
+    assert "_partition_call" not in calls[0]
+    assert result["graph"] == {"name": "merged"}
+    assert result["semantic_enrichment"]["clang"]["upgraded_calls"] == 1
