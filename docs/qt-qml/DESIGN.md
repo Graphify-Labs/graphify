@@ -596,7 +596,8 @@ same contained file. This identity check does not rewrite lexical source facts,
 literal lookup values or the shared `source_path` helper. Foreign input and
 declaration/input conflicts still fail the owning metadata guard. Resolving path
 identity reads filesystem path metadata, not target source content or new corpus
-inputs. INC-QML-39 retains the current Qt policy 18 and AST schema 12.
+inputs. The INC-QML-39 checkpoint retains policy 18/schema 12; INC-QML-40 advances
+derived policy 19 without changing the AST schema.
 The helper and its focused test
 module stay below 300 physical lines. Reader syntax, corpus admission, existing
 indexes and graph persistence remain in their existing owners.
@@ -1135,3 +1136,38 @@ nodes retain their own fields and origin. Subsequent legacy provenance inference
 remains compatible, and comparison continues to observe origins rather than
 discarding them. Writer/cohort/checkpoint ordering remains unchanged. This is
 publication-created placeholder state, with no source parser/cache schema change.
+
+## Canonical input and diagnostic boundaries (INC-QML-40/41)
+
+The reproduced facade gap is owned by the existing cached absolute-source-file
+normalization in `extract.py`. The correction resolves each supplied
+physical identity before its contained/external decision and reuses that value
+for endpoint-key forms. Source content, original byte spans, literal fact values,
+external-file policy and native traversal validation retain their owners.
+This is a shared normalization correction, so generic/Python and true external
+controls accompany Qt/QML success and lifecycle regressions. No separate path
+registry or new mutable root is introduced. Per-file caches contain facts before
+facade normalization, so warm replay can repair provenance without changing AST
+schema 12. Qt policy 19 is the approved same-package refresh for prior policy-18
+native/Qt products, including no-change updates. Existing stamp inspection,
+cohort publication, retention and repair ordering remain authoritative.
+Generic-only older API outputs require an explicit forced rebuild for repair.
+
+The current facade measures 8,997 physical lines, from 8,993 before INC-QML-40;
+the earlier tables record their historical 9,009-line snapshot. The existing
+9,010-line ceiling, extractor-facade maintainer ownership and separate characterized
+facade extraction exit remain in force. This correction adds four net lines to
+the existing cached responsibility and does not mix a mechanical extractor port
+or unrelated split into the behavior fix.
+
+The reproduced diagnostic escape is owned by `qt_qml_pipeline`'s existing join
+failure handler. Proposed diagnostic construction must tolerate a persistent
+filesystem-resolution failure independently of the failed semantic join. It
+retains bounded relative source context where available, represents unavailable
+context explicitly, annotates every affected source with the existing failure
+code and does not lend lookup/endpoint authority. CLI/watch still reject before
+normal graph-product publication; prior products and recovery retain existing
+cohort ownership. OSError/RuntimeError probes distinguish complete diagnostics
+from the already passing retention/recovery controls. INC-QML-40 has local source
+and installed proof; hosted acceptance remains pending. INC-QML-41 remains planned
+until its production change and ordinary regressions are integrated.

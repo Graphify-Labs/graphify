@@ -8717,8 +8717,16 @@ def extract(
         cached = _sf_forms.get(sf)
         if cached is not None:
             return cached
+        # Accepted aliases identify the same physical source as the canonical
+        # scan root. Decide containment before the external-path fallback so a
+        # nearby short/symlink parent cannot turn native provenance into ../..
+        # transport. Keep written and resolved forms for existing endpoint joins.
         try:
-            rel = sf_path.relative_to(root)
+            sf_resolved = _cached_realpath(str(sf_path), os.getcwd())
+        except (OSError, RuntimeError):
+            sf_resolved = sf_path
+        try:
+            rel = sf_resolved.relative_to(root)
         except ValueError:
             portable = _portable_out_of_root_sf(sf_path)
             canonical_id = _make_id("ext", portable)
@@ -8731,10 +8739,6 @@ def extract(
             # (belt-and-braces for #2195 regex-rescue stubs and friends).
             canonical_id = _file_node_id(rel)
             new_sf = rel.as_posix()
-        try:
-            sf_resolved = sf_path.resolve()
-        except (OSError, RuntimeError):
-            sf_resolved = sf_path
         # Learn the STEM (extension-dropped) forms too: symbol producers mint
         # compound ids as _make_id(_file_stem(path), name), so a node-less
         # absolute-derived endpoint arrives as <stem-key>_<symbol> and only

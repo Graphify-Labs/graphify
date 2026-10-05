@@ -244,8 +244,9 @@ DESIGN.md; tests and exact commands belong to validation/traceability.
 
 The initial INC-QML-14 profile is locally verified. INC-QML-39 extends accepted
 input identity; focused and broader local source regressions pass. A fresh
-artifact reproduces the separate INC-QML-40 facade gap; complete installed alias
-and current hosted proof remain pending. Qt policy 18 and AST schema 12 are current.
+artifact initially reproduced the separate INC-QML-40 facade gap; its correction
+now passes fresh installed alias smoke. Current hosted proof remains pending.
+Qt policy 19 and AST schema 12 are current under D23.
 The owners below implement
 REQ-QML-020-AC01–AC03 without a new parser or persistence pipeline.
 
@@ -254,7 +255,7 @@ REQ-QML-020-AC01–AC03 without a new parser or persistence pipeline.
 | `graphify/qt_project_membership.py::resolve_project_memberships` | Independent source-owned membership sites; literal/unique accepted canonical targets; canonical contained input identity admits real path aliases without rewriting lexical provenance, reading target content, expanding the corpus or mutating borrowed facts |
 | `graphify/qt_project_index.py::QtProjectIndex` | Existing accepted module/source/resource evidence and lookup behavior; projection does not change the index's runtime-uncertainty boundary |
 | `graphify/qt_qml_pipeline.py::resolve_qt_qml` | Narrow post-canonicalization helper hook, scratch publication and existing resolver failure guard |
-| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Historical INC-QML-14 policy-6/schema-7 refresh; current policy 18/schema 12 retain the same owners and are unchanged by INC-QML-39 |
+| `graphify/qt_incremental.py::QT_POLICY_VERSION` | Historical INC-QML-14 policy-6/schema-7 refresh; current policy 19/schema 12 retain the same owners and refresh prior native/Qt source-alias provenance at unchanged package/source versions |
 | `tests/test_qt_project_membership.py` | Public literal, ambiguity, source/span, direction and immutable-input production regressions; exact executed coverage belongs to traceability |
 | `tests/test_qt_project_membership_updates.py` | Real CLI/watch changes, policy upgrade, prior-product retention/repair/repeat, aggregate inspection and replacement publication without borrowed mutation |
 | `tests/test_qt_project_membership_aliases.py` | Real Windows short-path and parent-symlink admission; unchanged installed-smoke assertions, canonical/cold/warm/full/manual/watch equality, foreign/conflicting transport rejection and durable retention/recovery |
@@ -483,8 +484,9 @@ admission with characterization when the upstream assembly boundary is split;
 an unrelated mechanical extraction is outside this correction. Watch grows through
 2,526 (prior ownership) to 2,532 (first minted origin), below the existing 2,550
 ceiling and extraction exit. All new handwritten production/tests remain below
-300 lines. Current epochs are AST schema 12 and Qt policy 18; older epoch records
-describe their own source/artifact checkpoints.
+300 lines. This INC-QML-38 checkpoint uses AST schema 12 and Qt policy 18;
+INC-QML-40 below advances the derived epoch. Older records describe their own
+source/artifact checkpoints.
 
 ## Shared compatibility checkpoint
 
@@ -494,3 +496,24 @@ retains hook publication ownership; watcher recovery retains ordering and its
 2,550-line ceiling. Portable shell/test helpers and the Terraform regression do
 not change Qt resolution interfaces, AST schema 12 or Qt policy 18. Platform and
 consumer proof gaps remain distinct from the final Qt adoption artifact.
+
+## Canonical facade source aliases (INC-QML-40)
+
+`extract.py::_sf_entry` keeps cached physical source identity ahead of contained
+source/definition-file publication. Written and resolved forms still supply the
+existing endpoint remap keys; true external paths retain their existing policy.
+The run clears the existing real-path cache and retains source-root ownership.
+The facade measures 8,997 physical lines against its existing 9,010 ceiling;
+separate characterized extraction remains the exit condition.
+
+`qt_incremental.QT_POLICY_VERSION` is 19. Existing native/Qt stamps force an
+unchanged-input refresh after policy 18; syntax schema remains 12 because cached
+facts precede normalization. Generic-only older API outputs need an explicit
+forced rebuild when repair is required.
+
+`tests/test_qt_facade_path_aliases.py` (238 lines) owns real nearby aliases,
+generic/native source and definition-file parity, warm cache, actual update and
+foreign input controls. `tests/test_qt_alias_policy_upgrade.py` (85 lines) owns
+mixed and C++-only no-change upgrades, real stamp-publication failure, prior
+product retention, repaired retry and repeat. Exact evidence belongs to
+traceability; current hosted acceptance remains pending.

@@ -507,8 +507,9 @@ while stored lexical provenance remains immutable. Canonical identity cannot
 authorize a foreign declaration or expand the accepted corpus. INC-QML-39
 corrects this comparison without a new index, reader or persistence owner.
 The initial projection's Qt policy 6 invalidated prior derived graphs at the same
-package version while preserving AST schema 7. INC-QML-39 retains current policy
-18 and AST schema 12; producer fact contracts are unchanged.
+package version while preserving AST schema 7. The INC-QML-39 checkpoint retains
+policy 18/schema 12; D23 subsequently advances policy 19 for facade repair while
+preserving producer fact contracts and AST schema 12.
 INC-QML-14 implements this bounded literal membership profile. Exact local
 producer, lifecycle, consumer and installed-artifact evidence belongs to
 requirements, plan and
@@ -704,3 +705,30 @@ data, source identities and existing persistence ownership. Serialization reject
 before product commit under QT_EXPORT_DIRECTION; force does not bypass integrity.
 No graph schema or source-cache epoch change is required. Legacy unmarked graphs
 retain their prior behavior; malformed marked graphs now fail conservatively.
+
+## D23 — Physical input identity precedes source provenance publication
+
+INC-QML-40 corrects the shared facade's contained/external source decision.
+Its existing per-run real-path cache supplies physical identity before source
+relativization and endpoint-key remapping. Resolving a supplied alias can establish
+the same contained file; relaxing native traversal validation or treating an
+external helper's basename fallback as containment would grant false authority.
+Original source bytes/spans and literal metadata retain producer ownership.
+True external sources keep the existing portable identity policy. No corpus
+discovery, content reader, path registry or mutable root is added.
+
+Existing syntax-cache entries contain facts before this normalization, so warm
+replay can apply the correction without an AST schema change. Same-package Qt
+policy 19 refreshes previously accepted native/Qt derived products from policy 18,
+including a no-change update. AST schema 12 remains current. Ordinary analysis
+stamps and graph-product cohort publication retain ownership; failed refresh
+retains prior products and a repaired retry completes the upgrade. Generic-only
+older API outputs use an explicit forced rebuild when repair is required rather
+than invalidating every language's syntax cache.
+
+INC-QML-41 targets independently bounded join-failure diagnostic construction. A failed
+filesystem context lookup cannot change a rejected join into a raw backend error
+or stop later failure annotations. Safe relative context is informational;
+unavailable context grants no source or endpoint authority. Existing failure
+codes and writers remain authoritative. Implemented/source/installed/hosted
+evidence for both corrections is recorded separately in plan and traceability.

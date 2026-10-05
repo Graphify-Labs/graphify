@@ -239,6 +239,31 @@ acceptance assertion. INC-QML-41 owns ordinary regression promotion and correcti
 for REQ-QML-012-AC01/AC02 and REQ-QML-020-AC02. This is a diagnostic gap; no data
 loss is inferred.
 
+### Canonical facade provenance — INC-QML-40
+
+The owning normalization now decides containment from cached physical identity
+before external fallback, preserving written/resolved endpoint key forms and
+strict native traversal rejection. A nearby real alias is tested independently
+of the older external helper's deep-path basename fallback. True external input
+and a foreign implementation cannot become in-root membership/native authority.
+
+| Acceptance ID | Exact automatically collected assignment | Local evidence and limits |
+| --- | --- | --- |
+| REQ-QML-020-AC01 | `tests/test_qt_facade_path_aliases.py::test_req_qml020_ac01_nearby_alias_preserves_generic_cold_warm_provenance`; `tests/test_qt_facade_path_aliases.py::test_req_qml020_ac01_nearby_alias_preserves_unchanged_native_smoke_and_mixed_graph`; `tests/test_qt_facade_path_aliases.py::test_req_qml020_ac01_nearby_alias_preserves_real_decl_def_provenance` | Actual generic/Python/C++/QML source identity, CRLF bytes, canonical/alias cold/warm graphs and real declaration/definition carriers pass |
+| REQ-QML-020-AC02; REQ-QML-004-AC04 | `tests/test_qt_facade_path_aliases.py::test_req_qml020_ac02_foreign_implementation_cannot_supply_an_in_root_definition`; `tests/test_qt_facade_path_aliases.py::test_req_qml020_ac02_physical_external_source_keeps_external_policy_without_membership` | Explicit foreign input keeps external source policy/native rejection; no target membership or implicit discovery is added |
+| REQ-QML-020-AC03 | `tests/test_qt_facade_path_aliases.py::test_req_qml020_ac03_nearby_alias_updates_retire_membership_and_generic_targets`; `tests/test_qt_alias_policy_upgrade.py::test_req_qml020_ac03_policy18_no_change_upgrade_retains_repairs_and_repeats` | Real manual/watch generic then metadata-only edits, stale target/site retirement, canonical full parity, unrelated Python identity and mixed/C++-only no-edit policy upgrades pass; failed candidate stamp publication retains the cohort and repair/repeat completes |
+
+Original facade selection: four failed, one passed, five symlink skips.
+Mixed and C++-only policy-upgrade selections each fail two cases under policy 18.
+Final existing/new alias, policy and six unrelated source-portability/remap
+modules pass **65 cases, zero failures/errors, fourteen symlink-capability skips**,
+one existing Hypothesis warning, in 13.43 seconds. These selections overlap earlier
+proof and are not added to full-suite totals. Policy 19 refreshes prior native/Qt
+products at the same package/source version; AST schema 12 and persistence owners
+are unchanged. Generic-only prior API products require an explicit forced rebuild.
+The final 238/85-line test modules remain below 300; the facade's 8,997 lines stay
+within its existing 9,010 ceiling. Current hosted alias/platform proof remains open.
+
 ## Individual acceptance assignments
 
 The [follow-up audit](../docs/qt-qml/FOLLOWUP_AUDIT.md) supplies counterexamples for

@@ -458,14 +458,15 @@ project code.
 
 2 - Missing, duplicate, conditional, generated or out-of-root targets retain explicit unresolved/unsupported site status, reason and bounded evidence without a target edge. Same-name files in different scopes remain distinct; graph projection neither reads new files nor evaluates expansions, build hooks or QML. Malformed metadata and failed joins retain existing failure diagnostics and prior durable graph/state; force cannot authorize partial membership publication. Canonical input comparison still rejects a foreign input or conflicting declaration identity; an alias cannot authorize out-of-corpus membership or rewrite stored source facts. (`REQ-QML-020-AC02`)
 
-3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. Canonical and real alias profiles agree through cold/warm extraction, full/manual/watch updates and source removal; repaired retry and no-change repeats preserve accepted output. (`REQ-QML-020-AC03`)
+3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. Canonical and real alias profiles agree through cold/warm extraction, full/manual/watch updates and source removal; repaired retry and no-change repeats preserve accepted output. Existing policy-18 native/Qt products refresh under policy 19 at unchanged package/source versions; a failed upgrade retains prior products and repaired retry/repeat completes the same accepted graph. (`REQ-QML-020-AC03`)
 
 Status: **Implemented bounded profile; full canonical-alias verification remains open**.
 The earlier canonical-spelling cases have production, lifecycle/consumer and reviewed installed-artifact
 evidence assigned in [traceability](../tests/TRACEABILITY.md#project-membership-projection).
 The initial two source/lifecycle suites contribute 37 passing cases to their
-recorded reviewed-wheel selection. Current Qt policy 18 and AST cache schema 12
-retain existing refresh and producer ownership. Raw facts and existing module/resource
+recorded reviewed-wheel selection. The INC-QML-39 checkpoint uses Qt policy 18
+and AST schema 12; INC-QML-40's accepted compatibility decision advances policy
+19 while retaining schema 12, refresh and producer ownership. Raw facts and existing module/resource
 lookups remain unchanged; static membership does not establish runtime component
 use. Browser, new hosted, other-platform and executable Qt proof are not claimed.
 [INC-QML-14](qt-qml/PLAN.md#inc-qml-14--explicit-project-membership-relationships)

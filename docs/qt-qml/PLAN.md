@@ -2299,7 +2299,7 @@ the separate INC-QML-40/41 gaps below; no speculative increment is allocated.
 
 ## INC-QML-40 — Canonical facade source provenance
 
-Status: **Planned correction; source and installed counterexamples reproduced**.
+Status: **Implemented; local source/installed proof passes, hosted proof pending**.
 
 Acceptance: REQ-QML-020-AC01/AC03 and REQ-QML-004-AC04. Dependency: INC-QML-39.
 Owner: existing extractor-facade source-file normalization boundary.
@@ -2316,13 +2316,27 @@ Cover a real near-root Windows short path and portable parent symlink, canonical
 versus alias generic/Python/C++/QML IDs, edges and source ranges, unchanged native
 smoke, actual cold/warm and update parity, and true external controls. Do not
 relax traversal guards or depend on the external helper's basename fallback.
-The facade is oversized legacy code (9,009 lines before this correction); record
-a bounded cohesion exception and preserve the separate migration playbook.
+The facade is oversized legacy code (8,993 physical lines before this correction,
+8,997 after), within its documented 9,010-line ceiling. Preserve facade ownership
+and the separate characterized migration playbook.
+Compatibility decision D23 uses policy 19 to refresh older policy-18 native/Qt
+products at unchanged package/source versions; AST schema 12 remains because
+cached facts precede normalization. Cover actual no-change upgrade, failed-refresh
+retention, repaired retry and repeat. Generic-only prior API outputs require an
+explicit forced rebuild for repair.
 
 Exit: focused shared-boundary and alias regressions, fresh installed consumption
 and applicable hosted lanes pass without fixture normalization. Record artifact
-identity and review the plan again. Current policy 18/schema 12 remain unless
-durable compatibility review establishes a distinct invalidation need.
+identity and review the plan again. Policy 19/schema 12 preserve existing
+cache/product owners under the documented compatibility decision.
+
+Local evidence: nearby-alias/definition-file, policy-upgrade, existing membership
+and six unrelated source-remapping/portability modules pass 65 cases with fourteen
+symlink-capability skips. Fresh installed QML/core and real near-root short-alias
+smoke pass without changing their assertions. The original facade selection fails
+four cases before correction; four mixed/C++-only writer upgrade cases fail under
+policy 18 and pass under 19. INC-QML-41 below closes the separately reproduced
+diagnostic gap; no further reproduced gap is allocated at this checkpoint.
 
 ## INC-QML-41 — Failure-safe join diagnostics
 
