@@ -593,5 +593,11 @@ def extract_dart(path: Path) -> dict:
                       if e["source"] == file_nid and e["relation"] == "defines"]
         add_edge(file_nid, own_nid, "includes", line=part_of_line)
         edges.extend(part_edges)
+        # The symbols' ids carry the library's prefix while their source_file is
+        # this part, so extract()'s id canonicalization has to be told which
+        # file the prefix belongs to (#3522). Transient: extract() drops it.
+        for n in nodes:
+            if n["id"] != own_nid and n.get("source_file") == str(path):
+                n["_id_scope_file"] = str(parent_path)
 
     return {"nodes": nodes, "edges": edges}

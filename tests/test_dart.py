@@ -748,6 +748,36 @@ class TestDart(unittest.TestCase):
         for node in part["nodes"]:
             self.assertFalse(node["id"].startswith(absolute_marker + "_"), node["id"])
 
+    def test_part_of_ids_are_canonical_through_extract_with_absolute_paths(self):
+        """#3522: the CLI hands `extract` absolute paths. A part file's symbols are minted
+        under its library's prefix, so the id-canonicalization pass has to look that prefix
+        up through the library, not through the part named by their `source_file`, or the
+        persisted ids keep the machine's directory layout. That has to hold when the part is
+        re-extracted on its own too, as an incremental update does."""
+        from graphify.extract import extract
+
+        root = self.temp_path / "proj"
+        lib_dir = root / "lib" / "core" / "settlement"
+        lib_dir.mkdir(parents=True)
+        library = lib_dir / "settlement.dart"
+        library.write_text(
+            "library settlement;\npart 'derive.dart';\n\nclass Settlement {}\n", encoding="utf-8")
+        part = lib_dir / "derive.dart"
+        part.write_text("part of 'settlement.dart';\n\nclass DeriveHelper {}\n", encoding="utf-8")
+        absolute_marker = _make_id(str(root))
+
+        for batch in ([library, part], [part]):
+            result = extract(batch, cache_root=self.temp_path / "cache", root=root,
+                             parallel=False)
+            helper = next(n for n in result["nodes"] if n["label"] == "DeriveHelper")
+            self.assertEqual(helper["id"], "lib_core_settlement_settlement_derivehelper")
+            for node in result["nodes"]:
+                self.assertNotIn(absolute_marker, node["id"], (batch, node))
+                self.assertNotIn("_id_scope_file", node, (batch, node))
+            for edge in result["edges"]:
+                self.assertNotIn(absolute_marker, edge["source"], (batch, edge))
+                self.assertNotIn(absolute_marker, edge["target"], (batch, edge))
+
     def test_part_file_keeps_its_own_node(self):
         """A `part of` file is a real source file: it must be findable by name and
         linked to its library and its declarations, while those declarations keep

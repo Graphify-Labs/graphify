@@ -7906,8 +7906,12 @@ def extract(
             _remap_seen.add(_p.resolve())
         except (OSError, RuntimeError):
             pass
-    for _e in all_edges:
-        _tf = _e.get("target_file")
+    # A Dart part file's symbols carry their library's prefix (#3522), so the
+    # library is registered like an edge target: its prefixes are then known
+    # even when only the part is in this batch.
+    _stamped_files = [_e.get("target_file") for _e in all_edges]
+    _stamped_files += [_n.get("_id_scope_file") for _n in all_nodes]
+    for _tf in _stamped_files:
         if not _tf:
             continue
         _raw_tp = Path(_tf)
@@ -8073,7 +8077,7 @@ def extract(
             if n.get("type") == "package":
                 continue
             try:
-                entry = prefix_remap.get(Path(sf).resolve())
+                entry = prefix_remap.get(Path(n.get("_id_scope_file") or sf).resolve())
             except Exception:
                 continue
             if entry is None:
@@ -9018,6 +9022,10 @@ def extract(
     for e in all_edges:
         e.pop("local_alias", None)
         e.pop("_python_plain_import", None)
+    # _id_scope_file only told the prefix remap whose prefix a Dart part's
+    # symbols carry (#3522); nothing reads it after that.
+    for n in all_nodes:
+        n.pop("_id_scope_file", None)
 
     # Tag AST provenance so the incremental watch rebuild can distinguish
     # AST-extracted nodes from semantic/LLM nodes. On a full re-extraction
