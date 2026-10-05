@@ -1796,6 +1796,8 @@ def test_elixir_defmacro_and_defguard_are_extracted(tmp_path):
         "\n"
         "  defguard is_even(x) when is_integer(x) and rem(x, 2) == 0\n"
         "\n"
+        "  defguardp is_small(x) when is_integer(x) and x < 10\n"
+        "\n"
         "  def run(x) do\n"
         "    trace(priv_macro(x))\n"
         "  end\n"
@@ -1807,6 +1809,7 @@ def test_elixir_defmacro_and_defguard_are_extracted(tmp_path):
     assert "trace" in labels, f"defmacro dropped: {sorted(labels)}"
     assert "priv_macro" in labels, f"defmacrop dropped: {sorted(labels)}"
     assert "is_even" in labels, f"defguard dropped: {sorted(labels)}"
+    assert "is_small" in labels, f"defguardp dropped: {sorted(labels)}"
     # A call to a locally-defined macro now resolves to the macro's node.
     calls = _calls(r)
     assert ("run()", "trace()") in calls
