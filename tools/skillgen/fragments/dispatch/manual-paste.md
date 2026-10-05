@@ -6,15 +6,7 @@
 
 For each chunk of uncached files (20-25 per chunk), give a subagent the extraction prompt below. When it returns, paste its JSON response and write it to that chunk's file so Step B3 can collect it:
 
-```bash
-# After pasting a subagent's JSON for chunk N, save it (replace N and PASTED_JSON):
-PROJECT_ROOT=$(pwd)  # cwd — where Part C globs graphify-out/ (NOT .graphify_root/scan dir, #1392)
-cat > "${PROJECT_ROOT}/graphify-out/.graphify_chunk_0N.json" <<'CHUNK_JSON'
-PASTED_JSON
-CHUNK_JSON
-```
-
-Repeat for every chunk. Each chunk's JSON must land in its own `graphify-out/.graphify_chunk_NN.json` before Step B3 runs.
+Use the host's file-writing tool to save each parsed JSON response as data to its assigned absolute CHUNK_PATH from B1. Copy the matching FILE_LIST into the extraction prompt. Do not paste model output into an executable shell/Python command or construct a numbered filename. Every current-run response must pass the shared B3 ownership check before caching or merge.
 
 Subagent prompt template:
 

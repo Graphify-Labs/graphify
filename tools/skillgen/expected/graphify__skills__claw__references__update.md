@@ -92,6 +92,17 @@ from graphify.detect import save_manifest
 # Load new extraction and incremental state
 new_extraction = json.loads(Path('graphify-out/.graphify_extract.json').read_text(encoding=\"utf-8\"))
 incremental = json.loads(Path('graphify-out/.graphify_incremental.json').read_text(encoding=\"utf-8\"))
+# Bind the actual destructive payload to current dispatch + owned cache + AST.
+# Code-only/deletion-only updates skip B entirely and must not read an old manifest.
+# SPEC_PATH is the same installed extraction-spec.md used in B0/B3.
+semantic_types = ('document', 'paper', 'image')
+semantic_files = [f for t in semantic_types for f in incremental.get('new_files', {}).get(t, [])]
+video_changed = bool(incremental.get('new_files', {}).get('video'))
+if video_changed:
+    semantic_files += json.loads(Path('graphify-out/.graphify_transcripts.json').read_text(encoding=\"utf-8\"))
+if semantic_files or video_changed:
+    from graphify.skill_merge import load_skill_update_extraction
+    new_extraction = load_skill_update_extraction(semantic_files, root='INPUT_PATH', prompt_file='SPEC_PATH')
 deleted = list(incremental.get('deleted_files', []))
 # prune_sources is ONLY for genuinely DELETED files. Changed/re-extracted files are
 # handled by build_merge's replace-on-re-extract (#1344): every source_file in
@@ -117,6 +128,15 @@ G = build_merge(
     directed=IS_DIRECTED,
 )
 print(f'[graphify update] Merged: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges')
+
+# Diagnose raw incoming references against the final node set BEFORE rewriting
+# extraction with surviving edges, which would hide unresolved prefixes (#3947).
+from graphify.diagnostics import diagnose_extraction, format_diagnostic_report
+references = {**new_extraction, 'nodes': [{'id': n, **d} for n, d in G.nodes(data=True)]}
+summary = diagnose_extraction(references, directed=IS_DIRECTED, root='INPUT_PATH')
+if summary['dangling_endpoint_edges'] or summary['missing_endpoint_edges']:
+    print('Unresolved incoming references before persistence:')
+    print(format_diagnostic_report(summary))
 
 # Write merged result back to .graphify_extract.json so Step 4 sees the full graph
 merged_out = {

@@ -10,7 +10,7 @@ Dispatch one `@mention` per chunk — ALL in the same response:
 @agent Chunk 2 of TOTAL_CHUNKS: [next chunk]
 ```
 
-Wait for all agents to return. Parse each response as JSON. Accumulate nodes/edges/hyperedges across all results and write to `graphify-out/.graphify_semantic_new.json`. If the `@agent` path cannot write chunk files, fall back to the serial path that writes each `graphify-out/.graphify_chunk_NN.json` before merge.
+Wait for all agents to return. Parse each response as JSON and write it as data to its assigned CHUNK_PATH from B1, retaining that assignment's FILE_LIST. If an agent cannot write files, the controller writes its inline response to the same path. Do not accumulate directly into a semantic aggregate: B3 validates each current-run chunk before caching or merge.
 
 Subagent prompt template:
 

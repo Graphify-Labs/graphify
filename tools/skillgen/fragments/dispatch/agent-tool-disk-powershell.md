@@ -14,11 +14,7 @@ All three in one message. Not three separate messages.
 
 Each subagent receives this exact prompt (substitute FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, DEEP_MODE, and CHUNK_PATH).
 
-CHUNK_PATH must be an **absolute** path — derive it before dispatching:
-```powershell
-$PROJECT_ROOT = (Get-Location).Path  # cwd — where Part C globs graphify-out\ (NOT .graphify_root/scan dir, #1392)
-# Then for chunk N: $CHUNK_PATH = Join-Path $PROJECT_ROOT "graphify-out\.graphify_chunk_0N.json"
-```
+CHUNK_PATH is the absolute `path` returned by B1 for this exact FILE_LIST. Copy both from the same controller assignment; do not construct a numbered filename.
 
 Subagent prompt template:
 

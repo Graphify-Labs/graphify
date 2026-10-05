@@ -15,7 +15,7 @@ After all agents are dispatched, collect results sequentially in memory:
 result = wait_agent(handle); close_agent(handle)   # repeat per handle
 ```
 
-Parse each result as JSON. Accumulate nodes/edges/hyperedges across all results and write to `graphify-out/.graphify_semantic_new.json`. Codex collects in memory, so there are no per-chunk files on disk; the disk-based success checks in Step B3 do not apply — a chunk that returns invalid JSON is the failure signal instead.
+Parse each result as JSON. Codex collects in memory, then the controller writes each response as JSON data to the absolute CHUNK_PATH returned by B1 for that agent's FILE_LIST. Do not concatenate results yet: every chunk must pass the same B3 ownership validation before caching or merge. A malformed response stops the run; a missing result stays missing in the current dispatch.
 
 Subagent prompt template:
 
