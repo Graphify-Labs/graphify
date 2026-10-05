@@ -320,6 +320,24 @@ def test_null_conditional_this_field_receiver_resolves(tmp_path):
     assert (commit, cache_save) not in calls
 
 
+def test_null_conditional_bare_this_receiver_resolves(tmp_path):
+    """`this?.Save()` resolves like `this.Save()` (#4077)."""
+    calls, r = _calls(tmp_path, {
+        "S.cs": (
+            "public class Other { public bool Save() => false; }\n"
+            "public class Repo {\n"
+            "    public bool Save() => true;\n"
+            "    public bool? Commit() { return this?.Save(); }\n"
+            "}\n"
+        )
+    })
+    commit = _find(r, ".Commit()", "commit")
+    repo_save = _find(r, ".Save()", "repo")
+    other_save = _find(r, ".Save()", "other")
+    assert (commit, repo_save) in calls, "this?.Save() must resolve like this.Save()"
+    assert (commit, other_save) not in calls
+
+
 def test_null_conditional_cross_file_receiver_resolves(tmp_path):
     calls, r = _calls(tmp_path, {
         "Server.cs": (
