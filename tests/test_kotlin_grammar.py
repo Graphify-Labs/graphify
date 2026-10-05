@@ -753,3 +753,33 @@ def test_kotlin_annotation_class_literal(tmp_path):
              if e["relation"] == "references" and e.get("context") == "attribute"}
     assert (order, customer) in attrs
     assert (order, order_line) in attrs
+
+
+def test_kotlin_annotation_class_literal_fully_qualified_strips_package(tmp_path):
+    """`com.example.Customer::class` must resolve to the bare `Customer` class (#4079)."""
+    r = _extract(tmp_path, {
+        "Order.kt": (
+            '@Ann(target = com.example.Customer::class)\n'
+            'class Order\n'
+            'class Customer\n'
+        ),
+    })
+    order = _find(r, "Order")
+    customer = _find(r, "Customer")
+    attrs = {(e["source"], e["target"]) for e in r["edges"]
+             if e["relation"] == "references" and e.get("context") == "attribute"}
+    assert (order, customer) in attrs
+
+
+def test_kotlin_annotation_class_literal_builtin_emits_no_edge(tmp_path):
+    """`String::class` is a builtin type and must not produce an edge (#4079)."""
+    r = _extract(tmp_path, {
+        "Order.kt": (
+            '@Ann(type = String::class)\n'
+            'class Order\n'
+        ),
+    })
+    targets = {e["target"] for e in r["edges"]
+               if e["relation"] == "references" and e.get("context") == "attribute"}
+    assert "ann" in targets, f"annotation itself should still be extracted, got {targets}"
+    assert "string" not in targets, f"builtin String::class should emit no edge, got {targets}"
