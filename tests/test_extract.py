@@ -1187,6 +1187,53 @@ def test_extract_js_arbitrary_member_assignment_not_captured(tmp_path):
     assert ".whatever()" not in labels
 
 
+
+def test_extract_js_exported_object_member_assignment_and_calls(tmp_path):
+    """#3778: Member functions assigned to exported objects (like Express res.format = fn)
+    are captured as methods and their call expressions resolved."""
+    from graphify.extract import extract
+    utils = tmp_path / "utils.js"
+    utils.write_text(
+        "exports.normalizeType = function(val) { return val; };\n"
+    )
+    response = tmp_path / "response.js"
+    response.write_text(
+        "var normalizeType = require('./utils').normalizeType;\n"
+        "var res = Object.create(null);\n"
+        "module.exports = res;\n"
+        "res.format = function(obj) {\n"
+        "    return normalizeType(obj);\n"
+        "};\n"
+    )
+    result = extract([utils, response], root=tmp_path)
+    labels = {n["label"] for n in result["nodes"]}
+    assert ".format()" in labels
+    assert "res" in labels
+
+    edges = [(e["source"], e["target"], e["relation"]) for e in result["edges"]]
+    calls = [e for e in edges if e[2] == "calls"]
+    matching_calls = [
+        (s, t) for (s, t, r) in calls
+        if s.endswith("res_format") and t.endswith("normalizetype")
+    ]
+    assert len(matching_calls) == 1
+
+
+def test_extract_js_esm_exported_object_member_assignment(tmp_path):
+    """#3778: ESM exported object declarations (export const app = {}) capture member assignments."""
+    from graphify.extract import extract
+    app = tmp_path / "app.js"
+    app.write_text(
+        "export const app = {};\n"
+        "app.use = function(middleware) {\n"
+        "    return middleware;\n"
+        "};\n"
+    )
+    result = extract([app], root=tmp_path)
+    labels = {n["label"] for n in result["nodes"]}
+    assert ".use()" in labels
+    assert "app" in labels
+
 def test_extract_js_nested_function_declarations(tmp_path):
     """#2653: function declarations nested inside another function emit nodes,
     source contains edges from the enclosing function, and attribute call edges correctly."""

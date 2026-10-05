@@ -2753,6 +2753,75 @@ def _js_scan_member_assignments(
             function_bodies.append((m_nid, m_body))
 
 
+def _js_find_exported_objects(program_node, source: bytes) -> set[str]:
+    """Find names of identifiers exported from a JS module (CJS or ESM)."""
+    if program_node is None or program_node.type != "program":
+        return set()
+    exported = set()
+    for child in program_node.children:
+        if child.type == "export_statement":
+            for c in child.children:
+                if c.type == "identifier":
+                    exported.add(_read_text(c, source))
+                elif c.type == "export_clause":
+                    for sc in c.children:
+                        if sc.type == "export_specifier":
+                            name_node = sc.child_by_field_name("name")
+                            if name_node:
+                                exported.add(_read_text(name_node, source))
+                elif c.type in ("variable_declaration", "lexical_declaration"):
+                    for decl in c.children:
+                        if decl.type == "variable_declarator":
+                            name_node = decl.child_by_field_name("name")
+                            if name_node and name_node.type == "identifier":
+                                exported.add(_read_text(name_node, source))
+        elif child.type in ("variable_declaration", "lexical_declaration"):
+            for decl in child.children:
+                if decl.type != "variable_declarator":
+                    continue
+                name_node = decl.child_by_field_name("name")
+                val_node = decl.child_by_field_name("value")
+                if name_node and name_node.type == "identifier" and val_node:
+                    name_str = _read_text(name_node, source)
+                    curr = val_node
+                    while curr and curr.type == "assignment_expression":
+                        left = curr.child_by_field_name("left")
+                        if left:
+                            left_str = _read_text(left, source)
+                            if left_str in ("module.exports", "exports") or left_str.startswith(("module.exports.", "exports.")):
+                                exported.add(name_str)
+                                break
+                        curr = curr.child_by_field_name("right")
+                    if curr:
+                        val_str = _read_text(curr, source)
+                        if val_str in ("module.exports", "exports"):
+                            exported.add(name_str)
+        elif child.type == "expression_statement":
+            assign = next((c for c in child.children if c.type == "assignment_expression"), None)
+            if assign:
+                left = assign.child_by_field_name("left")
+                right = assign.child_by_field_name("right")
+                if left:
+                    left_str = _read_text(left, source)
+                    if left_str in ("module.exports", "exports") or left_str.startswith(("module.exports.", "exports.")):
+                        curr = right
+                        while curr and curr.type == "assignment_expression":
+                            l = curr.child_by_field_name("left")
+                            if l and l.type == "identifier":
+                                exported.add(_read_text(l, source))
+                            curr = curr.child_by_field_name("right")
+                        if curr and curr.type == "identifier":
+                            exported.add(_read_text(curr, source))
+                        elif curr and curr.type == "object":
+                            for prop in curr.children:
+                                if prop.type == "shorthand_property_identifier":
+                                    exported.add(_read_text(prop, source))
+                                elif prop.type == "pair":
+                                    v = prop.child_by_field_name("value")
+                                    if v and v.type == "identifier":
+                                        exported.add(_read_text(v, source))
+    return exported
+
 def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
                    parent_class_nid: str | None, add_node_fn, add_edge_fn,
@@ -2828,6 +2897,20 @@ def _js_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                             add_node_fn(nid, f".{member_name}()", line)
                             add_edge_fn(owner_nid, nid, "method", line)
                             handled = True
+                        elif kind == "object":
+                            is_exported = False
+                            if node.parent is not None and node.parent.type == "program":
+                                exported_names = _js_find_exported_objects(node.parent, source)
+                                is_exported = owner_name in exported_names
+                            if is_exported:
+                                owner_nid = _make_id(stem, owner_name)
+                                nid = _make_id(owner_nid, member_name)
+                                if owner_nid not in seen_ids:
+                                    add_node_fn(owner_nid, owner_name, line)
+                                    add_edge_fn(file_nid, owner_nid, "contains", line)
+                                add_node_fn(nid, f".{member_name}()", line)
+                                add_edge_fn(owner_nid, nid, "method", line)
+                                handled = True
                         if handled:
                             if callable_def_nids is not None:
                                 callable_def_nids.add(nid)  # CJS/prototype fn is callable
