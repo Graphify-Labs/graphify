@@ -41,6 +41,37 @@ correction. The current failed hosted gates remain open until corrected runs pas
 Targeted Ruff/Pyright pass; fresh whole-project Pyright remains 604 exactly
 matched baseline errors, with none added or removed.
 
+## Facade provenance and diagnostic corrections — 2026-10-05
+
+INC-QML-40 canonicalizes physical source identity before facade containment and
+external fallback, including real declaration/definition provenance. Existing
+external/native rejection and endpoint-key forms remain intact. Policy 19
+refreshes prior native/Qt products at unchanged source/package versions; AST
+schema remains 12. Generic-only older API outputs use an explicit forced rebuild
+when repair is required. The focused compatibility profile passes **65 cases,
+fourteen symlink-capability skips**, one existing Hypothesis warning.
+
+INC-QML-41 guards source-context construction independently of a failed join.
+Every affected source retains the existing failure code; safe complete relative
+labels are at most 160 characters and unsafe/unavailable context is empty.
+The focused profile changes nineteen failures into **22 passes with three
+symlink skips**. Existing failure/membership/update compatibility passes
+**136 cases with ten symlink skips**, one existing Hypothesis warning. Actual
+manual/watch failure retains all four product bytes, repaired retry and repeat;
+the changed helper's measured statement/branch coverage is complete.
+
+The combined frozen candidate's fresh 180-module wheel is byte-identical to
+source and passes unchanged offline isolated QML/core and real near-root Windows
+short-alias smoke. The installed alias, policy-upgrade and diagnostic selection
+passes **33 cases with ten symlink-capability skips**, with all 152 loaded Graphify
+modules originating in the fresh artifact. Three reviewed-wheel tests pass. Artifact digest, source map,
+parser/runtime versions, exact test assignments, overlap and capability limits
+are in [traceability](../../tests/TRACEABILITY.md#final-local-alias-artifact-and-contribution-gates).
+Whole-project typing remains 604 exactly matched baseline errors, with none
+added or removed; this is a failed gate. Current hosted results remain pending.
+The plan review allocates no further reproduced implementation gap beyond
+INC-QML-41; runner outcomes can create another focused correction if needed.
+
 <a name="executed-qml-00-through-qml-03--2026-10-03"></a>
 
 ## Executed INC-QML-00 through INC-QML-03 — 2026-10-03

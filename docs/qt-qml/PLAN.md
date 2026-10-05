@@ -2340,7 +2340,7 @@ diagnostic gap; no further reproduced gap is allocated at this checkpoint.
 
 ## INC-QML-41 — Failure-safe join diagnostics
 
-Status: **Planned correction; direct/manual/watch counterexamples reproduced**.
+Status: **Implemented; local source/installed proof passes, hosted proof pending**.
 
 Acceptance: REQ-QML-012-AC01/AC02 and REQ-QML-020-AC02. Dependency: the existing
 Qt/QML join/publication guards. Owner: `qt_qml_pipeline` diagnostic construction.
@@ -2363,3 +2363,16 @@ normal contained context and alias/outside-root fallback without private paths.
 Exit: ordinary regressions fail before and pass after the correction; source,
 installed and current hosted boundaries retain accurate failure/cleanup evidence.
 Review the plan and allocate further work only for another reproduced gap.
+
+Local evidence: nineteen failing diagnostic cases before the correction become
+22 passes with three symlink-capability exclusions. Existing failure/membership/
+update compatibility passes 136 cases with ten symlink skips. The changed helper's
+seven statements and two measured branches are covered; legacy uncovered paths
+remain unchanged. Complete diagnostics, four prior products, repair and byte-stable
+repeat pass through direct/manual/watch boundaries. Fresh source-identical wheel
+smoke and real Windows near-root alias pass. The installed alias, policy-upgrade
+and diagnostic selection passes 33 cases with ten symlink-capability exclusions;
+all loaded production modules originate in that artifact. The plan review finds no further
+reproduced implementation gap at this checkpoint; INC-QML-42 is unallocated.
+Current hosted execution and the pre-existing whole-project typing failure remain
+open evidence/gate limitations, not passing acceptance.

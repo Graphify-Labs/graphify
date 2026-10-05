@@ -264,7 +264,7 @@ Declaration-to-site `contains` uses `qt_membership_site`; a resolved site's
 `references` uses `qt_project_source` or `qt_resource_membership` with confidence
 `EXTRACTED`. Unresolved status/reason retains the source attempt without a guessed
 endpoint. The helper, original source test, pipeline, lifecycle test and alias
-test measure 198/283/85/267/222 physical lines, each below 300. Initial INC-QML-14
+test measure 198/283/106/267/222 physical lines, each below 300. Initial INC-QML-14
 CLI/watch, retention, consumer and reviewed-artifact evidence is recorded
 separately from INC-QML-39 proof. The API accepts optional `fresh_ast_ids=()` and returns derived nodes/
 edges; starting node/edge-object identities authorize replacement publication
@@ -517,3 +517,21 @@ foreign input controls. `tests/test_qt_alias_policy_upgrade.py` (85 lines) owns
 mixed and C++-only no-change upgrades, real stamp-publication failure, prior
 product retention, repaired retry and repeat. Exact evidence belongs to
 traceability; current hosted acceptance remains pending.
+
+## Failure-safe diagnostic context (INC-QML-41)
+
+`qt_qml_pipeline._diagnostic_source` owns display context only. Guarded physical
+containment precedes lexical `source_path` fallback; complete relative labels
+over 160 characters, controls, Unicode line/paragraph separators and unprovable
+context produce an empty `source_file`, without truncation. The failed join still
+annotates every affected Qt/QML source and grants no target authority.
+`QML_RESOLUTION_FAILED` remains the source-join code; writers retain their existing
+`QML_GRAPH_PRESERVED` stage and product-cohort ownership.
+
+The pipeline is 106 physical lines and
+`tests/test_qt_pipeline_failure_context.py` is 190. Ordinary direct and real
+manual/watch regressions cover persistent OSError/RuntimeError, safe/unavailable
+context, foreign transport, delimiter/ceiling rejection, prior-product bytes,
+repair and repeat. Exact execution/coverage/artifact evidence and remaining
+platform gaps are assigned in traceability. No epoch beyond policy 19/schema 12
+or new diagnostic code is introduced.

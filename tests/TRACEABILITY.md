@@ -264,6 +264,76 @@ are unchanged. Generic-only prior API products require an explicit forced rebuil
 The final 238/85-line test modules remain below 300; the facade's 8,997 lines stay
 within its existing 9,010 ceiling. Current hosted alias/platform proof remains open.
 
+### Failure-safe join diagnostics — INC-QML-41
+
+Diagnostic context no longer rethrows a persistent input identity failure.
+Guarded physical containment and lexical fallback are diagnostic-only; foreign,
+unavailable, overlong, control and Unicode line/paragraph-separator labels use
+an empty `source_file` string. Safe complete relative labels have a 160-character
+ceiling and are never truncated into another apparent identity. Every affected
+Qt/QML source retains the existing failure record; unrelated Python is untouched.
+
+| Acceptance ID | Exact automatically collected assignment | Local evidence and limits |
+| --- | --- | --- |
+| REQ-QML-012-AC01 | `tests/test_qt_pipeline_failure_context.py::test_req_qml012_ac01_all_sources_keep_safe_context_after_join_failure`; `tests/test_qt_pipeline_failure_context.py::test_req_qml012_ac01_real_alias_uses_canonical_or_explicit_unavailable_context`; `tests/test_qt_pipeline_failure_context.py::test_req_qml012_ac01_injected_context_delimiters_are_explicitly_unavailable`; `tests/test_qt_pipeline_failure_context.py::test_req_qml012_ac01_context_ceiling_preserves_or_rejects_complete_relative_label` | Ordinary, OSError and RuntimeError joins annotate every source with exact bounded QML_RESOLUTION_FAILED fields; canonical/real alias and 160/161/control boundaries pass |
+| REQ-QML-012-AC02; REQ-QML-020-AC02 | `tests/test_qt_pipeline_failure_context.py::test_req_qml012_ac02_persistent_failure_retains_products_and_repairs_without_leaking`; `tests/test_qt_pipeline_failure_context.py::test_req_qml020_ac02_foreign_transport_cannot_gain_authority_from_diagnostic_context` | Actual manual/watch QML_GRAPH_PRESERVED outcomes omit backend bodies, retain all four saved products, repair and repeat byte-for-byte; foreign transport/context cannot add authority |
+
+Focused RED: **nineteen failed, three passed, three symlink-capability skips**,
+4.90 seconds. Corrected focused profile: **22 passed, zero failures/errors, three
+capability skips**, 6.11 seconds. Existing failure/membership/update compatibility
+uses the guarded canonical Python 3.12.14 with all 197 locked distributions:
+**136 passed, zero failures/errors, ten symlink skips**, one existing Hypothesis
+warning, 115.19 seconds. These profiles overlap earlier selections and are not
+combined into a full-suite total. The changed helper covers seven of seven
+measured statements and two of two measured branches. Overall pipeline coverage
+is 89%; remaining uncovered collector/index-diagnostic paths are unchanged.
+The original coverage file is preserved; coverage evidence uses isolated storage.
+The production/test owners measure 106/190 lines, within the 300-line ceiling.
+
+### Final local alias artifact and contribution gates
+
+The combined frozen INC-QML-39/40/41 candidate is built from 671 source/test/tool
+Python files with canonical source-map SHA-256
+`795659a2a35b41b71443ad89e07ee739bef0242d67a0d82b0b41fb79f9ac822b`.
+Reviewed wheel SHA-256:
+`f2a759cc6ae5dd11d61a73806baebb867ebe4a1929cf06328b1d0473924a6799`.
+All 180 packaged Python payloads match source bytes; only membership, facade,
+derived policy and pipeline differ from the preceding core-05 wheel. Clean
+constrained extra/core environments use 40/30 compatible distributions from the
+unchanged 197-version source snapshot. Every loaded production module originates
+in that independent installation (128 extra/122 core modules).
+
+Unchanged offline `-I` QML/core smoke and the real Windows near-root temporary
+short-alias native smoke pass from a neutral working directory. Three ordinary
+reviewed-wheel metadata/import/parser-boundary tests also pass, with one existing
+Hypothesis warning. Artifact proof takes 9.32 seconds; Python is 3.12.14,
+tree-sitter 0.25.2, C++ grammar 0.23.4, language-pack 0.11.0 and watchdog 6.0.0.
+Source/dependency and original coverage bytes are preserved. This current artifact
+replaces the failed first alias candidate for its profile; hosted proof remains open.
+
+The same fresh optional artifact executes the three ordinary alias, policy-upgrade
+and failure-context modules through `python -I -X utf8`, importlib-mode pytest and
+an offline process/network guard from a neutral directory: **33 passed, zero
+failures/errors/warnings, ten actual symlink-capability skips**, 10.71 seconds.
+All 152 loaded Graphify modules originate in the artifact; only the test namespace
+is supplied by the source checkout. Its 180 payloads and 40 dependency versions,
+the source's 197 dependencies and original coverage bytes remain unchanged.
+The first harness attempt placed fixtures under the checkout's ignored `.venv`
+and records eight initial-build setup failures. Moving only its owned fixture
+directory to the host temporary area corrects setup without changing production,
+tests or assertions; both attempts are retained. Capability skips do not establish
+Linux/macOS acceptance and these overlapping selections are not added together.
+
+Ruff 0.15.14 passes the whole repository and all eight touched/new Python files;
+all 134 generated skill artifacts match. Actionlint 1.7.12 accepts both corrected
+workflows without suppressions. Document checks resolve every acceptance ID and
+exact test reference. AST-only graph maintenance is navigation, not acceptance.
+Targeted Pyright 1.1.409 on all eight files has 120 existing facade errors, exactly
+shared with immutable `135d50b`; the other seven files have zero diagnostics.
+Whole-project Pyright has **604 errors, zero warnings, 667 files**, exit one,
+20.990 seconds: 604 shared and zero added/removed under identical Python,
+dependencies and configuration. Typing remains a failed baseline gate.
+
 ## Individual acceptance assignments
 
 The [follow-up audit](../docs/qt-qml/FOLLOWUP_AUDIT.md) supplies counterexamples for

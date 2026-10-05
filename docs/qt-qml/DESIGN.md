@@ -1160,14 +1160,14 @@ facade extraction exit remain in force. This correction adds four net lines to
 the existing cached responsibility and does not mix a mechanical extractor port
 or unrelated split into the behavior fix.
 
-The reproduced diagnostic escape is owned by `qt_qml_pipeline`'s existing join
-failure handler. Proposed diagnostic construction must tolerate a persistent
-filesystem-resolution failure independently of the failed semantic join. It
-retains bounded relative source context where available, represents unavailable
-context explicitly, annotates every affected source with the existing failure
+The corrected diagnostic escape is owned by `qt_qml_pipeline`'s existing join
+failure handler. `_diagnostic_source` guards physical identity lookup and falls
+back to existing lexical `source_path` containment. It retains the complete safe
+relative label up to 160 characters; outside/unavailable, overlong, C0/C1/DEL and
+Unicode line/paragraph-separator labels become the empty `source_file` string,
+without truncation. This diagnostic-only fallback annotates every affected source with the existing failure
 code and does not lend lookup/endpoint authority. CLI/watch still reject before
 normal graph-product publication; prior products and recovery retain existing
 cohort ownership. OSError/RuntimeError probes distinguish complete diagnostics
-from the already passing retention/recovery controls. INC-QML-40 has local source
-and installed proof; hosted acceptance remains pending. INC-QML-41 remains planned
-until its production change and ordinary regressions are integrated.
+from the already passing retention/recovery controls. INC-QML-40/41 have local
+source and fresh installed proof; current hosted acceptance remains pending.

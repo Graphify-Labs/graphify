@@ -3,6 +3,24 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from graphify.qml_resolution_types import source_path
+
+
+def _diagnostic_source(path: Path, root: Path) -> str:
+    """Return a bounded relative label without granting source or target authority."""
+    # Match the existing safety display's 160-character bound. Diagnostic
+    # fallback must not retry a failed identity operation without a guard, leak
+    # a foreign root, or truncate a label into a different apparent source.
+    try:
+        relative = source_path({"source_file": str(path.resolve())}, Path(root).resolve())
+    except (OSError, RuntimeError, ValueError):
+        relative = source_path({"source_file": str(path)}, Path(root))
+    if (relative is None or len(relative) > 160
+            or any(ord(char) < 32 or 127 <= ord(char) < 160 or char in "\u2028\u2029"
+                   for char in relative)):
+        return ""
+    return relative
+
 
 def resolve_qt_qml(paths, per_file, all_nodes, all_edges, *, root,
                    context_nodes=(), context_edges=(), import_roots=None):
@@ -68,7 +86,10 @@ def resolve_qt_qml(paths, per_file, all_nodes, all_edges, *, root,
             path = Path(path)
             if path.suffix.lower() not in {".qml", ".js", ".mjs", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".qmltypes", ".cmake", ".pro", ".pri", ".qrc"} and path.name not in {"qmldir", "CMakeLists.txt"}:
                 continue
-            relative = path.resolve().relative_to(root).as_posix()
+            # A join can fail because this same input no longer resolves. Its
+            # diagnostic label is display context only; unavailable context is
+            # explicit and cannot interrupt annotation of the remaining files.
+            relative = _diagnostic_source(path, root)
             result.setdefault("qml_failures", []).append({"code": "QML_RESOLUTION_FAILED", "source_file": relative})
             result.setdefault("diagnostics", []).append({"code": "QML_RESOLUTION_FAILED", "severity": "error",
                 "owner": "qt_qml_resolution", "source_file": relative, "message": "Qt/QML project join failed",

@@ -726,7 +726,7 @@ retains prior products and a repaired retry completes the upgrade. Generic-only
 older API outputs use an explicit forced rebuild when repair is required rather
 than invalidating every language's syntax cache.
 
-INC-QML-41 targets independently bounded join-failure diagnostic construction. A failed
+INC-QML-41 independently bounds join-failure diagnostic construction. A failed
 filesystem context lookup cannot change a rejected join into a raw backend error
 or stop later failure annotations. Safe relative context is informational;
 unavailable context grants no source or endpoint authority. Existing failure

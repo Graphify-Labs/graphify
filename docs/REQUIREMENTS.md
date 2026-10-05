@@ -20,14 +20,16 @@ INC-QML-11, INC-QML-15 and INC-QML-08a/b/c are implemented and locally complete 
 the documented Windows x64/Python 3.12 profile. Bounded inherited signals, exact
 constructor identity, qmake paths, C++ header admission, declared providers and
 child-service subscriptions have source and reviewed installed-wheel evidence.
-INC-QML-28–38 correct the additional reproduced producer, consumer, transport and
-publication failures. AST cache schema 12 and Qt policy 18 govern the final profile.
+INC-QML-28–41 correct the additional reproduced producer, consumer, transport,
+publication, path-identity and diagnostic failures. AST cache schema 12 and Qt
+policy 19 govern the current profile.
 
 All seven REQ-QML-018 criteria have passing local acceptance assignments. The
 requirement is **Implemented; locally verified for the bounded Windows profile**,
-not Verified across the full declared platform matrix. The final source run
-retains 59 pre-existing failures with no new failure identities; full typing also
-retains baseline errors. Unexecuted hosted lanes, native browser/device behavior,
+not Verified across the full declared platform matrix. The earlier adoption
+checkpoint retains 59 pre-existing failures; the later native full-source run
+records 8,818 passes and zero failures. Subsequent alias and diagnostic profiles
+are recorded separately; full typing retains baseline errors. Unexecuted hosted lanes, native browser/device behavior,
 live database delivery and runtime Qt effects remain explicit gaps. See the
 [final adoption evidence](qt-qml/VALIDATION.md#final-adoption-delivery),
 [implementation limits](qt-qml/IMPLEMENTATION.md#final-adoption-delivery),
@@ -277,6 +279,15 @@ Malformed input, missing parser, partial extraction, and failed resolution canno
 
 4 - Oversized/deep/hostile source and metadata fixtures terminate under documented bounds, disclose no credentials or machine-private paths, and execute no analyzed instructions. (`REQ-QML-012-AC04`)
 
+Status: **Implemented bounded profile; current local diagnostic/retention proof
+passes, hosted proof pending**. INC-QML-41 adds persistent-identity failure coverage
+for AC01/AC02: complete failure records and safe context, exact prior-product
+retention, repaired retry and byte-stable repeat. A diagnostic label is at most
+160 characters and excludes controls/line separators; unavailable or unsafe
+context is the empty `source_file` string and grants no lookup authority.
+Exact assignments and capability exclusions are in
+[traceability](../tests/TRACEABILITY.md#failure-safe-join-diagnostics--inc-qml-41).
+
 <a name="qml-013--user-facing-graph-consumers"></a>
 
 ### REQ-QML-013 — User-facing graph consumers
@@ -476,9 +487,10 @@ counts do not establish completion.
 INC-QML-39 adds canonical input-alias acceptance after a reproduced installed
 smoke failure. The frozen broader Qt/QML source profile passes 2,259 cases with
 nine symlink-capability skips. A fresh source-identical artifact passes ordinary
-QML/core smoke but fails a near-root alias through the shared facade; INC-QML-40
-owns that distinct correction. INC-QML-41 owns the reproduced persistent-path
-diagnostic escape. Full installed/hosted acceptance remains open; earlier
+QML/core smoke but initially fails a near-root alias through the shared facade;
+INC-QML-40 corrects that distinct defect. INC-QML-41 corrects the reproduced
+persistent-path diagnostic escape. Fresh ordinary QML/core and actual near-root
+alias smoke now pass with source-identical payloads. Current hosted acceptance remains open; earlier
 canonical-spelling evidence does not close these expanded contracts.
 
 ### REQ-QML-021 — Middle mouse graph navigation

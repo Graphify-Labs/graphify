@@ -147,20 +147,24 @@ are successful view states, not HTML publication failures.
 INC-QML-39 compares supplied input identity inside the canonical root. Valid
 short-path and parent-directory aliases no longer cause a false join failure.
 Foreign/conflicting input identity retains the bounded `QML_METADATA` rejection
-and owning `QML_RESOLUTION_FAILED` publication guard. Persistent path-resolution
-failure is bounded at the membership helper, but the pipeline diagnostic handler
-can resolve it again and expose the backend exception. INC-QML-41 owns that
-reproduced diagnostic gap; complete bounded failure annotation is not yet verified.
+and owning `QML_RESOLUTION_FAILED` publication guard. INC-QML-41 guards diagnostic
+construction against persistent path-resolution failure. Every affected source
+is annotated; raw backend bodies are omitted. The complete safe relative label
+has a 160-character ceiling. Foreign/unavailable, overlong, C0/C1/DEL and Unicode
+line/paragraph-separator context uses an empty `source_file` string, without
+truncation or lookup authority. Guarded canonical context precedes lexical
+contained fallback; neither diagnostic form authorizes source membership.
 Rejected updates preserve prior graph/manifest/root/Qt-state products; restore accessible,
 matching accepted inputs before retrying. Path metadata resolution neither opens
-new source content nor expands the corpus. The membership helper omits raw OS
-exception bodies; INC-QML-41 must preserve that boundary through publication.
+new source content nor expands the corpus. Complete bounded failure annotation,
+existing `QML_GRAPH_PRESERVED` writer outcome and retained products pass locally
+through direct/manual/watch production paths; hosted proof remains pending.
 
 The initial INC-QML-14 profile is locally verified. INC-QML-39 adds accepted
 input-alias coverage; focused/broader source regressions pass. A fresh artifact
-reproduces the separate facade gap assigned to INC-QML-40; complete installed alias
-and current hosted proof remain pending. Current Qt policy 18 and AST schema 12 are unchanged
-by this correction.
+initially reproduces the facade gap corrected by INC-QML-40; fresh installed alias
+smoke now passes. Current hosted proof remains pending. Qt policy 19/schema 12
+provide the INC-QML-40 upgrade; INC-QML-41 adds no further epoch or code.
 `membership_resolution` sites retain the
 source declaration, original span, bounded evidence/candidates and status/reason.
 Missing, duplicate, conditional, generated or out-of-root targets retain ordinary
