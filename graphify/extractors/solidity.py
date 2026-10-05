@@ -291,7 +291,13 @@ def extract_solidity(path: Path) -> dict:
                         value_name = _read_text(value, source)
                         value_id = _make_id(enum_id, value_name)
                         add_node(value_id, value_name, value, kind="enum_value")
-                        add_edge(enum_id, value_id, "contains", value)
+                        # An enum value is a discriminant case, not a declared
+                        # field, so it gets `case_of` like every other language
+                        # with enums (Java #1719, C#, Swift, Rust, VB.NET). The
+                        # relation also matters to resolution: `case_of` targets
+                        # are excluded from constructor binding, so an enum value
+                        # named like a type can no longer be mistaken for one.
+                        add_edge(enum_id, value_id, "case_of", value)
                 continue
 
             simple_kinds = {
