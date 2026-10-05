@@ -1227,6 +1227,7 @@ def _check_shrink(
     had_explicit_deletions: bool = False,
     rebuilt_sources: "set[str] | None" = None,
     failed_sources: "set[str] | None" = None,
+    deleted_sources: "set[str] | None" = None,
 ) -> bool:
     """Return True (ok to proceed) or False (shrink refused).
 
@@ -1248,6 +1249,12 @@ def _check_shrink(
     ``--force`` (#1116 left stale nodes write-blocked even though build dropped them).
     Files in ``failed_sources`` never account for lost nodes: extraction did not
     complete, so their disappearance is the silent shrink this guard protects.
+
+    A larger total is not enough when a saved semantic id is gone (#2229).
+    ``deleted_sources`` is the files the user removed. A semantic node on one of
+    those files may go. A semantic node on a file that is still present may not.
+    The rebuilt set is not that list: an update re-extracts code and must not
+    treat a rationale node on that file as a deleted symbol.
     """
     if force or not existing_data:
         return True
@@ -1263,6 +1270,26 @@ def _check_shrink(
         return True
     existing_nodes = existing_data.get("nodes", [])
     new_nodes = new_data.get("nodes", [])
+    from graphify.build import _lost_saved_semantic_nodes
+    missing = _lost_saved_semantic_nodes(existing_nodes, new_nodes, deleted_sources)
+    if missing:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+        ids = ", ".join(str(node.get("id")) for node in missing)
+        print(
+            "[graphify] WARNING: Refusing to overwrite — saved semantic "
+            f"node(s) are missing from the new graph: {ids}.",
+            file=sys.stderr,
+        )
+        if len(new_nodes) < len(existing_nodes):
+            print(
+                f"[graphify] WARNING: new graph has {len(new_nodes)} nodes but existing "
+                f"graph.json has {len(existing_nodes)}. Refusing to overwrite — you may be "
+                f"missing chunk files from a previous session. "
+                f"Pass --force to override.",
+                file=sys.stderr,
+            )
+        return False
     if len(new_nodes) >= len(existing_nodes):
         return True
     if rebuilt_sources is not None:
@@ -2004,6 +2031,7 @@ def _rebuild_code(
                     had_explicit_deletions=bool(deleted_paths),
                     rebuilt_sources=rebuilt_sources,
                     failed_sources=failed_sources,
+                    deleted_sources=deleted_paths,
                 ):
                     return False
                 from graphify.export import backup_if_protected as _backup
@@ -2219,6 +2247,7 @@ def _rebuild_code(
                 had_explicit_deletions=bool(deleted_paths),
                 rebuilt_sources=rebuilt_sources,
                 failed_sources=failed_sources,
+                deleted_sources=deleted_paths,
             ):
                 return False
             from graphify.exporters.html import _HTML_STALE_MARKER
