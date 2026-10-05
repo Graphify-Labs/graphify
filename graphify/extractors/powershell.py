@@ -150,7 +150,13 @@ def extract_powershell(path: Path) -> dict:
                     m_line = member.start_point[0] + 1
                     member_nid = _make_id(enum_nid, member_name)
                     add_node(member_nid, member_name, m_line)
-                    add_edge(enum_nid, member_nid, "contains", m_line)
+                    # An enum member is a discriminant case, not a declared
+                    # field, so it gets `case_of` like every other language with
+                    # enums (Java #1719, C#, Swift, Rust, VB.NET). The relation
+                    # also matters to resolution: `case_of` targets are excluded
+                    # from constructor binding, so an enum member named like a
+                    # type can no longer be mistaken for one.
+                    add_edge(enum_nid, member_nid, "case_of", m_line)
             return
 
         if t == "class_statement":

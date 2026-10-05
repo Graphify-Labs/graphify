@@ -2699,17 +2699,42 @@ def test_powershell_enum_is_extracted_and_reference_resolves(tmp_path):
     color = next((n for n in r["nodes"] if n["label"] == "Color"), None)
     assert color is not None, "enum definition dropped"
     assert color["source_file"] != "", "enum must be a real sourced definition, not a phantom stub"
-    # members are captured
-    contained = {
+    # members are captured, hanging off the enum via case_of (not contains)
+    cases = {
         n["label"] for n in r["nodes"]
         for e in r["edges"]
-        if e["relation"] == "contains" and e["source"] == color["id"] and e["target"] == n["id"]
+        if e["relation"] == "case_of" and e["source"] == color["id"] and e["target"] == n["id"]
     }
-    assert {"Red", "Green", "Blue"} <= contained, f"enum members missing: {contained}"
+    assert {"Red", "Green", "Blue"} <= cases, f"enum members missing: {cases}"
     # the field type reference resolves to the real enum node
     ref_targets = {e["target"] for e in r["edges"]
                    if e["relation"] == "references" and e.get("context") == "field"}
     assert color["id"] in ref_targets, "[Color] field reference did not resolve to the enum"
+
+
+def test_powershell_enum_members_emit_case_of_not_contains(tmp_path):
+    """A PowerShell enum member is a discriminant case, so it must get a
+    `case_of` edge like every other language with enums (Java #1719, C#, Swift,
+    Rust, VB.NET), not the `contains` edge used for real class fields.
+    PowerShell was routing enum members through the same `contains` path as a
+    class property. The relation also matters to resolution: `case_of` targets
+    are excluded from constructor binding, so an enum member named like a type
+    can no longer be mistaken for one.
+    """
+    f = tmp_path / "status.ps1"
+    f.write_text("enum Status {\n    Active\n    Paused\n    Closed\n}\n")
+    r = extract_powershell(f)
+    case_of = _edge_labels(r, "case_of")
+    contains = _edge_labels(r, "contains")
+    # Each enum member hangs off its enum via case_of, not contains.
+    assert ("Status", "Active") in case_of
+    assert ("Status", "Paused") in case_of
+    assert ("Status", "Closed") in case_of
+    assert ("Status", "Active") not in contains
+    # Containment itself (the file owning the enum type) still uses `contains`;
+    # only the member-to-enum relation changed.
+    assert ("status.ps1", "Status") in contains
+    assert ("status.ps1", "Status") not in case_of
 
 
 def test_powershell_property_field_type_context():
