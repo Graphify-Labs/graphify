@@ -264,21 +264,28 @@ def test_inc25_partial_setup_cleanup_fault_retains_safe_recovery_evidence(tmp_pa
     """Failed scaffold cleanup reports its own safe code and keeps accepted bytes."""
     before = seed(tmp_path)
     error = PermissionError(13, "synthetic-sensitive-location", str(tmp_path / "private-fixture"))
-    copy, unlink = shutil.copy2, os.unlink
+    copy, unlink = shutil.copy2, Path.unlink
+    rejected_cleanup = []
 
     def reject_copy(source, target, *args, **kwargs):
         if Path(target).parent.name == "old" and Path(target).name == "manifest.json":
             raise error
         return copy(source, target, *args, **kwargs)
 
+    # Patch the owning Path method: Python 3.10 caches its os.unlink accessor.
+    # Witness only this transaction's recovery copy, preserving all others.
     def reject_cleanup(path, *args, **kwargs):
-        if Path(path).parent.name == "old" and Path(path).name == "graph.json":
+        target = Path(path)
+        if (target.parent.name == "old" and target.name == "graph.json"
+                and target.parent.parent.name.startswith(".gfy-publish-")
+                and target.parent.parent.parent == tmp_path):
+            rejected_cleanup.append(target)
             raise error
         return unlink(path, *args, **kwargs)
 
     with monkeypatch.context() as failure:
         failure.setattr(shutil, "copy2", reject_copy)
-        failure.setattr(os, "unlink", reject_cleanup)
+        failure.setattr(Path, "unlink", reject_cleanup)
         with pytest.raises(OSError, match="GRAPH_PUBLICATION_CLEANUP") as rejected:
             ProductPublication(tmp_path, NAMES)
     assert "synthetic-sensitive-location" not in str(rejected.value)
@@ -286,3 +293,5 @@ def test_inc25_partial_setup_cleanup_fault_retains_safe_recovery_evidence(tmp_pa
     assert contents(tmp_path) == before
     retained = list(tmp_path.glob(".gfy-publish-*"))
     assert len(retained) == 1 and (retained[0] / "old/graph.json").read_bytes() == before["graph.json"]
+    assert rejected_cleanup and set(rejected_cleanup) == {retained[0] / "old/graph.json"}
+    assert rejected.value.__cause__ is error

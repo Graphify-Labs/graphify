@@ -452,6 +452,47 @@ reports nine unique package/advisory identities across three packages. Their
 baseline origin is not assessed; this is not clean security acceptance. Local
 Pyright still fails with 604 exact baseline errors and zero added/removed errors.
 
+### Partial-setup cleanup fixture portability — INC-QML-48
+
+Acceptance: REQ-QML-012-AC02 and REQ-QML-018-AC06. Ordinary collected regression:
+`tests/test_publication.py::test_inc25_partial_setup_cleanup_fault_retains_safe_recovery_evidence`.
+The actual hosted Python 3.10 case fails before correction; native Python 3.10.21
+reproduces that failure against unchanged production/test bytes, while native
+Python 3.12.14 passes. Runtime inspection confirms the cached accessor bypass.
+
+The corrected scenario patches production's actual `Path.unlink` entry point,
+delegates real removal outside the exact rejected owned recovery target, and
+requires that target's observed fault. Existing `GRAPH_PUBLICATION_CLEANUP`, public
+message redaction, four accepted-product bytes and durable old-graph snapshot
+assertions remain intact. Production publication and diagnostics do not change;
+no resolver/schema/cache evidence is invalidated by this fixture correction.
+Corrected ordinary native execution uses:
+
+```text
+PYTHON -X utf8 -m pytest tests/test_publication.py tests/test_qt_product_publication.py tests/test_qt_readonly_publication.py tests/test_qt_publication_stub_origin.py -q -ra --tb=short -p no:cacheprovider --junitxml=REPORT.xml
+```
+
+Python 3.10.21/3.12.14/3.13.15/3.14.7 each pass **82 of 83 collected cases**, with
+one explicit actual file-symlink capability skip and zero failures/errors. Each
+includes all 32 publication cases and 51 adjacent Qt publication controls; the
+corrected cleanup case individually passes without a skip. Source production
+origin is verified. Dependency inventories (43/197/40/40 respectively), production
+and selected test bytes, original coverage and checkpoint HEAD remain unchanged
+through the run. A separate byte-exact `f699b0f` fixture replay reproduces the old
+3.10 failure against the same production boundary. Distinct retained red/fixed-stage
+logs bind each run to its actual test bytes.
+
+The final test has 297 physical lines and retains all four original assertion
+ASTs, adding exact owned-target and exception-cause checks. Targeted Ruff 0.15.14
+and Pyright 1.1.409 report zero diagnostics. Only this test file changes Python
+bytes from the prior exact 604-error baseline comparison; its baseline/current
+diagnostic sets are empty. Whole-project typing remains a failed baseline gate.
+Document checks resolve all 99 criteria and exact references; AST-only graph
+refresh completes. Production, dependency/wheel, error-catalog and architecture
+contracts are unchanged, so no new artifact payload or schema is introduced.
+Corrected four-lane hosted execution and retained-report transport remain pending
+for the next normal PR event; local counts and skips cannot establish those passes.
+
 ### Manual discovery and native fixture contracts — INC-QML-46/47
 
 The `38bf8cc` hosted Linux older-policy cases fail because the fixture omits

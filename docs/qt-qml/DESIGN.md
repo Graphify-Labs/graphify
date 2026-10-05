@@ -912,6 +912,14 @@ independent. The Qt state writer receives a stage directory; its candidate is
 accepted only with the cohort. Successful cleanup failure warns without reporting
 the coherent accepted update as failed. Unsuccessful rollback retains snapshots.
 
+Partial-setup cleanup regression coverage injects failure through `Path.unlink`,
+the actual production boundary, and delegates real removal for unrelated owned
+copies. Python 3.10 caches the underlying `os.unlink` accessor, so patching only
+the later module function does not exercise that cleanup failure. INC-QML-48
+corrects the test seam and records the rejected owned target while retaining
+diagnostic redaction, unchanged accepted products and durable recovery assertions.
+The transaction implementation and public failure contract remain unchanged.
+
 After complete Qt extraction/reconciliation, `prune_stale_ast_orphans` receives
 fresh identities and reference ownership. Partial/failed extraction cannot prune.
 It preserves source-backed, native/semantic, callable and live edge/hyperedge facts,

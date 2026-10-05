@@ -273,14 +273,16 @@ Malformed input, missing parser, partial extraction, and failed resolution canno
 
 1 - Missing parser, malformed source and a forced extractor/resolver failure produce bounded, stage-specific diagnostics and an explicit incomplete status. Persistent input-identity failure at the Qt/QML resolution boundary cannot escape diagnostic construction or disclose the backend exception body; every affected Qt/QML source receives `QML_RESOLUTION_FAILED`, with safe relative context where available and explicit unavailable context otherwise. Failed physical co-owner selection rejects with `WATCH_SOURCE_IDENTITY_FAILED`; failed native file-spelling admission rejects with `SOURCE_INPUT_IDENTITY_FAILED` before worker/cache work. Both pre-extraction rejections use bounded quoted relative context or an explicit empty field, omit backend bodies and identify repair/retry guidance, without publishing fresh source facts. (`REQ-QML-012-AC01`)
 
-2 - Starting from a valid persisted graph, those failures cannot replace it with a misleading empty/incomplete graph or poison a successful cache entry under existing write protections. Required graph, manifest, analysis-root and Qt-state publication must complete before reporting update success; a failed publication retains prior accepted products and reports failure, with explicit recovery on rollback failure. (`REQ-QML-012-AC02`)
+2 - Starting from a valid persisted graph, those failures cannot replace it with a misleading empty/incomplete graph or poison a successful cache entry under existing write protections. Required graph, manifest, analysis-root and Qt-state publication must complete before reporting update success; a failed publication retains prior accepted products and reports failure, with explicit recovery on rollback failure. A second failure cleaning partial setup reports `GRAPH_PUBLICATION_CLEANUP`, preserves accepted bytes and retained owned recovery copies, and omits private paths/backend bodies from the public message. (`REQ-QML-012-AC02`)
 
 3 - Intentional deletion is distinguished from extraction failure; zero-node/shrink guards, provenance preference and documented destructive-update controls preserve their existing behavior. (`REQ-QML-012-AC03`)
 
 4 - Oversized/deep/hostile source and metadata fixtures terminate under documented bounds, disclose no credentials or machine-private paths, and execute no analyzed instructions. (`REQ-QML-012-AC04`)
 
 Status: **Implemented bounded profile; current local diagnostic/retention proof
-passes, hosted proof pending**. INC-QML-41 adds persistent-identity failure coverage
+passes, hosted proof pending**. INC-QML-48 corrects the Python 3.10 cleanup-fault
+fixture's injection boundary; corrected hosted acceptance remains open.
+INC-QML-41 adds persistent-identity failure coverage
 for AC01/AC02: complete failure records and safe context, exact prior-product
 retention, repaired retry and byte-stable repeat. A diagnostic label is at most
 160 characters and excludes controls/line separators; unavailable or unsafe

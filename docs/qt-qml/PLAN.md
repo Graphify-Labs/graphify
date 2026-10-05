@@ -2600,7 +2600,8 @@ The subsequent hosted native profile passes 836 cases with 21 explicit skips,
 but omits its generated shell-consumer report from the uploaded artifact. The
 shared [INC-CORE-09](../COMPATIBILITY.md#native-consumer-evidence-retention--inc-core-09)
 corrects that evidence publication gap. It changes neither Qt/QML source behavior
-nor the next unallocated Qt increment, INC-QML-48.
+nor Qt increment numbering. The subsequent Python 3.10 fixture correction owns
+INC-QML-48 below.
 
 At source `f699b0f`, all twelve optional Qt/QML lanes and all assigned Linux
 co-owner/remap/discovery/CLI cases pass. Three full Linux suites pass, while
@@ -2608,3 +2609,50 @@ Python 3.10 exposes a separately reproduced cleanup-fault fixture seam. The
 complete [hosted checkpoint](../../tests/TRACEABILITY.md#hosted-source-and-optional-wheel-checkpoint--f699b0f)
 retains source/base/actual checkout, individual outcomes, artifact/source
 identity, service cleanup, exclusions and remaining delivery limits.
+
+## INC-QML-48 — Portable partial-setup cleanup fault injection
+
+Status: **Implemented fixture correction; four-version native profile passes, corrected hosted proof pending**.
+Acceptance: REQ-QML-012-AC02 and REQ-QML-018-AC06. Owner: product-publication test
+maintainer. Dependency: INC-QML-25; hosted discovery follows INC-QML-46/47.
+
+The actual Python 3.10 source job passes 9,007 cases but fails the partial-setup
+cleanup scenario. Its fixture patches `os.unlink`; Python 3.10 `Path.unlink`
+invokes a cached accessor that bypasses that patch. Cleanup therefore succeeds
+and the original snapshot-copy rejection correctly reports
+`GRAPH_PUBLICATION_FAILED`. Python 3.12 reaches the patched function and exercises
+the intended second failure. This is a test injection gap, not evidence that
+production failed to retain an accepted cohort.
+
+Patch the actual `Path.unlink` method used by production, delegating the saved
+method for every unrelated target. Record the injected owned target so the test
+cannot pass merely because any setup error produces a cleanup code. Preserve
+the exact diagnostic, redaction, original-product and durable recovery-copy
+assertions. Production publication, transaction ownership, ordering, errors,
+policy/schema, packaging and dependency contracts remain unchanged. Existing
+architecture/error-catalog ownership therefore needs no new decision or code.
+
+| Acceptance scenario | Executed boundary and required outcome |
+| --- | --- |
+| Existing fixture on Python 3.10 | Reproduce the missing second fault and mismatched code before correction |
+| Partial setup then cleanup rejection | Real snapshot preparation fails; exactly the owned old graph unlink rejects; `GRAPH_PUBLICATION_CLEANUP` preserves all accepted bytes and its recovery copy |
+| Unrelated cleanup and diagnostic safety | Delegate the real method for other targets; no private path/backend body in the public message; existing preparation/rollback/cleanup controls pass |
+| Supported interpreter/platform regression | Ordinary collected publication tests pass on available native Python profiles; next normal four-lane Linux PR evidence includes this exact case without a skip |
+
+Test corrections remain below the 300-line source ceiling. Verify the prior red
+case, corrected native Python 3.10 and 3.12 cases, adjacent production publication
+tests and unchanged source/dependency/coverage identities. Refresh the graph after
+the test edit. Publish together with the prepared INC-CORE-09 correction so one
+normal PR event owns their reviewed revision; prior runs are already terminal.
+Exit only with exact corrected hosted outcomes and review all jobs for another
+reproduced gap. INC-QML-49 remains unallocated.
+
+Local exit review: native Python 3.10.21/3.12.14/3.13.15/3.14.7 each pass 82
+publication cases with one actual file-symlink capability skip and zero failures.
+The corrected ordinary cleanup case passes individually in every profile; the
+byte-exact earlier fixture still fails its 3.10 replay. All original four
+assertions remain, with two owning-fault assertions added. Targeted Ruff/Pyright
+report zero diagnostics; whole-project typing's 604 baseline errors remain.
+Production, dependencies and original coverage bytes are unchanged. Graph refresh,
+requirements/links/references and 297-line test ceiling checks pass. No further
+reproduced local gap appears; corrected hosted proof remains the exit condition.

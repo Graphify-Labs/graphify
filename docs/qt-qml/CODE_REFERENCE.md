@@ -348,6 +348,9 @@ Imported-header targets remain unavailable rather than falling back globally.
 - `publication.py::ProductPublication` owns staging/snapshots/replacement/recovery;
   existing serializers and `watch._rebuild_code` retain semantic/run ownership.
   `qt_analysis_state.commit_qt_analysis` prepares candidate state in that stage.
+  `tests/test_publication.py::test_inc25_partial_setup_cleanup_fault_retains_safe_recovery_evidence`
+  exercises real partial setup and `Path.unlink` cleanup rejection across supported
+  Python versions; INC-QML-48 corrects only its failure-injection seam.
 - `qt_orphan_cleanup.py::prune_stale_ast_orphans` receives explicit complete-refresh
   authority, fresh IDs and graph references after caller-owned reconciliation.
 - `qt_qml_bridge_members.py::QtMemberViews.property_notify` returns an established
