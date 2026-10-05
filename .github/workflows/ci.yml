@@ -401,11 +401,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'The admitted native shell consumer cannot execute' }
           if ((& $proofNode --version) -ne 'v24.19.0') { throw 'The reviewed Node.js test interpreter was not selected' }
           $selection = @(
-            'tests/test_codex_hook_execution.py', 'tests/test_filesystem_profiles.py', 'tests/test_source_input_admission.py', 'tests/test_source_identity_remap_owners.py',
+            'tests/test_filesystem_profiles.py', 'tests/test_source_input_admission.py', 'tests/test_source_identity_remap_owners.py',
             'tests/test_install.py', 'tests/test_install_references.py', 'tests/test_install_roundtrip.py',
             'tests/test_skill_auto_refresh.py', 'tests/test_uninstall_scope.py', 'tests/test_settings_merge.py',
             'tests/test_hooks.py', 'tests/test_skillgen_input_path_injection.py', 'tests/test_shell_portability_helpers.py',
-            'tests/test_html_community_links.py', 'tests/test_html_initial_view.py', 'tests/test_html_middle_pan.py',
             'tests/test_watch.py', 'tests/test_source_alias_provenance.py', 'tests/test_qt_update_discovery_profile.py', 'tests/test_watch_physical_coowners.py', 'tests/test_watch_coowner_admission.py', 'tests/test_non_regular_files.py', 'tests/test_terraform.py',
             'tests/test_terraform_modules.py', 'tests/test_extractors_registry.py::test_terraform_migrated', 'tests/test_ci_windows_tools.py'
             # The merged upstream cache/discovery/consumer contracts also run

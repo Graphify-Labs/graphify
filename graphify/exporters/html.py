@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from graphify.exporters.base import COMMUNITY_COLORS  # noqa: E402,F401
-from graphify.exporters.html_navigation import MIDDLE_PAN_SCRIPT
 from pathlib import Path
 import html as _html
 from graphify.analyze import _node_community_map
@@ -65,8 +64,6 @@ def _html_styles() -> str:
   #legend-controls { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; padding: 4px 0; }
   #legend-controls label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #aaa; user-select: none; }
   #legend-controls label:hover { color: #e0e0e0; }
-  #view-caption { font-size: 11px; color: #aaa; line-height: 1.5; margin-bottom: 10px; }
-  #navigation-help { font-size: 11px; color: #aaa; line-height: 1.5; margin-bottom: 10px; }
   .legend-cb, #select-all-cb { appearance: none; -webkit-appearance: none; width: 14px; height: 14px; border: 1.5px solid #3a3a5e; border-radius: 3px; background: #0f0f1a; cursor: pointer; position: relative; flex-shrink: 0; }
   .legend-cb:checked, #select-all-cb:checked { background: #4E79A7; border-color: #4E79A7; }
   .legend-cb:checked::after, #select-all-cb:checked::after { content: ''; position: absolute; left: 3.5px; top: 1px; width: 4px; height: 7px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
@@ -152,13 +149,8 @@ function esc(s) {{
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }}
 
-// Start with all exported communities; large graphs are already aggregated.
-const knownCommunities = new Set(LEGEND.map(c => c.cid));
-let selectedCommunities = new Set(knownCommunities);
-let showUngrouped = true;
-const legendControls = new Map();
-
-const VIEW_NODES = RAW_NODES.map((n, i) => ({{
+// Build vis datasets
+const nodesDS = new vis.DataSet(RAW_NODES.map((n, i) => ({{
   ...n,
   id: n.id, label: n.label, color: n.color, size: n.size,
   font: n.font, title: n.title,
@@ -173,9 +165,9 @@ const VIEW_NODES = RAW_NODES.map((n, i) => ({{
   member_count: n.member_count,
   qt_qml: n.qt_qml,
   source_location: n.source_location,
-}}));
+}})));
 
-const VIEW_EDGES = RAW_EDGES.map((e, i) => ({{
+const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
   ...e,
   id: i, from: e.from, to: e.to,
   label: '',
@@ -184,21 +176,7 @@ const VIEW_EDGES = RAW_EDGES.map((e, i) => ({{
   width: e.width,
   color: e.color,
   arrows: {{ to: {{ enabled: true, scaleFactor: 0.5 }} }},
-}}));
-
-function visibleRecords() {{
-  const nodes = VIEW_NODES.filter(n => LEGEND.length
-    ? selectedCommunities.has(n.community) || (showUngrouped && !knownCommunities.has(n.community))
-    : showUngrouped);
-  const ids = new Set(nodes.map(n => n.id));
-  return {{ nodes, edges: VIEW_EDGES.filter(e => ids.has(e.from) && ids.has(e.to)) }};
-}}
-
-const initialRecords = visibleRecords();
-const nodesDS = new vis.DataSet(initialRecords.nodes);
-const edgesDS = new vis.DataSet(initialRecords.edges);
-let loadedNodeIds = new Set(initialRecords.nodes.map(n => n.id));
-let loadedEdgeIds = new Set(initialRecords.edges.map(e => e.id));
+}})));
 
 const container = document.getElementById('graph');
 const network = new vis.Network(container, {{ nodes: nodesDS, edges: edgesDS }}, {{
@@ -230,8 +208,6 @@ network.once('stabilizationIterationsDone', () => {{
   network.setOptions({{ physics: {{ enabled: false }} }});
 }});
 
-{MIDDLE_PAN_SCRIPT}
-
 function showInfo(nodeId) {{
   const n = nodesDS.get(nodeId);
   if (!n) return;
@@ -262,40 +238,22 @@ function showInfo(nodeId) {{
     }}
   }} else if (n.member_count !== undefined && n.member_count !== null) {{
     html += `<div class="field">Members: ${{esc(n.member_count)}}</div>`;
-    // Aggregate neighbors omit internal source relationships. Missing source
-    // counts in a caller-supplied meta-graph remain unknown, never zero.
+    // Membership links need source-edge counts; aggregate degree alone cannot
+    // describe internal relationships. Caller-supplied counts may be unknown.
     const internalKnown = Number.isInteger(n.internal_source_edges);
     const externalKnown = Number.isInteger(n.external_source_edges);
     html += `<div class="field">Internal source edges: ${{esc(internalKnown ? n.internal_source_edges : 'unavailable')}}</div>`;
     html += `<div class="field">External source edges: ${{esc(externalKnown ? n.external_source_edges : 'unavailable')}}</div>`;
-    html += `<div class="field">Connected communities: ${{esc(n.connected_communities)}}</div>`;
-    html += '<div class="field">Member-level source details are not expanded in this view.</div>';
-    if (internalKnown && externalKnown && n.external_source_edges === 0) {{
-      const explanation = n.internal_source_edges > 0
-        ? 'This community has internal source relationships and no links to other communities.'
-        : 'No source relationships are represented for this community.';
-      html += `<div class="field">${{esc(explanation)}}</div>`;
-    }}
   }}
-  if (!isMetaNode || n.member_count === undefined || n.member_count === null) {{
-    html += `<div class="field">Degree: ${{n.degree}}</div>`;
-  }}
+  html += `<div class="field">Degree: ${{n.degree}}</div>`;
   if (neighborIds.length) {{
     html += `<div class="field" style="margin-top:8px;color:#aaa;font-size:11px">Neighbors (${{neighborIds.length}})</div><div id="neighbors-list">${{neighborItems}}</div>`;
   }}
   document.getElementById('info-content').innerHTML = html;
 }}
 
-function focusNode(nodeId, scale = 1.4) {{
-  // A search result can belong to a deferred community. Add it before focus.
-  if (!loadedNodeIds.has(nodeId)) {{
-    const node = VIEW_NODES.find(n => n.id === nodeId);
-    if (!node) return;
-    if (knownCommunities.has(node.community)) selectedCommunities.add(node.community);
-    else showUngrouped = true;
-    refreshView();
-  }}
-  network.focus(nodeId, {{ scale, animation: true }});
+function focusNode(nodeId) {{
+  network.focus(nodeId, {{ scale: 1.4, animation: true }});
   network.selectNodes([nodeId]);
   showInfo(nodeId);
 }}
@@ -354,7 +312,9 @@ searchInput.addEventListener('input', () => {{
     el.style.borderLeft = `3px solid ${{n.color.background}}`;
     el.style.paddingLeft = '8px';
     el.onclick = () => {{
-      focusNode(n.id, 1.5);
+      network.focus(n.id, {{ scale: 1.5, animation: true }});
+      network.selectNodes([n.id]);
+      showInfo(n.id);
       searchResults.style.display = 'none';
       searchInput.value = '';
     }};
@@ -366,55 +326,30 @@ document.addEventListener('click', e => {{
     searchResults.style.display = 'none';
 }});
 
+const hiddenCommunities = new Set();
+
 const selectAllCb = document.getElementById('select-all-cb');
 
 function updateSelectAllState() {{
   const total = LEGEND.length;
-  const selected = selectedCommunities.size;
-  // Named groups alone cannot prove full selection when ungrouped nodes are hidden.
-  selectAllCb.checked = loadedNodeIds.size === VIEW_NODES.length &&
-    (loadedNodeIds.size > 0 || showUngrouped);
-  selectAllCb.indeterminate = !selectAllCb.checked && loadedNodeIds.size > 0;
-  legendControls.forEach(({{ item, cb }}, cid) => {{
-    cb.checked = selectedCommunities.has(cid);
-    if (cb.checked) item.classList.remove('dimmed');
-    else item.classList.add('dimmed');
-  }});
-  const caption = document.getElementById('view-caption');
-  if (!loadedNodeIds.size) {{
-    caption.textContent = 'No communities selected. Use Select All or choose a community.';
-  }} else if (!total) {{
-    caption.textContent = `Source graph: ${{loadedNodeIds.size}} nodes; no source communities available.`;
-  }} else {{
-    caption.textContent = `Source communities: ${{selected}} of ${{total}} source communities. Filter or search to focus.`;
-  }}
-}}
-
-function refreshView() {{
-  const next = visibleRecords();
-  const nodeIds = new Set(next.nodes.map(n => n.id));
-  const edgeIds = new Set(next.edges.map(e => e.id));
-  // Remove edges first so no active relationship points at a removed node.
-  edgesDS.remove([...loadedEdgeIds].filter(id => !edgeIds.has(id)));
-  nodesDS.remove([...loadedNodeIds].filter(id => !nodeIds.has(id)));
-  nodesDS.update(next.nodes.filter(n => !loadedNodeIds.has(n.id)));
-  edgesDS.update(next.edges.filter(e => !loadedEdgeIds.has(e.id)));
-  loadedNodeIds = nodeIds;
-  loadedEdgeIds = edgeIds;
-  document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>';
-  hoveredNodeId = null;
-  updateSelectAllState();
-  network.setOptions({{ physics: {{ enabled: nodeIds.size > 0 }} }});
-  if (nodeIds.size) {{
-    network.once('stabilizationIterationsDone', () => network.setOptions({{ physics: {{ enabled: false }} }}));
-    network.stabilize(100);
-  }}
+  const hidden = hiddenCommunities.size;
+  selectAllCb.checked = hidden === 0;
+  selectAllCb.indeterminate = hidden > 0 && hidden < total;
 }}
 
 function toggleAllCommunities(hide) {{
-  selectedCommunities = new Set(hide ? [] : LEGEND.map(c => c.cid));
-  showUngrouped = !hide;
-  refreshView();
+  document.querySelectorAll('.legend-item').forEach(item => {{
+    hide ? item.classList.add('dimmed') : item.classList.remove('dimmed');
+  }});
+  document.querySelectorAll('.legend-cb').forEach(cb => {{
+    cb.checked = !hide;
+  }});
+  LEGEND.forEach(c => {{
+    if (hide) hiddenCommunities.add(c.cid); else hiddenCommunities.delete(c.cid);
+  }});
+  const updates = RAW_NODES.map(n => ({{ id: n.id, hidden: hide }}));
+  nodesDS.update(updates);
+  updateSelectAllState();
 }}
 
 const legendEl = document.getElementById('legend');
@@ -424,21 +359,26 @@ LEGEND.forEach(c => {{
   const cb = document.createElement('input');
   cb.type = 'checkbox';
   cb.className = 'legend-cb';
-  cb.checked = selectedCommunities.has(c.cid);
+  cb.checked = true;
   cb.addEventListener('change', (e) => {{
     e.stopPropagation();
     if (cb.checked) {{
-      selectedCommunities.add(c.cid);
+      hiddenCommunities.delete(c.cid);
+      item.classList.remove('dimmed');
     }} else {{
-      selectedCommunities.delete(c.cid);
+      hiddenCommunities.add(c.cid);
+      item.classList.add('dimmed');
     }}
-    refreshView();
+    const updates = RAW_NODES
+      .filter(n => n.community === c.cid)
+      .map(n => ({{ id: n.id, hidden: !cb.checked }}));
+    nodesDS.update(updates);
+    updateSelectAllState();
   }});
   item.innerHTML = `<div class="legend-dot" style="background:${{c.color}}"></div>
     <span class="legend-label">${{c.label}}</span>
     <span class="legend-count">${{c.count}}</span>`;
   item.prepend(cb);
-  legendControls.set(c.cid, {{ item, cb }});
   item.onclick = (e) => {{
     if (e.target === cb) return;
     cb.checked = !cb.checked;
@@ -446,7 +386,6 @@ LEGEND.forEach(c => {{
   }};
   legendEl.appendChild(item);
 }});
-updateSelectAllState();
 </script>"""
 
 
@@ -518,13 +457,6 @@ def to_html(
     view would contain fewer than two communities and is intentionally skipped.
     """
     limit = node_limit if node_limit is not None else _viz_node_limit()
-    # HTML grouping is derived presentation state. Recover an absent/incomplete
-    # large-graph partition and missing labels without rewriting source artifacts.
-    from graphify.exporters.html_communities import prepare_html_communities
-    communities, community_labels = prepare_html_communities(
-        G, communities, community_labels,
-        recover_missing=node_limit is not None and G.number_of_nodes() > limit,
-    )
     if G.number_of_nodes() > limit:
         if node_limit is not None:
             # Build aggregated community meta-graph
@@ -540,10 +472,9 @@ def to_html(
                 cu, cv = node_to_community.get(u), node_to_community.get(v)
                 if cu is None or cv is None:
                     continue
-                # Each canonical source edge counts once, including a self-loop
-                # or each parallel/directed edge represented by G. Boundary
-                # edges belong to both incident communities; no self-link is
-                # added to the aggregate merely to display internal connectivity.
+                # Each source edge counts once, including parallel/directed
+                # edges and loops. Boundary edges belong to both communities;
+                # internal membership never invents an aggregate self-link.
                 if cu == cv:
                     internal_counts[cu] += 1
                 else:
@@ -662,9 +593,8 @@ def to_html(
         if member_counts:
             node["member_count"] = member_counts.get(cid, len(communities.get(cid, [])))
             if not data.get("file_type") and not data.get("source_file"):
-                # This count names distinct other communities even when a
-                # supplied meta-graph has loops or reciprocal directed edges.
-                node["connected_communities"] = len(set(nx.all_neighbors(G, node_id)) - {node_id})
+                # Only nonnegative integer source counts may become inspector
+                # facts; booleans, malformed strings and missing data stay unknown.
                 for field in ("internal_source_edges", "external_source_edges"):
                     value = data.get(field)
                     if type(value) is int and value >= 0:
@@ -774,8 +704,6 @@ def to_html(
     <div id="legend-controls">
       <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
     </div>
-    <div id="view-caption">Source communities: all available groups. Filter or search to focus.</div>
-    <div id="navigation-help">Hold the middle mouse button and drag to pan. Scroll the wheel to zoom.</div>
     <div id="legend"></div>
   </div>
   <div id="stats">{stats}</div>

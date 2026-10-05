@@ -1,9 +1,108 @@
 # Acceptance traceability
 
+## Upstream submission scope
+
+The [scoped upstream contribution](../docs/qt-qml/UPSTREAM_CONTRIBUTION.md) retains bounded Qt/QML analysis
+and its source, incremental, publication and consumer contracts. REQ-QML-019
+and REQ-QML-021, D12/D16, and the generic viewer portions of INC-QML-09/13/16
+are deferred for this submission. Native Codex REQ-CORE-001-AC01/AC05 and the
+broad fork repository policy are also deferred; the baseline installer and
+repository policy apply. Constructor and source-containment work in INC-QML-13
+remains in scope.
+
+Aggregate source-edge counts also remain as a REQ-QML-020-AC01 dependency,
+tested by `tests/test_qt_project_membership_updates.py::test_req_qml020_ac01_unused_packaged_component_survives_aggregate_export`
+through the existing upstream inspector harness. That partial source-count
+projection does not complete deferred REQ-QML-019-AC02. Startup selection is not
+part of the retained membership criterion.
+
+### Scoped local preparation — INC-QML-53
+
+The first 135-module Qt/QML source selection passes 2,379 tests with 38 skips
+and fails the aggregate membership case because its generic inspector helper
+was removed. The skips are three missing wheel-input cases, nineteen unavailable
+native symlink-capability cases and sixteen POSIX link/parent semantics cases.
+The correction preserves the two external links, degree, positive internal count
+and total source-edge accounting. The new parametrized
+`tests/test_qt_project_membership_updates.py::test_req_qml020_ac01_aggregate_counts_keep_source_edges_and_reject_invalid_fields`
+also checks parallel/directed/self-loop conservation, unchanged input graph and
+rejection of boolean, negative and injected string counts through production HTML.
+All four aggregate cases fail before the correction.
+
+Executed corrected command:
+`python -X utf8 -m pytest tests/test_qt_project_membership_updates.py tests/test_qt_graph_html_payload.py tests/test_qt_html_consumers.py tests/test_export.py tests/test_cli_export.py -q --tb=short -p no:cacheprovider -rs`:
+**145 passed, zero failures/skips**. Focused Ruff and explicit-interpreter Pyright
+pass. HTML is 717 lines within its 760-line scope ceiling; membership tests are
+299 lines within 300. Whole-project typing remains the recorded baseline gap.
+
+`python -X utf8 -m pytest tests/test_install.py tests/test_install_references.py tests/test_install_roundtrip.py tests/test_skill_auto_refresh.py tests/test_uninstall_scope.py tests/test_settings_merge.py -q --tb=short -p no:cacheprovider -rs`:
+**265 passed, five skipped**. Four require unavailable native symlink capability;
+one progressive fixture profile has no applicable shipped assistant.
+
+`uv build --wheel --offline` with a fresh setuptools build base produces the
+scoped wheel; all 182 packaged Python files match source bytes and deferred
+hook/community/navigation modules are absent. The wheel SHA-256 is
+`c9b413aac68289a2055baf1d70f7efda3fb1b8a4554ad7bb81b0ef6c94e90439`.
+With that wheel as `GRAPHIFY_QML_TEST_WHEEL`,
+`python -X utf8 -m pytest tests/test_qml_platform_matrix.py tests/test_qml_wheel_artifact.py tests/test_wheel_packaging.py -q --tb=short -p no:cacheprovider -rs`:
+**138 passed, zero failures/skips**, separately clearing the three artifact-input
+exclusions. Other source skips remain gaps on this local profile. AST-only graph
+refresh completes with 23,096 nodes/53,444 edges and no provider calls. These
+local results do not replace final-head normal hosted validation.
+
+Two fresh offline environments install the attested wheel with `[qml,watch]`
+and with core dependencies only. Isolated `python -I tests/qml_installed_smoke.py`
+and its `--core-only` profile pass from a neutral working directory on Windows
+Python 3.12.14/tree-sitter 0.25.2. Actual parser absence, safe unrelated extraction,
+native emission and optional native/module joins execute through installed
+production entry points. The smoke's audit guard rejects network/process use
+during analysis. Full `python -m pyright --pythonpath <environment-python>`
+still fails with 605 errors/zero warnings; focused touched-code typing passes.
+Comparing file/severity/rule/message multiplicities with the recorded integration
+checkpoint finds zero added or removed diagnostic signatures. Source-line shifts
+are excluded from that comparison; unchanged errors remain failures.
+
+The complete native command shown above finishes **9,202 passed, 45 failed,
+122 skipped**. JUnit identifies all 45 failures as inaccessible WindowsApps
+Bash alias / missing `sh` setup in `tests/test_hooks.py` (13),
+`tests/test_shell_portability_helpers.py` (6) and
+`tests/test_skillgen_input_path_injection.py` (26). No Qt/QML assertion fails:
+the 137 Qt/QML modules report **2,392 passed, zero failed, 38 skipped**.
+The full run also excludes sixteen shell-dependent cases in hooks and
+`tests/test_hook_chain_survives_skip.py`. The initial incomplete-bundle retry
+reports 157 passed, seven failed and eight skipped; failures require adjacent
+DLLs or the absent path mapper. The admission owner configures complete portable
+Git for Windows 2.56.0 in test-process PATH and reruns four unchanged modules.
+The [official release](https://github.com/git-for-windows/git/releases/tag/v2.56.0.windows.1)
+archive has verified SHA-256
+`eceb5e061aa90df2f69ddd3e90f0030e1b8037a7829934bc40e4be1caa1accc1`.
+The initial full failure remains evidence; a focused corrected result does not
+claim a repeated whole-suite pass. Native symlink/POSIX, compiler, service and
+other documented profile exclusions remain separate.
+
+Corrected command:
+`python -X utf8 -m pytest tests/test_hooks.py tests/test_shell_portability_helpers.py tests/test_skillgen_input_path_injection.py tests/test_hook_chain_survives_skip.py -q --tb=short -p no:cacheprovider -rs`:
+**171 passed, zero failed, eight skipped** under the CI-compatible isolated PATH,
+exact Python shim and offline installer guards. Python 3.12.14, Bash/sh 5.3.15,
+cygpath 3.6.10, Git 2.56.0.windows.1 and Node 24.19.0 execute actual production
+consumers. The eight exclusions are two unavailable symlink cases, one POSIX
+executable-shim case and five explicit native-Windows hook exclusions. Failed
+whole-suite and incomplete-bundle receipts remain separate from this result;
+no repeated whole-suite pass is claimed. The original local coverage file is
+unchanged and tooling stays outside published sources.
+
+The [complete frozen fork](https://github.com/SlinkyRamey/graphify/commit/82a4f296446b4cc219ffecfe3345a037e9c362e4)
+and its recorded 8b6c9d2 source/runner evidence retain their own revision scope.
+Deferred feature sections and their exact tests below are historical evidence,
+not implemented or verified contracts of this narrower contribution. A changed
+contribution head requires fresh applicable checks; prior totals, skips and
+hosted results do not establish those checks.
+
 Current criterion IDs use `REQ-QML-`; completion increments use `INC-QML-`.
 [Legacy aliases](../docs/qt-qml/IDENTIFIERS.md) retain earlier evidence identity.
-Recorded test identities retain their historical evidence; current renamed viewer
-tests are mapped to their actual functions below. Source annotations keep their IDs.
+Recorded test identities retain their historical evidence; deferred viewer and
+native-hook tests are mapped to their frozen owners below. Source annotations
+keep their IDs.
 
 The current catalog contains twenty-one requirements and eighty-five stable
 acceptance criteria. REQ-QML-018 has seven criteria, including the separate AC07
@@ -12,7 +111,7 @@ INC-QML-00–07 hosted proof describes its original seventeen-requirement,
 sixty-eight-criterion profile. Subsequent evidence does not retroactively broaden
 those historical results.
 
-INC-QML-11/15/08a/b/c and INC-QML-28–38 have current local source, update, consumer
+INC-QML-11/15/08a/b/c and INC-QML-28–38 have recorded local source, update, consumer
 and reviewed installed-wheel evidence. All seven REQ-QML-018 criteria are locally
 verified for the bounded Windows x64/Python 3.12 profile. Individual assignments
 and the [final local matrix](#final-adoption-delivery) distinguish passing cases
@@ -31,16 +130,36 @@ source profiles pass all 76 Node and seven preprocessor/wheel cases previously
 skipped for setup. Later real Linux/service and native checks pass at the
 [verified integrated checkpoint](#verified-integrated-hosted-checkpoint--8b6c9d2). The
 59-failure run above is historical; its failure identities are cleared in the
-current applicable Windows profile. Full typing still fails on existing errors.
+recorded applicable Windows profile. Full typing still fails on existing errors.
 
 The chronological records below preserve checkpoint evidence. Their older pending
-statements, epochs and test totals describe the recorded revisions. Current status
-and proof are in the [verified integrated checkpoint](#verified-integrated-hosted-checkpoint--8b6c9d2),
+statements, epochs and test totals describe the recorded revisions. Complete-fork
+status and proof are in the [verified integrated checkpoint](#verified-integrated-hosted-checkpoint--8b6c9d2),
 with earlier adoption evidence retained in
 [validation](../docs/qt-qml/VALIDATION.md#final-adoption-delivery).
 See [implementation limits](../docs/qt-qml/IMPLEMENTATION.md#final-adoption-delivery),
 [export contracts](../docs/qt-qml/EXPORT_MATRIX.md) and
 [platform matrix](../docs/qt-qml/PLATFORM_MATRIX.md).
+
+## Deferred criterion assignments for upstream submission
+
+These assignments preserve the catalog and recorded evidence without claiming
+that excluded features pass on the narrowed contribution. REQ-QML-001–018/020
+and retained shared compatibility criteria keep their behavioral acceptance
+unchanged and require evidence applicable to the submitted revision. The retained
+Qt aggregate-omission regression does not verify the deferred generic viewer.
+
+| Criterion | Current contribution assignment | Evidence / follow-up owner |
+| --- | --- | --- |
+| REQ-QML-019-AC01 | Deferred for this upstream submission; not a current acceptance gate | Separate generic-viewer contribution; frozen complete-fork evidence below |
+| REQ-QML-019-AC02 | Deferred for this upstream submission; not a current acceptance gate | Separate generic-viewer contribution; frozen complete-fork evidence below |
+| REQ-QML-019-AC03 | Deferred for this upstream submission; not a current acceptance gate | Separate generic-viewer contribution; frozen complete-fork evidence below |
+| REQ-QML-019-AC04 | Deferred for this upstream submission; not a current acceptance gate | Separate generic-viewer contribution; frozen complete-fork evidence below |
+| REQ-QML-021-AC01 | Deferred for this upstream submission; not a current acceptance gate | Separate native-navigation contribution; frozen complete-fork evidence below |
+| REQ-QML-021-AC02 | Deferred for this upstream submission; not a current acceptance gate | Separate native-navigation contribution; frozen complete-fork evidence below |
+| REQ-QML-021-AC03 | Deferred for this upstream submission; not a current acceptance gate | Separate native-navigation contribution; frozen complete-fork evidence below |
+| REQ-CORE-001-AC01 | Deferred for this upstream submission; not a current acceptance gate | Separate native Codex installer contribution; frozen complete-fork evidence below |
+| REQ-CORE-001-AC05 | Deferred for this upstream submission; not a current acceptance gate | Separate native Codex installer contribution; frozen complete-fork evidence below |
 
 ## Shared compatibility verification
 
@@ -52,11 +171,11 @@ remaining system procedure, ownership, size ceilings and consumer limitations.
 
 | Acceptance ID | Exact automated assignment | Checkpoint evidence and gaps |
 | --- | --- | --- |
-| REQ-CORE-001-AC01 | `tests/test_codex_hook_execution.py::test_req_core001_ac01_codex_hook_dispatches_spaced_native_launcher`; `tests/test_install.py::test_codex_hook_command_is_a_real_cli_subcommand` | Exact Cmd and Windows PowerShell 5.1 argument transports pass with a real selected launcher, failing PATH decoy and unsafe control; full-source and independent installed-artifact execution pass in the current native evidence below |
+| REQ-CORE-001-AC01 | [frozen test_codex_hook_execution owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_codex_hook_execution.py) (`test_req_core001_ac01_codex_hook_dispatches_spaced_native_launcher`); `tests/test_install.py::test_codex_hook_command_is_a_real_cli_subcommand` | Historical complete-fork evidence; deferred for this submission. Exact Cmd and Windows PowerShell 5.1 argument transports pass with a real selected launcher, failing PATH decoy and unsafe control; full-source and independent installed-artifact execution pass in the current native evidence below |
 | REQ-CORE-001-AC02 | `tests/test_install.py::test_hermes_skill_destination_posix_uses_home`; `tests/test_install_references.py::test_gemini_install_references_all_resolve`; `tests/test_install_roundtrip.py::test_skill_roundtrip_at_real_destination` | Exact destination and Linux/Windows contract profiles pass locally; simulated platform selection does not prove another kernel |
 | REQ-CORE-001-AC03 | `tests/test_skill_auto_refresh.py::test_every_stale_platform_is_refreshed_not_only_the_detected_one`; `tests/test_skill_auto_refresh.py::test_a_stale_gemini_skill_gets_the_warning_too` | Windows-adapted bytes and retained ambiguous shared copy pass; shared ownership isolation remains unresolved upstream |
 | REQ-CORE-001-AC04 | `tests/test_uninstall_scope.py::test_bare_call_still_removes_global`; `tests/test_uninstall_scope.py::test_remove_user_skill_opt_in_with_project_dir` | Linux/Windows scope profiles and protected shared-dir retention pass; no new uninstall policy |
-| REQ-CORE-001-AC05 | `tests/test_codex_hook_execution.py::test_req_core001_ac05_literal_expansion_characters_retain_launcher_identity`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_missing_launcher_fails_without_path_fallback`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_selected_process_failure_preserves_nonzero_exit`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_reinstall_and_uninstall_preserve_unrelated_hooks`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_unsupported_shell_rejects_before_settings_access`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_shell_inspection_failure_retains_settings_and_backup`; `tests/test_codex_hook_execution.py::test_req_core001_ac05_command_length_boundary_retains_literal_identity` | Native Cmd/Windows PowerShell 5.1 executable identity, failure/retention and rejected serialization boundaries pass in full-source and independent installed-artifact execution. Synthetic length cases establish admission/retention, not a real long-path launch. Actual Codex event delivery and other PowerShell versions remain separate system gaps. |
+| REQ-CORE-001-AC05 | [frozen test_codex_hook_execution owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_codex_hook_execution.py) (`test_req_core001_ac05_literal_expansion_characters_retain_launcher_identity`); [frozen test_codex_hook_execution owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_codex_hook_execution.py) (`test_req_core001_ac05_missing_launcher_fails_without_path_fallback`); [frozen test_codex_hook_execution owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_codex_hook_execution.py) (`test_req_core001_ac05_selected_process_failure_preserves_nonzero_exit`); [frozen test_codex_hook_execution owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_codex_hook_execution.py) (`test_req_core001_ac05_reinstall_and_uninstall_preserve_unrelated_hooks`); [frozen test_codex_hook_execution owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_codex_hook_execution.py) (`test_req_core001_ac05_unsupported_shell_rejects_before_settings_access`); [frozen test_codex_hook_execution owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_codex_hook_execution.py) (`test_req_core001_ac05_shell_inspection_failure_retains_settings_and_backup`); [frozen test_codex_hook_execution owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_codex_hook_execution.py) (`test_req_core001_ac05_command_length_boundary_retains_literal_identity`) | Historical complete-fork evidence; deferred for this submission. Native Cmd/Windows PowerShell 5.1 executable identity, failure/retention and rejected serialization boundaries pass in full-source and independent installed-artifact execution. Synthetic length cases establish admission/retention, not a real long-path launch. Actual Codex event delivery and other PowerShell versions remain separate system gaps. |
 | REQ-CORE-002-AC01 | `tests/test_filesystem_profiles.py::test_req_core_002_ac01_detect_rejects_nonregular_stat_modes`; `tests/test_filesystem_profiles.py::test_req_core_002_ac01_stat_failures_are_unreadable`; original real fixtures in `tests/test_non_regular_files.py` | Native admission/error seams and hosted real FIFO/socket cases pass at the verified 10cb15a checkpoint below; privileged device/link fixtures retain explicit capability exclusions |
 | REQ-CORE-002-AC02 | `tests/test_filesystem_profiles.py::test_req_core_002_ac02_unavailable_cwd_rejects_before_artifacts`; `tests/test_filesystem_profiles.py::test_req_core_002_ac02_repo_root_recovers_cwd_and_publishes_graph`; `tests/test_watch.py::test_rebuild_code_deleted_cwd_without_repo_root_returns_false`; `tests/test_watch.py::test_rebuild_code_deleted_cwd_uses_graphify_repo_root` | Native simulated lookup-failure and real chdir/persistence pass; actual removed-CWD POSIX cases pass individually in all four 10cb15a Linux lanes below |
 | REQ-CORE-002-AC03 | `tests/test_filesystem_profiles.py::test_req_core_002_ac03_unavailable_cwd_reports_root_reason` | Missing-root/chdir-denied assertions failed before correction; all three safe diagnostic categories pass after correction |
@@ -65,8 +184,8 @@ remaining system procedure, ownership, size ceilings and consumer limitations.
 
 Focused commands and results at the checkpoint:
 
-- Final INC-CORE-05 consumer correction: `PYTHONUTF8=1 python -X utf8 -m pytest tests/test_codex_hook_execution.py -q --tb=short -p no:cacheprovider` passes 19 cases, with no skips and one existing Hypothesis discovery warning. Both actual Windows shells exercise the persisted command. Installer/settings-merge/hook characterization passes 143 cases with three existing profile skips; these selections overlap and are not added to the full-suite count.
-- `pytest tests/test_install.py tests/test_install_references.py tests/test_install_roundtrip.py tests/test_skill_auto_refresh.py tests/test_uninstall_scope.py tests/test_codex_hook_execution.py -q`: 243 passed, five native symlink skips. Strengthened exact-launcher/subcommand follow-up: two passed.
+- Final INC-CORE-05 consumer correction: [frozen historical invocation](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/TRACEABILITY.md#L68) passes 19 cases, with no skips and one existing Hypothesis discovery warning. Both actual Windows shells exercise the persisted command. Installer/settings-merge/hook characterization passes 143 cases with three existing profile skips; these selections overlap and are not added to the full-suite count.
+- [frozen historical invocation](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/TRACEABILITY.md#L69): 243 passed, five native symlink skips. Strengthened exact-launcher/subcommand follow-up: two passed.
 - `pytest tests/test_hooks.py tests/test_skillgen_input_path_injection.py -q`: 143 passed, eight pre-existing profile skips. The final affected selection plus shell-identity helpers: 37 passed, no skips. All 20 hostile-path cases include reachable unsafe controls.
 - `pytest tests/test_watch.py tests/test_non_regular_files.py tests/test_filesystem_profiles.py -q`: 198 passed, eleven profile/capability skips, one existing Hypothesis warning. Seven formerly failing impossible Windows fixtures now remain explicit system gaps; sixteen new portable cases pass.
 - `pytest tests/test_terraform.py tests/test_terraform_modules.py tests/test_extractors_registry.py::test_terraform_migrated -q`: 42 passed, one unavailable symlink skip, one existing Hypothesis warning.
@@ -117,7 +236,7 @@ Reviewed wheel SHA-256:
 All 180 packaged Python payloads match current source bytes. Relative to the
 earlier reviewed 179-module wheel, 102 differences are only LF/CRLF spelling;
 newline-normalized source and parsed syntax differ only in `install.py`,
-`watch.py` and the new `codex_hook_command.py`. Independent installed consumption
+`watch.py` and the new [frozen codex_hook_command owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/graphify/codex_hook_command.py). Independent installed consumption
 pins all Graphify imports to its 163-distribution runtime from a neutral directory:
 **35 hook/filesystem cases pass**, with zero failures/skips. `uv pip check`
 confirms compatibility. This is complementary installed-consumer evidence,
@@ -915,7 +1034,7 @@ source-file change. Each row retains its original criterion identity.
 | REQ-QML-012-AC02 | `tests/test_qt_source_links_upgrade.py::test_req_qml012_ac02_failed_source_links_upgrade_retains_products` (force off/on); constructor mutation/retention case above (manual/watch) | Real malformed-source rejection retains graph, manifest, analysis stamp and applicable root marker; corrected retry and repeat succeed. These cases supplement earlier actual cache/publication-failure regressions, rather than proving every persistence failure by one fixture. Source and current installed public-fixture retention pass. |
 | REQ-QML-016-AC01/AC04 | `tests/test_qt_constructor_ownership.py::test_req_qml016_ac01_and_qml017_ac02_constructor_owns_emission_and_write_after_json_reload` (namespace/plain; directed/undirected); `tests/test_qt_constructor_ownership.py::test_req_qml016_ac04_constructor_conflicts_cannot_invent_a_canonical_owner`; constructor mutation/retention case above | Canonical constructor/source ownership through assembly, JSON reload, query and affected; no fabricated delivery call. Duplicate bodies, foreign namespaces and collapsed overloaded delegation retain unavailable native target proof. Inherited endpoint gap INC-QML-11 remains unverified. |
 | REQ-QML-017-AC02/AC04 | The same exact constructor emission/write, conflict and mutation/retention tests | Literal accepted resource handles independently authorize QML access in a proven source callable; native class authority is not guessed from that access. Current reviewed source/wheel/public-fixture proof passes; unsupported dynamic handles/provider adoption remain separate gaps. |
-| REQ-QML-019-AC02 | `tests/test_html_community_links.py::test_req_qml019_ac02_internal_only_group_has_source_edges_despite_zero_neighbors`; `tests/test_html_community_links.py::test_req_qml019_ac02_external_source_edges_are_distinct_from_neighbor_count`; `tests/test_html_community_links.py::test_req_qml019_ac02_isolated_source_member_does_not_claim_internal_connectivity`; `tests/test_html_community_links.py::test_req_qml019_ac02_source_edge_counts_keep_direction_parallel_edges_and_self_loops`; `tests/test_html_community_links.py::test_req_qml019_ac02_invalid_preaggregated_source_counts_remain_unavailable`; supplied-meta/small-view controls in that module | Eleven emitted-script/exporter cases pass. Counts use canonical graph edges, preserve source inputs and do not add fake plotted loops; unavailable counts, escaping and ordinary small-view Degree remain explicit. No new browser visual run is claimed. |
+| REQ-QML-019-AC02 | [frozen test_html_community_links owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_links.py) (`test_req_qml019_ac02_internal_only_group_has_source_edges_despite_zero_neighbors`); [frozen test_html_community_links owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_links.py) (`test_req_qml019_ac02_external_source_edges_are_distinct_from_neighbor_count`); [frozen test_html_community_links owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_links.py) (`test_req_qml019_ac02_isolated_source_member_does_not_claim_internal_connectivity`); [frozen test_html_community_links owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_links.py) (`test_req_qml019_ac02_source_edge_counts_keep_direction_parallel_edges_and_self_loops`); [frozen test_html_community_links owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_links.py) (`test_req_qml019_ac02_invalid_preaggregated_source_counts_remain_unavailable`); supplied-meta/small-view controls in that module | Historical complete-fork evidence; deferred for this submission. Eleven emitted-script/exporter cases pass. Counts use canonical graph edges, preserve source inputs and do not add fake plotted loops; unavailable counts, escaping and ordinary small-view Degree remain explicit. No new browser visual run is claimed. |
 
 The source-site suite first failed seven cases before correction. The actual
 facade source-file case then failed until the pipeline supplied explicit fresh
@@ -963,10 +1082,10 @@ executed commands are recorded in VALIDATION.md.
 
 | Criterion | Exact production evidence | Increment | Status |
 | --- | --- | --- | --- |
-| REQ-QML-019-AC01 | `tests/test_html_community_recovery.py::test_req_qml019_ac01_large_export_recovers_complete_partition`; `tests/test_html_community_recovery.py::test_req_qml019_ac01_invalid_saved_membership_is_rebuilt_without_stale_names`; `tests/test_html_community_recovery.py::test_req_qml019_ac01_cli_exports_unclustered_saved_graph_without_sidecars`; `tests/test_html_community_recovery.py::test_req_qml019_ac01_explicit_graph_uses_adjacent_analysis_not_malformed_cwd_sidecar` | INC-QML-09 | Locally verified |
-| REQ-QML-019-AC02 | `tests/test_html_community_recovery.py::test_req_qml019_ac02_existing_groups_get_missing_labels`; small/empty/authoritative group and name cases in the same module; `tests/test_qt_graph_html_payload.py::test_qml013_ac03_aggregated_html_explicitly_states_source_fact_omission`; existing escaping and written-node-info runtime regressions in `tests/test_export.py`; [current exact community-count assignments](#constructor-and-source-containment-corrections) | INC-QML-09; INC-QML-13 correction | Locally verified exporter/emitted-script counts and reviewed installed artifact; browser visual inspection is separate |
-| REQ-QML-019-AC03 | `tests/test_html_community_recovery.py::test_req_qml019_ac03_invalid_computed_partition_preserves_output_and_recovers`; `tests/test_html_community_recovery.py::test_req_qml019_ac03_cli_unavailable_view_retains_prior_outputs_and_retries`; `tests/test_html_community_recovery.py::test_req_qml019_ac03_cli_failure_has_no_false_write_and_preserves_prior_html`; `tests/test_html_community_recovery.py::test_req_qml019_ac03_isolate_partition_over_hard_cap_is_not_published` | INC-QML-09 | Locally verified; actual atomic replacement failure injected at its OS boundary |
-| REQ-QML-019-AC04 | `tests/test_html_initial_view.py::test_default_select_all_constructs_every_exported_node_and_edge_before_network`; `tests/test_html_initial_view.py::test_req_qml019_ac04_filters_all_none_preserve_endpoint_safe_source_data`; `tests/test_html_initial_view.py::test_req_qml019_ac04_search_restores_filtered_source_and_exact_metadata`; `tests/test_html_initial_view.py::test_small_grouped_and_ungrouped_views_default_to_select_all`; `tests/test_html_initial_view.py::test_req_qml019_ac04_partial_membership_cannot_mark_hidden_ungrouped_fact_selected` | INC-QML-09; INC-QML-16 removal | Locally verified current emitted-script controls and reviewed installed-artifact scripts. Native browser/device behavior unverified; earlier Overview results are revision-specific and superseded |
+| REQ-QML-019-AC01 | [frozen test_html_community_recovery owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_recovery.py) (`test_req_qml019_ac01_large_export_recovers_complete_partition`); [frozen test_html_community_recovery owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_recovery.py) (`test_req_qml019_ac01_invalid_saved_membership_is_rebuilt_without_stale_names`); [frozen test_html_community_recovery owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_recovery.py) (`test_req_qml019_ac01_cli_exports_unclustered_saved_graph_without_sidecars`); [frozen test_html_community_recovery owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_recovery.py) (`test_req_qml019_ac01_explicit_graph_uses_adjacent_analysis_not_malformed_cwd_sidecar`) | INC-QML-09 | Historical complete-fork evidence; deferred for this submission. Locally verified |
+| REQ-QML-019-AC02 | [frozen test_html_community_recovery owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_recovery.py) (`test_req_qml019_ac02_existing_groups_get_missing_labels`); small/empty/authoritative group and name cases in the same module; `tests/test_qt_graph_html_payload.py::test_qml013_ac03_aggregated_html_explicitly_states_source_fact_omission`; existing escaping and written-node-info runtime regressions in `tests/test_export.py`; [current exact community-count assignments](#constructor-and-source-containment-corrections) | INC-QML-09; INC-QML-13 correction | Historical complete-fork evidence; deferred for this submission. Locally verified exporter/emitted-script counts and reviewed installed artifact; browser visual inspection is separate |
+| REQ-QML-019-AC03 | [frozen test_html_community_recovery owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_recovery.py) (`test_req_qml019_ac03_invalid_computed_partition_preserves_output_and_recovers`); [frozen test_html_community_recovery owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_recovery.py) (`test_req_qml019_ac03_cli_unavailable_view_retains_prior_outputs_and_retries`); [frozen test_html_community_recovery owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_recovery.py) (`test_req_qml019_ac03_cli_failure_has_no_false_write_and_preserves_prior_html`); [frozen test_html_community_recovery owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_recovery.py) (`test_req_qml019_ac03_isolate_partition_over_hard_cap_is_not_published`) | INC-QML-09 | Historical complete-fork evidence; deferred for this submission. Locally verified; actual atomic replacement failure injected at its OS boundary |
+| REQ-QML-019-AC04 | [frozen test_html_initial_view owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_initial_view.py) (`test_default_select_all_constructs_every_exported_node_and_edge_before_network`); [frozen test_html_initial_view owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_initial_view.py) (`test_req_qml019_ac04_filters_all_none_preserve_endpoint_safe_source_data`); [frozen test_html_initial_view owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_initial_view.py) (`test_req_qml019_ac04_search_restores_filtered_source_and_exact_metadata`); [frozen test_html_initial_view owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_initial_view.py) (`test_small_grouped_and_ungrouped_views_default_to_select_all`); [frozen test_html_initial_view owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_initial_view.py) (`test_req_qml019_ac04_partial_membership_cannot_mark_hidden_ungrouped_fact_selected`) | INC-QML-09; INC-QML-16 removal | Historical complete-fork evidence; deferred for this submission. Locally verified current emitted-script controls and reviewed installed-artifact scripts. Native browser/device behavior unverified; earlier Overview results are revision-specific and superseded |
 
 <a name="planned-project-membership-projection"></a>
 
@@ -1024,15 +1143,13 @@ source metadata assertions while removing obsolete Overview expectations.
 
 | Criterion | Exact production evidence and boundaries | Increment | Status |
 | --- | --- | --- | --- |
-| REQ-QML-021-AC01 | `tests/test_html_middle_pan.py::test_req_qml021_ac01_middle_drag_translates_both_axes_at_current_zoom` (24 horizontal/vertical/diagonal, four-scale, source/aggregate variants); incremental client delta divided by current zoom, preserved scale, no animation, and suppressed native middle autoscroll | INC-QML-16 | Locally verified emitted-script and reviewed installed-artifact boundary; native browser/device and other platforms unverified |
-| REQ-QML-021-AC02 | `tests/test_html_middle_pan.py::test_req_qml021_ac02_release_cancel_blur_and_lost_buttons_end_drag`; `tests/test_html_middle_pan.py::test_req_qml021_ac02_capture_failure_has_window_fallback_and_no_lingering_drag`; `tests/test_html_middle_pan.py::test_req_qml021_ac02_invalid_camera_or_input_aborts_without_jump`; `tests/test_html_middle_pan.py::test_req_qml021_ac02_invalid_press_cannot_capture_or_resume_after_repair`; `tests/test_html_middle_pan.py::test_req_qml021_ac02_unrelated_pointer_and_nonmiddle_release_preserve_owned_drag`. Matching release/cancel, lost button/capture, blur/pagehide, outside movement/capture fallback, invalid finite/scale/derived-position and cursor restoration controls prove termination and no later jump | INC-QML-16 | Locally verified emitted-script and reviewed installed-artifact boundary; native browser/device and other platforms unverified |
-| REQ-QML-021-AC03 | `tests/test_html_middle_pan.py::test_req_qml021_ac03_other_inputs_and_source_datasets_remain_unchanged`; `tests/test_html_middle_pan.py::test_req_qml021_ac03_filters_and_search_work_after_middle_drag`; left/right/touch/wheel coexistence and actual startup/filter/all/none/search/inspector controls preserve graph/payload/dataset metadata, node positions, physics and temporary camera-only state | INC-QML-16 | Locally verified emitted-script and reviewed installed-artifact boundary; native browser/device and other platforms unverified |
+| REQ-QML-021-AC01 | [frozen test_html_middle_pan owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_middle_pan.py) (`test_req_qml021_ac01_middle_drag_translates_both_axes_at_current_zoom`) (24 horizontal/vertical/diagonal, four-scale, source/aggregate variants); incremental client delta divided by current zoom, preserved scale, no animation, and suppressed native middle autoscroll | INC-QML-16 | Historical complete-fork evidence; deferred for this submission. Locally verified emitted-script and reviewed installed-artifact boundary; native browser/device and other platforms unverified |
+| REQ-QML-021-AC02 | [frozen test_html_middle_pan owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_middle_pan.py) (`test_req_qml021_ac02_release_cancel_blur_and_lost_buttons_end_drag`); [frozen test_html_middle_pan owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_middle_pan.py) (`test_req_qml021_ac02_capture_failure_has_window_fallback_and_no_lingering_drag`); [frozen test_html_middle_pan owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_middle_pan.py) (`test_req_qml021_ac02_invalid_camera_or_input_aborts_without_jump`); [frozen test_html_middle_pan owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_middle_pan.py) (`test_req_qml021_ac02_invalid_press_cannot_capture_or_resume_after_repair`); [frozen test_html_middle_pan owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_middle_pan.py) (`test_req_qml021_ac02_unrelated_pointer_and_nonmiddle_release_preserve_owned_drag`). Matching release/cancel, lost button/capture, blur/pagehide, outside movement/capture fallback, invalid finite/scale/derived-position and cursor restoration controls prove termination and no later jump | INC-QML-16 | Historical complete-fork evidence; deferred for this submission. Locally verified emitted-script and reviewed installed-artifact boundary; native browser/device and other platforms unverified |
+| REQ-QML-021-AC03 | [frozen test_html_middle_pan owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_middle_pan.py) (`test_req_qml021_ac03_other_inputs_and_source_datasets_remain_unchanged`); [frozen test_html_middle_pan owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_middle_pan.py) (`test_req_qml021_ac03_filters_and_search_work_after_middle_drag`); left/right/touch/wheel coexistence and actual startup/filter/all/none/search/inspector controls preserve graph/payload/dataset metadata, node positions, physics and temporary camera-only state | INC-QML-16 | Historical complete-fork evidence; deferred for this submission. Locally verified emitted-script and reviewed installed-artifact boundary; native browser/device and other platforms unverified |
 
 The focused command executes both current modules:
 
-```powershell
-.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_html_middle_pan.py tests/test_html_initial_view.py --tb=short -rs
-```
+Historical invocation/source excerpt: [frozen TRACEABILITY lines 1033–1036](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/TRACEABILITY.md#L1033-L1036). Deferred owners: [frozen test_html_middle_pan owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_middle_pan.py), [frozen test_html_initial_view owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_initial_view.py).
 
 Result: **60 passed**, 6.57 seconds, with no skips, after restoring retained Qt
 projection, metadata/span/attribute and endpoint-safe source-edge assertions.
@@ -1088,7 +1205,7 @@ promote them into normal collection and reverify all affected criteria.
 | REQ-QML-016-AC01/AC03/AC04 | `tests/audit/probe_qt_native_type_shadowing.py::test_req_qml016_emission_alias_cannot_select_unrelated_global_signal` (using/typedef) | Two wrong emission endpoints fail; INC-QML-19 |
 | REQ-QML-008-AC01/AC03 | `tests/audit/probe_qt_native_type_shadowing.py::test_req_qml008_alias_registration_cannot_export_global_class_to_qml` (using/typedef) | Two wrong native-to-QML registration/handler cases fail; INC-QML-19 |
 | REQ-QML-008-AC01 and REQ-QML-016-AC01/AC02/AC04 | `tests/audit/probe_qt_native_type_shadowing.py::test_direct_native_type_control_preserves_roles_and_direction`; `tests/audit/probe_qt_native_type_shadowing.py::test_direct_registration_control_preserves_native_qml_endpoint` (Sender/Other variants) | Four direct native/QML controls pass through actual publication and directed reload |
-| REQ-QML-021-AC01–AC03 and REQ-QML-019-AC04 | [Native navigation review procedure](../docs/qt-qml/VIEWER_SYSTEM_REVIEW.md) | Exact fixture/actions/evidence/failure/cleanup/owner defined; physical browser/device/platform execution remains unverified |
+| REQ-QML-021-AC01–AC03 and REQ-QML-019-AC04 | [Native navigation review procedure](../docs/qt-qml/VIEWER_SYSTEM_REVIEW.md) | Historical complete-fork evidence; deferred for this submission. Exact fixture/actions/evidence/failure/cleanup/owner defined; physical browser/device/platform execution remains unverified |
 | REQ-QML-017-AC01/AC04 | `tests/audit/probe_qt_loader_forms.py::test_req_qml017_ac01_literal_loader_keeps_component_and_property_provenance` (engine URL constructor/component loadUrl/engine.load variants) | Two loader-admission assertions fail; engine.load control passes; INC-QML-20 collector/integration owner |
 
 Executed command:

@@ -1,5 +1,22 @@
 # Qt/QML diagnostics
 
+## Upstream submission scope
+
+The [scoped upstream contribution](UPSTREAM_CONTRIBUTION.md) retains bounded Qt/QML analysis
+and its source, incremental, publication and consumer contracts. REQ-QML-019
+and REQ-QML-021, D12/D16, and the generic viewer portions of INC-QML-09/13/16
+are deferred for this submission. Native Codex REQ-CORE-001-AC01/AC05 and the
+broad fork repository policy are also deferred; the baseline installer and
+repository policy apply. Constructor and source-containment work in INC-QML-13
+remains in scope.
+
+The [complete frozen fork](https://github.com/SlinkyRamey/graphify/commit/82a4f296446b4cc219ffecfe3345a037e9c362e4)
+and its recorded 8b6c9d2 source/runner evidence retain their own revision scope.
+Deferred feature sections and their exact tests below are historical evidence,
+not implemented or verified contracts of this narrower contribution. A changed
+contribution head requires fresh applicable checks; prior totals, skips and
+hosted results do not establish those checks.
+
 Adapters own source diagnostics; the writer owns publication guards. Paths are
 relative/bounded; messages omit source content and dependency exception details.
 
@@ -119,6 +136,11 @@ IMPLEMENTATION.md for executed positive/rejection and original-byte regressions.
 
 ## HTML view diagnostics
 
+Upstream disposition: these generic grouping/view diagnostics are deferred with
+REQ-QML-019. They describe the frozen viewer extension, not diagnostic contracts
+of the baseline HTML preparation retained in this submission. Qt parsing,
+resolution, retention and publication diagnostics elsewhere remain in scope.
+
 These CLI errors belong to HTML view preparation/publication; they do not describe
 Qt source parsing or an application's runtime import state. Messages retain safe
 stage/recovery guidance and omit raw backend exceptions or source content.
@@ -141,8 +163,9 @@ emission targets and unproved QML handles retain existing coverage reasons.
 Malformed native input or failed joins still reject publication with the existing
 stage-specific errors. AST schema 7 retires incompatible caches; prior valid
 graph/manifest/root/Qt state survives a failed refresh. Corrected retry uses the
-normal publication sequence. Internal-only or genuinely unlinked community counts
-are successful view states, not HTML publication failures.
+normal publication sequence. In the frozen viewer extension, internal-only or unlinked community counts
+are successful view states, not HTML publication failures. That generic count
+contract is deferred for this contribution.
 
 ## Project-membership coverage (INC-QML-14)
 

@@ -1,5 +1,10 @@
 # Qt and QML support foundation
 
+The [upstream contribution](UPSTREAM_CONTRIBUTION.md) defines the current
+submission scope. Earlier full-fork checkpoints remain revision-specific;
+independent repository policy, native hooks and general viewer features are
+deferred. Qt source payloads and membership-edge accounting remain supported.
+
 INC-QML-00 through INC-QML-07 implement optional QML declarations/imports, scoped
 bindings/aliases/JavaScript/handlers, native Qt C++ signals/connections/slots,
 registered C++ APIs and literal QML object access. See [implemented scope](IMPLEMENTATION.md)
@@ -22,6 +27,7 @@ audited again before carrying these conclusions forward.
 | Document | Purpose |
 | --- | --- |
 | [Audit](AUDIT.md) | Observed extension points, gaps, and risks in the baseline |
+| [Upstream contribution](UPSTREAM_CONTRIBUTION.md) | Current submission scope, overlapping proposal and verification boundaries |
 | [Follow-up audit](FOLLOWUP_AUDIT.md) | Current scope defects, public reproductions and contribution compliance |
 | [Qt API coverage](QT_API_COVERAGE.md) | Mechanism-based support, exclusions and unverified API families |
 | [Native navigation review](VIEWER_SYSTEM_REVIEW.md) | Physical browser/device acceptance procedure and evidence gap |
@@ -77,9 +83,13 @@ metadata never invokes a build or runtime engine. The [export matrix](EXPORT_MAT
 states which consumers retain complete facts, which omit them, and which live
 service checks remain unexecuted.
 
-## Community navigation
+## Historical community navigation
 
-HTML export recovers missing large-graph communities locally and fills names
+The complete fork checkpoint implements the following navigation behavior.
+REQ-QML-019/021 are deferred from the upstream contribution, which retains
+upstream community selection/navigation and Qt metadata/omission display.
+
+The frozen HTML export recovers missing large-graph communities locally and fills names
 from structural hubs. Select All starts checked and displays all exported view
 data. Large source graphs still use the complete labeled community aggregate
 within the display cap. Community filters, search, Select All and Select None

@@ -1,9 +1,20 @@
 # Shared compatibility verification
 
-This follow-up covers the contribution gate's installed-assistant contracts,
-portable graph provenance and filesystem test profiles. It is separate from the
-completed bounded Qt/QML adoption work. Runtime ownership, parser contracts and
-Qt policy/cache epochs remain governed by the existing architecture.
+This document records the complete fork's installed-assistant contracts,
+portable graph provenance and filesystem test profiles. The current
+[upstream contribution scope](qt-qml/UPSTREAM_CONTRIBUTION.md) retains
+REQ-CORE-001-AC02–AC04 and REQ-CORE-002–004, with their applicable profile
+assignments. It defers the independent native Codex feature under
+REQ-CORE-001-AC01/AC05 and DEC-CORE-01; the contribution restores the upstream
+installer contract. Runtime ownership, parser contracts and Qt policy/cache
+epochs remain governed by the existing architecture.
+
+The complete fork is frozen at
+[`82a4f29`](https://github.com/SlinkyRamey/graphify/commit/82a4f296446b4cc219ffecfe3345a037e9c362e4).
+The [verified integrated checkpoint](../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2)
+and all earlier results below remain proof of their recorded source/profile.
+They do not verify the narrowed contribution head; fresh applicable evidence
+belongs to [traceability](../tests/TRACEABILITY.md).
 
 Requirements use `REQ-CORE-NNN`, acceptance criteria `REQ-CORE-NNN-ACNN`, and
 increments `INC-CORE-NN`. The independent counters begin at 001/01 and do not
@@ -12,6 +23,12 @@ renumber or reuse the Qt/QML catalog. [Requirements](REQUIREMENTS.md) own behavi
 not a passing assertion.
 
 ## Plan and acceptance matrix
+
+This historical matrix retains each increment and its original acceptance
+identity. INC-CORE-01 has mixed disposition: AC01 is deferred for this
+contribution, while AC02–AC04 remain applicable. INC-CORE-05 is deferred in full.
+Retained infrastructure increments exclude the deferred native-hook assignment
+from their current profile selection without weakening the other contracts.
 
 | Increment | Outcome | Acceptance | Exit condition |
 | --- | --- | --- | --- |
@@ -26,8 +43,9 @@ not a passing assertion.
 | INC-CORE-09 | Retain native shell consumer identity evidence | REQ-CORE-004-AC03 | The actual uploaded job artifact includes and verifies both shells' executable, Python and Node identities for the reviewed checkout; omitted or inconsistent evidence cannot establish acceptance |
 | INC-CORE-10 | Admit the real native external-call subprocess fixture | REQ-CORE-004-AC02 | Required isolated Windows home/system fields reach the child while all ten extraction assertions remain; the exact native and four Linux cases pass at the integrated checkpoint |
 
-INC-CORE-01–05 have native source evidence below. The hook/filesystem corrections
-also have independent installed-consumer evidence. INC-CORE-06 closes the former
+At their recorded fork checkpoints, INC-CORE-01–05 have native source evidence
+below. The hook/filesystem corrections also have independent installed-consumer
+evidence. INC-CORE-06 closes the former
 POSIX filesystem gap and the missing Windows generic-contract CI selection at
 the [verified hosted checkpoint](../tests/TRACEABILITY.md#verified-hosted-runner-checkpoint--10cb15a); it changes test
 infrastructure, with no Graphify extraction or Qt schema change. Existing
@@ -55,15 +73,18 @@ Windows installs and refreshes use the existing adapted skill content. Shared
 Gemini/agents uninstall retention is deliberate and remains covered. Corrections
 to stale fixture expectations do not change these product contracts.
 
-Upstream PR [#3268](https://github.com/Graphify-Labs/graphify/pull/3268) proposes
-bare Codex commands for default installs. This correction instead retains the
-existing explicit executable contract and fixes literal invocation. PR
+The historical upstream review records PR
+[#3268](https://github.com/Graphify-Labs/graphify/pull/3268), which proposed bare
+Codex commands for default installs. The deferred fork correction instead retained
+the existing explicit executable contract and fixed literal invocation. PR
 [#2802](https://github.com/Graphify-Labs/graphify/pull/2802) independently addresses
 Windows destination fixtures. Upstream issue
 [#2800](https://github.com/Graphify-Labs/graphify/issues/2800) tracks Gemini/agents
 shared-directory collision; current tests do not establish ownership isolation
 or resolve that upgrade limitation. Incoming upstream `v8` was inspected at
-`35adf43`; no incoming commits are integrated in this follow-up.
+`35adf43`; no incoming commits were integrated in that follow-up. Subsequent
+integration and the current contribution scope are recorded separately in
+[UPSTREAM_CONTRIBUTION.md](qt-qml/UPSTREAM_CONTRIBUTION.md).
 The requirement review corrected the draft refresh criterion to describe only
 uniquely owned destinations: the production refresh deliberately leaves ambiguous
 shared copies unchanged. That retained behavior has exact regression assertions;
@@ -76,6 +97,11 @@ the test searched for a backslash path while the extractor emitted the correct
 portable path. No Terraform production change is needed for that defect.
 
 ## Verification profiles and remaining system work
+
+The local setup and WSL sequence below is historical. Its pending Linux work was
+subsequently addressed by the recorded hosted profiles; it is not a current
+claim that the contribution lacks those retained fixture contracts. New-head
+verification remains separate from that earlier hosted evidence.
 
 Native Windows cannot create Unix FIFOs through `os.mkfifo` or remove its current
 working directory. Symlink creation also depends on actual account capability.
@@ -138,6 +164,13 @@ dependency versions and remaining skips separate from native Windows evidence.
 
 ### DEC-CORE-01 — Windows hook literal transport
 
+Disposition: **Deferred for the upstream contribution**. The following contract,
+alternatives and limits describe the frozen fork's implementation and evidence.
+The [frozen native Codex serializer](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/graphify/codex_hook_command.py)
+and [frozen native hook execution tests](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_codex_hook_execution.py)
+remain available for a separate contribution. The restored upstream installer
+does not implement this transport or earn AC01/AC05 from those historical passes.
+
 Codex's versioned native runner accepts one command string and may select Cmd or
 PowerShell. A quoted executable token needs different invocation syntax in those
 shells; Cmd additionally expands percent names inside quotes. A user-scope hook
@@ -174,9 +207,10 @@ The encoded transport keeps the selected executable contract and fails safely
 when its OS dependency is unavailable. Actual Codex event delivery remains a
 system boundary separate from the versioned runner argument-transport tests.
 
-Production corrections cover the Codex command's literal executable invocation
-and the unavailable-CWD failure reason. Installation still owns hook JSON publication and its existing
-diagnostics; fixtures own shell/path transport. There is no new parser, logger,
+The frozen fork's production corrections cover the Codex command's literal
+executable invocation and the unavailable-CWD failure reason. Installation still
+owns hook JSON publication and its existing diagnostics; fixtures own shell/path
+transport. There is no new parser, logger,
 cache owner, persistence mechanism or Qt diagnostic. Successful commands reach
 the existing CLI; rejected arguments and filesystem failures retain existing
 behavior. Test-only scope/provenance corrections need no cache invalidation.
@@ -204,8 +238,9 @@ and [session configuration](https://github.com/openai/codex/blob/rust-v0.160.0/c
 
 ## Historical restart checkpoint
 
-This section records `9efa7e4`/`c1c0e6a` before the current consumer correction
-and native run. Current results are in [traceability](../tests/TRACEABILITY.md#current-native-source-and-artifact-evidence--2026-10-05).
+This section records `9efa7e4`/`c1c0e6a` before the later fork consumer correction
+and native run. That later historical source evidence is in
+[traceability](../tests/TRACEABILITY.md#current-native-source-and-artifact-evidence--2026-10-05).
 
 All dependency installation and focused test processes have finished. The full
 source rerun is deferred until the WSL installation restart and initialization.
@@ -229,6 +264,9 @@ exact commands and failure identities. No full-source success is claimed at this
 checkpoint.
 
 ## Current native outcome
+
+This heading retains its historical anchor. The outcome belongs to the source
+named below, preceding the integrated fork and the narrower contribution.
 
 Source `463ca3226c4aec4390a1e931fb1be1582059d1ca` has a full native Windows
 result of 8,818 passes, no failures and 151 skips. Exact supplemental profiles
@@ -439,15 +477,18 @@ compatibility increment is allocated by this exit review.
 
 ## Focused legacy ownership and size constraints
 
-New helpers/tests remain below 300 physical lines. Existing oversized files keep
+The measurements below belong to the recorded complete-fork compatibility
+checkpoints, including deferred native-hook work. They are not measurements or
+growth allowances for the narrowed contribution. At those checkpoints, new
+helpers/tests remain below 300 physical lines. Existing oversized files keep
 their established owners and receive only the focused correction/profile changes:
 
 | File | Before | Checkpoint ceiling | Owner and extraction exit |
 | --- | --- | --- | --- |
-| `graphify/install.py` | 2559 | 2570 | Install maintainer; Codex serialization now belongs to the focused `codex_hook_command` module; other assistant serializers remain installer-owned |
+| `graphify/install.py` | 2559 | 2570 | Historical install maintainer; Codex serialization belonged to the [frozen native Codex serializer](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/graphify/codex_hook_command.py); this independent transport is deferred and the contribution restores upstream installer ownership |
 | `graphify/watch.py` | 2532 | 2550 | Watch maintainer; existing documented extraction path and persistence ordering retained |
 | `tests/test_hooks.py` | 1590 | 1600 | Hook test owner; new shell identity transport is already a focused helper, unrelated hook cases stay in place |
-| `tests/test_install.py` | 1617 | 1640 | Install test owner; encoded-command expectations adapt two existing contract tests; new consumer and failure cases belong to the focused execution module |
+| `tests/test_install.py` | 1617 | 1640 | Install test owner; the contribution retains the portable Hermes destination assertion and restores baseline Codex expectations; native transport cases remain deferred frozen evidence |
 | `tests/test_install_references.py` | 548 | 553 | Install-reference test owner; separate platform destination characterization before extracting responsibilities |
 | `tests/test_install_roundtrip.py` | 318 | 323 | Install-roundtrip test owner; keep installed bundle identity in one roundtrip boundary |
 | `tests/test_skill_auto_refresh.py` | 527 | 541 | Refresh test owner; split platform adaptation from refresh lifecycle only in a separate characterized move |

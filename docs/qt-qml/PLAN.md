@@ -1,5 +1,11 @@
 # Qt and QML feature increment plan
 
+Current delivery scope is the [upstream contribution](UPSTREAM_CONTRIBUTION.md)
+under INC-QML-53. The recorded full-fork checkpoints below retain their original
+scope and source-specific evidence. Independent policy, native Codex hook and
+general HTML viewer features are deferred from this contribution; its retained
+Qt/QML and shared integrity contracts need fresh applicable proof.
+
 Use `INC-QML-` for delivery increments and `REQ-QML-` for requirements/criteria.
 The [identifier catalog](IDENTIFIERS.md) retains every prior ID as a permanent alias.
 
@@ -1575,7 +1581,7 @@ Select All/None, search and inspector behavior remain available. Select All refl
 actual loaded dataset, including nodes without community metadata; a partially
 visible dataset is indeterminate even when every named community is checked.
 
-`graphify/exporters/html_navigation.py` owns a private middle mouse gesture
+The [frozen camera helper](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/graphify/exporters/html_navigation.py) owned a private middle mouse gesture
 injected after network construction. Holding the middle button and dragging pans
 the camera in both axes using each movement's current zoom scale. Native wheel
 zoom remains available. Pointer capture and window listeners keep outside moves
@@ -2831,3 +2837,73 @@ and REQ-QML-022 remain unallocated. Baseline full typing, advisory security,
 physical browser/device/application procedures and upstream publication remain
 separate gaps. This evidence completion changes documentation only; its later
 head receives normal PR validation and does not inherit a fictitious tested SHA.
+
+## INC-QML-53 — Focused upstream contribution
+
+Status: **Locally prepared; upstream review and final-head hosted proof pending**.
+Owner: upstream contribution maintainer. Dependency: the integrated
+INC-QML-49–52 checkpoint. Upstream base remains `35adf43`; preserve the full
+tested fork at `82a4f29` and use `codex/qml-upstream-contribution` in the same
+canonical workspace. No history rewrite or default-branch merge is included.
+
+Scope decision: retain the bounded Qt/QML analysis, metadata, native event,
+bidirectional bridge, incremental integrity and Qt consumer contracts. Restore
+upstream repository policy, native Codex hook serialization and generic HTML
+grouping/navigation behavior; those independent concerns need separate PRs.
+Retain shared source-identity, atomic-publication and direction fixes because
+Qt acceptance depends on them. Preserve requirement/criterion identities and
+historical evidence while marking excluded features deferred.
+
+Scope refinement: the first broad local run exposed one retained membership
+test's dependency on the deleted generic inspector harness. Preserve its
+external links and exact internal/external source-edge counts through the
+upstream inspector seam. These counts remain a Qt membership prerequisite;
+partition recovery, selection redesign and navigation remain deferred. Remove
+only the assertion owned by deferred startup-selection acceptance.
+
+| Acceptance IDs | Required result |
+| --- | --- |
+| REQ-QML-010-AC02/AC03; REQ-QML-018-AC04/AC06 | Retained Qt source fields, tooltips, inspector/search, logical direction and source payloads survive the scoped HTML/export consumers |
+| REQ-QML-019-AC01–AC04; REQ-QML-021-AC01–AC03; REQ-CORE-001-AC01/AC05 | Independent features are absent from the contribution and explicitly deferred; the complete fork's proof remains source-bound |
+| REQ-QML-001–018; REQ-QML-020 | Parser, native/source, metadata, scope, bridge, update and packaging contracts retain applicable automated assignments |
+| REQ-CORE-004-AC01–AC03 | New normal-PR proof binds scoped source/base/actual checkout and applicable cases to its run; excluded test paths do not remain in job selections |
+
+Reconcile the open #1748 proposal at head `7b38d4c` through a recorded source
+comparison and explicit common-foundation integration note. Follow upstream's
+PR template with actual commands, supported forms, gaps and truthful AI
+attribution. Do not infer accepted integration, release or runtime semantics.
+
+Diagnostic impact: deferred generic viewer and native-hook diagnostics are not
+new contracts in this source. Retained Qt parser, identity, direction and
+publication diagnostics keep their existing owners and failure retention.
+No parser/dependency/cache epoch changes accompany scope cleanup. HTML and
+installer paths revert to upstream behavior apart from retained Qt payloads and
+membership-edge counters.
+
+The [scoped local preparation](../../tests/TRACEABILITY.md#scoped-local-preparation--inc-qml-53)
+records the initial broad dependency failure, four failing counter regressions
+before correction, 145 passing corrected consumer/membership cases, 265 passing
+installer cases with five exclusions and 138 passing built-wheel cases without
+skips. Source-byte attestation, scope ceilings and AST-only refresh pass.
+Unchanged full-fork hosted proof remains historical; the upstream PR owns fresh
+validation and review.
+
+The complete native source gate passes 9,202 cases and finds 45 shell-setup
+failures, all outside Qt/QML assertions; 122 exclusions remain recorded. Configure
+complete checksum-verified portable Git Bash for the test process and rerun the four affected
+unchanged modules, including shell-dependent exclusions. This environment
+correction adds no product contract or new increment; preserve the failed full
+run separately from corrected focused evidence. Fresh normal upstream validation
+continues to own the full supported hosted matrix.
+The corrected four-module selection passes 171 tests without failures and retains
+eight intentional Windows exclusions. The complete portable runtime and exact
+Python/Node transport are admitted; no assertion or production change is needed.
+The exit review identifies no further reproduced source defect or new increment.
+
+Exit with focused retained consumer/installer checks, generated-guidance,
+frozen packaging, document/identifier/privacy checks, scoped graph refresh,
+explicit push and an attached upstream PR. Record exact source/base/checkouts
+and normal CI outcomes; a required maintainer workflow approval remains an
+explicit external handoff. Review newly exposed failures without weakening
+assertions. No reproduced defect is assumed merely from the smaller scope;
+INC-QML-54 and REQ-QML-022 remain unallocated until a concrete need exists.

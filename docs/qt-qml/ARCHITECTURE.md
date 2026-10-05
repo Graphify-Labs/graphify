@@ -1,6 +1,31 @@
 # Qt and QML analysis architecture
 
-Status: INC-QML-00 through INC-QML-07 are implemented and verified for the bounded static source profile, with final declared hosted source/artifact evidence recorded. The historical audit describes Graphify 0.9.74 at upstream commit `0b60d47e6cd9338c51143f39f35b6c45c8453385` on 3 October 2026; that imported revision lacked QML extraction. This checkout has QML/JavaScript scopes, native Qt events and bidirectional bridges, literal project/resource/type-description metadata, and conservative configuration-aware refresh. [IMPLEMENTATION.md](IMPLEMENTATION.md), [VALIDATION.md](VALIDATION.md) and [traceability](../../tests/TRACEABILITY.md) own current acceptance evidence; [AUDIT.md](AUDIT.md) remains the baseline record.
+The contribution retains truthful aggregate source-edge counts as a
+REQ-QML-020 membership-projection prerequisite. General partition recovery,
+selection redesign and navigation remain deferred. The counts supplement
+upstream degree display without changing source graph ownership.
+
+Current contribution scope: [UPSTREAM_CONTRIBUTION.md](UPSTREAM_CONTRIBUTION.md)
+retains REQ-QML-001–018 and REQ-QML-020, supporting shared-source contracts and
+applicable compatibility infrastructure. General HTML features under
+REQ-QML-019/021 and D12/D16, the generic viewer portions of INC-QML-09/13/16,
+and native Codex transport under DEC-CORE-01 are deferred for this submission.
+Qt HTML metadata, tooltips and graph-preservation contracts remain in scope.
+
+Historical adoption status: INC-QML-00 through INC-QML-07 are implemented and
+verified for their recorded bounded static source profiles. The complete fork is
+frozen at [`82a4f29`](https://github.com/SlinkyRamey/graphify/commit/82a4f296446b4cc219ffecfe3345a037e9c362e4),
+with [integrated hosted evidence](../../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2)
+bound to its source. Those passes do not verify the narrowed contribution head.
+The historical audit describes Graphify 0.9.74 at upstream commit
+`0b60d47e6cd9338c51143f39f35b6c45c8453385` on 3 October 2026; that imported
+revision lacked QML extraction. Retained implementation includes QML/JavaScript
+scopes, native Qt events and bidirectional bridges, literal
+project/resource/type-description metadata, and conservative configuration-aware
+refresh.
+[IMPLEMENTATION.md](IMPLEMENTATION.md), [VALIDATION.md](VALIDATION.md) and
+[traceability](../../tests/TRACEABILITY.md) own revision-specific acceptance
+evidence; [AUDIT.md](AUDIT.md) remains the baseline record.
 
 The baseline/reuse review includes [feature request #1716](https://github.com/Graphify-Labs/graphify/issues/1716) and [implementation proposal #1748](https://github.com/Graphify-Labs/graphify/pull/1748), covering QML and Qt/C++ bridging. The recorded proposal review and parser decision informed the local implementation. Refresh the proposal's head before upstream delivery; its historical installation instructions and an open PR do not establish shipped support. This design retains the wider metadata, bidirectional bridge, incremental and consumer contracts needed for complete support.
 
@@ -270,7 +295,7 @@ Refresh activation uses exact filenames, accepted inputs and persisted Qt contex
 
 Discovery, code-only mode, direct single-file extraction, CLI update, watch batching and ignore/symlink containment use the same filename classification policy: `.qml`, `.qmltypes`, `.qrc`, `.pro`, `.pri`, `.cmake` and exact `qmldir`/`CMakeLists.txt`; `.ui.qml` preserves its compound identity. Metadata references cannot escape accepted root/corpus boundaries or fetch an HTTP import. External paths retain bounded reasons without publishing absolute machine paths.
 
-INC-QML-07 consumers cover query/node detail/explain/path/affected, installed MCP, coverage/report/HTML views and selected semantic exports. Source names, roles, locations, direction and confidence remain visible; event/meta-object/reactive mechanisms remain distinct from direct calls. Wiki and presentation formats have explicit omissions in [EXPORT_MATRIX.md](EXPORT_MATRIX.md). Assistant changes originate in authoritative fragments and are regenerated with frozen baseline checks. Revision-specific hosted evidence is recorded in [VALIDATION.md](VALIDATION.md); later HTML changes retain separate local and unexecuted platform/browser evidence.
+INC-QML-07 consumers cover query/node detail/explain/path/affected, installed MCP, coverage/report/HTML views and selected semantic exports. Source names, roles, locations, direction and confidence remain visible; event/meta-object/reactive mechanisms remain distinct from direct calls. Wiki and presentation formats have explicit omissions in [EXPORT_MATRIX.md](EXPORT_MATRIX.md). Assistant changes originate in authoritative fragments and are regenerated with frozen baseline checks. Revision-specific hosted evidence is recorded in [VALIDATION.md](VALIDATION.md); later general HTML changes and their local/platform/browser evidence are historical and deferred for this contribution.
 
 ## Support matrix and release gates
 
@@ -385,6 +410,12 @@ compatible caches to conceal a failed candidate.
 
 ## D12 — Recover HTML communities as local presentation state
 
+Disposition: **Deferred for the upstream contribution** under REQ-QML-019 and
+the generic viewer portions of INC-QML-09/13/16. The following decision describes
+the frozen fork's community recovery, aggregate-count and selection policy.
+The contribution restores upstream generic HTML behavior while retaining Qt
+metadata, tooltips and the documented Qt-only aggregate omission marker.
+
 Large unclustered graphs need a complete partition and usable names before
 community aggregation. Reuse the existing deterministic clustering/hub labeling
 interfaces within HTML view preparation, preserving canonical graph and analysis
@@ -400,8 +431,8 @@ and Select All/None remain the selection interfaces. Initial selection is
 explicit presentation policy rather than saved personal view state.
 Structural clustering supports navigation; versioned architecture/design
 documents describe intentional ownership. Earlier checked-default/Overview AC04
-proof belongs to that prior revision. The changed AC04 is locally verified at
-current emitted-script and reviewed installed-artifact boundaries; native browser,
+proof belongs to that prior revision. The changed AC04 was locally verified at
+the recorded emitted-script and reviewed installed-artifact boundaries; native browser,
 device, other-platform and new hosted checks remain unverified. Remaining parser/provider
 adoption contracts retain their scope.
 
@@ -472,6 +503,10 @@ Existing callable IDs and persistence owners remain authoritative. AST schema 7
 and Qt policy 5 retire stale same-version facts. Original INC-QML-10 policy-3/
 schema-6 evidence is historical, not proof of these additional cases.
 
+The complete generic inspector correction remains historical under deferred
+REQ-QML-019. Internal/external source-edge counts remain a REQ-QML-020 membership
+prerequisite; connected-community labels and isolate explanations are deferred.
+D14's source containment and the membership projection remain in the contribution.
 HTML aggregation is presentation state: internal source links and distinct
 external communities are different measurements. Display their actual counts
 without inventing topology, suppressing isolates or changing source data.
@@ -518,8 +553,10 @@ membership. Exact overload identity remains the separate INC-QML-15 contract.
 
 ## D16 — Middle-button input owns only the temporary camera
 
-Status: **Locally verified at emitted-script and reviewed installed-artifact
-boundaries** under REQ-QML-021-AC01–AC03 and changed REQ-QML-019-AC04. Native
+Disposition: **Deferred for the upstream contribution**. Historical status:
+**Locally verified at the recorded emitted-script and reviewed installed-artifact
+boundaries** under REQ-QML-021-AC01–AC03 and changed REQ-QML-019-AC04. These
+passes describe the frozen fork's INC-QML-16 feature. Native
 browser/device and other-platform behavior remains unverified. A held mouse
 middle button pans the existing 2D network camera.
 Screen movement `(dx, dy)` produces world movement `(-dx / scale, -dy / scale)`
@@ -527,7 +564,8 @@ from the current view, preserving the current scale and disabling camera animati
 for that movement. Reading the scale on each move preserves native wheel zoom
 between movements. Source and aggregate views share this input contract.
 
-`exporters/html_navigation.py::MIDDLE_PAN_SCRIPT` owns a plain JavaScript IIFE over
+The [frozen camera helper](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/graphify/exporters/html_navigation.py)
+defines `MIDDLE_PAN_SCRIPT`, a plain JavaScript IIFE over
 the existing `container` and `network`; the HTML exporter injects it once after
 network construction and initial physics setup. Mouse middle pointer input is
 handled separately from left/right/touch and wheel behavior. Native middle-button
@@ -549,7 +587,7 @@ state adds no graph diagnostic or writer operation. Qt policy 6, AST schema 7 an
 source fact schemas remain unchanged. The new helper/tests stay below 300 lines;
 the narrow HTML injection/removal stays within the measured legacy viewer ceiling.
 Exact production emitted-script, rejection/coexistence and reviewed installed-
-artifact evidence belongs to traceability/validation. Current navigation/selection
+artifact evidence belongs to traceability/validation. The recorded navigation/selection
 tests pass 60 cases, including 24 independent axis/scale/view variants. The source,
 wheel and isolated installation contain 156 byte-equal Python payloads. No browser
 visual or native-device proof is inferred from the recorded camera/network harness.

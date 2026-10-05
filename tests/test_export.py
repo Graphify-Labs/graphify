@@ -1304,9 +1304,7 @@ const vis = {{
 }};
 
 const document = doc;
-// Inspector scenarios register browser listeners without dispatching gestures.
-// Navigation tests exercise the same emitted callbacks through their event boundary.
-const window = {{ listeners: [], addEventListener(...args) {{ this.listeners.push(args); }} }};
+const window = {{}};
 
 {script}
 
@@ -1372,6 +1370,6 @@ def test_to_html_aggregated_community_nodes_runtime(tmp_path):
     assert '<div class="field"><b>Core Systems</b></div>' in info_html
     assert '<div class="field">Community: Core Systems</div>' in info_html
     assert '<div class="field">Members: 25</div>' in info_html
-    assert '<div class="field">Connected communities: 1</div>' in info_html
+    assert '<div class="field">Degree: 1</div>' in info_html
     assert "Type: unknown" not in info_html
     assert "Source: -" not in info_html

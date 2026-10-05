@@ -1,5 +1,22 @@
 # Qt/QML platform and artifact proof
 
+## Upstream submission scope
+
+The [scoped upstream contribution](UPSTREAM_CONTRIBUTION.md) retains bounded Qt/QML analysis
+and its source, incremental, publication and consumer contracts. REQ-QML-019
+and REQ-QML-021, D12/D16, and the generic viewer portions of INC-QML-09/13/16
+are deferred for this submission. Native Codex REQ-CORE-001-AC01/AC05 and the
+broad fork repository policy are also deferred; the baseline installer and
+repository policy apply. Constructor and source-containment work in INC-QML-13
+remains in scope.
+
+The [complete frozen fork](https://github.com/SlinkyRamey/graphify/commit/82a4f296446b4cc219ffecfe3345a037e9c362e4)
+and its recorded 8b6c9d2 source/runner evidence retain their own revision scope.
+Deferred feature sections and their exact tests below are historical evidence,
+not implemented or verified contracts of this narrower contribution. A changed
+contribution head requires fresh applicable checks; prior totals, skips and
+hosted results do not establish those checks.
+
 This is a delivery matrix for [REQ-QML-001 and REQ-QML-014](../REQUIREMENTS.md),
 not a claim that all Qt runtime behavior is statically resolvable. The project
 declares Python `>=3.10`; the twelve advertised CI lanes below are the narrower

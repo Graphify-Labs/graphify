@@ -1,5 +1,22 @@
 # Qt/QML validation record
 
+## Upstream submission scope
+
+The [scoped upstream contribution](UPSTREAM_CONTRIBUTION.md) retains bounded Qt/QML analysis
+and its source, incremental, publication and consumer contracts. REQ-QML-019
+and REQ-QML-021, D12/D16, and the generic viewer portions of INC-QML-09/13/16
+are deferred for this submission. Native Codex REQ-CORE-001-AC01/AC05 and the
+broad fork repository policy are also deferred; the baseline installer and
+repository policy apply. Constructor and source-containment work in INC-QML-13
+remains in scope.
+
+The [complete frozen fork](https://github.com/SlinkyRamey/graphify/commit/82a4f296446b4cc219ffecfe3345a037e9c362e4)
+and its recorded 8b6c9d2 source/runner evidence retain their own revision scope.
+Deferred feature sections and their exact tests below are historical evidence,
+not implemented or verified contracts of this narrower contribution. A changed
+contribution head requires fresh applicable checks; prior totals, skips and
+hosted results do not establish those checks.
+
 This chronological record preserves evidence for each tested revision. Current
 INC-QML-49–52 integration uses package 0.9.76, schema 13 and policy 22. Its
 [verified integrated checkpoint](../../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2)
@@ -778,9 +795,7 @@ the changed startup behavior.
 
 The focused production command was:
 
-```powershell
-.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_html_initial_view.py tests/test_html_community_recovery.py tests/test_export.py tests/test_cli_export.py tests/test_qt_graph_html_payload.py --tb=short -rs
-```
+Historical invocation/source excerpt: [frozen VALIDATION lines 781–784](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/docs/qt-qml/VALIDATION.md#L781-L784). Deferred owners: [frozen test_html_initial_view owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_initial_view.py), [frozen test_html_community_recovery owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_recovery.py).
 
 Result: **157 passed**, no skips, 43.03 seconds. The new expectations first failed
 with seven failed/one passed in 1.95 seconds; all eight initial-view cases pass
@@ -1004,7 +1019,7 @@ Six new modules exercise these production boundaries:
 | `tests/test_qt_member_source_links.py` | Exact accepted callable containment without type authority, local source occurrences, immutable borrowed context, negative proof controls and actual JSON/HTML |
 | `tests/test_qt_source_file_containment.py` | Real facade/source-file links for unresolved sites, accepted AST role controls, reload, refresh and stale-site removal |
 | `tests/test_qt_source_links_upgrade.py` | Same-version CLI upgrade from policy/schema 3/6 and 4/7, unchanged-source reparse, unrelated Python, no-change parity and durable failure retention |
-| `tests/test_html_community_links.py` | Production emitted inspector script and aggregate payload counts, escaping, immutable source graphs and supplied-meta/small-view controls |
+| [frozen test_html_community_links owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_links.py) | Production emitted inspector script and aggregate payload counts, escaping, immutable source graphs and supplied-meta/small-view controls |
 
 ### Red/green and compatibility evidence
 
@@ -1021,9 +1036,7 @@ source-file lifecycle/upgrade parameter additions:
 
 Final six-module source proof passes **90 cases**, 14.70 seconds, with no skips:
 
-```powershell
-.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_qt_source_file_containment.py tests/test_qt_member_source_links.py tests/test_qt_source_links_upgrade.py tests/test_cpp_constructor_ownership.py tests/test_qt_constructor_ownership.py tests/test_html_community_links.py --tb=short -rs
-```
+Historical invocation/source excerpt: [frozen VALIDATION lines 1024–1027](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/docs/qt-qml/VALIDATION.md#L1024-L1027). Deferred owners: [frozen test_html_community_links owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_links.py).
 
 An earlier 88-pass/two-failure execution of that selection in 12.95 seconds
 exposed the unsupported generic overload source-location parity discrepancy.
@@ -1126,14 +1139,7 @@ not complete REQ-QML-018's separate metadata/provider/whole-profile matrix.
 
 Final lint/type commands cover the focused production owners and six new suites:
 
-```powershell
-$reviewedFiles = @('graphify/qt_source_containment.py', 'graphify/qt_qml_pipeline.py', 'graphify/qt_incremental.py', 'graphify/extractors/cpp_constructors.py', 'graphify/extractors/qt_cpp_exposure.py', 'graphify/extractors/qt_cpp_mapping.py', 'graphify/extractors/qt_cpp_events.py', 'graphify/extractors/qt_cpp_variables.py', 'graphify/exporters/html.py', 'tests/test_cpp_constructor_ownership.py', 'tests/test_qt_constructor_ownership.py', 'tests/test_qt_source_file_containment.py', 'tests/test_qt_member_source_links.py', 'tests/test_qt_source_links_upgrade.py', 'tests/test_html_community_links.py')
-.venv/Scripts/ruff.exe check @reviewedFiles
-.venv/Scripts/pyright.exe --pythonpath .venv/qt-mcp-312/Scripts/python.exe @reviewedFiles
-uv lock --check --offline
-git diff --check
-git diff --cached --check
-```
+Historical invocation/source excerpt: [frozen VALIDATION lines 1129–1137](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/docs/qt-qml/VALIDATION.md#L1129-L1137). Deferred owners: [frozen test_html_community_links owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_links.py).
 
 The lock check resolves 210 packages with no lockfile change. These scoped type
 checks do not claim that the oversized legacy facade/extractor/resolver files
@@ -1394,17 +1400,7 @@ expectations. No retained product assertion is weakened for this removal.
 | Ruff and type checks | Five touched owners pass Ruff. The four navigation/source/test owners pass explicit-runtime Pyright with zero errors/warnings. Legacy export tests retain one proven pre-existing error described below |
 | Lockfile | Offline check resolves 210 packages; no dependency or lockfile change |
 
-```powershell
-.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_html_initial_view.py tests/test_html_middle_pan.py tests/test_export.py tests/test_cli_export.py tests/test_html_community_links.py tests/test_html_community_recovery.py tests/test_qt_graph_html_payload.py tests/test_qt_project_membership_updates.py --tb=short -rs
-$env:GRAPHIFY_QML_TEST_WHEEL = '<reviewed wheel>'
-.venv/qt-mcp-312/Scripts/python.exe -X utf8 -m pytest -q tests/test_qt_html_consumers.py tests/test_qml_wheel_artifact.py --tb=short -rs
-Remove-Item Env:GRAPHIFY_QML_TEST_WHEEL
-$navigationFiles = @('graphify/exporters/html.py', 'graphify/exporters/html_navigation.py', 'tests/test_html_initial_view.py', 'tests/test_html_middle_pan.py')
-.venv/Scripts/ruff.exe check @navigationFiles tests/test_export.py
-.venv/Scripts/pyright.exe --pythonpath .venv/qt-mcp-312/Scripts/python.exe @navigationFiles
-uv lock --check --offline
-graphify update .
-```
+Historical invocation/source excerpt: [frozen VALIDATION lines 1397–1408](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/docs/qt-qml/VALIDATION.md#L1397-L1408). Deferred owners: [frozen test_html_initial_view owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_initial_view.py), [frozen test_html_middle_pan owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_middle_pan.py), [frozen test_html_community_links owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_links.py), [frozen test_html_community_recovery owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_recovery.py), [frozen html_navigation owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/graphify/exporters/html_navigation.py).
 
 The wheel placeholder identifies the digest above rather than an arbitrary
 same-version artifact. Package version 0.9.74, Qt policy 6 and AST schema 7 remain

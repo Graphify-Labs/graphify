@@ -1,5 +1,22 @@
 # Qt/QML follow-up audit
 
+## Upstream submission scope
+
+The [scoped upstream contribution](UPSTREAM_CONTRIBUTION.md) retains bounded Qt/QML analysis
+and its source, incremental, publication and consumer contracts. REQ-QML-019
+and REQ-QML-021, D12/D16, and the generic viewer portions of INC-QML-09/13/16
+are deferred for this submission. Native Codex REQ-CORE-001-AC01/AC05 and the
+broad fork repository policy are also deferred; the baseline installer and
+repository policy apply. Constructor and source-containment work in INC-QML-13
+remains in scope.
+
+The [complete frozen fork](https://github.com/SlinkyRamey/graphify/commit/82a4f296446b4cc219ffecfe3345a037e9c362e4)
+and its recorded 8b6c9d2 source/runner evidence retain their own revision scope.
+Deferred feature sections and their exact tests below are historical evidence,
+not implemented or verified contracts of this narrower contribution. A changed
+contribution head requires fresh applicable checks; prior totals, skips and
+hosted results do not establish those checks.
+
 Date: 4 October 2026. Inspected implementation:
 `95adbdc165f44a96bf275a7870bb1da4d82a5bea`, on the existing feature branch.
 The baseline audit was findings-only. Its original observations and reproduction
@@ -183,7 +200,8 @@ retry, consumer and installed-artifact evidence. Existing INC-QML-08/11/15 remai
 open. Full-suite and language-convention gaps are upstream delivery gates rather
 than invented product features.
 
-AGENTS.md now emphasizes truthful AI attribution, receiver/declaration identity
+At the audit checkpoint, the [frozen fork policy](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/AGENTS.md)
+emphasized truthful AI attribution and receiver/declaration identity
 counterexamples and promotion of opt-in audit probes into normal regression
 collection. The audit strengthens evidence obligations without claiming a runtime
 fix, new infrastructure or complete Qt/QML coverage.

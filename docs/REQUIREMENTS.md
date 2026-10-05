@@ -1,5 +1,16 @@
 # Graphify requirements
 
+## Upstream contribution scope
+
+The [upstream contribution](qt-qml/UPSTREAM_CONTRIBUTION.md) retains Qt/QML
+analysis and its shared integrity/consumer prerequisites. REQ-QML-019/021 and
+REQ-CORE-001-AC01/AC05 are deferred independent features in this contribution.
+Their stable contracts and complete-fork evidence remain historical; they are
+not completed or verified by this source. The source-count projection portion
+of REQ-QML-019-AC02 remains a REQ-QML-020 dependency; the broader viewer criterion
+remains deferred. Other evidence is bound to its
+recorded revision and must be refreshed for the scoped contribution head.
+
 This is the canonical product requirements document. Entries cover the
 Qt/QML support extension and shared assistant/analysis compatibility. Add or update product requirements here with the
 behavioural change, preserving established identifiers and acceptance traceability.
@@ -453,7 +464,10 @@ reported accurately instead of claiming that a file was written.
 
 4 - Select All starts checked, and all exported view nodes and edges are active in the visualization datasets before network layout begins. Large source graphs retain the complete, labeled community aggregate and supported display cap; selecting all exported view data does not force raw full-source rendering. The Overview button, top-ten selection mode and reset function are absent. Community filters, search, Select All and Select None retain their selection behavior; the Select All checkbox accurately reflects complete, partial and empty active datasets, including ungrouped nodes. Search restores a filtered result before focusing it. The complete exported metadata remains in the RAW payload, canonical graph data is unchanged, and view choices remain temporary with no added saved camera/filter persistence. Production emitted-script tests exercise checked startup, removal of Overview, filters/search/all/none and payload preservation. (`REQ-QML-019-AC04`)
 
-Status: **AC01–AC04 locally verified at exporter/emitted-script boundaries**.
+Status: **Deferred from the upstream contribution**. AC01–AC04 have historical
+fork exporter/emitted-script evidence. The contribution retains baseline generic
+HTML grouping and selection behavior. The source-count portion of AC02 is
+retained for REQ-QML-020; these broader criteria do not close here.
 INC-QML-16 removes the former optional Overview contract and re-verifies the
 remaining selection lifecycle, with reviewed installed-artifact proof. Earlier
 AC04 startup/Overview results remain
@@ -545,8 +559,8 @@ community selection.
 
 3 - Left-button node selection/drag, right-button behavior, touch gestures, native wheel zoom, search, community filters, Select All/None and the inspector retain their supported behavior. Middle-button movement changes only the camera; no node, edge, source metadata, physics configuration, filter or selection is rewritten. Original graph bytes and exported source payloads remain unchanged. The production exporter, emitted script and reviewed installed artifact exercise the new controls and removal of Overview; unavailable browser appearance or platform checks remain explicit gaps. (`REQ-QML-021-AC03`)
 
-Status: **Implemented; AC01–AC03 locally verified at emitted-script and reviewed
-installed-artifact boundaries**. Native browser/device appearance and other-platform
+Status: **Deferred from the upstream contribution**. AC01–AC03 have historical
+fork emitted-script and reviewed installed-artifact evidence. Native browser/device appearance and other-platform
 interaction remain unverified; the external DOM/network harness does not establish
 those system results. Exact evidence and limitations belong to
 [INC-QML-16](qt-qml/PLAN.md#inc-qml-16--middle-mouse-navigation-and-overview-removal)
@@ -573,9 +587,11 @@ and content contract of the selected operating-system profile.
 
 5 - Windows user-scope hooks preserve the selected Graphify executable through Cmd and PowerShell argument transports when legal path characters include spaces, operators, apostrophes, dollar signs, backticks and paired percent names. A PATH decoy or environment expansion cannot substitute another executable. Missing selected launchers and launcher failures return failure. A missing, inaccessible or unsafe OS-owned PowerShell executable, or an encoded command exceeding the supported Cmd transport limit, rejects hook installation with a bounded actionable reason before changing existing hook JSON or its backup. Repeated installation and uninstall retain unrelated hooks and recognize the owned command through supported status metadata. Project-scope bare invocation and POSIX literal quoting retain their existing contracts. (`REQ-CORE-001-AC05`)
 
-Status: **Locally Verified for native Windows and destination decision profiles**.
-All five criteria have focused source and native consumer evidence; the full
-Windows source suite has no failures. Other kernels and actual Codex Desktop
+Status: **AC01/AC05 deferred from the upstream contribution; AC02–AC04 retain
+upstream behavior with platform fixture coverage**. All five criteria have
+historical fork source and native consumer evidence. The scoped contribution
+preserves upstream hook serialization and does not claim AC01/AC05 acceptance.
+Other kernels and actual Codex Desktop
 event delivery retain separate system boundaries. INC-CORE-01 and INC-CORE-05
 belong to the [compatibility plan](COMPATIBILITY.md#plan-and-acceptance-matrix).
 
@@ -625,7 +641,7 @@ dependencies, and reports failures and exclusions explicitly.
 
 1 - Ubuntu Python 3.10, 3.12, 3.13 and 3.14 jobs execute the full source suite with all frozen extras, a real C preprocessor, Bash/sh, Node and a reviewed wheel input. A disposable pinned FalkorDB service admits graph commands before its persistence/idempotency tests run. Missing tools or the wrong service fail readiness; they cannot establish passing acceptance through skips. Real POSIX object, permission and deleted-directory fixtures execute where applicable. (`REQ-CORE-004-AC01`)
 
-2 - A Windows Python 3.12 job executes the assigned native hook, installer, filesystem recovery, Terraform and emitted-script regressions with real Cmd/Windows PowerShell, Git Bash/sh and Node 24.19.0. Application resolution selects the first executable in the configured PATH even when multiple applications match; the selected Node version must be 24.19.0. Python test subprocesses launch the admitted absolute Bash/sh executable: native system/CWD search cannot replace it with another shell. Bash forwards to the selected Python interpreter; PATH cannot substitute a global Graphify or invoke an installation fallback. Tool preflight exercises that consumer boundary and fails before collection when a required consumer is unavailable. POSIX-only exclusions retain their separate Linux assignment. (`REQ-CORE-004-AC02`)
+2 - A Windows Python 3.12 job executes the assigned Qt/source-identity, installer, filesystem recovery and Terraform compatibility regressions with real Cmd/Windows PowerShell, Git Bash/sh and Node 24.19.0. Independent native hook serialization and general HTML navigation features are excluded from this contribution's assignment. Application resolution selects the first executable in the configured PATH even when multiple applications match; the selected Node version must be 24.19.0. Python test subprocesses launch the admitted absolute Bash/sh executable: native system/CWD search cannot replace it with another shell. Bash forwards to the selected Python interpreter; PATH cannot substitute a global Graphify or invoke an installation fallback. Tool preflight exercises that consumer boundary and fails before collection when a required consumer is unavailable. POSIX-only exclusions retain their separate Linux assignment. (`REQ-CORE-004-AC02`)
 
 3 - Source jobs retain the workflow/event/ref, PR source head and base, actual checkout SHA, interpreter/tool/dependency versions, pytest exit, JUnit outcomes and skip reasons. The native artifact includes the actual preflight's Bash/sh executable, Python and Node identity report; a local producer file or successful assertion alone cannot establish upload completion. Tests preserve the checkout, tracked source/configuration and installed dependency identities. Failed pytest remains a failed job when evidence/integrity steps run; unavailable evidence is reported explicitly. Disposable test graphs and the job-owned service are removed with confirmed cleanup; failed or unconfirmed cleanup cannot establish acceptance. Fake SDK providers and public fixtures supply test data without credentials or private corpus inputs. (`REQ-CORE-004-AC03`)
 
@@ -651,7 +667,8 @@ serialization and qualified path queries. These are REQ-QML-002, REQ-QML-003,
 REQ-QML-010, REQ-QML-011, REQ-QML-018 and REQ-QML-020 acceptance boundaries,
 with REQ-CORE-004 owning hosted evidence. No new numeric requirement is allocated.
 
-Status: **Implemented; recorded source/native/installed hosted profiles verified at 8b6c9d2**.
+Status: **Implemented; historical integrated source/native/installed hosted
+profiles verified at 8b6c9d2; scoped contribution proof pending**.
 Earlier Verified labels apply to their recorded bounded source/artifact/runner
 revisions. They do not establish current-upstream integration acceptance. Exact
 new assignments, executed profiles and remaining gaps belong to traceability.

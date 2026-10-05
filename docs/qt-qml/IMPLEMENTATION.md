@@ -1,17 +1,38 @@
 # Executed increments
 
+## Upstream submission scope
+
+The [scoped upstream contribution](UPSTREAM_CONTRIBUTION.md) retains bounded Qt/QML analysis
+and its source, incremental, publication and consumer contracts. REQ-QML-019
+and REQ-QML-021, D12/D16, and the generic viewer portions of INC-QML-09/13/16
+are deferred for this submission. Native Codex REQ-CORE-001-AC01/AC05 and the
+broad fork repository policy are also deferred; the baseline installer and
+repository policy apply. Constructor and source-containment work in INC-QML-13
+remains in scope.
+
+The [complete frozen fork](https://github.com/SlinkyRamey/graphify/commit/82a4f296446b4cc219ffecfe3345a037e9c362e4)
+and its recorded 8b6c9d2 source/runner evidence retain their own revision scope.
+Deferred feature sections and their exact tests below are historical evidence,
+not implemented or verified contracts of this narrower contribution. A changed
+contribution head requires fresh applicable checks; prior totals, skips and
+hosted results do not establish those checks.
+
 The [follow-up audit](FOLLOWUP_AUDIT.md) records receiver, descendant, engine and
 alias false positives at its inspected baseline. INC-QML-17–27 implement bounded
-corrections; INC-QML-11/15/08 and INC-QML-28–38 complete the current local adoption
-profile. Historical records retain their original revision and scope.
-Current capabilities, epochs, evidence and limits appear in the
-[final adoption delivery](#final-adoption-delivery).
+corrections; INC-QML-11/15/08 and INC-QML-28–38 complete the bounded local adoption
+profile recorded below. Historical records retain their original revision and scope.
+The [final adoption delivery](#final-adoption-delivery) preserves that older
+checkpoint. Later integration scope and evidence are recorded in the
+[current-upstream integration profile](../REQUIREMENTS.md#current-upstream-integration-profile)
+and the [immutable 8b6c9d2 checkpoint](../../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2).
+Those records retain their tested revision, declared profiles and remaining gaps;
+they do not establish acceptance of a later contribution head.
 
 <a name="qml-00"></a>
 
 The increment records below retain revision-specific implementation and evidence.
-The final adoption delivery section records the current expanded profile; older
-epochs, pending statements and test totals describe their individual checkpoints.
+Their epochs, pending statements and test totals describe their individual
+checkpoints.
 
 ## INC-QML-00
 
@@ -360,6 +381,11 @@ for this source change; prior INC-QML-07 proof remains revision-specific.
 
 ## INC-QML-09 community presentation
 
+Upstream disposition: this generic viewer increment and REQ-QML-019 are deferred.
+The implementation, tests, counts and owner measurements below describe the
+frozen complete fork. The narrowed contribution retains baseline generic HTML
+behavior and separate Qt payload/tooltip/omission contracts.
+
 HTML community recovery validates complete partition membership and uses the
 existing clustering and hub-labeling interfaces on an export-local view. A
 custom graph's analysis is loaded beside that graph. Missing names become usable
@@ -367,7 +393,7 @@ local labels; stale partition names do not migrate to newly computed groups.
 Failed or skipped publication retains prior output and reports its true CLI
 outcome. The atomic writer and canonical graph owners remain unchanged.
 
-The current viewer contract starts with Select All checked and admits all
+The viewer contract at this historical checkpoint starts with Select All checked and admits all
 exported view nodes and edges before network construction. Large graphs retain
 their complete labeled aggregate and supported cap. Overview optionally selects
 the ten largest source communities with stable member-count/ID ordering and
@@ -379,8 +405,8 @@ checked. The focused selection passes 157 cases without skips; built-artifact
 checks pass three cases. Prior selection-policy tests remain historical evidence
 in VALIDATION. Browser visual, other-platform and new hosted checks are unexecuted.
 
-Current handwritten owners measure html_communities.py (79 physical lines),
-test_html_community_recovery.py (293) and test_html_initial_view.py (234).
+Historical handwritten owners measure [frozen html_communities owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/graphify/exporters/html_communities.py) (79 physical lines),
+[frozen test_html_community_recovery owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_community_recovery.py) (293) and [frozen test_html_initial_view owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_initial_view.py) (234).
 Touched legacy ceilings are exporters/html.py (763) and cli.py (4966).
 Owner: presentation maintainer, coordinating CLI/export upstream ownership.
 The HTML module keeps one inline viewer state across layout, filtering, search
@@ -462,7 +488,12 @@ unique accepted source file. This file relationship leaves callable/class/target
 identities and unresolved status unchanged. Rejected file-role/provenance evidence
 cannot authorize containment.
 
-The aggregate HTML inspector reports internal source edges, external source edges
+The full generic aggregate-inspector change remains historical under deferred
+REQ-QML-019. Internal/external source-edge counts remain a REQ-QML-020 membership
+prerequisite; distinct-community labels and isolate explanations are deferred.
+Native constructor and source-containment changes remain retained.
+The frozen aggregate HTML inspector reports
+internal source edges, external source edges
 and distinct connected communities. Closed connected groups are distinguished
 from genuine isolates; counts use the canonical input graph, not duplicated raw
 serialized occurrences. Existing Select All, source-node Degree and bounded
@@ -550,6 +581,11 @@ identified no additional required increment for the completed membership profile
 
 ## Final adoption delivery
 
+This section preserves the local adoption checkpoint before integration with
+newer upstream. Its schema/policy, suite totals and pending outcomes belong to
+that revision. Later integration evidence is linked above; it does not rewrite
+these earlier results or prove a later contribution revision.
+
 INC-QML-11 resolves bounded multi-level inherited signals with declaration-owned
 endpoints and conservative shadow/conflict/cycle rejection. INC-QML-15 preserves
 distinct constructor signatures, original locations and declaration/definition
@@ -571,7 +607,7 @@ publication. Removal uses accepted prior ownership proof; partial refresh cannot
 authorize orphan deletion. First minted external nodes receive semantic origin;
 an unchanged second update cannot rewrite valid bytes solely for origin backfill.
 Per-occurrence event transport remains bounded without recursive literal encoding.
-Final AST cache schema is 12 and Qt policy is 18.
+The adoption checkpoint uses AST cache schema 12 and Qt policy 18.
 
 INC-QML-08c is locally complete for Windows x64/Python 3.12.14 with pinned parser
 0.25.2/language-pack 0.11.0. The reviewed installed wheel passes 3,024 tests with
@@ -581,9 +617,10 @@ pass, with hand-checked facts and equal graph bytes. Individual acceptance,
 failure/repair and mutation proof is in [traceability](../../tests/TRACEABILITY.md#final-adoption-delivery);
 commands and digest are in [validation](VALIDATION.md#final-adoption-delivery).
 
-The final full source suite has 8,630 passes, 59 pre-existing failures and 178 skips;
-no new failure identities appear. Full typing retains baseline errors with no
-added diagnostics. Current hosted OS/Python lanes, live service proof and native
-browser/device interaction remain unverified. Static declared API compatibility
+At this adoption checkpoint, the final full source suite has 8,630 passes,
+59 pre-existing failures and 178 skips; no new failure identities appear. Full
+typing retains baseline errors with no added diagnostics. The hosted OS/Python
+lanes, live service proof and native browser/device interaction remain unverified
+at this checkpoint. Static declared API compatibility
 does not establish Qt build success, plugin availability, runtime conversion,
 overload dispatch, allocation, ordering, lifetime or thread safety.

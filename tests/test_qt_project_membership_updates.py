@@ -7,6 +7,7 @@ import pytest
 
 from graphify.extractors.qml_facts import qml_metadata
 from tests.test_qt_final_incremental_parity import clean, normalized, run, unrelated
+from tests.test_qt_graph_html_payload import payload, runtime_info
 
 
 def fixture(root):
@@ -203,7 +204,6 @@ def test_req_qml020_ac02_join_exception_cannot_publish_partial_memberships(tmp_p
 def test_req_qml020_ac01_unused_packaged_component_survives_aggregate_export(tmp_path, monkeypatch):
     """Actual serialized facts yield aggregate links and truthful source-edge counts."""
     from graphify.export import to_html
-    from tests.test_html_community_links import inspect
 
     fixture(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -214,13 +214,45 @@ def test_req_qml020_ac01_unused_packaged_component_survives_aggregate_export(tmp
     number = files.index("Spare.qml")
     path = tmp_path / "aggregate.html"
     assert to_html(graph, groups, str(path), node_limit=1, learning_overlay={})
-    result = inspect(path.read_text(encoding="utf-8"), str(number))
+    content = path.read_text(encoding="utf-8")
+    result = {"nodes": payload(content, "RAW_NODES"), "info": runtime_info(content, str(number), monkeypatch)}
     selected = next(node for node in result["nodes"] if node["id"] == str(number))
     assert selected["external_source_edges"] == 2 and selected["degree"] == 2
     assert selected["internal_source_edges"] > 0
-    assert "External source edges: 2" in result["info"] and result["checked"]
+    # Startup selection belongs to deferred REQ-QML-019-AC04; source counts remain required.
+    assert "External source edges: 2" in result["info"]
     assert sum(node["internal_source_edges"] for node in result["nodes"]) + sum(
         node["external_source_edges"] for node in result["nodes"]) // 2 == graph.number_of_edges()
+
+
+@pytest.mark.parametrize("invalid", [True, -1, "</div><script>bad()</script>"])
+def test_req_qml020_ac01_aggregate_counts_keep_source_edges_and_reject_invalid_fields(tmp_path, monkeypatch, invalid):
+    """Parallel/directed/self-loop edges count once; untrusted aggregate fields remain unavailable."""
+    import copy
+    import networkx as nx
+    from graphify.export import to_html
+
+    graph = nx.MultiDiGraph()
+    graph.add_edges_from([("a0", "a1"), ("a1", "a0"), ("a0", "a0"), ("a0", "b0"),
+                          ("b0", "a0"), ("a0", "a1"), ("a1", "b0")])
+    before = copy.deepcopy(graph)
+    path = tmp_path / "counts.html"
+    assert to_html(graph, {0: ["a0", "a1"], 1: ["b0"]}, str(path), node_limit=1, learning_overlay={})
+    nodes = {node["id"]: node for node in payload(path.read_text(encoding="utf-8"), "RAW_NODES")}
+    assert nodes["0"]["internal_source_edges"] == 4 and nodes["1"]["internal_source_edges"] == 0
+    assert nodes["0"]["external_source_edges"] == nodes["1"]["external_source_edges"] == 3
+    assert sum(n["internal_source_edges"] for n in nodes.values()) + sum(
+        n["external_source_edges"] for n in nodes.values()) // 2 == graph.number_of_edges()
+    assert nx.utils.graphs_equal(graph, before)
+    meta = nx.Graph([("0", "1")])
+    meta.nodes["0"].update(internal_source_edges=invalid, external_source_edges=invalid)
+    assert to_html(meta, {0: ["0"], 1: ["1"]}, str(path), member_counts={0: 4, 1: 2}, learning_overlay={})
+    content = path.read_text(encoding="utf-8")
+    assert all("internal_source_edges" not in n and "external_source_edges" not in n
+               for n in payload(content, "RAW_NODES"))
+    info = runtime_info(content, "0", monkeypatch)
+    assert "Internal source edges: unavailable" in info and "External source edges: unavailable" in info
+    assert "bad()" not in info and "Degree: 1" in info
 
 
 def test_req_qml020_ac03_membership_ids_are_independent_of_checkout_location(tmp_path):

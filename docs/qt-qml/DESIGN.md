@@ -1,12 +1,36 @@
 # Qt/QML implementation contracts
 
+The scoped exporter retains per-source-edge aggregate counts required by Qt
+project membership. Count ownership remains the exporter; it visits canonical
+source edges without mutating the graph and supplements baseline degree display.
+This dependency does not include deferred partition recovery, startup-selection
+or navigation behavior. The corrected membership scenario uses the upstream
+production inspector harness rather than a deferred viewer-test module.
+
+## Upstream submission scope
+
+The [scoped upstream contribution](UPSTREAM_CONTRIBUTION.md) retains bounded Qt/QML analysis
+and its source, incremental, publication and consumer contracts. REQ-QML-019
+and REQ-QML-021, D12/D16, and the generic viewer portions of INC-QML-09/13/16
+are deferred for this submission. Native Codex REQ-CORE-001-AC01/AC05 and the
+broad fork repository policy are also deferred; the baseline installer and
+repository policy apply. Constructor and source-containment work in INC-QML-13
+remains in scope.
+
+The [complete frozen fork](https://github.com/SlinkyRamey/graphify/commit/82a4f296446b4cc219ffecfe3345a037e9c362e4)
+and its recorded 8b6c9d2 source/runner evidence retain their own revision scope.
+Deferred feature sections and their exact tests below are historical evidence,
+not implemented or verified contracts of this narrower contribution. A changed
+contribution head requires fresh applicable checks; prior totals, skips and
+hosted results do not establish those checks.
+
 Status: INC-QML-00 through INC-QML-07 are implemented and verified for the bounded
 static profile, with revision-specific hosted source/artifact proof.
-Earlier INC-QML-09 HTML selection is locally verified at exporter/CLI and emitted-
-script boundaries for its recorded revision. INC-QML-16 changes REQ-QML-019-AC04
-and adds camera navigation under REQ-QML-021; those current contracts have local
-emitted-script and reviewed installed-artifact proof. Native browser/device,
-other-platform and new hosted behavior remains unverified.
+Earlier INC-QML-09 HTML selection and INC-QML-16 camera navigation/Overview
+removal have local emitted-script and reviewed installed-artifact proof for their
+recorded complete-fork revisions. Those generic viewer contracts are deferred
+for this upstream submission. Native browser/device and other unexecuted profiles
+remain gaps in that historical evidence.
 [PLATFORM_MATRIX.md](PLATFORM_MATRIX.md) records declared installation lanes.
 [ARCHITECTURE.md](ARCHITECTURE.md) owns ADRs and
 [traceability](../../tests/TRACEABILITY.md) owns individual acceptance evidence.
@@ -16,8 +40,9 @@ deduplication, pass local source, final broad and reviewed installed-artifact ch
 INC-QML-11 implements bounded ancestor lookup. Its installed integration and
 INC-QML-28 emission admission pass the recorded local source/artifact profiles;
 current hosted acceptance is tracked separately in validation and traceability.
-INC-QML-12 constructor source proof and INC-QML-13 source containment/view counts
-are implemented with local source and reviewed installed-artifact validation. Missing constructor class proof
+INC-QML-12 constructor source proof and the native source-containment part of
+INC-QML-13 are retained, with recorded local source and installed-artifact evidence.
+Its generic viewer-count feature is deferred for this submission. Missing constructor class proof
 cannot be supplied by a same-name header prototype; source containment alone
 does not establish a native endpoint.
 INC-QML-14 membership projection and INC-QML-15 bounded overload resolution pass
@@ -392,7 +417,12 @@ publication. See the exact regression/evidence inventory in IMPLEMENTATION.md.
 
 ## HTML community-view ownership
 
-`exporters/html_communities.py` validates complete, disjoint membership for a
+Upstream disposition: D12 and REQ-QML-019 are deferred. This section preserves
+the complete fork's generic presentation design; these helper owners and viewer
+behavior are absent from the narrower contribution. Retained Qt HTML payload,
+tooltip, search and omission contracts remain separate.
+
+[frozen html_communities owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/graphify/exporters/html_communities.py) validates complete, disjoint membership for a
 large aggregate view. Missing or invalid presentation grouping is recovered on
 an export-local graph copy through the existing clustering interface. It fills
 missing labels through the existing hub labeler and discards labels tied to a
@@ -530,12 +560,16 @@ its persisted AST marker. Duplicate, foreign or unmarked borrowed candidates
 fail closed. Original spans and endpoint direction survive publication. File
 context does not populate `owner_id`, class identity or semantic resolution.
 
+The following full generic aggregate-inspector contract remains historical under
+deferred REQ-QML-019. Its internal/external source-count projection is retained
+as the REQ-QML-020 membership prerequisite; connected-community labels and
+isolate explanations remain deferred. Native source containment remains retained.
 The HTML aggregate counts each canonical source-graph edge once as internal to
 a community or external at both incident communities. Distinct neighboring
 communities remain a separate count. Canonical self-loops and parallel/directed
 edges are counted as represented by the input graph; serialized duplicate
 occurrences are not additional edges. Counts add no aggregate self-loops or
-synthetic relationships. The inspector distinguishes closed connected groups
+synthetic relationships. The frozen inspector distinguishes closed connected groups
 from actual isolates. A pre-aggregated caller without source counters displays
 unavailable counts; ordinary source-node Degree and Select All remain unchanged.
 
@@ -561,7 +595,12 @@ fallback, cache lifetime, direct-extractor behavior and parallel-worker semantic
 Review this exception before changes to either owner; it does not apply to Qt/QML
 extractors or authorize facade imports elsewhere.
 
-| Owner/file | Current measured size / permitted ceiling | Rationale and extraction exit |
+The following measurements belong to the INC-QML-13/16 checkpoint. Current
+submission owners and ceilings are recorded in
+[UPSTREAM_CONTRIBUTION.md](UPSTREAM_CONTRIBUTION.md); the camera helper and its
+injection are absent from the scoped exporter.
+
+| Owner/file | Historical measured size / permitted ceiling | Rationale and extraction exit |
 | --- | --- | --- |
 | HTML exporter maintainer: `exporters/html.py` | 789 / 810 physical lines | Existing embedded template and recursive aggregate projection share serialization. INC-QML-16 removes Overview and injects the isolated camera helper through a narrow seam, retaining this ceiling. Extract aggregate projection or template responsibility in a separate characterized viewer increment when the next cohesive change requires it. |
 | Generic extractor maintainer: `extractors/engine.py` | 7694 / 7700 | Five-line constructor producer hook only; domain logic belongs to `cpp_constructors.py`. Continue the upstream mechanical migration sequencing rather than mixing unrelated language moves into this fix. |
@@ -708,6 +747,10 @@ publication and broader API-family proof remain distinct evidence gaps.
 
 ## Temporary middle-button camera navigation (INC-QML-16)
 
+Upstream disposition: D16, REQ-QML-021 and the INC-QML-16 generic navigation
+change are deferred. The following camera contract and helper measurements
+belong to the frozen complete fork, not the baseline viewer in this submission.
+
 Status: **Locally verified at emitted-script and reviewed installed-artifact
 boundaries** under REQ-QML-021-AC01–AC03 and changed REQ-QML-019-AC04. Native
 browser/device and other-platform behavior remains unverified.
@@ -717,7 +760,7 @@ node geometry, physics, selection or filters. The Overview control/function/stat
 and top-ten ranking are removed. Checked full startup, community aggregation,
 Select All/None, filters, search and the inspector retain their current roles.
 
-`exporters/html_navigation.py::MIDDLE_PAN_SCRIPT` is a plain JavaScript IIFE using
+[frozen html_navigation owner](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/graphify/exporters/html_navigation.py) (`MIDDLE_PAN_SCRIPT`) is a plain JavaScript IIFE using
 the existing `container` and `network`, injected once after network construction
 and initial physics setup. It has no package, SDK or DOM dependency beyond the
 existing viewer. For each active mouse movement, obtain `network.getViewPosition()`

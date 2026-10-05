@@ -1,6 +1,24 @@
 # Qt/QML extension code reference
 
-The first table records baseline owners, with their current extension seams.
+The current HTML exporter owns source-edge count projection required by
+REQ-QML-020 membership links, alongside Qt metadata and tooltips. Its inspector
+keeps upstream degree display. General recovery/navigation owners linked below
+are deferred historical source, not current imports.
+
+The [upstream contribution scope](UPSTREAM_CONTRIBUTION.md) retains Qt/QML
+analysis, shared-source prerequisites and applicable compatibility owners.
+REQ-QML-019/021 and the generic viewer portions of INC-QML-09/13/16 are deferred,
+as is native Codex transport under REQ-CORE-001-AC01/AC05 and DEC-CORE-01.
+The deferred sections below retain their original IDs and frozen references.
+
+The complete fork is frozen at
+[`82a4f29`](https://github.com/SlinkyRamey/graphify/commit/82a4f296446b4cc219ffecfe3345a037e9c362e4).
+Its [integrated hosted checkpoint](../../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2)
+and earlier measurements/results apply to their recorded revisions. They do not
+verify the narrowed contribution head. Fresh applicable acceptance evidence
+belongs to [traceability](../../tests/TRACEABILITY.md).
+
+The first table records baseline owners, with their retained extension seams.
 [AUDIT.md](AUDIT.md) retains historical line evidence. The second table lists
 implemented QML/Qt owners through INC-QML-06 and local INC-QML-07 consumer hooks.
 Revision-specific verification remains in [VALIDATION.md](VALIDATION.md).
@@ -14,7 +32,7 @@ Revision-specific verification remains in [VALIDATION.md](VALIDATION.md).
 | `graphify/resolver_registry.py` | Post-extraction cross-file resolver activation; Qt context and exact metadata filenames must activate resolution after QML-only, C++-only or metadata-only changes |
 | `graphify/cache.py` | Persistent generic per-file cache; Qt source/metadata and native syntax in an explicit Qt context bypass reads/writes under `qt_incremental` policy |
 | `graphify/watch.py` | Manual update/watch rebuild, watched-file admission, incremental extraction and persistence guards |
-| `graphify/install.py`, `graphify/codex_hook_command.py` | Installer owns hook JSON merging/publication; focused serializer owns literal Codex command transport and rejects unsupported Windows shell/command boundaries before settings access; [shared compatibility decision](../COMPATIBILITY.md#dec-core-01--windows-hook-literal-transport) |
+| `graphify/install.py` | Upstream installer owns hook command serialization and JSON merging/publication; the [frozen native Codex serializer](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/graphify/codex_hook_command.py) and [shared compatibility decision](../COMPATIBILITY.md#dec-core-01--windows-hook-literal-transport) describe the deferred independent literal-transport feature |
 | `graphify/build.py` | Graph merge/provenance and simple graph construction; independent source sites/endpoint-role facts retain distinct Qt mechanisms |
 | `graphify/paths.py` | `load_node_link_graph` restores contract-versioned QML edge orientation from serialized endpoints on undirected reload |
 | `graphify/__main__.py`, `graphify/cli.py` | CLI dispatch/facade and query/explain/path/affected implementation entry points |
@@ -148,7 +166,14 @@ owners and interfaces intact and introduces no alternate cache or graph writer.
 
 ## HTML community-view interfaces
 
-`graphify/exporters/html_communities.py::prepare_html_communities` owns complete
+Disposition: **Deferred for the upstream contribution** under REQ-QML-019/021
+and the generic viewer portions of INC-QML-09/13/16. This section records the
+frozen fork's owners and evidence. Upstream generic HTML behavior is restored;
+retained Qt HTML metadata, tooltips, source direction and omission contracts
+continue through the INC-QML-07 helpers above.
+
+The [frozen community-preparation module](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/graphify/exporters/html_communities.py)
+defines `prepare_html_communities`, which owns complete
 large-view partition validation and local grouping/name recovery. The existing
 HTML exporter owns aggregate projection, deferred selection and atomic output.
 The CLI resolves an explicit graph's analysis beside that graph and reports
@@ -157,20 +182,22 @@ source extraction, graph identities and analysis persistence remain unchanged.
 
 INC-QML-16 removes the Overview control and ranking state while retaining checked
 full startup, community filters, search, Select All/None and aggregate rendering.
-It is **Locally verified at emitted-script and reviewed installed-artifact
-boundaries** under changed REQ-QML-019-AC04 and new REQ-QML-021-AC01–AC03.
+Its historical status is **Locally verified at the recorded emitted-script and
+reviewed installed-artifact boundaries** under changed REQ-QML-019-AC04 and new
+REQ-QML-021-AC01–AC03.
 Native browser/device and other-platform behavior remains unverified.
 
 | Owner | Camera/control responsibility |
 | --- | --- |
-| `graphify/exporters/html_navigation.py::MIDDLE_PAN_SCRIPT` | Isolated camera-only IIFE; incremental client delta/current-scale movement, input/capture guards and cleanup; no graph/dataset writes or wheel hook |
-| `graphify/exporters/html.py::to_html` | Remove Overview markup/function/state/ranking; inject the helper once after existing network/initial-physics setup; retain emitted payload and selection/search/inspector interfaces |
-| `tests/test_html_middle_pan.py` | Production emitted-script geometry, termination, invalid-camera/capture and coexistence/immutability evidence; current local source checkpoint passes |
-| `tests/test_html_initial_view.py` | Retained checked startup and filters/all/none/search/partial-membership behavior; obsolete Overview expectations are replaced |
+| [Frozen camera helper](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/graphify/exporters/html_navigation.py), `MIDDLE_PAN_SCRIPT` | Isolated camera-only IIFE; incremental client delta/current-scale movement, input/capture guards and cleanup; no graph/dataset writes or wheel hook |
+| [Frozen HTML exporter](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/graphify/exporters/html.py), `to_html` | Remove Overview markup/function/state/ranking; inject the helper once after existing network/initial-physics setup; retain emitted payload and selection/search/inspector interfaces |
+| [Frozen middle-button tests](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_middle_pan.py) | Production emitted-script geometry, termination, invalid-camera/capture and coexistence/immutability evidence; recorded local source checkpoint passes |
+| [Frozen initial-view tests](https://github.com/SlinkyRamey/graphify/blob/82a4f296446b4cc219ffecfe3345a037e9c362e4/tests/test_html_initial_view.py) | Checked startup and filters/all/none/search/partial-membership behavior; obsolete Overview expectations were replaced in that revision |
 
 The camera helper and new tests remain below 300 lines. The cohesive legacy HTML
-owner retains its 810-line ceiling; current integration measurements belong to
-DESIGN/validation. [D16](ARCHITECTURE.md#d16--middle-button-input-owns-only-the-temporary-camera)
+owner retained its 810-line ceiling at that checkpoint; revision-specific
+integration measurements belong to DESIGN/validation.
+[D16](ARCHITECTURE.md#d16--middle-button-input-owns-only-the-temporary-camera)
 defines temporary camera ownership. The existing vis camera API is reused with no
 new SDK, persistence operation, graph diagnostic or Qt policy/schema change.
 Actual navigation/selection outcomes pass 60 focused cases and reviewed installed-
@@ -495,8 +522,10 @@ source/artifact checkpoints.
 
 ## Shared compatibility checkpoint
 
-The [compatibility plan](../COMPATIBILITY.md) owns the installer command,
-filesystem-fixture transport and unavailable-CWD diagnostic follow-up. Installation
+The [compatibility plan](../COMPATIBILITY.md) records the historical installer
+command correction, filesystem-fixture transport and unavailable-CWD diagnostic
+follow-up. Native Codex literal transport is deferred under DEC-CORE-01; the
+contribution restores the upstream installer contract. Installation
 retains hook publication ownership; watcher recovery retains ordering and its
 2,550-line ceiling. Portable shell/test helpers and the Terraform regression do
 not change Qt resolution interfaces, AST schema 12 or Qt policy 18. Platform and
