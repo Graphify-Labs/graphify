@@ -466,3 +466,18 @@ source analysis from generating recursive literal maps or false parse failures.
 Genuine parser, resolver and publication failures retain their existing bounded
 diagnostics, prior product cohort and successful AST cache entries; repair retries
 the ordinary path. Runtime Qt execution remains outside analysis.
+## Typed Qt source-identity transport — INC-QML-50
+
+SOURCE_INPUT_IDENTITY_FAILED retains the source-admission owner and existing
+severity/recovery contract when a direct QML or Qt metadata reader encounters
+native spelling rejection. The typed producer returns no accepted facts and
+preserves that code through its existing diagnostic/result transport; it does
+not relabel native admission as QML_ROOT or metadata read success. Context remains
+bounded and safe, and unexpected backend exception bodies are omitted. Repair
+filesystem access and retry through the normal producer/update boundary; prior
+accepted products remain protected by existing transactional publication.
+
+Physical resolution precedes lexical normalization for POSIX link/`..` spelling.
+Containment rejection still has its separate root/input contract. Neither lexical
+source names nor a matching physical target grant member/module/native endpoint
+authority. Exact native/POSIX failure and retry assignments belong to traceability.

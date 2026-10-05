@@ -93,6 +93,12 @@ See `SECURITY.md` for the full threat model.
 
 ## Testing
 
+`analyze.suggest_questions()` interleaves candidates across question types before
+applying its result limit (seven by default). This keeps ambiguous relationships
+from hiding bridge, inferred-relationship, isolation, and low-cohesion signals.
+The existing candidate order within each type is preserved; if the limit is smaller
+than the number of available types, their generation order determines priority.
+
 One test file per module under `tests/`. Run with:
 
 ```bash

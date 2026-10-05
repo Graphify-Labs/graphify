@@ -1246,6 +1246,42 @@ def test_php_finds_static_property_access():
     r = extract_php(FIXTURES / "sample_php_static_prop.php")
     assert "uses_static_prop" in _relations(r)
 
+
+def test_php_enum_cases_have_case_of_edge(tmp_path):
+    """Each PHP 8.1 enum case must be a node with a `case_of` edge to its enum.
+
+    `enum_declaration` is in PHP's class_types, so the enum type and its methods
+    were captured, but the cases nest in the `enum_declaration_list` body as
+    `enum_case` nodes that nothing handled — so they were dropped and the enum was
+    left a caseless leaf. This brings PHP to parity with Java #1719, Scala, Swift,
+    and C++. Backed enums (`: string` with `= 'H'`) and pure enums both apply, and
+    enum methods must still be captured.
+    """
+    f = tmp_path / "suit.php"
+    f.write_text(
+        "<?php\n"
+        "enum Suit: string {\n"
+        "    case Hearts = 'H';\n"
+        "    case Spades = 'S';\n"
+        "    public function color(): string { return 'x'; }\n"
+        "}\n"
+        "enum Status {\n"
+        "    case Active;\n"
+        "    case Closed;\n"
+        "}\n"
+    )
+    r = extract_php(f)
+    assert "error" not in r
+    labels = set(_labels(r))
+    assert {"Hearts", "Spades", "Active", "Closed"} <= labels
+    case_of = _edge_labels(r, "case_of")
+    assert ("Suit", "Hearts") in case_of
+    assert ("Suit", "Spades") in case_of
+    assert ("Status", "Active") in case_of
+    assert ("Status", "Closed") in case_of
+    # The enum's method must still be present (body walk not broken by the cases).
+    assert any(l == ".color()" for l in labels)
+
 def test_php_static_prop_target_is_holding_class():
     r = extract_php(FIXTURES / "sample_php_static_prop.php")
     node_by_id = {n["id"]: n["label"] for n in r["nodes"]}
@@ -1736,6 +1772,44 @@ def test_elixir_guarded_single_clause_is_extracted(tmp_path):
     assert "guarded_private" in labels, (
         f"single-clause guarded defp dropped: {sorted(labels)}"
     )
+
+
+def test_elixir_defmacro_and_defguard_are_extracted(tmp_path):
+    """`defmacro`/`defmacrop`/`defguard`/`defguardp` must become member nodes.
+
+    They define named, invocable members with the same head shape as `def`/`defp`
+    (a `call` head, optionally wrapped in a `when` binary_operator), but only
+    def/defp were handled — so macros and guard macros fell through to the generic
+    recursion and were dropped entirely. The member was never a node, and a call
+    to a locally-defined macro had nothing to resolve to.
+    """
+    src = tmp_path / "macros.ex"
+    src.write_text(
+        "defmodule MyMod do\n"
+        "  defmacro trace(expr) do\n"
+        "    quote do: unquote(expr)\n"
+        "  end\n"
+        "\n"
+        "  defmacrop priv_macro(x) do\n"
+        "    quote do: unquote(x)\n"
+        "  end\n"
+        "\n"
+        "  defguard is_even(x) when is_integer(x) and rem(x, 2) == 0\n"
+        "\n"
+        "  def run(x) do\n"
+        "    trace(priv_macro(x))\n"
+        "  end\n"
+        "end\n"
+    )
+    r = extract_elixir(src)
+    assert "error" not in r
+    labels = {(n.get("label") or "").rstrip("()") for n in r["nodes"]}
+    assert "trace" in labels, f"defmacro dropped: {sorted(labels)}"
+    assert "priv_macro" in labels, f"defmacrop dropped: {sorted(labels)}"
+    assert "is_even" in labels, f"defguard dropped: {sorted(labels)}"
+    # A call to a locally-defined macro now resolves to the macro's node.
+    calls = _calls(r)
+    assert ("run()", "trace()") in calls
 
 
 def test_elixir_protocol_and_impl_are_extracted(tmp_path):
@@ -4760,6 +4834,84 @@ def test_zig_enum_members_emit_case_of_nodes(tmp_path):
     # not be emitted as a node or gain a case_of edge.
     assert "x" not in labels
     assert not any(src_lbl == "Point" for src_lbl, _ in case_of)
+
+
+@_needs_zig
+def test_zig_error_set_members_emit_case_of_nodes(tmp_path):
+    """A Zig error set must become a type node with a `case_of` edge per member.
+
+    `const E = error{ A, B };` parses as a `variable_declaration` whose value is
+    an `error_set_declaration`. That value node type was not recognised, so the
+    whole declaration fell through and BOTH the error type and its members were
+    dropped. An error set is a named enumeration of error values — the direct
+    parallel of a Zig enum — so emit the type plus a node + `case_of` edge per
+    member identifier, matching the enum handling (and Java #1719 / Swift / Scala).
+    """
+    src = (
+        "const FileError = error{ NotFound, PermissionDenied };\n"
+        "fn open() FileError!void { return error.NotFound; }\n"
+    )
+    f = tmp_path / "errors.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    labels = set(id_to_label.values())
+    # Pre-fix the whole `const FileError = error{...}` declaration vanished.
+    assert "FileError" in labels
+    assert {"NotFound", "PermissionDenied"} <= labels
+    case_of = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "case_of"
+    }
+    assert ("FileError", "NotFound") in case_of
+    assert ("FileError", "PermissionDenied") in case_of
+
+
+@_needs_zig
+def test_zig_tagged_union_variants_emit_case_of_nodes(tmp_path):
+    """A tagged union's variants must become nodes with a `case_of` edge each.
+
+    The `container_field` branch only fired for an `enum_declaration` parent, so a
+    tagged union (`union(enum) { circle: f64, point }`) kept its methods but
+    dropped every variant, leaving the union a near-memberless leaf. A tagged
+    union's fields are its discriminant cases — the same shape as enum members —
+    so they get the same node + `case_of` edge (Java #1719 / Swift / Scala
+    parity). A bare `union { ... }` has typed data fields, not cases, so — like a
+    struct's fields — it stays untouched.
+    """
+    src = (
+        "const Shape = union(enum) {\n"
+        "    circle: f64,\n"
+        "    rectangle: struct { w: f64, h: f64 },\n"
+        "    point,\n"
+        "};\n"
+        "const Payload = union(Tag) { int: i64, text: []const u8 };\n"
+        "const Bare = union { int: i64, float: f64 };\n"
+    )
+    f = tmp_path / "shapes.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    labels = set(id_to_label.values())
+    # Pre-fix every tagged-union variant was dropped.
+    assert {"circle", "rectangle", "point", "int", "text"} <= labels
+    case_of = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "case_of"
+    }
+    assert ("Shape", "circle") in case_of
+    assert ("Shape", "rectangle") in case_of
+    assert ("Shape", "point") in case_of
+    assert ("Payload", "int") in case_of
+    assert ("Payload", "text") in case_of
+    # A bare (untagged) union's fields are typed data, not cases: no case_of, and
+    # the data fields must not be minted as member nodes.
+    assert not any(src_lbl == "Bare" for src_lbl, _ in case_of)
+    assert "float" not in labels
 
 
 @_needs_commonlisp

@@ -2149,6 +2149,167 @@ def test_detect_skips_nested_worktrees_dir(tmp_path):
     assert not any("worktrees" in f for f in code)
 
 
+# Regression tests for #4057 - graphify's own installed skill folder is not project content
+
+def _all_detected(result) -> list[str]:
+    return as_posix_list(f for files in result["files"].values() for f in files)
+
+
+def test_detect_skips_installed_graphify_skill(tmp_path):
+    """The skill `graphify install --project --platform claude` writes (SKILL.md
+    plus references/) is never indexed; the user's code and their own skills
+    in the same .claude/skills/ dir still are (#4057)."""
+    from graphify.install import _copy_skill_file
+
+    (tmp_path / "auth.py").write_text("def login():\n    return 1\n")
+    skill = _copy_skill_file("claude", project=True, project_dir=tmp_path)
+    assert (skill.parent / "references").is_dir()  # the real packaged bundle
+    mine = tmp_path / ".claude" / "skills" / "deploy" / "SKILL.md"
+    mine.parent.mkdir(parents=True)
+    mine.write_text("# Deploy\n\nHow we ship this project.\n")
+
+    found = _all_detected(detect(tmp_path))
+    assert any(f.endswith("/auth.py") for f in found)
+    assert any(f.endswith("/.claude/skills/deploy/SKILL.md") for f in found)
+    assert not any("/skills/graphify/" in f for f in found), found
+
+    ignored = detect_mod.ignored_predicate(tmp_path)
+    assert ignored(skill)
+    assert not ignored(mine)
+
+
+def test_detect_skips_graphify_skill_for_every_project_platform(tmp_path):
+    """Every project-scope skill destination install.py knows about is pruned,
+    so a new platform with a new layout fails here instead of silently being
+    indexed (#4057)."""
+    from graphify.install import _PLATFORM_CONFIG, _platform_skill_destination
+
+    platforms = [*_PLATFORM_CONFIG, "gemini"]
+    for name in platforms:
+        dst = _platform_skill_destination(name, project=True, project_dir=tmp_path)
+        (dst.parent / "references").mkdir(parents=True, exist_ok=True)
+        dst.write_text("# graphify\n\nInstalled skill.\n")
+        (dst.parent / "references" / "query.md").write_text("# Query\n\nRef.\n")
+    (tmp_path / "app.py").write_text("x = 1\n")
+
+    found = _all_detected(detect(tmp_path))
+    assert any(f.endswith("/app.py") for f in found)
+    leaked = [f for f in found if "/graphify/" in f]
+    assert leaked == [], leaked
+
+
+def test_detect_keeps_skills_graphify_source_layouts(tmp_path):
+    """Only graphify's installed skill path shape is pruned, not the bare names
+    "skills" or "graphify" (#2479): graphify's own repo layout
+    (graphify/skills/<host>/references/), a top-level skills/graphify/ as
+    published by a skills repo, and similar names outside a hidden dir stay."""
+    keep = [
+        "graphify/skill.md",
+        "graphify/skills/claude/references/query.md",
+        "graphify/skills/codex/references/update.md",
+        "graphify/detect.py",
+        "skills/graphify/SKILL.md",
+        "src/skills/graphify/loader.py",
+        "docs/agent/skills/graphify/notes.md",
+        ".claude/skills/graphify-extras/SKILL.md",
+        ".claude/graphify/notes.md",
+    ]
+    for rel in keep:
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("def f():\n    return 1\n" if rel.endswith(".py") else "# Title\n\nText.\n")
+
+    found = _all_detected(detect(tmp_path))
+    for rel in keep:
+        assert any(f.endswith("/" + rel) for f in found), rel
+
+
+# Files graphify only adds its own section or entry to. They belong to the
+# user, so they stay in the corpus (how to treat graphify's section in the
+# instruction files is an open question on #4057).
+_USER_FILES_GRAPHIFY_EDITS = {
+    "AGENTS.md", "CLAUDE.md", ".claude/CLAUDE.md", "GEMINI.md", "CODEBUDDY.md",
+    ".github/copilot-instructions.md",
+    ".claude/settings.json", ".codebuddy/settings.json", ".codex/hooks.json",
+    ".gemini/settings.json", ".kilo/kilo.json", ".opencode/opencode.json",
+}
+
+
+def test_detect_skips_every_file_graphify_install_writes(tmp_path, monkeypatch):
+    """Run every project install in install.py (plus the CLI installers that
+    write into the project directly) and check that nothing graphify wrote
+    whole is indexed: skill folders, always-on rules/steering/workflow files
+    and hook plugins. A new platform that writes a new file fails here (#4057)."""
+    from graphify import install as inst
+    from graphify.extract import collect_files
+
+    proj = tmp_path / "proj"  # HOME is sandboxed by conftest
+    proj.mkdir()
+    monkeypatch.chdir(proj)
+    (proj / "app.py").write_text("def main():\n    return 1\n")
+
+    for name in [*inst._PLATFORM_CONFIG, "gemini", "cursor"]:
+        inst._project_install(name, proj)
+    inst._kilo_install(proj)         # .kilo/plugins/graphify.js
+    inst.codebuddy_install(proj)     # CODEBUDDY.md, .codebuddy/settings.json
+    inst.vscode_install(proj)        # .github/copilot-instructions.md
+
+    found = {
+        Path(f).relative_to(proj).as_posix()
+        for files in detect(proj)["files"].values()
+        for f in files
+    }
+    assert "app.py" in found
+    assert found - {"app.py"} <= _USER_FILES_GRAPHIFY_EDITS, sorted(found)
+
+    ignored = detect_mod.ignored_predicate(proj)
+    for parts in detect_mod._GRAPHIFY_INSTALLED_FILES:
+        written = proj.joinpath(*parts)
+        assert written.is_file(), f"no installer writes {written} any more"
+        assert ignored(written), written
+    collected = {p.relative_to(proj).as_posix() for p in collect_files(proj)}
+    assert "app.py" in collected
+    assert collected - {"app.py"} <= _USER_FILES_GRAPHIFY_EDITS, sorted(collected)
+
+
+def test_detect_keeps_files_named_like_graphify_installs(tmp_path):
+    """The single-file rule matches the holder dir plus the exact path, never a
+    bare graphify.md/graphify.js, and leaves the user's other rules alone."""
+    keep = [
+        "docs/graphify.md",
+        "rules/graphify.md",
+        "steering/graphify.md",
+        "src/plugins/graphify.js",
+        "plugins/graphify.js",
+        ".github/rules/graphify.md",
+        ".opencode/plugins/team.js",
+        ".kiro/steering/product.md",
+        ".agents/rules/style.md",
+        ".windsurf/rules/graphify-notes.md",
+    ]
+    for rel in keep:
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("export function f() { return 1 }\n" if rel.endswith(".js") else "# Title\n\nText.\n")
+
+    found = _all_detected(detect(tmp_path))
+    ignored = detect_mod.ignored_predicate(tmp_path)
+    for rel in keep:
+        assert any(f.endswith("/" + rel) for f in found), rel
+        assert not ignored(tmp_path / rel), rel
+
+    from graphify.extract import collect_files
+    collected = {p.relative_to(tmp_path).as_posix() for p in collect_files(tmp_path)}
+    assert {"src/plugins/graphify.js", "plugins/graphify.js", ".opencode/plugins/team.js"} <= collected
+
+
+def test_is_noise_dir_graphify_skill_needs_parent():
+    """Without a parent the path shape cannot be verified, so keep the dir."""
+    assert detect_mod._is_noise_dir("graphify") is False
+    assert detect_mod._is_noise_dir("skills") is False
+    assert detect_mod._is_noise_dir("graphify", Path("..") / "skills") is False
+
+
 def test_detect_extra_excludes_pattern(tmp_path):
     """extra_excludes patterns exclude matching files from detect() (#947)."""
     (tmp_path / "main.py").write_text("x = 1")

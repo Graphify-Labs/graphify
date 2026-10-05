@@ -84,6 +84,45 @@ def test_cpp_enum_nested_in_class_and_namespace_is_extracted(tmp_path):
     assert ("Proto", "Udp") in case_of
 
 
+def test_cpp_union_specifier_is_extracted(tmp_path):
+    """A named `union` is a class-like container whose type node and data members
+    must survive. `union_specifier` was missing from the C++ class_types, so a
+    `union { ... }` and everything it declared produced no nodes at all — the whole
+    type vanished. It shares struct_specifier's name/body fields (type_identifier +
+    field_declaration_list), so it must get a type node and its members, like a
+    struct. An anonymous union has no type name and is skipped, like an anonymous
+    enum.
+    """
+    p = tmp_path / "value.hpp"
+    p.write_text(
+        "union Value { int i; float f; };\n"
+        "struct Point { int x; };\n"
+        "typedef union { int a; char b; } Anon;\n"
+    )
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    ids = {n["id"]: n["label"] for n in result["nodes"]}
+    labels = set(ids.values())
+    # Pre-fix the whole `union Value { ... }` declaration vanished.
+    assert {"Value", "i", "f"} <= labels
+    contains = {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "contains"
+    }
+    defines = {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "defines"
+    }
+    assert ("value.hpp", "Value") in contains
+    assert ("Value", "i") in defines
+    assert ("Value", "f") in defines
+    # An anonymous union (`typedef union { ... } Anon`) has no type name, so it is
+    # skipped rather than emitting a nameless node, like an anonymous enum.
+    assert "Anon" not in labels
+
+
 def test_nested_cpp_class_is_extracted(tmp_path):
     # A nested type is a field_declaration whose `type` field IS the
     # class_specifier; the member-variable branch used to consume it and return

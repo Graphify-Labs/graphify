@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from graphify.ids import make_id
+from graphify.extractors.qml_source_identity import SourceInputIdentityError, relative_qml_source
 
 CONTRACT_VERSION = 1
 
@@ -79,10 +80,15 @@ class FactBuilder:
     def __init__(self, path: Path, root: Path | None, source: bytes):
         self.path = path
         self.source = source
-        resolved = path.resolve()
-        anchor = root.resolve() if root is not None else resolved.parent
         try:
-            self.relative_file = resolved.relative_to(anchor).as_posix()
+            # Fact IDs use the admitted walked owner; physical target identity
+            # still governs containment and later resolution authority.
+            self.relative_file = relative_qml_source(path, root)
+            # QML file/component names are also identity inputs. Native short
+            # leaf spelling must not survive after its source owner is admitted.
+            self.path = path.with_name(Path(self.relative_file).name)
+        except SourceInputIdentityError:
+            raise
         except ValueError as exc:
             raise ValueError("QML_ROOT: source is outside the explicit scan root") from exc
         self.nodes: list[dict] = []

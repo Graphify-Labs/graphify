@@ -81,6 +81,29 @@ _GEMINI_NUDGE_TEXT = (
 )
 
 
+_DEFAULT_NUDGE_GRAPH = "graphify-out/graph.json"
+
+
+def _nudge_for_out(nudge: str) -> str:
+    """Name the effective graph.json in a hook-guard reminder (#4040).
+
+    The reminder constants spell the default ``graphify-out/graph.json``. When
+    ``GRAPHIFY_OUT`` points elsewhere, the reminder must name the graph that was
+    actually found. Default output dir: returned byte-identical.
+    """
+    from graphify.paths import out_path
+    try:
+        ref = out_path("graph.json").as_posix()
+    except Exception:
+        return nudge
+    if ref == _DEFAULT_NUDGE_GRAPH:
+        return nudge
+    d = json.loads(nudge)
+    out = d["hookSpecificOutput"]
+    out["additionalContext"] = out["additionalContext"].replace(_DEFAULT_NUDGE_GRAPH, ref)
+    return json.dumps(d, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
 def _default_graph_path() -> str:
     return str(Path(_GRAPHIFY_OUT) / "graph.json")
 
@@ -867,7 +890,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
             is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
             if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
-                sys.stdout.write(_SEARCH_NUDGE)
+                sys.stdout.write(_nudge_for_out(_SEARCH_NUDGE))
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
             tails = [
@@ -977,7 +1000,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             except Exception:
                 pass
             if stale:
-                sys.stdout.write(_READ_NUDGE_STALE)
+                sys.stdout.write(_nudge_for_out(_READ_NUDGE_STALE))
                 return
             # Strict block: Read tool only, first time per session, not recently
             # oriented, and the file is demonstrably indexed.
@@ -988,7 +1011,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     and _mark_session_denied(str(d.get("session_id") or "")):
                 sys.stdout.write(_READ_DENY)
                 return
-            sys.stdout.write(_READ_NUDGE)
+            sys.stdout.write(_nudge_for_out(_READ_NUDGE))
     except Exception:
         pass
 
@@ -1605,7 +1628,7 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _pick_scored_endpoint, _score_nodes
+        from graphify.serve import _resolve_path_endpoint
         from networkx.readwrite import json_graph
         import networkx as _nx
 
@@ -1656,16 +1679,17 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
-        src_scored = [(1.0, source_label)] if source_label in G else _score_nodes(G, [t.lower() for t in source_label.split()])
-        tgt_scored = [(1.0, target_label)] if target_label in G else _score_nodes(G, [t.lower() for t in target_label.split()])
-        if not src_scored:
-            print(f"No node matching '{source_label}' found.", file=sys.stderr)
-            sys.exit(1)
-        if not tgt_scored:
-            print(f"No node matching '{target_label}' found.", file=sys.stderr)
-            sys.exit(1)
-        src_nid = _pick_scored_endpoint(G, src_scored, source_label)
-        tgt_nid = _pick_scored_endpoint(G, tgt_scored, target_label)
+        # Resolve exact IDs and qualified source::symbol names before scoring;
+        # the selected graph still retains Qt logical direction for traversal.
+        src_nid, src_scored, src_err = _resolve_path_endpoint(G, source_label)
+        tgt_nid, tgt_scored, tgt_err = _resolve_path_endpoint(G, target_label)
+        for _label, _nid, _err in (
+            (source_label, src_nid, src_err),
+            (target_label, tgt_nid, tgt_err),
+        ):
+            if _err or _nid is None:
+                print(_err or f"No node matching '{_label}' found.", file=sys.stderr)
+                sys.exit(1)
         # Ambiguity guard: when both queries resolve to the same node, the
         # shortest path is trivially zero hops, which is almost never what the
         # caller wanted (see bug #828).
@@ -1710,6 +1734,20 @@ def dispatch_command(cmd: str) -> None:
                 _dg.add_nodes_from(sorted(G.nodes))
                 _dg.add_edges_from(sorted(
                     (d.get("_src", u), d.get("_tgt", v)) for u, v, d in G.edges(data=True)
+                ))
+                # A `contains` edge only runs file -> symbol; there is no
+                # stored edge back out to the containing file, so a route that
+                # reaches a symbol (via an `imports`/`calls`/`references` hop)
+                # can never continue on to the file that defines it, and a
+                # file-to-file dependency routed through a shared symbol finds
+                # no path at all even though both halves of the route exist
+                # (#3878). Add the implied reverse hop for traversal only — the
+                # printed segment still recovers the real stored `contains`
+                # edge and its true direction from G, same as any other hop.
+                _dg.add_edges_from(sorted(
+                    (d.get("_tgt", v), d.get("_src", u))
+                    for u, v, d in G.edges(data=True)
+                    if d.get("relation") == "contains"
                 ))
                 path_nodes = _nx.shortest_path(_dg, src_nid, tgt_nid)
         except (_nx.NetworkXNoPath, _nx.NodeNotFound):
@@ -1774,7 +1812,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _find_node, find_node_ambiguity
+        from graphify.serve import _ambiguity_message, _find_node, find_node_ambiguity
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
@@ -1803,14 +1841,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
         rivals = find_node_ambiguity(G, label)
         if rivals:
-            print(f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.")
-            for rival in rivals:
-                print(f"  {G.nodes[rival].get('source_file') or rival}")
-                print(f"    id: {rival}")
-            print(
-                f"Retry with path::symbol using one of the paths above (e.g. "
-                f"<path>::{label}) or the full node id."
-            )
+            print(_ambiguity_message(G, label, rivals))
             sys.exit(1)
         nid = matches[0]
         d = G.nodes[nid]
@@ -2364,7 +2395,8 @@ def dispatch_command(cmd: str) -> None:
         # a report and labels describing a clustering graph.json does not contain
         # are worse than no run at all (#2436).
         if not to_json(G, communities, str(out / "graph.json"),
-                       community_labels=labels, built_at_commit=_commit):
+                       community_labels=labels, built_at_commit=_commit,
+                       original_links=_raw.get("links") or _raw.get("edges") or []):
             if not stale_marker_preexisted:
                 _clear_html_stale_marker()
             print(
@@ -2676,20 +2708,48 @@ def dispatch_command(cmd: str) -> None:
         args = sys.argv[2:]
         graph_paths: list[Path] = []
         out_path = Path(_GRAPHIFY_OUT) / "merged-graph.json"
+        previous_path: "Path | None" = None
         i = 0
         while i < len(args):
             if args[i] == "--out" and i + 1 < len(args):
                 out_path = Path(args[i + 1])
+                i += 2
+            elif args[i] == "--previous" and i + 1 < len(args):
+                previous_path = Path(args[i + 1])
                 i += 2
             else:
                 graph_paths.append(Path(args[i]))
                 i += 1
         if len(graph_paths) < 2:
             print(
-                "Usage: graphify merge-graphs <graph1.json> <graph2.json> [...] [--out merged.json]",
+                "Usage: graphify merge-graphs <graph1.json> <graph2.json> [...] "
+                "[--out merged.json] [--previous previous-merged-graph.json]",
                 file=sys.stderr,
             )
             sys.exit(1)
+        # Each input numbers its own communities from 0, so the merged output
+        # carries per-source ids (offset since #3014) that have no relation to
+        # the previous MERGED clustering .graphify_labels.json was written
+        # against. cluster-only's label-reuse remap reads this file's
+        # `community` field as "the previous clustering" and silently mismatches
+        # almost every community when it is actually per-source ids (#3858).
+        # --previous restores the real previous merged `community` onto each
+        # node that survives the merge (by id), so a subsequent cluster-only
+        # run remaps against the clustering its labels were actually built
+        # from. Per-source ids stay available in `local_community` regardless.
+        previous_community: dict[str, int] = {}
+        if previous_path is not None:
+            if not previous_path.exists():
+                print(f"error: --previous file not found: {previous_path}", file=sys.stderr)
+                sys.exit(1)
+            try:
+                _prev_raw = json.loads(previous_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+                print(f"error: --previous file is not readable JSON: {previous_path} ({e})", file=sys.stderr)
+                sys.exit(1)
+            for _n in _prev_raw.get("nodes", []):
+                if isinstance(_n, dict) and isinstance(_n.get("community"), int) and _n.get("id"):
+                    previous_community[_n["id"]] = _n["community"]
         import networkx as _nx
         from networkx.readwrite import json_graph as _jg
         from graphify.build import prefix_graph_for_global as _prefix, distinct_repo_tags as _repo_tags
@@ -2794,6 +2854,18 @@ def dispatch_command(cmd: str) -> None:
         call_links = _link_calls(merged)
         if call_links:
             print(f"  resolved {call_links} member call(s) across repos")
+        if previous_path is not None:
+            _restored = 0
+            for _nid, _data in merged.nodes(data=True):
+                if _nid in previous_community:
+                    _data["community"] = previous_community[_nid]
+                    _restored += 1
+                else:
+                    _data.pop("community", None)
+            print(
+                f"  restored the previous merged community on {_restored} node(s) "
+                f"from {previous_path}"
+            )
         # Drop whatever compose left behind (the last input's list, possibly
         # with internal duplicates) so attach_hyperedges dedups the full
         # collection by id from a clean slate.
@@ -3307,7 +3379,8 @@ def dispatch_command(cmd: str) -> None:
                 "[--model M] [--mode deep] [--out DIR|--output DIR] [--google-workspace] [--no-cluster] "
                 "[--no-gitignore] [--code-only] [--no-dedup] "
                 "[--max-workers N] [--token-budget N] [--max-concurrency N] "
-                "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] [--timing]",
+                "[--api-timeout S] [--postgres DSN] [--cargo] [--allow-partial] "
+                "[--allow-dedup-shrink] [--timing]",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -3329,6 +3402,9 @@ def dispatch_command(cmd: str) -> None:
         cli_postgres_dsn: str | None = None
         cli_cargo: bool = False
         cli_allow_partial: bool = False
+        # --allow-dedup-shrink: write a graph that is smaller because dedup
+        # merged nodes. A deleted file does not need this flag (#3774).
+        cli_allow_dedup_shrink: bool = False
         no_cluster = False
         dedup_llm = False
         # --no-dedup: skip entity deduplication entirely. On an incremental
@@ -3457,6 +3533,8 @@ def dispatch_command(cmd: str) -> None:
                 force = True; i += 1
             elif a == "--allow-partial":
                 cli_allow_partial = True; i += 1
+            elif a == "--allow-dedup-shrink":
+                cli_allow_dedup_shrink = True; i += 1
             elif a == "--timing":
                 cli_timing = True; i += 1
             else:
@@ -4654,15 +4732,17 @@ def dispatch_command(cmd: str) -> None:
         _backup(graphify_out)
         _invalidate_file_manifest_for_db_graph()
         # force=True bypasses the #479 shrink guard entirely. A full build
-        # legitimately shrinks (fuzzy dedup collapse, deleted code) so it keeps
-        # force=True — EXCEPT when this run's extraction was incomplete (an
-        # extractor pass crashed or some semantic chunks failed). Then a partial
-        # graph could silently overwrite a good complete one, so fall back to the
-        # shrink guard (force=False) unless the user opts in with --allow-partial.
+        # legitimately shrinks when files were deleted, so a complete run keeps
+        # force=True — EXCEPT:
+        #   * extraction was incomplete (a pass crashed or a chunk came back
+        #     empty). Fall back to the shrink guard unless --allow-partial.
+        #   * dedup merged nodes and the saved graph would shrink by more than
+        #     this run's deletions (#3774). Refuse the write before to_json unless
+        #     --allow-dedup-shrink. --allow-partial does not accept that shrink.
         #
-        # Both write paths are guarded: the clustered path here via to_json's
-        # #479 check, and the `--no-cluster` raw-dump path above via the same
-        # shrink check against the existing file (existing_graph_node_count).
+        # Both write paths are guarded for an incomplete extraction: the clustered
+        # path here via to_json's #479 check, and the `--no-cluster` raw-dump path
+        # above via the same shrink check against the existing file.
         #
         # Trade-off: this reuses to_json's coarse node-count guard, not the
         # source-aware _check_shrink that watch/update use. On an incremental run
@@ -4670,7 +4750,33 @@ def dispatch_command(cmd: str) -> None:
         # failure can therefore be refused here — recoverable by re-running or
         # passing --allow-partial (the good graph is preserved and the manifest
         # is not stamped, so the retry re-extracts).
+        from graphify.build import take_shrink_accounting as _take_shrink_accounting
+        _dedup_collapsed, _pruned_nodes = _take_shrink_accounting(G)
         _force_write = cli_allow_partial or not _extraction_incomplete
+        _dedup_shrink_counts: tuple[int, int] | None = None
+        if (
+            not _extraction_incomplete
+            and not no_dedup
+            and not cli_allow_dedup_shrink
+            and _dedup_collapsed > 0
+        ):
+            from graphify.export import existing_graph_node_count as _existing_graph_node_count
+            _existing_n = _existing_graph_node_count(graph_json_path)
+            _new_n = G.number_of_nodes()
+            if isinstance(_existing_n, int) and _new_n < _existing_n - _pruned_nodes:
+                _dedup_shrink_counts = (_existing_n, _new_n)
+        if _dedup_shrink_counts is not None:
+            # Refuse before to_json. to_json's own refusal tells the caller to
+            # pass force=True, which is not this flag (#3774).
+            _old_n, _new_n = _dedup_shrink_counts
+            print(
+                f"[graphify extract] error: dedup merged {_dedup_collapsed} "
+                f"node(s); writing would shrink the graph from {_old_n} nodes "
+                f"to {_new_n} nodes. Refusing to overwrite {graph_json_path}. "
+                "Pass --allow-dedup-shrink to write the smaller graph.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         # Stamp provenance from the ANALYSED repo, not the shell's cwd: without
         # this, to_json's fallback asks `git rev-parse HEAD` in whatever repo the
         # command was invoked from, so `graphify extract <target>` run from

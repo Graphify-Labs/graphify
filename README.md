@@ -914,6 +914,12 @@ Made with [contrib.rocks](https://contrib.rocks).
 
 ---
 
+## Translations
+
+The README is available in 32 languages. Use the language switcher at the top of this file to read it in yours, or browse [`docs/translations/`](docs/translations/). To improve a translation or add a new one, open a pull request against the matching file there.
+
+---
+
 ## Community and links
 
 <p align="center">

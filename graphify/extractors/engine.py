@@ -1299,6 +1299,47 @@ def _scala_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple
         for c in node.children:
             if c.is_named:
                 _scala_collect_type_refs(c, source, generic, out)
+    # A `match type` (`type Elem[X] = X match { case String => Char }`) names a
+    # real type in every case clause -- both the type it discriminates on and
+    # the type it yields. Without these two the walker returned nothing for a
+    # match type even when correctly dispatched (#2049). Recursing over named
+    # children matches how `compound_type` is already handled above.
+    if t in ("match_type", "type_case_clause"):
+        for c in node.children:
+            if c.is_named:
+                _scala_collect_type_refs(c, source, generic, out)
+
+
+def _scala_collect_context_bounds(
+    tp_node, source: bytes, out: list[tuple[str, str]]
+) -> None:
+    """Collect the types named by a ``type_parameters`` node's context bounds.
+
+    ``def sort[A: Ordering]`` desugars to an implicit ``Ordering[A]``, so the
+    bound is a real dependency the function has on that typeclass -- but
+    ``context_bound`` was not referenced anywhere in the extractor, so the
+    dependency was invisible wherever it appeared (#2046).
+
+    A ``context_bound`` is a direct child of ``type_parameters``, one per bound.
+    A higher-kinded parameter nests a further ``type_parameters`` for its own
+    arity brackets (``def program[F[_]: Async: Temporal]``), so this recurses
+    rather than reading direct children only -- otherwise both bounds on
+    ``program`` are missed.
+
+    ``upper_bound`` (``[T <: Comparable[T]]``) is a distinct node type and is
+    deliberately not matched here: a subtype constraint is not a dependency, so
+    emitting an edge for it would assert something the source does not say.
+    """
+    if tp_node is None:
+        return
+    for c in tp_node.children:
+        if c.type == "type_parameters":
+            _scala_collect_context_bounds(c, source, out)
+        elif c.type == "context_bound":
+            bound_type = c.child_by_field_name("type")
+            if bound_type is not None:
+                _scala_collect_type_refs(bound_type, source, False, out)
+
 
 def _python_collect_param_refs(params_node, source: bytes) -> list[tuple[str, str]]:
     """Collect type refs from each typed parameter under a `parameters` node."""
@@ -1355,6 +1396,67 @@ def _python_collect_assignment_targets(node, source: bytes, out: set[str]) -> No
     if node.type in ("pattern_list", "tuple_pattern", "list_pattern"):
         for c in node.children:
             _python_collect_assignment_targets(c, source, out)
+
+# Languages whose `self`/`this` member calls bind through _self_call_target.
+_SELF_CALL_LANGUAGES = frozenset({
+    "tree_sitter_python", "tree_sitter_javascript", "tree_sitter_typescript",
+    "tree_sitter_swift", "tree_sitter_ruby",
+})
+
+def _self_call_target(
+    caller_nid: str,
+    callee: str,
+    receiver: str,
+    label_to_nid: dict[str, str],
+    scope_parents: dict[str, str],
+    method_owner: dict[str, str],
+    methods_by_owner: dict[tuple[str, str], str],
+    class_bases: dict[str, list[str]],
+    walk_bases: bool = True,
+) -> str | None:
+    """In-file target of `self.m()` / `cls.m()` / `super().m()` in Python and
+    `this.m()` / `super.m()` in JS/TS, else None.
+
+    ``walk_bases=False`` stops after the caller's own class and otherwise keeps
+    the plain lookup: JS/TS `extends` edges come from the later symbol pass, so
+    the chain is unknown here and an inherited `this.m()` must not be refused.
+
+    The receiver is the caller's own instance, so the lookup starts at the
+    enclosing class (skipped for `super`) and walks its in-file bases one level
+    at a time, nearest first, the order the ObjC resolver already uses for
+    `self`. Two hits on one level are a multiple-inheritance tie this pass
+    cannot order, so neither is bound. A method of a class outside that chain is
+    never the target: the file-wide name map used to hand `self.save()` in one
+    class to whichever class declared save() last. A file-wide hit that is not
+    a method (a module-level callable stored on the instance) still binds, as
+    before.
+    """
+    scope: str | None = caller_nid
+    while scope and scope not in method_owner:
+        scope = scope_parents.get(scope)
+    fallback = label_to_nid.get(callee)
+    if not scope:
+        return fallback
+    level = [method_owner[scope]]
+    seen: set[str] = set()
+    skip_own = receiver == "super"
+    while level:
+        seen.update(level)
+        if not skip_own:
+            hits = {methods_by_owner[(c, callee)] for c in level if (c, callee) in methods_by_owner}
+            if hits:
+                return hits.pop() if len(hits) == 1 else None
+        if not walk_bases:
+            # JS/TS: the `extends` chain is unknown at this pass. An inherited
+            # `this.m()` must keep the plain lookup, but `super.m()` can never
+            # mean the caller's own method, so a file-wide fallback here is just
+            # a wrong self-loop onto the overriding method — fail closed instead.
+            return None if skip_own else fallback
+        skip_own = False
+        level = list(dict.fromkeys(
+            base for c in level for base in class_bases.get(c, ()) if base not in seen
+        ))
+    return None if fallback in method_owner else fallback
 
 def _python_local_bound_names(func_def_node, source: bytes) -> set[str]:
     """Names bound LOCALLY inside a Python function: parameters plus assignment,
@@ -1431,6 +1533,156 @@ def _python_module_bound_names(root, source: bytes) -> set[str]:
 
     walk(root)
     return bound
+
+
+def _python_receiver_shadow_checker(root, source: bytes):
+    """Conservative lexical guard for a plain external module receiver.
+
+    A module-root plain import is the only eligible binding. Other bindings in
+    any enclosing scope make the receiver unsafe, regardless of statement order.
+    Cache each scope scan because every member call in that scope asks again.
+    """
+    scope_types = {"module", "function_definition", "class_definition", "lambda"}
+    scopes: dict[int, tuple[set[str], dict[str, int], bool]] = {}
+    # A nested function can mutate module/captured bindings later. Dynamic
+    # namespace operations can also replace an import without an assignment AST.
+    dynamic_binding = False
+    dynamic_names = {"exec", "eval", "globals", "locals", "vars", "setattr", "delattr"}
+    pending = [root]
+    while pending:
+        candidate = pending.pop()
+        # Namespace mutators can be called directly, qualified, or saved under
+        # an alias. Reject references as well as calls, including imported aliases.
+        if (candidate.type in {"global_statement", "nonlocal_statement"}
+                or (candidate.type == "identifier"
+                    and _read_text(candidate, source) in dynamic_names)):
+            dynamic_binding = True
+            break
+        pending.extend(candidate.named_children)
+
+    def target_names(node, names: set[str]) -> bool:
+        if node is None:
+            return False
+        if node.type == "identifier":
+            names.add(_read_text(node, source))
+            return True
+        if node.type in {"tuple_pattern", "list_pattern", "pattern_list",
+                         "parenthesized_expression", "as_pattern_target"}:
+            return all(target_names(c, names) for c in node.named_children)
+        if node.type in {"attribute", "subscript"}:
+            return target_names(node.child_by_field_name("object") or node.named_children[0], names)
+        return False
+
+    def import_names(node) -> list[str] | None:
+        names: list[str] = []
+        past_import = False
+        for item in node.children:
+            if item.type == "import":
+                past_import = True
+                continue
+            if not past_import:
+                continue
+            if item.type == "aliased_import":
+                alias = item.child_by_field_name("alias")
+                if alias is None:
+                    return None
+                names.append(_read_text(alias, source))
+            elif item.type == "dotted_name":
+                names.append(_read_text(item, source).split(".")[0])
+            elif item.type == "wildcard_import":
+                return None
+        return names
+
+    def facts(scope):
+        key = scope.id
+        if key in scopes:
+            return scopes[key]
+        bound: set[str] = set()
+        plain_imports: dict[str, int] = {}
+        unsafe = bool(scope.has_error or scope.child_by_field_name("type_parameters")
+                      or (scope.type == "module" and dynamic_binding))
+        if scope.type in {"function_definition", "lambda"}:
+            bound.update(_python_param_names(scope.child_by_field_name("parameters"), source))
+
+        def walk(node) -> None:
+            nonlocal unsafe
+            for child in node.named_children:
+                kind = child.type
+                if kind in {"function_definition", "class_definition"}:
+                    name = child.child_by_field_name("name")
+                    if name is None:
+                        unsafe = True
+                    else:
+                        bound.add(_read_text(name, source))
+                    continue
+                if kind == "lambda":
+                    continue
+                if kind in {"global_statement", "nonlocal_statement", "match_statement", "ERROR"}:
+                    unsafe = True
+                    continue
+                if kind in {"import_statement", "import_from_statement"}:
+                    names = import_names(child)
+                    if names is None:
+                        unsafe = True
+                    elif kind == "import_statement" and scope.type == "module" and node == scope:
+                        for name in names:
+                            plain_imports[name] = plain_imports.get(name, 0) + 1
+                    else:
+                        bound.update(names)
+                    continue
+                if kind in {"assignment", "augmented_assignment", "for_statement", "for_in_clause"}:
+                    if not target_names(child.child_by_field_name("left"), bound):
+                        unsafe = True
+                elif kind == "type_alias_statement":
+                    left = child.child_by_field_name("left")
+                    name = _read_text(left, source).split("[", 1)[0].strip() if left is not None else ""
+                    if name.isidentifier():
+                        bound.add(name)
+                    else:
+                        unsafe = True
+                elif kind == "named_expression":
+                    if not target_names(child.child_by_field_name("name"), bound):
+                        unsafe = True
+                elif kind == "with_item":
+                    alias = child.child_by_field_name("alias")
+                    value = child.child_by_field_name("value")
+                    if alias is None and value is not None and value.type == "as_pattern":
+                        alias = value.child_by_field_name("alias")
+                    if alias is not None and not target_names(alias, bound):
+                        unsafe = True
+                elif kind == "as_pattern" and node.type == "except_clause":
+                    if not target_names(child.child_by_field_name("alias"), bound):
+                        unsafe = True
+                elif kind == "delete_statement":
+                    for item in child.named_children:
+                        if not target_names(item, bound):
+                            unsafe = True
+                walk(child)
+
+        body = scope if scope.type == "module" else scope.child_by_field_name("body")
+        if body is None:
+            unsafe = True
+        else:
+            walk(body)
+        scopes[key] = (bound, plain_imports, unsafe)
+        return scopes[key]
+
+    def is_shadowed(call, receiver: str) -> bool:
+        node = call
+        found_module = False
+        while node is not None:
+            if node.type in scope_types:
+                bound, plain_imports, unsafe = facts(node)
+                if unsafe or receiver in bound:
+                    return True
+                if node.type == "module":
+                    found_module = True
+                    if plain_imports.get(receiver) != 1:
+                        return True
+            node = node.parent
+        return not found_module
+
+    return is_shadowed
 
 _JS_SCOPE_BOUNDARY = frozenset({
     "function_declaration", "function_expression", "function", "arrow_function",
@@ -3104,6 +3356,37 @@ def _cpp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str
         return True
     return False
 
+def _php_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
+                    nodes: list, edges: list, seen_ids: set, function_bodies: list,
+                    parent_class_nid: str | None, add_node_fn, add_edge_fn) -> bool:
+    """Emit a node per PHP 8.1 enum case with a case_of edge. Returns True if handled.
+
+    A PHP `enum` is in class_types, so its type and methods are captured, but the
+    cases (`case Hearts = 'H';`) nest in the `enum_declaration_list` body as
+    `enum_case` nodes that nothing handled — they were dropped, leaving the enum a
+    caseless leaf. Each case carries its name in a `name` field. Emit a node plus a
+    `case_of` edge per case, the PHP parity of Java #1719 (enum_constant), Swift,
+    Scala, and C++.
+    """
+    if node.type == "enum_case" and parent_class_nid:
+        name_node = node.child_by_field_name("name")
+        if name_node is None:
+            name_node = next(
+                (c for c in node.children if c.type == "name"), None
+            )
+        if name_node is None:
+            return True
+        case_name = _read_text(name_node, source)
+        if case_name:
+            line = node.start_point[0] + 1
+            case_nid = _make_id(parent_class_nid, case_name)
+            if case_nid not in seen_ids:
+                add_node_fn(case_nid, case_name, line)
+                add_edge_fn(parent_class_nid, case_nid, "case_of", line)
+        return True
+    return False
+
+
 def _java_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
                      nodes: list, edges: list, seen_ids: set, function_bodies: list,
                      parent_class_nid: str | None, add_node_fn, add_edge_fn,
@@ -3761,6 +4044,23 @@ def _lua_is_require_call(node, source: bytes) -> bool:
 
 _PHP_ROUTING_VERBS = frozenset({"get", "post", "put", "patch", "delete", "options", "any", "match", "map"})
 
+# PHP language constructs that are written like functions. `empty($x)`,
+# `isset($a)`, `eval($s)` and `die($m)` parse as an ordinary
+# function_call_expression, so the bare-name lookup bound them to any method
+# that shares the name: since PHP 7 a reserved word is a legal method name
+# (`public function empty()`), while no function can ever be declared under
+# one. Every `empty($x)` in a corpus became an edge into that method, EXTRACTED
+# in the same file and INFERRED across files through the case-insensitive fold
+# (#3830).
+#
+# Same policy as _LANGUAGE_BUILTIN_GLOBALS: language-local, bare calls only
+# (`$bag->empty()` is a member call and still resolves), and the manual's whole
+# list of call-shaped keywords rather than the subset the pinned grammar emits
+# as calls today (`unset`, `exit`, `list` and `array` get their own node types).
+_PHP_LANGUAGE_CONSTRUCTS = frozenset({
+    "array", "die", "empty", "eval", "exit", "isset", "list", "unset",
+})
+
 def _php_get_route_name(closure_node, src: bytes) -> str | None:
     """Walk up the AST to extract grouped routing prefixes (#3409)."""
     prefixes = []
@@ -3907,6 +4207,10 @@ def _extract_generic(
         _js_external_import_names(root, source, str_path)
         if config.ts_module in ("tree_sitter_javascript", "tree_sitter_typescript")
         else set()
+    )
+    python_receiver_shadowed = (
+        _python_receiver_shadow_checker(root, source)
+        if config.ts_module == "tree_sitter_python" else None
     )
     nodes: list[dict] = []
     edges: list[dict] = []
@@ -5262,8 +5566,27 @@ def _extract_generic(
             return
 
         if (config.ts_module == "tree_sitter_scala"
-                and t in ("val_definition", "var_definition")
-                and parent_class_nid):
+                and t in ("val_definition", "var_definition", "type_definition")):
+            # Scala 3 drops the boilerplate wrapper: `val`/`var` can be written
+            # directly at file scope with no enclosing object/class/trait. Gating
+            # on `parent_class_nid` therefore dropped every type reference a
+            # file-scope binding makes -- the parsed shape is identical to the
+            # in-class case (both carry a `type` field), so the missing container
+            # was the only difference, and the binding vanished from the graph
+            # entirely rather than degrading (#2054). This is the Scala instance
+            # of the same generic defect already fixed for Python (#1050): a
+            # position that legitimately has no container must fall back to the
+            # file node rather than be skipped. Reuses the owner idiom from the
+            # property branch above.
+            #
+            # `type_definition` joins the tuple for the same reason (#2049): a
+            # type alias, an `opaque type` and a `match type` all declare a
+            # dependency on the types they name, and all three carry the RHS
+            # under the same `type` field, so the existing walk applies verbatim.
+            # Only the *edges* are in scope here -- the alias still gets no node
+            # of its own, which is a separate accepted tradeoff shared with
+            # `val`/`given` bindings.
+            owner_nid = parent_class_nid or file_nid
             type_node = node.child_by_field_name("type")
             if type_node is not None:
                 line = node.start_point[0] + 1
@@ -5272,8 +5595,8 @@ def _extract_generic(
                 for ref_name, role in refs:
                     ctx = "generic_arg" if role == "generic_arg" else "field"
                     target_nid = ensure_named_node(ref_name, line)
-                    if target_nid != parent_class_nid:
-                        add_edge(parent_class_nid, target_nid, "references",
+                    if target_nid != owner_nid:
+                        add_edge(owner_nid, target_nid, "references",
                                  line, context=ctx)
             # fall through so any call expressions in the initializer get walked
 
@@ -5853,6 +6176,26 @@ def _extract_generic(
                         if target_nid != func_nid:
                             add_edge(func_nid, target_nid, "references",
                                      line, context=ctx)
+                # Context bounds (`def sort[A: Ordering]`) are the sugar for
+                # typeclass-parameter wiring and name a real dependency, so they
+                # get their own `type_bound` context rather than being folded
+                # into `parameter_type` (#2046). Found by node type, never by
+                # field name: `type_parameters` and `parameters` share the field
+                # name "parameters" on function_definition, so a field lookup
+                # here would return the type parameters and read the function's
+                # real parameters as if they were bounds.
+                for c in node.children:
+                    if c.type != "type_parameters":
+                        continue
+                    bound_refs: list[tuple[str, str]] = []
+                    _scala_collect_context_bounds(c, source, bound_refs)
+                    for ref_name, role in bound_refs:
+                        ctx = ("generic_arg" if role == "generic_arg"
+                               else "type_bound")
+                        target_nid = ensure_named_node(ref_name, line)
+                        if target_nid != func_nid:
+                            add_edge(func_nid, target_nid, "references",
+                                     line, context=ctx)
 
             body = _find_body(node, config)
             # JS/TS: capture callable members assigned directly in a function
@@ -6030,6 +6373,13 @@ def _extract_generic(
                                   parent_class_nid, add_node, add_edge, walk):
                 return
 
+        # PHP 8.1 enum cases (`case Hearts = 'H';`) inside an enum body.
+        if config.ts_module == "tree_sitter_php":
+            if _php_extra_walk(node, source, file_nid, stem, str_path,
+                               nodes, edges, seen_ids, function_bodies,
+                               parent_class_nid, add_node, add_edge):
+                return
+
         # Scala 3 enum cases (`case Red`, `case Add(x: Int)`) nest under an
         # `enum_case_definitions` wrapper; emit a node + case_of edge per case.
         if config.ts_module == "tree_sitter_scala":
@@ -6203,6 +6553,18 @@ def _extract_generic(
     for _e in edges:
         if _e.get("relation") == "inherits":
             _local_bases.setdefault(_e["source"], []).append(_e["target"])
+
+    # Class membership for self-calls (see _self_call_target): Python
+    # self/cls/super and JS/TS this/super.
+    method_owner: dict[str, str] = {}
+    methods_by_owner: dict[tuple[str, str], str] = {}
+    if config.ts_module in _SELF_CALL_LANGUAGES:
+        label_by_nid = {n["id"]: n["label"] for n in nodes}
+        for e in edges:
+            if e["relation"] == "method":
+                method_owner[e["target"]] = e["source"]
+                name = label_by_nid.get(e["target"], "").strip("()").lstrip(".")
+                methods_by_owner.setdefault((e["source"], name), e["target"])
 
     def _fields_up_chain(tables: dict, class_nid) -> dict:
         if not class_nid:
@@ -6485,6 +6847,10 @@ def _extract_generic(
             callee_name: str | None = None
             is_member_call: bool = False
             is_this_field_call: bool = False
+            # `this.m()` / `self.m()` / `super.m()` (and Swift's/Ruby's implicit
+            # self): kept apart from member_receiver, which feeds the
+            # receiver-typed resolvers and raw_calls.
+            self_receiver: str | None = None
             swift_receiver: str | None = None
             member_receiver: str | None = None
             kotlin_qualified_prefix: str | None = None
@@ -6497,12 +6863,15 @@ def _extract_generic(
                 # A bare `identifier` has no receiver and no method/argument
                 # fields: the callee is the identifier itself, implicit `self`.
                 callee_name = _read_text(node, source)
+                self_receiver = "self"
             elif config.ts_module == "tree_sitter_swift":
                 # Swift: first child may be simple_identifier or navigation_expression
                 first = node.children[0] if node.children else None
                 if first:
                     if first.type == "simple_identifier":
                         callee_name = _read_text(first, source)
+                        # Inside a method a bare `save()` is `self.save()`.
+                        self_receiver = "self"
                     elif first.type == "navigation_expression":
                         is_member_call = True
                         for child in first.children:
@@ -6514,6 +6883,10 @@ def _extract_generic(
                         # resolve it through the file's type table.
                         recv_node = first.children[0] if first.children else None
                         swift_receiver = _swift_receiver_name(recv_node, source)
+                        if recv_node is not None and recv_node.type == "self_expression":
+                            self_receiver = "self"
+                        elif recv_node is not None and recv_node.type == "super_expression":
+                            self_receiver = "super"
             elif config.ts_module == "tree_sitter_kotlin":
                 # Kotlin: first child may be simple_identifier/identifier or
                 # navigation_expression. PyPI's `tree_sitter_kotlin` produces
@@ -6742,6 +7115,11 @@ def _extract_generic(
                     func_node = node.child_by_field_name("function")
                     if func_node:
                         callee_name = _read_text(func_node, source)
+                        # PHP names are case-insensitive, so `EMPTY($x)` is the
+                        # same construct. Dropping the name here skips the
+                        # in-file bind and keeps it out of raw_calls.
+                        if callee_name.lower() in _PHP_LANGUAGE_CONSTRUCTS:
+                            callee_name = None
                 elif node.type == "scoped_call_expression":
                     # Static method call: Helper::format() → callee = "Helper"
                     scope_node = node.child_by_field_name("scope")
@@ -6820,6 +7198,9 @@ def _extract_generic(
                 if meth is not None:
                     callee_name = _read_text(meth, source)
                 recv = node.child_by_field_name("receiver")
+                if recv is None or recv.type == "self":
+                    # `save(x)` and `self.save` both send to the current object.
+                    self_receiver = "self"
                 if recv is not None:
                     is_member_call = True
                     if recv.type in ("identifier", "constant"):
@@ -6870,6 +7251,12 @@ def _extract_generic(
                             obj = func_node.child_by_field_name(config.call_accessor_object_field)
                             if obj is not None and obj.type == "identifier":
                                 member_receiver = _read_text(obj, source)
+                            elif (
+                                obj is not None
+                                and obj.type in ("this", "super")
+                                and config.ts_module in _SELF_CALL_LANGUAGES
+                            ):
+                                self_receiver = obj.type
                             elif (
                                 config.ts_module == "tree_sitter_python"
                                 and obj is not None
@@ -6995,6 +7382,19 @@ def _extract_generic(
                             curr_scope = scope_parents.get(curr_scope)
                         if not tgt_nid:
                             tgt_nid = label_to_nid.get(callee_name)
+                    elif self_receiver or (
+                        config.ts_module == "tree_sitter_python"
+                        and is_member_call
+                        and member_receiver in ("self", "cls", "super")
+                    ):
+                        tgt_nid = _self_call_target(
+                            caller_nid, callee_name, self_receiver or member_receiver or "",
+                            label_to_nid, scope_parents, method_owner, methods_by_owner,
+                            _local_bases,
+                            walk_bases=config.ts_module not in (
+                                "tree_sitter_javascript", "tree_sitter_typescript",
+                            ),
+                        )
                     else:
                         tgt_nid = label_to_nid.get(callee_name)
                     # A qualified `new A.B.Foo()` whose bare name matches only a
@@ -7051,6 +7451,10 @@ def _extract_generic(
                             "source_location": f"L{node.start_point[0] + 1}",
                             "receiver": swift_receiver or member_receiver,
                         }
+                        if python_receiver_shadowed is not None and is_member_call:
+                            rc_entry["_python_receiver_shadowed"] = python_receiver_shadowed(
+                                node, member_receiver or ""
+                            )
                         # This file already named the callee as a type it does
                         # not define, so extract() binds it cross-file only with
                         # import or namespace evidence (#3888).

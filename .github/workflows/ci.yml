@@ -215,6 +215,16 @@ jobs:
           for module, expected in required.items():
               selected = [case for case in cases if case.get('classname') == module]
               proof[module] = len(selected) == len(expected) and {case.get('name') for case in selected} == expected and all(not any(case.find(tag) is not None for tag in ('skipped', 'failure', 'error')) for case in selected)
+          # Joint producer/consumer cases must execute, not merely collect;
+          # retained JUnit binds their complete reviewed matrix to this checkout.
+          integrated = {'tests.test_upstream_qt_cache_integration': 6,
+                        'tests.test_upstream_qt_discovery_integration': 11,
+                        'tests.test_upstream_qt_export_integration': 10,
+                        'tests.test_upstream_qt_path_integration': 3,
+                        'tests.test_upstream_qt_shared_integration': 4}
+          for module, count in integrated.items():
+              selected = [case for case in cases if case.get('classname') == module]
+              proof[module] = len(selected) == count and all(not any(case.find(tag) is not None for tag in ('skipped', 'failure', 'error')) for case in selected)
           client = None
           proof['test_graphs_deleted'] = False
           try:
@@ -398,6 +408,13 @@ jobs:
             'tests/test_html_community_links.py', 'tests/test_html_initial_view.py', 'tests/test_html_middle_pan.py',
             'tests/test_watch.py', 'tests/test_source_alias_provenance.py', 'tests/test_qt_update_discovery_profile.py', 'tests/test_watch_physical_coowners.py', 'tests/test_watch_coowner_admission.py', 'tests/test_non_regular_files.py', 'tests/test_terraform.py',
             'tests/test_terraform_modules.py', 'tests/test_extractors_registry.py::test_terraform_migrated', 'tests/test_ci_windows_tools.py'
+            # The merged upstream cache/discovery/consumer contracts also run
+            # under this admitted native interpreter, with retained case proof.
+            'tests/test_upstream_qt_cache_integration.py', 'tests/test_upstream_qt_discovery_integration.py',
+            'tests/test_upstream_qt_export_integration.py', 'tests/test_upstream_qt_path_integration.py',
+            'tests/test_upstream_qt_shared_integration.py', 'tests/test_qt_followed_metadata_alias.py',
+            'tests/test_extract.py::test_python_external_calls_survive_real_incremental_context'
+            'tests/test_qt_source_identity_admission.py'
           )
           & $proofPython -X utf8 -m pytest @selection -q --tb=short -p no:cacheprovider -rs "--junitxml=$proofDirectory/tests.xml" 2>&1 |
             Tee-Object -FilePath (Join-Path $proofDirectory 'tests.log')

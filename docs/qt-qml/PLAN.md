@@ -2672,3 +2672,88 @@ descriptions are historical; their assigned corrected profiles now pass. No new
 reproduced defect is found, so INC-QML-49 remains unallocated. Baseline typing,
 advisory security and physical application/device procedures remain explicit
 gaps; no merge or deployment is performed.
+
+## INC-QML-49 — Current-upstream integration
+
+Status: **Implemented and locally verified; integrated hosted proof pending**.
+Owner: upstream integration maintainer. Verified source `65103f8` remains on
+`codex/qml-08-adoption-planning`; integration uses the same workspace on
+`codex/qml-upstream-integration`. Dependency: INC-QML-00–48 and INC-CORE-01–09.
+Target: upstream `v8` at `35adf432b9d50f6f3d530ab5d7ec316819ef081c`, package
+0.9.76. Preserve the 62 incoming commits and all accepted Qt/QML contracts;
+resolve four content conflicts without rewriting published history.
+
+Scope decision: this increment integrates the current upstream implementation,
+not a parser rewrite or an upstream publication. Existing QML PR #1748 is an
+explicit overlap to reconcile before a later focused upstream contribution.
+The previous four-Linux/native/twelve-wheel proof tested a different base; it
+remains historical evidence rather than acceptance of this integration.
+
+| Acceptance IDs | Scenario and required observable result |
+| --- | --- |
+| REQ-QML-002-AC02/AC03/AC04; REQ-QML-020-AC01 | Detection and collection admit exact Qt metadata while excluding installed Graphify copies in default/contained-follow profiles; ignore, foreign-root and named-file rejection remain effective |
+| REQ-QML-003-AC04; REQ-QML-011-AC03/AC04 | AST schema 13 invalidates old schema 5/12 entries, retaining both Qt producer facts and upstream receiver-shadow facts; semantic-cache ownership and original source identities remain unchanged |
+| REQ-QML-010-AC02/AC03; REQ-QML-018-AC04/AC06 | Cluster-only/label serialization retains all accepted original parallel edges with logical Qt direction; malformed markers preserve prior output; qualified path/node-ID lookup uses the accepted endpoint and directed traversal |
+| REQ-QML-018-AC02/AC05/AC06 | Upstream C++ unions, Python import/receiver changes, shrink accounting and package 0.9.76 coexist with Qt parser, bridge, installed-wheel and publication contracts |
+| REQ-CORE-004-AC01/AC02/AC03/AC04 | Normal fork PR validation binds complete Linux/native/optional-wheel outcomes, required cases, artifacts, integrity and cleanup to the integrated source/base/checkout without a duplicate dispatch |
+
+Diagnostic impact: stale cache entries miss under the existing cache owner;
+malformed direction still reports QT_EXPORT_DIRECTION before publication.
+Corpus exclusion and unresolved path lookup retain existing rejection behaviour.
+No new diagnostic or persistence owner is introduced. Failed export/publication
+retains accepted graph products under the existing contracts; source analysis
+executes no corpus code. D26 records the combined cache compatibility decision.
+
+Exit: resolve every conflict with source review, add joint-boundary regressions
+and retain pre-correction failure evidence, run focused shared/Qt checks plus
+proportionate lint/type/generated/package checks, refresh the AST graph, then
+publish one integration revision for normal PR proof. Record exact test/skip
+identity and remaining baseline/manual gaps. Review the plan after verification;
+allocate another increment only for a reproduced separate defect.
+
+## INC-QML-50 — Followed Qt metadata source provenance
+
+Status: **Corrected and locally verified; POSIX/hosted profile proof pending**.
+Owner: Qt metadata producer maintainer. Dependency: INC-QML-49's integrated
+discovery/cache contracts. The prior 65103f8 producer and the current integration
+both admit a contained followed directory alias but emit only canonical metadata
+source paths. The direct qmldir reader already canonicalizes the path before the
+facade receives its facts. This contradicts REQ-QML-020-AC02's separately
+discovered lexical-source contract; collector admission alone does not prove it.
+
+Scope decision: preserve canonical physical admission and cache identity while
+retaining each accepted lexical fact owner, original-byte spans and nested
+references through direct readers, facade, persisted graph and actual manual/
+watch updates. Correct the owning producer/transport boundary without broadening
+containment or rewriting unrelated analyzer mechanisms. Root owns integration
+and documentation; the metadata maintainer owns disjoint producer/regression files.
+
+| Acceptance IDs | Scenario and required observable result |
+| --- | --- |
+| REQ-QML-020-AC02; REQ-QML-003-AC04 | A real contained followed directory supplies separate canonical and lexical qmldir/qmake/QML source owners with exact locations and stable cold/warm facts |
+| REQ-QML-020-AC01/AC02/AC03; REQ-QML-012-AC01/AC04 | Default exclusion, foreign aliases, ignore rules, cycles and nonregular inputs retain their established admission/rejection behaviour; native spelling rejection keeps its safe stage-specific code |
+| REQ-QML-011-AC03/AC04; REQ-QML-018-AC05/AC06 | Real metadata edits and manual/watch rebuilds match a clean build, remove stale facts, preserve accepted products on failure, and recover/repeat safely |
+
+Diagnostic impact: accepted aliases must not disappear as a successful empty
+producer result. Existing source/context and publication errors retain their
+owners and safe wording. Unsupported/foreign paths remain rejected without
+executing corpus code. Cache/schema impact follows inspection of the fact
+contract before correction. Native junction and POSIX link evidence are distinct
+profiles; unavailable capabilities remain explicit rather than passes.
+
+Exit: retain the full frozen-producer counterexample, promote real alias assertions
+into ordinary regressions, correct the producer, verify direct/full/warm/manual/
+watch/export and relevant failure controls, document any necessary epoch change,
+refresh the AST graph and include the correction in one normal integration PR run.
+Review the plan for further reproduced gaps.
+
+Local exit review: the combined integration selection passes 83 cases; sixteen
+POSIX link/`..` controls are explicitly inapplicable to the native Windows
+profile and assigned to hosted POSIX lanes. All 43 real alias cases and all six
+native-code/context/failure/recovery cases execute without skips. Existing
+membership/alias/short-name compatibility passes 133 cases with 23 explicit
+platform/capability exclusions before the final missing-context correction;
+the six corrected native cases pass again afterward. The independent final
+profile and distributable proof are recorded in traceability. No additional
+reproduced implementation gap remains at this local checkpoint. INC-QML-51
+remains unallocated; the normal integrated runner result is the exit gate.

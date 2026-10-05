@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from graphify.extractors.qml_source_identity import relative_qml_source
 
 
 class QmlInputError(Exception):
@@ -59,9 +60,11 @@ def parse_source(path: Path):
 
 def failure(path: Path, root: Path | None, error: Exception) -> dict:
     try:
-        name = path.resolve().relative_to(root.resolve() if root else path.resolve().parent).as_posix()
-    except ValueError:
-        name = path.name
+        # Diagnostics borrow the admitted lexical label without creating facts
+        # or target authority. A failed identity lookup must not rethrow here.
+        name = relative_qml_source(path, root)
+    except (OSError, RuntimeError, ValueError):
+        name = "" if getattr(error, "code", "") == "SOURCE_INPUT_IDENTITY_FAILED" else path.name
     code = getattr(error, "code", "QML_ROOT" if str(error).startswith("QML_ROOT:") else "QML_LIMIT")
     diagnostic = {"code": code, "severity": "error", "source_file": name,
                   "owner": "qml", "message": str(error),

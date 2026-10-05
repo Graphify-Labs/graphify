@@ -35,8 +35,11 @@ def main():
         run(interpreter(extra), "-I", smoke, cwd=neutral)
         run(interpreter(core), "-I", smoke, "--core-only", cwd=neutral)
     environment = dict(os.environ, GRAPHIFY_QML_TEST_WHEEL=str(wheel), PYTHONUTF8="1")
+    # Joint upstream/Qt boundaries belong to the same native source profile;
+    # Linux's all-extras job owns them while this lane keeps isolated smokes.
     tests = (["tests/test_qml_wheel_artifact.py"] if "--artifact-only" in sys.argv
-             else sorted(str(path.relative_to(root)) for path in (root / "tests").glob("test_*.py") if path.name.startswith(("test_qml_", "test_qt_"))))
+             else sorted(str(path.relative_to(root)) for path in (root / "tests").glob("test_*.py")
+                         if path.name.startswith(("test_qml_", "test_qt_", "test_upstream_qt_"))))
     run(interpreter(extra), "-X", "utf8", "-m", "pytest", *tests, "-q", "-ra", "--tb=short",
         cwd=root, env=environment)
 

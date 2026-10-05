@@ -467,3 +467,33 @@ disjoint installer, shell-fixture, filesystem-fixture and Terraform-test scopes;
 the integration owner handles environment, shared documentation and Git. Incoming
 upstream and overlapping hook/destination proposals are reviewed before choosing
 the correction; publication and upstream integration are separate delivery work.
+
+## Native external-call subprocess admission — INC-CORE-10
+
+Status: **Corrected and locally verified; hosted proof pending**. Owner: upstream
+test maintainer. Current-upstream integration exposes the existing
+`test_python_external_calls_survive_real_incremental_context` subprocess on
+native Windows. Its fixture forwards HOME but omits USERPROFILE and the native
+home/system fields; `Path.home()` fails before extraction with “Could not
+determine home directory.” This is a test-environment admission failure, not
+evidence of incorrect Python/Qt resolution.
+
+The fixture retains its isolated configuration and forwards the required native
+home/system fields from the already sandboxed environment. No provider secrets,
+global corpus or installation fallback are added. All source, external-call and
+incremental assertions remain unchanged. Existing subprocess/API owners and
+diagnostics need no production change.
+
+REQ-CORE-004-AC02 assigns the real corrected native child-process case, alongside
+the four Linux profiles. AC01/AC03/AC04 retain exact normal-PR identity, individual
+case evidence and source/dependency retention. Required exit: original failure
+evidence, corrected case and neighboring context tests, proportionate lint/type
+checks, native CI selection and terminal hosted proof. Review the integration
+plan for further reproduced gaps before completing this increment.
+
+Local proof: the exact corrected native subprocess case and neighboring context
+tests pass 81/81. The scoped upstream matrix passes 601 with eleven explicit
+capability/platform skips. All ten prior extraction assertions remain structurally
+unchanged; only the native home/system allowlist and explanatory comment differ.
+Ruff passes. The existing oversized fixture remains under the documented
+5460-line ceiling; no production or dependency change is introduced by CORE-10.

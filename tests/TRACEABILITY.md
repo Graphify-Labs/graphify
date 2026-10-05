@@ -1373,3 +1373,73 @@ selection. The final full source command records 8,630 passed, 59 failed,
 Current hosted platform jobs, live service delivery and native browser/device
 procedure have not executed for this source. A global Verified or release-ready
 status cannot be inferred from the bounded local evidence.
+
+## Current-upstream integration — INC-QML-49
+
+Source checkpoint: 65103f8; incoming v8:35adf43/package 0.9.76. Current integration
+proof is pending. The plan's acceptance matrix identifies affected IDs before
+implementation; concrete tests, commands, individual outcomes, baseline gaps and
+reviewed source/base/checkout identity are recorded here as they complete.
+Previous hosted results remain immutable checkpoints. Old skips or aggregate
+counts cannot establish the new joint-boundary criteria.
+
+The frozen native profile is Windows x64, Python 3.12.14, package 0.9.76,
+tree-sitter 0.25.2/language-pack 0.11.0, AST schema 13 and Qt policy 22.
+The ordinary joint selection executes 99 cases: **83 passed, sixteen explicit
+POSIX traversal exclusions, zero failures**. A final context-only correction is
+verified separately by all six native admission cases, with their exact code,
+empty unavailable context, fragmentwise backend-body absence and repaired repeat
+assertions. POSIX link/`..` controls require actual POSIX runner execution.
+
+| Affected acceptance IDs | Exact production tests and profile result |
+| --- | --- |
+| REQ-QML-002-AC02/AC03/AC04; REQ-QML-020-AC01 | `tests/test_upstream_qt_discovery_integration.py::test_req_qml002_ac02_ac03_detect_and_collect_share_named_metadata_and_copy_exclusions`; `tests/test_upstream_qt_discovery_integration.py::test_req_qml002_ac03_ac04_followed_metadata_keeps_lexical_scope_and_rejects_foreign_input`; direct cold/warm, real manual/watch and malformed-metadata cases in the same module. Eleven native cases pass; default/contained-follow, ignores and installed-copy exclusion remain production boundaries. |
+| REQ-QML-003-AC04; REQ-QML-011-AC03/AC04; REQ-QML-018-AC05/AC06 | `tests/test_upstream_qt_cache_integration.py::test_req_qml003_ac04_qml018_ac05_old_namespaces_miss_and_refresh`; `tests/test_upstream_qt_cache_integration.py::test_req_qml003_ac04_qml018_ac05_mixed_cold_warm_serialized_facts`; `tests/test_upstream_qt_cache_integration.py::test_req_qml011_ac03_ac04_qml018_ac06_upgrade_failure_retains_repairs_repeats`. Six native cases pass, with old schemas 5/12 and both package versions, receiver-shadow/Qt fact parity, semantic byte retention and actual replacement failure/recovery. |
+| REQ-QML-010-AC02; REQ-QML-018-AC04/AC06 | `tests/test_upstream_qt_export_integration.py::test_req_qml_010_ac02_original_parallel_links_retain_qml_direction`; `tests/test_upstream_qt_export_integration.py::test_req_qml_018_ac06_preserved_invalid_link_refuses_replacement`; `tests/test_upstream_qt_export_integration.py::test_req_qml_018_ac04_real_recluster_keeps_parallel_and_qml_links`. Ten native cases pass, preserving distinct generic mechanisms, actual QML direction/provenance, prior bytes/mtime, repaired repeat and real offline reclustering. |
+| REQ-QML-010-AC03; REQ-QML-018-AC04 | `tests/test_upstream_qt_path_integration.py::test_req_qml_010_ac03_qualified_native_path_preserves_direction`; `tests/test_upstream_qt_path_integration.py::test_req_qml_018_ac04_duplicate_qualified_target_refuses_guess`. Three native cases pass through the real CLI, qualified file/symbol and exact-ID selection, same-name decoys, explicit duplicate rejection, directed/undirected controls and unchanged durable input. |
+| REQ-QML-003-AC01/AC02/AC04; REQ-QML-011-AC01/AC04; REQ-QML-018-AC02 | `tests/test_upstream_qt_shared_integration.py::test_req_qml003_ac01_ac02_ac04_union_and_qt_native_cold_warm_reload`; `tests/test_upstream_qt_shared_integration.py::test_req_qml011_ac01_ac04_union_edit_removes_stale_member_keeps_native_endpoint`. Four native CMake/qmake cases pass with original spans, distinct same-named C++ union/native method ownership, real edits, stale removal and repeated output. |
+| REQ-QML-020-AC01/AC02/AC03; REQ-QML-003-AC04; REQ-QML-011-AC03/AC04; REQ-QML-018-AC05/AC06 | `tests/test_qt_followed_metadata_alias.py::test_req_qml020_ac02_typed_producers_keep_distinct_alias_facts_and_original_spans`; `tests/test_qt_followed_metadata_alias.py::test_req_qml020_ac02_followed_metadata_facade_keeps_every_owner_cold_warm_and_reload`; `tests/test_qt_followed_metadata_alias.py::test_req_qml020_ac03_typed_alias_updates_remove_stale_facts_and_match_full_rebuild`; `tests/test_qt_followed_metadata_alias.py::test_req_qml020_ac03_alias_read_failure_retains_cohort_cache_and_repairs`; `tests/test_qt_followed_metadata_alias.py::test_req_qml020_ac02_membership_rejects_another_walked_owner_of_same_physical_input`; `tests/test_qt_followed_metadata_alias.py::test_req_qml020_ac03_policy21_alias_products_refresh_retain_and_recover`. All 43 native cases pass, including BOM/CRLF/Unicode spans, nested owner/target references, actual junction/root aliases, foreign inputs, malformed lexical context and native short leaf spelling. |
+| REQ-QML-012-AC01/AC02/AC04; REQ-QML-020-AC02 | `tests/test_qt_source_identity_admission.py::test_req_qml020_ac02_native_admission_failure_keeps_its_code_and_recovers`. Six native production-reader cases pass after the final correction. `tests/test_qt_source_identity_admission.py::test_req_qml020_ac02_dotdot_input_keeps_actual_physical_target_and_containment` has sixteen Windows exclusions because actual POSIX physical link/`..` traversal is its test boundary; hosted POSIX outcomes remain pending. |
+| REQ-CORE-004-AC02 | `tests/test_extract.py::test_python_external_calls_survive_real_incremental_context` passes in the corrected native profile; all ten upstream extraction assertions remain structurally unchanged. The exact case is included in native hosted selection. |
+
+The joint command is:
+
+```text
+python -X utf8 -m pytest tests/test_upstream_qt_cache_integration.py tests/test_upstream_qt_discovery_integration.py tests/test_upstream_qt_export_integration.py tests/test_upstream_qt_path_integration.py tests/test_upstream_qt_shared_integration.py tests/test_qt_followed_metadata_alias.py tests/test_qt_source_identity_admission.py -q --tb=short -rs --junitxml=joint.xml
+```
+
+Adjacent profiles pass 601 upstream/shared cases with eleven capability skips,
+172 cache/stat-index/Python/Qt cases with eight file-symlink skips, and 271
+export/path/direction cases with no skips. Counts overlap and are not summed.
+Upstream multi-root stat-index warnings are retained. The original collector
+leaks installed copies under both profiles; both immutable parent cache modules
+reuse an old namespace; the old export loses a parallel relation and old path
+lookup fails qualified identity. The prior full producer and current pre-fix
+typed reader omit walked metadata; twenty ordinary alias cases fail before the
+correction. Replays use actual immutable modules with current support imports,
+not claims of full historical dependency equivalence or a checkout swap.
+
+The corrected source wheel contains **185 Python payloads**, each byte-identical
+to source and both isolated QML/core installs. Its SHA-256 is
+`870a56e35e3a18afde2f7c13811e6e3fa8af53529f485a4399521133046d9d01`.
+Both isolated installed smokes and all three reviewed-artifact tests pass.
+Production and original coverage bytes remain unchanged during artifact proof.
+The preliminary wheel precedes the final diagnostic correction and is not used
+as final acceptance. Hosted wheels retain their own independently recorded digests.
+
+Whole Ruff passes. All five skillgen validators pass, including 134 generated
+artifacts. Frozen explicit-interpreter Pyright remains **605 errors, zero warnings**;
+all new integration modules have zero diagnostics. Four errors move with an
+upstream responsibility transfer and one Dart OptionalSubscript is reproduced
+from the immutable incoming source. This is a failed existing contribution gate,
+not successful typing. The final 197-distribution inventory changes only the
+Graphify package version from the historical profile. No assertion, required
+check, protection or historical commit is weakened or rewritten. Advisory
+security and physical application/device procedures remain separate gaps.
+
+Normal fork PR proof targets the exact incoming 35adf43 base on
+`codex/qml-upstream-base`; the integration branch remains in the canonical
+workspace. All prior PRs and the verified 65103f8 branch are preserved. No
+upstream PR, merge, deployment or default-branch update is performed. Terminal
+current head/base/checkout identities, cases, artifacts and cleanup remain the
+hosted exit gate under REQ-CORE-004-AC01–AC04.

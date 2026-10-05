@@ -7,6 +7,16 @@ from typing import Any
 from graphify.extractors.base import _file_stem, _make_id, _read_text
 
 
+def _is_tagged_union(node) -> bool:
+    """True for a tagged union (`union(enum)` / `union(SomeTag)`), whose members
+    are discriminant cases, not for a bare `union { ... }` whose members are typed
+    data fields. A tagged union_declaration carries the tag in parentheses, so it
+    has a `(` child; a bare union has none."""
+    return node.type == "union_declaration" and any(
+        child.type == "(" for child in node.children
+    )
+
+
 def extract_zig(path: Path) -> dict:
     """Extract functions, structs, enums, unions, and imports from a .zig file."""
     try:
@@ -81,13 +91,16 @@ def extract_zig(path: Path) -> dict:
         # directly under the enum_declaration. The recurse into the enum body
         # only emitted its methods, so the members were dropped and the enum was
         # left a memberless leaf. Emit a node plus a `case_of` edge per member,
-        # the Zig parity of Java #1719 / Swift / Scala enums. The gate on the
-        # enum_declaration parent keeps struct/union fields (which share the
-        # container_field shape) untouched.
+        # the Zig parity of Java #1719 / Swift / Scala enums. A tagged union
+        # (`union(enum) { circle: f64, point }`) is the same shape — its fields are
+        # the discriminant cases — so it gets the same treatment. The gate keeps a
+        # bare `struct`/`union`'s typed data fields (which share the container_field
+        # shape but are not cases) untouched.
         if (t == "container_field"
                 and parent_struct_nid
                 and node.parent is not None
-                and node.parent.type == "enum_declaration"):
+                and (node.parent.type == "enum_declaration"
+                     or _is_tagged_union(node.parent))):
             name_node = node.child_by_field_name("name")
             if name_node is None:
                 name_node = next(
@@ -127,8 +140,8 @@ def extract_zig(path: Path) -> dict:
                 if child.type == "identifier":
                     name_node = child
                 elif child.type in ("struct_declaration", "enum_declaration",
-                                    "union_declaration", "builtin_function",
-                                    "field_expression"):
+                                    "union_declaration", "error_set_declaration",
+                                    "builtin_function", "field_expression"):
                     value_node = child
 
             if value_node and value_node.type == "struct_declaration":
@@ -155,6 +168,32 @@ def extract_zig(path: Path) -> dict:
                     # rather than dropped along with the whole method layer.
                     for child in value_node.children:
                         walk(child, parent_struct_nid=type_nid)
+                return
+
+            if value_node and value_node.type == "error_set_declaration":
+                if name_node:
+                    type_name = _read_text(name_node, source)
+                    line = node.start_point[0] + 1
+                    type_nid = _make_id(stem, type_name)
+                    add_node(type_nid, type_name, line)
+                    add_edge(file_nid, type_nid, "contains", line)
+                    # A Zig error set (`const E = error{ A, B };`) is a named
+                    # enumeration of error values; each member is an `identifier`
+                    # child of the error_set_declaration. Without this branch the
+                    # whole type was dropped (its value node type was unrecognised),
+                    # losing both the error type and its members. Emit a node plus a
+                    # `case_of` edge per member — the Zig error-set parity of the
+                    # enum members handled above (and Java #1719 / Swift / Scala).
+                    for child in value_node.children:
+                        if child.type != "identifier":
+                            continue
+                        member_name = _read_text(child, source)
+                        if not member_name:
+                            continue
+                        member_line = child.start_point[0] + 1
+                        member_nid = _make_id(type_nid, member_name)
+                        add_node(member_nid, member_name, member_line)
+                        add_edge(type_nid, member_nid, "case_of", member_line)
                 return
 
             if value_node and value_node.type in ("builtin_function", "field_expression"):

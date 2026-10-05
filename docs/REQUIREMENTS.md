@@ -477,9 +477,9 @@ project code.
 
 2 - Missing, duplicate, conditional, generated or out-of-root targets retain explicit unresolved/unsupported site status, reason and bounded evidence without a target edge. Same-name files in different scopes remain distinct; separately discovered in-corpus symlink sources retain their distinct walked provenance even when their physical target is shared. Alternate spelling of the scan root must not collapse those corpus owners or authorize new target roles. Graph projection neither reads new files nor evaluates expansions, build hooks or QML. Malformed metadata and failed joins retain existing failure diagnostics and prior durable graph/state; force cannot authorize partial membership publication. Canonical input comparison still rejects a foreign input or conflicting declaration identity; an alias cannot authorize out-of-corpus membership or rewrite stored source facts. (`REQ-QML-020-AC02`)
 
-3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. Canonical and real alias profiles agree through cold/warm extraction, full/manual/watch updates and source removal; repaired retry and no-change repeats preserve accepted output. Existing policy-18/19/20 native/Qt products refresh under policy 21 at unchanged package/source versions; a failed upgrade retains prior products and repaired retry/repeat completes the same accepted graph. (`REQ-QML-020-AC03`)
+3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. Canonical and real alias profiles agree through cold/warm extraction, full/manual/watch updates and source removal; repaired retry and no-change repeats preserve accepted output. Earlier native/Qt products refresh under current policy 22 at unchanged package/source versions, including canonical-only followed metadata from policy 21; a failed upgrade retains prior products and repaired retry/repeat completes the same accepted graph. (`REQ-QML-020-AC03`)
 
-Status: **Verified for the recorded bounded source, installed and hosted membership/alias profiles**.
+Status: **Implemented; earlier canonical/membership profiles have recorded verification. Followed Qt metadata provenance and current policy-22 integration require new profile evidence**.
 The earlier canonical-spelling cases have production, lifecycle/consumer and reviewed installed-artifact
 evidence assigned in [traceability](../tests/TRACEABILITY.md#project-membership-projection).
 The initial two source/lifecycle suites contribute 37 passing cases to their
@@ -637,3 +637,34 @@ tests and configuration checks do not establish hosted acceptance. The
 binds actual jobs, archives, individual required cases, integrity and cleanup to
 their tested source/base/checkout. Baseline typing, advisory security and separate
 application/device procedures are outside this runner-profile verification.
+
+## Current-upstream integration profile
+
+INC-QML-49 retains existing externally observable requirements while integrating
+upstream package 0.9.76. Schema 13 retires incompatible prior AST entries; Qt
+policy 21, semantic cache ownership, logical edge mechanisms and corpus bounds
+remain authoritative. Exact named Qt metadata and installed-source exclusion
+must coexist; original parallel links retain validated Qt direction through
+serialization and qualified path queries. These are REQ-QML-002, REQ-QML-003,
+REQ-QML-010, REQ-QML-011, REQ-QML-018 and REQ-QML-020 acceptance boundaries,
+with REQ-CORE-004 owning hosted evidence. No new numeric requirement is allocated.
+
+Status: **Integrated-profile implementation in progress; verification pending**.
+Earlier Verified labels apply to their recorded bounded source/artifact/runner
+revisions. They do not establish current-upstream integration acceptance. Exact
+new assignments, executed profiles and remaining gaps belong to traceability.
+
+INC-QML-50 corrects followed Qt metadata/QML provenance under REQ-QML-020-AC02:
+physical containment remains required, and each separately admitted lexical source
+retains its own facts, IDs, nested references and original-byte locations. Qt
+policy 22 refreshes prior canonical-only products at unchanged input; combined
+AST schema 13 and semantic-cache ownership remain unchanged. Default exclusion,
+foreign/ignored/nonregular rejection and transactional output retention still
+apply. Correction and exact profile verification are pending; the reproduced
+older omission invalidates alias-provenance acceptance for that earlier state.
+
+INC-CORE-10 corrects native admission of the upstream external-call subprocess
+fixture under REQ-CORE-004-AC02. The isolated child retains required Windows home
+and system fields so the extraction assertions execute; source/provider scope
+and production behaviour remain unchanged. The exact native/Linux case and
+unchanged inputs require current integration-run evidence.

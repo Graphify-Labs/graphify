@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path, PurePosixPath
 
 from graphify.extractors.qml_project_read import literal_path
+from graphify.extractors.qml_source_identity import relative_qml_source
 from graphify.qml_resolution_types import Resolution, answer, fact_edge, fact_node, qml_metadata, source_path
 from graphify.qt_source_file_role import generic_file_role
 
@@ -123,12 +124,12 @@ def _remove_owned_edges(edges, site_id):
 
 
 def _accepted_input_source(path: Path | str, root: Path) -> str | None:
-    """Compare physical input identity without rewriting stored lexical provenance."""
-    # The facade canonicalizes its root before joining source facts. Platform
-    # aliases (Windows short names or a symlinked temporary-directory parent)
-    # must identify the same accepted file, while outside-root targets still fail.
+    """Compare the physically admitted walked owner without lending target roles."""
+    # Native/root spellings canonicalize, while separately discovered aliases
+    # stay distinct. Exact lexical equality rejects facts borrowed from another
+    # owner even when those inputs happen to share a contained physical target.
     try:
-        return Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+        return relative_qml_source(Path(path), root)
     except (OSError, RuntimeError, ValueError):
         return None
 

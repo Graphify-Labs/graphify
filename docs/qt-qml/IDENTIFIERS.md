@@ -22,7 +22,8 @@ legacy targets. Navigation follows
 [GitHub custom-anchor syntax](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#custom-anchors).
 
 Future requirements continue with `REQ-QML-022`; future top-level increments
-continue with `INC-QML-49`. These counters describe different concerns and need
+continue with `INC-QML-51`. INC-QML-49 owns current-upstream integration;
+INC-QML-50 owns followed Qt metadata source provenance. These counters describe different concerns and need
 not advance together. Extend this catalog when retiring or migrating an ID;
 never transfer an alias to unrelated behavior. Document identifiers do not change
 runtime schemas or parser contracts.

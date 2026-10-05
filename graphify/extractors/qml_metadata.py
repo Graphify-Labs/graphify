@@ -7,6 +7,7 @@ import base64
 from pathlib import Path
 
 from graphify.qml_resolution_types import fact_edge, fact_node
+from graphify.extractors.qml_source_identity import SourceInputIdentityError, relative_qml_source
 
 MAX_METADATA_BYTES = 1_048_576
 MAX_METADATA_RECORDS = 10_000
@@ -149,10 +150,11 @@ def parse_qmldir(text: str, *, relative_file: str = "qmldir") -> dict:
 def extract_qmldir(path: Path, *, root: Path | None = None) -> dict:
     """Read one admitted file; do not follow any paths or plugins it declares."""
     path = Path(path)
-    anchor = Path(root).resolve() if root is not None else path.resolve().parent
     relative = ""
     try:
-        relative = path.resolve().relative_to(anchor).as_posix()
+        # Admission stays physical; source facts and failure context retain the
+        # separately discovered lexical owner before original bytes are read.
+        relative = relative_qml_source(path, root)
         if path.stat().st_size > MAX_METADATA_BYTES:
             return _read_failure(relative, "metadata_size_limit")
         with path.open("rb") as stream:
@@ -161,14 +163,19 @@ def extract_qmldir(path: Path, *, root: Path | None = None) -> dict:
             return _read_failure(relative, "metadata_size_limit")
         # Keep BOM and CRLF bytes in provenance; only tokenization skips a BOM.
         text = raw.decode("utf-8")
-    except (OSError, UnicodeError, ValueError):
+    except SourceInputIdentityError as exc:
+        return _read_failure("", exc.reason, code=exc.code)
+    except (OSError, RuntimeError, UnicodeError, ValueError):
         return _read_failure(relative, "metadata_unreadable_or_outside_root")
     return parse_qmldir(text, relative_file=relative)
 
 
-def _read_failure(relative: str, reason: str) -> dict:
-    return {"nodes": [], "edges": [], "error": "QML-META-002: metadata read rejected",
-            "diagnostics": [{"code": "QML-META-002", "severity": "error", "owner": "qmldir",
+def _read_failure(relative: str, reason: str, *, code="QML-META-002") -> dict:
+    identity_failed = code == "SOURCE_INPUT_IDENTITY_FAILED"
+    return {"nodes": [], "edges": [], "error": f"{code}: metadata read rejected",
+            "diagnostics": [{"code": code, "severity": "error", "owner": "qmldir",
                              "source_file": relative, "reason": reason,
-                             "message": "Metadata unreadable, oversized or outside the scan root",
-                             "recovery": "Use an accepted UTF-8 qmldir within the documented limits."}]}
+                             "message": "Source input identity unavailable" if identity_failed else
+                                        "Metadata unreadable, oversized or outside the scan root",
+                             "recovery": "Repair filesystem access and retry." if identity_failed else
+                                         "Use an accepted UTF-8 qmldir within the documented limits."}]}

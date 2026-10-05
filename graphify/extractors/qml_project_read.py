@@ -7,6 +7,7 @@ from bisect import bisect_left
 from pathlib import Path
 
 from graphify.qml_resolution_types import fact_edge, fact_node
+from graphify.extractors.qml_source_identity import relative_qml_source
 
 MAX_PROJECT_BYTES = 1_048_576
 MAX_PROJECT_FACTS = 10_000
@@ -96,11 +97,18 @@ class ProjectFacts:
 def failure(relative_file: str, metadata_format: str, error: Exception) -> dict:
     code = getattr(error, "code", "QML_PROJECT_READ")
     reason = getattr(error, "reason", "metadata_unreadable_or_outside_root")
+    identity_failed = code == "SOURCE_INPUT_IDENTITY_FAILED"
+    # Native admission failed before a source label was established. Match the
+    # other typed readers' explicit unavailable context, without a raw basename.
+    if identity_failed:
+        relative_file = ""
     return {"nodes": [], "edges": [], "error": f"{code}: metadata rejected",
             "diagnostics": [{"code": code, "reason": reason, "severity": "error",
                              "owner": metadata_format, "source_file": relative_file,
-                             "message": "Qt metadata rejected before source expansion",
-                             "recovery": "Use accepted UTF-8 metadata within documented bounds."}],
+                             "message": "Source input identity unavailable" if identity_failed else
+                                        "Qt metadata rejected before source expansion",
+                             "recovery": "Repair filesystem access and retry." if identity_failed else
+                                         "Use accepted UTF-8 metadata within documented bounds."}],
             "qml_failures": [{"code": code, "source_file": relative_file, "reason": reason}]}
 
 
@@ -109,8 +117,9 @@ def extract_project(path: Path, root: Path | None, metadata_format: str, parser)
     path = Path(path)
     relative = path.name
     try:
-        anchor = Path(root).resolve() if root is not None else path.resolve().parent
-        relative = path.resolve().relative_to(anchor).as_posix()
+        # Resolve authority before retaining a lexical source owner. Literal
+        # targets remain relative to that declaration; no new file is admitted.
+        relative = relative_qml_source(path, root)
         if path.stat().st_size > MAX_PROJECT_BYTES:
             raise MetadataError("QML_PROJECT_LIMIT", "metadata_size_limit")
         with path.open("rb") as stream:
@@ -118,5 +127,5 @@ def extract_project(path: Path, root: Path | None, metadata_format: str, parser)
         if len(raw) > MAX_PROJECT_BYTES:
             raise MetadataError("QML_PROJECT_LIMIT", "metadata_size_limit")
         return parser(raw, relative_file=relative)
-    except (OSError, UnicodeError, ValueError) as exc:
+    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
         return failure(relative, metadata_format, exc)

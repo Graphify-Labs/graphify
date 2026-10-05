@@ -781,3 +781,41 @@ watch parity under the same admitted profile while retaining conservative defaul
 scope. Unknown flags and multiple roots reject before rebuild; accepted work uses
 the existing failure/retention/retry path. No source grammar, Qt policy, AST schema,
 cache format, runtime dependency or new persistence boundary changes.
+
+## D26 — Combined upstream and Qt AST compatibility
+
+Status: **Accepted for INC-QML-49; verification pending**.
+The current upstream 0.9.76 producer retains Python receiver-shadow and other
+new source facts under its schema 5. The Qt/QML branch uses schema 12 for its
+accepted producer/callback facts. Integration uses schema 13, retaining both
+contracts and making prior namespaces miss rather than admitting stale facts.
+Qt policy 21 retains its existing analysis/publication owner; package/source
+version changes and the new AST namespace supply the accepted refresh boundary.
+Semantic caches retain their independent content ownership and are not
+invalidated merely by this AST change. No Qt SDK or second runtime is required.
+
+Keeping schema 5 would discard the established Qt cache contract; retaining 12
+would reuse a published producer identity for additional upstream semantics.
+A new schema is explicit, conservative and uses the existing cache cleanup and
+recovery path. Old evidence stays bound to its original revision. This decision
+changes no requirement identifiers, runtime edge mechanisms or persistence owner.
+
+## D27 — Physical admission and lexical Qt metadata ownership
+
+Status: **Accepted for INC-QML-50; corrected profile proof pending**.
+Physical containment and Windows long-spelling admission remain authoritative for
+accepting a source. After admission, a real separately walked contained alias owns
+its own Qt/QML source facts, IDs, nested references and original-byte locations.
+The shared stateless extractor helper chooses that lexical owner without executing
+the corpus or assigning target authority. Literal module/resource/member lookup
+retains its existing accepted-identity boundary.
+
+Canonical-only source facts lose an admitted alias silently and contradict the
+established discovery contract. Duplicating files or adding an independent cache
+would introduce conflicting owners. Reusing the existing source-identity helper
+and publication pipeline preserves the physical guard with one source-fact owner.
+Qt source/metadata bypass syntax caching; the combined AST schema remains 13.
+Qt policy 22 requires unchanged-input derived refresh of prior canonical-only
+products through the existing manual/watch publication owner. Semantic caches,
+diagnostic codes and graph format are unchanged. Native junction and POSIX link
+proof remain separately identified in traceability.

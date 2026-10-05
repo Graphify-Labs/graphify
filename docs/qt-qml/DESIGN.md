@@ -1285,3 +1285,69 @@ under INC-QML-47 require exact long entry spelling after input admission, while
 the distinct symlink fixture still requires its exact lexical parser owner.
 Neither change relaxes graph, native endpoint, cache or persisted provenance
 assertions. Source, installed and hosted outcomes remain revision-bound.
+
+## Current-upstream integration — INC-QML-49 / D26
+
+The integration maintainer owns reconciliation of upstream 35adf43/package
+0.9.76 with the preserved Qt/QML revision 65103f8. Source discovery combines
+exact Qt metadata admission with upstream installed-file exclusion. Cache schema
+13 preserves both producer contracts; Qt policy 21, per-file facts and semantic
+cache lifetimes retain their existing owners. CLI qualified endpoint lookup
+feeds the existing direction-aware path consumer. JSON's original-links input
+preserves upstream parallel relationships and then validates every Qt logical
+endpoint before the existing atomic writer can publish.
+
+Rejection and failure policy remain fail-closed: source boundaries cannot expand,
+invalid direction cannot publish, and a stale cache does not become a successful
+empty extraction. Current/previous graph and cache retention follow the owning
+contracts. No custom merger, corpus execution, second parser architecture or
+new global mutable state is added. Joint regressions and exact integrated runner
+proof belong to tests/TRACEABILITY.md; previous-base green checks do not verify
+this revision. Existing QML PR #1748 is a publication overlap, not integrated code.
+
+The integrated profile's focused legacy cohesion exceptions preserve existing
+owners and upstream migration sequencing:
+
+| Owner / touched file | Measured integration size / ceiling | Rationale and extraction exit |
+| --- | --- | --- |
+| Extractor facade maintainer: `graphify/extract.py` | 9226 / 9250 physical lines | Combine discovery gates in place; extract one characterized facade responsibility separately under the migration playbook |
+| Cache maintainer: `graphify/cache.py` | 1826 / 1840 | One epoch seam; stat-index rebinding remains upstream-owned. Separate a cohesive cache extraction after characterization |
+| CLI maintainer: `graphify/cli.py` | 5079 / 5090 | Preserve upstream dispatch and exact endpoint selection; separate characterized path-command ownership before further growth |
+| Export maintainer: `graphify/export.py` | 1402 / 1410 | Original parallel links feed existing direction validation and writer; separate a cohesive serializer only after preservation/failure characterization |
+| CI maintainer: `.github/workflows/ci.yml` | 474 / 510 | Extend existing native/source case selection and proof in the same workflow; extract shared evidence collection if another workflow requires it or further growth exceeds this ceiling |
+| Upstream fixture maintainer: `tests/test_extract.py` | 5453 / 5460 | Keep the existing isolated subprocess and extraction assertions; separate incremental-context characterization before a test-module extraction |
+
+These ceilings apply to the measured integration, not routine growth. Incoming
+oversized upstream files retain their upstream responsibilities; no unrelated
+mechanical extraction is mixed into this reconciliation. New helpers and joint
+regression files remain below 300 lines.
+
+## Followed Qt metadata provenance — INC-QML-50 / D27
+
+The stateless `extractors/qml_source_identity.py` owns admitted lexical source
+selection for Qt/QML producers. It receives the path and root explicitly and
+supplies a local real-path callback to the existing walked-name boundary.
+Physical normalization/containment and Windows long
+entry spelling use the existing source-identity boundary; a real separately
+walked contained alias then retains its lexical source name. FactBuilder, qmldir
+and literal project/resource/type-description readers use that same choice.
+Source ranges remain offsets into the original bytes; resolver lookup values
+and native endpoint authority keep their established owners.
+
+Qt source/metadata bypass syntax caching. Qt policy 22 reconstructs unchanged-input
+derived products under the current discovery profile before existing atomic
+publication; AST schema 13 and content-owned semantic cache are independent.
+Default non-following, foreign/ignored/nonregular rejection and guarded context
+diagnostics remain unchanged. Source/read failure and graph replacement failure
+retain prior products, with normal retry/repeat recovery. Native junction/POSIX
+fixtures and direct/full/warm/manual/watch evidence are individually assigned in
+traceability. Implementation/profile verification remains pending.
+
+Lexical normalization must not precede physical resolution of an accepted POSIX
+link/`..` input: those spellings can denote a different file from a lexical
+`abspath` collapse. Establish the original admitted target first; uncertain
+walked spelling falls back conservatively to that contained target. Existing
+native admission failures retain SOURCE_INPUT_IDENTITY_FAILED through typed
+QML/metadata results with safe context and retry guidance, rather than becoming
+QML_ROOT or a successful empty result. No native backend body or target authority
+is copied into public facts.

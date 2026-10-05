@@ -52,9 +52,11 @@ Qt 5.15 is later, separately verified work.
 Qt signals, slots, emissions and `QObject::connect` are explicit requirements,
 as is bidirectional QML/C++ integration: C++ APIs supplied to QML and C++ access
 to QML-created objects, signals, properties and methods. The current catalog has
-21 requirements and 84 assigned acceptance criteria with individual traceability.
-Original fixture passes do not verify the scope counterexamples in the follow-up
-audit; INC-QML-17/18/19/20 are planned corrections and loader admission work.
+21 Qt/QML requirements and 85 assigned acceptance criteria, alongside four shared
+requirements and 14 criteria, with individual traceability. INC-QML-17–48 include
+completed corrections and reviewed runner evidence. Current-upstream integration
+and the followed-metadata provenance correction are INC-QML-49/50; acceptance of
+that combined revision requires its own evidence.
 
 The [INC-QML-00 decision](PARSER_DECISION.md) selects the optional, pinned language-pack
 adapter. The source analysis requires no Qt runtime, compiler or JavaScript
@@ -63,7 +65,7 @@ execution. Scope and unresolved-coverage limits are in [architecture](ARCHITECTU
 The plan retains INC-QML-00 through INC-QML-07, with INC-QML-04a/INC-QML-04b/INC-QML-04c separating exposure,
 native events and reverse object access. Native C++ event work can follow INC-QML-00
 alongside the QML lane; metadata readers can follow INC-QML-02. Every acceptance ID
-has a planned completion increment in traceability. Early graph/persistence/update
+has an individual evidence or remaining-gap assignment in traceability. Early graph/persistence/update
 safety is required when a capability is enabled, before later optimization.
 
 
@@ -80,9 +82,9 @@ service checks remain unexecuted.
 HTML export recovers missing large-graph communities locally and fills names
 from structural hubs. Select All starts checked and displays all exported view
 data. Large source graphs still use the complete labeled community aggregate
-within the display cap. Overview optionally selects the ten largest source
-communities and unchecks Select All; filters, search, Select All and Select None
-remain available. The full source graph remains available for scoped queries.
+within the display cap. Community filters, search, Select All and Select None
+remain available. Middle-button dragging pans the graph; the wheel changes zoom.
+The full source graph remains available for scoped queries.
 Aggregated HTML states its source-detail omissions; camera/filter state is
 temporary. Checked-default startup is locally verified through exporter/CLI,
 emitted-script and reviewed installed-artifact checks. Browser visual inspection,
