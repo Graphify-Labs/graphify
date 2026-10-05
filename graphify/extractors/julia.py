@@ -84,25 +84,52 @@ def extract_julia(path: Path) -> dict:
             })
         return nid
 
+    def _type_name(node) -> str | None:
+        """Read a type's bare name from a node that is either a plain
+        `identifier` or a `parametrized_type_expression` (`Foo{T}`), whose
+        leading `identifier` child carries the real name.
+
+        A parametric type head was handled by neither branch below, so
+        `struct Box{T}` and `abstract type Shape{T}` — and the parametric
+        operand of a `Pair{A,B} <: Base` subtyping form — were dropped
+        entirely. Parametric types are the backbone of generic Julia.
+        """
+        if node is None:
+            return None
+        if node.type == "identifier":
+            return _read_text(node, source)
+        if node.type == "parametrized_type_expression":
+            ident = next((c for c in node.children if c.type == "identifier"), None)
+            return _read_text(ident, source) if ident else None
+        return None
+
     def _type_head_names(type_head) -> tuple[str | None, str | None]:
         """Return (type_name, supertype_name) from a Julia `type_head`.
 
-        A bare declaration (`Foo`) exposes an `identifier`; a subtyping
-        declaration (`Foo <: Bar`) wraps both names in a `binary_expression`.
-        Both the struct and abstract-type paths need this, so parse it once.
+        A bare declaration (`Foo`) exposes an `identifier`; a parametric one
+        (`Foo{T}`) a `parametrized_type_expression`; a subtyping declaration
+        (`Foo <: Bar`) wraps both operands in a `binary_expression`. Both the
+        struct and abstract-type paths need this, so parse it once.
         """
         bin_expr = next(
             (c for c in type_head.children if c.type == "binary_expression"), None
         )
         if bin_expr:
-            identifiers = [c for c in bin_expr.children if c.type == "identifier"]
-            if identifiers:
-                name = _read_text(identifiers[0], source)
-                super_name = _read_text(identifiers[-1], source) if len(identifiers) >= 2 else None
+            operands = [
+                c for c in bin_expr.children
+                if c.type in ("identifier", "parametrized_type_expression")
+            ]
+            if operands:
+                name = _type_name(operands[0])
+                super_name = _type_name(operands[-1]) if len(operands) >= 2 else None
                 return name, super_name
             return None, None
-        name_node = next((c for c in type_head.children if c.type == "identifier"), None)
-        return (_read_text(name_node, source) if name_node else None), None
+        name_node = next(
+            (c for c in type_head.children
+             if c.type in ("identifier", "parametrized_type_expression")),
+            None,
+        )
+        return _type_name(name_node), None
 
     def _func_name_from_signature(sig_node) -> str | None:
         """Extract function name from a Julia signature node (call_expression > identifier)."""

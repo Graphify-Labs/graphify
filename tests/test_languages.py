@@ -2405,6 +2405,35 @@ def test_julia_abstract_type_with_supertype_is_extracted(tmp_path):
     assert ("Dog", "Animal") in _edge_labels(r, "inherits"), "abstract inherits edge dropped"
 
 
+def test_julia_parametric_types_are_extracted(tmp_path):
+    """Parametric type declarations must yield a node (and keep their
+    supertype edge), the same as their non-parametric forms.
+
+    The type-head reader only recognised a plain `identifier`, so a
+    `parametrized_type_expression` (`Box{T}`) matched nothing and the type was
+    dropped entirely — including the parametric operand of a subtyping form
+    (`Sq{T} <: Shape{T}`), which also lost its inherits edge. Generic types
+    are the backbone of idiomatic Julia.
+    """
+    f = tmp_path / "params.jl"
+    f.write_text(
+        "struct Box{T}\n"
+        "    value::T\n"
+        "end\n"
+        "abstract type Shape{T} end\n"
+        "struct Sq{T} <: Shape{T}\n"
+        "end\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = [n["label"] for n in r["nodes"]]
+    assert "Box" in labels, "parametric struct dropped"
+    assert "Shape" in labels, "parametric abstract type dropped"
+    assert "Sq" in labels, "parametric subtype dropped"
+    assert ("Sq", "Shape") in _edge_labels(r, "inherits"), \
+        "parametric subtyping inherits edge dropped"
+
+
 def test_julia_macro_definition_is_extracted(tmp_path):
     """`macro name(...) ... end` must be a definition, with the calls in its
     body attributed to it. Macros are first-class Julia definitions and were
