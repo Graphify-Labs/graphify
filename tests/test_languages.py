@@ -1815,6 +1815,37 @@ def test_elixir_defmacro_and_defguard_are_extracted(tmp_path):
     assert ("run()", "trace()") in calls
 
 
+def test_elixir_defdelegate_is_extracted(tmp_path):
+    """`defdelegate name(args), to: Mod` defines a real, public module function.
+
+    Its head is the same `call` shape as `def` (the first argument is the
+    signature), but `defdelegate` was not handled, so the delegated function
+    was never a node and an intra-module call to it had nothing to resolve to.
+    Delegation is a common public-API idiom.
+    """
+    src = tmp_path / "facade.ex"
+    src.write_text(
+        "defmodule Facade do\n"
+        "  defdelegate start(x), to: Worker\n"
+        "  defdelegate stop(x), to: Worker, as: :halt\n"
+        "\n"
+        "  def run(x) do\n"
+        "    start(x)\n"
+        "    stop(x)\n"
+        "  end\n"
+        "end\n"
+    )
+    r = extract_elixir(src)
+    assert "error" not in r
+    labels = {(n.get("label") or "").rstrip("()") for n in r["nodes"]}
+    assert "start" in labels, f"defdelegate dropped: {sorted(labels)}"
+    assert "stop" in labels, f"defdelegate (with as:) dropped: {sorted(labels)}"
+    # Calls to the delegated functions now resolve to their nodes.
+    calls = _calls(r)
+    assert ("run()", "start()") in calls
+    assert ("run()", "stop()") in calls
+
+
 def test_elixir_protocol_and_impl_are_extracted(tmp_path):
     """`defprotocol`/`defimpl` are module-like containers. Before they were
     handled, the protocol and implementation nodes were never minted and their
