@@ -102,6 +102,25 @@ def test_symbolless_warning_names_the_file(tmp_path, capsys):
     assert "may be data rather than code" not in err
 
 
+def test_symbolless_warning_survives_a_cross_drive_path(tmp_path, capsys, monkeypatch):
+    import graphify.extract as ex
+
+    source = _data_only_fixture(tmp_path)
+    original_relpath = ex.os.path.relpath
+
+    def cross_drive_relpath(path, start=None):
+        if str(path) == str(source) and str(start) == str(tmp_path):
+            raise ValueError("path is on mount 'D:', start on mount 'C:'")
+        return original_relpath(path, start)
+
+    monkeypatch.setattr(ex.os.path, "relpath", cross_drive_relpath)
+    result = extract([source], root=tmp_path)
+    assert any(node.get("label") == "data.js" for node in result["nodes"])
+    err = capsys.readouterr().err
+    assert "yielded no symbols" in err
+    assert source.as_posix() in err
+
+
 def test_symbolless_warning_is_silent_for_an_empty_init(tmp_path, capsys):
     """An empty __init__.py is symbol-less *code*, ubiquitous in Python
     packages. It has nothing to model, so the warning must stay silent rather

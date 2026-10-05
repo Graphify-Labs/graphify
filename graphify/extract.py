@@ -7790,7 +7790,11 @@ def extract(
                 continue  # empty / whitespace-only: nothing to model, no signal
         except OSError:
             _size = 0
-        _symbolless_files.append((os.path.relpath(str(_p), str(root)).replace("\\", "/"), _size))
+        try:
+            _display_path = os.path.relpath(str(_p), str(root)).replace("\\", "/")
+        except ValueError:
+            _display_path = _p.as_posix()
+        _symbolless_files.append((_display_path, _size))
     if _symbolless_files:
         _total_bytes = sum(size for _, size in _symbolless_files)
         _total_mb = _total_bytes / (1024 * 1024)
