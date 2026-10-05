@@ -226,6 +226,30 @@ def extract_objc(path: Path) -> dict:
                     if entry is not None:
                         _record_field_type(cls_nid, *entry)
 
+    def _emit_enum(enum_spec, name: str, line: int) -> None:
+        """Emit a C-style enum type node plus a node + `case_of` edge per
+        enumerator, mirroring how every other language with enums models them
+        (Java #1719, C++ #3939, Swift). Objective-C is an object-oriented
+        extractor that already emits @interface/@protocol types, but plain
+        `enum`/`typedef enum` definitions were dropped entirely.
+        """
+        enum_nid = _make_id(stem, name)
+        add_node(enum_nid, name, line)
+        add_edge(file_nid, enum_nid, "contains", line)
+        body = next((c for c in enum_spec.children if c.type == "enumerator_list"), None)
+        if body is None:
+            return
+        for member in body.children:
+            if member.type != "enumerator":
+                continue
+            mname = next((_read(c) for c in member.children if c.type == "identifier"), None)
+            if not mname:
+                continue
+            m_line = member.start_point[0] + 1
+            member_nid = _make_id(enum_nid, mname)
+            add_node(member_nid, mname, m_line)
+            add_edge(enum_nid, member_nid, "case_of", m_line)
+
     def walk(node, parent_nid: str | None = None) -> None:
         t = node.type
         line = node.start_point[0] + 1
@@ -406,6 +430,42 @@ def extract_objc(path: Path) -> dict:
                 add_edge(container, method_nid, "method", line)
                 if t == "method_definition":
                     method_bodies.append((method_nid, node, container))
+            return
+
+        if t == "type_definition":
+            # `typedef enum { ... } Name;` / `typedef enum Tag { ... } Name;`.
+            # The enum body sits on a child enum_specifier that carries no usable
+            # name; the name callers reference is the typedef alias (the trailing
+            # type_identifier). NS_ENUM/NS_OPTIONS never reach here — they are
+            # macro_type_specifiers that tree-sitter parses into ERROR subtrees,
+            # so they remain unsupported.
+            enum_spec = next((c for c in node.children if c.type == "enum_specifier"), None)
+            if enum_spec is not None and any(
+                c.type == "enumerator_list" for c in enum_spec.children
+            ):
+                alias = next(
+                    (_read(c) for c in reversed(node.children) if c.type == "type_identifier"),
+                    None,
+                )
+                if alias is None:
+                    alias = next(
+                        (_read(c) for c in enum_spec.children if c.type == "type_identifier"),
+                        None,
+                    )
+                if alias:
+                    _emit_enum(enum_spec, alias, line)
+                    return
+            # Not an enum typedef: fall through to the generic recursion.
+
+        if t == "enum_specifier":
+            # A named C-style enum definition: `enum Color { Red, Green };`. Skip
+            # a bare reference / forward declaration (no enumerator_list) and an
+            # anonymous enum (no name): neither is a nameable definition.
+            name = next(
+                (_read(c) for c in node.children if c.type == "type_identifier"), None
+            )
+            if name and any(c.type == "enumerator_list" for c in node.children):
+                _emit_enum(node, name, line)
             return
 
         for child in node.children:
