@@ -2595,3 +2595,16 @@ in the local exit review; INC-QML-48 remains unallocated. The next normal PR eve
 owns corrected four-lane Linux, native Windows and twelve-lane optional-wheel
 proof. Existing physical device/system and advisory security limits remain
 explicit; no merge is performed by this increment.
+
+The subsequent hosted native profile passes 836 cases with 21 explicit skips,
+but omits its generated shell-consumer report from the uploaded artifact. The
+shared [INC-CORE-09](../COMPATIBILITY.md#native-consumer-evidence-retention--inc-core-09)
+corrects that evidence publication gap. It changes neither Qt/QML source behavior
+nor the next unallocated Qt increment, INC-QML-48.
+
+At source `f699b0f`, all twelve optional Qt/QML lanes and all assigned Linux
+co-owner/remap/discovery/CLI cases pass. Three full Linux suites pass, while
+Python 3.10 exposes a separately reproduced cleanup-fault fixture seam. The
+complete [hosted checkpoint](../../tests/TRACEABILITY.md#hosted-source-and-optional-wheel-checkpoint--f699b0f)
+retains source/base/actual checkout, individual outcomes, artifact/source
+identity, service cleanup, exclusions and remaining delivery limits.

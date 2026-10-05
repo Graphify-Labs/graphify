@@ -431,6 +431,7 @@ jobs:
           name: windows-compat-python-3.12-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/graphify-compat-results/identity.json
+            ${{ runner.temp }}/graphify-compat-results/shell-consumers.json
             ${{ runner.temp }}/graphify-compat-results/production-import.txt
             ${{ runner.temp }}/graphify-compat-results/dependencies*.txt
             ${{ runner.temp }}/graphify-compat-results/tests.*

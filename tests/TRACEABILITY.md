@@ -131,10 +131,10 @@ owns setup, revision identity, exclusions and recovery.
 
 | Acceptance ID | Exact automated job/system assignment | Current evidence |
 | --- | --- | --- |
-| REQ-CORE-004-AC01 | `.github/workflows/ci.yml::test` four Python lanes; actual fixtures in `tests/test_non_regular_files.py`, `tests/test_cpp_preprocess.py`, `tests/test_qml_wheel_artifact.py`, `tests/test_falkordb_integration.py` | Real Linux/service checks execute; source suite fails and other lanes are matrix-cancelled. Corrected four-lane acceptance remains open |
-| REQ-CORE-004-AC02 | `.github/workflows/ci.yml::windows-compatibility`; exact CORE functions above and assigned HTML/installer/shell modules | Hosted `38bf8cc`: 783 passes, 33 Bash-transport failures, 20 skips. INC-CORE-08 owns correction and revised executable proof |
-| REQ-CORE-004-AC03 | Source identity/readiness, pytest, retention, service cleanup and artifact steps in both CI source profiles; GitHub run/job/artifact read for actual checkout | Retained native artifact proves revision, JUnit and unchanged source/dependencies; failures remain failed jobs. Per-lane cleanup/integrity evidence is recorded at its checkpoint |
-| REQ-CORE-004-AC04 | CI trigger/permission/concurrency configuration review and hosted procedure's PR/recovery event audit | Normal PR events own both workflows; no duplicate dispatch. Existing matrix fail-fast cancels incomplete Ubuntu lanes after a source failure |
+| REQ-CORE-004-AC01 | `.github/workflows/ci.yml::test` four Python lanes; actual fixtures in `tests/test_non_regular_files.py`, `tests/test_cpp_preprocess.py`, `tests/test_qml_wheel_artifact.py`, `tests/test_falkordb_integration.py` | Hosted `f699b0f`: all assigned Linux/service/wheel regressions pass individually; three full suites pass, Python 3.10 has one cleanup-fixture failure. Full four-lane acceptance remains open |
+| REQ-CORE-004-AC02 | `.github/workflows/ci.yml::windows-compatibility`; exact CORE functions above and assigned HTML/installer/shell modules | Hosted `f699b0f`: 836 passes, 21 explicit skips, zero failures. All original shell failures and revised admission cases pass individually; retained consumer report remains AC03 work |
+| REQ-CORE-004-AC03 | Source identity/readiness, pytest, retention, service cleanup and artifact steps in both CI source profiles; GitHub run/job/artifact read for actual checkout | Retained native artifact proves revision, JUnit and unchanged source/dependencies; f699b0f omits the consumer report, assigned to INC-CORE-09. Per-lane cleanup/integrity evidence is recorded at its checkpoint |
+| REQ-CORE-004-AC04 | CI trigger/permission/concurrency configuration review and hosted procedure's PR/recovery event audit | Normal PR events own both workflows; no duplicate dispatch. All four `f699b0f` source lanes finish; earlier matrix cancellations remain historical incomplete evidence |
 
 Local configuration review parses both workflows with PyYAML `BaseLoader`,
 compiles each embedded Python block, checks extracted Ubuntu scripts with
@@ -387,6 +387,70 @@ Bash/Python blocks compile, and complete native blocks parse in Windows
 PowerShell 5.1 and pwsh 7.6.6. CI measures 467 within its documented 470 ceiling.
 These are local consumer/configuration results; corrected hosted proof remains
 assigned to the next normal PR event.
+
+### Native artifact report retention — INC-CORE-09
+
+Acceptance: REQ-CORE-004-AC03. Real source `f699b0f` native job
+`111592305005` passes **836 tests, 21 explicit platform/baseline skips**, zero
+failures/errors/warnings. JUnit individually passes all eighteen CORE-08 helper
+cases, the original 33 shell regressions, all seven CLI cases and five CORE-07
+selection cases. Artifact `11321839435` archive SHA-256
+`634462cf980eaa47090d2d64109702473d6142678ccb655bbb4a0f8db3a8f51f`
+matches GitHub's API digest. Source/base/synthetic checkout, tool versions,
+197 dependency identities, pytest exit and source integrity are retained.
+The real archive omits the generated `shell-consumers.json`; exact per-consumer
+identity transport therefore remains unavailable despite passing preflight.
+
+The one-line artifact inclusion correction leaves producer/test behavior and
+permissions unchanged. Its meaningful system regression is the actual GitHub
+archive read and report/profile identity verification described in
+[the acceptance procedure](../docs/COMPATIBILITY.md#native-consumer-evidence-retention--inc-core-09).
+This is a real external publication boundary, not a simulated or literal-only
+pytest test. Prepared configuration is not a retained-report pass. The corrected
+normal PR event must provide exact source/base/checkout and archive/record proof
+before AC03 is verified; current intended runs finish before publication.
+
+### Hosted source and optional-wheel checkpoint — f699b0f
+
+[CI 37255744156](https://github.com/SlinkyRamey/graphify/actions/runs/37255744156)
+and [QML 37255744181](https://github.com/SlinkyRamey/graphify/actions/runs/37255744181)
+are normal PR attempt-one runs. Source head
+`f699b0feb760ff0fc6347b3930cf79fa0b4a615f`, base
+`f61827f42378f6e7feff05a1cb4cbbcab1736ca8` and actual synthetic checkout
+`114824c6099ce6592f7fd025a291b129681bb445` are bound through API parent inspection,
+job logs and retained source identities. Both runs are terminal before the next
+correction is published; no duplicate dispatch or job retry is introduced.
+
+| Profile | Actual outcome | Evidence boundary |
+| --- | --- | --- |
+| Ubuntu Python 3.12/3.13/3.14 | Each 9,007 passed, 112 explicit skips, zero failures; end-to-end install passes | Full source suite, real disposable FalkorDB and reviewed source wheel |
+| Ubuntu Python 3.10 | 9,007 passed, 111 explicit skips, one cleanup-fixture failure; end-to-end install step omitted after failure | `test_inc25_partial_setup_cleanup_fault_retains_safe_recovery_evidence` does not inject its intended unlink failure on this interpreter |
+| Native Windows Python 3.12 | 836 passed, 21 explicit skips, zero failures/errors/warnings | JUnit/integrity/archive evidence above; consumer report omission remains INC-CORE-09 |
+| Optional QML wheel, four Windows lanes | Each 2,323 passed, three optional-extra skips | Platform source selection and unchanged isolated installed QML/core smokes |
+| Optional QML wheel, four macOS lanes | Each 2,271 passed, 55 Windows/optional-extra skips | Platform source selection and unchanged isolated installed QML/core smokes |
+| Optional QML wheel, four Ubuntu lanes | Each three artifact tests passed, zero skips | Unchanged isolated installed QML/core smokes also pass |
+
+All 39 assigned co-owner/remap/discovery/CLI source cases and the exact two live
+FalkorDB plus three wheel cases individually pass on every Ubuntu lane. All four
+downloaded archives match their API digests. Each 182-payload wheel matches the
+reviewed source Git blobs; checkout, tracked inputs, dependencies and wheel bytes
+remain unchanged. Both test graphs are deleted and all four owned containers are
+confirmed absent. The service has no mounted storage, Redis 8.10.2 and module
+60001; readiness includes actual graph-list/query operations. Source runner tools
+are Node 22.23.3, GNU cpp 13.3.0, Bash 5.2.21 and Git 2.55.0 on Ubuntu image
+20260927.320.1. Exact skip identities and per-case JUnit remain in retained source
+artifacts; an aggregate count does not turn a skip into acceptance.
+
+All twelve QML jobs pass, including all 24 installed smokes. Its platform suites
+run from the checkout and do not establish isolated installed origin for every
+case. That workflow retains no wheel-digest/JUnit artifact; logs supply selected
+module outcomes, not a fabricated per-case attestation. Windows/macOS Python 3.10
+each retain two existing warnings. Skill generation passes all five validators
+and 134 generated artifacts. Advisory security remains green by policy while
+Bandit reports four High/eight Medium/109 Low findings and completed pip-audit
+reports nine unique package/advisory identities across three packages. Their
+baseline origin is not assessed; this is not clean security acceptance. Local
+Pyright still fails with 604 exact baseline errors and zero added/removed errors.
 
 ### Manual discovery and native fixture contracts — INC-QML-46/47
 

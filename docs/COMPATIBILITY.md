@@ -23,6 +23,7 @@ not a passing assertion.
 | INC-CORE-06 | Hosted Linux evidence and native Windows compatibility lane | REQ-CORE-004-AC01–AC04 | Required tools/service and reviewed wheel admitted; workflow syntax/configuration reviewed; hosted jobs retain applicable passing results and exact revision/integrity evidence |
 | INC-CORE-07 | Deterministic hosted Windows tool selection | REQ-CORE-004-AC02/AC03 | Multiple real application matches preserve the first PATH identity, required version and executable invocation; missing tools reject before collection; normal PR evidence records the corrected revision |
 | INC-CORE-08 | Preserve admitted shell identity at native process launch | REQ-CORE-004-AC02/AC03 | Actual Python subprocesses execute the selected absolute Bash/sh file, preserve literal/security assertions and reject missing shells; corrected normal PR results retain exact identity and outcomes |
+| INC-CORE-09 | Retain native shell consumer identity evidence | REQ-CORE-004-AC03 | The actual uploaded job artifact includes and verifies both shells' executable, Python and Node identities for the reviewed checkout; omitted or inconsistent evidence cannot establish acceptance |
 
 INC-CORE-01–05 have current native source evidence below. The hook/filesystem
 corrections also have independent installed-consumer evidence. INC-CORE-02
@@ -384,6 +385,45 @@ exclusions. Revised preflight proves actual Python and Node identities through
 both selected shells, and retains `shell-consumers.json`. Exact commands, counts,
 skip identities and limits belong to
 [traceability](../tests/TRACEABILITY.md#native-shell-launch-identity--inc-core-08).
+
+## Native consumer evidence retention — INC-CORE-09
+
+Status: **Reproduced omission; upload correction prepared, hosted retention proof pending**.
+Owner: native compatibility artifact publication. Acceptance: REQ-CORE-004-AC03.
+Dependency: INC-CORE-08. Source `f699b0f` passes all 836 native cases with 21
+explicit exclusions, but its uploaded artifact omits `shell-consumers.json`.
+Preflight assertions pass and source/dependency/JUnit evidence is retained; exact
+consumer identity JSON is unavailable after runner cleanup. That passing test
+result does not satisfy the missing evidence contract.
+
+Add the already generated report to the existing artifact inclusion list. Keep
+its producer, validation ordering, tests, permissions, event and failure behavior
+unchanged. No runtime, corpus, schema, dependency or graph-persistence change is
+introduced. A missing report remains a specific system-proof gap; it does not
+justify another privileged workflow, fabricated executable identity or skipped
+test. The next normal PR event owns correction proof after the intended current
+runs reach terminal results.
+
+Both intended runs for `f699b0f` are terminal. All twelve optional Qt/QML lanes
+pass; all assigned Linux/service/wheel cases pass individually on all four
+interpreters. Three complete Linux suites pass; Python 3.10 exposes a separate
+cleanup-fault fixture seam because its `Path.unlink` bypasses a later `os.unlink`
+patch. Preserve the production cleanup/diagnostic behavior and correct that
+fixture before the next normal PR validation. The exact checkpoint and limits
+are recorded in [traceability](../tests/TRACEABILITY.md#hosted-source-and-optional-wheel-checkpoint--f699b0f).
+
+Acceptance procedure: obtain the native artifact ID/digest through GitHub's API;
+download that exact archive and compare SHA-256 to its API digest; require the
+report alongside identity, JUnit, pytest exit and integrity evidence. Parse its
+bounded two-shell record as data and compare each shell's admitted executable,
+Python and Node against the owning workflow/profile identity. Confirm the same
+source/base/actual checkout and passing preflight, unchanged dependencies/source
+and terminal pytest result. Missing/inconsistent fields or archive integrity
+failure leave AC03 unverified. This external artifact boundary is checked through
+the real service; a literal workflow assertion cannot prove upload completion.
+No new secret or disposable service is introduced; existing runner/artifact
+retention and cleanup own recovery. Exit with exact retained-report proof and
+review all remaining jobs for another reproduced gap.
 
 ## Focused legacy ownership and size constraints
 
