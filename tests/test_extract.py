@@ -4946,6 +4946,21 @@ def test_rewire_binds_builtin_named_supertype_stub_within_same_language():
     assert edges[0]["target"] == "pkg_support_Exception"
 
 
+def test_cross_file_inheritance_resolves_across_jvm_languages(tmp_path):
+    """A Kotlin subclass must keep its Java base despite the extension difference."""
+    base = tmp_path / "Base.java"
+    child = tmp_path / "Child.kt"
+    base.write_text("package models;\npublic class Base {}\n", encoding="utf-8")
+    child.write_text("import models.Base\nclass Child : Base()\n", encoding="utf-8")
+    result = extract([base, child], root=tmp_path, cache_root=tmp_path / "cache", parallel=False)
+    base_node = next(n for n in result["nodes"]
+                     if n["label"] == "Base" and n.get("source_file") == "Base.java")
+    child_node = next(n for n in result["nodes"]
+                      if n["label"] == "Child" and n.get("source_file") == "Child.kt")
+    assert any(e["relation"] == "inherits" and e["source"] == child_node["id"]
+               and e["target"] == base_node["id"] for e in result["edges"])
+
+
 def test_rewire_builtin_supertype_guard_folds_case_insensitive_languages():
     """#2812: PHP resolves class names case-insensitively, so `extends \\exception`
     names the same built-in as `extends \\Exception` and must be blocked too."""
