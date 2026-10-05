@@ -353,6 +353,71 @@ native Windows PowerShell 5.1, Node 24.19.0 and actual uv. The focused test is
 109 physical lines; Ruff and whitespace checks pass. Original coverage bytes
 are retained. Corrected hosted execution and its complete evidence remain pending.
 
+### Discovered source identity — INC-QML-42
+
+Hosted f95366d fails the unchanged original tests
+`tests/test_cache.py::test_warm_cache_keeps_target_and_symlink_sources_distinct`
+and `tests/test_watch.py::test_rebuild_code_incremental_rename_preserves_symlink_source_path`
+in both completed Linux pytest profiles. The correction preserves their assertions;
+actual Linux replay remains assigned to the corrected hosted run. Local actual
+NTFS directory junctions reproduce six initial failures with one passing control
+and one unavailable file-symlink case; stronger dual-alias assertions also expose
+the shared prefix/stem lookup collapse and remain ordinary regressions.
+
+| Acceptance ID | Exact ordinary test | Source/installed checkpoint evidence |
+| --- | --- | --- |
+| REQ-QML-020-AC01 | `tests/test_source_alias_provenance.py::test_req_qml020_ac01_discovered_directory_sources_survive_cold_warm_and_reload`; `tests/test_source_alias_provenance.py::test_req_qml020_ac01_leaf_alias_retains_its_source_below_an_aliased_root`; `tests/test_source_alias_provenance.py::test_req_qml020_ac01_native_definition_keeps_discovered_directory_provenance` | Real target/directory aliases and aliased scan root retain exact disjoint IDs/call endpoints, warm cache fragments, directed/undirected JSON reload and C++ definition provenance; leaf symlink remains a host capability exclusion |
+| REQ-QML-020-AC02 | `tests/test_source_alias_provenance.py::test_req_qml020_ac02_foreign_alias_cannot_acquire_native_root_authority`; `tests/test_source_alias_provenance.py::test_req_qml020_ac02_failed_parent_anchor_keeps_only_accepted_physical_identity` | Foreign linked QObject remains excluded with exact QT_CPP_ROOT, unchanged source bytes and no native authority; failed lexical anchors retain only the accepted physical source |
+| REQ-QML-020-AC03 | `tests/test_source_alias_provenance.py::test_req_qml020_ac03_watch_rename_deletion_and_repeat_preserve_discovered_source`; `tests/test_source_alias_provenance.py::test_req_qml020_ac03_policy19_products_refresh_retain_and_recover` | Actual two renames/deletion/no-change graph bytes, no-edit policy19-to20 refresh, staged publication failure/cohort retention, repair/full parity and repeat pass |
+
+The full new selection passes **nine cases with one actual file-symlink skip**,
+3.89 seconds. Existing cache/watch/ID/barrel/native/callback and alias/update
+compatibility passes **405 cases with 31 capability skips**, 54.8 seconds.
+The pure helper covers fifteen of fifteen measured statements and four of four
+branches; isolated coverage storage preserves the original file. Facade/helper/
+policy/test physical sizes are 8,998/31/114/277, within existing ceilings. Policy
+20 refreshes older native/Qt products; AST schema 12 remains unchanged. Single-alias
+shared-content notification is separately reproduced and assigned INC-QML-44.
+
+### Nearby alias fixture — INC-QML-43
+
+REQ-QML-020-AC01 additionally maps to
+`tests/test_qt_nearby_alias_fixture.py::test_req_qml020_ac01_real_short_ancestors_preserve_nearby_facade_provenance`.
+The original real five-ancestor fixture records one setup error with ten ancestor
+hops; the corrected case passes with one real short-basename hop and unchanged
+production source/edge equality. Existing/new alias modules pass **eight cases,
+seven actual symlink capability skips**, one existing Hypothesis collection
+warning. The source files measure 241 and 59 physical lines. No production
+assertion, native SDK or graph/cache schema changes.
+
+### Installed discovered-alias checkpoint — INC-QML-42/43
+
+Wheel SHA-256:
+`65a096a0042b181582f179fd63c1108479822bac866f7fab0d3eaf5fb7730309`.
+All 181 source/installed Python payloads match; only facade, policy and new
+source_identity differ from the preceding f2 wheel. The isolated unchanged
+optional/core smoke and actual full-TEMP Windows short-alias smoke pass, with
+129/123 loaded artifact modules. The five-module installed contract selection
+passes **43 cases, eleven actual file-symlink capability skips, zero failures/
+errors/warnings**, 13.58 seconds. All 153 loaded Graphify modules originate in
+the artifact. The new source-identity module passes nine/one; the nearby-fixture
+case passes. These overlapping counts are not added to full-suite totals.
+
+Offline harness setup admits only ten exact seven-argument native cmd/mklink/J
+fixture operations within its verified owned temporary tree. Sixty other process
+attempts remain denied and no network call is admitted; owned junctions/temp data
+are confirmed removed. This exception establishes real fixture setup, not corpus
+execution authority. All 675 Python-file fingerprints, source197/optional40/core30
+dependency versions, HEAD3c70bfc and original coverage bytes remain unchanged.
+Separate source CI tool tests pass five cases without skips or warnings.
+
+Full Pyright remains **604 errors, zero warnings, 671 files**, exit one, 20.651
+seconds; every identity matches immutable135d50b under the same dependencies and
+configuration, with zero added/removed. Targeted seven-file Pyright retains only
+120 matched legacy-facade errors; the other six have zero diagnostics. Ruff passes.
+This checkpoint excludes the subsequent INC-QML-44/45 correction and does not
+establish corrected hosted or clean typing acceptance.
+
 ## Individual acceptance assignments
 
 The [follow-up audit](../docs/qt-qml/FOLLOWUP_AUDIT.md) supplies counterexamples for

@@ -43,7 +43,10 @@ def nearby_parent_alias(request):
             length = api(str(parent), buffer, len(buffer))
             if not length or length >= len(buffer) or buffer.value == str(parent):
                 pytest.skip("Filesystem does not supply a distinct Windows short-path alias")
-            alias = Path(buffer.value)
+            # Full short paths can alias every TEMP ancestor on hosted Windows.
+            # Keep the real short basename under its canonical existing parent
+            # so this fixture still exercises the deliberately nearby fallback.
+            alias = parent.parent / Path(buffer.value).name
         else:
             alias = parent.with_name(parent.name + "-alias")
             alias.symlink_to(parent, target_is_directory=True)

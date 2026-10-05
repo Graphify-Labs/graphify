@@ -2376,3 +2376,103 @@ all loaded production modules originate in that artifact. The plan review finds 
 reproduced implementation gap at this checkpoint; INC-QML-42 is unallocated.
 Current hosted execution and the pre-existing whole-project typing failure remain
 open evidence/gate limitations, not passing acceptance.
+
+## INC-QML-42 — Distinct discovered symlink provenance
+
+Status: **Implemented; source/installed checkpoint passes, corrected hosted proof pending**.
+Owner: extractor-facade source normalization. Acceptance: REQ-QML-020-AC01/AC02/AC03
+and the existing unrelated-language provenance contract. Dependency: INC-QML-40.
+
+Physical containment distinguishes accepted inputs from external sources. It
+must not erase distinct walked source identities inside that accepted corpus.
+The first corrected hosted head collapses a target and its leaf symlink into
+one source label, and changes a followed-directory watch rename from its lexical
+source path to the physical target. Keep both existing upstream regressions and
+restore their observed contract while retaining contained parent/short aliases.
+
+Preserve source_file/definition_file, stable IDs, topology, cold/warm cache groups,
+full/manual/watch rename/deletion/repeat and real failure retention. External
+targets must retain their existing policy and grant no native authority. Bound
+per-run root-alias work, document ownership and any required derived-policy
+refresh, and preserve the existing facade ceiling. Generic-only old outputs need
+an explicit repair procedure if the existing refresh owner does not admit them.
+
+Exit: original Linux regressions and ordinary new shared-boundary coverage pass;
+fresh installed aliases, native rejection, cache/update and current hosted profiles
+retain individual passing evidence. Review the plan after the correction.
+
+Local correction evidence: nine ordinary cases pass, one actual file-symlink
+capability case is skipped. Real Windows junctions exercise double aliases,
+disjoint file/symbol/call identities and writer transitions; the unchanged shared
+compatibility selection passes 405 cases with 31 capability exclusions. The helper
+covers all fifteen measured statements and four branches. The fresh 181-module
+artifact checkpoint passes 43 installed cases with eleven symlink skips across
+overlapping alias/upgrade/diagnostic/fixture selections. Original Linux failures
+remain assigned to corrected hosted execution. The plan review adds INC-QML-44
+for a separately reproduced single-alias watch notification and INC-QML-45 for
+actual NTFS short-leaf spelling; those contracts are not closed by this checkpoint.
+
+## INC-QML-43 — Nearby Windows alias fixture portability
+
+Status: **Implemented fixture correction; local/installed proof passes, hosted proof pending**.
+Owner: facade-alias acceptance fixture. Acceptance: REQ-QML-020-AC01/AC02/AC03.
+Dependency: INC-QML-40. No Graphify runtime or analysis epoch change.
+
+GetShortPathNameW can shorten multiple Windows temporary-directory ancestors.
+Its full returned spelling then violates the fixture's deliberate nearby-path
+precondition before any product assertion runs. Use the real returned short
+basename with its canonical existing parent. Preserve distinct real filesystem
+identity, canonical-target equality and the three-ancestor maximum; do not weaken
+or skip these checks. Full short-path input remains separately tested.
+
+Exit: a real multi-ancestor short-path setup fails before and passes after the
+fixture correction; all existing production/source/definition/native/update
+assertions remain intact and the Windows hosted profile executes them. Review
+the plan again and allocate further work only for another reproduced gap.
+
+The real five-long-ancestor fixture fails its original precondition with ten
+ancestor hops before correction; the corrected real short basename uses one hop
+and passes production cold/warm source/edge checks. Existing/new facade selection
+passes eight cases with seven actual file-symlink capability skips. The same new
+case passes in the reviewed installed artifact. All original production assertions
+are retained; full-path short-input and unchanged installed smoke remain separate
+coverage. INC-QML-44/45 capture the adjacent gaps discovered in the exit review.
+
+## INC-QML-44 — Shared physical-source watch invalidation
+
+Status: **Planned correction; single-alias notification reproduced**.
+Owner: watch accepted-input invalidation. Acceptance: REQ-QML-011-AC01/AC03/AC04,
+REQ-QML-020-AC03 and relevant REQ-QML-012 diagnostic/retention criteria.
+
+Two accepted walked paths can share physical content. Editing that content and
+notifying only one alias currently updates its functions while retaining stale
+functions under the other source owner. Expand invalidation only over already
+accepted nonsemantic regular-file owners with verified contained physical
+identity, including supported real hardlinks. Preserve distinct walked names,
+ordinary rename/deletion, unrelated inputs and full/incremental topology.
+
+Keep per-call identity grouping separate from discovery, durable state and cohort
+publication. Unexpected identity failure must reject boundedly, retain prior
+products/cache and omit backend bodies; repair and no-change repeat must succeed.
+Document derived refresh and generic-only full-rebuild recovery. Exit with real
+alias/hardlink notifications, metadata/native controls, stale removal, actual
+failure/retention and source/installed/hosted evidence. Review the plan again.
+
+## INC-QML-45 — Canonical NTFS short-leaf input spelling
+
+Status: **Planned correction; actual short-header membership loss reproduced**.
+Owner: extractor input spelling. Acceptance: REQ-QML-020-AC01/AC02/AC03 and
+relevant REQ-QML-011/012 update/diagnostic criteria.
+
+An actual NTFS 8.3 short header spelling identifies the same directory entry as
+its long name. Substituting that input currently changes native member identities
+and silently loses its accepted CMake membership. This is distinct from separately
+discovered symbolic/junction aliases, whose walked identities must remain separate.
+
+Normalize supported alternate file spelling without resolving discovered reparse
+aliases into their targets or expanding the corpus. Preserve parser dispatch,
+original bytes/spans, literal metadata, cache ownership, source/definition roles,
+native external/traversal rejection and cold/warm/full/incremental parity. SDK
+execution and new runtime dependencies are excluded. Cover real short files and
+failure/absence handling, version refresh and retained-product recovery before
+source/installed/hosted acceptance. Review the plan after the correction.

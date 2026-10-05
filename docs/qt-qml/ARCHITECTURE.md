@@ -732,3 +732,16 @@ or stop later failure annotations. Safe relative context is informational;
 unavailable context grants no source or endpoint authority. Existing failure
 codes and writers remain authoritative. Implemented/source/installed/hosted
 evidence for both corrections is recorded separately in plan and traceability.
+
+INC-QML-42 separates physical admission from discovered source naming. Its pure
+`source_identity.walked_relative_source` helper receives the canonical root,
+already resolved source and the facade's existing cached-realpath dependency.
+It preserves distinct accepted walked suffixes, including a leaf/directory alias
+below an aliased scan root, and uses physical fallback only without a lexical
+root anchor. Physical containment rejects external targets first. No cache,
+index, content reader or mutable root belongs to the helper. The facade uses
+that single decision for file/symbol IDs, target stem forms and source/definition
+provenance; resolving each lookup key independently would collapse owners again.
+Policy 20 refreshes prior native/Qt products from 19; syntax schema remains 12.
+Generic-only retained outputs require an explicit full/forced rebuild. Source
+and installed checkpoint evidence remains separate from hosted acceptance.

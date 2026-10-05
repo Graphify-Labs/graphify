@@ -72,6 +72,68 @@ added or removed; this is a failed gate. Current hosted results remain pending.
 The plan review allocates no further reproduced implementation gap beyond
 INC-QML-41; runner outcomes can create another focused correction if needed.
 
+## Hosted correction checkpoint — f95366d
+
+[CI run 37248954702](https://github.com/SlinkyRamey/graphify/actions/runs/37248954702)
+and [QML wheel run 37248954699](https://github.com/SlinkyRamey/graphify/actions/runs/37248954699)
+use `pull_request`, source `f95366d3f83f5a1c2558e99ff2e0efa294c41f08`,
+base `f61827f42378f6e7feff05a1cb4cbbcab1736ca8` and actual synthetic checkout
+`7f2e808696edfdb6bac010b80986439ae060216c`. Configuration admission succeeds.
+
+Ubuntu Python 3.14.8 completes **8,952 passes, two failures, 69 skips**.
+Python 3.13 retains the same complete pytest result before its job is cancelled
+by matrix fail-fast. Python 3.10/3.12 have no complete JUnit or pytest-exit result;
+their cancellation establishes no suite acceptance. Both failures are generic
+symlink provenance: distinct target/leaf-source labels collapse, and watched
+followed-directory rename loses its lexical source. INC-QML-42 owns the correction
+with both original assertions intact. The two real FalkorDB and three reviewed
+wheel cases pass individually in each completed pytest profile. Source, checkout,
+dependencies and prebuilt wheel remain unchanged there; test graphs are deleted
+and all four job-owned containers are confirmed absent. Artifact ZIP digests
+match the API digests. Redis is 8.10.2 and graph module version 60001; readiness
+and zero mounts are recorded. These are passing service boundaries within failed
+source jobs, not an overall passing CI result.
+
+The native Windows compatibility job rejects before pytest when duplicate Node
+applications become a path array. INC-CORE-07 corrects selection; five real native
+application/version/rejection regressions pass locally. Dependency/import evidence
+exists for the failed setup, but identity, JUnit and integrity evidence is absent.
+
+All twelve QML lanes pass unchanged isolated optional/core installed smoke.
+All four Ubuntu lanes pass three reviewed-wheel cases; all four macOS lanes pass
+**2,264 source cases, 48 skips** each. Windows lanes each retain **2,302 passes,
+three optional-profile skips and seven nearby-alias fixture setup errors**.
+INC-QML-43 corrects the actual multi-ancestor short-path fixture while retaining
+its nearby-path precondition and production assertions. QML job logs bind checkout
+and outcomes; that workflow retains no wheel digest, JUnit or source/dependency
+integrity artifact. This limitation remains explicit rather than being inferred
+from the job conclusion. Separate lane totals overlap and are not added together.
+
+Skill generation, coverage inventory, enum and round-trip checks pass. The existing
+security job uses advisory continue-on-error: its green conclusion includes four
+high/eight medium Bandit findings and fifteen dependency-advisory rows across
+three packages, with repeated advisory identities. It is not a clean security
+audit or proof that the findings originate in this change. Gate policy and frozen
+dependencies are unchanged. The corrected hosted runs remain pending.
+
+## Discovered-source and nearby-fixture checkpoint — INC-QML-42/43
+
+Actual Windows junction regressions pass nine cases with one file-symlink
+capability skip; existing alias/cache/watch compatibility passes 405 cases with
+31 capability skips. The corrected nearby short-path fixture passes under real
+short-named ancestors. The frozen source-identical 181-module wheel passes
+unchanged core/QML smoke and the installed contract selection: **43 passes,
+eleven actual file-symlink skips, zero failures/errors/warnings**. Source bytes,
+dependency versions and original coverage remain unchanged. Exact artifact
+identity, individual acceptance assignments and boundaries are recorded in
+[traceability](../../tests/TRACEABILITY.md#discovered-source-identity--inc-qml-42).
+
+Whole-project Pyright retains 604 exactly matched baseline errors, zero added or
+removed; it is not a passing typing gate. These results precede INC-QML-44/45.
+Adjacent probes reproduce shared-content watch invalidation and Windows short
+leaf-input identity gaps, assigned separately in the increment plan. Corrected
+Linux replay and hosted Windows/QML acceptance remain pending.
+
 <a name="executed-qml-00-through-qml-03--2026-10-03"></a>
 
 ## Executed INC-QML-00 through INC-QML-03 — 2026-10-03

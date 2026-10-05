@@ -22,7 +22,7 @@ constructor identity, qmake paths, C++ header admission, declared providers and
 child-service subscriptions have source and reviewed installed-wheel evidence.
 INC-QML-28–41 correct the additional reproduced producer, consumer, transport,
 publication, path-identity and diagnostic failures. AST cache schema 12 and Qt
-policy 19 govern the current profile.
+policy 20 govern the current profile.
 
 All seven REQ-QML-018 criteria have passing local acceptance assignments. The
 requirement is **Implemented; locally verified for the bounded Windows profile**,
@@ -467,9 +467,9 @@ project code.
 
 1 - Public CMake, qmake and resource fixtures project each supported literal module/source or resource-alias membership through an independent source-owned `membership_resolution` site to the uniquely accepted canonical file/component endpoint. Accepted C++ file endpoints retain their file role with valid bounded producer provenance; callable, class, foreign, malformed or unrelated semantic metadata cannot borrow that role. The declaration contains its site with context `qt_membership_site`; a resolved site references the target with confidence `EXTRACTED` and context `qt_project_source` or `qt_resource_membership`. Direction, module/alias context and original span survive build, JSON reload and scoped query; raw declarations and existing loader/module lookup results remain unchanged. Canonical spelling and real contained input aliases, including Windows short paths and parent-directory aliases, accept the same source declaration and produce identical membership identity/provenance. (`REQ-QML-020-AC01`)
 
-2 - Missing, duplicate, conditional, generated or out-of-root targets retain explicit unresolved/unsupported site status, reason and bounded evidence without a target edge. Same-name files in different scopes remain distinct; graph projection neither reads new files nor evaluates expansions, build hooks or QML. Malformed metadata and failed joins retain existing failure diagnostics and prior durable graph/state; force cannot authorize partial membership publication. Canonical input comparison still rejects a foreign input or conflicting declaration identity; an alias cannot authorize out-of-corpus membership or rewrite stored source facts. (`REQ-QML-020-AC02`)
+2 - Missing, duplicate, conditional, generated or out-of-root targets retain explicit unresolved/unsupported site status, reason and bounded evidence without a target edge. Same-name files in different scopes remain distinct; separately discovered in-corpus symlink sources retain their distinct walked provenance even when their physical target is shared. Alternate spelling of the scan root must not collapse those corpus owners or authorize new target roles. Graph projection neither reads new files nor evaluates expansions, build hooks or QML. Malformed metadata and failed joins retain existing failure diagnostics and prior durable graph/state; force cannot authorize partial membership publication. Canonical input comparison still rejects a foreign input or conflicting declaration identity; an alias cannot authorize out-of-corpus membership or rewrite stored source facts. (`REQ-QML-020-AC02`)
 
-3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. Canonical and real alias profiles agree through cold/warm extraction, full/manual/watch updates and source removal; repaired retry and no-change repeats preserve accepted output. Existing policy-18 native/Qt products refresh under policy 19 at unchanged package/source versions; a failed upgrade retains prior products and repaired retry/repeat completes the same accepted graph. (`REQ-QML-020-AC03`)
+3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. Canonical and real alias profiles agree through cold/warm extraction, full/manual/watch updates and source removal; repaired retry and no-change repeats preserve accepted output. Existing policy-18/19 native/Qt products refresh under policy 20 at unchanged package/source versions; a failed upgrade retains prior products and repaired retry/repeat completes the same accepted graph. (`REQ-QML-020-AC03`)
 
 Status: **Implemented bounded profile; full canonical-alias verification remains open**.
 The earlier canonical-spelling cases have production, lifecycle/consumer and reviewed installed-artifact
@@ -492,6 +492,14 @@ INC-QML-40 corrects that distinct defect. INC-QML-41 corrects the reproduced
 persistent-path diagnostic escape. Fresh ordinary QML/core and actual near-root
 alias smoke now pass with source-identical payloads. Current hosted acceptance remains open; earlier
 canonical-spelling evidence does not close these expanded contracts.
+
+Hosted revision `f95366d` exposes a shared symlink-provenance regression and a
+Windows fixture setup gap. INC-QML-42 restores distinct discovered source owners
+under policy 20; INC-QML-43 preserves the real nearby-alias fixture when parent
+directories also have short names. Their source and fresh installed checkpoint
+pass, with actual symlink capability exclusions; corrected hosted proof remains
+pending. An adjacent single-alias notification gap and actual NTFS short-leaf
+membership gap are assigned to INC-QML-44/45 and remain unverified corrections.
 
 ### REQ-QML-021 — Middle mouse graph navigation
 

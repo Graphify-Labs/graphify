@@ -535,3 +535,21 @@ context, foreign transport, delimiter/ceiling rejection, prior-product bytes,
 repair and repeat. Exact execution/coverage/artifact evidence and remaining
 platform gaps are assigned in traceability. No epoch beyond policy 19/schema 12
 or new diagnostic code is introduced.
+
+## Distinct walked source identities (INC-QML-42/43)
+
+`source_identity.walked_relative_source` is a 31-line pure helper; it receives
+the root and existing realpath dependency from `extract._walked_rel`. Physical
+containment precedes walked relative-name selection. The facade uses the same
+result for file/symbol prefix keys, target stem forms and source/definition
+provenance. It measures 8,998 lines, within the existing 9,010 ceiling.
+Qt policy 20 owns prior-19 derived refresh; AST schema 12 is unchanged.
+
+`tests/test_source_alias_provenance.py` (277 lines) exercises actual NTFS
+junctions/POSIX symlinks, double aliases, exact IDs/call endpoints, cache replay,
+directed/undirected reload, native definition/external controls, writer rename/
+deletion and failed upgrade recovery. The 241-line facade-alias fixture now uses
+the actual short basename below its canonical parent; the separate 59-line
+nearby-fixture regression creates real long ancestors and preserves all distance,
+source and topology assertions. No production fixture response is fabricated.
+The earlier 238-line size is the recorded INC-QML-40 checkpoint.

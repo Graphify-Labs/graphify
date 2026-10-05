@@ -15,6 +15,7 @@ from pathlib import Path, PurePath
 from typing import Any, Callable
 
 from .cache import load_cached, save_cached
+from .source_identity import walked_relative_source
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
 from .manifest_ingest import extract_package_manifest, is_package_manifest_path
 from .resolver_registry import (
@@ -7388,6 +7389,12 @@ def extract(
     elif cache_root is not None:
         root = cache_root
     root = root.resolve()
+    # One source-name decision serves IDs and provenance; realpath state remains
+    # owned by this analysis run, with no second cache or discovery authority.
+    def _walked_rel(path, resolved=None):
+        walked = Path(os.path.abspath(path))
+        physical = resolved if resolved is not None else _cached_realpath(str(walked), os.getcwd())
+        return walked_relative_source(walked, root, physical, realpath=_cached_realpath, cwd=os.getcwd())
     python_scan_paths = list(paths)
     for context_node in resolution_context_nodes or []:
         source_file = context_node.get("source_file")
@@ -7720,7 +7727,7 @@ def extract(
     # file node is correctly relativized to main and the skill.md spec wants
     # main_run -- splitting the symbol into AST/semantic ghosts (#1096). Relativize
     # the symbol prefix the same way, gated by source_file so two files sharing a
-    # prefix can't cross-contaminate. Keyed by resolved path -> (old_pref, new_pref).
+    # prefix can't cross-contaminate. Keyed by walked root-relative source identity.
     # Each file maps from up to TWO old prefixes — the input-form prefix
     # _file_node_id(path) and the absolute-resolved-form prefix
     # _file_node_id(path.resolve()). Alias/workspace imports resolve specifiers
@@ -7823,12 +7830,9 @@ def extract(
     for path in remap_paths:
         old_id = _make_id(str(path))
         try:
-            rel = path.relative_to(root)
+            rel = _walked_rel(path)
         except ValueError:
-            try:
-                rel = path.resolve().relative_to(root)
-            except ValueError:
-                continue
+            continue
         new_id = _file_node_id(rel)
         if old_id != new_id:
             id_remap[old_id] = new_id
@@ -7861,10 +7865,10 @@ def extract(
             if _entry_old != _entry_new:
                 id_remap.setdefault(_entry_old, _entry_new)
         if old_prefs:
-            prefix_remap[path.resolve()] = old_prefs
+            prefix_remap[root / rel] = old_prefs
         # Absolute form first: it is the longest, so prefix decomposition can
         # try forms in order without a shorter form shadowing it.
-        stem_forms[path.resolve()] = (
+        stem_forms[root / rel] = (
             new_id, [old_pref_abs, old_pref, new_id]
         )
     if id_remap:
@@ -7916,7 +7920,7 @@ def extract(
             if n.get("type") == "package":
                 continue
             try:
-                entry = prefix_remap.get(Path(sf).resolve())
+                entry = prefix_remap.get(root / _walked_rel(Path(sf)))
             except Exception:
                 continue
             if entry is None:
@@ -8022,8 +8026,8 @@ def extract(
 
         def _decompose(target: str, tf: str) -> "tuple[str, str] | None":
             try:
-                forms = stem_forms.get(Path(tf).resolve())
-            except (OSError, RuntimeError):
+                forms = stem_forms.get(root / _walked_rel(Path(tf)))
+            except (OSError, RuntimeError, ValueError):
                 return None
             if not forms:
                 return None
@@ -8726,17 +8730,14 @@ def extract(
         except (OSError, RuntimeError):
             sf_resolved = sf_path
         try:
-            rel = sf_resolved.relative_to(root)
+            rel = _walked_rel(sf_path, sf_resolved)
         except ValueError:
             portable = _portable_out_of_root_sf(sf_path)
             canonical_id = _make_id("ext", portable)
             new_sf = portable
         else:
-            # In-root: the same canonical repo-relative form the real file
-            # node uses (_file_node_id), so the scan root can never leak into
-            # a persisted id. Real file nodes were already remapped by the
-            # #2169 pass, so only leftover absolute-derived ids match below
-            # (belt-and-braces for #2195 regex-rescue stubs and friends).
+            # IDs and source/definition provenance use the same physically
+            # admitted walked identity, including distinct discovered aliases.
             canonical_id = _file_node_id(rel)
             new_sf = rel.as_posix()
         # Learn the STEM (extension-dropped) forms too: symbol producers mint

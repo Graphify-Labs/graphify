@@ -1171,3 +1171,29 @@ normal graph-product publication; prior products and recovery retain existing
 cohort ownership. OSError/RuntimeError probes distinguish complete diagnostics
 from the already passing retention/recovery controls. INC-QML-40/41 have local
 source and fresh installed proof; current hosted acceptance remains pending.
+
+## Walked source identity (INC-QML-42)
+
+The facade owns per-run admission, `_walked_rel`, realpath memoization and remap
+publication. The 31-line `source_identity` helper owns relative-name selection
+only. Inputs are absolute source/root paths, the physical source and an explicit
+cached-realpath callback/CWD; output is the accepted root-relative walked name
+or a containment ValueError. It stores no state, reads no content and imports
+no extractor facade. Physical containment precedes written root-relative names,
+then a lexical ancestor identifying the scan root, then the physical fallback.
+Unavailable parent anchors are skipped without exposing their backend body.
+
+Primary file, symbol-prefix, stem/target decomposition and final source_file/
+definition_file normalization share that decision. Root-relative keys preserve
+two discovered source owners of the same target, including cache replay and
+aliased scan roots, without lending external/native authority. Existing producer
+IDs and topology, original bytes/spans, syntax-cache fragments and graph-product
+cohort ordering retain ownership. The facade measures 8,998 physical lines,
+within its existing 9,010 ceiling; the focused regression file is 277 lines.
+This is a characterized normalization correction, not an extractor migration.
+
+Policy 20 triggers no-edit native/Qt refresh of older policy-19 products with
+schema 12 unchanged. Failure retains the complete prior cohort and corrected
+retry/repeat completes; generic-only old products require full/forced rebuilding.
+The separately reproduced co-owner watch-invalidation and NTFS short-leaf
+spelling boundaries are INC-QML-44/45; this checkpoint does not claim them fixed.
