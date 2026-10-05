@@ -126,6 +126,28 @@ def test_ts_named_reexport_alias_from_index_resolves_imported_symbol_to_origin(t
     )
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_re_export_survives_for_both_files_whose_ids_collide(tmp_path: Path, reverse: bool):
+    """`a-b/x.ts` and `a/b/x.ts` both normalize to `a_b_x`. Each re-exports the
+    same module, so each must keep its own re_exports edge whatever the order the
+    files are processed in; the second one used to be deduped as a copy of the
+    first before the colliding ids were split."""
+    util = _write(tmp_path / "lib/util.ts", "export function helper() { return 1; }\n")
+    dashed = _write(tmp_path / "a-b/x.ts", "export * from '../lib/util'\n")
+    nested = _write(tmp_path / "a/b/x.ts", "export * from '../../lib/util'\n")
+    paths = [util, dashed, nested]
+
+    result = _extract_for(list(reversed(paths)) if reverse else paths, tmp_path)
+
+    by_id = {node["id"]: node for node in result["nodes"]}
+    re_exporters = sorted(
+        Path(by_id[edge["source"]]["source_file"]).as_posix()
+        for edge in result["edges"]
+        if edge["relation"] == "re_exports" and edge["target"] == _file_node_id(Path("lib/util.ts"))
+    )
+    assert re_exporters == ["a-b/x.ts", "a/b/x.ts"]
+
+
 def test_ts_export_star_from_index_resolves_imported_symbol_to_origin(tmp_path: Path):
     target = _write(tmp_path / "src/lib/foo.ts", "export class Foo { id = '' }\n")
     barrel = _write(tmp_path / "src/lib/index.ts", "export * from './foo'\n")
