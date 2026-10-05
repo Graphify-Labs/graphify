@@ -1700,6 +1700,38 @@ def test_check_shrink_allows_deleted_code_file_when_semantic_ids_remain(capsys):
     assert "Refusing to overwrite" not in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("stub", [
+    {"id": "json", "external": True, "source_file": "", "file_type": "concept", "_origin": "semantic"},
+    {"id": "json", "type": "external", "source_file": "", "file_type": "concept", "_origin": "semantic"},
+])
+def test_check_shrink_allows_dropped_import_stub_when_total_grows(capsys, stub):
+    """Removing an import drops its auto-minted stub. Added code can make the
+    total grow. That write must succeed without --force."""
+    def code(node_id):
+        return {
+            "id": node_id,
+            "source_file": "app.py",
+            "_origin": "ast",
+            "source_location": "L1",
+            "file_type": "code",
+        }
+    existing = {"nodes": [
+        code("app"),
+        code("app_load"),
+        stub,
+    ], "links": []}
+    new = {"nodes": [
+        code("app"),
+        code("app_load"),
+        code("app_extra"),
+        code("app_more"),
+    ], "links": []}
+    assert len(new["nodes"]) > len(existing["nodes"])
+    ok = _check_shrink(False, existing, new, rebuilt_sources={"app.py"})
+    assert ok is True
+    assert "Refusing to overwrite" not in capsys.readouterr().err
+
+
 def test_check_shrink_unlinks_tmp_on_refuse(tmp_path):
     """When refusing, the temp graph file gets cleaned up so it can't leak across runs."""
     tmp = tmp_path / "graph.tmp.json"

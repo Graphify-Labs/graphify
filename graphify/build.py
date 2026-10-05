@@ -63,6 +63,10 @@ def _lost_saved_semantic_nodes(
     A node created in this run is not in ``saved_nodes``, so a sourceless stub
     cannot stand in for a missing id. ``deleted_sources`` is the files the user
     removed. A code rebuild is not a deletion: do not pass the rebuilt set.
+
+    An auto-minted import stub (``external`` true, or ``type`` ``external``) is
+    rebuilt from the import edges of this run. Dropping one is not a lost
+    rationale or document node.
     """
     deleted = {
         norm
@@ -90,6 +94,8 @@ def _lost_saved_semantic_nodes(
     lost: list[dict] = []
     for node in saved_nodes:
         if not isinstance(node, dict) or _is_ast_tier(node):
+            continue
+        if node.get("external") is True or node.get("type") == "external":
             continue
         node_id = node.get("id")
         if node_id in new_ids:
