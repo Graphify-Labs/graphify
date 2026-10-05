@@ -131,6 +131,40 @@ def test_pascal_enum_type_and_values_are_extracted(tmp_path):
     assert ("TColor", "clBlue") in case_of
 
 
+@_needs_pascal
+def test_pascal_valued_enum_literals_are_not_nodes(tmp_path):
+    """The valued form (`clRed = 1`) yields the same graph as the plain form.
+
+    An explicit ordinal nests under declEnumValue -> defaultValue, beside the
+    value's identifier. Only the identifier names the case: the literal must not
+    leak into the value's label or become a node of its own (#4071).
+    """
+    from graphify.extract import extract_pascal
+    p = tmp_path / "colors.pas"
+    p.write_text(
+        "unit Colors;\n"
+        "interface\n"
+        "type\n"
+        "  TColor = (clRed = 1, clGreen = 2);\n"
+        "implementation\n"
+        "end.\n",
+        encoding="utf-8",
+    )
+    r = extract_pascal(p)
+    assert "error" not in r
+    labels = {n["label"] for n in r["nodes"]}
+    assert {"TColor", "clRed", "clGreen"} <= labels
+    assert not {"1", "2"} & labels
+    ids = {n["id"]: n["label"] for n in r["nodes"]}
+    cases = {
+        ids.get(e["target"])
+        for e in r["edges"]
+        if e["relation"] == "case_of" and ids.get(e["source"]) == "TColor"
+    }
+    # Exactly the two bare names: not `clRed = 1`, and no edge to a literal.
+    assert cases == {"clRed", "clGreen"}
+
+
 def test_pascal_finds_calls():
     from graphify.extract import extract_pascal
     r = extract_pascal(FIXTURES / "sample.pas")
