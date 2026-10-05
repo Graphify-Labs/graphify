@@ -162,7 +162,6 @@ def test_issue4061_workflow_respects_documented_skips(platform):
     assert "skip Steps 1–5 entirely" in core
     assert "A plain local path skips this step." in core
     assert "Skip this step entirely if `detect` returned zero `video` files." in core
-    assert "If all files are cached, skip to Part C directly." in core
 
     semantic = core.split("#### Part B - Semantic extraction", 1)[1].split(
         "**Step B1", 1
@@ -172,7 +171,6 @@ def test_issue4061_workflow_respects_documented_skips(platform):
     assert "one subagent per chunk" in semantic
     assert "5-10x faster" in semantic
     assert "Skip dispatch when the Part B fast path applies" in semantic
-    assert "or all semantic files are cached" in semantic
     assert "a host that cannot dispatch subagents" in semantic
     assert "First write an empty semantic file" in semantic
 

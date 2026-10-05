@@ -56,7 +56,7 @@ If no path was given, use `.` (current directory). Do not ask the user for a pat
 
 If the path argument starts with `https://github.com/` or `http://github.com/`, treat it as a GitHub URL - run Step 0 before anything else, then continue with the resolved local path.
 
-Run the steps in order. Skip a step only where explicitly instructed, including the existing-graph fast path, Step 0 for a plain local path, Step 2.5 without video/audio, and Part B for a code-only corpus or fully cached semantic files.
+Run the steps in order. Skip a step only where explicitly instructed.
 
 ### Step 0 - GitHub repos and multi-path merge (only if a URL or several paths)
 
@@ -209,7 +209,7 @@ Path('graphify-out/.graphify_semantic.json').write_text(json.dumps({'nodes':[],'
 "
 ```
 
-**For host-agent semantic extraction, use the platform's dispatch mechanism described in Step B2 (the Agent tool on Claude Code), one subagent per chunk; parallel dispatch is 5-10x faster than reading files yourself. Skip dispatch when the Part B fast path applies, a configured Gemini backend handles semantic extraction, or all semantic files are cached. On a host that cannot dispatch subagents, use the inline fallback described above.**
+**For host-agent semantic extraction, use the platform's dispatch mechanism described in Step B2 (the Agent tool on Claude Code), one subagent per chunk; parallel dispatch is 5-10x faster than reading files yourself. Skip dispatch when the Part B fast path applies or a configured Gemini backend handles semantic extraction. On a host that cannot dispatch subagents, use the inline fallback described above.**
 
 Before dispatching subagents, print a timing estimate:
 - Load `total_words` and file counts from `graphify-out/.graphify_detect.json`
