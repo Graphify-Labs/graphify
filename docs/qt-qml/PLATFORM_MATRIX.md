@@ -164,3 +164,20 @@ gates. Exact commands and counts are in [validation](VALIDATION.md#final-adoptio
 | Twelve hosted OS/Python lanes above | Not executed for this delivery | Historical INC-QML-07 results apply only to their recorded revision |
 | Native browser/device interaction; live database service | Not executed | Emitted scripts/export guards cannot establish system interaction or service delivery |
 | Qt runtime/build/plugin execution | Outside static profile | Analysis executes no corpus or Qt SDK |
+
+## Current-upstream integrated checkpoint
+
+The [verified integrated checkpoint](../../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2)
+records source 8b6c9d2, exact upstream base 35adf43 and tested synthetic checkout
+0863b2b. All twelve declared optional-wheel lanes pass: Windows source profiles
+pass 2,406 tests with nineteen exclusions each; macOS passes 2,361 with 64 each;
+Ubuntu wheel lanes pass three artifact tests each. All 24 neutral isolated
+optional/core smokes pass. Four full Ubuntu suites and focused native Windows
+also pass with their individual cases, archive integrity and cleanup retained.
+
+The preceding local-adoption table remains its historical checkpoint. Current
+QML platform suites remain source profiles; their aggregate logs do not establish
+per-case wheel-byte attestation. Exact counts, source/native artifact evidence,
+failed advisory scans, baseline typing and physical interaction/runtime limits
+belong to the canonical checkpoint. Documentation follow-up revisions retain
+their own normal PR validation through the [PR checks](https://github.com/SlinkyRamey/graphify/pull/7/checks).

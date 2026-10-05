@@ -1,9 +1,10 @@
 # Qt/QML validation record
 
 This chronological record preserves evidence for each tested revision. Current
-INC-QML-49/50 integration uses package 0.9.76, schema 13 and policy 22; its local
-proof and pending exact-base hosted acceptance are in
-[current integration traceability](../../tests/TRACEABILITY.md#current-upstream-integration--inc-qml-49).
+INC-QML-49–52 integration uses package 0.9.76, schema 13 and policy 22. Its
+[verified integrated checkpoint](../../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2)
+binds source 8b6c9d2, exact base 35adf43 and actual checkout 0863b2b to four full
+Linux suites, native Windows, twelve wheel lanes and their evidence limits.
 Earlier
 hosted results at `10cb15a` are in the
 [verified runner checkpoint](../../tests/TRACEABILITY.md#verified-hosted-runner-checkpoint--10cb15a):

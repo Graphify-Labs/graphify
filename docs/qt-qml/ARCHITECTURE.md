@@ -720,7 +720,7 @@ discovery, content reader, path registry or mutable root is added.
 Existing syntax-cache entries contain facts before this normalization, so warm
 replay can apply the correction without an AST schema change. Same-package Qt
 policy 19 refreshes previously accepted native/Qt derived products from policy 18,
-including a no-change update. AST schema 12 remains current. Ordinary analysis
+including a no-change update. AST schema 12 remains unchanged at this checkpoint. Ordinary analysis
 stamps and graph-product cohort publication retain ownership; failed refresh
 retains prior products and a repaired retry completes the upgrade. Generic-only
 older API outputs use an explicit forced rebuild when repair is required rather
@@ -784,13 +784,15 @@ cache format, runtime dependency or new persistence boundary changes.
 
 ## D26 — Combined upstream and Qt AST compatibility
 
-Status: **Accepted for INC-QML-49; verification pending**.
+Status: **Accepted; recorded integration profiles verified at 8b6c9d2**.
 The current upstream 0.9.76 producer retains Python receiver-shadow and other
 new source facts under its schema 5. The Qt/QML branch uses schema 12 for its
 accepted producer/callback facts. Integration uses schema 13, retaining both
 contracts and making prior namespaces miss rather than admitting stale facts.
-Qt policy 21 retains its existing analysis/publication owner; package/source
-version changes and the new AST namespace supply the accepted refresh boundary.
+The initial INC-QML-49 schema reconciliation retains policy 21's existing
+analysis/publication owner; D27 additionally introduces policy 22 for lexical
+metadata refresh. Package/source version changes and the new AST namespace
+supply the accepted AST refresh boundary.
 Semantic caches retain their independent content ownership and are not
 invalidated merely by this AST change. No Qt SDK or second runtime is required.
 
@@ -802,7 +804,7 @@ changes no requirement identifiers, runtime edge mechanisms or persistence owner
 
 ## D27 — Physical admission and lexical Qt metadata ownership
 
-Status: **Accepted for INC-QML-50; corrected profile proof pending**.
+Status: **Accepted; recorded native/POSIX integration profiles verified at 8b6c9d2**.
 Physical containment and Windows long-spelling admission remain authoritative for
 accepting a source. After admission, a real separately walked contained alias owns
 its own Qt/QML source facts, IDs, nested references and original-byte locations.
@@ -819,3 +821,8 @@ Qt policy 22 requires unchanged-input derived refresh of prior canonical-only
 products through the existing manual/watch publication owner. Semantic caches,
 diagnostic codes and graph format are unchanged. Native junction and POSIX link
 proof remain separately identified in traceability.
+
+The [verified integrated checkpoint](../../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2)
+binds D26/D27 source, native and installed evidence to the tested revision.
+Static source proof does not establish physical UI/device interaction, runtime
+Qt effects or upstream released-package delivery.

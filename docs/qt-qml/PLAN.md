@@ -2675,7 +2675,7 @@ gaps; no merge or deployment is performed.
 
 ## INC-QML-49 — Current-upstream integration
 
-Status: **Implemented and locally verified; integrated hosted proof pending**.
+Status: **Completed for the recorded source/native/installed hosted profiles at 8b6c9d2**.
 Owner: upstream integration maintainer. Verified source `65103f8` remains on
 `codex/qml-08-adoption-planning`; integration uses the same workspace on
 `codex/qml-upstream-integration`. Dependency: INC-QML-00–48 and INC-CORE-01–09.
@@ -2713,9 +2713,9 @@ allocate another increment only for a reproduced separate defect.
 
 ## INC-QML-50 — Followed Qt metadata source provenance
 
-Status: **Corrected and locally verified; POSIX/hosted profile proof pending**.
+Status: **Corrected; recorded native and POSIX hosted profiles verified at 8b6c9d2**.
 Owner: Qt metadata producer maintainer. Dependency: INC-QML-49's integrated
-discovery/cache contracts. The prior 65103f8 producer and the current integration
+discovery/cache contracts. The prior 65103f8 producer and the pre-correction integration
 both admit a contained followed directory alias but emit only canonical metadata
 source paths. The direct qmldir reader already canonicalizes the path before the
 facade receives its facts. This contradicts REQ-QML-020-AC02's separately
@@ -2761,7 +2761,7 @@ is retained and does not establish the integrated hosted exit gate.
 
 ## INC-QML-51 — Platform selection guard integration
 
-Status: **Corrected and locally verified; corrected hosted proof pending**.
+Status: **Corrected; local and recorded hosted source profiles verified at 8b6c9d2**.
 Owner: optional-wheel validation maintainer. Dependency: INC-QML-49.
 At source dbc4859 the native runner correctly includes `test_upstream_qt_`
 alongside QML/Qt source tests, but its existing guard requires the previous
@@ -2788,7 +2788,7 @@ the plan for further reproduced failures.
 
 ## INC-QML-52 — Native metadata-growth fixture identity
 
-Status: **Corrected and locally verified; corrected hosted proof pending**.
+Status: **Corrected; local and recorded hosted source profiles verified at 8b6c9d2**.
 Owner: metadata regression maintainer. Dependency: INC-QML-50's actual native
 source identity admission. Windows source lanes report a second failure in
 `test_cmake_scope_limit_and_source_file_growth_are_rejected`: its fake stat
@@ -2812,3 +2812,22 @@ non-size stat and same-file witnesses prove native admission reaches that bounda
 The changed fixture is 99 lines, below the 300-line ceiling. No runtime or
 dependency change is required. Review subsequent failures; INC-QML-53 remains
 unallocated.
+
+### Integrated exit review — INC-QML-49–52 / INC-CORE-10
+
+The [verified integrated checkpoint](../../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2)
+records passing normal-PR validation of source 8b6c9d2 against exact upstream
+35adf43: four full Linux suites, native Windows and twelve optional-wheel lanes.
+All assigned applicable joint, alias, native/POSIX, guard, metadata and subprocess
+cases pass individually where JUnit evidence is retained. Installed QML/core
+smokes pass in every wheel lane; platform source counts retain their separate
+log-only evidence limitations. Input/dependency integrity, archive digests and
+required disposable-service cleanup are verified.
+
+The failed dbc4859 checkpoint remains visible. Corrections preserve source
+authority, retention, original assertions and all declared lane assignments.
+The plan review finds no additional reproduced integration defect; INC-QML-53
+and REQ-QML-022 remain unallocated. Baseline full typing, advisory security,
+physical browser/device/application procedures and upstream publication remain
+separate gaps. This evidence completion changes documentation only; its later
+head receives normal PR validation and does not inherit a fictitious tested SHA.

@@ -21,8 +21,10 @@ the documented Windows x64/Python 3.12 profile. Bounded inherited signals, exact
 constructor identity, qmake paths, C++ header admission, declared providers and
 child-service subscriptions have source and reviewed installed-wheel evidence.
 INC-QML-28–45 correct the additional reproduced producer, consumer, transport,
-publication, path-identity and diagnostic failures. AST cache schema 12 and Qt
-policy 21 govern the current profile.
+publication, path-identity and diagnostic failures. The integrated checkpoint
+uses AST cache schema 13 and Qt policy 22; its
+[revision-bound hosted proof](../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2)
+records current source, native and isolated-install profiles.
 
 All seven REQ-QML-018 criteria have passing local acceptance assignments. The
 requirement is **Implemented; locally verified for the bounded Windows profile**,
@@ -649,7 +651,7 @@ serialization and qualified path queries. These are REQ-QML-002, REQ-QML-003,
 REQ-QML-010, REQ-QML-011, REQ-QML-018 and REQ-QML-020 acceptance boundaries,
 with REQ-CORE-004 owning hosted evidence. No new numeric requirement is allocated.
 
-Status: **Integrated-profile implementation in progress; verification pending**.
+Status: **Implemented; recorded source/native/installed hosted profiles verified at 8b6c9d2**.
 Earlier Verified labels apply to their recorded bounded source/artifact/runner
 revisions. They do not establish current-upstream integration acceptance. Exact
 new assignments, executed profiles and remaining gaps belong to traceability.
@@ -660,7 +662,7 @@ retains its own facts, IDs, nested references and original-byte locations. Qt
 policy 22 refreshes prior canonical-only products at unchanged input; combined
 AST schema 13 and semantic-cache ownership remain unchanged. Default exclusion,
 foreign/ignored/nonregular rejection and transactional output retention still
-apply. Correction and exact profile verification are pending; the reproduced
+apply. The correction's recorded native and POSIX hosted profiles pass; the reproduced
 older omission invalidates alias-provenance acceptance for that earlier state.
 
 INC-CORE-10 corrects native admission of the upstream external-call subprocess
@@ -677,7 +679,7 @@ against a temporary corpus, checking admitted and excluded files in both modes;
 optional/core installation and isolated offline assertions remain required.
 The original guard fails at integration source dbc4859 because it expects the
 former two-prefix spelling. Local correction and all three reviewed-artifact
-contracts pass; hosted acceptance remains pending for the corrected revision.
+contracts pass; the corrected recorded hosted source profiles also pass.
 
 INC-QML-52 corrects the metadata-growth fixture under REQ-QML-002-AC03 and
 REQ-QML-012-AC01/AC04. Native file identity remains authoritative before bounded
@@ -685,4 +687,4 @@ metadata reads; a simulated understated size must retain the real stat identity
 so oversized bytes reach and fail the intended metadata-size boundary. The
 scope-limit and size-limit rejection assertions remain unchanged. All 35 metadata
 boundary cases pass on native Python 3.10/3.12/3.13/3.14 after the correction;
-exact corrected hosted evidence remains pending.
+exact corrected hosted evidence is recorded in the integrated checkpoint above.

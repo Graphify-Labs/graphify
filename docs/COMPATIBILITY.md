@@ -24,6 +24,7 @@ not a passing assertion.
 | INC-CORE-07 | Deterministic hosted Windows tool selection | REQ-CORE-004-AC02/AC03 | Multiple real application matches preserve the first PATH identity, required version and executable invocation; missing tools reject before collection; normal PR evidence records the corrected revision |
 | INC-CORE-08 | Preserve admitted shell identity at native process launch | REQ-CORE-004-AC02/AC03 | Actual Python subprocesses execute the selected absolute Bash/sh file, preserve literal/security assertions and reject missing shells; corrected normal PR results retain exact identity and outcomes |
 | INC-CORE-09 | Retain native shell consumer identity evidence | REQ-CORE-004-AC03 | The actual uploaded job artifact includes and verifies both shells' executable, Python and Node identities for the reviewed checkout; omitted or inconsistent evidence cannot establish acceptance |
+| INC-CORE-10 | Admit the real native external-call subprocess fixture | REQ-CORE-004-AC02 | Required isolated Windows home/system fields reach the child while all ten extraction assertions remain; the exact native and four Linux cases pass at the integrated checkpoint |
 
 INC-CORE-01–05 have native source evidence below. The hook/filesystem corrections
 also have independent installed-consumer evidence. INC-CORE-06 closes the former
@@ -470,10 +471,10 @@ the correction; publication and upstream integration are separate delivery work.
 
 ## Native external-call subprocess admission — INC-CORE-10
 
-Status: **Corrected and locally verified; hosted proof pending**. Owner: upstream
+Status: **Corrected; recorded native and four Linux profiles verified at 8b6c9d2**. Owner: upstream
 test maintainer. Current-upstream integration exposes the existing
 `test_python_external_calls_survive_real_incremental_context` subprocess on
-native Windows. Its fixture forwards HOME but omits USERPROFILE and the native
+native Windows. The original fixture forwarded HOME but omitted USERPROFILE and the native
 home/system fields; `Path.home()` fails before extraction with “Could not
 determine home directory.” This is a test-environment admission failure, not
 evidence of incorrect Python/Qt resolution.
@@ -497,3 +498,11 @@ capability/platform skips. All ten prior extraction assertions remain structural
 unchanged; only the native home/system allowlist and explanatory comment differ.
 Ruff passes. The existing oversized fixture remains under the documented
 5460-line ceiling; no production or dependency change is introduced by CORE-10.
+
+The [verified integrated checkpoint](../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2)
+owns current source/base/checkout, individual subprocess/native outcomes,
+uploaded shell identities, integrity and cleanup. Earlier workflow-size values
+describe their original compatibility checkpoints; current-upstream integration
+measures 485 lines with its 510-line ceiling and extraction exit in
+[design](qt-qml/DESIGN.md#current-upstream-integration--inc-qml-49--d26).
+No additional shared increment is allocated by the completed integration review.

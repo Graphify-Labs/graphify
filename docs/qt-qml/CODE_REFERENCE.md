@@ -635,4 +635,5 @@ identity remains owned by `source_identity`; the shared metadata reader owns
 bounded read completion. The fixture must preserve actual non-size stat fields
 when reporting a smaller pre-read size, so its existing rejection assertions
 exercise the read boundary rather than unsupported native identity. Exact
-before/after and hosted outcomes belong to traceability.
+before/after and hosted outcomes belong to the
+[verified integrated checkpoint](../../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2).

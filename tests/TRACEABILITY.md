@@ -28,14 +28,16 @@ The separate [shared compatibility verification](#shared-compatibility-verificat
 records `REQ-CORE-` behavior and the all-extras environment. The recorded native
 Windows full run at `463ca32` has 8,818 passes, zero failures and 151 skips. Separate unchanged-
 source profiles pass all 76 Node and seven preprocessor/wheel cases previously
-skipped for setup. Later real Linux/service checks execute within failed source
-jobs; complete corrected hosted execution remains unverified. The
+skipped for setup. Later real Linux/service and native checks pass at the
+[verified integrated checkpoint](#verified-integrated-hosted-checkpoint--8b6c9d2). The
 59-failure run above is historical; its failure identities are cleared in the
 current applicable Windows profile. Full typing still fails on existing errors.
 
 The chronological records below preserve checkpoint evidence. Their older pending
 statements, epochs and test totals describe the recorded revisions. Current status
-and proof are in the final matrix and [validation](../docs/qt-qml/VALIDATION.md#final-adoption-delivery).
+and proof are in the [verified integrated checkpoint](#verified-integrated-hosted-checkpoint--8b6c9d2),
+with earlier adoption evidence retained in
+[validation](../docs/qt-qml/VALIDATION.md#final-adoption-delivery).
 See [implementation limits](../docs/qt-qml/IMPLEMENTATION.md#final-adoption-delivery),
 [export contracts](../docs/qt-qml/EXPORT_MATRIX.md) and
 [platform matrix](../docs/qt-qml/PLATFORM_MATRIX.md).
@@ -1376,8 +1378,8 @@ status cannot be inferred from the bounded local evidence.
 
 ## Current-upstream integration — INC-QML-49
 
-Source checkpoint: 65103f8; incoming v8:35adf43/package 0.9.76. Current integration
-proof is pending. The plan's acceptance matrix identifies affected IDs before
+Source checkpoint: 65103f8; incoming v8:35adf43/package 0.9.76. Corrected integration
+proof passes at the recorded 8b6c9d2 checkpoint below. The plan's acceptance matrix identifies affected IDs before
 implementation; concrete tests, commands, individual outcomes, baseline gaps and
 reviewed source/base/checkout identity are recorded here as they complete.
 Previous hosted results remain immutable checkpoints. Old skips or aggregate
@@ -1399,7 +1401,7 @@ assertions. POSIX link/`..` controls require actual POSIX runner execution.
 | REQ-QML-010-AC03; REQ-QML-018-AC04 | `tests/test_upstream_qt_path_integration.py::test_req_qml_010_ac03_qualified_native_path_preserves_direction`; `tests/test_upstream_qt_path_integration.py::test_req_qml_018_ac04_duplicate_qualified_target_refuses_guess`. Three native cases pass through the real CLI, qualified file/symbol and exact-ID selection, same-name decoys, explicit duplicate rejection, directed/undirected controls and unchanged durable input. |
 | REQ-QML-003-AC01/AC02/AC04; REQ-QML-011-AC01/AC04; REQ-QML-018-AC02 | `tests/test_upstream_qt_shared_integration.py::test_req_qml003_ac01_ac02_ac04_union_and_qt_native_cold_warm_reload`; `tests/test_upstream_qt_shared_integration.py::test_req_qml011_ac01_ac04_union_edit_removes_stale_member_keeps_native_endpoint`. Four native CMake/qmake cases pass with original spans, distinct same-named C++ union/native method ownership, real edits, stale removal and repeated output. |
 | REQ-QML-020-AC01/AC02/AC03; REQ-QML-003-AC04; REQ-QML-011-AC03/AC04; REQ-QML-018-AC05/AC06 | `tests/test_qt_followed_metadata_alias.py::test_req_qml020_ac02_typed_producers_keep_distinct_alias_facts_and_original_spans`; `tests/test_qt_followed_metadata_alias.py::test_req_qml020_ac02_followed_metadata_facade_keeps_every_owner_cold_warm_and_reload`; `tests/test_qt_followed_metadata_alias.py::test_req_qml020_ac03_typed_alias_updates_remove_stale_facts_and_match_full_rebuild`; `tests/test_qt_followed_metadata_alias.py::test_req_qml020_ac03_alias_read_failure_retains_cohort_cache_and_repairs`; `tests/test_qt_followed_metadata_alias.py::test_req_qml020_ac02_membership_rejects_another_walked_owner_of_same_physical_input`; `tests/test_qt_followed_metadata_alias.py::test_req_qml020_ac03_policy21_alias_products_refresh_retain_and_recover`. All 43 native cases pass, including BOM/CRLF/Unicode spans, nested owner/target references, actual junction/root aliases, foreign inputs, malformed lexical context and native short leaf spelling. |
-| REQ-QML-012-AC01/AC02/AC04; REQ-QML-020-AC02 | `tests/test_qt_source_identity_admission.py::test_req_qml020_ac02_native_admission_failure_keeps_its_code_and_recovers`. Six native production-reader cases pass after the final correction. `tests/test_qt_source_identity_admission.py::test_req_qml020_ac02_dotdot_input_keeps_actual_physical_target_and_containment` has sixteen Windows exclusions because actual POSIX physical link/`..` traversal is its test boundary; hosted POSIX outcomes remain pending. |
+| REQ-QML-012-AC01/AC02/AC04; REQ-QML-020-AC02 | `tests/test_qt_source_identity_admission.py::test_req_qml020_ac02_native_admission_failure_keeps_its_code_and_recovers`. Six native production-reader cases pass after the final correction. `tests/test_qt_source_identity_admission.py::test_req_qml020_ac02_dotdot_input_keeps_actual_physical_target_and_containment` has sixteen Windows exclusions because actual POSIX physical link/`..` traversal is its test boundary; all sixteen cases pass individually in each recorded Linux lane below. |
 | REQ-CORE-004-AC02 | `tests/test_extract.py::test_python_external_calls_survive_real_incremental_context` passes in the corrected native profile; all ten upstream extraction assertions remain structurally unchanged. The exact case is included in native hosted selection. |
 
 The joint command is:
@@ -1530,10 +1532,92 @@ the fixture correction all 35 module cases pass without skips on native
 every real non-size stat field and actual same-file identity, retaining the
 original two rejection assertions. It measures 99 physical lines. Source
 runtime, dependencies and original coverage are unchanged; corrected hosted
-outcomes remain pending.
+source outcomes pass in the verified integrated checkpoint below.
 
 Executed per-interpreter command:
 
 ```text
 python -X utf8 -m pytest tests/test_qt_metadata_boundaries.py -q --tb=short --junitxml=metadata.xml
 ```
+
+## Verified integrated hosted checkpoint — 8b6c9d2
+
+Draft [PR 7](https://github.com/SlinkyRamey/graphify/pull/7) source
+`8b6c9d2bd4a89377829cb09c0737744aebccfb97` targets exact incoming upstream base
+`35adf432b9d50f6f3d530ab5d7ec316819ef081c`. Both normal `pull_request` workflows
+test actual synthetic checkout `0863b2b7e5c63a27b6d5185490b8b610cc997424`;
+API parent identity and each job's retained checkout identity agree.
+[CI 37289566337](https://github.com/SlinkyRamey/graphify/actions/runs/37289566337)
+and [QML wheel 37289566340](https://github.com/SlinkyRamey/graphify/actions/runs/37289566340)
+both conclude success on attempt one. All nineteen validation jobs pass.
+The prior dbc4859 failures and cancelled profiles remain separate evidence.
+
+| Profile | Passed | Explicit exclusions | Actual evidence boundary |
+| --- | ---: | ---: | --- |
+| Full Ubuntu / Python 3.10.22 | 9,356 | 120 | Source suite, JUnit, pytest exit zero, retained identity/integrity and cleanup |
+| Full Ubuntu / Python 3.12.3 | 9,355 | 121 | Same source/retention boundary |
+| Full Ubuntu / Python 3.13.16 | 9,355 | 121 | Same source/retention boundary |
+| Full Ubuntu / Python 3.14.8 | 9,355 | 121 | Same source/retention boundary |
+| Focused native Windows / Python 3.12.10 | 923 | 37 | Actual Cmd/PowerShell/Bash/sh consumers, JUnit, uploaded report and input/dependency identity |
+| Four Windows QML lanes / Python 3.10/3.12/3.13/3.14 | 2,406 each | 19 each | Checkout source profiles and separate neutral isolated installed smokes |
+| Four macOS QML lanes / Python 3.10/3.12/3.13/3.14 | 2,361 each | 64 each | Checkout source profiles and separate neutral isolated installed smokes |
+| Four Ubuntu wheel lanes / Python 3.10/3.12/3.13/3.14 | 3 each | 0 | Reviewed-artifact contracts and separate neutral isolated installed smokes |
+
+Every Linux lane individually passes all 128 applicable integration assignments:
+34 joint upstream/Qt, 40 alias, sixteen real POSIX link/`..`, two platform guards,
+35 metadata-boundary and the exact INC-CORE-10 subprocess case. Nine new
+Windows-only native/short-leaf controls retain platform skips. The five actual
+FalkorDB/wheel cases also pass. The native Windows artifact individually passes
+all 34 joint, 43 alias, six native-admission and the same subprocess case.
+Its 37 exclusions are the prior 21 plus sixteen POSIX-only controls. Full skip
+inventories retain their actual reasons; version-specific `tomli`, exhausted
+bundle-fallback and absent optional graspologic comparison controls are not
+relabelled as passes. The native partition test still executes independently.
+
+All five source/native archives have downloaded SHA-256 equal to the GitHub API
+digest. Linux artifacts are 11336600508 (3.10), 11336267743 (3.12), 11336132399
+(3.13) and 11335669170 (3.14). The native artifact 11336246160 digest is
+`c280b9aa51311e5bf02874cc90f0eea7bbeb54e759c44e09c8290d8a5a7d36ef`.
+Its actual uploaded preflight proves both admitted Git Bash/sh consumers use
+the intended checkout Python and Node 24.19.0. Linux dependency inventories
+contain 185/195/174/174 distributions respectively; Windows contains 197.
+Each before/after inventory, tested checkout and tracked input identity is
+unchanged. All twelve Linux integrity flags pass. Real service readiness,
+test-graph deletion and absence of every job-owned container are confirmed;
+all four end-to-end install steps pass.
+
+Each full-source Linux wheel's 185 Python payloads equal reviewed source bytes
+and actual synthetic-checkout Git blobs. Their SHA-256 digests, in lane order
+3.10/3.12/3.13/3.14, are:
+
+- `1be83a0da3a89eb8824dd8a76b7445cba5a172f2cf52b76c5701dacf1ca375ca`
+- `cd6e12dd0d8131651300d06a9c3d0baad46bc788f78fdb258eda872799864291`
+- `3803242269198f47e6565dd6a9fe0ae0baecf5db323de430c4dc0afdb07661a6`
+- `02f3bf909e13aa4f4aff0fb402c9ecc6a8fc5d58038f61b8f37ab4302100485f`
+
+All 24 optional/core installed smokes pass from neutral directories with isolated
+interpreters. Windows/macOS platform tests import the checkout; their workflow
+retains aggregate logs, without per-case JUnit, wheel-digest or byte-attestation
+archives. Those limits are not filled by a source total or another job's wheel.
+Linux JUnit evidence establishes individual corrected guard and metadata cases;
+Linux/native JUnit establishes their applicable integration and subprocess cases.
+Skill generation passes five validators and 134
+artifact checks. Frozen local source typing still fails with 605 errors; new
+integration/changed fixture modules have zero scoped diagnostics.
+
+Advisory security still has successful job metadata but failed raw commands:
+four high/eight medium/112 low Bandit findings and fifteen dependency rows across
+three packages. All twelve printed medium/high owner functions match immutable
+upstream 35adf43 AST exactly; the 112 aggregate low findings are not individually
+classified. A clean security or typing contribution gate is not established.
+Physical browser/device/application interaction, Qt runtime effects, released
+upstream delivery and merging remain outside this hosted source profile.
+
+The final plan review finds no additional reproduced integration defect;
+INC-QML-53 and REQ-QML-022 remain unallocated. AST-only refresh after the source
+corrections completes with 23,247 nodes/53,843 edges and the known malformed Luau
+fixture warning. No graph commit stamp is inferred from that update command.
+This evidence completion changes documentation only. The later documentation
+head receives its own normal PR validation; this immutable checkpoint does not
+claim its unknown future head already passed. AI commit attribution and the
+original coverage artifact remain preserved; no upstream PR or merge is performed.

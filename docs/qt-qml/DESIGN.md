@@ -21,8 +21,8 @@ are implemented with local source and reviewed installed-artifact validation. Mi
 cannot be supplied by a same-name header prototype; source containment alone
 does not establish a native endpoint.
 INC-QML-14 membership projection and INC-QML-15 bounded overload resolution pass
-the recorded local source/artifact profiles. Current analysis uses policy 21
-and AST schema 12. Expanded REQ-QML-020 alias contracts retain their separately
+the recorded local source/artifact profiles. Current integrated analysis uses
+policy 22 and AST schema 13. Expanded REQ-QML-020 alias contracts retain their separately
 recorded hosted corrections; an earlier profile does not verify changed behavior.
 
 ## Ownership and dependency direction
@@ -1291,7 +1291,7 @@ assertions. Source, installed and hosted outcomes remain revision-bound.
 The integration maintainer owns reconciliation of upstream 35adf43/package
 0.9.76 with the preserved Qt/QML revision 65103f8. Source discovery combines
 exact Qt metadata admission with upstream installed-file exclusion. Cache schema
-13 preserves both producer contracts; Qt policy 21, per-file facts and semantic
+13 preserves both producer contracts; Qt policy 22, per-file facts and semantic
 cache lifetimes retain their existing owners. CLI qualified endpoint lookup
 feeds the existing direction-aware path consumer. JSON's original-links input
 preserves upstream parallel relationships and then validates every Qt logical
@@ -1341,7 +1341,8 @@ Default non-following, foreign/ignored/nonregular rejection and guarded context
 diagnostics remain unchanged. Source/read failure and graph replacement failure
 retain prior products, with normal retry/repeat recovery. Native junction/POSIX
 fixtures and direct/full/warm/manual/watch evidence are individually assigned in
-traceability. Implementation/profile verification remains pending.
+traceability. The recorded native/POSIX source and installed profiles pass at
+the [integrated checkpoint](../../tests/TRACEABILITY.md#verified-integrated-hosted-checkpoint--8b6c9d2).
 
 Lexical normalization must not precede physical resolution of an accepted POSIX
 link/`..` input: those spellings can denote a different file from a lexical
