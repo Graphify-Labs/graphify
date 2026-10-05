@@ -589,6 +589,70 @@ def test_posix_custom_hookspath_still_works(tmp_path):
     assert (repo / ".husky" / "post-commit").exists()
 
 
+def test_hookspath_outside_repo_falls_back_to_default(tmp_path, capsys):
+    """#3869: an absolute core.hooksPath outside the repo must not be created.
+
+    The setting lives in local git config (a zip of .git can carry it; a clone
+    does not). hook install used to mkdir that path and write post-commit there.
+    """
+    repo = _make_git_repo(tmp_path / "repo")
+    outside = tmp_path / "outside"
+    _set_hookspath(repo, str(outside))
+    msg = install(repo)
+    err = capsys.readouterr().err
+    assert "refusing hooks path" in err
+    assert not outside.exists()
+    assert (repo / ".git" / "hooks" / "post-commit").exists()
+    assert (repo / ".git" / "hooks" / "post-checkout").exists()
+    assert ".git" in msg and "hooks" in msg
+
+
+def test_hookspath_relative_escape_falls_back_to_default(tmp_path, capsys):
+    """#3869: a relative core.hooksPath that resolves outside the repo is refused."""
+    repo = _make_git_repo(tmp_path / "repo")
+    _set_hookspath(repo, "../escaped")
+    _hooks_dir(repo)
+    err = capsys.readouterr().err
+    assert "refusing hooks path" in err
+    assert not (tmp_path / "escaped").exists()
+    assert _hooks_dir(repo) == (repo / ".git" / "hooks").resolve()
+
+
+def test_linked_worktree_keeps_its_default_hooks_dir(tmp_path):
+    """A linked worktree's hooks live under the common git dir, outside the
+    worktree root. That default must still be used when core.hooksPath is unset."""
+    main = tmp_path / "main"
+    main.mkdir()
+    subprocess.run(["git", "init", str(main)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(main), "config", "user.email", "t@example.com"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(main), "config", "user.name", "t"],
+                   check=True, capture_output=True)
+    (main / "f").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(main), "add", "f"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(main), "commit", "-m", "x"],
+                   check=True, capture_output=True)
+    wt = tmp_path / "wt"
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", str(wt), "-b", "wt"],
+                   check=True, capture_output=True)
+    expected = subprocess.run(
+        ["git", "-C", str(wt), "rev-parse", "--git-path", "hooks"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    got = _hooks_dir(wt)
+    assert got == (wt / expected).resolve()
+    assert _is_within_repo_git(got, main)
+    assert not (wt / ".git" / "hooks").exists()
+
+
+def _is_within_repo_git(hooks: Path, main: Path) -> bool:
+    try:
+        hooks.resolve().relative_to((main / ".git").resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def test_default_hooks_dir_unaffected(tmp_path):
     """No core.hooksPath -> normal .git/hooks install, no rejection."""
     repo = _make_git_repo(tmp_path)
@@ -1406,3 +1470,185 @@ def test_hook_probes_snap_confined_uv_tool_dirs():
 
     assert '"$HOME"/snap/*/[0-9]*/.local/share/uv/tools' in _HOOK_SCRIPT
     assert '"$HOME"/snap/*/current/.local/share/uv/tools' in _HOOK_SCRIPT
+
+
+# ── GRAPHIFY_OUT: the shell gates in front of the rebuild must honour it ─────
+#
+# #1423 moved the Python rebuild bodies onto GRAPHIFY_OUT, but the sh that runs
+# BEFORE them still hardcoded graphify-out/: post-checkout exited unless a
+# literal graphify-out/ directory existed, and post-commit's "only graph
+# artifacts changed" filter only recognised graphify-out/ paths. With the
+# documented override (#686) the branch-switch rebuild therefore never launched
+# and a commit touching only the renamed output dir triggered a full rebuild.
+# Behaviour of the emitted script under a real sh, per the #2126/#2641
+# convention, with the launcher stubbed so the test observes whether the hook
+# REACHES the launch rather than running a rebuild.
+
+_LAUNCH_LINE = "launching background rebuild"
+
+
+def _stub_python(tmp_path: Path) -> Path:
+    """A 'python' that passes the find_spec probe and swallows the launcher."""
+    py = tmp_path / "stubpy"
+    py.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8", newline="\n")
+    py.chmod(0o755)
+    return py
+
+
+def _emitted_hook_run(repo: Path, script: str, args: list[str], env_extra: dict[str, str]):
+    stub = _stub_python(repo.parent)
+    rendered = script.replace("__PINNED_PYTHON__", str(stub)).replace("__VIZ_LIMIT_EXPORT__", "")
+    hook = repo.parent / "emitted-hook.sh"
+    hook.write_text(rendered, encoding="utf-8", newline="\n")
+    env = dict(os.environ)
+    env["HOME"] = str(repo.parent / "home")
+    for key in ("GIT_DIR", "GRAPHIFY_OUT", "GRAPHIFY_SKIP_HOOK"):
+        env.pop(key, None)
+    env.update(env_extra)
+    return subprocess.run(
+        ["sh", str(hook), *args], capture_output=True, text=True, cwd=str(repo), env=env,
+    )
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
+         "-c", "core.hooksPath=/dev/null", "-C", str(repo), *args],
+        check=True, capture_output=True,
+    )
+
+
+def _repo_with_graph_only_commit(tmp_path: Path, out_dir: str) -> Path:
+    """Two commits: a source file, then ONLY <out_dir>/graph.json — the
+    tracked-output case the post-commit filter exists for."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "a.py").write_text("x = 1\n", encoding="utf-8")
+    _git(repo, "add", "a.py")
+    _git(repo, "commit", "-q", "-m", "src")
+    (repo / out_dir).mkdir()
+    (repo / out_dir / "graph.json").write_text("{}", encoding="utf-8")
+    _git(repo, "add", f"{out_dir}/graph.json")
+    _git(repo, "commit", "-q", "-m", "graph")
+    return repo
+
+
+_SH_ONLY = pytest.mark.skipif(
+    shutil.which("sh") is None or os.name == "nt", reason="sh required to run the emitted hook"
+)
+
+
+@_SH_ONLY
+def test_checkout_hook_rebuilds_when_graphify_out_is_renamed(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "custom-out").mkdir()  # the configured output dir; no graphify-out/
+    result = _emitted_hook_run(repo, _CHECKOUT_SCRIPT, ["aaa", "bbb", "1"], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE in result.stdout, (
+        "post-checkout exited before the launch: it gates on a literal graphify-out/ "
+        f"instead of $GRAPHIFY_OUT\nstdout={result.stdout!r}\nstderr={result.stderr!r}"
+    )
+
+
+@_SH_ONLY
+def test_checkout_hook_still_skips_when_no_graph_was_built(tmp_path):
+    """Control: with neither the default nor the configured dir present there is
+    no graph to refresh, so the branch-switch hook stays a no-op."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    result = _emitted_hook_run(repo, _CHECKOUT_SCRIPT, ["aaa", "bbb", "1"], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE not in result.stdout
+
+
+@_SH_ONLY
+def test_commit_hook_skips_graph_only_commit_when_graphify_out_is_renamed(tmp_path):
+    repo = _repo_with_graph_only_commit(tmp_path, "custom-out")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE not in result.stdout, (
+        "post-commit launched a rebuild for a commit that only touched the configured "
+        f"output dir\nstdout={result.stdout!r}"
+    )
+
+
+@_SH_ONLY
+def test_commit_hook_skips_graph_only_commit_under_default_dir(tmp_path):
+    """Control: the default-name case the filter always handled keeps working."""
+    repo = _repo_with_graph_only_commit(tmp_path, "graphify-out")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE not in result.stdout
+
+
+@_SH_ONLY
+def test_commit_hook_still_rebuilds_for_a_source_change(tmp_path):
+    """Control: a commit that touches source alongside the renamed output dir
+    must still launch — the filter drops output-dir paths, not the rebuild."""
+    repo = _repo_with_graph_only_commit(tmp_path, "custom-out")
+    (repo / "b.py").write_text("y = 2\n", encoding="utf-8")
+    (repo / "custom-out" / "graph.json").write_text("{\"n\": 1}", encoding="utf-8")
+    _git(repo, "add", "b.py", "custom-out/graph.json")
+    _git(repo, "commit", "-q", "-m", "src+graph")
+    result = _emitted_hook_run(repo, _HOOK_SCRIPT, [], {"GRAPHIFY_OUT": "custom-out"})
+    assert result.returncode == 0, result.stderr
+    assert _LAUNCH_LINE in result.stdout, result.stdout
+
+
+# Launcher flags a hook installed before the #2253 fix still carries on disk.
+_PRE_2253_FLAGS = "0x00000008 | 0x00000200"  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+
+
+def _status_line(result: str, name: str) -> str:
+    return next(line for line in result.splitlines() if line.startswith(f"{name}:"))
+
+
+def test_status_flags_a_hook_block_from_an_older_graphify(tmp_path):
+    """Upgrading the package never rewrites hooks already on disk, so a block
+    written by an older release keeps its old launcher (#3771). `status` must
+    say so and name the command that refreshes it, not report "installed"."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    text = hook.read_text(encoding="utf-8")
+    assert "0x08000000 | 0x00000200" in text
+    hook.write_text(text.replace("0x08000000 | 0x00000200", _PRE_2253_FLAGS), encoding="utf-8")
+
+    res = status(repo)
+    assert "out of date" in _status_line(res, "post-commit")
+    assert "graphify hook install" in _status_line(res, "post-commit")
+    assert "out of date" not in _status_line(res, "post-checkout")
+
+    assert "updated existing post-commit hook" in install(repo)
+    assert "out of date" not in status(repo)
+
+
+def test_status_ignores_the_pinned_interpreter(tmp_path):
+    """`_PINNED` is whichever interpreter ran `hook install`. A hook pinned to a
+    different one is not stale, so it must not be reported as out of date."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-commit"
+    text = hook.read_text(encoding="utf-8")
+    repinned = re.sub(r"(?m)^_PINNED='[^']*'$", "_PINNED='/opt/other/bin/python3'", text)
+    assert repinned != text
+    hook.write_text(repinned, encoding="utf-8")
+
+    assert "out of date" not in status(repo)
+
+
+def test_status_compares_only_the_graphify_block(tmp_path):
+    """User commands around the graphify block are not graphify's to judge."""
+    repo = _make_git_repo(tmp_path)
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "post-commit").write_text("#!/bin/sh\necho 'user before'\n", encoding="utf-8")
+    install(repo)
+    hook = hooks_dir / "post-commit"
+    hook.write_text(hook.read_text(encoding="utf-8") + "echo 'user after'\n", encoding="utf-8")
+
+    assert "out of date" not in status(repo)

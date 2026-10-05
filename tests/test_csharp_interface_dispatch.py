@@ -76,6 +76,10 @@ _INJECTED = {
 def test_single_implementer_links_the_interface_method(tmp_path):
     dispatch, r = _extract(tmp_path, _INJECTED)
     assert (_find(r, ".Build()", "ireport"), _find(r, ".Build()", "report_report")) in dispatch
+    for edge in r["edges"]:
+        if edge["relation"] == "dispatches_to":
+            assert edge["confidence"] == "INFERRED"
+            assert edge["confidence_score"] == 0.85
 
 
 def test_chain_through_an_injected_dependency_becomes_reachable(tmp_path):

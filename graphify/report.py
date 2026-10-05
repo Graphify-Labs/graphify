@@ -153,21 +153,42 @@ def generate(
                 f"the graph (top: {top})"
             )
 
-    from .analyze import _is_file_node as _ifn
+    from .analyze import _is_file_node, _is_concept_node
+
+    def _real_node(n) -> bool:
+        # The one definition of "real" (structural, not file/concept/
+        # rationale) every figure this function prints about itself must
+        # agree on (#3148) -- file nodes are structural scaffolding, concept
+        # nodes are semantic-layer entities, and rationale nodes are
+        # docstring fragments the LLM extracted for context, none of which
+        # are a code declaration a reader would recognize as a "node" in
+        # this list. A community-listing loop that filtered only file nodes
+        # let rationale/concept content leak into "Nodes (N): ..." as if it
+        # were a real declaration, and inflated N by counting it (#3794).
+        return (
+            not _is_file_node(G, n)
+            and not _is_concept_node(G, n)
+            and G.nodes[n].get("file_type") != "rationale"
+        )
 
     def _real_count(nodes) -> int:
-        return sum(1 for n in nodes if not _ifn(G, n))
+        return sum(1 for n in nodes if _real_node(n))
 
     non_empty = {cid: nodes for cid, nodes in communities.items()
-                 if any(not _ifn(G, n) for n in nodes)}
+                 if any(_real_node(n) for n in nodes)}
     # One predicate for every figure the report prints about itself (#3148):
-    # "thin" is 0 < real < min_community_size, and "shown" is what the render
-    # loop below actually renders (real >= min_community_size) - previously
-    # shown was total-thin, which also counted communities with ZERO real
-    # nodes that the loop skips, overstating the count (#2129's residual).
+    # "thin" is real < min_community_size (ZERO real nodes included), and
+    # "shown" is what the render loop below actually renders (real >=
+    # min_community_size) - previously shown was total-thin, which also
+    # counted communities with ZERO real nodes that the loop skips,
+    # overstating the count (#2129's residual). A subsequent `0 <` guard on
+    # "thin" fixed that overcount but introduced the opposite gap: an
+    # all-file-node community (real == 0) is skipped by the SAME render loop
+    # yet was excluded from "thin" too, so it went uncounted anywhere and
+    # `shown + thin` silently undercounted `len(communities)` (#3548).
     thin_count_summary = sum(
         1 for nodes in communities.values()
-        if 0 < _real_count(nodes) < min_community_size
+        if _real_count(nodes) < min_community_size
     )
     shown_count = sum(
         1 for nodes in communities.values()
@@ -275,8 +296,9 @@ def generate(
     for cid, nodes in communities.items():
         label = community_labels.get(cid, f"Community {cid}")
         score = cohesion_scores.get(cid, 0.0)
-        # Filter method/function stubs from display - they're structural noise
-        real_nodes = [n for n in nodes if not _ifn(G, n)]
+        # Filter file/concept/rationale nodes from display - they're
+        # structural noise or docstring prose, not a code declaration (#3794).
+        real_nodes = [n for n in nodes if _real_node(n)]
         if not real_nodes:
             continue
         if len(real_nodes) < min_community_size:
@@ -302,22 +324,16 @@ def generate(
             ]
 
     # --- Gaps section ---
-    from .analyze import _is_file_node, _is_concept_node
-
-    isolated = [
-        n for n in G.nodes()
-        if G.degree(n) <= 1
-        and not _is_file_node(G, n)
-        and not _is_concept_node(G, n)
-        and G.nodes[n].get("file_type") != "rationale"
-    ]
+    isolated = [n for n in G.nodes() if G.degree(n) <= 1 and _real_node(n)]
     # Same threshold the Summary and Communities headers used (#3148): this
     # was a hardcoded 3, so with --min-community-size anything else the count
     # here disagreed with the label text beside it, which already printed
-    # min_community_size.
+    # min_community_size. No `0 <` guard, matching thin_count_summary above
+    # (#3548): an all-file-node community is skipped by the same render loop
+    # as a genuinely thin one, so it belongs in this count too.
     thin_communities = {
         cid: nodes for cid, nodes in communities.items()
-        if 0 < sum(1 for n in nodes if not _is_file_node(G, n)) < min_community_size
+        if _real_count(nodes) < min_community_size
     }
     gap_count = len(isolated) + len(thin_communities)
 
@@ -328,8 +344,23 @@ def generate(
             suffix = f" (+{len(isolated)-5} more)" if len(isolated) > 5 else ""
             raw_isolated = sum(1 for n in G.nodes() if G.degree(n) <= 1)
             lines.append(f"- **{len(isolated)} isolated node(s):** {', '.join(f'`{l}`' for l in isolated_labels)}{suffix}")
+            # "Undocumented components" only means anything when a semantic
+            # layer exists: document/paper/image nodes an LLM extracted
+            # meaning from, where an isolated node genuinely could be
+            # "mentioned but never explained further." A code-only graph
+            # (--code-only, or any run where semantic extraction never
+            # happened) has no such nodes at all, so offering it as a live
+            # possibility on every report is misleading (#3801).
+            has_semantic_layer = any(
+                G.nodes[n].get("file_type") in ("document", "paper", "image")
+                for n in G.nodes()
+            )
+            reason = (
+                "possible missing edges or undocumented components" if has_semantic_layer
+                else "possible missing edges"
+            )
             lines.append(
-                "  These have ≤1 connection - possible missing edges or undocumented components. "
+                f"  These have ≤1 connection - {reason}. "
                 f"(Counts symbols only; {raw_isolated} node(s) total have ≤1 connection when "
                 "file, concept and rationale nodes are included.)"
             )
