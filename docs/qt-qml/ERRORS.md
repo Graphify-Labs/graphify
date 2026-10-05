@@ -31,6 +31,8 @@ relative/bounded; messages omit source content and dependency exception details.
 | QT_CPP_PARSER / QT_CPP_SYNTAX | error | C++ parser failure or incomplete supported Qt syntax | Restore parser dependency or correct the source |
 | QT_CPP_LIMIT / QT_LIMIT | error | Bounded source, AST, parameters or semantic transport exceeds its limit | Reduce input or extend the measured profile |
 | QT_METADATA | rejection prefix | Invalid versioned Qt literal transport | Re-extract valid source facts; the join guard rejects publication |
+| WATCH_SOURCE_IDENTITY_FAILED | error/rejection prefix | An already admitted nonsemantic watch input has unavailable, foreign or nonregular physical identity, or a changed source was not admitted | Restore the contained regular source and retry; reject partial invalidation and retain the prior product cohort |
+| SOURCE_INPUT_IDENTITY_FAILED | error/rejection prefix | Native spelling admission for an existing Windows file fails, returns unusable bounded output or changes physical identity | Restore filesystem access and retry; extraction rejects before workers/cache, and existing manual/watch guards retain prior products |
 
 Failures emit no authoritative declarations/edges. CLI/watch reject before graph
 reconciliation, reports/HTML, root marker and manifest updates. Prior bytes remain

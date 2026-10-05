@@ -15,7 +15,7 @@ from pathlib import Path, PurePath
 from typing import Any, Callable
 
 from .cache import load_cached, save_cached
-from .source_identity import walked_relative_source
+from .source_identity import normalize_input_source, resolved_source_owners, walked_relative_source
 from .mcp_ingest import extract_mcp_config, is_mcp_config_path
 from .manifest_ingest import extract_package_manifest, is_package_manifest_path
 from .resolver_registry import (
@@ -7338,8 +7338,10 @@ def extract(
             resolution_context_nodes: they widen the resolvers' view but only
             fresh results are appended to the returned nodes/edges.
     """
-    paths = [Path(p) for p in paths]
     anchor_root = Path(root) if root is not None else None
+    # Normalize native entry spellings before facts, worker dispatch or cache keys.
+    context_root = anchor_root if anchor_root is not None else cache_root
+    paths = [normalize_input_source(Path(p), context_root) for p in paths]
     _check_tree_sitter_version()
     _raise_recursion_limit()
     # Workspace package manifests/globs can change during watch or repeated extraction.
@@ -7769,9 +7771,9 @@ def extract(
             # Already covered: either the target is in this batch (its input
             # form is the same form the extractors minted ids from, and the
             # per-path loop registers both that and the resolved form) or an
-            # earlier stamped edge registered it. Re-appending it here would
-            # re-run its per-path iteration AFTER later batch files and could
-            # flip the last-writer of a colliding old-id key.
+            # earlier stamped edge registered it. The ownership pass below
+            # handles shared forms independently; no redundant target entry
+            # should participate in its accepted source claims.
             continue
         _remap_seen.add(_tp)
         try:
@@ -7827,6 +7829,9 @@ def extract(
         if _raw_tp != _tp:
             _remap_seen.add(_raw_tp)
             remap_paths.append(_raw_tp)
+    # Shared physical forms have one explicit owner, independent of batch order.
+    _physical_owners = resolved_source_owners(
+        remap_paths, root, walked_relative=_walked_rel, realpath=_cached_realpath, cwd=os.getcwd())
     for path in remap_paths:
         old_id = _make_id(str(path))
         try:
@@ -7840,8 +7845,9 @@ def extract(
         # alias/workspace import targets (resolved via .resolve()) remap to
         # canonical instead of orphaning (#1529).
         old_id_abs = _make_id(str(path.resolve()))
-        if old_id_abs != new_id:
-            id_remap[old_id_abs] = new_id
+        physical_id = _file_node_id(_physical_owners[path.resolve()])
+        if old_id_abs != physical_id:
+            id_remap[old_id_abs] = physical_id
         old_prefs: list[tuple[str, str]] = []
         old_pref = _file_node_id(path)
         if old_pref != new_id:
@@ -7857,10 +7863,11 @@ def extract(
         # (#2243). Register the suffixed forms, preserving the extension tail
         # exactly as the prefix remap yields for in-batch entry nodes
         # (`c.sh` -> `c_sh__entry`): new prefix + the tail of the minted id.
-        for _old, _pref in ((old_id, old_pref), (old_id_abs, old_pref_abs)):
+        for _old, _pref, _owner in ((old_id, old_pref, new_id),
+                                    (old_id_abs, old_pref_abs, physical_id)):
             if not _old.startswith(_pref):
                 continue
-            _entry_new = new_id + _old[len(_pref):] + "__entry"
+            _entry_new = _owner + _old[len(_pref):] + "__entry"
             _entry_old = _old + "__entry"
             if _entry_old != _entry_new:
                 id_remap.setdefault(_entry_old, _entry_new)

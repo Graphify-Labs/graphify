@@ -418,6 +418,94 @@ configuration, with zero added/removed. Targeted seven-file Pyright retains only
 This checkpoint excludes the subsequent INC-QML-44/45 correction and does not
 establish corrected hosted or clean typing acceptance.
 
+### Shared physical co-owner watch invalidation — INC-QML-44
+
+Initial production probes reproduce stale facts after only one of two admitted
+source owners is notified. Real junction and hardlink regressions retain full/
+incremental equality assertions; the directory-rename case also exposes a shared
+absolute-ID remap collision. The extractor owner corrects that collision alongside
+INC-QML-45, without selecting source ownership through iteration order.
+
+| Acceptance ID | Exact ordinary production test | Assigned boundary |
+| --- | --- | --- |
+| REQ-QML-011-AC01/AC03; REQ-QML-020-AC03 | `tests/test_watch_physical_coowners.py::test_req_qml011_ac01_ac03_qml020_ac03_one_owner_edit_refreshes_shared_content` | Actual generic/mixed directory-alias and hardlink edits; disjoint stable APIs, stale removal, unrelated facts, cold/warm/full/repeat |
+| REQ-QML-011-AC03; REQ-QML-012-AC03 | `tests/test_watch_physical_coowners.py::test_req_qml011_ac03_normal_rename_and_deletion_retire_only_absent_owners` | Existing detection/deletion behavior, both owner kinds and full/incremental equality |
+| REQ-QML-012-AC01/AC02 | `tests/test_watch_physical_coowners.py::test_req_qml012_ac01_ac02_identity_failure_retains_recovers_and_repeats` | Five actual admitted resolve/stat/disappearance failures, safe diagnostic, prior four-product cohort and existing cache bytes, repair/repeat |
+| REQ-QML-012-AC04 | `tests/test_watch_physical_coowners.py::test_req_qml012_ac04_unsafe_or_long_missing_identity_context_is_empty`; `tests/test_watch_physical_coowners.py::test_req_qml012_ac04_context_quotes_delimiters_and_preserves_160_character_boundary` | Empty unsafe/unavailable context, JSON delimiter quoting and 160/161 limits |
+| REQ-QML-011-AC01 | `tests/test_watch_physical_coowners.py::test_req_qml011_ac01_selection_cannot_discover_foreign_or_unadmitted_coowners`; `tests/test_watch_physical_coowners.py::test_req_qml011_ac01_missing_inode_identity_uses_contained_path_without_false_joins`; `tests/test_watch_coowner_admission.py::test_req_qml011_ac01_semantic_backed_hardlink_keeps_its_own_tier`; `tests/test_watch_coowner_admission.py::test_req_qml011_ac01_excluded_hardlink_cannot_reenter_the_corpus` | Foreign/unadmitted/nonregular rejection, conservative inode fallback, retained semantic tier and ignore exclusions |
+| REQ-QML-011-AC03/AC04; REQ-QML-020-AC03 | `tests/test_watch_physical_coowners.py::test_req_qml011_ac03_ac04_qml020_ac03_policy20_refresh_retains_repairs_and_repeats` | Actual unchanged policy20-to21 watch refresh, staged-stamp failure, retained cohort and repaired full/repeat parity |
+
+The new stateless helper measures 69 lines, facade watch 2,543 within its 2,550
+ceiling, and focused tests 280/70. Isolated helper coverage measures 39 of 39
+statements and ten of ten branches; original coverage is untouched. Combined
+source/installed results appear below; corrected hosted acceptance is pending. Early
+scan/stat bookkeeping remains outside the prior-product retention boundary;
+cache-byte assertions establish the actual rejection point rather than a universal
+promise about detection bookkeeping.
+
+### Native entry spelling and shared ID ownership — INC-QML-45
+
+Actual Windows short header/build-metadata spellings reproduce four membership/
+source-identity failures with one passing foreign-root control. Admission now
+precedes worker/cache work and verifies a native long spelling of the same file
+without resolving discovered directory owners. The remap correction separates
+primary walked claims from shared resolved forms; canonical supplied ownership,
+unique-alias fallback and ambiguous physical forms retain distinct contracts.
+
+| Acceptance ID | Exact ordinary production test | Assigned boundary |
+| --- | --- | --- |
+| REQ-QML-020-AC01 | `tests/test_qt_short_leaf_aliases.py::test_req_qml020_ac01_short_native_leaf_preserves_membership_facts_and_reload`; `tests/test_qt_short_leaf_aliases.py::test_req_qml020_ac01_native_utf16_lengths_preserve_astral_source_names` | Real header/build-metadata/both short inputs, exact raw facts, membership, original BOM/CRLF bytes/spans, UTF-16 supplementary names, cold/warm and directed reload |
+| REQ-QML-020-AC02 | `tests/test_qt_short_leaf_aliases.py::test_req_qml020_ac02_short_spelling_preserves_two_discovered_junction_owners`; `tests/test_qt_short_leaf_aliases.py::test_req_qml020_ac02_short_foreign_native_leaf_keeps_existing_root_rejection`; `tests/test_source_identity_remap_owners.py::test_req_qml020_ac02_primary_physical_owner_survives_both_batch_orders`; `tests/test_source_identity_remap_owners.py::test_req_qml020_ac02_multiple_aliases_cannot_authorize_arbitrary_physical_target` | Separate junction IDs/calls, foreign native rejection, canonical-first/last absolute/relative inputs and conservative ambiguous import ownership |
+| REQ-QML-012-AC01/AC02; REQ-QML-020-AC01/AC03 | `tests/test_source_input_admission.py::test_req_qml012_ac01_ac02_qml020_ac01_native_failure_retains_repairs_and_repeats`; `tests/test_source_input_admission.py::test_req_qml012_ac01_native_admission_refuses_before_any_worker_or_cache_write`; `tests/test_source_input_admission.py::test_req_qml012_ac01_native_filesystem_identity_failure_is_bounded` | Actual zero/oversize/empty/wrong-length/foreign-target/backend API failures, stat/same-file refusal, manual/watch prior products and cache bytes, repair/full parity/repeat, direct refusal before work |
+| REQ-QML-020-AC01 | `tests/test_source_input_admission.py::test_req_qml020_ac01_missing_and_nonfile_keep_existing_admission_shape`; `tests/test_source_input_admission.py::test_req_qml020_ac01_nonwindows_input_needs_no_native_lookup` | Existing missing/directory/non-file handling and no POSIX native API requirement |
+| REQ-QML-012-AC04 | `tests/test_source_input_admission.py::test_req_qml012_ac04_native_context_is_quoted_bounded_and_lexical`; `tests/test_source_input_admission.py::test_req_qml012_ac04_failed_context_lookup_keeps_bounded_admission_error` | Delimiters, empty/control/160–161 context, actual API failure plus failed lexical/CWD context adapter |
+
+An early ambiguous-control expectation excluded all builder stubs. The owning
+contract instead rejects newly admitted source/native authority and arbitrary
+alias selection; ordinary unresolved import stubs keep the upstream builder's
+existing behavior. Raw producer facts and built stub roles are verified separately.
+No graph-builder behavior or accepted-source policy is changed for that control.
+The combined local results are recorded below; corrected hosted proof is pending.
+
+### Combined source and installed checkpoint — INC-QML-44/45
+
+Native Windows/Python 3.12.14 source selection:
+**640 passed, 21 capability/profile skips, zero failures**, 114.30 seconds.
+All 59 new cases above execute without skips. The retained exclusions are eight
+cache file-symlink cases, two active-CWD removals, one Windows Git profile,
+one watch directory-symlink setup, one watch file-symlink, four extractor
+file-symlinks, one discovered leaf-symlink and three prior diagnostic-context
+symlinks. Actual Linux/platform proof is separately assigned to hosted execution.
+Focused new selections overlap this profile and are not added to its total.
+
+Fresh wheel SHA-256:
+`c815eef893aa928eb58287be2b56e41c22b99ba43999e2c3ec30026af82108ac`.
+All 182 source/wheel/installed Python payloads match, with only the approved five
+payload changes from the 65a096a checkpoint. Unchanged QML/core/full-TEMP short
+smokes pass; 129/123 loaded smoke modules come from the artifact. The ten-module
+installed profile passes **102 cases, eleven actual file-symlink skips, zero
+failures/errors/warnings**, 34.49 seconds; all 154 loaded Graphify modules
+originate in the artifact. All 59 new cases pass. Only 33 exact owned native
+junction-fixture callbacks are admitted; 157 other process attempts remain
+denied, with no additional process/network authority. Temporary junctions/data
+are confirmed removed. Source fingerprints for 681 Python files, 197/40/30 source/
+optional/core dependencies, basis HEADfca23e2 and original coverage stay unchanged.
+Separate actual Windows CI tool tests pass five cases, no skips/warnings.
+
+Source identity coverage: 76/76 statements and 22/22 branches; its broader control
+selection passes 54 cases with eight capability skips. Watch co-owner coverage:
+39/39 statements and 10/10 branches; all 21 ordinary cases pass. Both use isolated
+coverage storage. Whole-project Pyright 1.1.409 retains **604 errors, zero
+warnings, 677 files**, exactly matching immutable135d50b diagnostic identities
+under the same configuration/dependencies: zero added/removed. Targeted ten-file
+typing retains only 142 matched legacy facade/watch errors; other eight have zero.
+Ruff 0.15.14 and 134 generated artifacts pass. Actionlint 1.7.12 reports no
+workflow diagnostics; both complete native run blocks parse with zero errors in
+Windows PowerShell 5.1 and pwsh 7.6.6. Workflow size remains 450 lines.
+AST-only `graphify update . --no-cluster` completes with no LLM invocation;
+graph counts are navigation output rather than correctness evidence. Current
+hosted, typing and physical device/system gaps remain explicit.
+
 ## Individual acceptance assignments
 
 The [follow-up audit](../docs/qt-qml/FOLLOWUP_AUDIT.md) supplies counterexamples for
@@ -430,6 +518,12 @@ Exact opt-in probes and corrective increments appear in
 Exact test references below identify executed cases. Documentation, privacy and
 hosted integration reviews are explicit review evidence rather than invented unit
 tests. Later revisions reverify affected evidence; preserve these identifiers.
+
+The INC-QML-06/07 rows retain their original bounded-profile evidence. Expanded
+shared-owner incremental contracts in REQ-QML-011-AC01/AC03/AC04 are assigned to
+INC-QML-44; new input-identity failure and short-leaf contracts are assigned to
+INC-QML-45. Historical passes do not verify those additions. Their current
+source, installed and hosted results are recorded separately below when run.
 
 | Acceptance ID | Actual evidence / assigned open case | Planned completion increment | Status |
 | --- | --- | --- | --- |

@@ -302,6 +302,13 @@ runtime/device profiles retain their separate system procedures. Hosted pytest
 does not repair the failed typing baseline or broaden generic-only Qt API support.
 No merge or post-merge/protected proof is included in this validation increment.
 
+The native Windows selection also executes the discovered-source and physical
+co-owner watch regressions from INC-QML-42/44. Owned NTFS directory junctions and
+hardlinks exercise source ownership without requiring file-symlink elevation.
+Actual Windows short-leaf spelling remains in the QML source selection; Linux
+source CI executes the original real POSIX regressions. Capability exclusions
+are retained individually and never counted as passing acceptance.
+
 ## Deterministic Windows tool selection — INC-CORE-07
 
 Status: **Implemented correction; native regression passes, corrected hosted proof pending**.

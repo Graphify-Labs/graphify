@@ -134,6 +134,34 @@ Adjacent probes reproduce shared-content watch invalidation and Windows short
 leaf-input identity gaps, assigned separately in the increment plan. Corrected
 Linux replay and hosted Windows/QML acceptance remain pending.
 
+## Combined physical-source correction — INC-QML-44/45
+
+The frozen native Windows/Python 3.12.14 compatibility selection passes
+**640 tests, zero failures, 21 documented capability/profile skips**. All 59 new
+co-owner, short-spelling, admission-failure and remap-owner cases pass without
+skips. Source/helper sizes, exact criterion assignments, retained exclusions and
+prior cache/cohort byte evidence are in
+[traceability](../../tests/TRACEABILITY.md#combined-source-and-installed-checkpoint--inc-qml-4445).
+
+Fresh wheel SHA-256:
+`c815eef893aa928eb58287be2b56e41c22b99ba43999e2c3ec30026af82108ac`.
+All 182 Python payloads match source and installation. Unchanged isolated
+QML/core/full-TEMP short-alias smoke passes; installed contracts pass **102 cases,
+eleven file-symlink capability skips, zero failures/errors/warnings**. All 154
+loaded Graphify modules come from that artifact. Source/dependency/coverage bytes
+are unchanged; owned junction/temp fixtures are removed. The five separate actual
+Windows CI tool tests pass without skips or warnings.
+
+Both focused helpers have complete measured statement/branch coverage. Ruff,
+134 generated artifacts, document/reference checks and actionlint pass; both
+complete native CI scripts parse with no errors in Windows PowerShell 5.1 and
+pwsh 7.6.6. AST-only repository graph refresh completes without an LLM call.
+Full Pyright remains **604 exact baseline errors**, zero added/removed, across
+677 current files; the typing gate still fails. Source/installed exit review finds
+no further reproduced defect in this scope and leaves INC-QML-46 unallocated.
+The next normal PR event owns corrected hosted execution, separately from these
+overlapping local profiles and unexecuted physical device/system procedures.
+
 <a name="executed-qml-00-through-qml-03--2026-10-03"></a>
 
 ## Executed INC-QML-00 through INC-QML-03 — 2026-10-03

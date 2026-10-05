@@ -1197,3 +1197,60 @@ schema 12 unchanged. Failure retains the complete prior cohort and corrected
 retry/repeat completes; generic-only old products require full/forced rebuilding.
 The separately reproduced co-owner watch-invalidation and NTFS short-leaf
 spelling boundaries are INC-QML-44/45; this checkpoint does not claim them fixed.
+
+## Physical co-owner watch invalidation (INC-QML-44)
+
+The watch selector owns detection, exclusions, semantic-document separation,
+deletion handling and the existing publication cohort. Its new stateless
+`watch_coowners` boundary receives positive changed paths and already accepted
+nonsemantic inputs. Within one call, it groups verified contained regular files
+by nonzero device/inode identity; a canonical contained path is the conservative
+fallback where usable inode IDs are absent. Hardlinks join only with actual
+inode evidence. No content is read, source discovered or durable cache introduced.
+The selector keeps notification order and appends additional owners in corpus
+order; order cannot determine source-ID ownership or hide a remap collision.
+
+Unexpected resolution/stat failure, disappearance after admission, foreign or
+nonregular identity rejects with `WATCH_SOURCE_IDENTITY_FAILED`. Its existing
+watch exception boundary reports failure and retains graph, manifest, analysis
+root and Qt stamp. Safe quoted root-relative context is bounded to 160 characters;
+controls, line separators, unavailable and longer context become an empty field.
+Backend exception bodies are omitted. Ordinary absence before discovery keeps
+existing deletion behavior. Restore the source and retry through normal detection;
+accepted repeat updates preserve product bytes. The error catalog owns the code,
+and traceability distinguishes source, installed and hosted evidence.
+
+## Native file-spelling admission and physical ID ownership (INC-QML-45)
+
+The facade normalizes initial input paths before parser checks, worker dispatch
+or cache access. `source_identity.normalize_input_source` leaves POSIX and missing/
+non-file inputs to existing handling. Existing Windows regular files use bounded
+`GetLongPathNameW` output and unchanged physical-target/same-file checks. The
+returned long spelling preserves lexical junction/symlink owners; resolving the
+entire input would erase those owners. Successful output uses UTF-16 code-unit
+bounds, including supplementary Unicode characters. The helper reads identity
+metadata only and retains no state, cache, root or content ownership.
+
+Unavailable/malformed/oversized output or changed physical identity rejects with
+`SOURCE_INPUT_IDENTITY_FAILED` before worker/cache work. Direct extraction names
+the failed stage and repair/retry action without claiming a durable graph exists.
+The existing manual/watch owners retain prior products on that rejection. Safe
+lexical relative context is JSON-quoted and bounded; unavailable, unsafe or long
+context is empty. Missing/non-file inputs preserve their previous downstream
+result rather than becoming a new whole-batch identity failure.
+
+`resolved_source_owners` collects explicit walked claims for each physical form
+within one analysis run. Primary walked IDs remain separate. A supplied canonical
+physical owner wins its shared absolute form; one unique alias keeps the existing
+fallback. Several aliases without that physical owner retain the portable
+physical endpoint form, with no arbitrary alias choice or newly admitted source
+authority. Ordinary unresolved import stubs retain the graph builder's existing
+policy; a stub cannot establish a parsed declaration or native endpoint role.
+The same ownership applies to suffixed callable entries. Prefix/stem
+lookups retain each walked owner. This corrects watch rename order dependence
+without sorting the notification list or overwriting another owner's file ID.
+
+Combined Qt policy 21 refreshes older derived products; AST schema 12 and cache/
+publication formats remain unchanged. Generic-only historical outputs use an
+explicit full/forced rebuild. Acceptance records distinguish the earlier
+policy20 checkpoint from the combined source, installed and hosted results.

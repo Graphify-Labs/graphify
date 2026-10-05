@@ -20,9 +20,9 @@ INC-QML-11, INC-QML-15 and INC-QML-08a/b/c are implemented and locally complete 
 the documented Windows x64/Python 3.12 profile. Bounded inherited signals, exact
 constructor identity, qmake paths, C++ header admission, declared providers and
 child-service subscriptions have source and reviewed installed-wheel evidence.
-INC-QML-28–41 correct the additional reproduced producer, consumer, transport,
+INC-QML-28–45 correct the additional reproduced producer, consumer, transport,
 publication, path-identity and diagnostic failures. AST cache schema 12 and Qt
-policy 20 govern the current profile.
+policy 21 govern the current profile.
 
 All seven REQ-QML-018 criteria have passing local acceptance assignments. The
 requirement is **Implemented; locally verified for the bounded Windows profile**,
@@ -255,11 +255,11 @@ Cold rebuild, warm cache, manual update, and watch agree on normalized Qt/QML ou
 
 **Acceptance Criteria**
 
-1 - Cold build, warm build, manual update and watch produce equal normalized Qt/QML graphs for the supported fixture corpus after a normal QML edit. (`REQ-QML-011-AC01`)
+1 - Cold build, warm build, manual update and watch produce equal normalized Qt/QML graphs for the supported fixture corpus after a normal QML edit. In mixed and generic corpora, a watch notification for one already admitted nonsemantic regular-file source refreshes every admitted nonsemantic contained owner of the same physical bytes, including supported directory aliases and hardlinks, while preserving distinct walked IDs and unrelated facts. Semantic-backed siblings retain their existing tier; identity grouping cannot discover or admit another source. (`REQ-QML-011-AC01`)
 
 2 - Metadata-only and C++-registration-only edits, provider deletion/rename and duplicate-provider introduction update links in unchanged QML and remove stale derived edges. (`REQ-QML-011-AC02`)
 
-3 - Parser/grammar/config/import-root/ignore-policy changes invalidate the affected cached facts or resolution; stale output cannot be accepted solely because file content hashes match. (`REQ-QML-011-AC03`)
+3 - Parser/grammar/config/import-root/ignore-policy changes invalidate the affected cached facts or resolution; stale output cannot be accepted solely because file content hashes match. Shared physical-source edits, rename and deletion remove stale facts under each remaining admitted owner; one notification cannot preserve an obsolete sibling owner. An absent source before discovery remains an intentional deletion, while failed identity lookup after admission rejects partial work. (`REQ-QML-011-AC03`)
 
 4 - Repeated no-change updates are idempotent and preserve unrelated source facts; the final incremental graph equals a clean rebuild after every delivered mutation case. Removing or restoring source cannot leave stale synthetic reference nodes without an accepted remaining owner, including generic C++ include stubs. Still-referenced external nodes and source-backed definitions remain intact. (`REQ-QML-011-AC04`)
 
@@ -271,7 +271,7 @@ Malformed input, missing parser, partial extraction, and failed resolution canno
 
 **Acceptance Criteria**
 
-1 - Missing parser, malformed source and a forced extractor/resolver failure produce bounded, stage-specific diagnostics and an explicit incomplete status. Persistent input-identity failure cannot escape diagnostic construction or disclose the backend exception body; every affected Qt/QML source receives `QML_RESOLUTION_FAILED`, with safe relative context where available and explicit unavailable context otherwise. (`REQ-QML-012-AC01`)
+1 - Missing parser, malformed source and a forced extractor/resolver failure produce bounded, stage-specific diagnostics and an explicit incomplete status. Persistent input-identity failure at the Qt/QML resolution boundary cannot escape diagnostic construction or disclose the backend exception body; every affected Qt/QML source receives `QML_RESOLUTION_FAILED`, with safe relative context where available and explicit unavailable context otherwise. Failed physical co-owner selection rejects with `WATCH_SOURCE_IDENTITY_FAILED`; failed native file-spelling admission rejects with `SOURCE_INPUT_IDENTITY_FAILED` before worker/cache work. Both pre-extraction rejections use bounded quoted relative context or an explicit empty field, omit backend bodies and identify repair/retry guidance, without publishing fresh source facts. (`REQ-QML-012-AC01`)
 
 2 - Starting from a valid persisted graph, those failures cannot replace it with a misleading empty/incomplete graph or poison a successful cache entry under existing write protections. Required graph, manifest, analysis-root and Qt-state publication must complete before reporting update success; a failed publication retains prior accepted products and reports failure, with explicit recovery on rollback failure. (`REQ-QML-012-AC02`)
 
@@ -285,6 +285,11 @@ for AC01/AC02: complete failure records and safe context, exact prior-product
 retention, repaired retry and byte-stable repeat. A diagnostic label is at most
 160 characters and excludes controls/line separators; unavailable or unsafe
 context is the empty `source_file` string and grants no lookup authority.
+INC-QML-44/45 add distinct pre-extraction watch/native admission rejection codes,
+actual cache/product retention, repaired retry and bounded lexical-context tests.
+The combined installed profile passes all 59 new cases without skips; eleven
+older file-symlink cases retain actual capability exclusions. Hosted proof is
+still separate from these local results.
 Exact assignments and capability exclusions are in
 [traceability](../tests/TRACEABILITY.md#failure-safe-join-diagnostics--inc-qml-41).
 
@@ -469,7 +474,7 @@ project code.
 
 2 - Missing, duplicate, conditional, generated or out-of-root targets retain explicit unresolved/unsupported site status, reason and bounded evidence without a target edge. Same-name files in different scopes remain distinct; separately discovered in-corpus symlink sources retain their distinct walked provenance even when their physical target is shared. Alternate spelling of the scan root must not collapse those corpus owners or authorize new target roles. Graph projection neither reads new files nor evaluates expansions, build hooks or QML. Malformed metadata and failed joins retain existing failure diagnostics and prior durable graph/state; force cannot authorize partial membership publication. Canonical input comparison still rejects a foreign input or conflicting declaration identity; an alias cannot authorize out-of-corpus membership or rewrite stored source facts. (`REQ-QML-020-AC02`)
 
-3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. Canonical and real alias profiles agree through cold/warm extraction, full/manual/watch updates and source removal; repaired retry and no-change repeats preserve accepted output. Existing policy-18/19 native/Qt products refresh under policy 20 at unchanged package/source versions; a failed upgrade retains prior products and repaired retry/repeat completes the same accepted graph. (`REQ-QML-020-AC03`)
+3 - Source/resource edits, rename, deletion and ambiguity introduction remove stale membership edges; cold, warm and incremental graphs agree and no-change updates are idempotent. Source facts and unrelated-language identities remain stable, and HTML community edges reflect only accepted persisted memberships. Exact automated source, persistence, consumer and failure tests cover each supported form. Canonical and real alias profiles agree through cold/warm extraction, full/manual/watch updates and source removal; repaired retry and no-change repeats preserve accepted output. Existing policy-18/19/20 native/Qt products refresh under policy 21 at unchanged package/source versions; a failed upgrade retains prior products and repaired retry/repeat completes the same accepted graph. (`REQ-QML-020-AC03`)
 
 Status: **Implemented bounded profile; full canonical-alias verification remains open**.
 The earlier canonical-spelling cases have production, lifecycle/consumer and reviewed installed-artifact
@@ -498,8 +503,12 @@ Windows fixture setup gap. INC-QML-42 restores distinct discovered source owners
 under policy 20; INC-QML-43 preserves the real nearby-alias fixture when parent
 directories also have short names. Their source and fresh installed checkpoint
 pass, with actual symlink capability exclusions; corrected hosted proof remains
-pending. An adjacent single-alias notification gap and actual NTFS short-leaf
-membership gap are assigned to INC-QML-44/45 and remain unverified corrections.
+pending. INC-QML-44/45 correct the adjacent single-alias notification and actual
+NTFS short-leaf membership gaps. All 59 new cases pass in source and in the fresh
+installed wheel, with real cache/cohort failure retention and repaired parity.
+The compatibility profile passes 640 cases with 21 recorded capability/profile
+skips; installed contracts pass 102 with eleven file-symlink skips. Corrected
+hosted acceptance remains open; overlapping local counts are not a full-suite total.
 
 ### REQ-QML-021 — Middle mouse graph navigation
 

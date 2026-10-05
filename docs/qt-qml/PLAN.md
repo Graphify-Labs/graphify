@@ -38,6 +38,16 @@ fails eight Windows/macOS installed-smoke lanes. INC-CORE-06 corrects workflow
 admission; INC-QML-39 corrects the reproduced canonical input-alias mismatch.
 These failures remain unmet current hosted gates until corrected evidence exists.
 
+At hosted head `f95366d`, all twelve isolated QML/core wheel smoke profiles pass,
+and the four macOS QML source profiles pass. Ubuntu source jobs expose two
+discovered-symlink provenance failures; Windows QML source jobs expose seven
+nearby-alias fixture setup errors, and the native compatibility job rejects its
+duplicate Node application selection before pytest. INC-CORE-07 and INC-QML-42/43
+have passing local source/installed checkpoint evidence for those corrections.
+Plan exit review reproduces shared-content watch invalidation and actual Windows
+short-leaf identity gaps, assigned to INC-QML-44/45. The next normal PR revision
+owns corrected hosted proof; no current full hosted pass is claimed.
+
 INC-QML-00–07 hosted results remain evidence for their recorded original profile.
 INC-QML-09/13/16 implement community presentation and middle mouse navigation;
 emitted-script/installed contracts pass, with native interaction still unverified.
@@ -2440,13 +2450,13 @@ coverage. INC-QML-44/45 capture the adjacent gaps discovered in the exit review.
 
 ## INC-QML-44 — Shared physical-source watch invalidation
 
-Status: **Planned correction; single-alias notification reproduced**.
+Status: **Implemented; source/installed verification passes, corrected hosted proof pending**.
 Owner: watch accepted-input invalidation. Acceptance: REQ-QML-011-AC01/AC03/AC04,
 REQ-QML-020-AC03 and relevant REQ-QML-012 diagnostic/retention criteria.
 
-Two accepted walked paths can share physical content. Editing that content and
-notifying only one alias currently updates its functions while retaining stale
-functions under the other source owner. Expand invalidation only over already
+Two accepted walked paths can share physical content. The earlier selector
+refreshes only the notified owner and retains stale functions under the other.
+Expand invalidation only over already
 accepted nonsemantic regular-file owners with verified contained physical
 identity, including supported real hardlinks. Preserve distinct walked names,
 ordinary rename/deletion, unrelated inputs and full/incremental topology.
@@ -2460,12 +2470,12 @@ failure/retention and source/installed/hosted evidence. Review the plan again.
 
 ## INC-QML-45 — Canonical NTFS short-leaf input spelling
 
-Status: **Planned correction; actual short-header membership loss reproduced**.
+Status: **Implemented; source/installed verification passes, corrected hosted proof pending**.
 Owner: extractor input spelling. Acceptance: REQ-QML-020-AC01/AC02/AC03 and
 relevant REQ-QML-011/012 update/diagnostic criteria.
 
 An actual NTFS 8.3 short header spelling identifies the same directory entry as
-its long name. Substituting that input currently changes native member identities
+its long name. The earlier input conversion changes native member identities
 and silently loses its accepted CMake membership. This is distinct from separately
 discovered symbolic/junction aliases, whose walked identities must remain separate.
 
@@ -2476,3 +2486,32 @@ native external/traversal rejection and cold/warm/full/incremental parity. SDK
 execution and new runtime dependencies are excluded. Cover real short files and
 failure/absence handling, version refresh and retained-product recovery before
 source/installed/hosted acceptance. Review the plan after the correction.
+
+Three ordinary INC-QML-45 modules pass 38 cases without skips in the native
+Windows source profile. Actual short header/build metadata, both discovered
+junction owners, foreign-root rejection and supplementary Unicode retain exact
+facts/IDs/spans and cold/warm/reload. Native API zero/oversized/empty/wrong-length/
+changed-target/backend failures reject before work and retain actual manual/watch
+products and cache bytes; repair/full parity/repeat pass. Canonical-first/last
+absolute/relative inputs preserve primary source ownership; ambiguous import
+forms retain ordinary non-authoritative builder stubs without choosing an alias.
+Source helper/facade measure 125/9,005 within their 300/9,010 limits. Combined
+policy 21 retains AST schema 12.
+
+### Combined exit review — INC-QML-44/45
+
+The final fifteen-module source profile passes **640 cases, zero failures,
+21 capability/profile skips**; all 59 new cases pass without skips. The reviewed
+182-module wheel passes unchanged QML/core/full-TEMP short-alias smoke and
+**102 installed cases, eleven file-symlink skips, zero failures/errors/warnings**.
+All loaded Graphify code originates in that source-identical artifact. Failure
+checks preserve actual cache/cohort bytes, and owned temporary fixtures are removed.
+Helper statement/branch coverage is complete; Ruff and 134 generated-artifact
+checks pass. Full typing retains 604 exact baseline errors, with zero added or
+removed, and remains a failed gate.
+
+The source/installed exit review finds no further reproduced gap in this scope;
+INC-QML-46 remains unallocated. The corrected normal PR run owns real POSIX,
+hosted Windows and optional-wheel matrix proof. New runner failures create a
+focused regression/correction obligation; local completion does not pass an
+unexecuted hosted check, typing gate or native device/system procedure.

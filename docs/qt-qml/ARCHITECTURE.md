@@ -745,3 +745,23 @@ provenance; resolving each lookup key independently would collapse owners again.
 Policy 20 refreshes prior native/Qt products from 19; syntax schema remains 12.
 Generic-only retained outputs require an explicit full/forced rebuild. Source
 and installed checkpoint evidence remains separate from hosted acceptance.
+
+## D24 — Alternate Windows spelling preserves walked source ownership
+
+INC-QML-45 treats native short and long names of one Windows directory entry as
+alternate spellings of one input, while retaining separately discovered junction
+and symbolic-link owners. Initial input admission uses the OS long-name lookup
+and verifies unchanged physical identity before parser dispatch or syntax-cache
+work. Resolving the entire path would collapse source owners; guessing short
+names from a tilde or basename cannot establish equivalent input identity.
+The runtime remains Python with the standard-library Windows API binding;
+ordinary analysis gains no Qt SDK, corpus execution or runtime dependency.
+
+Microsoft's [GetLongPathNameW contract](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getlongpathnamew)
+requires readable path attributes and parent-directory access. A supported existing
+file whose identity cannot be established rejects boundedly before extraction;
+missing and non-file inputs keep their previous handling. Native lookup output
+does not authorize discovery, change raw declarations or grant external/native
+endpoint roles. Failure diagnostics and publication guards retain separate owners.
+The source helper remains stateless; the facade owns its invocation, per-run
+remapping and cache ordering. Source, installed and hosted proof remain distinct.

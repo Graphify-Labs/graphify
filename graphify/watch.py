@@ -1748,6 +1748,10 @@ def _rebuild_code(
                     # File was deleted or renamed away inside the watched root.
                     # Evict preserved nodes that still claim this source path.
                     _add_deleted_source(deleted_in_root)
+            # Shared physical bytes can change every already admitted lexical
+            # owner. Keep semantic documents and discovery outside this boundary.
+            from graphify.watch_coowners import expand_changed_coowners
+            wanted = expand_changed_coowners(wanted, (p for p in code_files if p not in semantic_doc_files), root=watch_root)
             from graphify.extractors.terraform import refresh_terraform_paths
             wanted = refresh_terraform_paths(wanted, code_files, changed_paths)
             # Changes to QML/metadata/embedded JS may invalidate unchanged QML

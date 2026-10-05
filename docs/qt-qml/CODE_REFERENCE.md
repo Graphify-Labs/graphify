@@ -246,7 +246,7 @@ The initial INC-QML-14 profile is locally verified. INC-QML-39 extends accepted
 input identity; focused and broader local source regressions pass. A fresh
 artifact initially reproduced the separate INC-QML-40 facade gap; its correction
 now passes fresh installed alias smoke. Current hosted proof remains pending.
-Qt policy 19 and AST schema 12 are current under D23.
+Qt policy 21 and AST schema 12 are current under D23/D24.
 The owners below implement
 REQ-QML-020-AC01–AC03 without a new parser or persistence pipeline.
 
@@ -538,11 +538,12 @@ or new diagnostic code is introduced.
 
 ## Distinct walked source identities (INC-QML-42/43)
 
-`source_identity.walked_relative_source` is a 31-line pure helper; it receives
+At the INC-QML-42/43 checkpoint, `source_identity` measured 31 lines. Its pure
+`walked_relative_source` helper receives
 the root and existing realpath dependency from `extract._walked_rel`. Physical
 containment precedes walked relative-name selection. The facade uses the same
 result for file/symbol prefix keys, target stem forms and source/definition
-provenance. It measures 8,998 lines, within the existing 9,010 ceiling.
+provenance. The facade measured 8,998 lines, within the existing 9,010 ceiling.
 Qt policy 20 owns prior-19 derived refresh; AST schema 12 is unchanged.
 
 `tests/test_source_alias_provenance.py` (277 lines) exercises actual NTFS
@@ -553,3 +554,27 @@ the actual short basename below its canonical parent; the separate 59-line
 nearby-fixture regression creates real long ancestors and preserves all distance,
 source and topology assertions. No production fixture response is fabricated.
 The earlier 238-line size is the recorded INC-QML-40 checkpoint.
+
+## Physical co-owner and native spelling boundaries (INC-QML-44/45)
+
+The current facade measures 9,005 lines within its 9,010 ceiling. Its initial
+input conversion calls `source_identity.normalize_input_source` before workers
+or cache work. The stateless 125-line module also owns walked relative naming
+and `resolved_source_owners`; explicit primary/shared ID ownership prevents
+order-dependent overwriting. Raw source bytes, lexical declarations, remap/cache
+ordering and graph-product publication retain their existing owners.
+
+`watch_coowners.expand_changed_coowners` (69 lines) receives only admitted
+nonsemantic regular sources from the watch selector. It reads contained physical
+identity, groups supported actual inode/path evidence within one call and appends
+co-owners without discovery or durable state. Watch measures 2,543 lines within
+its 2,550 ceiling. Combined policy 21 refreshes derived Qt products; AST schema
+12 and persistence formats remain unchanged. The error catalog owns both new
+bounded admission diagnostics and their recovery policy.
+
+Focused ordinary regressions remain below 300 lines: physical-watch 280,
+admission-tier 70, native short-leaf 151, input-failure 191 and remap-owner 94.
+They exercise actual NTFS junctions/hardlinks/short names, both batch orders,
+supplementary Unicode, conservative import stubs, cold/warm/reload, staged
+publication/API failure, retained cache/product bytes and repaired repeat.
+The previous 31/8,998 measurements remain checkpoint evidence, not current sizes.
