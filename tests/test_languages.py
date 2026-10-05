@@ -4912,6 +4912,12 @@ def test_zig_tagged_union_variants_emit_case_of_nodes(tmp_path):
     # the data fields must not be minted as member nodes.
     assert not any(src_lbl == "Bare" for src_lbl, _ in case_of)
     assert "float" not in labels
+    # A variant's nested-struct payload is not recursed into (#4074): `rectangle`
+    # is minted as a variant, but its `w`/`h` fields are not, and `rectangle`
+    # owns no `case_of` edges of its own.
+    assert "w" not in labels
+    assert "h" not in labels
+    assert not any(src_lbl == "rectangle" for src_lbl, _ in case_of)
 
 
 @_needs_commonlisp
