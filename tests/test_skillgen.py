@@ -149,6 +149,59 @@ def test_extraction_states_no_api_key_required_for_every_host():
                 f"{a.path}: no-key clarity is not hoisted above the GEMINI tip"
 
 
+@pytest.mark.parametrize(
+    "platform",
+    [p for p in gen.load_platforms().values() if p.core == "core"],
+    ids=lambda p: p.key,
+)
+def test_issue4061_workflow_respects_documented_skips(platform):
+    """Shared-core hosts must not override their fast paths with absolutes."""
+    core = gen.render(platform)[0].content
+    assert "Do not skip steps." not in core
+    assert "Skip a step only where explicitly instructed" in core
+    assert "skip Steps 1–5 entirely" in core
+    assert "A plain local path skips this step." in core
+    assert "Skip this step entirely if `detect` returned zero `video` files." in core
+    assert "If all files are cached, skip to Part C directly." in core
+
+    semantic = core.split("#### Part B - Semantic extraction", 1)[1].split(
+        "**Step B1", 1
+    )[0]
+    assert "MANDATORY:" not in semantic
+    assert "you are doing this wrong" not in semantic
+    assert "one subagent per chunk" in semantic
+    assert "5-10x faster" in semantic
+    assert "Skip dispatch when the Part B fast path applies" in semantic
+    assert "or all semantic files are cached" in semantic
+    assert "a host that cannot dispatch subagents" in semantic
+    assert "First write an empty semantic file" in semantic
+
+
+@pytest.mark.parametrize(
+    "platform",
+    [p for p in gen.load_platforms().values() if p.core == "core"],
+    ids=lambda p: p.key,
+)
+def test_issue4061_credentials_have_one_accurately_scoped_note(platform):
+    """Consolidate fallback guidance without changing #2513 provider routing."""
+    core = gen.render(platform)[0].content
+    extraction = core.split("### Step 3 - Extract entities and relationships", 1)[1].split(
+        "#### Part A", 1
+    )[0]
+    credential_notes = [
+        line for line in extraction.splitlines()
+        if line.startswith("> ") and "API key" in line and not line.startswith("> Tip:")
+    ]
+    assert len(credential_notes) == 1
+    note = credential_notes[0]
+    assert "Never ask the user for one, and never block on one." in note
+    assert "cannot dispatch subagents" in note
+    assert "headless CLI supports other configured providers" in note
+    assert "No other API keys are read" not in extraction
+    assert "graphify does **not** read" not in extraction
+    assert "extract those inline yourself" in note
+
+
 def test_references_contain_no_core_pipeline_content():
     """No reference fragment may duplicate the core build pipeline."""
     _, refs = _claude_artifacts()
