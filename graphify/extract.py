@@ -1462,7 +1462,14 @@ _SCALA_CONFIG = LanguageConfig(
     # Scala 3 `enum` is a class-like container too: it owns methods and a set of
     # cases, so it needs a node and a body walk like the others (its cases are
     # emitted by _scala_extra_walk, the parity of Java #1719 / Kotlin #1738).
-    class_types=frozenset({"class_definition", "object_definition", "trait_definition", "enum_definition"}),
+    # A Scala 3 `given ... with { ... }` instance is a class-like container: it
+    # owns method implementations. Left out of class_types, its body was not a
+    # scope, so its methods leaked to the file and an instance like
+    # `given intShow: Show[Int] with { def show ... }` minted a file-level
+    # `show` node that COLLIDED with the same-named trait method — corrupting
+    # the trait node with the given's edges. Modelling the given as a node
+    # (named by its `identifier`) keeps its members namespaced and distinct.
+    class_types=frozenset({"class_definition", "object_definition", "trait_definition", "enum_definition", "given_definition"}),
     # `function_declaration` is a bodyless `def area: Double` — a deferred
     # (abstract) method. In a `trait` or `abstract class` it is the contract a
     # subclass must implement, exactly like Java/C#/TS abstract methods. Only
@@ -1477,8 +1484,9 @@ _SCALA_CONFIG = LanguageConfig(
     call_accessor_field="field",
     name_fallback_child_types=("identifier",),
     # an enum wraps its members in `enum_body` rather than a `template_body`,
-    # so the body walk needs it to reach the enum's methods and cases.
-    body_fallback_child_types=("template_body", "enum_body"),
+    # so the body walk needs it to reach the enum's methods and cases. A
+    # `given ... with` instance wraps its methods in `with_template_body`.
+    body_fallback_child_types=("template_body", "enum_body", "with_template_body"),
     function_boundary_types=frozenset({"function_definition"}),
     import_handler=_import_scala,
 )
