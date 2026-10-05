@@ -21,6 +21,7 @@ not a passing assertion.
 | INC-CORE-04 | Accurate unavailable-CWD recovery diagnostics | REQ-CORE-002-AC03 | Supplied-root change-directory failure is distinguished from an unset root; prior output retained and private paths excluded |
 | INC-CORE-05 | Native hook consumer and literal-path completion | REQ-CORE-001-AC01/AC05 | Exact Cmd and PowerShell argument transport, expansion-sensitive paths, dependency rejection and hook ownership; full-source and installed-artifact proof |
 | INC-CORE-06 | Hosted Linux evidence and native Windows compatibility lane | REQ-CORE-004-AC01–AC04 | Required tools/service and reviewed wheel admitted; workflow syntax/configuration reviewed; hosted jobs retain applicable passing results and exact revision/integrity evidence |
+| INC-CORE-07 | Deterministic hosted Windows tool selection | REQ-CORE-004-AC02/AC03 | Multiple real application matches preserve the first PATH identity, required version and executable invocation; missing tools reject before collection; normal PR evidence records the corrected revision |
 
 INC-CORE-01–05 have current native source evidence below. The hook/filesystem
 corrections also have independent installed-consumer evidence. INC-CORE-02
@@ -300,6 +301,39 @@ Actual Codex event delivery, physical middle-button/browser behavior and omitted
 runtime/device profiles retain their separate system procedures. Hosted pytest
 does not repair the failed typing baseline or broaden generic-only Qt API support.
 No merge or post-merge/protected proof is included in this validation increment.
+
+## Deterministic Windows tool selection — INC-CORE-07
+
+Status: **Implemented correction; native regression passes, corrected hosted proof pending**.
+Owner: CI Windows environment admission. Acceptance: REQ-CORE-004-AC02/AC03.
+Dependency: INC-CORE-06. The hosted Windows image exposes multiple Node
+applications. PowerShell's `Get-Command -CommandType Application` returns all
+matches, so direct `.Source` projection produces an array instead of one
+executable path. The first hosted compatibility attempt at `f95366d` rejects
+before pytest; it establishes no native test pass or source-integrity result.
+
+The owning workflow selects the first application for Node and uv before
+projecting its path. Node retains its exact required version check. The selected
+Python, restricted process PATH, offline installation guards, test-exit retention
+and evidence sequencing keep their existing owners. Multiple matches are a
+successful admission case; missing tools or a wrong Node version reject before
+collection. The prior partial dependency/import evidence remains retained, with
+identity, JUnit and post-test integrity explicitly unavailable for that attempt.
+These setup rejections do not mutate analyzed graph data. Process-local setup is
+discarded with the runner; no product migration or new diagnostic code is needed.
+
+Ordinary regressions execute the actual workflow expressions with multiple real
+applications, prove first-PATH executable identity and invocation, and cover a
+missing required application and real incompatible executable. The historical
+selector fails both duplicate-application cases; the corrected profile passes
+all five cases with no skips. Native PowerShell 5.1 runs actual Node 24.19.0 and
+uv binaries. The test-only absolute uv dependency is passed through
+`GRAPHIFY_TEST_UV`, keeping installer commands off the consumer PATH. The workflow
+measures 450 physical lines within its existing ceiling. The normal PR run supplies corrected hosted proof.
+No Graphify runtime interface, Qt analysis epoch, cache/persistence ordering or
+dependency contract changes; the compatibility procedure owns this infrastructure
+design. Review the plan after the corrected run and add further work only for
+another reproduced gap.
 
 ## Focused legacy ownership and size constraints
 

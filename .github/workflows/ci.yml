@@ -298,8 +298,9 @@ jobs:
           $proofDirectory = Join-Path $env:RUNNER_TEMP 'graphify-compat-results'
           New-Item -ItemType Directory -Path $proofDirectory -Force | Out-Null
           $proofPython = (Resolve-Path '.venv/Scripts/python.exe').Path
-          $proofUv = (Get-Command uv -CommandType Application).Source
-          $proofNode = (Get-Command node -CommandType Application).Source
+          # Hosted PATH can expose multiple copies; retain its first application.
+          $proofUv = (Get-Command uv -CommandType Application | Select-Object -First 1).Source
+          $proofNode = (Get-Command node -CommandType Application | Select-Object -First 1).Source
           $nodeDirectory = Split-Path -Path $proofNode -Parent
           $gitDirectory = Join-Path $env:ProgramFiles 'Git/usr/bin'
           $gitCommandDirectory = Join-Path $env:ProgramFiles 'Git/cmd'
@@ -331,7 +332,6 @@ jobs:
             bash = (& (Join-Path $gitDirectory 'bash.exe') --version | Select-Object -First 1)
           }
           $identity | ConvertTo-Json | Set-Content (Join-Path $proofDirectory 'identity.json') -Encoding utf8
-
           # Bash blocks call python3. Forward to the exact proof interpreter,
           # reject installer fallback, and expose only this process-local PATH.
           $shimDirectory = Join-Path $env:RUNNER_TEMP 'graphify-compat-bin'
@@ -345,6 +345,7 @@ jobs:
           '@
           [IO.File]::WriteAllText((Join-Path $shimDirectory 'python3'), $shim.Replace("`r`n", "`n") + "`n", [Text.UTF8Encoding]::new($false))
           $env:GRAPHIFY_TEST_PYTHON = $proofPython
+          $env:GRAPHIFY_TEST_UV = $proofUv
           $env:PATH = @($shimDirectory, $gitDirectory, $gitCommandDirectory, $nodeDirectory, (Join-Path $env:SystemRoot 'System32')) -join ';'
           $env:PYTHONUTF8 = '1'
           $env:GRAPHIFY_NO_AUTO_REFRESH = '1'
@@ -379,7 +380,7 @@ jobs:
             'tests/test_hooks.py', 'tests/test_skillgen_input_path_injection.py', 'tests/test_shell_portability_helpers.py',
             'tests/test_html_community_links.py', 'tests/test_html_initial_view.py', 'tests/test_html_middle_pan.py',
             'tests/test_watch.py', 'tests/test_non_regular_files.py', 'tests/test_terraform.py',
-            'tests/test_terraform_modules.py', 'tests/test_extractors_registry.py::test_terraform_migrated'
+            'tests/test_terraform_modules.py', 'tests/test_extractors_registry.py::test_terraform_migrated', 'tests/test_ci_windows_tools.py'
           )
           & $proofPython -X utf8 -m pytest @selection -q --tb=short -p no:cacheprovider -rs "--junitxml=$proofDirectory/tests.xml" 2>&1 |
             Tee-Object -FilePath (Join-Path $proofDirectory 'tests.log')

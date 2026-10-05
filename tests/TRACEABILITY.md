@@ -334,6 +334,25 @@ Whole-project Pyright has **604 errors, zero warnings, 667 files**, exit one,
 20.990 seconds: 604 shared and zero added/removed under identical Python,
 dependencies and configuration. Typing remains a failed baseline gate.
 
+### Hosted Windows application selection — INC-CORE-07
+
+At source `f95366d`, the native compatibility job fails before pytest because
+Get-Command returns two Node applications and `.Source` projects both paths.
+The job retains dependency/import evidence only; identity, pytest exit, JUnit
+and post-test integrity are absent. No native test acceptance is inferred from
+that setup failure. Node and uv selection now retains one first-PATH application.
+
+| Acceptance ID | Exact ordinary regression | Evidence and limits |
+| --- | --- | --- |
+| REQ-CORE-004-AC02 | `tests/test_ci_windows_tools.py::test_req_core004_ac02_workflow_executes_first_real_path_application` | Actual workflow expressions execute a copied preferred real Node/uv binary before the original; scalar path and Node process.execPath prove exact executable identity |
+| REQ-CORE-004-AC03 | `tests/test_ci_windows_tools.py::test_req_core004_ac03_missing_workflow_application_has_no_fallback`; `tests/test_ci_windows_tools.py::test_req_core004_ac03_node_guard_rejects_real_incompatible_application` | Missing Node/uv and real uv named as Node reject through owning discovery/version expressions; no fake executable response or fallback |
+
+Immutable historical workflow: **two failures, three passes**, 7.22 seconds.
+Current workflow: **five passes, zero skips/failures/errors**, 13.38 seconds,
+native Windows PowerShell 5.1, Node 24.19.0 and actual uv. The focused test is
+109 physical lines; Ruff and whitespace checks pass. Original coverage bytes
+are retained. Corrected hosted execution and its complete evidence remain pending.
+
 ## Individual acceptance assignments
 
 The [follow-up audit](../docs/qt-qml/FOLLOWUP_AUDIT.md) supplies counterexamples for
