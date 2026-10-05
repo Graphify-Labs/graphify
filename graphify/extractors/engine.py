@@ -4364,6 +4364,10 @@ def _extract_generic(
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
+    if not source:
+        # #4041: a zero-byte file has no line 1. Keep the node (an empty
+        # __init__.py is still a module others import) but leave it unanchored.
+        next(n for n in nodes if n["id"] == file_nid)["source_location"] = None
     if config.ts_module == "tree_sitter_ruby":
         file_node = next(n for n in nodes if n["id"] == file_nid)
         file_metadata = {"ruby_resolution_schema": 1}

@@ -48,6 +48,22 @@ def test_extract_python_no_dangling_edges():
         assert edge["source"] in node_ids, f"Dangling source: {edge['source']}"
 
 
+def test_zero_byte_file_keeps_node_without_source_location(tmp_path):
+    """#4041: a 0-byte file has no line 1, so its file node must not claim L1.
+    The node itself stays (an empty __init__.py is still an importable module)."""
+    empty = tmp_path / "empty.py"
+    empty.write_bytes(b"")
+    witness = tmp_path / "witness.py"
+    witness.write_text("VALUE = 1\n")
+
+    result = extract([empty, witness], cache_root=tmp_path / "cache")
+    by_label = {n["label"]: n for n in result["nodes"]}
+
+    assert "empty.py" in by_label
+    assert by_label["empty.py"]["source_location"] is None
+    assert by_label["witness.py"]["source_location"] == "L1"
+
+
 def test_structural_edges_are_extracted():
     """contains / method / inherits / imports edges must always be EXTRACTED."""
     result = extract_python(FIXTURES / "sample.py")
