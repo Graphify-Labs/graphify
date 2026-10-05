@@ -150,7 +150,13 @@ def extract_powershell(path: Path) -> dict:
                     m_line = member.start_point[0] + 1
                     member_nid = _make_id(enum_nid, member_name)
                     add_node(member_nid, member_name, m_line)
-                    add_edge(enum_nid, member_nid, "contains", m_line)
+                    # An enum member is a discriminant case, not a declared
+                    # field, so it gets `case_of` like every other language with
+                    # enums (Java #1719, C#, Swift, Rust, VB.NET). The relation
+                    # also matters to resolution: `case_of` targets are excluded
+                    # from constructor binding, so an enum member named like a
+                    # type can no longer be mistaken for one.
+                    add_edge(enum_nid, member_nid, "case_of", m_line)
             return
 
         if t == "class_statement":
@@ -309,6 +315,13 @@ def extract_powershell(path: Path) -> dict:
     walk(root)
 
     label_to_nid = {n["label"].strip("()").lstrip(".").lower(): n["id"] for n in nodes}
+    # Member calls (`$this.M()`, `[C]::M()`) must resolve only to a method, never
+    # to a free function that happens to share the name. Methods are exactly the
+    # nodes whose label is dot-prefixed (`.M()`), so key them separately (#3992).
+    method_label_to_nid = {
+        n["label"].strip("()").lstrip(".").lower(): n["id"]
+        for n in nodes if n["label"].startswith(".")
+    }
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
 
@@ -336,6 +349,33 @@ def extract_powershell(path: Path) -> dict:
                             "source_file": str_path,
                             "source_location": f"L{node.start_point[0] + 1}",
                         })
+        elif node.type == "invokation_expression":
+            # A method call — `$this.Square(3)`, `$obj.Run()`, or the static
+            # `[Calc]::Build()` form. All parse as an invokation_expression whose
+            # callee is the `member_name` child and whose arguments sit in an
+            # `argument_list` (a bare `$this.Name` property read is a separate
+            # `member_access` node with no argument_list, so it never lands here).
+            # Only the command form was handled before, so every method call was
+            # dropped from the call graph (#3992).
+            member_node = next((c for c in node.children if c.type == "member_name"), None)
+            if member_node is not None:
+                method_name = _read_text(member_node, source)
+                tgt_nid = method_label_to_nid.get(method_name.lower())
+                if tgt_nid and tgt_nid != caller_nid:
+                    pair = (caller_nid, tgt_nid)
+                    if pair not in seen_call_pairs:
+                        seen_call_pairs.add(pair)
+                        add_edge(caller_nid, tgt_nid, "calls",
+                                 node.start_point[0] + 1,
+                                 confidence="EXTRACTED", weight=1.0)
+                elif method_name and not tgt_nid:
+                    raw_calls.append({
+                        "caller_nid": caller_nid,
+                        "callee": method_name,
+                        "is_member_call": True,
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                    })
         for child in node.children:
             walk_calls(child, caller_nid)
 

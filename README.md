@@ -126,6 +126,7 @@ What you get out of the box:
 | LOCOMO (n=300) | recall@10 | **0.497** | mem0 0.048, supermemory 0.149 |
 | LOCOMO (n=300) | QA accuracy | 45.3% | supermemory 49.7%, mem0 27.3% |
 | LongMemEval-S (n=50) | QA accuracy | **76%** | tied with dense RAG |
+| ERPNext cross-tool (n=6) | key-fact coverage | **82.0%** | grep/read baseline 70.8% |
 | Graph build | LLM credits | **0** | per-token for most systems |
 
 Every system ran on the same harness with the same model and budgets, scored by a judge blind-validated against a second judge (90.6% agreement, Cohen's kappa 0.81). Full per-system tables, the code-intelligence result, and reproduction commands: **[BENCHMARKS.md](./BENCHMARKS.md)**.
@@ -864,6 +865,12 @@ graphify label ./my-project                                    # (re)name commun
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
 ```
 
+`--no-dedup` also skips coalescing distinct non-AST nodes solely because they
+share a file and label. The Python equivalents are `build(chunks, dedup=False)`,
+`build_merge(chunks, graph_path, dedup=False)`, and
+`build_from_json(extraction, dedup=False)`. AST/semantic twins still reconcile to
+the canonical AST node, and document-file twin reconciliation remains enabled.
+
 > **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
 
 ---
@@ -903,6 +910,12 @@ New here? Say hi on [Discord](https://discord.gg/XDnKVpzdXB) or in [GitHub Discu
 </a>
 
 Made with [contrib.rocks](https://contrib.rocks).
+
+---
+
+## Translations
+
+The README is available in 32 languages. Use the language switcher at the top of this file to read it in yours, or browse [`docs/translations/`](docs/translations/). To improve a translation or add a new one, open a pull request against the matching file there.
 
 ---
 

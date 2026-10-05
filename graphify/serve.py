@@ -1625,14 +1625,18 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     nodes; this covers the symbol case it does not reach.
     """
     for tier in _find_node_tiers(G, label):
-        if not tier:
-            continue
-        by_source: dict[str, str] = {}
-        for nid in tier:
-            source = str(G.nodes[nid].get("source_file") or "")
-            by_source.setdefault(source, nid)
-        return list(by_source.values()) if len(by_source) > 1 else []
+        if tier:
+            return _rivals_across_files(G, tier)
     return []
+
+
+def _rivals_across_files(G: nx.Graph, tier: list[str]) -> list[str]:
+    """One node id per distinct source file in *tier*, or `[]` for a single file."""
+    by_source: dict[str, str] = {}
+    for nid in tier:
+        source = str(G.nodes[nid].get("source_file") or "")
+        by_source.setdefault(source, nid)
+    return list(by_source.values()) if len(by_source) > 1 else []
 
 
 def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | None]:
@@ -1649,16 +1653,78 @@ def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | Non
         return None, f"No node matching '{label}' found."
     rivals = find_node_ambiguity(G, label)
     if rivals:
-        listing = "\n".join(
-            f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
-        )
-        return None, (
-            f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
-            f"{listing}\n"
-            f"Retry with path::symbol using one of the paths above (e.g. "
-            f"<path>::{label}) or the full node id."
-        )
+        return None, _ambiguity_message(G, label, rivals)
     return matches[0], None
+
+
+def _ambiguity_message(G: nx.Graph, label: str, rivals: list[str]) -> str:
+    listing = "\n".join(
+        f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
+    )
+    # The example names the matched node's own label: echoing the query would
+    # nest a path-scoped one (`index.ts::foo()`) behind a second path.
+    symbol = G.nodes[rivals[0]].get("label") or label
+    return (
+        f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
+        f"{listing}\n"
+        f"Retry with path::symbol using one of the paths above (e.g. "
+        f"<path>::{symbol}) or the full node id."
+    )
+
+
+def _same_file_ambiguity_message(G: nx.Graph, label: str, hits: list[str]) -> str:
+    source = G.nodes[hits[0]].get("source_file")
+    where = f"in {source}" if source else "with no source file"
+    listing = "\n".join(
+        f"  {G.nodes[h].get('source_location') or G.nodes[h].get('label', h)}\n    id: {h}"
+        for h in hits
+    )
+    return (
+        f"Ambiguous: '{label}' matches {len(hits)} nodes {where}.\n"
+        f"{listing}\n"
+        f"Retry with the full node id."
+    )
+
+
+def _resolve_path_endpoint(
+    G: nx.Graph, query: str
+) -> tuple[str | None, list[tuple[float, str]], str | None]:
+    """Resolve one endpoint of the `path` CLI / `shortest_path` tool (#3913).
+
+    A hit in `_find_node`'s exact tiers — the `path::symbol` form, a full node
+    id, an exact label or source path — names the node outright, so it is used
+    as-is, and refused with the candidate list when it spans several files (the
+    answer `explain` gives). Scoring alone tokenized those forms instead: the
+    path half of `path::symbol` pulled the route to the file node, and an id's
+    tokens to its containing class. Only a query without an exact hit falls
+    through to `_score_nodes`, which ranks the multi-word and partial labels
+    the tiers cannot.
+
+    Several hits in one file are refused too, unless the query is a file path
+    (whose tier is the file node followed by its members): two same-named
+    symbols of one file were split by graph order behind a score-tie warning,
+    and `path::symbol` cannot separate them — only the node id can.
+
+    Returns ``(node_id, scored, None)``, where ``scored`` is empty unless the
+    score fallback picked the node; ``(None, [], message)`` when ambiguous; and
+    ``(None, [], None)`` when nothing matches.
+    """
+    source_exact, exact, _, _ = _find_node_tiers(G, query)
+    hits = source_exact or exact
+    if hits:
+        rivals = _rivals_across_files(G, hits)
+        if rivals:
+            return None, [], _ambiguity_message(G, query, rivals)
+        # A `path::symbol` hit also lands in `source_exact`; only a plain path
+        # query makes that tier a file lookup.
+        file_query = bool(source_exact) and "::" not in query
+        if len(hits) > 1 and not file_query:
+            return None, [], _same_file_ambiguity_message(G, query, hits)
+        return hits[0], [], None
+    scored = _score_nodes(G, [t.lower() for t in query.split()])
+    if not scored:
+        return None, [], None
+    return _pick_scored_endpoint(G, scored, query), scored, None
 
 
 def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
@@ -1668,14 +1734,16 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     Directed by default (#2487): the returned path must follow stored
     caller→callee direction; pass ``undirected=True`` to ignore it.
     """
-    src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])
-    tgt_scored = _score_nodes(G, [t.lower() for t in arguments["target"].split()])
-    if not src_scored:
+    src_nid, src_scored, src_err = _resolve_path_endpoint(G, arguments["source"])
+    if src_err:
+        return src_err
+    if src_nid is None:
         return f"No node matching source '{arguments['source']}' found."
-    if not tgt_scored:
+    tgt_nid, tgt_scored, tgt_err = _resolve_path_endpoint(G, arguments["target"])
+    if tgt_err:
+        return tgt_err
+    if tgt_nid is None:
         return f"No node matching target '{arguments['target']}' found."
-    src_nid = _pick_scored_endpoint(G, src_scored, arguments["source"])
-    tgt_nid = _pick_scored_endpoint(G, tgt_scored, arguments["target"])
     # Ambiguity guard: when both queries resolve to the same node, the
     # shortest path is trivially zero hops, which is almost never what the
     # caller wanted (see bug #828).

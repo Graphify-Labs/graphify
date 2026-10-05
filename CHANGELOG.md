@@ -2,6 +2,45 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.77 (2026-10-05)
+
+More community language-structure coverage, two reload/incremental correctness fixes, and a batch of extractor tests.
+
+- Feature: four more language extractors gained type coverage from @rajatnagda45 — **Solidity** enum values link via `case_of` instead of `contains` (#4090), **PowerShell** enum members likewise (which also stops a member named like a type binding as a constructor) (#4092), **Objective-C** C-style `enum` and `typedef enum` declarations are extracted with their members (#4096), and a **SQL** trigger is linked to the function it executes with an `executes` edge (#4094).
+- Feature: **Scala** class-level context bounds (`class C[A: Ordering]`) now resolve to `references` edges, mirroring the method-level handling from 0.9.75 (#4085, #4080, thanks @Mpasha17).
+- Fix: **Astro** files terminate a trailing `//` comment in one `<script>` block so it no longer swallows the next block on the same line; byte offsets and line numbers are preserved (#4083, #4072, thanks @Sourya-Prabaharan).
+- Fix: a zero-byte source file keeps its node but no longer claims a line-1 source location, so an empty `__init__.py` is still a real module without a misleading anchor (#4086, #4041, thanks @Mpasha17).
+- Fix: **PHP** calls to a method whose name collides with a cross-language builtin (`$this->list()`, `$this->open()`) now resolve against the caller's own class instead of being dropped, while non-`$this` receivers and bare construct names stay fail-closed (#4119, refines #3975 and #3381, thanks @xiehuanyi).
+- Fix: **JavaScript** methods attached to an exported object (`res.format = function () {...}; module.exports = res`) are now extracted as nodes, so calls inside them resolve across CommonJS/ESM module boundaries (#4121, #3778, thanks @harshaygadekar).
+- Fix: incremental `graphify update` on a subfolder no longer false-reports files in sibling folders as deleted; a shared single manifest now anchors stored paths to its base and scopes deletion detection to the scanned root (#4118, #3785, thanks @harshaygadekar).
+- Fix: reloading a saved `graph.json` preserves stored edge direction across the HTML, Cypher, Neo4j, FalkorDB, and Obsidian-canvas exporters, the watch HTML re-render, and the merge driver, instead of reversing edges whose target precedes their source in the node list (#4088, #4066, thanks @e4c5).
+- Fix: **PowerShell** method calls are now recorded — `$this.Method()` and `[Type]::Method()` resolve to the method node by name, keyed only on method-labelled targets so a free function sharing the name is never bound, and unresolved names stay fail-closed (#3995, thanks @rajatnagda45).
+- Fix: **Rust** anonymous constants (`const _: () = assert!(...)`) no longer collapse onto the file node and emit a self-loop; the anonymous item is skipped while named consts and statics keep their nodes (#4108, #4064, thanks @xiehuanyi).
+- Fix: a cleanly-parsed source file on a different drive from the scan root no longer aborts the whole extraction on Windows; the symbol-free-file warning falls back to an absolute display path instead of raising (#4106, #4059, thanks @xiehuanyi).
+- Fix: `--no-dedup` now also disables the same-file ghost-merge pass in `build_from_json`, so two distinct non-AST nodes sharing a `(source_file, label)` are preserved when dedup is turned off; AST reconciliation and the default dedup path are unchanged (#4122, #4019, thanks @xiehuanyi).
+- Fix: a second `/graphify` run on an unchanged mixed corpus no longer crashes with a missing `.graphify_semantic.json`; when every semantic file is cached the skill still runs Step B3's merge (and clears stale chunk files first) so Part C always has its input (#4117, #4116, thanks @brunovima83).
+- Test: extractor coverage was extended for **Pascal** valued enums (#4104, thanks @MalikHaroonKhokhar), **C#** `this?.M()` null-conditional self calls (#4105) and **Zig** tagged-union nested-struct payloads (#4107, thanks @Jarvis-J-Jacob), **Kotlin** annotation class-literal boundaries (#4112) and cross-language JVM inheritance (#4113) plus **C++** union method-versus-field edges (#4114, thanks @xiehuanyi), **Elixir** `defguardp` private guards (#4084, thanks @ClockZW), and **bash** `source`/`.` imports plus `merge-graphs --previous` node pruning (#4097, #4081, #4078, thanks @akshitj11).
+- Docs: the code-intelligence benchmark result is surfaced in the README and BENCHMARKS summary tables (key-fact coverage 82.0% vs a 70.8% grep-and-read baseline, n=6) (#4109, thanks @Mr-Neutr0n).
+
+## 0.9.76 (2026-10-04)
+
+More language-structure coverage, resolution/dedup correctness, and a security fix for the git-hook installer.
+
+- Feature: four more language extractors gained type coverage from @rajatnagda45 — **Zig** tagged-union variants (`union(enum)`) emit a node per variant with a `case_of` edge (#4050), **C++** `union` specifiers are extracted as class-like type nodes with their members (#4052), **VB.NET** enum members link via `case_of` instead of `contains` (which also stops a member named like a type binding as a constructor) (#4054), and **Pascal** enumerated types and their values are extracted (#4056).
+- Feature: three **Scala** type-reference fixes shipped together earlier in the day are followed here by @Faisal-Fayaz's extractor hardening — graphify now stops walking JSON Schema files as config manifests, keyed on a `$schema` declaration plus a structural marker (`$defs`/`definitions`/`$id`) so real manifests that merely reference a schema are unaffected (#4048, #2255).
+- Fix: **Elixir** `import`/`use` call scoping is now per-module rather than per-file, so an unqualified call in one module no longer resolves against another module's imports in the same file (#4058, refines #4015).
+- Fix: track calls to external **Python** modules — a `module.func()` call to a plainly-imported dependency now records a `calls` edge to that module, fail-closed (receiver-shadowing and non-unique bindings are skipped, builtins and unresolved locals are never fabricated) (#4043, #3793, thanks @oleksii-tumanov).
+- Fix: **Svelte** files now feed only their `<script>` blocks to the AST pass (masking the template and style, preserving line numbers), so the markup no longer produces a parse error that dropped every symbol (#3984, #3928, thanks @Agnik47).
+- Fix: **PHP** language constructs (`isset`, `empty`, `list`, `eval`, ...) no longer bind as calls to a user method that happens to share the name (#3975, #3830, thanks @Cintu07).
+- Fix: an unresolved base class whose only same-named definition lives in another language is kept unresolved instead of binding across languages; same-language cross-file inheritance still resolves (#4068, thanks @SrijanSriv).
+- Fix: unstamped document nodes with the same heading in different files are no longer merged together during dedup; same-file document twins still merge (#4065, thanks @SrijanSriv).
+- Fix: `graphify path` and the MCP `shortest_path` tool resolve a `path::symbol` or raw node-id endpoint to the exact node before falling back to fuzzy scoring, and refuse an ambiguous endpoint instead of silently picking one (#3935, #3913, thanks @bercedev).
+- Fix: cross-repo resolver confidence scores are snapped to the canonical INFERRED rubric (a label-only change; no edge is added, dropped, or reclassified) (#4046, #4045, thanks @DeepanshuPal).
+- Fix: `graphify` no longer indexes its own installed skill folders and whole-written rule/hook files when scanning a project, keyed on the exact install locations so a user's own `graphify`-named folder is not skipped (#4062, #4057, thanks @Mpasha17).
+- Fix: the suggested questions in the analysis output are diversified across signal types with a round-robin, so one category no longer crowds out the others (#3972, #3849, thanks @azizur100389).
+- Security: `graphify hook install` refuses a `core.hooksPath` that resolves outside the repository (resolving both sides, symlink-safe), falling back to the in-repo `.git/hooks` instead of writing an executable outside the checkout; legitimate in-repo custom hook paths, linked worktrees, and submodules still work (#3919, #3869, CWE-22, thanks @nothariharan).
+- Chore: the PyPI package page now points Homepage at graphify.com and adds a Documentation link to docs.graphify.com; Repository and Issues stay on GitHub (#4069, thanks @SyedFahad7).
+
 ## 0.9.75 (2026-10-04)
 
 Intra-class call binding across five languages, new language-structure coverage, and a batch of resolution/build/cache fixes.

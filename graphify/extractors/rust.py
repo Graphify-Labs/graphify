@@ -262,6 +262,8 @@ def extract_rust(path: Path) -> dict:
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = _read_text(name_node, source)
+                if t in ("static_item", "const_item") and name == "_":
+                    return
                 nid = _make_id(stem, name)
                 is_type = t in ("struct_item", "enum_item", "trait_item")
                 items_by_id.setdefault(nid, set()).add((is_type, name))
@@ -558,6 +560,8 @@ def extract_rust(path: Path) -> dict:
             name_node = node.child_by_field_name("name")
             if name_node:
                 item_name = _read_text(name_node, source)
+                if item_name == "_":
+                    return
                 line = node.start_point[0] + 1
                 if parent_impl_nid:
                     item_nid = _make_id(parent_impl_nid, item_name)

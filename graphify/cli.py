@@ -1641,7 +1641,7 @@ def dispatch_command(cmd: str) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        from graphify.serve import _pick_scored_endpoint, _score_nodes
+        from graphify.serve import _resolve_path_endpoint
         from networkx.readwrite import json_graph
         import networkx as _nx
 
@@ -1692,16 +1692,15 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
-        src_scored = _score_nodes(G, [t.lower() for t in source_label.split()])
-        tgt_scored = _score_nodes(G, [t.lower() for t in target_label.split()])
-        if not src_scored:
-            print(f"No node matching '{source_label}' found.", file=sys.stderr)
-            sys.exit(1)
-        if not tgt_scored:
-            print(f"No node matching '{target_label}' found.", file=sys.stderr)
-            sys.exit(1)
-        src_nid = _pick_scored_endpoint(G, src_scored, source_label)
-        tgt_nid = _pick_scored_endpoint(G, tgt_scored, target_label)
+        src_nid, src_scored, src_err = _resolve_path_endpoint(G, source_label)
+        tgt_nid, tgt_scored, tgt_err = _resolve_path_endpoint(G, target_label)
+        for _label, _nid, _err in (
+            (source_label, src_nid, src_err),
+            (target_label, tgt_nid, tgt_err),
+        ):
+            if _err or _nid is None:
+                print(_err or f"No node matching '{_label}' found.", file=sys.stderr)
+                sys.exit(1)
         # Ambiguity guard: when both queries resolve to the same node, the
         # shortest path is trivially zero hops, which is almost never what the
         # caller wanted (see bug #828).
@@ -1818,7 +1817,7 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print('Usage: graphify explain "<node>" [--graph path]', file=sys.stderr)
             sys.exit(1)
-        from graphify.serve import _find_node, find_node_ambiguity
+        from graphify.serve import _ambiguity_message, _find_node, find_node_ambiguity
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
@@ -1847,14 +1846,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(0)
         rivals = find_node_ambiguity(G, label)
         if rivals:
-            print(f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.")
-            for rival in rivals:
-                print(f"  {G.nodes[rival].get('source_file') or rival}")
-                print(f"    id: {rival}")
-            print(
-                f"Retry with path::symbol using one of the paths above (e.g. "
-                f"<path>::{label}) or the full node id."
-            )
+            print(_ambiguity_message(G, label, rivals))
             sys.exit(1)
         nid = matches[0]
         d = G.nodes[nid]
@@ -2705,6 +2697,12 @@ def dispatch_command(cmd: str) -> None:
             out_data = _jg.node_link_data(merged, edges="links")
         except TypeError:
             out_data = _jg.node_link_data(merged)
+        # Write direction back into arc order, as to_json does (#563): the
+        # loader stamped _src/_tgt, and compose() kept them on each edge.
+        for _link in out_data.get("links", []):
+            _ts, _tt = _link.pop("_src", None), _link.pop("_tgt", None)
+            if _ts is not None and _tt is not None:
+                _link["source"], _link["target"] = _ts, _tt
         from graphify.paths import write_json_atomic
         write_json_atomic(_current_path, out_data, indent=2)
         sys.exit(0)
@@ -3102,6 +3100,8 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(graph_path.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
+        from graphify.paths import restore_arc_direction as _rad
+        _raw = _rad(_raw)
         try:
             G = _jg.node_link_graph(_raw, edges="links")
         except TypeError:

@@ -7,6 +7,16 @@ from typing import Any
 from graphify.extractors.base import _file_stem, _make_id, _read_text
 
 
+def _is_tagged_union(node) -> bool:
+    """True for a tagged union (`union(enum)` / `union(SomeTag)`), whose members
+    are discriminant cases, not for a bare `union { ... }` whose members are typed
+    data fields. A tagged union_declaration carries the tag in parentheses, so it
+    has a `(` child; a bare union has none."""
+    return node.type == "union_declaration" and any(
+        child.type == "(" for child in node.children
+    )
+
+
 def extract_zig(path: Path) -> dict:
     """Extract functions, structs, enums, unions, and imports from a .zig file."""
     try:
@@ -81,13 +91,16 @@ def extract_zig(path: Path) -> dict:
         # directly under the enum_declaration. The recurse into the enum body
         # only emitted its methods, so the members were dropped and the enum was
         # left a memberless leaf. Emit a node plus a `case_of` edge per member,
-        # the Zig parity of Java #1719 / Swift / Scala enums. The gate on the
-        # enum_declaration parent keeps struct/union fields (which share the
-        # container_field shape) untouched.
+        # the Zig parity of Java #1719 / Swift / Scala enums. A tagged union
+        # (`union(enum) { circle: f64, point }`) is the same shape — its fields are
+        # the discriminant cases — so it gets the same treatment. The gate keeps a
+        # bare `struct`/`union`'s typed data fields (which share the container_field
+        # shape but are not cases) untouched.
         if (t == "container_field"
                 and parent_struct_nid
                 and node.parent is not None
-                and node.parent.type == "enum_declaration"):
+                and (node.parent.type == "enum_declaration"
+                     or _is_tagged_union(node.parent))):
             name_node = node.child_by_field_name("name")
             if name_node is None:
                 name_node = next(

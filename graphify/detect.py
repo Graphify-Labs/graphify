@@ -22,7 +22,7 @@ from graphify.google_workspace import (
     convert_google_workspace_file,
     google_workspace_enabled,
 )
-from graphify.paths import GRAPHIFY_OUT, out_path
+from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
 
 
 class FileType(str, Enum):
@@ -971,6 +971,32 @@ _SKIP_FILES = {
 # unconditionally pruned above; only the ambiguous bare name is gated here.
 _JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
 
+# Platforms whose project-scope skills dir is one level below the hidden dir
+# (install.py: pi -> .pi/agent/skills, kilo -> .config/kilo/skills).
+_NESTED_SKILL_HOLDERS = frozenset({(".pi", "agent"), (".config", "kilo")})
+
+# Single files `graphify install` writes whole into a project (#4057): the
+# always-on rules/steering/workflow files and the opencode/kilo hook plugins.
+# Matched on the hidden holder dir plus the exact relative path, never on the
+# bare file name, so e.g. docs/graphify.md or src/plugins/graphify.js stay.
+# Files graphify only adds a section or entry to (AGENTS.md, CLAUDE.md,
+# settings.json, ...) belong to the user and are not listed here.
+_GRAPHIFY_INSTALLED_FILES = frozenset({
+    (".agents", "rules", "graphify.md"),      # antigravity
+    (".agents", "workflows", "graphify.md"),  # antigravity
+    (".cursor", "rules", "graphify.mdc"),     # cursor
+    (".kilo", "plugins", "graphify.js"),      # kilo
+    (".kiro", "steering", "graphify.md"),     # kiro
+    (".opencode", "plugins", "graphify.js"),  # opencode
+    (".grok", "hooks", "graphify.json"),      # grok (own hook file, not a shared edit)
+    (".windsurf", "rules", "graphify.md"),    # devin
+})
+
+
+def _is_installed_graphify_file(path: "Path") -> bool:
+    """True for a single file `graphify install` wrote into the project (#4057)."""
+    return path.parts[-3:] in _GRAPHIFY_INSTALLED_FILES
+
 # Files a coverage tool writes into its own output dir. Any one of them is proof
 # the directory is generated: lcov (lcov.info), nyc/Istanbul (coverage-final.json,
 # clover.xml, the lcov-report/ subtree), coverage.py (coverage.xml, .coverage),
@@ -1128,6 +1154,21 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
     # worktrees/ nested inside a dotted dir (e.g. .claude/worktrees/, .git/worktrees/)
     if part == "worktrees" and parent is not None and parent.name.startswith("."):
         return True
+    # graphify's own skill folder, as `graphify install --project` writes it
+    # (#4057): <hidden dir>/skills/graphify/ (.claude, .codex, .agents, ...),
+    # .pi/agent/skills/graphify/, .config/kilo/skills/graphify/ and
+    # .aider/graphify/. Matched on the whole path shape rather than the bare
+    # names "skills"/"graphify" (#2479), so graphify's own source tree
+    # (graphify/skills/<host>/), a top-level skills/graphify/ and the user's
+    # other skills under .claude/skills/ are still indexed.
+    if part == "graphify" and parent is not None:
+        if parent.name == ".aider":
+            return True
+        if parent.name == "skills":
+            holder = parent.parent
+            if holder.name.startswith(".") and holder.name != "..":
+                return True
+            return (holder.parent.name, holder.name) in _NESTED_SKILL_HOLDERS
     return False
 
 
@@ -1771,7 +1812,7 @@ def ignored_predicate(
             rel_parts = path.relative_to(root).parts
         except ValueError:
             return False  # outside the scan root: detect() never considered it
-        if path.name in _SKIP_FILES:
+        if path.name in _SKIP_FILES or _is_installed_graphify_file(path):
             return True
         # Noise-dir pruning: os.walk never descends these, so anything beneath
         # one is excluded from the corpus regardless of ignore patterns.
@@ -2014,6 +2055,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 if fname in _SKIP_FILES:
                     continue
                 p = dp / fname
+                if _is_installed_graphify_file(p):
+                    continue
                 if p not in seen:
                     seen.add(p)
                     all_files.append(p)
@@ -2355,6 +2398,27 @@ def _collapse_manifest_duplicates(
     return result
 
 
+def _manifest_storage_anchor(manifest_path: str | Path | None, root: Path | None) -> Path | None:
+    """When a manifest lives under <repo>/graphify-out/manifest.json and root
+    is a subfolder of <repo>, stored relative keys are anchored to <repo> (#3785)."""
+    if root is None or not manifest_path:
+        return root
+    try:
+        mp = Path(manifest_path).resolve()
+        if mp.parent.name in ("graphify-out", GRAPHIFY_OUT_NAME):
+            manifest_base = mp.parent.parent
+            root_resolved = Path(root).resolve()
+            if root_resolved != manifest_base:
+                try:
+                    root_resolved.relative_to(manifest_base)
+                    return manifest_base
+                except ValueError:
+                    pass
+    except (OSError, RuntimeError):
+        pass
+    return root
+
+
 def load_manifest(
     manifest_path: str = _MANIFEST_PATH,
     *,
@@ -2379,8 +2443,9 @@ def load_manifest(
         return raw
     if root is None:
         return _collapse_manifest_duplicates(raw.items(), _nfc)
+    anchor = _manifest_storage_anchor(manifest_path, root) or root
     return _collapse_manifest_duplicates(
-        raw.items(), lambda k: _nfc(_to_absolute_from_storage(k, root))
+        raw.items(), lambda k: _nfc(_to_absolute_from_storage(k, anchor))
     )
 
 
@@ -2582,18 +2647,10 @@ def save_manifest(
             "semantic_hash": sem_h,
         }
         manifest[key] = entry
-    if root is not None:
-        # Persist in portable form: forward-slash relative paths. Keys outside
-        # ``root`` (out-of-tree symlinked corpora, --include sources) keep
-        # their absolute form so the manifest round-trips on the saving
-        # machine even when not every entry can be portably encoded.
-        # NFC after relativize so on-disk keys match what load_manifest
-        # re-anchors and compares against (#2221). A seeded absolute key and
-        # a seeded relative key for the same file collapse here too (#1964)
-        # -- _collapse_manifest_duplicates keeps whichever is more recently
-        # seen instead of whichever the dict comprehension iterates last.
+    storage_root = _manifest_storage_anchor(manifest_path, root) if root is not None else None
+    if storage_root is not None:
         manifest = _collapse_manifest_duplicates(
-            manifest.items(), lambda k: _nfc(_to_relative_for_storage(k, root))
+            manifest.items(), lambda k: _nfc(_to_relative_for_storage(k, storage_root))
         )
     else:
         manifest = _collapse_manifest_duplicates(manifest.items(), _nfc)
@@ -2771,10 +2828,32 @@ def detect_incremental(
     # current scan was EXCLUDED (ignore rules / --exclude changed) and must
     # not be reported as deleted. Mirrors the watch-side excluded-vs-deleted
     # distinction (#1795).
+    try:
+        root_res: Path | None = Path(root).resolve() if root is not None else None
+    except (OSError, RuntimeError):
+        root_res = Path(root) if root is not None else None
+
+    def _in_root(path_str: str) -> bool:
+        if root_res is None:
+            return True
+        p = Path(path_str)
+        try:
+            p.relative_to(root_res)
+            return True
+        except ValueError:
+            pass
+        try:
+            p.resolve().relative_to(root_res)
+            return True
+        except (ValueError, OSError, RuntimeError):
+            return False
+
     current_files = {_nfc(f) for flist in full["files"].values() for f in flist}
     deleted_files: list[str] = []
     excluded_files: list[str] = []
     for f in manifest:
+        if not _in_root(f):
+            continue
         if _nfc(f) in current_files:
             continue
         try:

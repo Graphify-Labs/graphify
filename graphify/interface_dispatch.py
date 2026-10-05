@@ -150,7 +150,7 @@ def resolve_interface_dispatch(
                 "relation": DISPATCH_RELATION,
                 "context": "call",
                 "confidence": "INFERRED",
-                "confidence_score": 0.9,
+                "confidence_score": 0.85,
                 "source_file": str(impl_node.get("source_file", "")),
                 "source_location": impl_node.get("source_location"),
                 "weight": 1.0,

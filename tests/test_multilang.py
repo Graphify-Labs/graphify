@@ -859,6 +859,57 @@ def test_sql_clean_trigger_links_to_its_on_table(tmp_path):
     assert (by_label["audit_ins"]["id"], "triggers", by_label["users"]["id"]) in edges
 
 
+def test_sql_trigger_links_to_the_function_it_executes(tmp_path):
+    """A trigger exists to run a function, yet the EXECUTE FUNCTION/PROCEDURE
+    target was never linked. Only the ON table got an edge, so the trigger's
+    whole reason to exist — the routine it fires — was dropped from the graph.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE users (id INT);\n"
+        "CREATE FUNCTION log_it() RETURNS TRIGGER AS 'SELECT 1';\n"
+        "CREATE TRIGGER audit_ins AFTER INSERT ON users\n"
+        "  FOR EACH ROW EXECUTE FUNCTION log_it();\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert "audit_ins" in by_label and "log_it()" in by_label
+    edges = {(e["source"], e["relation"], e["target"]) for e in r["edges"]}
+    # The trigger fires on its ON table ...
+    assert (by_label["audit_ins"]["id"], "triggers", by_label["users"]["id"]) in edges
+    # ... and executes the function it names.
+    assert (by_label["audit_ins"]["id"], "executes", by_label["log_it()"]["id"]) in edges
+    # Nothing dangles.
+    node_ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
+
+
+def test_sql_trigger_executing_an_undefined_function_fails_closed(tmp_path):
+    """When the executed routine is not defined in this file, link nothing
+    rather than mint a bare-name stub that could never rewire onto the real
+    `name()` function node. The ON-table edge is unaffected.
+    """
+    pytest.importorskip("tree_sitter_sql")
+    p = tmp_path / "schema.sql"
+    p.write_text(
+        "CREATE TABLE users (id INT);\n"
+        "CREATE TRIGGER audit_ins AFTER INSERT ON users EXECUTE FUNCTION elsewhere();\n",
+        encoding="utf-8",
+    )
+    r = extract_sql(p)
+    by_label = {n["label"]: n for n in r["nodes"]}
+    assert (by_label["audit_ins"]["id"], "triggers", by_label["users"]["id"]) in {
+        (e["source"], e["relation"], e["target"]) for e in r["edges"]
+    }
+    # No executes edge, and the unresolved routine was not minted as a node.
+    assert not any(e["relation"] == "executes" for e in r["edges"])
+    assert "elsewhere()" not in by_label
+    node_ids = {n["id"] for n in r["nodes"]}
+    assert all(e["source"] in node_ids and e["target"] in node_ids for e in r["edges"])
+
+
 def test_sql_procedural_body_trigger_is_recovered(tmp_path):
     """A trigger with a `FOR EACH ROW BEGIN ... END` body has no grammar parse,
     so the statement lands in ERROR recovery. TRIGGER was excluded from the

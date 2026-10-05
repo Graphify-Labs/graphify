@@ -107,6 +107,38 @@ def test_imported_and_used_module_calls_still_resolve(tmp_path: Path):
     assert ("opts()", "timestamps_opts()") in calls
 
 
+def test_import_is_scoped_to_the_module_that_declares_it(tmp_path: Path):
+    """An `import` applies to the module body it appears in and to modules
+    nested in it, not to a sibling module that happens to share the file."""
+    calls = _cross_file_calls(tmp_path, {
+        "lib/my_app/helpers.ex": _HELPERS,
+        "lib/my_app/pair.ex": (
+            "defmodule MyApp.Importer do\n"
+            "  import MyApp.Helpers\n"
+            "\n"
+            "  def show(x) do\n"
+            "    fmt(x)\n"
+            "  end\n"
+            "\n"
+            "  defmodule Nested do\n"
+            "    def inner(x) do\n"
+            "      fmt(x)\n"
+            "    end\n"
+            "  end\n"
+            "end\n"
+            "\n"
+            "defmodule MyApp.Sibling do\n"
+            "  def go(x) do\n"
+            "    fmt(x)\n"
+            "  end\n"
+            "end\n"
+        ),
+    })
+    assert ("show()", "fmt()") in calls
+    assert ("inner()", "fmt()") in calls
+    assert ("go()", "fmt()") not in calls
+
+
 def test_imported_call_survives_incremental_rebuild(tmp_path: Path):
     """On `graphify update` the unchanged helpers file arrives only as
     resolution-context nodes; its module must still count as in scope."""

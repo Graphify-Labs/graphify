@@ -494,6 +494,25 @@ def nfc(s: str) -> str:
     return unicodedata.normalize("NFC", s)
 
 
+def restore_arc_direction(data: dict) -> dict:
+    """Stamp each link's stored direction as ``_src``/``_tgt`` before loading.
+
+    graph.json is written ``directed: false`` but carries true direction in arc
+    order (#563), or in ``_src``/``_tgt`` markers on legacy canonicalized files.
+    An undirected ``node_link_graph`` load re-orders endpoints by node-list
+    position, so readers recover direction from these markers. Existing markers
+    win (#2309). Same idiom as the query and merge-graphs loaders (#2261).
+    """
+    links = data.get("links")
+    if not isinstance(links, list):
+        return data
+    return dict(data, links=[
+        {**link, "_src": link.get("_src", link.get("source")), "_tgt": link.get("_tgt", link.get("target"))}
+        if isinstance(link, dict) else link
+        for link in links
+    ])
+
+
 def load_node_link_graph(path_or_data):
     """Load a graphify graph.json into a networkx graph, accepting both writers.
 
@@ -517,6 +536,8 @@ def load_node_link_graph(path_or_data):
         data = json.loads(p.read_text(encoding="utf-8"))
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
+    if isinstance(data, dict):
+        data = restore_arc_direction(data)
     try:
         return json_graph.node_link_graph(data, edges="links")
     except TypeError:  # networkx too old for the edges kwarg; default is "links"

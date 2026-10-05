@@ -137,3 +137,94 @@ def test_bound_never_points_at_the_function_itself(tmp_path):
     r, nid = _build(tmp_path)
     for label in ("sort()", "program()", ".member()"):
         assert nid[label] not in _bound_targets(r, label, nid)
+
+
+# Class-level context bounds (#4080). `class_definition`, `trait_definition`
+# and `enum_definition` carry the same `type_parameters` node as a method, so
+# the bound is the same typeclass dependency, attributed to the type itself.
+CLASS_SRC = '''\
+trait Ordering
+trait Show
+trait Eq
+trait Async
+trait Comparable
+
+class Sorted[A: Ordering](xs: List[A])
+
+case class Pretty[T: Show: Eq](t: T)
+
+trait Effectful[F[_]: Async]
+
+enum Ranked[A: Ordering] { case Low }
+
+class Plain[T](t: T)
+
+class Upper[T <: Comparable[T]](t: T)
+
+class Holder {
+  def member[K: Ordering](k: K): K = k
+}
+'''
+
+
+def _build_classes(tmp_path):
+    (tmp_path / "ClassContextBounds.scala").write_text(CLASS_SRC)
+    r = extract_scala(tmp_path / "ClassContextBounds.scala")
+    nid = {n["label"]: n["id"] for n in r["nodes"]}
+    return r, nid
+
+
+def test_class_context_bound_emits_reference(tmp_path):
+    r, nid = _build_classes(tmp_path)
+    assert nid["Ordering"] in _bound_targets(r, "Sorted", nid)
+
+
+def test_case_class_several_context_bounds_each_emit_a_reference(tmp_path):
+    r, nid = _build_classes(tmp_path)
+    targets = _bound_targets(r, "Pretty", nid)
+    assert nid["Show"] in targets
+    assert nid["Eq"] in targets
+
+
+def test_trait_higher_kinded_context_bound_emits_reference(tmp_path):
+    r, nid = _build_classes(tmp_path)
+    assert nid["Async"] in _bound_targets(r, "Effectful", nid)
+
+
+def test_enum_context_bound_emits_reference(tmp_path):
+    r, nid = _build_classes(tmp_path)
+    assert nid["Ordering"] in _bound_targets(r, "Ranked", nid)
+
+
+def test_class_without_context_bound_emits_no_bound_edge(tmp_path):
+    r, nid = _build_classes(tmp_path)
+    assert not _bound_targets(r, "Plain", nid)
+    assert not _bound_targets(r, "Upper", nid)
+
+
+def test_class_context_bound_keeps_constructor_param_as_field(tmp_path):
+    # The bound must not displace the class_parameters walk: `xs: List[A]`
+    # still references List under the `field` context.
+    r, nid = _build_classes(tmp_path)
+    refs = {(e["target"], e.get("context")) for e in r["edges"]
+            if e["relation"] == "references" and e["source"] == nid["Sorted"]}
+    assert (nid["List"], "field") in refs
+    assert (nid["List"], "type_bound") not in refs
+
+
+def test_member_bound_is_not_hoisted_to_the_enclosing_class(tmp_path):
+    r, nid = _build_classes(tmp_path)
+    assert nid["Ordering"] in _bound_targets(r, ".member()", nid)
+    assert not _bound_targets(r, "Holder", nid)
+
+
+def test_class_bound_edge_is_tagged_extracted_with_a_location(tmp_path):
+    r, nid = _build_classes(tmp_path)
+    edges = [e for e in r["edges"]
+             if e["relation"] == "references"
+             and e["source"] == nid["Sorted"]
+             and e.get("context") == "type_bound"]
+    assert edges
+    for e in edges:
+        assert e.get("confidence") == "EXTRACTED", e
+        assert e.get("source_location") == "L7", e

@@ -326,3 +326,179 @@ def test_explain_direction_recovered_from_src_tgt_markers(monkeypatch, tmp_path,
     out = capsys.readouterr().out
     assert "<-- spoke.ts [calls]" in out
     assert "--> spoke.ts" not in out
+
+
+# ── #3913: endpoints resolve like `explain` (refuse ambiguity, honor ::/id) ──
+
+def _twin_method_graph(tmp_path):
+    """`.nonce()` defined on a class in each of two files, both reachable from run()."""
+    data = {
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "src_main", "label": "main.ts", "source_file": "src/main.ts",
+             "source_location": "L1"},
+            {"id": "src_main_run", "label": "run()", "source_file": "src/main.ts",
+             "source_location": "L3"},
+            {"id": "src_a", "label": "a.ts", "source_file": "src/a.ts",
+             "source_location": "L1"},
+            {"id": "src_a_alphaclient", "label": "AlphaClient", "source_file": "src/a.ts",
+             "source_location": "L1"},
+            {"id": "src_a_alphaclient_nonce", "label": ".nonce()", "source_file": "src/a.ts",
+             "source_location": "L1"},
+            {"id": "src_b", "label": "b.ts", "source_file": "src/b.ts",
+             "source_location": "L1"},
+            {"id": "src_b_betaclient", "label": "BetaClient", "source_file": "src/b.ts",
+             "source_location": "L1"},
+            {"id": "src_b_betaclient_nonce", "label": ".nonce()", "source_file": "src/b.ts",
+             "source_location": "L1"},
+        ],
+        "links": [
+            {"source": "src_main", "target": "src_main_run", "relation": "contains",
+             "confidence": "EXTRACTED"},
+            {"source": "src_main_run", "target": "src_a_alphaclient", "relation": "calls",
+             "confidence": "EXTRACTED"},
+            {"source": "src_main_run", "target": "src_b_betaclient", "relation": "calls",
+             "confidence": "EXTRACTED"},
+            {"source": "src_a", "target": "src_a_alphaclient", "relation": "contains",
+             "confidence": "EXTRACTED"},
+            {"source": "src_b", "target": "src_b_betaclient", "relation": "contains",
+             "confidence": "EXTRACTED"},
+            {"source": "src_a_alphaclient", "target": "src_a_alphaclient_nonce",
+             "relation": "method", "confidence": "EXTRACTED"},
+            {"source": "src_b_betaclient", "target": "src_b_betaclient_nonce",
+             "relation": "method", "confidence": "EXTRACTED"},
+        ],
+    }
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps(data))
+    return gp
+
+
+@pytest.mark.parametrize("ends", [("run()", ".nonce()"), (".nonce()", "run()")])
+def test_path_refuses_ambiguous_endpoint(monkeypatch, tmp_path, capsys, ends):
+    """A bare label naming symbols in two files is refused with the candidate ids,
+    as `explain` does, instead of a confident route through one of them — on
+    either end of the path."""
+    gp = _twin_method_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "path", *ends, "--graph", str(gp)])
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "Shortest path" not in captured.out
+    assert "Ambiguous: '.nonce()' matches 2 nodes in different files." in captured.err
+    assert "src_a_alphaclient_nonce" in captured.err
+    assert "src_b_betaclient_nonce" in captured.err
+
+
+@pytest.mark.parametrize("target", ["src/b.ts::.nonce()", "src_b_betaclient_nonce"])
+def test_path_endpoint_selects_named_node(monkeypatch, tmp_path, capsys, target):
+    """The two retry forms `explain` suggests (`path::symbol`, full node id) end
+    the route at that method, not at its file or containing class."""
+    gp = _twin_method_graph(tmp_path)
+    out = _run(monkeypatch, gp, "run()", target, capsys)
+    assert "Shortest path (2 hops):" in out
+    assert "run() --calls [EXTRACTED]--> BetaClient --method [EXTRACTED]--> .nonce()" in out
+
+
+def test_shortest_path_tool_refuses_ambiguous_endpoint(tmp_path):
+    """The MCP `shortest_path` tool shares the resolution and refuses the same way."""
+    from graphify.serve import _shortest_path_text
+    raw = json.loads(_twin_method_graph(tmp_path).read_text())
+    G = json_graph.node_link_graph({**raw, "directed": True}, edges="links")
+    out = _shortest_path_text(G, {"source": "run()", "target": ".nonce()"})
+    assert out.startswith("Ambiguous: '.nonce()' matches 2 nodes in different files.")
+    out = _shortest_path_text(G, {"source": ".nonce()", "target": "run()"})
+    assert out.startswith("Ambiguous: '.nonce()' matches 2 nodes in different files.")
+    out = _shortest_path_text(G, {"source": "run()", "target": "src/b.ts::.nonce()"})
+    assert "Shortest path (2 hops):" in out
+    assert "BetaClient --method [EXTRACTED]--> .nonce()" in out
+
+
+def _write_nodes(tmp_path, nodes, links):
+    gp = tmp_path / "graph.json"
+    gp.write_text(json.dumps({
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": i, "label": lbl, "source_file": sf, "source_location": loc}
+            for i, lbl, sf, loc in nodes
+        ],
+        "links": [
+            {"source": a, "target": b, "relation": rel, "confidence": "EXTRACTED"}
+            for a, b, rel in links
+        ],
+    }))
+    return gp
+
+
+def _same_file_twin_graph(tmp_path):
+    """`.nonce()` on two classes of one file, both reachable from run()."""
+    return _write_nodes(tmp_path, [
+        ("src_x", "x.ts", "src/x.ts", "L1"),
+        ("src_x_run", "run()", "src/x.ts", "L3"),
+        ("src_x_alphaclient", "AlphaClient", "src/x.ts", "L5"),
+        ("src_x_alphaclient_nonce", ".nonce()", "src/x.ts", "L6"),
+        ("src_x_betaclient", "BetaClient", "src/x.ts", "L9"),
+        ("src_x_betaclient_nonce", ".nonce()", "src/x.ts", "L10"),
+    ], [
+        ("src_x", "src_x_run", "contains"),
+        ("src_x_run", "src_x_alphaclient", "calls"),
+        ("src_x_run", "src_x_betaclient", "calls"),
+        ("src_x_alphaclient", "src_x_alphaclient_nonce", "method"),
+        ("src_x_betaclient", "src_x_betaclient_nonce", "method"),
+    ])
+
+
+@pytest.mark.parametrize("target", [".nonce()", "src/x.ts::.nonce()"])
+def test_path_refuses_same_file_duplicate_endpoint(monkeypatch, tmp_path, capsys, target):
+    """Two same-named symbols in one file used to be split by graph order behind
+    a score-tie warning; path::symbol cannot tell them apart either, so they are
+    refused with the ids, the one form that can."""
+    gp = _same_file_twin_graph(tmp_path)
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "path", "run()", target, "--graph", str(gp)])
+    with pytest.raises(SystemExit) as exc_info:
+        mainmod.main()
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "Shortest path" not in captured.out
+    assert f"Ambiguous: '{target}' matches 2 nodes in src/x.ts." in captured.err
+    assert "src_x_alphaclient_nonce" in captured.err
+    assert "src_x_betaclient_nonce" in captured.err
+    assert "Retry with the full node id." in captured.err
+
+
+def test_path_same_file_endpoints_still_resolve(monkeypatch, tmp_path, capsys):
+    """The node id picks one of the twins, and a file-path query (file node plus
+    its members, one file) stays a file lookup rather than an ambiguity."""
+    gp = _same_file_twin_graph(tmp_path)
+    out = _run(monkeypatch, gp, "run()", "src_x_betaclient_nonce", capsys)
+    assert "run() --calls [EXTRACTED]--> BetaClient --method [EXTRACTED]--> .nonce()" in out
+    out = _run(monkeypatch, gp, "src/x.ts", "src_x_betaclient_nonce", capsys)
+    assert "Shortest path (3 hops):" in out
+
+
+def test_ambiguity_hint_names_symbol_not_query(monkeypatch, tmp_path, capsys):
+    """`index.ts::foo()` whose path suffix matches two files is refused; the retry
+    hint shows `<path>::foo()`, not the query repeated behind another path."""
+    from graphify.serve import _shortest_path_text
+    gp = _write_nodes(tmp_path, [
+        ("a_index_foo", "foo()", "a/index.ts", "L3"),
+        ("b_index_foo", "foo()", "b/index.ts", "L3"),
+    ], [])
+    G = json_graph.node_link_graph(
+        {**json.loads(gp.read_text()), "directed": True}, edges="links")
+    out = _shortest_path_text(G, {"source": "index.ts::foo()", "target": "a_index_foo"})
+    assert "(e.g. <path>::foo())" in out
+    assert "<path>::index.ts::" not in out
+    monkeypatch.setattr(mainmod, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(mainmod.sys, "argv",
+        ["graphify", "explain", "index.ts::foo()", "--graph", str(gp)])
+    with pytest.raises(SystemExit):
+        mainmod.main()
+    out = capsys.readouterr().out
+    assert "(e.g. <path>::foo())" in out
+    assert "<path>::index.ts::" not in out

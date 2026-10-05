@@ -48,6 +48,22 @@ def test_extract_python_no_dangling_edges():
         assert edge["source"] in node_ids, f"Dangling source: {edge['source']}"
 
 
+def test_zero_byte_file_keeps_node_without_source_location(tmp_path):
+    """#4041: a 0-byte file has no line 1, so its file node must not claim L1.
+    The node itself stays (an empty __init__.py is still an importable module)."""
+    empty = tmp_path / "empty.py"
+    empty.write_bytes(b"")
+    witness = tmp_path / "witness.py"
+    witness.write_text("VALUE = 1\n")
+
+    result = extract([empty, witness], cache_root=tmp_path / "cache")
+    by_label = {n["label"]: n for n in result["nodes"]}
+
+    assert "empty.py" in by_label
+    assert by_label["empty.py"]["source_location"] is None
+    assert by_label["witness.py"]["source_location"] == "L1"
+
+
 def test_structural_edges_are_extracted():
     """contains / method / inherits / imports edges must always be EXTRACTED."""
     result = extract_python(FIXTURES / "sample.py")
@@ -284,7 +300,12 @@ def test_extract_updates_raw_call_callers_after_duplicate_id_disambiguation(tmp_
             assert edge["target"] in node_ids
 
 
-def test_extract_rewires_unique_inheritance_stub_to_real_definition(tmp_path):
+def test_extract_keeps_inheritance_stub_when_the_only_class_is_another_language(tmp_path):
+    """C# `SqliteBookStore : BookStore` must not inherit the Python class.
+
+    This fixture used to require that rewire. It is the same bind as an
+    unresolved base landing on the only same-label class in another language (#2207).
+    """
     definition = tmp_path / "interfaces.py"
     implementation = tmp_path / "services/BookStore.cs"
     definition.write_text("class BookStore:\n    pass\n", encoding="utf-8")
@@ -293,22 +314,105 @@ def test_extract_rewires_unique_inheritance_stub_to_real_definition(tmp_path):
 
     result = extract([definition, implementation], cache_root=tmp_path)
     node_by_id = {node["id"]: node for node in result["nodes"]}
-    inherits_edges = [edge for edge in result["edges"] if edge["relation"] == "inherits"]
-
     matching = [
-        edge for edge in inherits_edges
-        if node_by_id[edge["source"]]["label"] == "SqliteBookStore"
-        and node_by_id[edge["target"]]["label"] == "BookStore"
+        edge for edge in result["edges"]
+        if edge["relation"] == "inherits"
+        and node_by_id[edge["source"]]["label"] == "SqliteBookStore"
     ]
 
-    assert matching
+    assert len(matching) == 1
+    target = node_by_id[matching[0]["target"]]
+    assert target["label"] == "BookStore"
+    assert not target.get("source_file")
+    assert any(
+        node["label"] == "BookStore" and node.get("source_file") == "interfaces.py"
+        for node in result["nodes"]
+    )
+
+
+def test_extract_does_not_rewire_unresolved_base_to_other_language_const(tmp_path):
+    """#2207: `class User(Base)` must not inherit a TS const named Base."""
+    models = tmp_path / "backend/models.py"
+    widget = tmp_path / "frontend/widget.test.tsx"
+    models.parent.mkdir(parents=True)
+    widget.parent.mkdir(parents=True)
+    models.write_text("class User(Base):\n    pass\n", encoding="utf-8")
+    widget.write_text('const Base = { id: 1, name: "test" };\n', encoding="utf-8")
+
+    result = extract([models, widget], cache_root=tmp_path)
+    node_by_id = {node["id"]: node for node in result["nodes"]}
+    matching = [
+        edge for edge in result["edges"]
+        if edge["relation"] == "inherits" and node_by_id[edge["source"]]["label"] == "User"
+    ]
+
+    assert len(matching) == 1
+    target = node_by_id[matching[0]["target"]]
+    assert target["label"] == "Base"
+    assert not target.get("source_file")
+
+
+def test_extract_does_not_rewire_unresolved_base_to_other_language_class(tmp_path):
+    """#2207: a real TS class is still the wrong language for `User(Base)`."""
+    models = tmp_path / "backend/models.py"
+    widget = tmp_path / "frontend/widget.tsx"
+    models.parent.mkdir(parents=True)
+    widget.parent.mkdir(parents=True)
+    models.write_text("class User(Base):\n    pass\n", encoding="utf-8")
+    widget.write_text("export class Base { id: number = 1; }\n", encoding="utf-8")
+
+    result = extract([models, widget], cache_root=tmp_path)
+    node_by_id = {node["id"]: node for node in result["nodes"]}
+    matching = [
+        edge for edge in result["edges"]
+        if edge["relation"] == "inherits" and node_by_id[edge["source"]]["label"] == "User"
+    ]
+
+    assert len(matching) == 1
+    target = node_by_id[matching[0]["target"]]
+    assert target["label"] == "Base"
+    assert not target.get("source_file")
+
+
+def test_extract_does_not_rewire_csharp_base_to_other_language_class(tmp_path):
+    """A C# base stub has no origin file. It still must not bind to a TS class."""
+    service = tmp_path / "services/User.cs"
+    widget = tmp_path / "frontend/widget.tsx"
+    service.parent.mkdir(parents=True)
+    widget.parent.mkdir(parents=True)
+    service.write_text("class User : Base { }\n", encoding="utf-8")
+    widget.write_text("export class Base { id: number = 1; }\n", encoding="utf-8")
+
+    result = extract([service, widget], cache_root=tmp_path)
+    node_by_id = {node["id"]: node for node in result["nodes"]}
+    matching = [
+        edge for edge in result["edges"]
+        if edge["relation"] == "inherits" and node_by_id[edge["source"]]["label"] == "User"
+    ]
+
+    assert len(matching) == 1
+    target = node_by_id[matching[0]["target"]]
+    assert target["label"] == "Base"
+    assert not target.get("source_file")
+
+
+def test_extract_still_rewires_unique_base_in_the_same_language(tmp_path):
+    definition = tmp_path / "a.py"
+    user = tmp_path / "b.py"
+    definition.write_text("class Widget:\n    pass\n", encoding="utf-8")
+    user.write_text("class User(Widget):\n    pass\n", encoding="utf-8")
+
+    result = extract([definition, user], cache_root=tmp_path)
+    node_by_id = {node["id"]: node for node in result["nodes"]}
+    matching = [
+        edge for edge in result["edges"]
+        if edge["relation"] == "inherits" and node_by_id[edge["source"]]["label"] == "User"
+    ]
+
+    assert len(matching) == 1
     assert matching[0]["target"] == next(
         node["id"] for node in result["nodes"]
-        if node["label"] == "BookStore" and node.get("source_file") == "interfaces.py"
-    )
-    assert all(
-        not (node["label"] == "BookStore" and not node.get("source_file"))
-        for node in result["nodes"]
+        if node["label"] == "Widget" and node.get("source_file") == "a.py"
     )
 
 
@@ -1098,6 +1202,53 @@ def test_extract_js_arbitrary_member_assignment_not_captured(tmp_path):
     assert "whatever()" not in labels
     assert ".whatever()" not in labels
 
+
+
+def test_extract_js_exported_object_member_assignment_and_calls(tmp_path):
+    """#3778: Member functions assigned to exported objects (like Express res.format = fn)
+    are captured as methods and their call expressions resolved."""
+    from graphify.extract import extract
+    utils = tmp_path / "utils.js"
+    utils.write_text(
+        "exports.normalizeType = function(val) { return val; };\n"
+    )
+    response = tmp_path / "response.js"
+    response.write_text(
+        "var normalizeType = require('./utils').normalizeType;\n"
+        "var res = Object.create(null);\n"
+        "module.exports = res;\n"
+        "res.format = function(obj) {\n"
+        "    return normalizeType(obj);\n"
+        "};\n"
+    )
+    result = extract([utils, response], root=tmp_path)
+    labels = {n["label"] for n in result["nodes"]}
+    assert ".format()" in labels
+    assert "res" in labels
+
+    edges = [(e["source"], e["target"], e["relation"]) for e in result["edges"]]
+    calls = [e for e in edges if e[2] == "calls"]
+    matching_calls = [
+        (s, t) for (s, t, r) in calls
+        if s.endswith("res_format") and t.endswith("normalizetype")
+    ]
+    assert len(matching_calls) == 1
+
+
+def test_extract_js_esm_exported_object_member_assignment(tmp_path):
+    """#3778: ESM exported object declarations (export const app = {}) capture member assignments."""
+    from graphify.extract import extract
+    app = tmp_path / "app.js"
+    app.write_text(
+        "export const app = {};\n"
+        "app.use = function(middleware) {\n"
+        "    return middleware;\n"
+        "};\n"
+    )
+    result = extract([app], root=tmp_path)
+    labels = {n["label"] for n in result["nodes"]}
+    assert ".use()" in labels
+    assert "app" in labels
 
 def test_extract_js_nested_function_declarations(tmp_path):
     """#2653: function declarations nested inside another function emit nodes,
@@ -1904,11 +2055,8 @@ def test_python_namespace_package_import_of_non_module_fabricates_nothing(tmp_pa
     assert fabricated == [], fabricated
 
 
-def test_python_external_aliased_import_fabricates_no_call_edge(tmp_path):
-    """#2082 must not over-resolve: an aliased import of an EXTERNAL/uncorpus
-    module (`import numpy as np; np.array()`) has no in-corpus callee, so it must
-    produce NO `calls` edge — the alias resolution stays inside the member-call
-    carve-out (in-corpus target required)."""
+def test_python_external_aliased_import_fabricates_no_member_node(tmp_path):
+    """External calls may target the imported module, never an invented member."""
     caller = tmp_path / "app.py"
     caller.write_text(
         "import numpy as np\n"
@@ -1926,6 +2074,93 @@ def test_python_external_aliased_import_fabricates_no_call_edge(tmp_path):
              or "join" in nodes.get(e["target"], {}).get("label", ""))
     ]
     assert fabricated == [], f"external aliased calls must not fabricate edges: {fabricated}"
+
+
+@pytest.mark.parametrize("hint", [None, 0, 1, "false"])
+def test_python_external_resolver_requires_explicit_false_shadow_fact(hint):
+    from graphify.extract import _resolve_python_member_calls
+
+    raw = {"caller_nid": "caller_fetch", "callee": "get", "receiver": "requests",
+           "is_member_call": True, "source_file": "caller.py", "source_location": "L4"}
+    if hint is not None:
+        raw["_python_receiver_shadowed"] = hint
+    nodes = [{"id": "caller", "label": "caller.py", "source_file": "caller.py"},
+             {"id": "caller_fetch", "label": "fetch()", "source_file": "caller.py"}]
+    edges = [{"source": "caller", "target": "caller_fetch", "relation": "contains"},
+             {"source": "caller", "target": "requests", "relation": "imports",
+              "_python_plain_import": True}]
+    _resolve_python_member_calls([{"raw_calls": [raw]}], nodes, edges)
+    assert not any(e["relation"] == "calls" for e in edges)
+
+
+@pytest.mark.parametrize(("receiver", "imports", "producer_hint"), [
+    ("Requests", [("requests", "requests")], True),
+    ("Request", [("requests", None)], True),
+    ("requests", [], True),
+    ("requests", [("requests", None), ("other", "requests")], True),
+    ("requests", [("requests", None)], None),
+    ("requests", [("requests", None)], False),
+    ("requests", [("requests", None)], 1),
+    ("requests", [("requests", None)], "true"),
+])
+def test_python_external_resolver_requires_unique_exact_plain_import(
+    receiver, imports, producer_hint,
+):
+    from graphify.extract import _resolve_python_member_calls
+
+    raw = {"caller_nid": "caller_fetch", "callee": "get", "receiver": receiver,
+           "is_member_call": True, "source_file": "caller.py", "source_location": "L4",
+           "_python_receiver_shadowed": False}
+    nodes = [{"id": "caller", "label": "caller.py", "source_file": "caller.py"},
+             {"id": "caller_fetch", "label": "fetch()", "source_file": "caller.py"}]
+    edges = [{"source": "caller", "target": "caller_fetch", "relation": "contains"}]
+    edges.extend({"source": "caller", "target": target, "relation": "imports",
+                  "source_file": "caller.py", "source_location": "L1",
+                  **({"_python_plain_import": producer_hint} if producer_hint is not None else {}),
+                  **({"local_alias": alias} if alias else {})} for target, alias in imports)
+    _resolve_python_member_calls([{"raw_calls": [raw]}], nodes, edges)
+    assert not any(e["relation"] == "calls" for e in edges)
+
+
+@pytest.mark.parametrize("member_count", [0, 2])
+def test_python_parsed_module_never_falls_back_to_coarse_call(member_count):
+    from graphify.extract import _resolve_python_member_calls
+
+    raw = {"caller_nid": "caller_fetch", "callee": "get", "receiver": "helper",
+           "is_member_call": True, "source_file": "caller.py", "source_location": "L4",
+           "_python_receiver_shadowed": False}
+    nodes = [{"id": "caller", "label": "caller.py", "source_file": "caller.py"},
+             {"id": "caller_fetch", "label": "fetch()", "source_file": "caller.py"},
+             {"id": "helper", "label": "helper.py", "source_file": "helper.py"}]
+    edges = [{"source": "caller", "target": "caller_fetch", "relation": "contains"},
+             {"source": "caller", "target": "helper", "relation": "imports",
+              "_python_plain_import": True}]
+    for number in range(member_count):
+        nid = f"helper_get_{number}"
+        nodes.append({"id": nid, "label": "get()", "source_file": "helper.py"})
+        edges.append({"source": "helper", "target": nid, "relation": "contains"})
+    _resolve_python_member_calls([{"raw_calls": [raw]}], nodes, edges)
+    assert not any(e["relation"] == "calls" for e in edges)
+
+
+def test_python_external_module_call_survives_cache(tmp_path):
+    source = tmp_path / "caller.py"
+    source.write_text("import requests\n\ndef fetch():\n    return requests.get('/data')\n")
+    cold = extract([source], cache_root=tmp_path, root=tmp_path)
+    warm = extract([source], cache_root=tmp_path, root=tmp_path)
+    def calls(result):
+        return [e for e in result["edges"] if e["relation"] == "calls" and e["target"] == "requests"]
+    assert len(calls(cold)) == len(calls(warm)) == 1
+    assert calls(cold) == calls(warm)
+    graph = build_from_json(cold)
+    assert graph.nodes["requests"]["external"] is True
+    assert graph.get_edge_data("caller_fetch", "requests")["relation"] == "calls"
+    shadow = tmp_path / "shadow.py"
+    shadow.write_text("import requests\n\ndef fetch(requests):\n    return requests.get('/data')\n")
+    for result in (extract([shadow], cache_root=tmp_path, root=tmp_path),
+                   extract([shadow], cache_root=tmp_path, root=tmp_path)):
+        assert not any(e["relation"] == "calls" and e["target"] == "requests"
+                       for e in result["edges"])
 
 
 def test_python_aliased_call_survives_warm_cache(tmp_path):
@@ -2975,6 +3210,29 @@ def test_extract_bash_emits_source_imports_from(tmp_path):
     import_edges = [e for e in result["edges"] if e["relation"] == "imports_from"]
     assert len(import_edges) >= 1
     assert import_edges[0].get("context") == "import"
+
+
+@pytest.mark.parametrize("source_form", ["source ./helpers.sh", ". ./helpers.sh"])
+def test_extract_bash_source_forms_are_imports_not_invokes(tmp_path, source_form):
+    """#4081: sourcing a shell file is an import, not script execution."""
+    helpers = tmp_path / "helpers.sh"
+    helpers.write_text("# helper\n", encoding="utf-8")
+    script = tmp_path / "deploy.sh"
+    script.write_text(f"#!/bin/bash\n{source_form}\n", encoding="utf-8")
+
+    result = extract_bash(script)
+    import_edges = [edge for edge in result["edges"] if edge["relation"] == "imports_from"]
+    # A misrouted `source` would land in the script-invocation branch as either a
+    # direct-`.sh` `calls` edge or an interpreter `invokes` edge, so guard on the
+    # context regardless of relation (the `calls` form is the realistic #4081 miss).
+    invocation_edges = [
+        edge for edge in result["edges"]
+        if edge.get("context") == "script_invocation"
+    ]
+
+    assert import_edges
+    assert import_edges[0]["target"] == _make_id(str(helpers.resolve()))
+    assert invocation_edges == []
 
 
 def test_extract_bash_source_via_variable_path_resolves_to_real_file(tmp_path):
@@ -4774,6 +5032,21 @@ def test_rewire_binds_builtin_named_supertype_stub_within_same_language():
     assert edges[0]["target"] == "pkg_support_Exception"
 
 
+def test_cross_file_inheritance_resolves_across_jvm_languages(tmp_path):
+    """A Kotlin subclass must keep its Java base despite the extension difference."""
+    base = tmp_path / "Base.java"
+    child = tmp_path / "Child.kt"
+    base.write_text("package models;\npublic class Base {}\n", encoding="utf-8")
+    child.write_text("import models.Base\nclass Child : Base()\n", encoding="utf-8")
+    result = extract([base, child], root=tmp_path, cache_root=tmp_path / "cache", parallel=False)
+    base_node = next(n for n in result["nodes"]
+                     if n["label"] == "Base" and n.get("source_file") == "Base.java")
+    child_node = next(n for n in result["nodes"]
+                      if n["label"] == "Child" and n.get("source_file") == "Child.kt")
+    assert any(e["relation"] == "inherits" and e["source"] == child_node["id"]
+               and e["target"] == base_node["id"] for e in result["edges"])
+
+
 def test_rewire_builtin_supertype_guard_folds_case_insensitive_languages():
     """#2812: PHP resolves class names case-insensitively, so `extends \\exception`
     names the same built-in as `extends \\Exception` and must be blocked too."""
@@ -4787,6 +5060,59 @@ def test_rewire_builtin_supertype_guard_folds_case_insensitive_languages():
               "source_file": "pkg/FooApiException.php", "weight": 1.0}]
     _rewire_unique_stub_nodes(nodes, edges)
     assert edges[0]["target"] == "exception"
+
+
+def test_rewire_does_not_bind_casefolded_type_across_language():
+    """The case-folded candidate list is a second way into the same bind (#2207)."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "base_base", "label": "base", "file_type": "code",
+         "source_file": "Base.php", "source_location": "L1"},
+        {"id": "Base", "label": "Base", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "models_user", "target": "Base", "relation": "inherits",
+              "source_file": "models.py", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "Base"
+    assert "Base" in {n["id"] for n in nodes}
+
+
+def test_rewire_does_not_bind_constant_reference_across_language():
+    """#2207: `Command::SUCCESS` must not land on a TS class."""
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "ui_command_command", "label": "Command", "file_type": "code",
+         "source_file": "resources/js/components/ui/command.tsx", "source_location": "L1"},
+        {"id": "command", "label": "Command", "file_type": "code", "source_file": ""},
+    ]
+    edges = [{"source": "retry_handle", "target": "command", "relation": "references_constant",
+              "source_file": "app/Console/Commands/RetryDeadLetters.php", "weight": 1.0}]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "command"
+    assert "command" in {n["id"] for n in nodes}
+
+
+def test_rewire_cross_language_block_is_per_edge():
+    """A same-language referrer of the stub still binds. The other language stays put.
+
+    Dropping the candidate for the whole stub would leave the TypeScript edge unbound.
+    """
+    from graphify.extract import _rewire_unique_stub_nodes
+    nodes = [
+        {"id": "frontend_widget", "label": "Widget", "file_type": "code",
+         "source_file": "frontend/widget.tsx", "source_location": "L1"},
+        {"id": "widget", "label": "Widget", "file_type": "code", "source_file": ""},
+    ]
+    edges = [
+        {"source": "php_user", "target": "widget", "relation": "inherits",
+         "source_file": "User.php", "weight": 1.0},
+        {"source": "tsx_user", "target": "widget", "relation": "inherits",
+         "source_file": "User.tsx", "weight": 1.0},
+    ]
+    _rewire_unique_stub_nodes(nodes, edges)
+    assert edges[0]["target"] == "widget"
+    assert edges[1]["target"] == "frontend_widget"
+    assert "widget" in {n["id"] for n in nodes}
 
 
 def test_rewire_builtin_supertype_guard_is_per_edge_not_per_stub():
@@ -5181,3 +5507,41 @@ def test_3252_metadata_preservation(tmp_path):
     assert param_ref["source_location"] == "L2"
     assert node_by_id[param_ref["target"]]["label"] == "User"
     assert node_by_id[param_ref["target"]]["source_file"] == "models.py"
+
+
+def test_python_external_calls_survive_real_incremental_context(tmp_path):
+    """A changed caller shares an external stub with an unchanged caller."""
+    import subprocess
+
+    (tmp_path / "ext_a.py").write_text("import requests\n\ndef fetch_a():\n    return requests.get('/a')\n")
+    (tmp_path / "ext_b.py").write_text("import requests as rq\n\ndef fetch_b():\n    return rq.post('/b')\n")
+    (tmp_path / "helper.py").write_text("def other():\n    return 1\n")
+    (tmp_path / "local_caller.py").write_text("import helper\n\ndef fetch_local():\n    return helper.get()\n")
+    env = {k: v for k, v in os.environ.items()
+           if k in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE"}}
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+
+    def run():
+        result = subprocess.run(
+            [sys.executable, "-m", "graphify", "extract", str(tmp_path), "--code-only"],
+            cwd=tmp_path, env=env, capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        graph = json.loads((tmp_path / "graphify-out" / "graph.json").read_text())
+        calls = [e for e in graph["links"] if e.get("relation") == "calls"]
+        assert not any(e["source"] == "local_caller_fetch_local" for e in calls)
+        stub = next(n for n in graph["nodes"] if n["id"] == "requests")
+        assert stub["external"] is True and stub["source_file"] == ""
+        assert "_python_receiver_shadowed" not in json.dumps(graph)
+        assert "_python_plain_import" not in json.dumps(graph)
+        return result.stdout, sorted((e["source"], e["target"], e["source_location"]) for e in calls)
+
+    full_stdout, full_calls = run()
+    assert "AST extraction on 4 code files" in full_stdout
+    assert full_calls == [("ext_a_fetch_a", "requests", "L4"), ("ext_b_fetch_b", "requests", "L4")]
+    (tmp_path / "ext_a.py").write_text("import requests\n\ndef fetch_a():\n    # changed caller\n    return requests.get('/a')\n")
+    (tmp_path / "local_caller.py").write_text("import helper\n\ndef fetch_local():\n    # changed local consumer\n    return helper.get()\n")
+    incremental_stdout, incremental_calls = run()
+    assert "incremental scan" in incremental_stdout
+    assert "AST extraction on 2 code files" in incremental_stdout
+    assert incremental_calls == [("ext_a_fetch_a", "requests", "L5"), ("ext_b_fetch_b", "requests", "L4")]

@@ -105,7 +105,7 @@ def test_dispatch_edge_shape(tmp_path):
     _, r = _extract(tmp_path, _INJECTED)
     edge = next(e for e in r["edges"] if e["relation"] == "dispatches_to")
     assert edge["confidence"] == "INFERRED"
-    assert edge["confidence_score"] == 0.9
+    assert edge["confidence_score"] == 0.85
     assert edge["context"] == "call"
     assert edge["source_file"].endswith("RemoteStore.swift")
 

@@ -119,6 +119,40 @@ def test_solidity_types_imports_inheritance_overloads_and_modifiers(tmp_path):
     assert len([edge for edge in result["edges"] if edge["relation"] == "imports_from"]) == 2
 
 
+def test_solidity_enum_values_emit_case_of_not_contains(tmp_path):
+    """A Solidity enum value is a discriminant case, so it must get a `case_of`
+    edge like every other language with enums (Java #1719, C#, Swift, Rust,
+    VB.NET), not the `contains` edge used for real declared members. Solidity
+    was routing enum values through the same `contains` path as struct fields.
+    The relation also matters to resolution: `case_of` targets are excluded
+    from constructor binding, so an enum value named like a type can no longer
+    be mistaken for one.
+    """
+    source = tmp_path / "Status.sol"
+    source.write_text(
+        "pragma solidity ^0.8.0;\n"
+        "contract Order {\n"
+        "  enum Status { Pending, Shipped, Delivered }\n"
+        "  struct Point { uint x; uint y; }\n"
+        "  Status public status;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    case_of = _edge_labels(result, "case_of")
+    contains = _edge_labels(result, "contains")
+    # Each enum value hangs off its enum via case_of, not contains.
+    assert ("Status", "Pending") in case_of
+    assert ("Status", "Shipped") in case_of
+    assert ("Status", "Delivered") in case_of
+    assert ("Status", "Pending") not in contains
+    # A real struct field is a declaration, not a case: it keeps `contains`.
+    assert ("Point", "x") in contains
+    assert ("Point", "x") not in case_of
+
+
 def test_solidity_fixture_uses_normal_extract_path(tmp_path):
     result = extract([FIXTURE], cache_root=tmp_path)
 

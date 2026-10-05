@@ -1346,24 +1346,22 @@ def test_reads_as_file_entity_helper():
 
 
 def test_dedup_merges_crossfile_document_entity_variants():
-    """The reported bug (#296): case/prefix variants of one entity, extracted
-    from three different notes and typed `document` by extension, must collapse
-    to a single node."""
+    """Unstamped document nodes that share a label stay one node per file.
+
+    The exact pass calls the same cross-file block as the fuzzy pass (#3094).
+    Three notes no longer collapse to one node.
+    """
     nodes = [
         {"id": "journal_2024_03_0%d_cyrilxbt" % i, "label": variant,
          "file_type": "document", "source_file": "journal/2024-03-0%d.md" % i}
         for i, variant in enumerate(_CYRIL_VARIANTS, start=1)
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
-    assert len(result_nodes) == 1, (
-        "cross-file `document` entity variants did not merge -- the #296 gate "
-        "widening is not reaching Pass 1's cross-file residue"
-    )
+    assert len(result_nodes) == 3
 
 
 def test_dedup_merges_crossfile_rationale_entity_variants():
-    """`rationale` rides the same gate as `document` (#296): entity nodes of
-    that type, provably not their files' own nodes, merge on an exact label."""
+    """Unstamped rationale nodes that share a label stay one node per file (#3094)."""
     nodes = [
         {"id": "svc_alpha_py_retention_window", "label": "Retention Window",
          "file_type": "rationale", "source_file": "svc/alpha.py"},
@@ -1371,7 +1369,7 @@ def test_dedup_merges_crossfile_rationale_entity_variants():
          "file_type": "rationale", "source_file": "svc/beta.py"},
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
-    assert len(result_nodes) == 1
+    assert len(result_nodes) == 2
 
 
 def test_dedup_never_merges_a_files_own_node_away():
@@ -1434,10 +1432,11 @@ def test_dedup_crossfile_entity_merge_keeps_the_provenance_gate():
 
 
 def test_dedup_crossfile_fuzzy_fileanchored_block_is_untouched():
-    """#296 widens only the exact-normalization pass. Pass 2's fuzzy
-    `_crossfile_fileanchored_blocked` is unchanged, so near-identical (not
-    identical) document labels in different files still stay distinct -- the
-    #1284 guard keeps doing its job on entity nodes too."""
+    """Pass 2 still refuses near-identical document labels in different files.
+
+    The exact pass now calls the same block (#3094). This pair is not an exact
+    label match, so only the fuzzy pass can see it, and the block keeps both nodes.
+    """
     nodes = [
         {"id": "docs_a_guide", "label": "Getting Started Installation Guide",
          "file_type": "document", "source_file": "docs/a.md"},
@@ -1446,6 +1445,75 @@ def test_dedup_crossfile_fuzzy_fileanchored_block_is_untouched():
     ]
     result_nodes, _ = deduplicate_entities(nodes, [], communities={})
     assert len(result_nodes) == 2
+
+
+def _doc(node_id, label, source_file, file_type="document"):
+    return {
+        "id": node_id,
+        "label": label,
+        "file_type": file_type,
+        "source_file": source_file,
+        "source_location": None,
+    }
+
+
+def test_exact_pass_keeps_unstamped_documents_across_files(tmp_path, capsys):
+    """The 0.9.66 script: five unstamped document nodes, three source files."""
+    from graphify.build import build_merge
+
+    extraction = {"nodes": [
+        _doc("a_decisions", "Decisions", "Sessions/session-A.md"),
+        _doc("b_decisions", "Decisions", "Sessions/session-B.md"),
+        _doc("c_decisions", "Decisions", "Sessions/session-C.md"),
+        _doc("a_open_items", "Open items", "Sessions/session-A.md"),
+        _doc("b_open_items", "Open items", "Sessions/session-B.md"),
+    ], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
+    graph = build_merge(
+        [extraction],
+        graph_path=tmp_path / "missing.json",
+        dedup=True,
+    )
+    files = {data.get("source_file") for _, data in graph.nodes(data=True)}
+    assert graph.number_of_nodes() == 5
+    assert files == {
+        "Sessions/session-A.md",
+        "Sessions/session-B.md",
+        "Sessions/session-C.md",
+    }
+    assert "Deduplicated" not in capsys.readouterr().out
+
+
+def test_exact_pass_still_merges_same_file_document_duplicate():
+    nodes = [
+        _doc("a1", "Decisions", "Sessions/session-A.md"),
+        _doc("a2", "Decisions", "Sessions/session-A.md"),
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_exact_pass_still_merges_crossfile_concepts():
+    nodes = [
+        _doc("c1", "Decisions", "Sessions/session-A.md", file_type="concept"),
+        _doc("c2", "Decisions", "Sessions/session-B.md", file_type="concept"),
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    assert len(result_nodes) == 1
+
+
+def test_exact_pass_merges_concepts_beside_a_blocked_document():
+    """A document winner must not leave the two concept nodes unjoined."""
+    nodes = [
+        _doc("a", "Decisions", "Sessions/session-A.md"),
+        _doc("c1", "Decisions", "Sessions/session-B.md", file_type="concept"),
+        _doc("c2", "Decisions", "Sessions/session-C.md", file_type="concept"),
+    ]
+    result_nodes, _ = deduplicate_entities(nodes, [], communities={})
+    kinds = sorted(node["file_type"] for node in result_nodes)
+    ids = {node["id"] for node in result_nodes}
+    assert len(result_nodes) == 2
+    assert kinds == ["concept", "document"]
+    assert "a" in ids
 
 
 def test_dedup_never_merges_repeated_headings_across_files():
