@@ -2464,6 +2464,7 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "update":
         force = os.environ.get("GRAPHIFY_FORCE", "").lower() in ("1", "true", "yes")
         no_cluster = False
+        follow_symlinks = False
         args = sys.argv[2:]
         watch_arg: str | None = None
         for a in args:
@@ -2472,6 +2473,9 @@ def dispatch_command(cmd: str) -> None:
                 continue
             if a == "--no-cluster":
                 no_cluster = True
+                continue
+            if a == "--follow-symlinks":
+                follow_symlinks = True
                 continue
             if a.startswith("-"):
                 print(f"error: unknown update option: {a}", file=sys.stderr)
@@ -2503,7 +2507,10 @@ def dispatch_command(cmd: str) -> None:
         # Interactive CLI: block on the per-repo lock rather than skip, so the
         # user sees their explicit `graphify update` complete instead of
         # exiting silently when a hook-driven rebuild happens to be running.
-        ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster, block_on_lock=True)
+        # Discovery remains opt-in; the existing watch owner checks containment
+        # and publishes the same accepted graph/state cohort for either profile.
+        ok = _rebuild_code(watch_path, force=force, no_cluster=no_cluster,
+                           follow_symlinks=follow_symlinks, block_on_lock=True)
         if ok:
             print("Code graph updated. For doc/paper/image changes run /graphify --update in your AI assistant.")
             if not (

@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.shell_portability import resolve_shell_path
+from tests.shell_portability import resolve_shell_path, select_shell_executable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SKILL_MD = REPO_ROOT / "graphify" / "skill.md"
@@ -58,7 +58,7 @@ def step1_script() -> str:
 
 
 def _run_step1(script: str, input_path_value: str, cwd: Path) -> subprocess.CompletedProcess:
-    # The quoted heredoc goes to Python's stdin, bypassing shell argv mapping.
+    # Admit the shell explicitly; the heredoc preserves Python stdin payload bytes.
     # Preserve the fixture's native spelling; Windows alone does not imply WSL.
     substituted = script.replace("INPUT_PATH", input_path_value).replace("\r\n", "\n")
     if sys.platform == "win32":
@@ -67,12 +67,12 @@ def _run_step1(script: str, input_path_value: str, cwd: Path) -> subprocess.Comp
         script_file = cwd / "_run_step1.sh"
         script_file.write_text(substituted, encoding="utf-8", newline="\n")
         return subprocess.run(
-            ["bash", "_run_step1.sh"],
+            [select_shell_executable("bash"), "_run_step1.sh"],
             cwd=cwd, capture_output=True, text=True,
             env={**os.environ, "PATH": os.environ.get("PATH", "")},
         )
     return subprocess.run(
-        ["bash", "-c", substituted],
+        [select_shell_executable("bash"), "-c", substituted],
         cwd=cwd, capture_output=True, text=True,
         env={**os.environ, "PATH": os.environ.get("PATH", "")},
     )

@@ -59,7 +59,7 @@ def memberships(graph):
 
 
 def test_req_qml020_ac01_real_parent_alias_preserves_smoke_and_cold_warm_identity(
-        aliased_parent, tmp_path, monkeypatch):
+        aliased_parent, tmp_path, monkeypatch, request):
     """Unchanged smoke and a warm unrelated cache retain identical Qt endpoints."""
     parent, alias = aliased_parent
     canonical, supplied = parent / "native-profile", alias / "native-profile"
@@ -84,7 +84,10 @@ def test_req_qml020_ac01_real_parent_alias_preserves_smoke_and_cold_warm_identit
 
     monkeypatch.setattr(extraction, "_safe_extract_with_xaml_root", observe)
     warm, warm_result = extract_graph(supplied, supplied, tmp_path / "alias-cache", ("keep.py",))
-    assert set(observed) == {supplied / name for name in NAMES}
+    # Native alternate entry spellings expand before dispatch; a separately
+    # discovered symlink keeps its exact lexical owner. Python still hits cache.
+    parser_root = canonical if request.node.callspec.params["aliased_parent"] == "windows_short" else supplied
+    assert set(observed) == {parser_root / name for name in NAMES}
     assert normalized(warm) == normalized(cold)
     assert memberships(warm) == sites
     assert {node["id"] for node in warm_result["nodes"]} == {

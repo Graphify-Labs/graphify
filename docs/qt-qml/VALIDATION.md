@@ -162,6 +162,71 @@ no further reproduced defect in this scope and leaves INC-QML-46 unallocated.
 The next normal PR event owns corrected hosted execution, separately from these
 overlapping local profiles and unexecuted physical device/system procedures.
 
+## Hosted correction checkpoint — 38bf8cc
+
+[CI run 37253601867](https://github.com/SlinkyRamey/graphify/actions/runs/37253601867)
+and [QML wheel run 37253601849](https://github.com/SlinkyRamey/graphify/actions/runs/37253601849)
+use normal `pull_request` events, source
+`38bf8cc12fc84f6b43f25b150a6ba5a16b4ecdd2`, base
+`f61827f42378f6e7feff05a1cb4cbbcab1736ca8` and synthetic checkout
+`ec2b85d07ed02408e81fb2127150393f7b702b64`. Both workflows fail; no manual
+dispatch or duplicate feature-push run is used.
+
+Ubuntu Python 3.14.8 records **8,989 passes, two failures, 107 skips**. Both
+failures are the new manual/watch older-policy alias fixture using default
+discovery for a followed directory. INC-QML-46 owns explicit profile/interface
+correction. The original two Linux provenance regressions and all 27 applicable
+new co-owner/remap cases pass individually. Both real FalkorDB and all three
+reviewed-wheel cases pass. Checkout, source, dependencies and wheel remain
+unchanged. All four retained wheels contain 182 Python payloads byte-identical
+to published source; all four artifact archive digests match GitHub API values.
+The other three Ubuntu lanes are matrix-cancelled before complete JUnit, exit
+and integrity evidence; they are incomplete, not passing. All four disposable
+containers are confirmed absent, and the completed lane confirms graph deletion.
+
+Native Windows records **783 passes, 33 failures, 20 skips**. Ten hook cases and
+23 generated-skill security cases launch the WSL stub through a bare Bash process
+name despite successful absolute Git Bash preflight. The retained artifact binds
+the exact checkout, JUnit, tool versions and unchanged 197 dependencies/source.
+INC-CORE-07 selection cases pass; INC-CORE-08 owns the separately reproduced
+native shell launch/consumer identity correction.
+
+All twelve QML lanes pass unchanged installed optional/core smoke. Ubuntu wheel
+jobs and all four macOS jobs pass; macOS records **2,264 source passes, 55 skips**
+per lane. Each Windows source lane fails the one warm-parser short-parent spy
+whose raw-path expectation predates INC-QML-45 normalization. INC-QML-47 preserves
+exact owner assertions under the accepted spelling contract. These workflow
+logs retain checkout and outcomes but no wheel digest, JUnit or source/dependency
+integrity artifact; that limitation remains explicit.
+
+All 134 generated artifacts and five skill-generation validators pass. Advisory
+Bandit retains four high, eight medium and 109 low findings. Dependency auditing
+fails before producing an inventory with a remote connection error; that is
+unavailable evidence, not a clean or completed vulnerability scan. Existing
+advisory policies and frozen dependencies are unchanged. The new focused
+corrections require another normal PR event; earlier successful boundaries do
+not establish their current complete hosted acceptance.
+
+## Manual discovery and native shell correction — INC-QML-46/47 and INC-CORE-08
+
+The final local source/consumer/artifact profile passes its assigned corrections:
+70 focused cohort/discovery cases (two capability/profile skips), 253 broader
+CLI/watch cases (five skips), 161 shell/hook/skillgen cases (eight profile skips),
+and nine membership cases (seven actual file-symlink skips). Exact commands and
+individual acceptance assignments belong to
+[traceability](../../tests/TRACEABILITY.md#manual-discovery-and-native-fixture-contracts--inc-qml-4647).
+The counts overlap; they are not a full-suite result.
+
+The fresh source-identical 182-payload wheel passes unchanged isolated QML/core/
+full-TEMP short-alias smoke and **118 installed cases, nineteen explicit skips**,
+zero failures/errors/warnings. All 69 required new/prior cases pass without skips;
+loaded modules originate in the artifact and source/dependency/coverage bytes
+remain unchanged. Native explicit shell preflight proves the selected Python
+and Node identities. Both workflows pass their syntax checks; the AST-only
+repository graph refresh completes. Full typing retains 604 exact baseline
+errors with zero added/removed and remains a failed gate. Current corrected
+hosted proof remains pending; no merge or protected publication is performed.
+
 <a name="executed-qml-00-through-qml-03--2026-10-03"></a>
 
 ## Executed INC-QML-00 through INC-QML-03 — 2026-10-03

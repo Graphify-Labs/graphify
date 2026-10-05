@@ -765,3 +765,19 @@ does not authorize discovery, change raw declarations or grant external/native
 endpoint roles. Failure diagnostics and publication guards retain separate owners.
 The source helper remains stateless; the facade owns its invocation, per-run
 remapping and cache ordering. Source, installed and hosted proof remain distinct.
+
+## D25 — Manual directory-link discovery is an explicit option
+
+INC-QML-46 exposes the watch rebuild owner's existing `follow_symlinks` discovery
+profile through `graphify update --follow-symlinks`. The CLI owns argument
+admission only; discovery, ignore/physical containment, extraction, locking and
+product publication stay with their existing owners. Omitting the flag preserves
+the default. No saved setting or inferred permission from an older graph enables
+directory traversal in a later invocation.
+
+Following links implicitly or forcing the option through a fixture-only monkeypatch
+would hide the real manual interface gap. An explicit option permits cold/manual/
+watch parity under the same admitted profile while retaining conservative default
+scope. Unknown flags and multiple roots reject before rebuild; accepted work uses
+the existing failure/retention/retry path. No source grammar, Qt policy, AST schema,
+cache format, runtime dependency or new persistence boundary changes.

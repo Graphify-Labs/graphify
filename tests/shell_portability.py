@@ -1,4 +1,4 @@
-"""Preserve complete file identity across native and MSYS test subprocesses.
+"""Admit explicit shell executables and preserve native/MSYS file identity.
 
 Shells may report a POSIX spelling for a file created by native Windows Python.
 Convert only through the reporting shell's own path mapper; drive-prefix guesses
@@ -12,12 +12,31 @@ import shutil
 import subprocess
 
 
+def select_shell_executable(shell: str = "sh") -> str:
+    """Select Bash/sh only from configured PATH, then launch its absolute identity."""
+    if shell not in {"bash", "sh"}:
+        raise AssertionError("only Bash/sh are admitted by shell fixtures")
+    configured = os.environ.get("PATH", "")
+    if not configured:
+        raise AssertionError(f"{shell} is unavailable in configured PATH")
+    # A qualified candidate avoids Windows which/CreateProcess adding CWD or
+    # system directories before PATH. Explicit empty/dot entries still admit CWD.
+    for directory in configured.split(os.pathsep):
+        candidate = Path(directory or os.curdir).absolute() / shell
+        executable = shutil.which(str(candidate))
+        if executable is None:
+            continue
+        identity = Path(executable)
+        if not identity.is_absolute() or not identity.is_file():
+            raise AssertionError(f"{shell} selection is not an absolute executable file")
+        return str(identity.resolve(strict=True))
+    raise AssertionError(f"{shell} is unavailable in configured PATH")
+
+
 def resolve_shell_path(value: str, *, shell: str = "sh") -> Path:
     """Resolve one existing absolute path in the reporting shell's namespace."""
     if os.name == "nt" and value.startswith("/"):
-        executable = shutil.which(shell)
-        if executable is None:
-            raise AssertionError(f"{shell} is unavailable for path identity proof")
+        executable = select_shell_executable(shell)
         system = subprocess.check_output(
             [executable, "-c", "uname -s"], text=True,
         ).strip()

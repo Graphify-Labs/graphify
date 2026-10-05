@@ -771,6 +771,7 @@ def _run_cli() -> None:
         print("    --force                 overwrite graph.json even if the rebuild has fewer nodes")
         print("                            (also: GRAPHIFY_FORCE=1 env var; use after refactors that delete code)")
         print("    --no-cluster            skip clustering, write raw extraction only")
+        print("    --follow-symlinks       opt into contained symlink discovery (default: off)")
         print("  cluster-only <path>     rerun clustering on an existing graph.json and regenerate report")
         print("    --no-viz                skip graph.html generation (useful for >5000 node graphs / CI)")
         print("    --graph <path>          path to graph.json (default <path>/graphify-out/graph.json)")

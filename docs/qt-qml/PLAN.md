@@ -2511,7 +2511,87 @@ checks pass. Full typing retains 604 exact baseline errors, with zero added or
 removed, and remains a failed gate.
 
 The source/installed exit review finds no further reproduced gap in this scope;
-INC-QML-46 remains unallocated. The corrected normal PR run owns real POSIX,
+INC-QML-46 was unallocated at this local checkpoint. The corrected normal PR run owns real POSIX,
 hosted Windows and optional-wheel matrix proof. New runner failures create a
 focused regression/correction obligation; local completion does not pass an
 unexecuted hosted check, typing gate or native device/system procedure.
+
+## INC-QML-46 — Explicit followed-directory upgrade fixture profile
+
+Status: **Implemented; local source/installed verification passes, corrected hosted proof pending**.
+Owner: manual discovery option and Qt policy-upgrade acceptance fixture.
+Acceptance: REQ-QML-020-AC03 and REQ-QML-011-AC01/AC03/AC04.
+Dependency: INC-QML-42/44/45.
+
+Hosted Linux source `38bf8cc` fails both manual/watch policy-upgrade cases because
+their directory alias is a POSIX symlink, but their shared runner and cold/full
+comparison use default discovery, which excludes followed directory symlinks.
+The native Windows junction fixture is traversed under that default and concealed
+the mismatched profile. The manual update parser additionally rejects the
+discovery option supported by the watch rebuild API. Add the explicit manual
+option and align the fixture; default discovery continues to exclude links.
+
+Acceptance matrix: the real CLI, watch update, initial older-policy publication,
+failed staging, repaired retry, full/cold comparison and repeat must use the same
+explicit followed-directory profile through `graphify update --follow-symlinks`
+and the existing watch API. Preserve exact alias source and
+topology assertions, prior stamp/cache/product retention and recovery. Default
+discovery still excludes a POSIX directory symlink; no fixture can broaden the
+analyzed corpus by changing a production default. Windows junction and real
+POSIX profiles retain their distinct capability evidence.
+
+Keep shared helper options default-compatible. The CLI owns option admission
+and forwards discovery to the existing rebuild owner; no source parser, Qt
+policy/schema, dependency or durable-product format changes. Unknown flags and
+multiple roots still reject before publication. Diagnostics are unchanged: forced
+publication failure retains its existing owner and recovery assertions. Exit
+with focused unchanged assertions, default-exclusion controls and corrected
+hosted Linux execution. Review the plan after the run and allocate another
+increment only for a separately reproduced gap.
+
+## INC-QML-47 — Native entry-spelling fixture expectation
+
+Status: **Corrected; local source/installed verification passes, corrected hosted proof pending**.
+Owner: membership alias warm-cache fixture. Acceptance: REQ-QML-020-AC01/AC02/AC03.
+Dependency: INC-QML-45.
+
+Hosted Windows optional-wheel source checks fail the warm-parser input spy for
+the real short-parent fixture. INC-QML-45 expands alternate NTFS entry spellings
+before parser dispatch. The spy still expects the unexpanded short parent even
+though smoke, cold/warm facts and membership identity pass. Require the exact
+long spelling for this native fixture and keep exact lexical spelling for a
+distinct symlink owner. Do not replace the assertion with physical equivalence
+that could hide a collapsed discovered owner.
+
+Retain all cached-Python exclusion, fresh native/QML/metadata input, source/ID,
+graph/membership parity, foreign/conflicting input, publication retention and
+recovery assertions. Production and diagnostic contracts do not change. Exit
+with the old expectation failing the unchanged accepted normalization, the
+corrected exact-path contract passing, and corrected hosted native evidence.
+Review all source lanes for another independently reproduced gap.
+
+### Combined exit review — INC-QML-46/47 and INC-CORE-08
+
+The source profile passes 70 cohort/discovery cases with two native capability/
+profile skips; broader CLI/watch compatibility passes 253 with five such skips.
+All seven new CLI cases and both corrected upgrade cases pass. Native shell
+consumer selection passes 161 with eight established platform exclusions; all
+eighteen helper cases pass. Membership source checks pass nine with seven actual
+file-symlink capability skips, one existing Hypothesis warning. These profiles
+overlap and do not form a full-suite total.
+
+The fresh 182-payload source-identical wheel passes unchanged QML/core/full-TEMP
+short-alias smoke and 118 installed cases with nineteen explicit capability/
+profile skips. The new CLI contracts, older-policy refresh, native short-parent
+warm inputs and all 59 prior co-owner/spelling cases pass individually. Loaded
+Graphify modules come from the artifact; dependencies, source and original
+coverage stay unchanged. Source/installed writer failures retain cache/products
+and repaired retry. Owned temporary fixtures are removed.
+
+Ruff, workflow syntax and actual Python shell/consumer admission pass. Current
+Pyright retains 604 exact baseline errors with zero added or removed; this is a
+failed gate. AST-only graph refresh completes. No further reproduced gap appears
+in the local exit review; INC-QML-48 remains unallocated. The next normal PR event
+owns corrected four-lane Linux, native Windows and twelve-lane optional-wheel
+proof. Existing physical device/system and advisory security limits remain
+explicit; no merge is performed by this increment.

@@ -578,3 +578,23 @@ They exercise actual NTFS junctions/hardlinks/short names, both batch orders,
 supplementary Unicode, conservative import stubs, cold/warm/reload, staged
 publication/API failure, retained cache/product bytes and repaired repeat.
 The previous 31/8,998 measurements remain checkpoint evidence, not current sizes.
+
+## Manual discovery option and acceptance profiles (INC-QML-46/47)
+
+`cli.dispatch_command` owns the update option parser and forwards the explicit
+`follow_symlinks` Boolean to the existing watch rebuild owner. `__main__.main`
+owns help output. The touched legacy CLI begins at 4,966 lines with a 4,980-line
+ceiling; help begins at 964 with a 970-line ceiling. CLI maintainer owns these
+bounded changes. Extract update argument admission only in a separately
+characterized increment if another option requires material growth; no mechanical
+dispatcher move is mixed into this correction.
+
+The 236-line final-parity helper keeps existing callers on default false.
+The 290-line discovered-alias module supplies explicit opt-in for the policy
+upgrade and retains a real POSIX default-exclusion control. The focused update
+module exercises actual parser, nested rebuild and publication, invalid input
+retention, foreign-target exclusion and help. The membership alias fixture keeps
+exact long-spelling versus lexical-symlink parser ownership alongside its cold/
+warm/ID/source/publication contracts. Policy 21, AST schema 12 and persistence
+formats remain unchanged. Shared native shell transport and CI admission belong
+to [INC-CORE-08](../COMPATIBILITY.md#native-shell-process-identity--inc-core-08).

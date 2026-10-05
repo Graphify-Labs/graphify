@@ -28,7 +28,8 @@ The separate [shared compatibility verification](#shared-compatibility-verificat
 records `REQ-CORE-` behavior and the all-extras environment. The recorded native
 Windows full run at `463ca32` has 8,818 passes, zero failures and 151 skips. Separate unchanged-
 source profiles pass all 76 Node and seven preprocessor/wheel cases previously
-skipped for setup. Linux/service and hosted execution remain unverified. The
+skipped for setup. Later real Linux/service checks execute within failed source
+jobs; complete corrected hosted execution remains unverified. The
 59-failure run above is historical; its failure identities are cleared in the
 current applicable Windows profile. Full typing still fails on existing errors.
 
@@ -130,10 +131,10 @@ owns setup, revision identity, exclusions and recovery.
 
 | Acceptance ID | Exact automated job/system assignment | Current evidence |
 | --- | --- | --- |
-| REQ-CORE-004-AC01 | `.github/workflows/ci.yml::test` four Python lanes; actual fixtures in `tests/test_non_regular_files.py`, `tests/test_cpp_preprocess.py`, `tests/test_qml_wheel_artifact.py`, `tests/test_falkordb_integration.py` | Configuration implemented and locally syntax-checked; real Linux/service execution unverified |
-| REQ-CORE-004-AC02 | `.github/workflows/ci.yml::windows-compatibility`; exact CORE functions above and assigned HTML/installer/shell modules | Local source/consumer assertions pass; new hosted lane unexecuted |
-| REQ-CORE-004-AC03 | Source identity/readiness, pytest, retention, service cleanup and artifact steps in both CI source profiles; GitHub run/job/artifact read for actual checkout | Local integrity checks pass; hosted exit, retained evidence, integrity and cleanup conclusions pending |
-| REQ-CORE-004-AC04 | CI trigger/permission/concurrency configuration review and hosted procedure's PR/recovery event audit | Configuration implemented and reviewed; actual hosted sequencing/cancellation remains a system gap |
+| REQ-CORE-004-AC01 | `.github/workflows/ci.yml::test` four Python lanes; actual fixtures in `tests/test_non_regular_files.py`, `tests/test_cpp_preprocess.py`, `tests/test_qml_wheel_artifact.py`, `tests/test_falkordb_integration.py` | Real Linux/service checks execute; source suite fails and other lanes are matrix-cancelled. Corrected four-lane acceptance remains open |
+| REQ-CORE-004-AC02 | `.github/workflows/ci.yml::windows-compatibility`; exact CORE functions above and assigned HTML/installer/shell modules | Hosted `38bf8cc`: 783 passes, 33 Bash-transport failures, 20 skips. INC-CORE-08 owns correction and revised executable proof |
+| REQ-CORE-004-AC03 | Source identity/readiness, pytest, retention, service cleanup and artifact steps in both CI source profiles; GitHub run/job/artifact read for actual checkout | Retained native artifact proves revision, JUnit and unchanged source/dependencies; failures remain failed jobs. Per-lane cleanup/integrity evidence is recorded at its checkpoint |
+| REQ-CORE-004-AC04 | CI trigger/permission/concurrency configuration review and hosted procedure's PR/recovery event audit | Normal PR events own both workflows; no duplicate dispatch. Existing matrix fail-fast cancels incomplete Ubuntu lanes after a source failure |
 
 Local configuration review parses both workflows with PyYAML `BaseLoader`,
 compiles each embedded Python block, checks extracted Ubuntu scripts with
@@ -352,6 +353,93 @@ Current workflow: **five passes, zero skips/failures/errors**, 13.38 seconds,
 native Windows PowerShell 5.1, Node 24.19.0 and actual uv. The focused test is
 109 physical lines; Ruff and whitespace checks pass. Original coverage bytes
 are retained. Corrected hosted execution and its complete evidence remain pending.
+
+### Native shell launch identity — INC-CORE-08
+
+Hosted `38bf8cc` records 783 native passes, 33 failures and 20 skips. Its retained
+artifact binds source/base/checkout, tools and unchanged 197 dependencies/source.
+Ten hook and 23 skill input-security cases launch the WSL stub through a bare
+Bash process name. A real direct probe confirms that PATH lookup selects Git
+Bash while native bare launch invokes another executable. Existing absolute
+preflight therefore cannot establish the ordinary Python consumer's identity.
+
+| Acceptance ID | Exact ordinary regression | Observable outcome |
+| --- | --- | --- |
+| REQ-CORE-004-AC02 | `tests/test_shell_portability_helpers.py::test_req_core004_ac02_admitted_shell_runs_real_posix_command` | Both selected absolute shells execute real POSIX syntax; no GNU-only assumption is imposed on POSIX |
+| REQ-CORE-004-AC02 | `tests/test_shell_portability_helpers.py::test_req_core004_ac02_native_cwd_shadow_requires_explicit_path_admission` | A real native CWD decoy shadows bare launch; configured-PATH selection excludes it until CWD is explicitly admitted |
+| REQ-CORE-004-AC02 | `tests/test_shell_portability_helpers.py::test_req_core004_ac02_real_consumers_resist_native_cwd_shadow` | Actual hook Bash/sh and skillgen launchers preserve the admitted process identity and original result assertions |
+| REQ-CORE-004-AC03 | `tests/test_shell_portability_helpers.py::test_req_core004_ac03_missing_shell_selection_is_rejected`; `tests/test_shell_portability_helpers.py::test_req_core004_ac03_invalid_shell_identity_is_rejected`; `tests/test_shell_portability_helpers.py::test_req_core004_ac03_unadmitted_shell_name_is_rejected` | Missing/invalid identity or unadmitted names reject before launch without global/system fallback |
+
+The unchanged original consumer functions fail three real decoy regressions;
+fifteen helper cases pass. Corrected ordinary shell/hook/skillgen selection
+passes **161 cases, eight explicit Windows/POSIX profile skips**, with all
+eighteen helper cases passing. Raw literal payload, hostile-input rejection,
+legitimate path, nonexistent path and vulnerable positive controls are retained.
+No subprocess-resolution adapter changes the process under test.
+
+The complete revised workflow consumer block executes before collection through
+the same helper: both actual Git shells prove the selected Python interpreter
+and Node 24.19.0 executable identity. Source (682 Python files), 197 dependencies
+and original coverage remain unchanged during this proof; the owned forwarding
+shim is removed. Shared helper/test files measure 56/161 lines, hooks retain
+1,600 and skillgen 222. Both workflows pass actionlint 1.7.12; all extracted
+Bash/Python blocks compile, and complete native blocks parse in Windows
+PowerShell 5.1 and pwsh 7.6.6. CI measures 467 within its documented 470 ceiling.
+These are local consumer/configuration results; corrected hosted proof remains
+assigned to the next normal PR event.
+
+### Manual discovery and native fixture contracts — INC-QML-46/47
+
+The `38bf8cc` hosted Linux older-policy cases fail because the fixture omits
+followed-directory discovery. The real manual parser separately rejects that
+option with exit 2. INC-QML-46 adds the explicit parser option and retains its
+default false, while every alias upgrade entry point uses the same supported
+profile. INC-QML-47 corrects only the short-parent parser-spy expectation under
+the already accepted INC-QML-45 long-spelling contract. Exact lexical symlink
+ownership and every existing cold/warm/native/ID/retention assertion remain.
+
+| Acceptance ID | Exact ordinary regression | Observable outcome |
+| --- | --- | --- |
+| REQ-QML-011-AC01/AC04 | `tests/test_qt_update_discovery_profile.py::test_req_qml011_ac01_ac04_cli_default_and_optin_reach_real_publication` | Actual parser and nested rebuild receive false/true respectively and publish identical facts/products when corpus scope is unchanged |
+| REQ-QML-011-AC01 | `tests/test_qt_update_discovery_profile.py::test_req_qml011_ac01_optin_cannot_discover_foreign_qt_provider`; `tests/test_qt_update_discovery_profile.py::test_req_qml011_ac01_cli_help_exposes_supported_optin` | Real foreign alias cannot admit a native provider; actual help exposes the option and default |
+| REQ-QML-011-AC03 | `tests/test_qt_update_discovery_profile.py::test_req_qml011_ac03_invalid_cli_profile_refuses_before_rebuild_or_publication` | Four actual unknown-option/multiple-root orderings reject before rebuild and retain accepted graph/state/cache bytes |
+| REQ-QML-020-AC03; REQ-QML-011-AC03/AC04 | `tests/test_source_alias_provenance.py::test_req_qml020_ac03_policy19_products_refresh_retain_and_recover` | Real manual/watch opt-in refreshes the old-policy cohort; staged failure retains products/stamp, then repair/full parity/repeat succeeds |
+| REQ-QML-020-AC03 | `tests/test_source_alias_provenance.py::test_req_qml020_ac03_directory_symlink_requires_explicit_discovery_profile` | Real POSIX directory link remains excluded by default and appears only with explicit discovery; native Windows cannot supply this profile |
+| REQ-QML-020-AC01 | `tests/test_qt_project_membership_aliases.py::test_req_qml020_ac01_real_parent_alias_preserves_smoke_and_cold_warm_identity` | Exact native long-parent or lexical symlink parser inputs, warm unrelated cache, graph/IDs/membership parity and unchanged source bytes |
+
+Source command: environment Python `-X utf8 -m pytest` with the focused seven
+cohort/discovery modules, `-q --tb=short -p no:cacheprovider`, retained JUnit.
+It passes **70 cases, two actual file-symlink/POSIX-profile skips**; all seven
+new CLI cases and both upgrade operations pass. Broader CLI/watch compatibility
+passes **253 cases, five existing capability/profile skips**. The separate
+membership source module passes **nine cases, seven actual file-symlink skips**,
+with one existing Hypothesis collection warning. These overlapping profiles are
+not combined into a full-suite total.
+
+Fresh wheel SHA-256:
+`52a9c79c59ca2c1f985b3900655a6acf9f55b866b616e3d7f33d7767c17e449a`.
+All 182 Python payloads equal source and installation; only CLI/help differs
+from the preceding `c815eef8` wheel. Unchanged isolated QML/core and actual full-
+TEMP short-alias smoke pass. Twelve ordinary installed modules run through
+isolated `-I -X utf8` Python, `pytest --import-mode=importlib -p no:cacheprovider`,
+with a retained JUnit report and an offline audit guard. Only exact owned native
+junction fixture setup is admitted; analyzed code and network execution remain
+forbidden. Result: **118 passed, nineteen explicit skips, zero failures/errors/
+warnings**, 43.80 seconds pytest. Eighteen skips are actual file-symlink capability
+exclusions; one is the POSIX default-discovery profile. All 69 assigned new/prior
+co-owner/spelling/CLI/upgrade/native warm-input cases pass individually with no
+skip. All 154 loaded Graphify modules come from that artifact. Source (682 Python
+files), source 197/optional 40/core 30 dependency versions and original coverage
+are retained; owned fixtures are removed.
+
+Ruff 0.15.14 passes targeted/full source checks. Pyright 1.1.409/Python 3.12.14
+reports **604 errors, zero warnings, 678 files**. The fresh immutable `135d50b`
+baseline has 604 matching errors across 658 files: zero added or removed.
+Ten touched targets retain two exact existing errors, with zero new/removed.
+Typing remains a failed gate. Current CI consumer/configuration proof is recorded
+above; repository AST-only refresh completes with 22,641 nodes/51,218 edges and
+the existing deliberately malformed Luau fixture warning. No further local gap
+is reproduced; the corrected normal PR event owns hosted acceptance.
 
 ### Discovered source identity — INC-QML-42
 

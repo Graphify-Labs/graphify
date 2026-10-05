@@ -13,15 +13,17 @@ other-platform and new hosted behavior remains unverified.
 Dependency-directed cache optimization and Qt runtime equivalence remain deferred.
 INC-QML-10 native ownership corrections, including accepted-context source/span
 deduplication, pass local source, final broad and reviewed installed-artifact checks.
-INC-QML-11 implements bounded ancestor lookup with local source/update evidence;
-installed integration and INC-QML-28 emission admission remain pending.
+INC-QML-11 implements bounded ancestor lookup. Its installed integration and
+INC-QML-28 emission admission pass the recorded local source/artifact profiles;
+current hosted acceptance is tracked separately in validation and traceability.
 INC-QML-12 constructor source proof and INC-QML-13 source containment/view counts
 are implemented with local source and reviewed installed-artifact validation. Missing constructor class proof
 cannot be supplied by a same-name header prototype; source containment alone
 does not establish a native endpoint.
-INC-QML-14 membership projection is locally complete and REQ-QML-020 is Verified
-within the bounded static profile with policy 6/schema 7. INC-QML-15 has bounded local overload implementation; installed integration
-remains pending.
+INC-QML-14 membership projection and INC-QML-15 bounded overload resolution pass
+the recorded local source/artifact profiles. Current analysis uses policy 21
+and AST schema 12. Expanded REQ-QML-020 alias contracts retain their separately
+recorded hosted corrections; an earlier profile does not verify changed behavior.
 
 ## Ownership and dependency direction
 
@@ -1254,3 +1256,24 @@ Combined Qt policy 21 refreshes older derived products; AST schema 12 and cache/
 publication formats remain unchanged. Generic-only historical outputs use an
 explicit full/forced rebuild. Acceptance records distinguish the earlier
 policy20 checkpoint from the combined source, installed and hosted results.
+
+## Manual directory-link update profile (INC-QML-46)
+
+The update parser accepts `--follow-symlinks` in either position around its one
+root argument and forwards the explicit Boolean to `_rebuild_code`. Omission
+retains false. The existing rebuild/discovery owner applies ignore rules and
+physical containment, selects inputs and publishes the graph/state cohort. A
+saved graph or scan-root marker does not persist this traversal permission.
+Unknown flags and multiple roots reject with the existing option diagnostics
+and exit 2 before rebuild or publication. Accepted failures retain their existing
+writer diagnostic, product/cache retention and retry policy; no new error code
+or publication boundary is introduced. [D25](ARCHITECTURE.md#d25--manual-directory-link-discovery-is-an-explicit-option)
+records the scope decision.
+
+Policy-upgrade fixtures use the explicit profile for older-state setup, manual/
+watch updates, failed staging, retry, full comparison and repeat. A separate real
+POSIX control retains default exclusion. Native short-parent fixture expectations
+under INC-QML-47 require exact long entry spelling after input admission, while
+the distinct symlink fixture still requires its exact lexical parser owner.
+Neither change relaxes graph, native endpoint, cache or persisted provenance
+assertions. Source, installed and hosted outcomes remain revision-bound.

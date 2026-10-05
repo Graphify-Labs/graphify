@@ -22,6 +22,7 @@ not a passing assertion.
 | INC-CORE-05 | Native hook consumer and literal-path completion | REQ-CORE-001-AC01/AC05 | Exact Cmd and PowerShell argument transport, expansion-sensitive paths, dependency rejection and hook ownership; full-source and installed-artifact proof |
 | INC-CORE-06 | Hosted Linux evidence and native Windows compatibility lane | REQ-CORE-004-AC01–AC04 | Required tools/service and reviewed wheel admitted; workflow syntax/configuration reviewed; hosted jobs retain applicable passing results and exact revision/integrity evidence |
 | INC-CORE-07 | Deterministic hosted Windows tool selection | REQ-CORE-004-AC02/AC03 | Multiple real application matches preserve the first PATH identity, required version and executable invocation; missing tools reject before collection; normal PR evidence records the corrected revision |
+| INC-CORE-08 | Preserve admitted shell identity at native process launch | REQ-CORE-004-AC02/AC03 | Actual Python subprocesses execute the selected absolute Bash/sh file, preserve literal/security assertions and reject missing shells; corrected normal PR results retain exact identity and outcomes |
 
 INC-CORE-01–05 have current native source evidence below. The hook/filesystem
 corrections also have independent installed-consumer evidence. INC-CORE-02
@@ -342,6 +343,48 @@ dependency contract changes; the compatibility procedure owns this infrastructur
 design. Review the plan after the corrected run and add further work only for
 another reproduced gap.
 
+## Native shell process identity — INC-CORE-08
+
+Status: **Implemented; local consumer/configuration verification passes, corrected hosted proof pending**.
+Owner: shared shell test transport and native CI admission. Acceptance:
+REQ-CORE-004-AC02/AC03. Dependency: INC-CORE-07.
+
+Hosted source `38bf8cc` reaches native pytest with 783 passes, 33 failures and
+20 skips. All failures belong to Bash allowlist/payload and generated skill input
+security cases. Git Bash is present and the explicit preflight passes, but Python
+subprocesses launch the Windows WSL stub when given the bare `bash` name. A real
+native reproduction resolves Git Bash with PATH lookup, then obtains a WSL
+installation notice from bare process launch; launching that absolute Git Bash
+file succeeds. Availability lookup alone does not bind process identity.
+
+Acceptance matrix: select and execute the actual admitted absolute shell;
+preserve literal paths, raw payloads, hostile-input rejection and vulnerable
+positive controls; reject unavailable shell selection without collection skips;
+prove a competing native/CWD executable cannot replace the selected shell.
+MSYS path conversion uses that same installation's mapper. Native CI preflight
+must exercise the ordinary Python consumer boundary, and retain selected shell
+identity with version, revision, JUnit and integrity evidence. POSIX lookup and
+production discovery defaults remain unchanged.
+
+This is test/environment transport ownership. It changes no Graphify runtime,
+extraction epoch, dependency, cache or product-persistence contract. Missing or
+failed consumers reject setup; process-local admission cannot alter analyzed
+data. Existing job failure preservation and cleanup own recovery. No new product
+diagnostic code or infrastructure rerun is required. Exit with the unchanged
+failed cases passing, executable identity/rejection regressions and corrected
+normal PR evidence; review new outcomes before allocating further work.
+
+Current shell selection resolves only qualified candidates in configured PATH
+order and launches the absolute selected file. Native implicit CWD/system search
+cannot replace it; an explicit CWD PATH entry remains eligible. All original
+literal/hostile-input/control assertions are preserved. Eighteen helper cases
+pass, including three real consumer failures before correction. The combined
+shell/hook/skillgen source selection passes 161 with eight established profile
+exclusions. Revised preflight proves actual Python and Node identities through
+both selected shells, and retains `shell-consumers.json`. Exact commands, counts,
+skip identities and limits belong to
+[traceability](../tests/TRACEABILITY.md#native-shell-launch-identity--inc-core-08).
+
 ## Focused legacy ownership and size constraints
 
 New helpers/tests remain below 300 physical lines. Existing oversized files keep
@@ -357,7 +400,7 @@ their established owners and receive only the focused correction/profile changes
 | `tests/test_install_roundtrip.py` | 318 | 323 | Install-roundtrip test owner; keep installed bundle identity in one roundtrip boundary |
 | `tests/test_skill_auto_refresh.py` | 527 | 541 | Refresh test owner; split platform adaptation from refresh lifecycle only in a separate characterized move |
 | `tests/test_watch.py` | 5100 | 5104 | Watch test owner; new portable failure cases live in the focused filesystem-profile module |
-| `.github/workflows/ci.yml` | 106 | 450 | CI maintainer; full Ubuntu and focused Windows execution/evidence sequencing remain one cohesive workflow; extract a shared evidence helper when another caller needs it or further meaningful growth exceeds this ceiling |
+| `.github/workflows/ci.yml` | 106 | 470 | CI maintainer; full Ubuntu and focused Windows execution/evidence sequencing remain one cohesive workflow; CORE-08 adds actual Python shell/consumer admission after the earlier 450-line checkpoint; extract a shared evidence helper when another caller needs it or further meaningful growth exceeds this ceiling |
 
 The ceilings authorize this bounded change, not routine growth. No mechanical
 extractor move, broad refactor or generated artifact edit is mixed into the fixes.
@@ -366,7 +409,7 @@ The CI cohesion exception retains tool/service admission, source/dependency
 identity, test exit preservation and cleanup ordering together. Splitting these
 blocks solely to meet 300 lines would obscure their execution contract. The
 measured workflow size and local syntax checks belong to the increment's
-traceability record; 450 is a bounded ceiling, not permission for routine growth.
+traceability record; 470 is a bounded ceiling, not permission for routine growth.
 
 The current branch remains the integration checkout. Delegated owners have
 disjoint installer, shell-fixture, filesystem-fixture and Terraform-test scopes;

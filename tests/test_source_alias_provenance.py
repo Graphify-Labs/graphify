@@ -237,7 +237,7 @@ def test_req_qml020_ac03_policy19_products_refresh_retain_and_recover(
     monkeypatch.setenv("GRAPHIFY_NO_TIPS", "1")
     with monkeypatch.context() as prior:
         prior.setattr(policy, "QT_POLICY_VERSION", 19)
-        run(root, prior, operation)
+        run(root, prior, operation, follow_symlinks=True)
     output = root / "graphify-out"
     before, old_stamp = snapshot(output), state.read_qt_fingerprint(output)
     observed, real_extract = [], extraction.extract
@@ -258,20 +258,33 @@ def test_req_qml020_ac03_policy19_products_refresh_retain_and_recover(
         failed.setattr(state, "commit_qt_analysis", fail_after_staging)
         if operation == "manual":
             with pytest.raises(SystemExit) as rejection:
-                run(root, failed, operation, [])
+                run(root, failed, operation, [], follow_symlinks=True)
             assert rejection.value.code == 1
         else:
-            assert not _rebuild_code(root, changed_paths=[], no_cluster=True)
+            assert not _rebuild_code(root, changed_paths=[], no_cluster=True, follow_symlinks=True)
     assert snapshot(output) == before and state.read_qt_fingerprint(output) == old_stamp
     no_scratch(output)
-    repaired = run(root, monkeypatch, operation, [])
+    repaired = run(root, monkeypatch, operation, [], follow_symlinks=True)
     assert state.read_qt_fingerprint(output) != old_stamp
     assert observed and {"Main.qml", "backend.h", "loader.cpp"} <= set.union(*observed)
     assert "linked/member.py" in {data.get("source_file") for _, data in repaired.nodes(data=True)}
-    paths = extraction.collect_files(root, root=root)
+    paths = extraction.collect_files(root, root=root, follow_symlinks=True)
     _, full = extracted(paths, root, tmp_path / "full")
     assert normalized(repaired) == normalized(full)
     accepted = snapshot(output)
-    assert normalized(run(root, monkeypatch, operation, [])) == normalized(repaired)
+    assert normalized(run(root, monkeypatch, operation, [], follow_symlinks=True)) == normalized(repaired)
     assert snapshot(output) == accepted
     no_scratch(output)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory-symlink discovery profile")
+def test_req_qml020_ac03_directory_symlink_requires_explicit_discovery_profile(tmp_path, directory_alias):
+    """A real alias remains absent by default; only supported opt-in admits it."""
+    root = tmp_path.resolve()
+    real = root / "real"
+    real.mkdir()
+    (real / "member.py").write_bytes(PYTHON)
+    directory_alias(root / "linked", real)
+    (root / ".graphifyignore").write_text("real/\n", encoding="utf-8")
+    assert extraction.collect_files(root, root=root) == []
+    assert extraction.collect_files(root, root=root, follow_symlinks=True) == [root / "linked/member.py"]

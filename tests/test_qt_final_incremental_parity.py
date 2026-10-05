@@ -82,20 +82,26 @@ def clean(root, cache):
     return load_node_link_graph(json.loads(output.read_text(encoding="utf-8")))
 
 
-def manual_update(root, monkeypatch):
+def manual_update(root, monkeypatch, *, follow_symlinks=False):
     # Suppress only unrelated installed-skill maintenance. The actual CLI,
     # locking, extraction, resolution, persistence and update driver all run.
     monkeypatch.setattr(entrypoint, "_check_skill_version", lambda *_: None)
     monkeypatch.setattr(entrypoint, "_refresh_stale_skills", lambda: None)
-    monkeypatch.setattr(entrypoint.sys, "argv", ["graphify", "update", str(root), "--no-cluster"])
+    argv = ["graphify", "update", str(root), "--no-cluster"]
+    if follow_symlinks:
+        argv.append("--follow-symlinks")
+    monkeypatch.setattr(entrypoint.sys, "argv", argv)
     entrypoint.main()
 
 
-def run(root, monkeypatch, operation, changes=None):
+def run(root, monkeypatch, operation, changes=None, *, follow_symlinks=False):
+    # Alias-specific fixtures opt into the real supported discovery profile;
+    # ordinary fixtures keep the production default and their existing scope.
     if operation == "manual":
-        manual_update(root, monkeypatch)
+        manual_update(root, monkeypatch, follow_symlinks=follow_symlinks)
     else:
-        assert _rebuild_code(root, changed_paths=changes, no_cluster=True)
+        assert _rebuild_code(root, changed_paths=changes, no_cluster=True,
+                             follow_symlinks=follow_symlinks)
     return published(root)
 
 

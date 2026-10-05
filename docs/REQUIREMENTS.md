@@ -255,7 +255,7 @@ Cold rebuild, warm cache, manual update, and watch agree on normalized Qt/QML ou
 
 **Acceptance Criteria**
 
-1 - Cold build, warm build, manual update and watch produce equal normalized Qt/QML graphs for the supported fixture corpus after a normal QML edit. In mixed and generic corpora, a watch notification for one already admitted nonsemantic regular-file source refreshes every admitted nonsemantic contained owner of the same physical bytes, including supported directory aliases and hardlinks, while preserving distinct walked IDs and unrelated facts. Semantic-backed siblings retain their existing tier; identity grouping cannot discover or admit another source. (`REQ-QML-011-AC01`)
+1 - Cold build, warm build, manual update and watch produce equal normalized Qt/QML graphs for the supported fixture corpus after a normal QML edit. Manual `graphify update --follow-symlinks` admits the same contained directory-link discovery profile as the existing watch rebuild option; omission preserves normal discovery defaults, and ignored or external targets remain excluded. In mixed and generic corpora, a watch notification for one already admitted nonsemantic regular-file source refreshes every admitted nonsemantic contained owner of the same physical bytes, including supported directory aliases and hardlinks, while preserving distinct walked IDs and unrelated facts. Semantic-backed siblings retain their existing tier; identity grouping cannot discover or admit another source. (`REQ-QML-011-AC01`)
 
 2 - Metadata-only and C++-registration-only edits, provider deletion/rename and duplicate-provider introduction update links in unchanged QML and remove stale derived edges. (`REQ-QML-011-AC02`)
 
@@ -510,6 +510,14 @@ The compatibility profile passes 640 cases with 21 recorded capability/profile
 skips; installed contracts pass 102 with eleven file-symlink skips. Corrected
 hosted acceptance remains open; overlapping local counts are not a full-suite total.
 
+Hosted `38bf8cc` exposes a followed-directory setup mismatch and missing manual
+update discovery option. INC-QML-46 adds that explicit option and aligns every
+entry point and clean comparison, preserving alias and failed-publication assertions.
+Production defaults, policy 21 and schema 12 remain unchanged; passing junction
+fixtures alone cannot establish the real POSIX profile.
+INC-QML-47 aligns the native short-parent parser-spy expectation with accepted
+long-spelling admission while retaining exact lexical symlink owner checks.
+
 ### REQ-QML-021 — Middle mouse graph navigation
 
 Holding the middle mouse button and dragging pans the displayed graph in both
@@ -602,13 +610,13 @@ dependencies, and reports failures and exclusions explicitly.
 
 1 - Ubuntu Python 3.10, 3.12, 3.13 and 3.14 jobs execute the full source suite with all frozen extras, a real C preprocessor, Bash/sh, Node and a reviewed wheel input. A disposable pinned FalkorDB service admits graph commands before its persistence/idempotency tests run. Missing tools or the wrong service fail readiness; they cannot establish passing acceptance through skips. Real POSIX object, permission and deleted-directory fixtures execute where applicable. (`REQ-CORE-004-AC01`)
 
-2 - A Windows Python 3.12 job executes the assigned native hook, installer, filesystem recovery, Terraform and emitted-script regressions with real Cmd/Windows PowerShell, Git Bash/sh and Node 24.19.0. Application resolution selects the first executable in the configured PATH even when multiple applications match; the selected Node version must be 24.19.0. Bash forwards to the selected Python interpreter; PATH cannot substitute a global Graphify or invoke an installation fallback. Tool preflight fails before collection when a required consumer is unavailable. POSIX-only exclusions retain their separate Linux assignment. (`REQ-CORE-004-AC02`)
+2 - A Windows Python 3.12 job executes the assigned native hook, installer, filesystem recovery, Terraform and emitted-script regressions with real Cmd/Windows PowerShell, Git Bash/sh and Node 24.19.0. Application resolution selects the first executable in the configured PATH even when multiple applications match; the selected Node version must be 24.19.0. Python test subprocesses launch the admitted absolute Bash/sh executable: native system/CWD search cannot replace it with another shell. Bash forwards to the selected Python interpreter; PATH cannot substitute a global Graphify or invoke an installation fallback. Tool preflight exercises that consumer boundary and fails before collection when a required consumer is unavailable. POSIX-only exclusions retain their separate Linux assignment. (`REQ-CORE-004-AC02`)
 
 3 - Source jobs retain the workflow/event/ref, PR source head and base, actual checkout SHA, interpreter/tool/dependency versions, pytest exit, JUnit outcomes and skip reasons. Tests preserve the checkout, tracked source/configuration and installed dependency identities. Failed pytest remains a failed job when evidence/integrity steps run; unavailable evidence is reported explicitly. Disposable test graphs and the job-owned service are removed with confirmed cleanup; failed or unconfirmed cleanup cannot establish acceptance. Fake SDK providers and public fixtures supply test data without credentials or private corpus inputs. (`REQ-CORE-004-AC03`)
 
 4 - The established push/PR/dispatch triggers and existing required/advisory gate policies remain intact. One PR event owns its validation; no equivalent full feature-push dispatch is added. Obsolete PR revisions can cancel their own workflow runs, while default-branch and explicit recovery runs retain distinct groups and cannot be cancelled by a later PR revision. Jobs use read-only repository permissions. (`REQ-CORE-004-AC04`)
 
-Status: **Implemented configuration; complete hosted execution unverified**. INC-CORE-06/07 in
+Status: **Implemented configuration; hosted failures require correction**. INC-CORE-06–08 in
 the [compatibility plan](COMPATIBILITY.md#plan-and-acceptance-matrix) owns readiness,
 workflow validation, publication and exact-revision evidence. Local passing
 tests and configuration checks do not establish hosted acceptance.
