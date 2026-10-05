@@ -2527,10 +2527,12 @@ def _astro_mask_non_script(src: str) -> str:
     chars = [c if c in "\r\n" else " " for c in src]
     for start, end in keep:
         chars[start:end] = src[start:end]
-        # Terminate the region in place of the following `<`, so two scripts on
-        # one line don't run together into a single statement.
+        # End a trailing // comment before terminating the statement, as in
+        # the Svelte masker. U+2028 keeps source line numbers unchanged; its
+        # three UTF-8 bytes replace three ASCII bytes from the closing tag.
+        # Frontmatter ends at a preserved newline and needs no terminator.
         if end < len(chars) and chars[end] == " ":
-            chars[end] = ";"
+            chars[end:end + 4] = ["\u2028", ";", "", ""]
     return "".join(chars)
 
 
