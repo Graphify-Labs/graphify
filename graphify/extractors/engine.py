@@ -1400,7 +1400,7 @@ def _python_collect_assignment_targets(node, source: bytes, out: set[str]) -> No
 # Languages whose `self`/`this` member calls bind through _self_call_target.
 _SELF_CALL_LANGUAGES = frozenset({
     "tree_sitter_python", "tree_sitter_javascript", "tree_sitter_typescript",
-    "tree_sitter_swift", "tree_sitter_ruby",
+    "tree_sitter_swift", "tree_sitter_ruby", "tree_sitter_php",
 })
 
 def _self_call_target(
@@ -1413,9 +1413,9 @@ def _self_call_target(
     methods_by_owner: dict[tuple[str, str], str],
     class_bases: dict[str, list[str]],
     walk_bases: bool = True,
+    require_method_owner: bool = False,
 ) -> str | None:
-    """In-file target of `self.m()` / `cls.m()` / `super().m()` in Python and
-    `this.m()` / `super.m()` in JS/TS, else None.
+    """In-file target of a known current-instance or base-instance method call.
 
     ``walk_bases=False`` stops after the caller's own class and otherwise keeps
     the plain lookup: JS/TS `extends` edges come from the later symbol pass, so
@@ -1436,7 +1436,7 @@ def _self_call_target(
         scope = scope_parents.get(scope)
     fallback = label_to_nid.get(callee)
     if not scope:
-        return fallback
+        return None if require_method_owner else fallback
     level = [method_owner[scope]]
     seen: set[str] = set()
     skip_own = receiver == "super"
@@ -6532,6 +6532,8 @@ def _extract_generic(
             if e["relation"] == "method":
                 method_owner[e["target"]] = e["source"]
                 name = label_by_nid.get(e["target"], "").strip("()").lstrip(".")
+                if config.ts_module == "tree_sitter_php":
+                    name = name.casefold()
                 methods_by_owner.setdefault((e["source"], name), e["target"])
 
     def _fields_up_chain(tables: dict, class_nid) -> dict:
@@ -7099,6 +7101,12 @@ def _extract_generic(
                     name_node = node.child_by_field_name("name")
                     if name_node:
                         callee_name = _read_text(name_node, source)
+                    receiver = node.child_by_field_name("object")
+                    if (receiver is not None
+                            and _read_text(receiver, source) == "$this"
+                            and callee_name
+                            and callee_name.casefold() in _LANGUAGE_BUILTIN_GLOBALS):
+                        self_receiver = "this"
             elif config.ts_module == "tree_sitter_cpp":
                 # C++: function field, then field_expression/qualified_identifier
                 func_node = node.child_by_field_name(config.call_function_field) if config.call_function_field else None
@@ -7288,7 +7296,9 @@ def _extract_generic(
             # receiver-typed defers just past this comment) means it can only ever
             # reach an edge through a guarded, receiver-typed resolver, never the
             # unguarded bare-name path a real god node would need.
+            # A known PHP $this receiver resolves against its owning class's methods.
             _builtin_member_call = is_member_call and callee_name in _LANGUAGE_BUILTIN_GLOBALS
+            php_builtin_self_call = config.ts_module == "tree_sitter_php" and self_receiver == "this"
             if callee_name and (
                 callee_name not in _LANGUAGE_BUILTIN_GLOBALS or _builtin_member_call
             ):
@@ -7329,7 +7339,7 @@ def _extract_generic(
                     and is_member_call
                     and not lua_self_qualified
                 )
-                if _python_defer or _java_defer or _builtin_member_call or _lua_member_defer or (
+                if _python_defer or _java_defer or (_builtin_member_call and not php_builtin_self_call) or _lua_member_defer or (
                     is_member_call
                     and member_receiver
                     and (
@@ -7356,13 +7366,17 @@ def _extract_generic(
                         and member_receiver in ("self", "cls", "super")
                     ):
                         tgt_nid = _self_call_target(
-                            caller_nid, callee_name, self_receiver or member_receiver or "",
+                            caller_nid, callee_name.casefold() if php_builtin_self_call else callee_name,
+                            self_receiver or member_receiver or "",
                             label_to_nid, scope_parents, method_owner, methods_by_owner,
                             _local_bases,
                             walk_bases=config.ts_module not in (
                                 "tree_sitter_javascript", "tree_sitter_typescript",
                             ),
+                            require_method_owner=php_builtin_self_call,
                         )
+                        if php_builtin_self_call and tgt_nid not in method_owner:
+                            tgt_nid = None
                     else:
                         tgt_nid = label_to_nid.get(callee_name)
                     # A qualified `new A.B.Foo()` whose bare name matches only a
