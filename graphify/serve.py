@@ -74,6 +74,11 @@ def _load_graph(graph_path: str) -> nx.Graph:
         except TypeError:
             G = json_graph.node_link_graph(data)
         G.graph["_logical_directed"] = _logical_directed
+        # node_link_graph drops top-level keys other than data["graph"], so the
+        # build commit export.to_json writes there is stashed by hand (#3354).
+        _commit = data.get("built_at_commit")
+        if isinstance(_commit, str) and _commit.strip():
+            G.graph["_built_at_commit"] = _commit.strip()
         # Attach the work-memory overlay (derived sidecar next to graph.json) so
         # the query/MCP read surface can annotate NODE lines display-only. Empty
         # when no sidecar exists, leaving un-annotated output byte-identical.
@@ -2257,6 +2262,29 @@ def _build_server(graph_path: str):
             f"EXTRACTED: {round(confs.count('EXTRACTED')/total*100)}%\n"
             f"INFERRED: {round(confs.count('INFERRED')/total*100)}%\n"
             f"AMBIGUOUS: {round(confs.count('AMBIGUOUS')/total*100)}%\n"
+            f"{_build_commit_line()}"
+        )
+
+    def _build_commit_line() -> str:
+        """Which commit the graph was built from, and whether HEAD has moved on.
+
+        An MCP client cannot stat graph.json, so this is its only staleness
+        signal (#3354). HEAD is read at query time from the repo holding the
+        graph (the same anchor export.to_json stamps from); no git or no repo
+        just drops the HEAD comparison. Empty when the graph has no commit.
+        """
+        commit = getattr(G, "graph", {}).get("_built_at_commit")
+        if not commit:
+            return ""
+        from graphify.export import _git_head
+        head = _git_head(Path(active_graph_path).parent)
+        if not head:
+            return f"Built at commit: {commit}\n"
+        if head == commit:
+            return f"Built at commit: {commit} (matches HEAD)\n"
+        return (
+            f"Built at commit: {commit}\n"
+            f"HEAD is {head[:7]}, graph built at {commit[:7]}: graph may be stale\n"
         )
 
     def _tool_shortest_path(arguments: dict) -> str:
