@@ -630,24 +630,39 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
             return (u, v, data.get("relation", ""))
         return (min(u, v), max(u, v), data.get("relation", ""))
 
-    old_edge_keys = {
-        edge_key(G_old, u, v, d)
+    def edge_dir(data: dict) -> tuple | None:
+        # Stored direction of an undirected edge (build_from_json, load_node_link_graph).
+        if "_src" in data and "_tgt" in data:
+            return (data["_src"], data["_tgt"])
+        return None
+
+    old_edge_dirs = {
+        edge_key(G_old, u, v, d): edge_dir(d)
         for u, v, d in G_old.edges(data=True)
     }
-    new_edge_keys = {
-        edge_key(G_new, u, v, d)
+    new_edge_dirs = {
+        edge_key(G_new, u, v, d): edge_dir(d)
         for u, v, d in G_new.edges(data=True)
     }
+    old_edge_keys = set(old_edge_dirs)
+    new_edge_keys = set(new_edge_dirs)
 
-    added_edge_keys = new_edge_keys - old_edge_keys
-    removed_edge_keys = old_edge_keys - new_edge_keys
+    # A reversed edge (a->b became b->a) keeps its undirected key. Report it as
+    # removed + added only when both snapshots carry _src/_tgt and they differ,
+    # so graphs without the markers diff exactly as before (#4067).
+    reversed_edge_keys = {
+        k for k in old_edge_keys & new_edge_keys
+        if old_edge_dirs[k] and new_edge_dirs[k] and old_edge_dirs[k] != new_edge_dirs[k]
+    }
+    added_edge_keys = (new_edge_keys - old_edge_keys) | reversed_edge_keys
+    removed_edge_keys = (old_edge_keys - new_edge_keys) | reversed_edge_keys
 
     new_edges_list = []
     for u, v, d in G_new.edges(data=True):
         if edge_key(G_new, u, v, d) in added_edge_keys:
             new_edges_list.append({
-                "source": u,
-                "target": v,
+                "source": d.get("_src", u),
+                "target": d.get("_tgt", v),
                 "relation": d.get("relation", ""),
                 "confidence": d.get("confidence", ""),
             })
@@ -656,8 +671,8 @@ def graph_diff(G_old: nx.Graph, G_new: nx.Graph) -> dict:
     for u, v, d in G_old.edges(data=True):
         if edge_key(G_old, u, v, d) in removed_edge_keys:
             removed_edges_list.append({
-                "source": u,
-                "target": v,
+                "source": d.get("_src", u),
+                "target": d.get("_tgt", v),
                 "relation": d.get("relation", ""),
                 "confidence": d.get("confidence", ""),
             })

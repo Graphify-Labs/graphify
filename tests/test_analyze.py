@@ -347,6 +347,39 @@ def test_graph_diff_empty_diff():
     assert diff["summary"] == "no changes"
 
 
+def _make_marked_graph(src, tgt):
+    """Helper: undirected graph whose one edge stores its direction in _src/_tgt."""
+    G = nx.Graph()
+    G.add_node("n1", label="Alpha")
+    G.add_node("n2", label="Beta")
+    G.add_edge(src, tgt, relation="calls", confidence="EXTRACTED", _src=src, _tgt=tgt)
+    return G
+
+
+def test_graph_diff_reversed_edge_reported():
+    # #4067: n1 calls n2 becoming n2 calls n1 must not vanish from the diff.
+    diff = graph_diff(_make_marked_graph("n1", "n2"), _make_marked_graph("n2", "n1"))
+    assert [(e["source"], e["target"]) for e in diff["new_edges"]] == [("n2", "n1")]
+    assert [(e["source"], e["target"]) for e in diff["removed_edges"]] == [("n1", "n2")]
+    assert diff["summary"] == "1 new edge, 1 edge removed"
+
+
+def test_graph_diff_unchanged_direction_no_changes():
+    diff = graph_diff(_make_marked_graph("n2", "n1"), _make_marked_graph("n2", "n1"))
+    assert diff["new_edges"] == []
+    assert diff["removed_edges"] == []
+    assert diff["summary"] == "no changes"
+
+
+def test_graph_diff_reversed_edge_without_markers_unchanged():
+    # Without _src/_tgt on both sides the edge is keyed by its endpoints, as before.
+    nodes = [("n1", "Alpha"), ("n2", "Beta")]
+    G_old = _make_simple_graph(nodes, [("n1", "n2", "calls", "EXTRACTED")])
+    G_new = _make_simple_graph(nodes, [("n2", "n1", "calls", "EXTRACTED")])
+    assert graph_diff(G_old, G_new)["summary"] == "no changes"
+    assert graph_diff(G_old, _make_marked_graph("n2", "n1"))["summary"] == "no changes"
+
+
 # --- code↔doc INFERRED suppression tests ---
 
 def _make_code_doc_graph():
