@@ -674,6 +674,23 @@ def _python_import_bindings(node, source: bytes) -> list[tuple[str, str]]:
     return bindings
 
 
+def _missing_relative_module_name(attempted: Path, root: Path, raw: str) -> str:
+    """Dotted module name, relative to ``root``, of an unresolved relative import.
+
+    ``attempted`` is the file the import would have named (``pkg/missing.py`` or
+    ``pkg/__init__.py``). Falls back to ``ref:`` + the raw specifier when the
+    import climbs above the scan root, so the id never carries an absolute path.
+    """
+    try:
+        rel = attempted.relative_to(root)
+    except ValueError:
+        return f"ref:{raw}"
+    parts = list(rel.with_suffix("").parts)
+    if parts and parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(parts) if parts else f"ref:{raw}"
+
+
 def _import_python(
     node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str,
     scope_stack: list[str] | None = None, scan_root: Path | None = None,
@@ -749,13 +766,24 @@ def _import_python(
                 target_path = _resolve_python_module_path(
                     module_name, current_path, root, level=dots
                 )
+                missing = False
                 if target_path is None:
                     base = current_path.parent
                     for _ in range(dots - 1):
                         base = base.parent
                     rel = (module_name.replace(".", "/") + ".py") if module_name else "__init__.py"
                     target_path = base / rel
-                tgt_nid = _make_id(str(target_path))
+                    missing = not target_path.is_file()
+                if missing:
+                    # No file behind the import: minting the id from the
+                    # attempted absolute path bakes the checkout location (and
+                    # OS username) into the graph, and the root-relative id
+                    # remap never rewrites it. Use the dotted module name
+                    # relative to the scan root, the id an unresolved absolute
+                    # import of the same module already gets.
+                    tgt_nid = _make_id(_missing_relative_module_name(target_path, root, raw))
+                else:
+                    tgt_nid = _make_id(str(target_path))
             else:
                 # Use the shared scan-root-aware resolver for absolute imports.
                 # It stops at the corpus boundary and handles package roots the
