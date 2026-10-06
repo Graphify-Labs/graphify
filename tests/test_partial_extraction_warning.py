@@ -13,6 +13,7 @@ region. Both rendered as "may be partially extracted".
 Part 1 of #2788 — the Astro frontmatter parse itself — is NOT addressed here;
 that belongs to the .svelte/.astro AST work in #2731.
 """
+import ntpath
 import re
 
 import pytest
@@ -64,6 +65,38 @@ def test_warning_still_reports_the_first_error_line(tmp_path, capsys):
     survive the rewrite."""
     err = _run(tmp_path, [_partial_parse_fixture(tmp_path)], capsys)
     assert re.search(r"first error at line \d+", err), err
+
+
+def test_syntax_warning_survives_cross_drive_paths_without_changing_the_graph(
+    tmp_path, capsys, monkeypatch,
+):
+    """The real recovery parse must return its graph even if display relpath fails."""
+    import graphify.extract as ex
+
+    source = _partial_parse_fixture(tmp_path)
+    original = extract([source], root=tmp_path)
+    original_warning = capsys.readouterr().err
+    assert "may be partially extracted: broken.lua (" in original_warning
+    assert source.as_posix() not in original_warning
+    original_relpath = ex.os.path.relpath
+    cross_drive_calls = []
+
+    def cross_drive_relpath(path, start=None):
+        if str(path) == str(source) and str(start) == str(tmp_path):
+            cross_drive_calls.append((path, start))
+            return ntpath.relpath("D:/included/broken.lua", "C:/scan-root")
+        return original_relpath(path, start)
+
+    monkeypatch.setattr(ex.os.path, "relpath", cross_drive_relpath)
+    result = extract([source], root=tmp_path)
+    assert cross_drive_calls
+    assert result["nodes"] == original["nodes"]
+    assert result["edges"] == original["edges"]
+    warning = capsys.readouterr().err
+    assert "partially extracted" in warning
+    assert source.as_posix() in warning
+    assert re.search(r"first error at line \d+", warning)
+    assert "yielded no symbols" not in warning
 
 
 def test_a_clean_file_is_silent(tmp_path, capsys):

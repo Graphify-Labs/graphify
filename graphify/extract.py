@@ -7727,7 +7727,12 @@ def extract(
         # #2520 Luau case). `multiline_error` is absent from pre-fix cached
         # results, so those fall back to the file-node-only arm.
         if len(_res.get("nodes", [])) <= 1 or _pe.get("multiline_error"):
-            _rel = os.path.relpath(str(_p), str(root)).replace("\\", "/")
+            try:
+                _rel = os.path.relpath(str(_p), str(root)).replace("\\", "/")
+            except ValueError:
+                # Included files may live on another Windows drive. A display
+                # warning must not discard the graph recovered by the parser.
+                _rel = _p.as_posix()
             # Symbols recovered from the file, excluding its own file node. This
             # is what separates the two cases the warning otherwise blurs: a file
             # that contributed nothing but its file node is a total loss, while
