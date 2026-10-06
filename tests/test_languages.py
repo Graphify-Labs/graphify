@@ -3730,6 +3730,68 @@ def test_markdown_dotted_wikilink_literal_file_keeps_precedence(tmp_path):
         f"an indexed literal file must keep precedence over its .md note: {refs}")
 
 
+def test_markdown_link_destination_with_spaces(tmp_path):
+    """A file name with a space is linked as <bracketed> or percent-encoded,
+    the two CommonMark forms (and Obsidian's markdown-style output). Both
+    resolve, in inline and reference-style links alike, instead of being cut
+    at the space or kept encoded and dropped as a ghost."""
+    vault = tmp_path / "vault"
+    (vault / "sub").mkdir(parents=True)
+    docs = [vault / "My Note.md", vault / "sub" / "Deep Note.md",
+            vault / "Ref One.md", vault / "Ref Two.md"]
+    for d in docs:
+        d.write_text("# Note\n")
+    entry = vault / "entry.md"
+    entry.write_text(
+        "See [a](My%20Note.md), [b](<sub/Deep Note.md> \"title\"), [c][r1] and [d][r2].\n"
+        "\n"
+        "[r1]: <Ref One.md>\n"
+        "[r2]: Ref%20Two.md\n")
+    node_ids, refs, page_id = _vault_extract(vault, docs + [entry])
+    targets = {e["target"] for e in refs if e["source"] == page_id(entry)}
+    assert targets == {page_id(d) for d in docs}, f"spaced link lost: {refs}"
+    for e in refs:
+        assert e["target"] in node_ids, f"link target is a ghost node: {e}"
+
+
+def test_markdown_link_forms_keep_their_existing_targets(tmp_path):
+    """Decoding and bracket parsing take no link away from the file it already
+    reached: a file whose name literally contains the escape still wins, with
+    or without the .md ([x](100%25) beside 100%25.md); a wikilink stays
+    verbatim ([[My%20Note]] is not My Note.md); an unclosed < does not swallow
+    the links after it on the line, even inside a parenthesised aside."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    literal = vault / "100%25.md"
+    spaced = vault / "My Note.md"
+    b, d, f, h = (vault / f"{n}.md" for n in "bdfh")
+    for doc in (literal, spaced, b, d, f, h):
+        doc.write_text("# Note\n")
+    entry = vault / "entry.md"
+    entry.write_text(
+        "See [x](100%25.md) and [[My%20Note]].\n"
+        "Then [a](<b.md) -> [c](d.md).\n"
+        "And [e](<f.md) -> (see [g](h.md)).\n")
+    bare = vault / "bare.md"
+    bare.write_text("See [y](100%25).\n")
+    node_ids, refs, page_id = _vault_extract(
+        vault, [literal, spaced, b, d, f, h, entry, bare])
+    targets = {e["target"] for e in refs if e["source"] == page_id(entry)}
+    assert targets & node_ids == {page_id(p) for p in (literal, b, d, f, h)}, (
+        f"a link lost the file it reached: {refs}")
+    bare_targets = {e["target"] for e in refs if e["source"] == page_id(bare)}
+    assert bare_targets == {page_id(literal)}, (
+        f"an extension-less link lost its literal file: {refs}")
+
+
+def test_markdown_decoded_link_stays_external(tmp_path):
+    """An encoded scheme or protocol-relative prefix (a UNC path on Windows)
+    is still an external link once decoded, never a local file lookup."""
+    from graphify.extractors.markdown import _resolve_markdown_link
+    for raw in ("%2F%2Fhost%2Fshare%2Fx.md", "https%3A%2F%2Fexample.com%2Fa.md"):
+        assert _resolve_markdown_link(raw, tmp_path) is None, raw
+
+
 # ── Groovy ───────────────────────────────────────────────────────────────────
 
 
