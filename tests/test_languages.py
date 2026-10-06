@@ -2677,6 +2677,48 @@ def test_fortran_type_bound_procedures_link_to_the_type(tmp_path):
     assert ("circle", "scale") in methods
 
 
+def test_fortran_generic_interface_is_a_callable_node(tmp_path):
+    """A named generic interface (`interface area; module procedure …`) names a
+    callable that dispatches to its specific procedures.
+
+    The interface was never a node, so a call to the generic name dangled (a
+    function call only resolves to an in-file node) and the dispatch set was
+    invisible — even though the specific procedures were extracted. The generic
+    name must be a node, linked to the procedures it groups, so `area(x)`
+    resolves.
+    """
+    src = tmp_path / "shapes.f90"
+    src.write_text(
+        "module shapes\n"
+        "  interface area\n"
+        "    module procedure area_circle, area_square\n"
+        "  end interface\n"
+        "contains\n"
+        "  real function area_circle(r)\n"
+        "    real :: r\n"
+        "    area_circle = r\n"
+        "  end function\n"
+        "  real function area_square(s)\n"
+        "    real :: s\n"
+        "    area_square = s\n"
+        "  end function\n"
+        "  subroutine report(x)\n"
+        "    real :: x, a\n"
+        "    a = area(x)\n"
+        "  end subroutine\n"
+        "end module\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    assert "error" not in r
+    assert "area()" in [n["label"] for n in r["nodes"]], "generic interface dropped"
+    dispatch = _edge_labels(r, "dispatches_to", "generic_interface")
+    assert ("area", "area_circle") in dispatch
+    assert ("area", "area_square") in dispatch
+    # A call to the generic name now resolves instead of dangling.
+    assert ("report", "area") in _edge_labels(r, "calls")
+
+
 def test_fortran_type_bound_procedure_from_other_module_is_sourceless(tmp_path):
     """A binding to a procedure implemented in another module resolves to a
     sourceless stub the corpus rewire can collapse, never a dangling edge."""
