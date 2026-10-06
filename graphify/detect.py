@@ -2448,6 +2448,63 @@ def load_manifest(
     )
 
 
+def _checkout_prefix(abs_key: str, relative_keys: set[str]) -> str | None:
+    """Longest directory prefix of ``abs_key`` whose suffix is in ``relative_keys``.
+
+    The suffix is forward-slash and NFC. ``src/c.py`` beats a shorter ``c.py``.
+    Prefixes ``""``, ``"/"``, and ``"\\"`` are skipped so a shorter suffix can
+    still match. The prefix that remains must be a real directory.
+    """
+    parts = _nfc(abs_key).replace("\\", "/").split("/")
+    best: tuple[int, str] | None = None
+    for i in range(1, len(parts)):
+        suffix = "/".join(parts[i:])
+        if suffix not in relative_keys:
+            continue
+        prefix = "/".join(parts[:i])
+        if prefix in ("", "/", "\\"):
+            continue
+        if not Path(prefix).is_dir():
+            continue
+        if best is None or len(suffix) > best[0]:
+            best = (len(suffix), prefix)
+    return None if best is None else best[1]
+
+
+def _previous_checkout_absolute_keys(
+    existing_keys: Iterable[Any],
+    storage_root: Path | None,
+    relative_keys: set[str],
+) -> set[str]:
+    """Absolute keys that still name a previous checkout (#3581).
+
+    A key is a candidate only when :func:`_to_relative_for_storage` keeps it
+    absolute against ``storage_root`` (a sibling row that becomes relative,
+    including #3785, is not a candidate). Candidates that share one directory
+    prefix are a previous checkout when that group has at least two keys. One
+    absolute key is an include row and stays. ``storage_root is None`` yields
+    an empty set.
+    """
+    if storage_root is None:
+        return set()
+    groups: dict[str, set[str]] = {}
+    for key in existing_keys:
+        if not isinstance(key, str) or not _looks_absolute(key):
+            continue
+        stored = _nfc(_to_relative_for_storage(key, storage_root))
+        if not _looks_absolute(stored):
+            continue
+        prefix = _checkout_prefix(stored, relative_keys)
+        if prefix is None:
+            continue
+        groups.setdefault(prefix, set()).add(key)
+    stale: set[str] = set()
+    for keys in groups.values():
+        if len(keys) >= 2:
+            stale.update(keys)
+    return stale
+
+
 def save_manifest(
     files: dict[str, list[str]],
     manifest_path: str = _MANIFEST_PATH,
@@ -2480,7 +2537,9 @@ def save_manifest(
     forever and masquerading as deletions in detect_incremental. It must be
     the RAW detect output, not a stamp-filtered subset — pruning to a
     filtered set would erase rows the filter merely omitted (failed chunks,
-    --code-only doc rows). Out-of-root entries are never pruned. Callers
+    --code-only doc rows). A single include row stays; two or more absolute
+    keys that share a directory prefix and match relative keys this save writes
+    are a previous checkout and are dropped (#3581). Callers
     saving a SUBSET of files (changed_paths hooks, skill runbooks, #917)
     must leave this None so their untouched rows are preserved.
 
@@ -2583,6 +2642,17 @@ def save_manifest(
     # caller supplied the full scan corpus, additionally prune in-root rows
     # the scan no longer covers: those files were excluded, not deleted, and
     # keeping the row makes them look deleted on every future run (#1908).
+    all_files = [f for file_list in files.values() for f in file_list]
+    storage_root = _manifest_storage_anchor(manifest_path, root) if root is not None else None
+    new_rels: set[str] = set()
+    if storage_root is not None:
+        for f in all_files:
+            stored = _nfc(_to_relative_for_storage(_nfc(f), storage_root))
+            if not _looks_absolute(stored):
+                new_rels.add(stored)
+    stale_checkout = _previous_checkout_absolute_keys(
+        existing.keys(), storage_root, new_rels
+    )
     manifest: dict[str, dict] = {}
     for f, entry in existing.items():
         normalised = _normalise_entry(entry)
@@ -2593,6 +2663,8 @@ def save_manifest(
                 continue
         except OSError:
             continue
+        if f in stale_checkout:
+            continue  # previous checkout copied with graphify-out (#3581)
         if scan_set is not None and not _in_scan(f) and _in_root(f):
             continue  # excluded-but-alive: drop the stale row (#1908)
         if clear_ast_set is not None and _in_clear_ast(f):
@@ -2605,7 +2677,6 @@ def save_manifest(
             normalised = {**normalised, "semantic_hash": ""}
         manifest[f] = normalised
 
-    all_files = [f for file_list in files.values() for f in file_list]
     with ThreadPoolExecutor() as pool:
         raw = pool.map(_stat_and_hash, all_files)
     hashed: dict[str, tuple[float, str]] = {
@@ -2646,7 +2717,6 @@ def save_manifest(
             "semantic_hash": sem_h,
         }
         manifest[key] = entry
-    storage_root = _manifest_storage_anchor(manifest_path, root) if root is not None else None
     if storage_root is not None:
         manifest = _collapse_manifest_duplicates(
             manifest.items(), lambda k: _nfc(_to_relative_for_storage(k, storage_root))

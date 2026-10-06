@@ -3589,6 +3589,203 @@ def test_save_manifest_full_scan_keeps_out_of_root_rows(tmp_path):
         outside.unlink(missing_ok=True)
 
 
+def _write_checkout_files(checkout: Path) -> list[Path]:
+    """Three files under one checkout: a.py, b.py, and src/c.py (#3581)."""
+    files = [checkout / "a.py", checkout / "b.py", checkout / "src" / "c.py"]
+    (checkout / "src").mkdir(parents=True)
+    files[0].write_text("a = 1\n", encoding="utf-8")
+    files[1].write_text("b = 2\n", encoding="utf-8")
+    files[2].write_text("c = 3\n", encoding="utf-8")
+    return files
+
+
+def _save_checkout_manifest(checkout: Path, files: list[Path], *, root, scan_corpus):
+    manifest_path = str(checkout / "graphify-out" / "manifest.json")
+    save_manifest(
+        {"code": [str(p) for p in files]},
+        manifest_path,
+        kind="both",
+        root=root,
+        scan_corpus=scan_corpus,
+    )
+    return manifest_path
+
+
+def test_save_manifest_reclone_drops_other_checkout_when_scan_corpus_is_set(tmp_path):
+    """A copied graphify-out must not keep the old checkout's absolute keys
+    when the new save passes the full scan corpus (#3581)."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b,
+        scan_corpus={str(p) for p in files_b},
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py", "src/c.py"}
+    assert not any(k.startswith(str(checkout_a)) for k in raw)
+
+
+def test_save_manifest_reclone_drops_other_checkout_when_scan_corpus_is_unset(tmp_path):
+    """The same re-clone drop runs when scan_corpus is omitted (#3581)."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b, scan_corpus=None,
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py", "src/c.py"}
+    assert not any(k.startswith(str(checkout_a)) for k in raw)
+
+
+def test_save_manifest_move_has_no_absolute_key_when_scan_corpus_is_set(tmp_path):
+    """Deleting the old checkout before the save already yields relative keys
+    when scan_corpus is set (#3581)."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    shutil.rmtree(checkout_a)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b,
+        scan_corpus={str(p) for p in files_b},
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py", "src/c.py"}
+    assert not any(k.startswith(str(checkout_a)) for k in raw)
+
+
+def test_save_manifest_move_has_no_absolute_key_when_scan_corpus_is_unset(tmp_path):
+    """Deleting the old checkout before the save already yields relative keys
+    when scan_corpus is omitted (#3581)."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    shutil.rmtree(checkout_a)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b, scan_corpus=None,
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py", "src/c.py"}
+    assert not any(k.startswith(str(checkout_a)) for k in raw)
+
+
+def test_save_manifest_drops_other_checkout_keys_mixed_with_relative_keys(tmp_path):
+    """A manifest that already holds the new relative keys plus the old
+    absolute keys drops the old checkout on the next save (#3581)."""
+    import json
+    import shutil
+    checkout_a = tmp_path / "checkout-a"
+    checkout_b = tmp_path / "checkout-b"
+    files_a = _write_checkout_files(checkout_a)
+    manifest_a = _save_checkout_manifest(checkout_a, files_a, root=None, scan_corpus=None)
+    shutil.copytree(checkout_a, checkout_b)
+    files_b = [
+        checkout_b / "a.py", checkout_b / "b.py", checkout_b / "src" / "c.py",
+    ]
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b,
+        scan_corpus={str(p) for p in files_b},
+    )
+    mixed = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    stale = json.loads(Path(manifest_a).read_text(encoding="utf-8"))
+    mixed.update(stale)
+    Path(manifest_b).write_text(json.dumps(mixed), encoding="utf-8")
+    manifest_b = _save_checkout_manifest(
+        checkout_b, files_b, root=checkout_b,
+        scan_corpus={str(p) for p in files_b},
+    )
+    raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
+    assert set(raw) == {"a.py", "b.py", "src/c.py"}
+    assert not any(k.startswith(str(checkout_a)) for k in raw)
+
+
+def test_save_manifest_keeps_one_include_that_shares_a_basename(tmp_path):
+    """One include row stays even when its file name matches a project file."""
+    import json
+    import shutil
+    a = tmp_path / "a.py"
+    a.write_text("x = 1\n", encoding="utf-8")
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-include-a"
+    outside_dir.mkdir()
+    outside = outside_dir / "a.py"
+    outside.write_text("z = 3\n", encoding="utf-8")
+    try:
+        manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+        save_manifest(
+            {"code": [str(a), str(outside)]}, manifest_path, root=tmp_path,
+        )
+        save_manifest(
+            {"code": [str(a)]}, manifest_path, root=tmp_path,
+            scan_corpus={str(a)},
+        )
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        assert "a.py" in raw
+        assert str(outside.resolve()) in raw, (
+            f"a single include row must stay, got {set(raw)}"
+        )
+    finally:
+        shutil.rmtree(outside_dir, ignore_errors=True)
+
+
+def test_save_manifest_keeps_includes_whose_paths_are_not_this_tree(tmp_path):
+    """Two include rows stay when their suffixes are not relative keys this save writes."""
+    import json
+    import shutil
+    a = tmp_path / "a.py"
+    a.write_text("x = 1\n", encoding="utf-8")
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-includes"
+    outside_dir.mkdir()
+    notes = outside_dir / "notes.md"
+    extra = outside_dir / "extra.md"
+    notes.write_text("notes\n", encoding="utf-8")
+    extra.write_text("extra\n", encoding="utf-8")
+    try:
+        manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+        save_manifest(
+            {"code": [str(a), str(notes), str(extra)]},
+            manifest_path, root=tmp_path,
+        )
+        save_manifest(
+            {"code": [str(a)]}, manifest_path, root=tmp_path,
+            scan_corpus={str(a)},
+        )
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        assert "a.py" in raw
+        assert str(notes.resolve()) in raw
+        assert str(extra.resolve()) in raw
+    finally:
+        shutil.rmtree(outside_dir, ignore_errors=True)
+
+
 def test_detect_incremental_reports_excluded_not_deleted(tmp_path):
     """A previously-indexed file that becomes excluded (still on disk) must
     land in excluded_files, not deleted_files (#1908)."""
