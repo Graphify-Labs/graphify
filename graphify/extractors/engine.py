@@ -7101,6 +7101,19 @@ def _extract_generic(
                                 and fname.type == "identifier"
                             ):
                                 member_receiver = _read_text(fname, source)
+                        elif recv is not None and recv.type == "parenthesized_expression":
+                            # ((IStore)x).M() / (x as IStore).M(): the cast names
+                            # the receiver's type in source, so resolve it as
+                            # IStore.M() (#3797).
+                            inner = recv.named_children[0] if recv.named_children else None
+                            cast_type = None
+                            if inner is not None and inner.type == "cast_expression":
+                                cast_type = inner.child_by_field_name("type")
+                            elif inner is not None and inner.type == "as_expression":
+                                cast_type = inner.child_by_field_name("right")
+                            type_info = _read_csharp_type_name(cast_type, source)
+                            if type_info and type_info[0]:
+                                member_receiver = type_info[0]
                 elif fn_node is not None and fn_node.type == "identifier":
                     callee_name = _read_text(fn_node, source)
                 elif fn_node is not None and fn_node.type == "generic_name":

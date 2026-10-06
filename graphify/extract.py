@@ -4679,13 +4679,14 @@ def _resolve_csharp_member_calls(
             type_nid = bases[0]
             type_qualified = True
         elif receiver[:1].isupper():
-            # Type.M() — the type is named explicitly (also covers a Pascal-cased
-            # local whose name equals its type, resolved via the table below if the
-            # explicit-type lookup misses).
-            type_nid = _resolve_type_name_nid(receiver, caller_node, src_file)
+            # Type.M() — the type is named explicitly. A field/property/local of
+            # that name in scope shadows the type (`IStore Store => ...;
+            # Store.Save()`, #3797), so the receiver's declared type from the
+            # table wins when known; otherwise fall back to the type name.
+            type_name = rc.get("receiver_type")
+            type_nid = _resolve_type_name_nid(type_name, caller_node, src_file)
             if not type_nid:
-                type_name = rc.get("receiver_type")
-                type_nid = _resolve_type_name_nid(type_name, caller_node, src_file)
+                type_nid = _resolve_type_name_nid(receiver, caller_node, src_file)
                 if not type_nid:
                     _park_if_absent(type_name or receiver, caller_node, rc)
                     continue
