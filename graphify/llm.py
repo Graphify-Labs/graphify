@@ -101,6 +101,26 @@ def _resolve_ollama_base_url(default: str) -> str:
     return host
 
 
+def _resolve_ollama_seed() -> int | None:
+    """Return the opt-in seed for built-in Ollama requests, if configured."""
+    raw = os.environ.get("GRAPHIFY_OLLAMA_SEED")
+    if raw is None or not raw.strip():
+        return None
+    value = raw.strip()
+    max_seed = "9223372036854775807"
+    normalized = value.lstrip("0") or "0"
+    if (
+        re.fullmatch(r"[0-9]+", value) is None
+        or len(normalized) > len(max_seed)
+        or (len(normalized) == len(max_seed) and normalized > max_seed)
+    ):
+        raise ValueError(
+            "GRAPHIFY_OLLAMA_SEED must be an ASCII integer in the range "
+            f"0..{max_seed}."
+        )
+    return int(normalized)
+
+
 BACKENDS: dict[str, dict] = {
     "claude": {
         # ANTHROPIC_BASE_URL points the backend at any Anthropic-compatible
@@ -1376,6 +1396,7 @@ def _call_openai_compat(
     extra_body: dict | None = None,
 ) -> dict:
     """Call any OpenAI-compatible API (Kimi, OpenAI, etc.) and return parsed JSON."""
+    ollama_seed = _resolve_ollama_seed() if backend == "ollama" else None
     try:
         from openai import OpenAI
     except ImportError as exc:
@@ -1412,6 +1433,8 @@ def _call_openai_compat(
         kwargs["temperature"] = temperature
     if reasoning_effort is not None:
         kwargs["reasoning_effort"] = reasoning_effort
+    if ollama_seed is not None:
+        kwargs["seed"] = ollama_seed
     # A custom provider in providers.json can pass its own extra_body (e.g.
     # `chat_template_kwargs.enable_thinking=false` for self-hosted Qwen3 served
     # by vLLM). When supplied, it wins over the moonshot default — the user has
@@ -2910,6 +2933,7 @@ def _call_llm(
     """
     if backend not in BACKENDS:
         raise ValueError(f"Unknown backend {backend!r}")
+    ollama_seed = _resolve_ollama_seed() if backend == "ollama" else None
     cfg = BACKENDS[backend]
     key = _get_backend_api_key(backend)
     if not key and backend == "ollama":
@@ -3062,6 +3086,8 @@ def _call_llm(
         kwargs["temperature"] = temperature
     if cfg.get("reasoning_effort"):
         kwargs["reasoning_effort"] = cfg["reasoning_effort"]
+    if ollama_seed is not None:
+        kwargs["seed"] = ollama_seed
     # Custom providers can override via providers.json `extra_body`; falls back
     # to the moonshot default to preserve existing behavior.
     if cfg.get("extra_body") is not None:

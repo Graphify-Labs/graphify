@@ -576,6 +576,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `OLLAMA_MODEL` | Ollama model name | `--backend ollama` (default: auto-detect) |
 | `GRAPHIFY_OLLAMA_NUM_CTX` | Override Ollama KV-cache window size | optional — auto-sized by default |
 | `GRAPHIFY_OLLAMA_KEEP_ALIVE` | Minutes to keep Ollama model loaded | optional — set `0` to unload after each chunk |
+| `GRAPHIFY_OLLAMA_SEED` | Sampling seed for all built-in Ollama requests (`0..9223372036854775807`) | optional — off by default |
 | `AZURE_OPENAI_API_KEY` | Azure OpenAI Service backend | `--backend azure` |
 | `AZURE_OPENAI_ENDPOINT` | Azure resource endpoint URL | `--backend azure` (required alongside API key) |
 | `AZURE_OPENAI_API_VERSION` | Azure API version override | optional — default `2024-12-01-preview` |
@@ -657,6 +658,13 @@ The KV-cache window is auto-sized but may be too large for your GPU. Reduce it:
 ```bash
 GRAPHIFY_OLLAMA_NUM_CTX=8192 graphify extract ./docs --backend ollama --token-budget 4000
 ```
+
+**Repeat Ollama extraction with a fixed seed**
+Set `GRAPHIFY_OLLAMA_SEED` to an integer from `0` through `9223372036854775807`. It applies to every request made through the built-in `ollama` backend and can improve repeatability when the model and runtime stay stable, but it does not guarantee identical output across model builds, Ollama versions, hardware, concurrency, or other runtime changes:
+```bash
+GRAPHIFY_OLLAMA_SEED=42 graphify extract ./docs --backend ollama
+```
+The semantic cache is not partitioned by seed, so enabling or changing the seed can reuse an existing cached result. Run once with `--force` when you need a fresh semantic extraction under the new seed.
 
 **`LLM returned invalid JSON` / `Unterminated string` warnings**
 The model's JSON response hit its output-token limit and was cut off mid-string. graphify auto-recovers (it splits the chunk and re-extracts the halves, and an oversized single document is first sliced at heading/paragraph boundaries so the whole file is still covered), so these warnings are noisy but not data loss. To reduce the churn, raise the output cap or shrink each chunk's output:
@@ -802,6 +810,7 @@ OPENAI_BASE_URL=http://localhost:8080/v1 OPENAI_MODEL=my-model graphify extract 
 ANTHROPIC_BASE_URL=http://localhost:4000 ANTHROPIC_MODEL=my-model graphify extract ./docs --backend claude   # any Anthropic-compatible endpoint (LiteLLM proxy, gateways)
 GRAPHIFY_OLLAMA_NUM_CTX=32768 graphify extract ./docs --backend ollama   # override KV-cache window (auto-sized by default)
 GRAPHIFY_OLLAMA_KEEP_ALIVE=0 graphify extract ./docs --backend ollama    # unload model after each chunk (saves VRAM on small GPUs)
+GRAPHIFY_OLLAMA_SEED=42 graphify extract ./docs --backend ollama         # opt into a fixed sampling seed (improves repeatability)
 graphify extract ./docs --backend bedrock      # AWS Bedrock via IAM - no API key, uses AWS credential chain
 graphify extract ./docs --backend claude-cli   # route through Claude Code CLI - no API key, uses your Claude subscription
 graphify extract ./docs --backend azure        # Azure OpenAI (set AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT)
