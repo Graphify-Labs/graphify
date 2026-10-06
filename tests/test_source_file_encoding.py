@@ -239,3 +239,21 @@ def test_utf16_catch2_test_case_is_recovered(tmp_path):
     nodes, _ = _graph(tmp_path, {"order_test.cpp": src.encode("utf-16")})
     labels = {label for _, label in nodes}
     assert any("pays the café order" in label for label in labels), labels
+
+
+# ── the semantic pass: whole-file and slice readers must agree ───────────────
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig", "utf-16", "cp1252"])
+def test_whole_file_and_slice_readers_give_the_same_text(tmp_path, encoding):
+    # A document small enough to send whole goes through llm._file_to_text; a
+    # bigger one is cut by offsets into file_slice.unit_source_text. If the two
+    # read a file differently, a UTF-16 note reaches the model as NUL-riddled
+    # garbage when small and as clean text when big.
+    from graphify.file_slice import unit_source_text
+    from graphify.llm import _file_to_text
+
+    text = "# Café notes\r\n\r\nSome text about the café.\r\n"
+    p = tmp_path / "notes.md"
+    p.write_bytes(text.encode(encoding))
+    assert _file_to_text(p) == unit_source_text(p)
+    assert _file_to_text(p).lstrip("﻿") == text.replace("\r\n", "\n")

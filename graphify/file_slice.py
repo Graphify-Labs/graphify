@@ -24,9 +24,10 @@ from pathlib import Path
 from graphify.extractors.base import _read_source_text
 
 # Plain-text document types where boundary-based slicing is meaningful and where
-# `_file_to_text` is a straight ``read_text`` (so a char range matches the bytes
-# the model is shown). Deliberately excludes code (.py, .ts, ...) and binary
-# docs (.pdf) — those are never sliced.
+# `_file_to_text` reads them with ``_read_source_text``, the same reader as
+# `unit_source_text` (so a char range matches the text the model is shown).
+# Deliberately excludes code (.py, .ts, ...) and binary docs (.pdf) — those are
+# never sliced.
 #
 # This set has to keep pace with ``detect.DOC_EXTENSIONS``: anything classified
 # as a document reaches the semantic pass, and anything the pass sees that is

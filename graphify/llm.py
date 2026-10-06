@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from graphify.extractors.base import _read_source_text
 from graphify.file_slice import (
     FileSlice,
     bisect_slice,
@@ -537,7 +538,7 @@ def _file_to_text(path: Path) -> str:
     if path.suffix.lower() == ".pdf":
         from graphify.detect import extract_pdf_text
         return extract_pdf_text(path)
-    return path.read_text(encoding="utf-8", errors="replace")
+    return _read_source_text(path)
 
 
 def _resolve_under_root(path: Path, root: Path) -> Path | None:
@@ -2148,7 +2149,7 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
         return chars // _CHARS_PER_TOKEN
     else:
         try:
-            content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
+            content = _read_source_text(path, warn=False)[:_FILE_CHAR_CAP]
         except OSError:
             return 0
 
