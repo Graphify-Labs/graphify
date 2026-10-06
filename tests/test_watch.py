@@ -1530,13 +1530,13 @@ def test_check_shrink_allows_shrink_within_rebuilt_sources(capsys):
     """#1116: a symbol removed from a re-extracted file is a legitimate shrink —
     every lost node belongs to a rebuilt source, so the write proceeds (no --force)."""
     existing = {"nodes": [
-        {"id": "a", "source_file": "m.py"},
-        {"id": "b", "source_file": "m.py"},
-        {"id": "c", "source_file": "other.py"},
+        {"id": "a", "source_file": "m.py", "_origin": "ast"},
+        {"id": "b", "source_file": "m.py", "_origin": "ast"},
+        {"id": "c", "source_file": "other.py", "_origin": "ast"},
     ], "links": []}
     new = {"nodes": [
-        {"id": "a", "source_file": "m.py"},
-        {"id": "c", "source_file": "other.py"},
+        {"id": "a", "source_file": "m.py", "_origin": "ast"},
+        {"id": "c", "source_file": "other.py", "_origin": "ast"},
     ], "links": []}
     ok = _check_shrink(False, existing, new, rebuilt_sources={"m.py"})
     assert ok is True
@@ -1619,6 +1619,117 @@ def test_check_shrink_allows_growth():
         new_data=_shrink_payload(60),
     )
     assert ok is True
+
+
+def _masked_semantic_loss():
+    """#2229: AST growth plus a new sourceless stub hides one lost rationale id.
+
+    The total rises (4 → 7). The semantic count stays at 2 because pathlib_Path
+    fills the slot. src/app.ts is rebuilt and is not deleted, so a rebuilt-set
+    excuse also accepts the loss.
+    """
+    def ast(node_id, line):
+        return {
+            "id": node_id,
+            "source_file": "src/app.ts",
+            "_origin": "ast",
+            "source_location": f"L{line}",
+            "file_type": "code",
+        }
+
+    def rationale(node_id):
+        return {
+            "id": node_id,
+            "source_file": "src/app.ts",
+            "_origin": "semantic",
+            "source_location": None,
+            "file_type": "rationale",
+        }
+
+    saved = {"nodes": [
+        ast("app_ts", 1),
+        ast("app_ts_main", 2),
+        rationale("rationale_kept"),
+        rationale("rationale_lost"),
+    ], "links": []}
+    new = {"nodes": [
+        ast("app_ts", 1),
+        ast("app_ts_main", 2),
+        ast("app_ts_hook", 10),
+        ast("app_ts_route", 20),
+        ast("app_ts_util", 30),
+        rationale("rationale_kept"),
+        {
+            "id": "pathlib_Path",
+            "source_file": "",
+            "source_location": None,
+            "file_type": "concept",
+        },
+    ], "links": []}
+    return saved, new
+
+
+def test_check_shrink_refuses_lost_semantic_id_when_total_grows(capsys):
+    """#2229: a larger total must not write away a saved rationale id."""
+    saved, new = _masked_semantic_loss()
+    assert len(new["nodes"]) > len(saved["nodes"])
+    ok = _check_shrink(False, saved, new, rebuilt_sources={"src/app.ts"})
+    assert ok is False
+    assert "rationale_lost" in capsys.readouterr().err
+
+
+def test_check_shrink_allows_deleted_code_file_when_semantic_ids_remain(capsys):
+    """A removed code file may drop its nodes. A rationale id on a file that
+    is still present must stay, and that pair still writes."""
+    existing = {"nodes": [
+        {"id": "gone_fn", "source_file": "gone.py", "_origin": "ast", "source_location": "L1"},
+        {"id": "gone_rationale", "source_file": "gone.py", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+        {"id": "stay_rationale", "source_file": "stay.md", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+    ], "links": []}
+    new = {"nodes": [
+        {"id": "stay_rationale", "source_file": "stay.md", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+    ], "links": []}
+    ok = _check_shrink(
+        False,
+        existing,
+        new,
+        rebuilt_sources={"gone.py"},
+        deleted_sources={"gone.py"},
+    )
+    assert ok is True
+    assert "Refusing to overwrite" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stub", [
+    {"id": "json", "external": True, "source_file": "", "file_type": "concept", "_origin": "semantic"},
+    {"id": "json", "type": "external", "source_file": "", "file_type": "concept", "_origin": "semantic"},
+])
+def test_check_shrink_allows_dropped_import_stub_when_total_grows(capsys, stub):
+    """Removing an import drops its auto-minted stub. Added code can make the
+    total grow. That write must succeed without --force."""
+    def code(node_id):
+        return {
+            "id": node_id,
+            "source_file": "app.py",
+            "_origin": "ast",
+            "source_location": "L1",
+            "file_type": "code",
+        }
+    existing = {"nodes": [
+        code("app"),
+        code("app_load"),
+        stub,
+    ], "links": []}
+    new = {"nodes": [
+        code("app"),
+        code("app_load"),
+        code("app_extra"),
+        code("app_more"),
+    ], "links": []}
+    assert len(new["nodes"]) > len(existing["nodes"])
+    ok = _check_shrink(False, existing, new, rebuilt_sources={"app.py"})
+    assert ok is True
+    assert "Refusing to overwrite" not in capsys.readouterr().err
 
 
 def test_check_shrink_unlinks_tmp_on_refuse(tmp_path):

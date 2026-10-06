@@ -1045,6 +1045,84 @@ def test_to_json_refuses_shrink(tmp_path):
     assert to_json(_mkG(2), {}, str(p), force=True) is True  # force overrides
 
 
+def test_to_json_refuses_lost_semantic_id_when_total_grows(tmp_path, capsys):
+    """#2229: AST growth and a new stub must not replace a saved rationale id."""
+    import networkx as nx
+
+    saved_nodes = [
+        {"id": "app_ts", "label": "app.ts", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L1", "file_type": "code"},
+        {"id": "app_ts_main", "label": "main", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L2", "file_type": "code"},
+        {"id": "rationale_kept", "label": "kept", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+        {"id": "rationale_lost", "label": "lost", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+    ]
+    new_nodes = [
+        {"id": "app_ts", "label": "app.ts", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L1", "file_type": "code"},
+        {"id": "app_ts_main", "label": "main", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L2", "file_type": "code"},
+        {"id": "app_ts_hook", "label": "hook", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L10", "file_type": "code"},
+        {"id": "app_ts_route", "label": "route", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L20", "file_type": "code"},
+        {"id": "app_ts_util", "label": "util", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L30", "file_type": "code"},
+        {"id": "rationale_kept", "label": "kept", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+        {"id": "pathlib_Path", "label": "Path", "source_file": "", "source_location": None, "file_type": "concept"},
+    ]
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({"nodes": saved_nodes, "links": []}), encoding="utf-8")
+    G = nx.Graph()
+    for node in new_nodes:
+        G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
+    assert G.number_of_nodes() > len(saved_nodes)
+    assert to_json(G, {}, str(p), force=False) is False
+    written = json.loads(p.read_text(encoding="utf-8"))
+    assert "rationale_lost" in {n["id"] for n in written["nodes"]}
+    assert "rationale_lost" in capsys.readouterr().err
+
+
+def test_to_json_allows_ast_growth_that_keeps_semantic_ids(tmp_path):
+    """AST nodes may be added when every saved rationale id is still present."""
+    import networkx as nx
+
+    saved_nodes = [
+        {"id": "app_ts", "label": "app.ts", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L1", "file_type": "code"},
+        {"id": "rationale_kept", "label": "kept", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+        {"id": "rationale_lost", "label": "lost", "source_file": "src/app.ts", "_origin": "semantic", "source_location": None, "file_type": "rationale"},
+    ]
+    new_nodes = saved_nodes + [
+        {"id": "app_ts_hook", "label": "hook", "source_file": "src/app.ts", "_origin": "ast", "source_location": "L10", "file_type": "code"},
+    ]
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({"nodes": saved_nodes, "links": []}), encoding="utf-8")
+    G = nx.Graph()
+    for node in new_nodes:
+        G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
+    assert to_json(G, {}, str(p), force=False) is True
+    written = json.loads(p.read_text(encoding="utf-8"))
+    assert {"rationale_kept", "rationale_lost"} <= {n["id"] for n in written["nodes"]}
+
+
+def test_to_json_rewrites_the_same_integer_node_ids(tmp_path):
+    """An unstamped integer id that is still in the graph is not a lost semantic node."""
+    import networkx as nx
+
+    G = nx.Graph()
+    G.add_nodes_from([(1, {}), (2, {}), (3, {})])
+    G.add_edges_from([(1, 2, {}), (1, 3, {}), (2, 3, {})])
+    p = tmp_path / "racecar"
+    assert to_json(G, {}, str(p), force=False) is True
+    assert to_json(G, {}, str(p), force=False) is True
+    assert {n["id"] for n in json.loads(p.read_text(encoding="utf-8"))["nodes"]} == {1, 2, 3}
+
+
+def test_to_json_refuses_a_missing_integer_semantic_id(tmp_path):
+    """A saved integer id that the new graph dropped is still refused when the total grows."""
+    import networkx as nx
+
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({"nodes": [{"id": 4}], "links": []}), encoding="utf-8")
+    G = nx.Graph()
+    G.add_nodes_from([(1, {}), (2, {}), (3, {})])
+    assert to_json(G, {}, str(p), force=False) is False
+    assert json.loads(p.read_text(encoding="utf-8"))["nodes"] == [{"id": 4}]
+
+
 def test_to_json_fails_safe_on_corrupt_existing(tmp_path):
     """A non-empty but unparseable existing graph.json (corrupt or mid-write)
     must NOT be silently overwritten — we can't verify the new graph isn't a

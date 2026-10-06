@@ -53,6 +53,62 @@ def _is_ast_tier(item: dict) -> bool:
     return isinstance(loc, str) and bool(_AST_LOC_RE.match(loc))
 
 
+def _lost_saved_semantic_nodes(
+    saved_nodes: list,
+    new_nodes: list,
+    deleted_sources: set[str] | None = None,
+) -> list[dict]:
+    """Saved semantic nodes whose ids are absent from the new graph.
+
+    A node created in this run is not in ``saved_nodes``, so a sourceless stub
+    cannot stand in for a missing id. ``deleted_sources`` is the files the user
+    removed. A code rebuild is not a deletion: do not pass the rebuilt set.
+
+    An auto-minted import stub (``external`` true, or ``type`` ``external``) is
+    rebuilt from the import edges of this run. Dropping one is not a lost
+    rationale or document node.
+    """
+    deleted = {
+        norm
+        for source in (deleted_sources or ())
+        if (norm := _norm_source_file(source))
+    }
+    new_ids = {node.get("id") for node in new_nodes if isinstance(node, dict)}
+    # cluster-only and build_from_json rewrite a legacy semantic id to its
+    # canonical stem, then fold a bare doc id into its `_doc` twin. That id
+    # is the same node. A missing rationale id has no such successor.
+    stem_remap = _semantic_id_remap(saved_nodes, None)
+    rewritten = [
+        {**node, "id": stem_remap[node["id"]]}
+        if isinstance(node, dict) and node.get("id") in stem_remap
+        else node
+        for node in saved_nodes
+    ]
+    doc_remap = _doc_twin_remap(rewritten)
+
+    def _renamed_present(node_id: str) -> bool:
+        renamed = stem_remap.get(node_id, node_id)
+        renamed = doc_remap.get(renamed, renamed)
+        return renamed in new_ids
+
+    lost: list[dict] = []
+    for node in saved_nodes:
+        if not isinstance(node, dict) or _is_ast_tier(node):
+            continue
+        if node.get("external") is True or node.get("type") == "external":
+            continue
+        node_id = node.get("id")
+        if node_id in new_ids:
+            continue
+        if isinstance(node_id, str) and _renamed_present(node_id):
+            continue
+        source = _norm_source_file(node.get("source_file"))
+        if source and source in deleted:
+            continue
+        lost.append(node)
+    return lost
+
+
 # Relations that say only "these two symbols appear together", with no claim about
 # HOW. An extractor that finds a specific fact for a pair — a call, an import, an
 # inheritance — routinely emits one of these for the same pair as well, so when the

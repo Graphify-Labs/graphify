@@ -310,10 +310,14 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 # Empty/whitespace existing file (e.g. a freshly touched path):
                 # no nodes to lose, so any new graph is a growth — proceed.
                 existing_n = 0
+                existing_nodes = []
             else:
                 try:
                     existing_data = json.loads(raw)
-                    existing_n = len(existing_data.get("nodes", []))
+                    existing_nodes = existing_data.get("nodes", [])
+                    if not isinstance(existing_nodes, list):
+                        existing_nodes = []
+                    existing_n = len(existing_nodes)
                 except Exception as exc:
                     # Non-empty but unparseable existing graph (corrupt or a
                     # mid-write): we cannot verify the new graph is not a silent
@@ -330,6 +334,21 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                     )
                     return False
             new_n = G.number_of_nodes()
+            from graphify.build import _lost_saved_semantic_nodes
+            new_node_list = [
+                {"id": node_id, **{key: value for key, value in attrs.items() if key != "id"}}
+                for node_id, attrs in G.nodes(data=True)
+            ]
+            missing = _lost_saved_semantic_nodes(existing_nodes, new_node_list, set())
+            if missing:
+                import sys as _sys
+                ids = ", ".join(str(node.get("id")) for node in missing)
+                print(
+                    "[graphify] WARNING: Refusing to overwrite — saved semantic "
+                    f"node(s) are missing from the new graph: {ids}.",
+                    file=_sys.stderr,
+                )
+                return False
             if new_n < existing_n:
                 import sys as _sys
                 print(
