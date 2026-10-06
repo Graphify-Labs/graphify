@@ -30,7 +30,10 @@ def extract_powershell(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
-    function_bodies: list[tuple[str, Any]] = []
+    function_bodies: list[tuple[str, Any, str | None]] = []
+    class_ids_by_name: dict[str, list[str]] = {}
+    class_names_by_id: dict[str, str] = {}
+    methods_by_class: dict[str, dict[str, str]] = {}
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -120,7 +123,7 @@ def extract_powershell(path: Path) -> dict:
                 add_edge(file_nid, func_nid, "contains", line)
                 body = _find_script_block_body(node)
                 if body:
-                    function_bodies.append((func_nid, body))
+                    function_bodies.append((func_nid, body, None))
                     # Also walk the body during the main pass so that
                     # Import-Module / dot-source inside functions emit
                     # file-level imports_from edges (#1331).
@@ -165,6 +168,9 @@ def extract_powershell(path: Path) -> dict:
                 class_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
                 class_nid = _make_id(stem, class_name)
+                # Count declarations, including duplicates that share a node id.
+                class_ids_by_name.setdefault(class_name.lower(), []).append(class_nid)
+                class_names_by_id[class_nid] = class_name.lower()
                 add_node(class_nid, class_name, line)
                 add_edge(file_nid, class_nid, "contains", line)
                 # Base type(s) after ':'. PowerShell has no syntactic base vs
@@ -207,6 +213,7 @@ def extract_powershell(path: Path) -> dict:
                     method_nid = _make_id(parent_class_nid, method_name)
                     add_node(method_nid, f".{method_name}()", line)
                     add_edge(parent_class_nid, method_nid, "method", line)
+                    methods_by_class.setdefault(parent_class_nid, {})[method_name.lower()] = method_nid
                 else:
                     method_nid = _make_id(stem, method_name)
                     add_node(method_nid, f"{method_name}()", line)
@@ -239,7 +246,7 @@ def extract_powershell(path: Path) -> dict:
                                      p_line, context="parameter_type")
                 body = _find_script_block_body(node)
                 if body:
-                    function_bodies.append((method_nid, body))
+                    function_bodies.append((method_nid, body, parent_class_nid))
             return
 
         if t == "command":
@@ -315,17 +322,10 @@ def extract_powershell(path: Path) -> dict:
     walk(root)
 
     label_to_nid = {n["label"].strip("()").lstrip(".").lower(): n["id"] for n in nodes}
-    # Member calls (`$this.M()`, `[C]::M()`) must resolve only to a method, never
-    # to a free function that happens to share the name. Methods are exactly the
-    # nodes whose label is dot-prefixed (`.M()`), so key them separately (#3992).
-    method_label_to_nid = {
-        n["label"].strip("()").lstrip(".").lower(): n["id"]
-        for n in nodes if n["label"].startswith(".")
-    }
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
 
-    def walk_calls(node, caller_nid: str) -> None:
+    def walk_calls(node, caller_nid: str, parent_class_nid: str | None) -> None:
         if node.type in ("function_statement", "class_statement"):
             return
         if node.type == "command":
@@ -360,7 +360,25 @@ def extract_powershell(path: Path) -> dict:
             member_node = next((c for c in node.children if c.type == "member_name"), None)
             if member_node is not None:
                 method_name = _read_text(member_node, source)
-                tgt_nid = method_label_to_nid.get(method_name.lower())
+                receiver_class = None
+                receiver = node.children[0] if node.children else None
+                operator = node.children[1].type if len(node.children) > 1 else None
+                # Only a direct lexical self or unique literal local type proves
+                # ownership. Value, expression and dynamic receivers stay raw.
+                if receiver is not None and receiver.type == "variable" and operator == ".":
+                    if _read_text(receiver, source).lower() == "$this" and parent_class_nid:
+                        name = class_names_by_id[parent_class_nid]
+                        if len(class_ids_by_name[name]) == 1:
+                            receiver_class = parent_class_nid
+                elif receiver is not None and receiver.type == "type_literal" and operator == "::":
+                    type_name = _ps_type_name(receiver)
+                    class_ids = class_ids_by_name.get(type_name.lower(), []) if type_name else []
+                    if len(class_ids) == 1:
+                        receiver_class = class_ids[0]
+                literal_member = (len(member_node.named_children) == 1
+                                  and member_node.named_children[0].type == "simple_name")
+                tgt_nid = (methods_by_class.get(receiver_class, {}).get(method_name.lower())
+                           if receiver_class and literal_member else None)
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:
@@ -377,10 +395,10 @@ def extract_powershell(path: Path) -> dict:
                         "source_location": f"L{node.start_point[0] + 1}",
                     })
         for child in node.children:
-            walk_calls(child, caller_nid)
+            walk_calls(child, caller_nid, parent_class_nid)
 
-    for caller_nid, body_node in function_bodies:
-        walk_calls(body_node, caller_nid)
+    for caller_nid, body_node, parent_class_nid in function_bodies:
+        walk_calls(body_node, caller_nid, parent_class_nid)
 
     clean_edges = [e for e in edges if e["source"] in seen_ids and
                    (e["target"] in seen_ids or e["relation"] in ("imports_from", "imports"))]
