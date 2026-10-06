@@ -68,6 +68,10 @@ graphify-out/
 └── graph.json       the full graph — query it anytime without re-reading your files
 ```
 
+The persisted graph includes `graph.schema_version` so integrations can detect
+incompatible format changes, plus `graph.graphify_version` identifying the
+Graphify release that produced it.
+
 **Works in** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, and 15+ more — [pick your platform](#install).
 
 ---
