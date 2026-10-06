@@ -2353,7 +2353,10 @@ def _emit_rescued_import(
     absolute — a ghost node (e.g. ``private_tmp_..._src_lib_content``)
     duplicating the real ``src_lib_content`` node and clobbering its label on
     dedupe (#2195). Stub nodes are still minted for unresolved specifiers
-    (externals, not-yet-created files) so prior behavior is preserved.
+    (externals, not-yet-created files). Their path is retained only until
+    extract() has canonicalized path-derived IDs; the transient marker then
+    clears source_file. The specifier stays in the label and the importing
+    file's evidence stays on the edge.
     """
     resolution = _resolve_rescued_specifier(path, raw, aliases, base_url)
     if resolution is None:
@@ -2377,6 +2380,7 @@ def _emit_rescued_import(
     result.setdefault("nodes", []).append({
         "id": node_id, "label": raw,
         "file_type": "code", "source_file": stub_source_file,
+        "_unresolved_import": True,
         "confidence": "EXTRACTED",
     })
     result.setdefault("edges", []).append(edge)
@@ -9003,6 +9007,11 @@ def extract(
     # cache keeps its own copy, which is what the colliding-id pass reads on a cache hit.
     for n in all_nodes:
         n.pop("origin_file", None)
+        # A rescued external/missing target's path was only an ID hint.
+        # Keep it through the canonicalization above (#2195), then remove
+        # the false filesystem provenance without changing import edges.
+        if n.pop("_unresolved_import", False):
+            n["source_file"] = ""
     # `_callable` / `_callable_class` are deliberately NOT popped (#2438): they
     # persist into graph.json — the same underscore-provenance precedent as
     # `_origin` below — so an incremental rebuild can hand them back as
