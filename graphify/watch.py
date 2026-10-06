@@ -811,6 +811,64 @@ def _reconcile_markdown_links(
     return preserved_edges
 
 
+def _referenced_unscanned_identities(
+    existing: dict,
+    source_paths: "_StoredSourcePaths",
+    *,
+    out: Path,
+    project_root: Path,
+    live_sources: "set[str | None]",
+    rebuilt_sources: "set[str | None]",
+) -> set[str]:
+    """Missing source paths that were never scanned but an unchanged file still points at.
+
+    An extractor can mint a node for a file that is not in the checkout: the
+    target of an unresolved dynamic import (``import('./queue.js')``) or a
+    project a ``.sln`` / ``<ProjectReference>`` names. The node carries that
+    path as its ``source_file``, but it is the REFERRING file's output. The
+    corpus sweep read the missing path as a deleted source and evicted it, so
+    the unchanged referrer's preserved edges to it dangled and were dropped,
+    while a full rebuild of the same tree keeps both.
+
+    Deletion evidence (#1795) is the previous scan: a path listed in
+    manifest.json was a real file and is evicted as before. A path that was
+    never scanned cannot have been deleted; its nodes stay while a referrer
+    that is not re-extracted this run still points at them. A re-extracted
+    referrer re-emits them (or not) itself. Without a readable manifest the
+    old behaviour is kept.
+    """
+    from graphify.build import _is_ast_tier
+
+    try:
+        scanned = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(scanned, dict):
+        return set()
+    scanned_before = {source_paths.absolute_identity(str(key), project_root) for key in scanned}
+
+    owner: dict[str, str] = {}
+    for node in existing.get("nodes", []):
+        source_file = node.get("source_file")
+        if not source_file or not node.get("id") or not _is_ast_tier(node):
+            continue
+        identity = source_paths.identity(source_file)
+        if identity and identity not in live_sources and identity not in scanned_before:
+            owner[node["id"]] = identity
+    if not owner:
+        return set()
+    referenced: set[str] = set()
+    for edge in existing.get("links", existing.get("edges", [])):
+        edge_source = source_paths.identity(edge.get("source_file"))
+        if edge_source not in live_sources or edge_source in rebuilt_sources:
+            continue
+        for endpoint in (edge.get("source"), edge.get("target")):
+            identity = owner.get(endpoint)
+            if identity:
+                referenced.add(identity)
+    return referenced
+
+
 def _reconcile_existing_graph(
     existing_graph: Path,
     result: dict,
@@ -912,6 +970,20 @@ def _reconcile_existing_graph(
         newly_ignored_files: set[str] = set()
         newly_ignored_nodes = 0
         _alive_cache: dict[str, bool] = {}
+        _unscanned_refs: set[str] | None = None
+
+        def _referenced_unscanned(identity: str) -> bool:
+            nonlocal _unscanned_refs
+            if _unscanned_refs is None:
+                _unscanned_refs = _referenced_unscanned_identities(
+                    existing,
+                    source_paths,
+                    out=out,
+                    project_root=project_root,
+                    live_sources=current_sources,
+                    rebuilt_sources=rebuilt_source_identities,
+                )
+            return identity in _unscanned_refs
         _ignored_cache: dict[str, bool] = {}
 
         def _ignored_now(identity: str) -> bool:
@@ -955,6 +1027,8 @@ def _reconcile_existing_graph(
                     if alive is None:
                         alive = Path(identity).exists()
                         _alive_cache[identity] = alive
+                    if not alive and _referenced_unscanned(identity):
+                        continue  # never scanned: a referrer's placeholder, not a deletion
                     ignored = alive and _ignored_now(identity)
                     if ignored:
                         newly_ignored_files.add(identity)
@@ -984,6 +1058,8 @@ def _reconcile_existing_graph(
                             excluded_alive_files.add(identity)
                             excluded_alive_nodes += 1
                             continue
+                    elif _referenced_unscanned(identity):
+                        continue  # never scanned: a referrer's placeholder, not a deletion
                 normalized = source_paths.normalize(source_file)
                 if normalized:
                     deleted_paths.add(normalized)
