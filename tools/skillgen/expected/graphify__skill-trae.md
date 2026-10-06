@@ -299,12 +299,19 @@ Merge all chunk files into `.graphify_semantic_new.json`. **After each Agent cal
 $(cat graphify-out/.graphify_python) -c "
 import json, glob
 from pathlib import Path
+from graphify.cache import scope_semantic_result
 
 chunks = sorted(glob.glob('graphify-out/.graphify_chunk_*.json'))
+uncached = [line for line in Path('graphify-out/.graphify_uncached.txt').read_text(encoding=\"utf-8\").splitlines() if line]
 all_nodes, all_edges, all_hyperedges = [], [], []
 total_in, total_out = 0, 0
 for c in chunks:
     d = json.loads(Path(c).read_text(encoding=\"utf-8\"))
+    # source_file is a destructive replacement key during --update. Scope the
+    # fresh result BEFORE both cache writes and assembly with cached/AST nodes.
+    dropped_files, dropped_count = scope_semantic_result(d, root=Path('INPUT_PATH'), allowed_source_files=uncached)
+    if dropped_count:
+        print(f'[graphify scope] {c}: dropped {dropped_count} out-of-scope items from {sorted(dropped_files)}')
     all_nodes += d.get('nodes', [])
     all_edges += d.get('edges', [])
     all_hyperedges += d.get('hyperedges', [])
