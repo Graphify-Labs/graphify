@@ -2537,11 +2537,12 @@ def save_manifest(
     forever and masquerading as deletions in detect_incremental. It must be
     the RAW detect output, not a stamp-filtered subset — pruning to a
     filtered set would erase rows the filter merely omitted (failed chunks,
-    --code-only doc rows). A single include row stays; two or more absolute
+    --code-only doc rows). When this argument is set, two or more absolute
     keys that share a directory prefix and match relative keys this save writes
-    are a previous checkout and are dropped (#3581). Callers
-    saving a SUBSET of files (changed_paths hooks, skill runbooks, #917)
-    must leave this None so their untouched rows are preserved.
+    are a previous checkout and are dropped (#3581). A single include row stays.
+    Callers saving a SUBSET of files (changed_paths hooks, skill runbooks, #917)
+    must leave this None so their untouched rows, including out-of-root rows,
+    are preserved.
 
     ``clear_semantic`` (#1948): files that were dispatched this run but
     produced no stamped output (e.g. the LLM omitted their chunk on a
@@ -2644,15 +2645,19 @@ def save_manifest(
     # keeping the row makes them look deleted on every future run (#1908).
     all_files = [f for file_list in files.values() for f in file_list]
     storage_root = _manifest_storage_anchor(manifest_path, root) if root is not None else None
-    new_rels: set[str] = set()
-    if storage_root is not None:
+    # A subset save omits scan_corpus and must keep every live row it was not
+    # given (#917), including an include row and a previous checkout. The
+    # checkout drop runs only on a full scan.
+    stale_checkout: set[str] = set()
+    if scan_set is not None and storage_root is not None:
+        new_rels: set[str] = set()
         for f in all_files:
             stored = _nfc(_to_relative_for_storage(_nfc(f), storage_root))
             if not _looks_absolute(stored):
                 new_rels.add(stored)
-    stale_checkout = _previous_checkout_absolute_keys(
-        existing.keys(), storage_root, new_rels
-    )
+        stale_checkout = _previous_checkout_absolute_keys(
+            existing.keys(), storage_root, new_rels
+        )
     manifest: dict[str, dict] = {}
     for f, entry in existing.items():
         normalised = _normalise_entry(entry)

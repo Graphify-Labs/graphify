@@ -3633,8 +3633,9 @@ def test_save_manifest_reclone_drops_other_checkout_when_scan_corpus_is_set(tmp_
     assert not any(k.startswith(str(checkout_a)) for k in raw)
 
 
-def test_save_manifest_reclone_drops_other_checkout_when_scan_corpus_is_unset(tmp_path):
-    """The same re-clone drop runs when scan_corpus is omitted (#3581)."""
+def test_save_manifest_subset_save_keeps_other_checkout_absolute_keys(tmp_path):
+    """Omitting scan_corpus is a subset save (#917). It must keep absolute
+    keys that point at the other checkout."""
     import json
     import shutil
     checkout_a = tmp_path / "checkout-a"
@@ -3649,8 +3650,41 @@ def test_save_manifest_reclone_drops_other_checkout_when_scan_corpus_is_unset(tm
         checkout_b, files_b, root=checkout_b, scan_corpus=None,
     )
     raw = json.loads(Path(manifest_b).read_text(encoding="utf-8"))
-    assert set(raw) == {"a.py", "b.py", "src/c.py"}
-    assert not any(k.startswith(str(checkout_a)) for k in raw)
+    assert {"a.py", "b.py", "src/c.py"} <= set(raw)
+    old = [k for k in raw if k.startswith(str(checkout_a))]
+    assert len(old) == 3, f"a subset save must keep the other checkout, got {set(raw)}"
+
+
+def test_save_manifest_subset_save_keeps_includes_that_share_basenames(tmp_path):
+    """A subset save must keep two include rows whose file names match the
+    files it restamps."""
+    import json
+    import shutil
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    a.write_text("x = 1\n", encoding="utf-8")
+    b.write_text("y = 2\n", encoding="utf-8")
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-includes"
+    outside_dir.mkdir()
+    outside_a = outside_dir / "a.py"
+    outside_b = outside_dir / "b.py"
+    outside_a.write_text("z = 3\n", encoding="utf-8")
+    outside_b.write_text("w = 4\n", encoding="utf-8")
+    try:
+        manifest_path = str(tmp_path / "graphify-out" / "manifest.json")
+        save_manifest(
+            {"code": [str(a), str(b), str(outside_a), str(outside_b)]},
+            manifest_path, root=tmp_path,
+        )
+        save_manifest(
+            {"code": [str(a), str(b)]}, manifest_path, root=tmp_path,
+        )
+        raw = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        assert {"a.py", "b.py"} <= set(raw)
+        assert str(outside_a.resolve()) in raw, set(raw)
+        assert str(outside_b.resolve()) in raw, set(raw)
+    finally:
+        shutil.rmtree(outside_dir, ignore_errors=True)
 
 
 def test_save_manifest_move_has_no_absolute_key_when_scan_corpus_is_set(tmp_path):
