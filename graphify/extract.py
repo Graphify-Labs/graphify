@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import textwrap
+import unicodedata
 from bisect import bisect_right
 from collections import Counter
 from dataclasses import dataclass, field
@@ -384,6 +385,9 @@ def _suppress_ambiguous_python_imports(
         if marker_only:
             continue
         if not module_is_ambiguous:
+            # Keep the exact dotted spelling for _repoint_python_package_imports,
+            # which pops it: the target id alone is case-folded.
+            edge["_python_import_spelling"] = module_name
             kept_edges.append(edge)
             continue
         # A raw dotted alias could itself belong to an unrelated real node. Use
@@ -417,6 +421,54 @@ def _suppress_ambiguous_python_imports(
             raw_call["_ambiguous_python_import"] = True
 
 
+# stdlib_module_names | builtin_module_names of CPython 3.10/3.12/3.13/3.14: a deliberate superset.
+_PYTHON_STDLIB_MODULE_NAMES = frozenset({
+    "__future__", "_abc", "_aix_support", "_android_support", "_apple_support", "_ast",
+    "_ast_unparse", "_asyncio", "_bisect", "_blake2", "_bootsubprocess", "_bz2", "_codecs",
+    "_codecs_cn", "_codecs_hk", "_codecs_iso2022", "_codecs_jp", "_codecs_kr", "_codecs_tw",
+    "_collections", "_collections_abc", "_colorize", "_compat_pickle", "_compression",
+    "_contextvars", "_crypt", "_csv", "_ctypes", "_curses", "_curses_panel", "_datetime", "_dbm",
+    "_decimal", "_elementtree", "_frozen_importlib", "_frozen_importlib_external", "_functools",
+    "_gdbm", "_hashlib", "_heapq", "_hmac", "_imp", "_interpchannels", "_interpqueues",
+    "_interpreters", "_io", "_ios_support", "_json", "_locale", "_lsprof", "_lzma", "_markupbase",
+    "_md5", "_msi", "_multibytecodec", "_multiprocessing", "_opcode", "_opcode_metadata",
+    "_operator", "_osx_support", "_overlapped", "_pickle", "_posixshmem", "_posixsubprocess",
+    "_py_abc", "_py_warnings", "_pydatetime", "_pydecimal", "_pyio", "_pylong", "_pyrepl", "_queue",
+    "_random", "_remote_debugging", "_scproxy", "_sha1", "_sha2", "_sha256", "_sha3", "_sha512",
+    "_signal", "_sitebuiltins", "_socket", "_sqlite3", "_sre", "_ssl", "_stat", "_statistics",
+    "_string", "_strptime", "_struct", "_suggestions", "_symtable", "_sysconfig",
+    "_testinternalcapi", "_thread", "_threading_local", "_tkinter", "_tokenize", "_tracemalloc",
+    "_types", "_typing", "_uuid", "_warnings", "_weakref", "_weakrefset", "_winapi", "_wmi",
+    "_xxsubinterpreters", "_xxtestfuzz", "_zoneinfo", "_zstd", "abc", "aifc", "annotationlib",
+    "antigravity", "argparse", "array", "ast", "asynchat", "asyncio", "asyncore", "atexit",
+    "audioop", "base64", "bdb", "binascii", "binhex", "bisect", "builtins", "bz2", "cProfile",
+    "calendar", "cgi", "cgitb", "chunk", "cmath", "cmd", "code", "codecs", "codeop", "collections",
+    "colorsys", "compileall", "compression", "concurrent", "configparser", "contextlib",
+    "contextvars", "copy", "copyreg", "crypt", "csv", "ctypes", "curses", "dataclasses", "datetime",
+    "dbm", "decimal", "difflib", "dis", "distutils", "doctest", "email", "encodings", "ensurepip",
+    "enum", "errno", "faulthandler", "fcntl", "filecmp", "fileinput", "fnmatch", "fractions",
+    "ftplib", "functools", "gc", "genericpath", "getopt", "getpass", "gettext", "glob", "graphlib",
+    "grp", "gzip", "hashlib", "heapq", "hmac", "html", "http", "idlelib", "imaplib", "imghdr",
+    "imp", "importlib", "inspect", "io", "ipaddress", "itertools", "json", "keyword", "lib2to3",
+    "linecache", "locale", "logging", "lzma", "mailbox", "mailcap", "marshal", "math", "mimetypes",
+    "mmap", "modulefinder", "msilib", "msvcrt", "multiprocessing", "netrc", "nis", "nntplib", "nt",
+    "ntpath", "nturl2path", "numbers", "opcode", "operator", "optparse", "os", "ossaudiodev",
+    "pathlib", "pdb", "pickle", "pickletools", "pipes", "pkgutil", "platform", "plistlib", "poplib",
+    "posix", "posixpath", "pprint", "profile", "pstats", "pty", "pwd", "py_compile", "pyclbr",
+    "pydoc", "pydoc_data", "pyexpat", "queue", "quopri", "random", "re", "readline", "reprlib",
+    "resource", "rlcompleter", "runpy", "sched", "secrets", "select", "selectors", "shelve",
+    "shlex", "shutil", "signal", "site", "smtpd", "smtplib", "sndhdr", "socket", "socketserver",
+    "spwd", "sqlite3", "sre_compile", "sre_constants", "sre_parse", "ssl", "stat", "statistics",
+    "string", "stringprep", "struct", "subprocess", "sunau", "symtable", "sys", "sysconfig",
+    "syslog", "tabnanny", "tarfile", "telnetlib", "tempfile", "termios", "textwrap", "this",
+    "threading", "time", "timeit", "tkinter", "token", "tokenize", "tomllib", "trace", "traceback",
+    "tracemalloc", "tty", "turtle", "turtledemo", "types", "typing", "unicodedata", "unittest",
+    "urllib", "uu", "uuid", "venv", "warnings", "wave", "weakref", "webbrowser", "winreg",
+    "winsound", "wsgiref", "xdrlib", "xml", "xmlrpc", "xxsubtype", "zipapp", "zipfile", "zipimport",
+    "zlib", "zoneinfo",
+})
+
+
 def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
     """Repoint Python absolute-import edges to the real file node under a nested
     (e.g. ``src/``) package root (#2072).
@@ -431,13 +483,50 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
     and rewrite matching ``imports``/``imports_from`` edge targets. Guards: never
     shadow an existing node id, and drop an alias claimed by more than one file
     (ambiguous -> leave dangling, as before). Files whose package root IS the
-    scan root are skipped (ids already coincide)."""
+    scan root are skipped (ids already coincide).
+
+    Ids are case-folded, so the sourceless stub that a ``flask.Flask``
+    annotation leaves for the type ``Flask`` takes the package alias ``flask``.
+    Such a stub does not block the alias when the import spells the module
+    exactly (after Python's NFKC identifier normalization), the file is one
+    Python can import by that name, the resolver stamped no ``target_file``
+    of its own, no other node shares the destination id, the top-level name
+    is not a standard-library or built-in module, the file is what Python
+    would load from its own root (``_wins_own_tree``), and nothing on disk
+    could be imported first for the top-level name (``_shadowed``).
+    The stub and its own edges are left alone."""
     try:
         root = Path(root).resolve()
     except OSError:
         root = Path(root)
     node_ids = {n.get("id") for n in all_nodes if isinstance(n, dict)}
+    holders: dict[str, list[dict]] = {}
+    for n in all_nodes:
+        nid = n.get("id") if isinstance(n, dict) else None
+        if isinstance(nid, str):
+            holders.setdefault(nid, []).append(n)
     alias_to_files: dict[str, set[str]] = {}
+    # (dotted spelling, file node, resolved path, its sys.path root) per alias,
+    # for the stub case.
+    alias_sources: dict[str, set[tuple[str, str, Path, Path]]] = {}
+
+    def _add_source(
+        alias: str, mod_parts: tuple[str, ...], file_node: str, path: Path, sys_root: Path,
+    ) -> None:
+        # Only a file Python can import under this exact dotted name: a `.py`
+        # or `.pyi` suffix (not `.PY`), and identifier parts that NFKC leaves
+        # unchanged (Python reads `import \u212a` as ASCII `K`). A literal
+        # `shop.v2/` directory is not the dotted module `shop.v2`.
+        if Path(path).suffix not in (".py", ".pyi"):
+            return
+        if all(
+            part.isidentifier() and unicodedata.normalize("NFKC", part) == part
+            for part in mod_parts
+        ):
+            alias_sources.setdefault(alias, set()).add(
+                (".".join(mod_parts), file_node, Path(path).resolve(), sys_root)
+            )
+
     for p in paths:
         if p.suffix.lower() not in (".py", ".pyi"):
             continue
@@ -461,32 +550,154 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
         if len(mod_parts) == len(parts):
             continue  # package root == scan root: file-node id already coincides
         file_node = _file_node_id(rel)
-        alias = _make_id(str(Path(*mod_parts).with_suffix("")))
+        mod_path = Path(*mod_parts).with_suffix("")
+        alias = _make_id(str(mod_path))
         alias_to_files.setdefault(alias, set()).add(file_node)
+        _add_source(alias, mod_path.parts, file_node, p, d)
         if p.name in ("__init__.py", "__init__.pyi") and len(mod_parts) > 1:
             # `import pkg` / `from pkg import x` targets the package-dir id.
             pkg_alias = _make_id(str(Path(*mod_parts[:-1])))
             alias_to_files.setdefault(pkg_alias, set()).add(file_node)
+            _add_source(pkg_alias, mod_parts[:-1], file_node, p, d)
     alias_map = {
         a: next(iter(fs))
         for a, fs in alias_to_files.items()
         if len(fs) == 1 and a not in node_ids
     }
-    if not alias_map:
-        return
+
+    def _sole_holder(file_node: str, path: Path) -> bool:
+        # The colliding-id pass re-keys an id held by two nodes (`__init__.py`
+        # next to `__init__.h` or `__init__.pyi`) and sends import edges to a
+        # header variant first (#1475), so only this file may hold the id.
+        held = holders.get(file_node, [])
+        source_file = held[0].get("source_file") if len(held) == 1 else None
+        try:
+            return bool(source_file) and Path(str(source_file)).resolve() == path
+        except OSError:
+            return False
+
+    def _module_files(stem: str, names: set[str]) -> list[str]:
+        """Entries Python could load as module `stem`, in path-finder order:
+        extension modules, source, bytecode, then `.pyi` stubs. Extension
+        modules match by pattern (`stem.so`, `stem.pyd`, `stem.<tag>.so`,
+        `stem.<tag>.pyd`), not the running interpreter's EXTENSION_SUFFIXES,
+        so the graph does not depend on which Python runs graphify."""
+        extensions = sorted(
+            n for n in names if n.startswith(stem + ".") and n.endswith((".so", ".pyd"))
+        )
+        return extensions + [stem + s for s in (".py", ".pyc", ".pyi") if stem + s in names]
+
+    listings: dict[Path, set[str] | None] = {}
+
+    def _listing(directory: Path) -> set[str] | None:
+        # Exact-case entry names, as the finder compares them. None when the
+        # directory cannot be read; every caller then refuses the stub case.
+        if directory not in listings:
+            try:
+                listings[directory] = {c.name for c in directory.iterdir()}
+            except OSError:
+                listings[directory] = None
+        return listings[directory]
+
+    def _wins_own_tree(path: Path, sys_root: Path) -> bool:
+        """Would Python load this file for its dotted name from its own root?
+
+        Reads the disk, not the scan, so an ignored `core/__init__.py` next
+        to a scanned `core.py` still counts. No package directory on the way
+        may have a same-named module file beside it. The file itself must
+        come first in finder order, with no same-named entry (package or
+        namespace directory) beside it.
+        """
+        try:
+            parts = path.relative_to(sys_root).parts
+        except ValueError:
+            return False
+        directory = sys_root
+        for i, part in enumerate(parts):
+            names = _listing(directory)
+            if names is None:
+                return False
+            last = i == len(parts) - 1
+            stem = Path(part).stem if last else part
+            modules = _module_files(stem, names)
+            if not last and modules:
+                return False  # `core.py` beside package `core/`
+            if last and (stem in names or modules[:1] != [part]):
+                return False  # `core/` beside core.py, or core.so ahead of it
+            directory = directory / part
+        return True
+
+    stub_alias_map: dict[str, tuple[str, str, Path]] = {}
+    for a, fs in alias_to_files.items():
+        sources = alias_sources.get(a, set())
+        if len(fs) != 1 or len(sources) != 1 or a not in holders:
+            continue
+        if any(n.get("source_file") for n in holders[a]):
+            continue  # a real node owns the id: the guard above applies
+        spelling, file_node, path, sys_root = next(iter(sources))
+        if spelling.split(".", 1)[0] in _PYTHON_STDLIB_MODULE_NAMES:
+            # Built-in, frozen and stdlib modules load ahead of any path entry.
+            # A fixed list, so the graph does not depend on the host Python.
+            continue
+        if _sole_holder(file_node, path) and _wins_own_tree(path, sys_root):
+            stub_alias_map[a] = (file_node, spelling, sys_root)
+
+    def _shadowed(spelling: str, importer: str, sys_root: Path) -> bool:
+        """Could another module be imported first for the top-level name?
+
+        Checks the sys.path roots the shared resolver probes besides the
+        candidate's own: the scan root and the importer's non-package
+        ancestors. An entry named `<top>` (package or namespace directory)
+        or `<top>` plus any module suffix there, scanned or not, blocks the
+        stub case, for the raw and the NFKC spelling. So does a directory
+        that cannot be listed.
+        """
+        top = spelling.split(".", 1)[0]
+        tops = {top, unicodedata.normalize("NFKC", top)}
+        dirs = [root]
+        try:
+            for anc in Path(importer).resolve().parents:
+                anc.relative_to(root)
+                if anc not in (root, sys_root) and not (anc / "__init__.py").is_file():
+                    dirs.append(anc)
+        except (ValueError, OSError):
+            pass  # left the scan root
+        for directory in dirs:
+            names = _listing(directory)
+            if names is None:
+                return True
+            for name in tops:
+                if name in names or _module_files(name, names):
+                    return True
+        return False
+
     for e in all_edges:
+        if not isinstance(e, dict):
+            continue
+        spelling = e.pop("_python_import_spelling", None)
         # Only repoint edges emitted from a Python file: a non-Python import edge
         # (e.g. C# `using Pkg.Mod;`, Java/Go dotted imports) can have a dangling
         # target string that coincides with a Python alias, and repointing it
         # would fabricate a cross-language import edge (#2072 review).
         if (
-            isinstance(e, dict)
-            and e.get("relation") in ("imports", "imports_from")
+            e.get("relation") in ("imports", "imports_from")
             and str(e.get("source_file", "")).lower().endswith((".py", ".pyi"))
         ):
             tgt = e.get("target")
             if tgt in alias_map:
                 e["target"] = alias_map[tgt]
+            elif (
+                tgt in stub_alias_map
+                and isinstance(spelling, str)
+                and unicodedata.normalize("NFKC", spelling) == stub_alias_map[tgt][1]
+                # A stamped target_file is the resolver's own pick (e.g. an
+                # unscanned scan-root module); never swap in another file.
+                and not e.get("target_file")
+                and not _shadowed(
+                    spelling, str(e.get("source_file", "")), stub_alias_map[tgt][2]
+                )
+            ):
+                e["target"] = stub_alias_map[tgt][0]
 
 
 def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
