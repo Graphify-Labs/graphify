@@ -371,7 +371,8 @@ def extract_powershell(path: Path) -> dict:
                         if len(class_ids_by_name[name]) == 1:
                             receiver_class = parent_class_nid
                 elif receiver is not None and receiver.type == "type_literal" and operator == "::":
-                    type_name = _ps_type_name(receiver)
+                    # Match the whole literal: a partial parse can hide type qualifiers.
+                    type_name = _read_text(receiver, source)[1:-1].strip() if not receiver.has_error else ""
                     class_ids = class_ids_by_name.get(type_name.lower(), []) if type_name else []
                     if len(class_ids) == 1:
                         receiver_class = class_ids[0]

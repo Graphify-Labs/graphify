@@ -2774,6 +2774,8 @@ def test_powershell_member_calls_keep_receiver_class(tmp_path, reverse):
     ("([Alpha]$this).Pick()", "Pick"),
     ("$this.$dynamic()", "$dynamic"),
     ("[External]::Pick()", "Pick"),
+    ("[Alpha+Nested]::Pick()", "Pick"),
+    ("[Alpha, MyAssembly]::Pick()", "Pick"),
     ("[Beta]::Pick()", "Pick"),
 ])
 def test_powershell_uncertain_receivers_remain_raw(tmp_path, call, callee):
@@ -2798,6 +2800,22 @@ def test_powershell_uncertain_receivers_remain_raw(tmp_path, call, callee):
     assert picked[0]["is_member_call"] is True
     assert picked[0]["source_file"] == str(f)
     assert picked[0]["source_location"].startswith("L")
+
+
+@pytest.mark.parametrize("receiver", ["[Alpha]", "[aLpHa]", "[ Alpha ]"])
+def test_powershell_complete_static_type_literal_resolves(tmp_path, receiver):
+    f = tmp_path / "literal.ps1"
+    f.write_text(
+        "class Alpha { static [int] Pick() { return 1 } }\n"
+        f"function Start {{ {receiver}::Pick() }}\n"
+    )
+    r = extract_powershell(f)
+    assert "error" not in r
+    caller = next(n["id"] for n in r["nodes"] if n["label"] == "Start()")
+    target = next(n["id"] for n in r["nodes"] if n["label"] == ".Pick()")
+    calls = [e for e in r["edges"] if e["relation"] == "calls"]
+    assert [(e["source"], e["target"]) for e in calls] == [(caller, target)]
+    assert not [c for c in r["raw_calls"] if c["callee"] == "Pick"]
 
 
 @pytest.mark.parametrize("second_name", ["Alpha", "alpha"])
