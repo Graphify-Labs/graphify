@@ -1680,7 +1680,7 @@ def _walk_js_tree(node):
 
 def _js_module_specifier(node, source: bytes) -> str | None:
     source_node = node.child_by_field_name("source")
-    if source_node is None:
+    if source_node is None and node.type != "export_statement":
         for child in node.children:
             if child.type == "string":
                 source_node = child

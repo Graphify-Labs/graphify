@@ -827,10 +827,7 @@ def _import_js(node, source: bytes, file_nid: str, stem: str, edges: list, str_p
     if is_reexport:
         has_from = any(child.type == "from" or (_read_text(child, source) == "from") for child in node.children if child.type in ("from", "identifier"))
         if not has_from:
-            # Check for string child (source path) as a more reliable indicator
-            has_from = any(child.type == "string" for child in node.children)
-            if not has_from:
-                return
+            return
 
     # `import type {...} from` / `export type {...} from` are erased by the
     # TypeScript compiler: no runtime emit, no module-graph edge. The
