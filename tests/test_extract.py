@@ -861,22 +861,37 @@ def test_extract_js_destructured_require_imports_from():
         assert e["confidence"] == "EXTRACTED"
 
 
-def test_extract_js_destructured_require_named_symbols():
+def _cjs_require_with_targets(tmp_path):
+    """cjs_require.js next to real modules for the specifiers it requires.
+
+    The fixture's own siblings (./foundation, ./utils, ./helpers) do not exist,
+    and a require() of a missing module is unresolved (no symbol edges, a stable
+    ref target), the same as a static import (#2457). Binder symbol edges are
+    therefore checked against modules that resolve.
+    """
+    for name in ("foundation", "utils", "helpers"):
+        (tmp_path / f"{name}.js").write_text("module.exports = {};\n", encoding="utf-8")
+    importer = tmp_path / "cjs_require.js"
+    importer.write_text((FIXTURES / "cjs_require.js").read_text(encoding="utf-8"), encoding="utf-8")
+    return importer
+
+
+def test_extract_js_destructured_require_named_symbols(tmp_path):
     """Destructured CJS requires must emit symbol-level `imports` edges per binder."""
     from graphify.extract import extract_js, _make_id, _file_stem
-    result = extract_js(FIXTURES / "cjs_require.js")
+    result = extract_js(_cjs_require_with_targets(tmp_path))
     sym_targets = [e["target"] for e in result["edges"] if e["relation"] == "imports"]
-    foundation_stem = _file_stem(FIXTURES / "foundation.js")
+    foundation_stem = _file_stem(tmp_path / "foundation.js")
     assert _make_id(foundation_stem, "loadFoundation") in sym_targets
     assert _make_id(foundation_stem, "validateConfig") in sym_targets
 
 
-def test_extract_js_member_require_emits_property_symbol():
+def test_extract_js_member_require_emits_property_symbol(tmp_path):
     """`const x = require('./m').y` must emit symbol edge for `y`."""
     from graphify.extract import extract_js, _make_id, _file_stem
-    result = extract_js(FIXTURES / "cjs_require.js")
+    result = extract_js(_cjs_require_with_targets(tmp_path))
     sym_targets = [e["target"] for e in result["edges"] if e["relation"] == "imports"]
-    helpers_stem = _file_stem(FIXTURES / "helpers.js")
+    helpers_stem = _file_stem(tmp_path / "helpers.js")
     assert _make_id(helpers_stem, "helperFn") in sym_targets
 
 

@@ -1092,6 +1092,37 @@ def test_unresolved_relative_import_uses_stable_ref_target(tmp_path: Path):
     )
 
 
+
+def test_unresolved_relative_require_uses_stable_ref_target(tmp_path: Path):
+    """CommonJS require() of a missing local module took a separate path from
+    static imports and still minted its target, and every destructured symbol
+    under it, from the attempted absolute path: the checkout location and the
+    OS username ended up in node ids (#2457 residual)."""
+    importer = _write(
+        tmp_path / "src/consumer.js",
+        "const { loadFoundation } = require('./generated/api');\n"
+        "function run() { return loadFoundation(); }\n"
+        "module.exports = { run };\n",
+    )
+
+    result = _extract_for([importer], tmp_path)
+    source = _file_node_id(Path("src/consumer.js"))
+    imports_from = [
+        edge["target"]
+        for edge in result["edges"]
+        if edge["source"] == source and edge["relation"] == "imports_from"
+    ]
+
+    assert imports_from == [_make_id("ref", "./generated/api")]
+    checkout = _make_id(str(tmp_path))
+    leaked = [
+        endpoint
+        for edge in result["edges"]
+        for endpoint in (edge["source"], edge["target"])
+        if checkout in endpoint
+    ] + [node["id"] for node in result["nodes"] if checkout in node["id"]]
+    assert leaked == []
+
 # ── #927: wildcard tsconfig path patterns ────────────────────────────────────
 
 

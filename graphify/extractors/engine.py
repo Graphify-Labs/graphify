@@ -2429,6 +2429,13 @@ def _require_imports_js(node, source: bytes, importer_nid: str, stem: str, edges
         if resolved is None:
             continue
         tgt_nid, resolved_path = resolved
+        # A relative specifier with no file behind it resolves to the attempted
+        # absolute path. Minting an id from that bakes the checkout location
+        # (and the OS username) into the graph, so treat it as unresolved, the
+        # same as static imports do (#2457).
+        if resolved_path is not None and not resolved_path.is_file():
+            tgt_nid = _make_id("ref", raw)
+            resolved_path = None
         line = node.start_point[0] + 1
         edge = {
             "source": importer_nid,
