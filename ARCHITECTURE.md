@@ -112,3 +112,9 @@ pytest tests/ -q
 ```
 
 The test suite is designed to avoid network access and uncontrolled filesystem effects; most tests are isolated with temporary directories and environment fixtures.
+
+R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
+When normal ID normalization removes an entire binding name, its UTF-8 bytes
+provide a deterministic operator suffix within the same lexical owner. Its double
+underscore separators cannot collide with an ordinary normalized binding ID. Local
+call resolution stops if malformed scope metadata cycles.

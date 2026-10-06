@@ -181,3 +181,94 @@ def test_r_missing_parser_reports_install_hint(tmp_path, monkeypatch, capsys):
 
     assert result["nodes"] == []
     assert 'pip install "graphifyy[r]"' in capsys.readouterr().err
+
+
+def test_r_symbol_only_bindings_have_distinct_ids(tmp_path):
+    source = tmp_path / "ops.R"
+    source.write_text(
+        "`%||%` <- function(a, b) a\n"
+        "`%>%` <- function(a, b) b\n"
+        "`%+%` <- 42\n",
+        encoding="utf-8",
+    )
+    result = extract_r(source)
+    by_label = {node["label"]: node for node in result["nodes"]}
+    assert {"`%||%`()", "`%>%`()", "`%+%`"} <= by_label.keys()
+    assert len({by_label[label]["id"] for label in by_label}) == len(by_label)
+    file_id = by_label["ops.R"]["id"]
+    for label in ("`%||%`()", "`%>%`()", "`%+%`"):
+        assert (file_id, by_label[label]["id"]) in {
+            (edge["source"], edge["target"])
+            for edge in result["edges"] if edge["relation"] == "contains"
+        }
+
+
+def test_r_symbol_only_function_with_external_call_terminates(tmp_path):
+    import json
+    import subprocess
+
+    source = tmp_path / "ops.R"
+    source.write_text(
+        "`%||%` <- function(a, b) if (is.null(a)) b else a\n",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c",
+         "import json, sys; from pathlib import Path; "
+         "from graphify.extractors.r import extract_r; "
+         "print(json.dumps(extract_r(Path(sys.argv[1]))))", str(source)],
+        check=True, capture_output=True, text=True, timeout=10,
+    )
+    result = json.loads(completed.stdout)
+    assert "`%||%`()" in {node["label"] for node in result["nodes"]}
+    assert any(call["callee"] == "is.null" for call in result["raw_calls"])
+
+
+def test_r_operator_fallback_does_not_collide_with_ordinary_binding(tmp_path):
+    from graphify.build import build
+
+    source = tmp_path / "ops.R"
+    operator = "`%||%` <- function(a, b) a\n"
+    ordinary = "operator_60257c7c2560 <- function(a, b) b\n"
+    ids_by_order = []
+    for declarations in (operator + ordinary, ordinary + operator):
+        source.write_text(
+            declarations
+            + "ordinary_call <- function() operator_60257c7c2560(1, 2)\n"
+            + "operator_call <- function() `%||%`(1, 2)\n",
+            encoding="utf-8",
+        )
+        result = extract_r(source)
+        by_label = {node["label"]: node for node in result["nodes"]}
+        assert {"`%||%`()", "operator_60257c7c2560()"} <= by_label.keys()
+        assert ("ordinary_call()", "operator_60257c7c2560()") in _edge_labels(result, "calls")
+        assert ("operator_call()", "`%||%`()") in _edge_labels(result, "calls")
+        ids_by_order.append({label: node["id"] for label, node in by_label.items()})
+        graph = build([result])
+        assert by_label["`%||%`()"]["id"] in graph
+        assert by_label["operator_60257c7c2560()"]["id"] in graph
+    assert ids_by_order[0] == ids_by_order[1]
+
+
+def test_r_operator_scope_keeps_nested_binding_identity(tmp_path):
+    source = tmp_path / "ops.R"
+    source.write_text(
+        "`%||%` <- function() { inner <- function() 1; inner() }\n"
+        "operator_60257c7c2560 <- function() { inner <- function() 2; inner() }\n",
+        encoding="utf-8",
+    )
+    result = extract_r(source)
+    inners = [node for node in result["nodes"] if node["label"] == "inner()"]
+    assert len(inners) == 2
+    for label in ("`%||%`()", "operator_60257c7c2560()"):
+        owner = next(node["id"] for node in result["nodes"] if node["label"] == label)
+        contained = {
+            edge["target"] for edge in result["edges"]
+            if edge["source"] == owner and edge["relation"] == "contains"
+        }
+        called = {
+            edge["target"] for edge in result["edges"]
+            if edge["source"] == owner and edge["relation"] == "calls"
+        }
+        assert len(contained) == 1
+        assert called == contained

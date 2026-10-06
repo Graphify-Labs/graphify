@@ -182,10 +182,20 @@ def extract_r(path: Path) -> dict:
             return ""
         return _unquote(_read_text(node, source))
 
+    def binding_id(owner: str, name: str) -> str:
+        suffix = _make_id(name)
+        if not suffix:
+            # Symbol-only R operators are real bindings. Repeated underscores
+            # cannot be produced by _make_id for ordinary names.
+            return f"{owner}__operator__{name.encode('utf-8').hex()}"
+        # Preserve the owner verbatim so nested bindings in an operator's scope
+        # keep its reserved namespace instead of normalizing it away.
+        return f"{owner}_{suffix}"
+
     def declare_function(
         name: str, function: Node, body: Node | None, owner: str, relation: str = "contains"
     ) -> str:
-        nid = _make_id(owner, name)
+        nid = binding_id(owner, name)
         line = function.start_point[0] + 1
         add_node(nid, f"{name}()", line, kind="function", callable_node=True)
         add_edge(owner, nid, relation, line)
@@ -355,7 +365,7 @@ def extract_r(path: Path) -> dict:
                             add_class_members(class_id, arguments)
                         continue
                 if top_level and name_node is not None:
-                    nid = _make_id(owner, name)
+                    nid = binding_id(owner, name)
                     line = name_node.start_point[0] + 1
                     add_node(nid, name, line, kind="variable")
                     add_edge(owner, nid, "contains", line)
@@ -382,7 +392,9 @@ def extract_r(path: Path) -> dict:
 
     def resolve_local(caller_id: str, name: str) -> str | None:
         scope: str | None = caller_id
-        while scope is not None:
+        visited: set[str] = set()
+        while scope is not None and scope not in visited:
+            visited.add(scope)
             target = definitions.get(scope, {}).get(name)
             if target is not None:
                 return target
