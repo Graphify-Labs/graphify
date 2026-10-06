@@ -3244,6 +3244,18 @@ def _ts_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: str,
         return True
     return False
 
+def _csharp_scope_id(node) -> str:
+    """Id of a namespace scope, stored in ``scope_chain`` / ``scope_id`` metadata.
+
+    Row and column, not ``start_byte``: a CRLF checkout has one more byte per
+    line than an LF checkout of the same file, so a byte offset gave a
+    Windows and a Linux build of the same commit different graph.json
+    metadata. Row and column are the same for both and just as unique.
+    """
+    row, column = node.start_point
+    return f"s{row}:{column}"
+
+
 def _csharp_namespace_name(node, source: bytes) -> str:
     name_node = node.child_by_field_name("name")
     if name_node is not None:
@@ -3286,7 +3298,7 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
         pushed = False
         if ns_name:
             namespace_stack.append(ns_name)
-            scope_stack.append(f"s{node.start_byte}")
+            scope_stack.append(_csharp_scope_id(node))
             pushed = True
             ns_label = ".".join(namespace_stack)
             ns_nid = _csharp_namespace_id(ns_label)
@@ -3310,7 +3322,7 @@ def _csharp_extra_walk(node, source: bytes, file_nid: str, stem: str, str_path: 
         ns_name = _csharp_namespace_name(node, source)
         if ns_name:
             namespace_stack.append(ns_name)
-            scope_stack.append(f"s{node.start_byte}")
+            scope_stack.append(_csharp_scope_id(node))
             ns_label = ".".join(namespace_stack)
             ns_nid = _csharp_namespace_id(ns_label)
             line = node.start_point[0] + 1
