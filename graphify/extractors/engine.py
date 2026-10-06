@@ -6397,6 +6397,56 @@ def _extract_generic(
                         if lit_body is not None:
                             for child in lit_body.children:
                                 walk(child, parent_class_nid=obj_nid)
+                if config.ts_module in ("tree_sitter_java", "tree_sitter_groovy"):
+                    # Java/Groovy anonymous classes (`new Runnable() { … }`): the
+                    # body hangs off an `object_creation_expression` as a
+                    # `class_body`. The function branch never recurses into
+                    # bodies and object_creation_expression is not a class_type,
+                    # so the anonymous class's methods — and every call inside
+                    # them — got no nodes at all (the Java/Groovy twin of Kotlin
+                    # #2347). Scan this body for anonymous classes without
+                    # crossing a nested method/lambda boundary and without
+                    # descending into a found one, then emit an owner node per
+                    # anonymous class and walk its class_body like the class
+                    # branch so members and their calls flow through the normal
+                    # machinery. The base type is recorded only as the node's
+                    # label, not an implements/inherits edge: an anonymous class
+                    # usually realises a library interface/class whose kind is
+                    # unknowable from this file, so a guessed subtype relation is
+                    # withheld (fail-closed).
+                    _jv_anon = []
+                    _jv_stack = list(body.children)
+                    while _jv_stack:
+                        _jv_node = _jv_stack.pop()
+                        if _jv_node.type in ("method_declaration",
+                                             "lambda_expression"):
+                            continue
+                        if _jv_node.type == "object_creation_expression" and any(
+                            c.type == "class_body" for c in _jv_node.children
+                        ):
+                            _jv_anon.append(_jv_node)
+                            continue
+                        _jv_stack.extend(_jv_node.children)
+                    _jv_anon.sort(key=lambda n: n.start_byte)
+                    for anon in _jv_anon:
+                        anon_line = anon.start_point[0] + 1
+                        type_node = anon.child_by_field_name("type")
+                        base = _read_text(type_node, source).strip() if type_node else ""
+                        obj_label = base or f"object@L{anon_line}"
+                        obj_nid = _make_id(
+                            func_nid, f"object:{obj_label}", f"L{anon_line}"
+                        )
+                        add_node(obj_nid, obj_label, anon_line)
+                        add_edge(func_nid, obj_nid, "contains", anon_line)
+                        callable_def_nids.add(obj_nid)
+                        callable_class_nids.add(obj_nid)
+                        anon_body = next(
+                            (c for c in anon.children if c.type == "class_body"),
+                            None,
+                        )
+                        if anon_body is not None:
+                            for child in anon_body.children:
+                                walk(child, parent_class_nid=obj_nid)
             return
 
         # JS/TS arrow functions and C# namespaces — language-specific extra handling
