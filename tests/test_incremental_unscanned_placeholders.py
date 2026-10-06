@@ -88,3 +88,39 @@ def test_without_a_manifest_the_old_eviction_is_kept(tmp_path):
     _rebuild(corpus, ["other.ts"])
 
     assert not _placeholder_ids(_graph(corpus))
+
+
+def test_a_manifest_anchored_elsewhere_is_no_evidence(tmp_path):
+    corpus = _corpus(tmp_path)
+    _rebuild(corpus)
+    manifest = corpus / "graphify-out" / "manifest.json"
+    manifest.write_text(json.dumps({"some/other/root/x.ts": 1}), encoding="utf-8")
+
+    (corpus / "other.ts").write_text("export function other() {\n  return 2;\n}\n", encoding="utf-8")
+    _rebuild(corpus, ["other.ts"])
+
+    assert not _placeholder_ids(_graph(corpus))
+
+
+def test_a_deleted_real_file_is_evicted_even_if_the_manifest_lost_it(tmp_path):
+    """A stale manifest must not turn a deleted, extracted file into a kept
+    placeholder: its own file node and edges prove it was scanned."""
+    corpus = _corpus(tmp_path)
+    (corpus / "lib.ts").write_text("export function helper() {\n  return 1;\n}\n", encoding="utf-8")
+    (corpus / "user.ts").write_text(
+        "import { helper } from './lib';\nexport function use() {\n  return helper();\n}\n",
+        encoding="utf-8")
+    _rebuild(corpus)
+    assert any(n.get("source_file", "").endswith("lib.ts") for n in _graph(corpus)["nodes"])
+
+    manifest = corpus / "graphify-out" / "manifest.json"
+    scanned = json.loads(manifest.read_text(encoding="utf-8"))
+    stale = {k: v for k, v in scanned.items() if not k.endswith("lib.ts")}
+    assert len(stale) < len(scanned)
+    manifest.write_text(json.dumps(stale), encoding="utf-8")
+
+    (corpus / "lib.ts").unlink()  # deleted outside the change set
+    (corpus / "other.ts").write_text("export function other() {\n  return 2;\n}\n", encoding="utf-8")
+    _rebuild(corpus, ["other.ts"])
+
+    assert not [n for n in _graph(corpus)["nodes"] if n.get("source_file", "").endswith("lib.ts")]

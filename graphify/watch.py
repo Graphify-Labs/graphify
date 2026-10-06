@@ -834,8 +834,10 @@ def _referenced_unscanned_identities(
     manifest.json was a real file and is evicted as before. A path that was
     never scanned cannot have been deleted; its nodes stay while a referrer
     that is not re-extracted this run still points at them. A re-extracted
-    referrer re-emits them (or not) itself. Without a readable manifest the
-    old behaviour is kept.
+    referrer re-emits them (or not) itself. A path whose nodes carry a
+    ``source_location``, or that is the ``source_file`` of any edge, was
+    extracted itself and is evicted even if the manifest is stale. Without a
+    readable manifest that lists today's files, the old behaviour is kept.
     """
     from graphify.build import _is_ast_tier
 
@@ -846,8 +848,13 @@ def _referenced_unscanned_identities(
     if not isinstance(scanned, dict):
         return set()
     scanned_before = {source_paths.absolute_identity(str(key), project_root) for key in scanned}
+    if not scanned_before & live_sources:
+        # A manifest that lists none of today's files was anchored elsewhere
+        # (or is unusable): it is no evidence either way.
+        return set()
 
     owner: dict[str, str] = {}
+    produced_by_itself: set[str] = set()
     for node in existing.get("nodes", []):
         source_file = node.get("source_file")
         if not source_file or not node.get("id") or not _is_ast_tier(node):
@@ -855,18 +862,26 @@ def _referenced_unscanned_identities(
         identity = source_paths.identity(source_file)
         if identity and identity not in live_sources and identity not in scanned_before:
             owner[node["id"]] = identity
+            if node.get("source_location"):
+                produced_by_itself.add(identity)
     if not owner:
         return set()
+    missing = set(owner.values())
     referenced: set[str] = set()
     for edge in existing.get("links", existing.get("edges", [])):
         edge_source = source_paths.identity(edge.get("source_file"))
+        if edge_source in missing:
+            # The missing path emitted edges itself, so it was extracted: a
+            # real file, even if the manifest does not list it.
+            produced_by_itself.add(edge_source)
+            continue
         if edge_source not in live_sources or edge_source in rebuilt_sources:
             continue
         for endpoint in (edge.get("source"), edge.get("target")):
             identity = owner.get(endpoint)
             if identity:
                 referenced.add(identity)
-    return referenced
+    return referenced - produced_by_itself
 
 
 def _reconcile_existing_graph(
