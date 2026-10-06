@@ -1398,7 +1398,12 @@ def dispatch_command(cmd: str) -> None:
         if len(sys.argv) < 3:
             print("Usage: graphify affected \"<node-or-label>\" [--relation R] [--depth N] [--graph path]", file=sys.stderr)
             sys.exit(1)
-        from graphify.affected import DEFAULT_AFFECTED_RELATIONS, format_affected, load_graph
+        from graphify.affected import (
+            DEFAULT_AFFECTED_RELATIONS,
+            SeedResolutionError,
+            format_affected,
+            load_graph,
+        )
         query = sys.argv[2]
         graph_path = _default_graph_path()
         depth = 2
@@ -1453,15 +1458,20 @@ def dispatch_command(cmd: str) -> None:
         # --graph falls back to its own directory.
         from graphify.paths import GRAPHIFY_OUT_NAME
         graph_root = gp.parent.parent if gp.parent.name == GRAPHIFY_OUT_NAME else gp.parent
-        print(
-            format_affected(
+        try:
+            report = format_affected(
                 graph,
                 query,
                 relations=relations or DEFAULT_AFFECTED_RELATIONS,
                 depth=depth,
                 root=graph_root,
             )
-        )
+        except SeedResolutionError as exc:
+            # A miss or a tie exits nonzero on stderr: on stdout with exit 0 a
+            # script read it as "nothing depends on this".
+            print(exc, file=sys.stderr)
+            sys.exit(1)
+        print(report)
     elif cmd in ("god-nodes", "god_nodes"):
         # god_nodes has long been an analyzer (analyze.py), an MCP tool, and a
         # README-advertised capability, but never a CLI subcommand — `graphify
