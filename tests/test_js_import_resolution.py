@@ -1990,3 +1990,764 @@ def test_workspace_main_dist_target_used_when_no_source_entry_exists(tmp_path: P
     result = _extract_for([dist_target, importer], tmp_path)
 
     assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")
+
+
+# ── tsconfig `customConditions` reach source the fixed walk cannot ─────────
+#
+# Every import that the fixed condition walk (#3487) already resolves to a
+# source file keeps its target. customConditions only change imports that
+# walk leaves on build output or on an external stub.
+
+
+def _write_source_condition_package(root: Path, exports: dict) -> None:
+    """zod's layout: every export names its source behind a custom condition,
+    and the runtime conditions point at build output that is not in the scan."""
+    _write_workspace_package(root, "@example/pkg-a", exports)
+    _write(
+        root / "tsconfig.base.json",
+        "{\n  // JSONC, like most real configs\n"
+        '  "compilerOptions": {"module": "esnext", "moduleResolution": "bundler",\n'
+        '    "customConditions": ["@example/source"]},\n}\n',
+    )
+
+
+def _write_condition_importer(
+    root: Path, conditions: list[str], exports: dict, nested: bool = True,
+    extra_options: "dict | None" = None,
+) -> Path:
+    """One workspace package plus an importer whose tsconfig enables `conditions`."""
+    _write_workspace_package(root, "@example/pkg-a", exports)
+    _write(
+        root / "apps/web/tsconfig.json",
+        json.dumps({"compilerOptions": {
+            "module": "esnext",
+            "moduleResolution": "bundler",
+            "customConditions": conditions,
+            **(extra_options or {}),
+        }}),
+    )
+    source = "import { a } from '@example/pkg-a'\n"
+    if nested:
+        source += "import { n } from '@example/pkg-a/nested'\n"
+    return _write(root / "apps/web/src/consumer.ts", source + "export const v = a\n")
+
+
+def test_tsconfig_custom_condition_resolves_workspace_export_to_source(tmp_path: Path):
+    """`import 'zod/v4'` in zod resolves through `"@zod/source": "./src/..."`
+    because packages/zod/tsconfig.json declares that condition. Graphify
+    consulted only its fixed condition list, reached the `import`/`types`
+    targets in an unbuilt package, and left the import pointing at nothing."""
+    _write_source_condition_package(tmp_path, {
+        ".": {
+            "@example/source": "./src/index.ts",
+            "types": "./index.d.ts",
+            "import": "./index.js",
+        },
+        "./mini": {
+            "@example/source": "./src/mini/index.ts",
+            "types": "./mini/index.d.ts",
+            "import": "./mini/index.js",
+        },
+    })
+    _write(tmp_path / "apps/web/tsconfig.json", '{"extends": "../../tsconfig.base.json"}')
+    root_entry = _write(tmp_path / "packages/pkg-a/src/index.ts", "export const a = 1\n")
+    mini_entry = _write(tmp_path / "packages/pkg-a/src/mini/index.ts", "export const m = 1\n")
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { a } from '@example/pkg-a'\n"
+        "import { m } from '@example/pkg-a/mini'\n"
+        "export const v = a + m\n",
+    )
+
+    result = _extract_for([root_entry, mini_entry, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/index.ts")
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/mini/index.ts")
+
+
+def test_tsconfig_custom_condition_follows_the_importers_own_config(tmp_path: Path):
+    """The condition set belongs to the importing project. A sibling whose
+    tsconfig overrides the inherited list with `[]` keeps the fixed walk's
+    answer, here the built `dist/` file, like `tsc` does for zod's packages/tsc."""
+    _write_source_condition_package(tmp_path, {
+        ".": {"@example/source": "./src/source.ts", "default": "./dist/index.js"},
+    })
+    _write(tmp_path / "apps/web/tsconfig.json", '{"extends": "../../tsconfig.base.json"}')
+    _write(
+        tmp_path / "apps/admin/tsconfig.json",
+        '{"extends": "../../tsconfig.base.json", "compilerOptions": {"customConditions": []}}',
+    )
+    source = _write(tmp_path / "packages/pkg-a/src/source.ts", "export const a = 1\n")
+    built = _write(tmp_path / "packages/pkg-a/dist/index.js", "export const a = 2\n")
+    web = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { a } from '@example/pkg-a'\nexport const v = a\n",
+    )
+    admin = _write(
+        tmp_path / "apps/admin/src/consumer.ts",
+        "import { a } from '@example/pkg-a'\nexport const v = a\n",
+    )
+
+    result = _extract_for([source, built, web, admin], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/source.ts")
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")
+    assert _has_edge(result, "apps/admin/src/consumer.ts", "packages/pkg-a/dist/index.js")
+    assert not _has_edge(result, "apps/admin/src/consumer.ts", "packages/pkg-a/src/source.ts")
+
+
+def test_tsconfig_custom_condition_escaping_or_missing_target_keeps_the_v8_result(
+    tmp_path: Path,
+):
+    """Fail closed: a custom-condition target that is not a real file, or that
+    escapes the package directory, leaves the import where the fixed walk put
+    it (the build output here)."""
+    from graphify.extractors.resolution import _resolve_js_module_path
+
+    _write_source_condition_package(tmp_path, {
+        ".": {"@example/source": "./src/missing.ts", "default": "./dist/index.js"},
+        "./widget": {"@example/source": "./../../secret.ts", "default": "./dist/widget.js"},
+    })
+    _write(tmp_path / "apps/web/tsconfig.json", '{"extends": "../../tsconfig.base.json"}')
+    outside = _write(tmp_path / "secret.ts", "export const leak = 1\n")
+    # The escaping target names a real file, so only the containment check
+    # keeps it out; a missing file would pass this test for the wrong reason.
+    assert (tmp_path / "packages/pkg-a/../../secret.ts").resolve() == outside.resolve()
+    built = _write(tmp_path / "packages/pkg-a/dist/index.js", "export const a = 1\n")
+    built_widget = _write(tmp_path / "packages/pkg-a/dist/widget.js", "export const w = 1\n")
+    importer_dir = tmp_path / "apps/web/src"
+    importer_dir.mkdir(parents=True)
+
+    assert _resolve_js_module_path("@example/pkg-a", importer_dir) == built
+    assert _resolve_js_module_path("@example/pkg-a/widget", importer_dir) == built_widget
+
+
+def test_tsconfig_custom_condition_symlink_escape_keeps_the_v8_result(tmp_path: Path):
+    """Containment is checked on the file finally reached. `./src/link.js` does
+    not exist, the `.js` -> `.ts` rule finds `src/link.ts`, and that is a
+    symlink to a file outside the package, so the custom target is refused."""
+    from graphify.extractors.resolution import _resolve_js_module_path
+
+    importer = _write_condition_importer(tmp_path, ["custom"], {
+        ".": {"custom": "./src/link.js", "default": "./dist/index.js"},
+    }, nested=False)
+    outside = _write(tmp_path / "secret.ts", "export const leak = 1\n")
+    built = _write(tmp_path / "packages/pkg-a/dist/index.js", "export const a = 1\n")
+    link = tmp_path / "packages/pkg-a/src/link.ts"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks are not available on this platform")
+
+    assert _resolve_js_module_path("@example/pkg-a", importer.parent) == built
+
+
+def test_tsconfig_custom_condition_never_changes_an_import_v8_resolves_to_source(
+    tmp_path: Path,
+):
+    """An unrelated custom condition must not move an import the fixed walk
+    already resolves. `require` listed before `import`: v8 and tsc 5.9.3 give
+    this ESM importer `esm.ts`; no export even uses "custom"."""
+    importer = _write_condition_importer(tmp_path, ["custom"], {
+        ".": {"require": "./src/cjs.ts", "import": "./src/esm.ts"},
+    }, nested=False)
+    files = [
+        _write(tmp_path / f"packages/pkg-a/src/{name}.ts", "export const a = 1\n")
+        for name in ("cjs", "esm")
+    ]
+
+    result = _extract_for([*files, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/esm.ts")
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/cjs.ts")
+
+
+def test_tsconfig_custom_condition_does_not_beat_an_earlier_export_key(tmp_path: Path):
+    """A custom condition listed after `default`, at the top level or inside a
+    nested condition object, does not displace the `default` file. tsc 5.9.3
+    resolves both specifiers here to the `default` files too."""
+    importer = _write_condition_importer(tmp_path, ["custom"], {
+        ".": {"default": "./src/default.ts", "custom": "./src/custom.ts"},
+        "./nested": {
+            "types": "./dist/nested.d.ts",
+            "import": {"default": "./src/nested-default.ts", "custom": "./src/nested-custom.ts"},
+        },
+    })
+    files = [
+        _write(tmp_path / f"packages/pkg-a/src/{name}.ts", "export const a = 1, n = 1\n")
+        for name in ("default", "custom", "nested-default", "nested-custom")
+    ]
+
+    result = _extract_for([*files, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/default.ts")
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/nested-default.ts")
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/custom.ts")
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/nested-custom.ts")
+
+
+def test_tsconfig_custom_condition_first_key_decides_not_list_order(tmp_path: Path):
+    """The order inside `customConditions` is not a ranking. With ["b", "a"]
+    and an exports object listing `a` first, tsc 5.9.3 picks `a`."""
+    importer = _write_condition_importer(tmp_path, ["b", "a"], {
+        ".": {"a": "./src/a.ts", "b": "./src/b.ts"},
+    }, nested=False)
+    files = [
+        _write(tmp_path / f"packages/pkg-a/src/{name}.ts", "export const a = 1\n")
+        for name in ("a", "b")
+    ]
+
+    result = _extract_for([*files, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/a.ts")
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/b.ts")
+
+
+def test_tsconfig_custom_condition_root_shorthand_target(tmp_path: Path):
+    """A root condition object with no `"."` key is shorthand for
+    `{".": {...}}`. The fixed walk ignores it and finds nothing here; tsc
+    5.9.3 picks `src/shorthand.ts`."""
+    importer = _write_condition_importer(tmp_path, ["custom"], {
+        "custom": "./src/shorthand.ts", "import": "./dist/index.js",
+    }, nested=False)
+    target = _write(tmp_path / "packages/pkg-a/src/shorthand.ts", "export const a = 1\n")
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/shorthand.ts")
+
+
+def test_tsconfig_custom_condition_js_target_resolves_to_ts_sibling(tmp_path: Path):
+    """tsc's first pass swaps `.js` for `.ts`, so `./src/thing.js` with only
+    `src/thing.ts` on disk resolves to the TypeScript file (tsc 5.9.3 agrees)."""
+    importer = _write_condition_importer(
+        tmp_path, ["custom"], {".": {"custom": "./src/thing.js"}}, nested=False
+    )
+    target = _write(tmp_path / "packages/pkg-a/src/thing.ts", "export const a = 1\n")
+
+    result = _extract_for([target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/thing.ts")
+
+
+def test_tsconfig_custom_conditions_layered_diamond_reads_each_config_once(
+    tmp_path: Path, monkeypatch,
+):
+    """32 configs where each layer extends both configs of the layer below.
+    Re-merging shared parents per branch read them 98,303 times; a finished
+    merge is cached per path, so each config is read once."""
+    from graphify.extractors import resolution
+
+    _write(tmp_path / "base.json", json.dumps({"compilerOptions": {
+        "moduleResolution": "bundler", "customConditions": ["custom"],
+    }}))
+    for layer in range(16):
+        below = ["./base.json"] if layer == 0 else [f"./left{layer - 1}.json", f"./right{layer - 1}.json"]
+        for side in ("left", "right"):
+            _write(tmp_path / f"{side}{layer}.json", json.dumps({"extends": below}))
+    reads = []
+    original = resolution._read_json_config
+    monkeypatch.setattr(resolution, "_read_json_config", lambda p: reads.append(p) or original(p))
+    resolution._TSCONFIG_EXPORTS_OPTIONS_CACHE.clear()
+
+    options = resolution._read_tsconfig_exports_options(tmp_path / "left15.json")
+
+    assert options is not None and options["customConditions"] == ["custom"]
+    assert len(reads) == len(set(reads)) == 32
+
+
+def test_tsconfig_custom_condition_missing_target_keeps_the_v8_fallback(tmp_path: Path):
+    """When the custom target is missing, resolution is what it was without
+    customConditions: here the conventional `src/index` entry."""
+    importer = _write_condition_importer(
+        tmp_path, ["custom"], {".": {"custom": "./src/missing.ts"}}, nested=False
+    )
+    entry = _write(tmp_path / "packages/pkg-a/src/index.ts", "export const a = 1\n")
+
+    result = _extract_for([entry, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/index.ts")
+
+
+def test_tsconfig_custom_conditions_config_rules(tmp_path: Path):
+    """When the importer's options are known the way tsc knows them, and
+    when they rule the fallback out.
+
+    compilerOptions merge key by key over `extends`: a later array entry
+    beats an earlier one, a parent shared by two branches is read in both, and
+    the nearest config that sets a key wins; a suffix-less relative `extends`
+    gets `.json`. Unknown options (a package-name `extends` anywhere in the
+    chain, a parent that does not parse, a cycle) turn the fallback off, as do
+    the node10 default, `resolvePackageJsonExports: false`, `moduleSuffixes`,
+    any `outDir` or `declarationDir` (even `""`), a `paths` key that could
+    take the specifier first, any `baseUrl` at all, a `${configDir}` template
+    (not expanded here) in a path option, set directly or inherited, and a
+    non-string condition."""
+    from graphify.extractors.resolution import _load_tsconfig_custom_conditions
+
+    def conditions(directory: str, _package: Path, specifier: str = "@example/pkg-a"):
+        return _load_tsconfig_custom_conditions(tmp_path / directory, specifier)
+
+    def config(path: str, data: dict | str) -> None:
+        _write(tmp_path / path, data if isinstance(data, str) else json.dumps(data))
+
+    bundler = {"module": "esnext", "moduleResolution": "bundler"}
+    other = tmp_path / "packages/other"
+    other.mkdir(parents=True)
+    config("configs/first.json", {"compilerOptions": {**bundler, "customConditions": ["first"]}})
+    config("configs/second.json", {"extends": "./second.base"})
+    config("configs/second.base.json", {"compilerOptions": {"customConditions": ["second"]}})
+    config("nonstring/tsconfig.json", {"compilerOptions": {**bundler, "customConditions": ["c", 7]}})
+    config("array/tsconfig.json", {"extends": ["../configs/first.json", "../configs/second.json"]})
+    config("diamond/shared.json", {"compilerOptions": {**bundler, "customConditions": []}})
+    config("diamond/left.json", {"extends": "./shared.json", "compilerOptions": {"customConditions": ["c"]}})
+    config("diamond/right.json", {"extends": "./shared.json"})
+    config("diamond/tsconfig.json", {"extends": ["./left.json", "./right.json"]})
+    config("pkgparent/tsconfig.json", {
+        "extends": "@tsconfig/strictest/tsconfig.json",
+        "compilerOptions": {**bundler, "customConditions": ["c"]},
+    })
+    config("deep/base.json", {"extends": "@tsconfig/strictest/tsconfig.json"})
+    config("deep/tsconfig.json", {
+        "extends": "./base.json", "compilerOptions": {**bundler, "customConditions": ["c"]},
+    })
+    config("broken/base.json", "{ not json")
+    config("broken/tsconfig.json", {
+        "extends": "./base.json", "compilerOptions": {**bundler, "customConditions": ["c"]},
+    })
+    config("cycle/a.json", {"extends": "./tsconfig.json"})
+    config("cycle/tsconfig.json", {"extends": "./a.json", "compilerOptions": {**bundler, "customConditions": ["c"]}})
+    config("node10/tsconfig.json", {"compilerOptions": {"customConditions": ["c"]}})
+    config("nodenext/tsconfig.json", {"compilerOptions": {"module": "nodenext", "customConditions": ["c"]}})
+    config("off/base.json", {"compilerOptions": {**bundler, "resolvePackageJsonExports": False}})
+    config("off/tsconfig.json", {"extends": "./base.json", "compilerOptions": {"customConditions": ["c"]}})
+    config("suffixes/base.json", {"compilerOptions": {"moduleSuffixes": [".ios", ""]}})
+    config("suffixes/tsconfig.json", {
+        "extends": "./base.json", "compilerOptions": {**bundler, "customConditions": ["c"]},
+    })
+    config("nosuffix/tsconfig.json", {"compilerOptions": {**bundler, "customConditions": ["c"], "moduleSuffixes": [""]}})
+    config("aliased/tsconfig.json", {"compilerOptions": {
+        **bundler, "customConditions": ["c"], "paths": {"@example/*": ["./vendor/*"]},
+    }})
+    config("based/tsconfig.json", {"compilerOptions": {**bundler, "customConditions": ["c"], "baseUrl": "./lib"}})
+    config("based-parent/base.json", {"compilerOptions": {"baseUrl": "./nowhere"}})
+    config("based-parent/tsconfig.json", {
+        "extends": "./base.json", "compilerOptions": {**bundler, "customConditions": ["c"]},
+    })
+    config("templated/tsconfig.json", {"compilerOptions": {
+        **bundler, "customConditions": ["c"], "typeRoots": ["${configDir}/types"],
+    }})
+    config("templated-parent/base.json", {"compilerOptions": {"paths": {"x/*": ["${configDir}/x/*"]}}})
+    config("templated-parent/tsconfig.json", {
+        "extends": "./base.json", "compilerOptions": {**bundler, "customConditions": ["c"]},
+    })
+    _write(tmp_path / "based/lib/@example/pkg-a/index.ts", "export const a = 1\n")
+    self_pkg = tmp_path / "packages/self"
+    config("packages/self/tsconfig.json", {"compilerOptions": {**bundler, "customConditions": ["c"], "outDir": "dist"}})
+    config("emptyout/tsconfig.json", {"compilerOptions": {**bundler, "customConditions": ["c"], "outDir": ""}})
+    config("emptydecl/tsconfig.json", {"compilerOptions": {
+        **bundler, "customConditions": ["c"], "declarationDir": "",
+    }})
+    (tmp_path / "array/src/deep").mkdir(parents=True)
+
+    assert conditions("array/src/deep", other) == ("second",)
+    assert conditions("diamond", other) == ()
+    assert conditions("pkgparent", other) == ()
+    assert conditions("deep", other) == ()
+    assert conditions("broken", other) == ()
+    assert conditions("cycle", other) == ()
+    assert conditions("node10", other) == ()
+    assert conditions("nodenext", other) == ("c",)
+    assert conditions("off", other) == ()
+    assert conditions("suffixes", other) == ()
+    assert conditions("nosuffix", other) == ("c",)
+    assert conditions("aliased", other) == ()
+    assert conditions("aliased", other, "@other/pkg") == ("c",)
+    assert conditions("based", other) == ()
+    assert conditions("based", other, "@example/pkg-b") == ()
+    assert conditions("based-parent", other) == ()
+    assert conditions("templated", other) == ()
+    assert conditions("templated-parent", other) == ()
+    assert conditions("packages/self", self_pkg) == ()
+    assert conditions("packages/self", other) == ()
+    assert conditions("emptyout", other) == ()
+    assert conditions("emptydecl", other) == ()
+    assert conditions("nonstring", other) == ()
+
+
+_KEEPS_V8_EXPORTS = [
+    # (exports["."], files on disk, extra compilerOptions, v8's result, a file the
+    #  import must not reach). The first twelve are reviewer fixtures where an
+    #  earlier revision of this PR picked that file while tsc 5.9.3 resolves
+    #  them to a declaration, another file, or nothing. The last seven are
+    #  targets tsc does resolve to that file, which the fallback deliberately
+    #  leaves to v8: `//` and `\\` spellings, and the unsupported shapes.
+    pytest.param(
+        {"default": "./dist/runtime.d.ts", "custom": "./src/custom.ts"},
+        ["dist/runtime.d.ts", "src/custom.ts"], None, "dist/runtime.d.ts", "src/custom.ts",
+        id="earlier-default-target-exists",
+    ),
+    pytest.param(
+        {"custom": ["./dist/runtime.d.ts", "./src/custom.ts"]},
+        ["dist/runtime.d.ts", "src/custom.ts"], None, None, "src/custom.ts",
+        id="earlier-array-entry-exists",
+    ),
+    pytest.param(
+        {"custom": "./src/component"},
+        ["src/component/index.ts"], None, None, "src/component/index.ts",
+        id="directory-target",
+    ),
+    pytest.param(
+        {"custom": "./src/component.js"},
+        ["src/component.js.ts"], None, None, "src/component.js.ts",
+        id="appended-extension",
+    ),
+    pytest.param(
+        {"custom": "./src/../private.ts"},
+        # src/ exists, so only the segment rule (not the OS) refuses `src/..`.
+        ["private.ts", "src/other.ts"], None, None, "private.ts",
+        id="internal-traversal",
+    ),
+    pytest.param(
+        {"custom": "./src/custom.ts"},
+        ["src/custom.ts"], {"resolvePackageJsonExports": False}, None, "src/custom.ts",
+        id="exports-resolution-off",
+    ),
+    pytest.param(
+        {"custom": {"require": "./src/cjs.ts", "import": "./src/esm.ts"}},
+        ["src/cjs.ts", "src/esm.ts"], None, None, "src/cjs.ts",
+        id="custom-key-around-require-and-import",
+    ),
+    pytest.param(
+        {"custom": ["./src//first.ts", "./src/second.ts"]},
+        ["src/first.ts", "src/second.ts"], None, None, "src/second.ts",
+        id="double-slash-array-entry",
+    ),
+    pytest.param(
+        {"custom": ["./src\\first.ts", "./src/second.ts"]},
+        ["src/first.ts", "src/second.ts"], None, None, "src/second.ts",
+        id="backslash-array-entry",
+    ),
+    pytest.param(
+        {"custom": "./src/first.js", "second": "./src/second.ts"},
+        ["src/first.js", "src/second.ts"], {"customConditions": ["custom", "second"]},
+        None, "src/first.js",
+        id="javascript-first-target-typescript-later",
+    ),
+    pytest.param(
+        {"custom": "./src\\custom.ts"},
+        # On Linux both a literal `src\custom.ts` file and `src/custom.ts` exist.
+        ["src\\custom.ts", "src/custom.ts"], None, None, "src\\custom.ts",
+        id="backslash-target-with-literal-file",
+    ),
+    pytest.param(
+        {"custom": "./src/custom.ts", "0": "./src/zero.ts"},
+        ["src/custom.ts", "src/zero.ts"], {"customConditions": ["custom", "0"]},
+        None, "src/custom.ts",
+        id="integer-like-key-enumerates-first",
+    ),
+    pytest.param(
+        {"custom": "./src//double.ts"},
+        ["src/double.ts"], None, None, "src/double.ts",
+        id="double-slash-target",
+    ),
+    pytest.param(
+        {"custom": "./src\\back.ts"},
+        ["src/back.ts"], None, None, "src/back.ts",
+        id="backslash-target",
+    ),
+    pytest.param(
+        {"custom": "./src/only.js"},
+        ["src/only.js"], None, None, "src/only.js",
+        id="unsupported-javascript-only-target",
+    ),
+    pytest.param(
+        {"default": None, "custom": "./src/custom.ts"},
+        ["src/custom.ts"], None, None, "src/custom.ts",
+        id="unsupported-null-before-custom",
+    ),
+    pytest.param(
+        {"custom": ["./src/custom.ts"]},
+        ["src/custom.ts"], None, None, "src/custom.ts",
+        id="unsupported-array-target",
+    ),
+    pytest.param(
+        {"custom": {"custom": "./src/custom.ts"}},
+        ["src/custom.ts"], None, None, "src/custom.ts",
+        id="unsupported-nested-object",
+    ),
+    pytest.param(
+        {"import": "./dist/index.js", "custom": "./src/custom.ts"},
+        ["src/custom.ts"], None, None, "src/custom.ts",
+        id="unsupported-custom-not-first",
+    ),
+]
+
+
+@pytest.mark.parametrize("exports, files, options, v8_result, not_target", _KEEPS_V8_EXPORTS)
+def test_tsconfig_custom_condition_keeps_v8_outside_the_supported_shape(
+    tmp_path: Path, exports, files, options, v8_result, not_target,
+):
+    """Only `{"<custom>": "./<file>", ...}` with the custom key first is
+    handled. Everything else, and every target tsc would refuse or resolve
+    differently, keeps exactly v8's result."""
+    from graphify.extractors.resolution import _resolve_js_module_path
+
+    importer = _write_condition_importer(
+        tmp_path, ["custom"], {".": exports}, nested=False, extra_options=options
+    )
+    written = [
+        _write(tmp_path / "packages/pkg-a" / name, "export const a = 1\n") for name in files
+    ]
+
+    resolved = _resolve_js_module_path("@example/pkg-a", importer.parent)
+    result = _extract_for([*written, importer], tmp_path)
+
+    expected = None if v8_result is None else tmp_path / "packages/pkg-a" / v8_result
+    assert resolved == expected
+    assert not _has_edge(result, "apps/web/src/consumer.ts", f"packages/pkg-a/{not_target}")
+
+
+def test_tsconfig_custom_condition_keeps_v8_for_wildcard_exports(tmp_path: Path):
+    """`*` patterns are not handled: `pkg/feature/a` stays where v8 left it
+    even though tsc 5.9.3 maps it through `./feature/*`."""
+    from graphify.extractors.resolution import _resolve_js_module_path
+
+    importer = _write_condition_importer(tmp_path, ["custom"], {
+        "./*": {"custom": "./src/broad/*.ts"},
+        "./feature/*": {"custom": "./src/specific/*.ts"},
+    }, nested=False)
+    importer.write_text("import { a } from '@example/pkg-a/feature/a'\n", encoding="utf-8")
+    for name in ("broad/feature/a", "specific/a"):
+        _write(tmp_path / f"packages/pkg-a/src/{name}.ts", "export const a = 1\n")
+
+    assert _resolve_js_module_path("@example/pkg-a/feature/a", importer.parent) is None
+
+
+@pytest.mark.parametrize(
+    "layout", ["diamond", "package-name-parent-with-module-suffixes", "configdir-baseurl"]
+)
+def test_tsconfig_custom_condition_keeps_v8_when_inherited_options_say_so(
+    tmp_path: Path, layout,
+):
+    """REVIEW-4 config fixtures. Diamond: the importer extends [left, right],
+    both extend shared (`customConditions: []`); only left sets ["custom"], so
+    tsc ends with [] from right and reports the import unresolved. Package
+    parent: the importer extends `@fixture/config/tsconfig.json`, whose
+    `moduleSuffixes` make tsc pick `custom.ios.ts`; a package-name parent is
+    not resolved here, so the fallback stays off. `${configDir}` baseUrl: tsc
+    expands it and finds `apps/web/vendor/@example/pkg-a.ts` first; templates
+    are not expanded here, so the fallback stays off. All keep v8's stub."""
+    from graphify.extractors.resolution import _resolve_js_module_path
+
+    _write_workspace_package(tmp_path, "@example/pkg-a", {".": {"custom": "./src/custom.js"}})
+    files = [_write(tmp_path / "packages/pkg-a/src/custom.ts", "export const a = 1\n")]
+    bundler = {"module": "esnext", "moduleResolution": "bundler"}
+    if layout == "diamond":
+        _write(tmp_path / "configs/shared.json", json.dumps(
+            {"compilerOptions": {**bundler, "customConditions": []}}))
+        _write(tmp_path / "configs/left.json", json.dumps(
+            {"extends": "./shared.json", "compilerOptions": {"customConditions": ["custom"]}}))
+        _write(tmp_path / "configs/right.json", json.dumps({"extends": "./shared.json"}))
+        importer_config = {"extends": ["../../configs/left.json", "../../configs/right.json"]}
+    elif layout == "configdir-baseurl":
+        files.append(_write(tmp_path / "apps/web/vendor/@example/pkg-a.ts", "export const a = 3\n"))
+        importer_config = {"compilerOptions": {
+            **bundler, "customConditions": ["custom"], "baseUrl": "${configDir}/vendor",
+        }}
+    else:
+        files.append(_write(tmp_path / "packages/pkg-a/src/custom.ios.ts", "export const a = 2\n"))
+        _write(tmp_path / "node_modules/@fixture/config/package.json", '{"name": "@fixture/config"}')
+        _write(tmp_path / "node_modules/@fixture/config/tsconfig.json", json.dumps(
+            {"compilerOptions": {"moduleSuffixes": [".ios", ""]}}))
+        importer_config = {
+            "extends": "@fixture/config/tsconfig.json",
+            "compilerOptions": {**bundler, "customConditions": ["custom"]},
+        }
+    _write(tmp_path / "apps/web/tsconfig.json", json.dumps(importer_config))
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { a } from '@example/pkg-a'\nexport const v = a\n",
+    )
+
+    resolved = _resolve_js_module_path("@example/pkg-a", importer.parent)
+    result = _extract_for([*files, importer], tmp_path)
+
+    assert resolved is None
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/custom.ts")
+
+
+def test_tsconfig_custom_conditions_refuse_symlinked_configs(tmp_path: Path):
+    """tsc reads every config through its lexical path and resolves relative
+    options from there. A config that is a symlink, or is reached through a
+    symlinked directory, turns the fallback off rather than risk reading
+    those options from the wrong directory."""
+    from graphify.extractors.resolution import _load_tsconfig_custom_conditions
+
+    other = tmp_path / "packages/other"
+    other.mkdir(parents=True)
+    options = {"compilerOptions": {
+        "module": "esnext", "moduleResolution": "bundler", "customConditions": ["c"],
+    }}
+    _write(tmp_path / "real/tsconfig.json", json.dumps(options))
+    _write(tmp_path / "shared/base.json", json.dumps(options))
+    (tmp_path / "own").mkdir()
+    (tmp_path / "via-dir").mkdir()
+    _write(tmp_path / "via-dir/tsconfig.json", json.dumps({"extends": "./linked/base.json"}))
+    try:
+        (tmp_path / "own/tsconfig.json").symlink_to(tmp_path / "real/tsconfig.json")
+        (tmp_path / "via-dir/linked").symlink_to(tmp_path / "shared", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks are not available on this platform")
+
+    assert _load_tsconfig_custom_conditions(tmp_path / "real", "@example/pkg-a") == ("c",)
+    assert _load_tsconfig_custom_conditions(tmp_path / "own", "@example/pkg-a") == ()
+    assert _load_tsconfig_custom_conditions(tmp_path / "via-dir", "@example/pkg-a") == ()
+
+
+@pytest.mark.parametrize(
+    "case", ["inherited-baseurl-js", "direct-baseurl-mjs", "symlinked-parent-config"]
+)
+def test_tsconfig_custom_condition_keeps_v8_when_tsc_may_resolve_elsewhere(
+    tmp_path: Path, case,
+):
+    """REVIEW-6 fixtures. tsc 5.9.3 resolves each import outside the
+    package: `<baseUrl>/@example/pkg-a/feature.js` swaps to an existing `.ts`
+    (inherited baseUrl), `.mjs` swaps to `.mts` (direct baseUrl), and a parent
+    config reached through a symlink has a `baseUrl` that tsc reads from the
+    link's directory. Any `baseUrl` and any symlinked config turn the
+    fallback off, so each import keeps v8's stub."""
+    from graphify.extractors.resolution import _resolve_js_module_path
+
+    specifier = {
+        "inherited-baseurl-js": "@example/pkg-a/feature.js",
+        "direct-baseurl-mjs": "@example/pkg-a/feature.mjs",
+    }.get(case, "@example/pkg-a")
+    key = "." if specifier == "@example/pkg-a" else "./" + specifier.split("/", 2)[2]
+    _write_workspace_package(tmp_path, "@example/pkg-a", {key: {"custom": "./src/custom.ts"}})
+    files = [_write(tmp_path / "packages/pkg-a/src/custom.ts", "export const a = 1\n")]
+    options = {"module": "esnext", "moduleResolution": "bundler", "customConditions": ["custom"]}
+    config: dict = {"compilerOptions": options}
+    if case == "inherited-baseurl-js":
+        _write(tmp_path / "base.json", json.dumps({"compilerOptions": {"baseUrl": "./vendor"}}))
+        config["extends"] = "../../base.json"
+        files.append(_write(tmp_path / "vendor/@example/pkg-a/feature.ts", "export const a = 2\n"))
+    elif case == "direct-baseurl-mjs":
+        options["baseUrl"] = "./vendor"
+        files.append(_write(tmp_path / "apps/web/vendor/@example/pkg-a/feature.mts", "export const a = 2\n"))
+    else:
+        shared = _write(tmp_path / "configs/shared.json", json.dumps({"compilerOptions": {"baseUrl": "./vendor"}}))
+        (tmp_path / "apps/web").mkdir(parents=True)
+        try:
+            (tmp_path / "apps/web/base.json").symlink_to(shared)
+        except OSError:
+            pytest.skip("symlinks are not available on this platform")
+        config["extends"] = "./base.json"
+        files.append(_write(tmp_path / "apps/web/vendor/@example/pkg-a.ts", "export const a = 2\n"))
+    _write(tmp_path / "apps/web/tsconfig.json", json.dumps(config))
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        f"import {{ a }} from '{specifier}'\nexport const v = a\n",
+    )
+
+    resolved = _resolve_js_module_path(specifier, importer.parent)
+    result = _extract_for([*files, importer], tmp_path)
+
+    assert resolved is None
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/custom.ts")
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["empty-outdir", "empty-declarationdir", "pattern-precedence", "multi-star", "jsonc-condition"],
+)
+def test_tsconfig_custom_condition_keeps_v8_for_output_dirs_patterns_and_jsonc(
+    tmp_path: Path, case,
+):
+    """REVIEW-7 fixtures; v8 leaves each one unresolved.
+
+    - A self-import with `rootDir: ./src` and `outDir` or `declarationDir` set
+      to `""`: tsc maps `./lib/custom.js` to `src/lib/custom.ts`. Any outDir or
+      declarationDir turns the fallback off.
+    - `pkg-a/feature/` with `"./feature/"` and `"./feature/*"` keys: tsc picks
+      the pattern target. `pkg-a/foo/**` against a literal `"./foo/**"` key:
+      tsc leaves it unresolved. Requests containing `*` or ending in `/` are
+      refused.
+    - A JSONC config with `"customConditions": ["custom,}"]`: the shared
+      JSONC parser reads it as `custom}`, so the condition is refused unless
+      it appears verbatim in the file. tsc leaves the import unresolved."""
+    from graphify.extractors.resolution import _resolve_js_module_path
+
+    options: dict = {"module": "esnext", "moduleResolution": "bundler", "customConditions": ["custom"]}
+    specifier = "@example/pkg-a"
+    exports: dict = {".": {"custom": "./lib/custom.ts"}}
+    names = ["lib/custom.ts"]
+    config_dir = tmp_path / "apps/web"
+    if case in ("empty-outdir", "empty-declarationdir"):
+        config_dir = tmp_path / "packages/pkg-a"
+        options.update({"rootDir": "./src", "outDir" if case == "empty-outdir" else "declarationDir": ""})
+        exports = {".": {"custom": "./lib/custom.js"}}
+        names.append("src/lib/custom.ts")
+    elif case == "pattern-precedence":
+        specifier = "@example/pkg-a/feature/"
+        exports = {"./feature/": {"custom": "./lib/custom.ts"}, "./feature/*": {"custom": "./lib/other.ts"}}
+        names.append("lib/other.ts")
+    elif case == "multi-star":
+        specifier = "@example/pkg-a/foo/**"
+        exports = {"./foo/**": {"custom": "./lib/custom.ts"}}
+    elif case == "jsonc-condition":
+        options["customConditions"] = ["custom,}"]
+        exports = {".": {"custom}": "./lib/custom.ts"}}
+    _write_workspace_package(tmp_path, "@example/pkg-a", exports)
+    config_text = json.dumps({"compilerOptions": options})
+    if case == "jsonc-condition":
+        config_text = "// comment\n" + config_text
+    config = _write(config_dir / "tsconfig.json", config_text)
+    importer = _write(config_dir / "consumer.ts", f"import {{ a }} from '{specifier}'\nexport const v = a\n")
+    files = [_write(tmp_path / "packages/pkg-a" / name, "export const a = 1\n") for name in names]
+
+    if case == "jsonc-condition":
+        from graphify.extractors.resolution import _read_json_config, _read_tsconfig_exports_options
+
+        # The shared parser alters the string; the fallback must not use it.
+        parsed = _read_json_config(config)
+        merged = _read_tsconfig_exports_options(config)
+        assert parsed is not None and parsed["compilerOptions"]["customConditions"] == ["custom}"]
+        assert merged is not None and merged["customConditions"] is None
+    resolved = _resolve_js_module_path(specifier, importer.parent)
+    result = _extract_for([*files, importer], tmp_path)
+
+    assert resolved is None
+    importer_rel = importer.relative_to(tmp_path).as_posix()
+    assert not _has_edge(result, importer_rel, "packages/pkg-a/lib/custom.ts")
+
+
+def test_tsconfig_custom_conditions_refresh_between_extract_calls(tmp_path: Path):
+    """The per-config cache has no mtime component, so extract() must clear it
+    per run, like the alias cache (#2917). `graphify watch` and the MCP server
+    rebuild in one process and would otherwise keep the old condition list."""
+    _write_source_condition_package(tmp_path, {
+        ".": {"@example/source": "./src/source.ts", "default": "./dist/index.js"},
+    })
+    config = _write(
+        tmp_path / "apps/web/tsconfig.json", '{"extends": "../../tsconfig.base.json"}'
+    )
+    source = _write(tmp_path / "packages/pkg-a/src/source.ts", "export const a = 1\n")
+    built = _write(tmp_path / "packages/pkg-a/dist/index.js", "export const a = 2\n")
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { a } from '@example/pkg-a'\nexport const v = a\n",
+    )
+
+    first = _extract_for([source, built, importer], tmp_path)
+    assert _has_edge(first, "apps/web/src/consumer.ts", "packages/pkg-a/src/source.ts")
+
+    config.write_text(
+        '{"compilerOptions": {"moduleResolution": "bundler", "customConditions": []}}',
+        encoding="utf-8",
+    )
+    second = _extract_for([source, built, importer], tmp_path)
+
+    assert _has_edge(second, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")
+    assert not _has_edge(second, "apps/web/src/consumer.ts", "packages/pkg-a/src/source.ts")
