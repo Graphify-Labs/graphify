@@ -37,7 +37,10 @@ _JS_INDEX_FILES = ("index.ts", "index.tsx", "index.svelte", "index.js", "index.j
 def _resolve_js_import_path(candidate: Path) -> Path:
     """Resolve a JS/TS/Svelte import target to a local file when it exists."""
     candidate = Path(os.path.normpath(candidate))
-    if candidate.is_file():
+    try:
+        if candidate.is_file():
+            return candidate
+    except OSError:
         return candidate
 
     # TS ESM convention: imports often spell .js/.jsx while source is .ts/.tsx.
@@ -339,8 +342,11 @@ def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]],
         if base_url is not None:
             candidate = Path(os.path.normpath(base_url / raw))
             resolved = _resolve_js_import_path(candidate)
-            if resolved.is_file():
-                return resolved
+            try:
+                if resolved.is_file():
+                    return resolved
+            except OSError:
+                pass
         return None
 
     _, captured, is_wildcard, targets = best
@@ -355,8 +361,11 @@ def _resolve_tsconfig_alias(raw: str, aliases: dict[str, list[str]],
             if captured:
                 cand = Path(os.path.normpath(cand / captured))
         resolved = _resolve_js_import_path(cand)
-        if resolved.is_file():
-            return resolved
+        try:
+            if resolved.is_file():
+                return resolved
+        except OSError:
+            pass
         if first is None:
             first = cand
     return first
