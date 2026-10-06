@@ -6,7 +6,7 @@ from typing import Any
 
 from tree_sitter import Node
 
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
 _TYPE_BLOCKS = {
@@ -86,7 +86,7 @@ def extract_vbnet(path: Path) -> dict:
         return {"nodes": [], "edges": [], "error": "tree-sitter-vb-dotnet not installed"}
 
     try:
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         root = Parser(Language(tree_sitter_vb_dotnet.language())).parse(source).root_node
     except Exception as exc:
         return {"nodes": [], "edges": [], "error": f"VB.NET grammar failed to load: {exc}"}

@@ -4,13 +4,13 @@ from __future__ import annotations
 import re
 
 from pathlib import Path
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_source_text
 
 
 def extract_dart(path: Path) -> dict:
     """Extract classes, mixins, functions, imports, generic calls, and annotations from a .dart file using regex."""
     try:
-        src = path.read_text(encoding="utf-8", errors="replace")
+        src = _read_source_text(path)
     except OSError:
         return {"error": f"cannot read {path}"}
 

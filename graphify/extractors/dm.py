@@ -5,7 +5,13 @@ import re
 
 from pathlib import Path
 from typing import Any
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import (
+    _file_stem,
+    _make_id,
+    _read_source_bytes,
+    _read_source_text,
+    _read_text,
+)
 
 
 def extract_dm(path: Path) -> dict:
@@ -18,7 +24,7 @@ def extract_dm(path: Path) -> dict:
     try:
         language = Language(tsdm.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -366,7 +372,7 @@ def extract_dmm(path: Path) -> dict:
     try:
         if path.stat().st_size > 50 * 1024 * 1024:
             return {"nodes": [], "edges": [], "error": "file too large (>50 MB)"}
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = _read_source_text(path)
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
@@ -436,7 +442,7 @@ _DMF_TYPE_RE = re.compile(r'^\s*type\s*=\s*(\S+)\s*$')
 def extract_dmf(path: Path) -> dict:
     """Extract windows and controls from a .dmf interface file."""
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = _read_source_text(path)
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 

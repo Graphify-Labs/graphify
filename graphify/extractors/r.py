@@ -6,7 +6,7 @@ from typing import Any
 
 from tree_sitter import Node
 
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
 _CLASS_CONSTRUCTORS = frozenset({"R6Class", "setRefClass", "ggproto"})
@@ -95,7 +95,7 @@ def extract_r(path: Path) -> dict:
         return {"nodes": [], "edges": [], "error": "tree-sitter-language-pack not installed"}
 
     try:
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         root = Parser(get_language("r")).parse(source).root_node
     except Exception as exc:
         return {"nodes": [], "edges": [], "error": f"R grammar failed to load: {exc}"}

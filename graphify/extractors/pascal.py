@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_source_text
 from graphify.extractors.resolution import _pascal_resolve_class, _pascal_resolve_unit
 from pathlib import Path
 from typing import Any, Callable
@@ -233,7 +233,7 @@ def _extract_pascal_regex(path: Path) -> dict:
     is unavailable. Produces the same node/edge schema as the tree-sitter pass.
     """
     try:
-        raw = path.read_text(encoding="utf-8", errors="replace")
+        raw = _read_source_text(path, warn=False)
     except Exception as exc:
         return {"nodes": [], "edges": [], "error": str(exc)}
 
@@ -457,7 +457,7 @@ def extract_pascal(path: Path) -> dict:
     try:
         language = Language(tspascal.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception:

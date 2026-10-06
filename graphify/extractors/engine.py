@@ -4,7 +4,13 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
+from graphify.extractors.base import (
+    _LANGUAGE_BUILTIN_GLOBALS,
+    _file_stem,
+    _make_id,
+    _read_source_bytes,
+    _read_text,
+)
 from graphify.ids import normalize_id
 from graphify.extractors.models import LanguageConfig
 from graphify.extractors.resolution import _resolve_js_import_target
@@ -4258,7 +4264,7 @@ def _extract_generic(
 
     try:
         parser = Parser(language)
-        source = path.read_bytes() if source_override is None else source_override
+        source = _read_source_bytes(path) if source_override is None else source_override
         # In C and C++, if the .h file does not end with a newline '\n' an error
         # is throwed even if the file is valid. In order to avoid this, a new line
         # char is added only if the original file does not end with it.

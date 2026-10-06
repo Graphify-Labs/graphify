@@ -4,7 +4,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id
+from graphify.extractors.base import (
+    _LANGUAGE_BUILTIN_GLOBALS,
+    _file_stem,
+    _make_id,
+    _read_source_bytes,
+)
 
 
 def extract_elixir(path: Path) -> dict:
@@ -18,7 +23,7 @@ def extract_elixir(path: Path) -> dict:
     try:
         language = Language(tselixir.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
