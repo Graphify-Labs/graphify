@@ -440,6 +440,8 @@ class _StoredSourcePaths:
         self.watch_root = watch_root
         self._normalize_source = normalize_source
         self.existing_source_root = project_root
+        self._identity_cache: dict[str, str | None] = {}
+        self._in_watch_root_cache: dict[str, bool] = {}
         relative_marker_prefix: str | None = None
 
         root_marker = out / ".graphify_root"
@@ -539,14 +541,33 @@ class _StoredSourcePaths:
         return Path(os.path.abspath(source_path)).as_posix()
 
     def identity(self, source_file: str | None) -> str | None:
+        # Every node, edge and hyperedge asks for its file's identity, several
+        # times per item, but a graph has far fewer distinct source files than
+        # items. The answer depends only on ``source_file`` and roots fixed in
+        # __init__, so compute it once per file instead of rebuilding Path
+        # objects (and an abspath) on every call.
+        if not isinstance(source_file, str):
+            return self._identity_uncached(source_file)
+        try:
+            return self._identity_cache[source_file]
+        except KeyError:
+            identity = self._identity_cache[source_file] = self._identity_uncached(source_file)
+            return identity
+
+    def _identity_uncached(self, source_file: str | None) -> str | None:
         normalized = self._normalize_source(source_file)
         if normalized and not Path(normalized).is_absolute() and self.legacy_watch_relative:
             return self.absolute_identity(normalized, self.watch_root)
         return self.absolute_identity(normalized, self.existing_source_root)
 
     def in_watch_root(self, source_file: str | None) -> bool:
+        if isinstance(source_file, str) and source_file in self._in_watch_root_cache:
+            return self._in_watch_root_cache[source_file]
         identity = self.identity(source_file)
-        return bool(identity) and _is_relative_to(Path(identity), self.watch_root)
+        inside = bool(identity) and _is_relative_to(Path(identity), self.watch_root)
+        if isinstance(source_file, str):
+            self._in_watch_root_cache[source_file] = inside
+        return inside
 
     def is_evicted(self, item: dict, identities: set[str]) -> bool:
         return self.identity(item.get("source_file")) in identities
