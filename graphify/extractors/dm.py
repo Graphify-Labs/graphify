@@ -449,6 +449,7 @@ def extract_dmf(path: Path) -> dict:
     seen: set[str] = {file_nid}
 
     current_window_nid: str | None = None
+    current_window_name: str | None = None
     current_elem_nid: str | None = None
     current_elem_name: str | None = None
 
@@ -465,13 +466,19 @@ def extract_dmf(path: Path) -> dict:
                               "confidence": "EXTRACTED", "source_file": str_path,
                               "source_location": f"L{line_idx}", "weight": 1.0})
             current_window_nid = nid
+            current_window_name = name
             current_elem_nid = None
             current_elem_name = None
             continue
         m = _DMF_ELEM_RE.match(line)
-        if m and current_window_nid is not None:
+        if m and current_window_nid is not None and current_window_name is not None:
             name = m.group(1)
-            nid = _make_id(stem, "elem", current_window_nid, name)
+            # Key on the window NAME, not its node id: the id already embeds
+            # `stem`, which is absolute at extraction time. extract()'s
+            # id-remap only rewrites the leading stem, so the copy nested in
+            # the middle kept the checkout path (and OS username) in every
+            # element id.
+            nid = _make_id(stem, "elem", current_window_name, name)
             if nid not in seen:
                 seen.add(nid)
                 nodes.append({"id": nid, "label": f'elem "{name}"', "file_type": "code",
