@@ -218,6 +218,15 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".devin" / "skills" / "graphify" / "SKILL.md"
         return Path.home() / ".config" / "devin" / "skills" / "graphify" / "SKILL.md"
 
+    if platform_name == "moca":
+        # moca resolves its config dir from XDG_CONFIG_HOME, falling back to
+        # ~/.config (same convention as the XDG Base Directory spec). Honor it
+        # here too, or the skill lands where moca never looks on XDG setups.
+        if project:
+            return (project_dir or Path(".")) / ".moca" / "skills" / "graphify" / "SKILL.md"
+        config_home = os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
+        return Path(config_home) / "moca" / "skills" / "graphify" / "SKILL.md"
+
     if platform_name == "amp":
         if project:
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
@@ -678,6 +687,16 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         # Project scope: .devin/skills/graphify/SKILL.md (overridden in _platform_skill_destination)
         "skill_dst": Path(".config") / "devin" / "skills" / "graphify" / "SKILL.md",
         "claude_md": False,
+    },
+    "moca": {
+        # Skill-only Agent-Skills host. moca loads ~/.config/moca/skills (or
+        # $XDG_CONFIG_HOME/moca/skills) and <project>/.moca/skills; both scopes
+        # are resolved in _platform_skill_destination. Reuses claude's split
+        # bundle (shares skill.md; byte-identical to pi's).
+        "skill_file": "skill.md",
+        "skill_dst": Path(".config") / "moca" / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "claude",
     },
 }
 # CLI-only platform aliases, resolved to a real _PLATFORM_CONFIG key before
@@ -1840,9 +1859,10 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         skill_dst = _copy_skill_file("antigravity", project=True, project_dir=project_dir)
         _antigravity_finalize(skill_dst, project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".agents"])
-    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents", "moca"):
         # Skill-only project install: drop SKILL.md (+ references) at the scope
-        # root. `agents` -> ./.agents/skills/graphify/SKILL.md.
+        # root. `agents` -> ./.agents/skills/graphify/SKILL.md;
+        # `moca` -> ./.moca/skills/graphify/SKILL.md.
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
     else:
@@ -1873,7 +1893,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _devin_rules_uninstall(project_dir)
         if not removed:
             print("nothing to remove")
-    elif platform_name in ("copilot", "pi", "kimi", "agents"):
+    elif platform_name in ("copilot", "pi", "kimi", "agents", "moca"):
         removed = _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         if not removed:
             print("nothing to remove")
@@ -2271,6 +2291,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "install",
     "kilo",
     "kiro",
+    "moca",
     "opencode",
     "pi",
     "skills",
@@ -2493,6 +2514,22 @@ def dispatch_install_cli(cmd: str) -> bool:
                 _remove_skill_file("pi")
         else:
             print("Usage: graphify pi [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "moca":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("moca", Path("."))
+            else:
+                install(platform="moca")
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("moca", Path("."))
+            else:
+                removed = _remove_skill_file("moca")
+                print("skill removed" if removed else "nothing to remove")
+        else:
+            print("Usage: graphify moca [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd == "amp":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
