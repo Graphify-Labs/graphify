@@ -4199,21 +4199,39 @@ def _resolve_python_member_calls(
         return _key(stem or n.get("label", ""))
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
+    # A method hangs off its class (`method` edge), not its file (`contains`), so
+    # the typed-receiver arm finds a method caller's file through its class.
+    method_class: dict[str, str] = {}
+    for e in all_edges:
+        src, tgt = e.get("source"), e.get("target")
+        if e.get("relation") == "method" and isinstance(src, str) and isinstance(tgt, str):
+            method_class[tgt] = src
 
-    def _emit_call(caller: str, target_nid: "str | None", rc: dict) -> None:
+    def _file_node(nid: str) -> "str | None":
+        seen: set[str] = set()
+        while nid and nid not in seen:
+            seen.add(nid)
+            if nid in file_of_node:
+                return file_of_node[nid]
+            nid = method_class.get(nid, "")
+        return None
+
+    def _emit_call(caller: str, target_nid: "str | None", rc: dict, confidence: str = "EXTRACTED") -> None:
         if not target_nid or target_nid == caller or (caller, target_nid) in existing_pairs:
             return
         existing_pairs.add((caller, target_nid))
         # EXTRACTED: a qualified call (`ClassName.method()` or `module.func()`) is
         # an explicit, unambiguous static reference resolved to exactly one
         # definition (each arm applies a single-definition god-node guard).
+        # INFERRED: the typed-receiver arm, where the receiver's class came from
+        # an annotation or a constructor binding rather than the call itself.
         all_edges.append({
             "source": caller,
             "target": target_nid,
             "relation": "calls",
             "context": "call",
-            "confidence": "EXTRACTED",
-            "confidence_score": 1.0,
+            "confidence": confidence,
+            "confidence_score": 1.0 if confidence == "EXTRACTED" else 0.85,  # rubric value (#2813)
             "source_file": rc.get("source_file", ""),
             "source_location": rc.get("source_location"),
             "weight": 1.0,
@@ -4241,6 +4259,25 @@ def _resolve_python_member_calls(
                 continue
             if targets:
                 continue
+        receiver_type = rc.get("receiver_type")
+        if receiver_type and not receiver[:1].isupper():
+            # Typed-receiver arm: `request.read()` where the extractor typed the
+            # local or parameter `request` from an annotation (`request: Request`)
+            # or a constructor binding (`client = Client(...)`, `with Client() as
+            # client`). Same origin gate as the TypeScript arm (#2553): the class
+            # must be the only class of that name AND be defined in the caller's
+            # file, imported by name into it, or inside a module it imports;
+            # otherwise emit nothing. The method must be the class's own. A typed
+            # local is never an imported module, so the module arm is skipped.
+            class_nids = class_def_nids.get(_key(receiver_type), [])
+            caller_file = _file_node(caller)
+            if len(class_nids) == 1 and caller_file is not None:
+                cls = class_nids[0]
+                imported = imported_by_filenode.get(caller_file, set())
+                cls_file = _file_node(cls)
+                if cls_file == caller_file or cls in imported or (cls_file is not None and cls_file in imported):
+                    _emit_call(caller, method_index.get((cls, _key(callee))), rc, confidence="INFERRED")
+            continue
         if receiver[:1].isupper():
             # Class arm (#1446): a capitalized receiver is a class reference; an
             # instance (`self`, `obj`) never collides with a same-spelled class.
