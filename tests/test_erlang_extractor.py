@@ -7,6 +7,7 @@ from __future__ import annotations
 
 
 
+import importlib.util as _ilu
 import sys
 
 
@@ -16,7 +17,17 @@ from pathlib import Path
 
 
 
+import pytest
+
 from graphify.extract import extract
+
+# tree-sitter-language-pack is an optional extra, not installed by a default
+# `uv sync`. Skip the grammar tests when it is absent; the missing-parser
+# test below still runs because it simulates the absent grammar itself.
+_needs_erlang = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_language_pack") is None,
+    reason="tree-sitter-language-pack not installed (optional [erlang] extra)",
+)
 
 
 
@@ -37,6 +48,7 @@ def _edge_labels(result: dict, relation: str) -> set[tuple[str, str]]:
     }
 
 
+@_needs_erlang
 def test_erlang_functions_resolve_by_name_and_arity(tmp_path):
     source = tmp_path / "worker.erl"
     source.write_text(
@@ -56,6 +68,7 @@ def test_erlang_functions_resolve_by_name_and_arity(tmp_path):
     assert ("run/1", "helper/2") not in _edge_labels(result, "calls")
 
 
+@_needs_erlang
 def test_erlang_attributes_includes_and_remote_calls(tmp_path):
     header = tmp_path / "worker.hrl"
     header.write_text("-define(HEADER_VALUE, 2).\n", encoding="utf-8")
@@ -94,6 +107,7 @@ def test_erlang_attributes_includes_and_remote_calls(tmp_path):
     assert any(edge["relation"] == "imports_from" for edge in result["edges"])
 
 
+@_needs_erlang
 def test_erlang_fixture_uses_normal_extract_path(tmp_path):
     result = extract([FIXTURE], cache_root=tmp_path)
 
@@ -102,6 +116,7 @@ def test_erlang_fixture_uses_normal_extract_path(tmp_path):
     assert ('run/0', 'helper/0') in _edge_labels(result, "calls")
 
 
+@_needs_erlang
 def test_erlang_local_fun_reference_links_to_the_function(tmp_path):
     """`fun helper/1` is a reference to a local function — the idiomatic way to
     pass a callback to `lists:map`, `spawn`, etc. It names exactly one function
@@ -122,6 +137,7 @@ def test_erlang_local_fun_reference_links_to_the_function(tmp_path):
     assert ("run/0", "helper/1") in _edge_labels(result, "indirect_call")
 
 
+@_needs_erlang
 def test_erlang_local_fun_reference_respects_arity(tmp_path):
     """Fail-closed: `fun helper/1` must bind only to the arity-1 clause, never to
     a same-named function of a different arity (#3993)."""
@@ -140,6 +156,7 @@ def test_erlang_local_fun_reference_respects_arity(tmp_path):
     )
 
 
+@_needs_erlang
 def test_erlang_direct_call_stays_a_call_not_indirect(tmp_path):
     """Positive control: a direct call keeps emitting a `calls` edge (not
     `indirect_call`), unchanged by the fun-reference handling (#3993)."""
@@ -157,6 +174,7 @@ def test_erlang_direct_call_stays_a_call_not_indirect(tmp_path):
     assert ("run/0", "helper/1") not in _edge_labels(result, "indirect_call")
 
 
+@_needs_erlang
 def test_erlang_call_inside_anonymous_fun_still_captured(tmp_path):
     """Positive control: a direct call made inside an anonymous `fun ... end`
     body must still be walked and resolved (#3993)."""
@@ -173,6 +191,7 @@ def test_erlang_call_inside_anonymous_fun_still_captured(tmp_path):
     assert ("run/0", "helper/1") in _edge_labels(result, "calls")
 
 
+@_needs_erlang
 def test_erlang_malformed_tail_comments_and_strings_do_not_create_phantoms(tmp_path):
     source = tmp_path / 'broken.erl'
     source.write_text('-module(broken).\nvalid() -> ok.\n% ghost() -> ok.\ninvalid(\n', encoding="utf-8")
