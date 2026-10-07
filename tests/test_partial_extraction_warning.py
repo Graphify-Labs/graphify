@@ -80,3 +80,85 @@ def test_the_citation_is_gone_from_the_source_not_just_one_path():
     assert "may be partially extracted: {_shown}{_more} (#2551)" not in text
     assert "no symbols extracted" in text
     assert "symbol(s) extracted" in text
+
+
+# ── #3946: a clean-parse file that yields nothing but its own file node ─────
+
+def _data_only_fixture(tmp_path):
+    """A plain data literal with no functions, classes or imports — the AST
+    extractor has nothing to model, but the file parses with zero errors, so
+    the syntax-error warning above must stay silent for it."""
+    f = tmp_path / "data.js"
+    f.write_text("module.exports = [{a: 1}, {b: 2}];\n", encoding="utf-8")
+    return f
+
+
+def test_symbolless_warning_names_the_file(tmp_path, capsys):
+    err = _run(tmp_path, [_data_only_fixture(tmp_path)], capsys)
+    assert "yielded no symbols" in err, err
+    assert "data.js" in err
+    # neutral wording: a symbol-less file may be data OR source the extractor
+    # models nothing for — do NOT assert it is "data rather than code".
+    assert "may be data rather than code" not in err
+
+
+def test_symbolless_warning_survives_a_cross_drive_path(tmp_path, capsys, monkeypatch):
+    import graphify.extract as ex
+
+    source = _data_only_fixture(tmp_path)
+    original_relpath = ex.os.path.relpath
+
+    def cross_drive_relpath(path, start=None):
+        if str(path) == str(source) and str(start) == str(tmp_path):
+            raise ValueError("path is on mount 'D:', start on mount 'C:'")
+        return original_relpath(path, start)
+
+    monkeypatch.setattr(ex.os.path, "relpath", cross_drive_relpath)
+    result = extract([source], root=tmp_path)
+    assert any(node.get("label") == "data.js" for node in result["nodes"])
+    err = capsys.readouterr().err
+    assert "yielded no symbols" in err
+    assert source.as_posix() in err
+
+
+def test_symbolless_warning_is_silent_for_an_empty_init(tmp_path, capsys):
+    """An empty __init__.py is symbol-less *code*, ubiquitous in Python
+    packages. It has nothing to model, so the warning must stay silent rather
+    than fire on essentially every package scan."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    err = _run(tmp_path, [pkg / "__init__.py"], capsys)
+    assert "yielded no symbols" not in err
+
+
+def test_symbolless_warning_is_silent_for_a_whitespace_only_file(tmp_path, capsys):
+    f = tmp_path / "blank.py"
+    f.write_text("\n   \n\t\n", encoding="utf-8")
+    err = _run(tmp_path, [f], capsys)
+    # whitespace-only: nothing to model, so the strip-empty guard keeps it quiet
+    assert "yielded no symbols" not in err
+
+
+def test_symbolless_warning_does_not_fire_for_a_real_function(tmp_path, capsys):
+    f = tmp_path / "real.js"
+    f.write_text("function run() { return 1; }\n", encoding="utf-8")
+    err = _run(tmp_path, [f], capsys)
+    assert "yielded no symbols" not in err
+
+
+def test_symbolless_warning_does_not_overlap_the_syntax_error_warning(tmp_path, capsys):
+    """A file already explained by the partial-extraction warning (a genuine
+    parse error) must not ALSO be counted as a clean-parse data file."""
+    err = _run(tmp_path, [_partial_parse_fixture(tmp_path)], capsys)
+    assert "yielded no symbols" not in err
+
+
+def test_symbolless_warning_counts_total_size(tmp_path, capsys):
+    a = tmp_path / "a.js"
+    a.write_text("module.exports = [1, 2, 3];\n", encoding="utf-8")
+    b = tmp_path / "b.js"
+    b.write_text("export default [4, 5, 6];\n", encoding="utf-8")
+    err = _run(tmp_path, [a, b], capsys)
+    assert "2 code file(s) yielded no symbols" in err
+    assert "a.js" in err and "b.js" in err

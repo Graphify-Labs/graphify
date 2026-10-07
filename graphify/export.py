@@ -16,7 +16,13 @@ from networkx.readwrite import json_graph
 from graphify.security import sanitize_label
 from graphify.analyze import _node_community_map
 from graphify.build import edge_data
-from graphify.paths import stem_filename_budget
+from graphify.paths import (
+    os_replace_with_fallback,
+    stem_filename_budget,
+    write_json_atomic,
+    write_text_atomic,
+    write_text_atomic_if_changed,
+)
 
 from graphify.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
@@ -166,6 +172,20 @@ from graphify.exporters.base import COMMUNITY_COLORS  # noqa: E402,F401
 from graphify.exporters.html import to_html  # noqa: E402,F401
 
 
+# Increment when the persisted graph structure changes incompatibly for consumers.
+GRAPH_SCHEMA_VERSION = 1
+
+
+def _graphify_version() -> str | None:
+    """Return the installed graphify version for graph provenance."""
+    try:
+        from importlib.metadata import version
+
+        return version("graphifyy")
+    except Exception:
+        return None
+
+
 # Fallback scores for an edge that carries a confidence tier but no
 # confidence_score. The INFERRED default was 0.5, which references/extraction-spec.md
 # rules out in as many words — "never omit it, never use 0.5 as a default" — and
@@ -263,7 +283,11 @@ def existing_graph_node_count(path: "str | Path"):
     return len(nodes) if isinstance(nodes, list) else MALFORMED_GRAPH
 
 
-def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None) -> bool:
+def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *, force: bool = False, built_at_commit: str | None = None, community_labels: dict[int, str] | None = None, original_links: "list[dict] | None" = None) -> bool:
+    # Drop #3774 accounting before any write. Extract pops these first; every
+    # other caller of to_json (the documented build_merge persist path) does not.
+    from graphify.build import take_shrink_accounting
+    take_shrink_accounting(G)
     # Safety check: refuse to silently shrink an existing graph (#479)
     existing_path = Path(output_path)
     if not force and existing_path.exists():
@@ -336,6 +360,30 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         if cid is not None and _labels:
             node["community_name"] = _labels.get(cid, f"Community {cid}")
         node["norm_label"] = _strip_diacritics(node.get("label", "")).lower()
+    if original_links is not None:
+        # A simple Graph keeps one edge per node pair, so re-deriving the link
+        # list from G after a reload-and-recluster (cluster-only/label) would
+        # silently drop a second edge on a pair that stayed connected by
+        # another (e.g. an `imports` and a `calls` edge between the same two
+        # nodes, #3999). Community is purely a node attribute, so clustering
+        # never needs to add or remove an edge; write back every original
+        # link verbatim instead, dropping only one whose endpoint no longer
+        # exists in G. This also sidesteps any endpoint-order canonicalization
+        # undirected storage would otherwise apply when deriving from G.
+        #
+        # The endpoint-existence filter below assumes original_links carry the
+        # SAME ids as G's post-load nodes. That holds because build_from_json
+        # rewrites a legacy node id to its canonical stem (_semantic_id_remap /
+        # _doc_twin_remap) IN PLACE on the shared link dicts the caller then
+        # passes here, so a remapped endpoint already matches node_ids rather
+        # than being silently dropped (regression-tested in test_cli_export.py:
+        # test_cluster_only_preserves_parallel_edges_across_an_id_remap).
+        node_ids = {n["id"] for n in data["nodes"]}
+        data["links"] = [
+            dict(link) for link in original_links
+            if isinstance(link, dict)
+            and link.get("source") in node_ids and link.get("target") in node_ids
+        ]
     for link in data["links"]:
         if "confidence_score" not in link:
             conf = link.get("confidence", "EXTRACTED")
@@ -399,6 +447,11 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     if isinstance(data.get("graph"), dict) and "hyperedges" in data["graph"]:
         data["graph"]["hyperedges"] = hyperedges
     data["hyperedges"] = hyperedges
+    graph_metadata = data.setdefault("graph", {})
+    graph_metadata["schema_version"] = GRAPH_SCHEMA_VERSION
+    graphify_version = _graphify_version()
+    if graphify_version is not None:
+        graph_metadata["graphify_version"] = graphify_version
     # Fallback provenance comes from the repo the graph is being written INTO
     # (output_path lives in <target>/graphify-out/), never the shell's cwd —
     # the same cwd-anchoring mistake #2316 fixed for `update`.
@@ -483,6 +536,7 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
         lines.append(f"MERGE (n:{ftype} {{id: '{node_id_esc}', label: '{label}'}});")
     lines.append("")
     for u, v, data in G.edges(data=True):
+        u, v = data.get("_src", u), data.get("_tgt", v)
         rel = _cypher_label(
             (data.get("relation", "RELATES_TO") or "RELATES_TO").upper(),
             "RELATES_TO",
@@ -542,6 +596,73 @@ def _cap_filename(s: str, limit: int = 200) -> str:
     keep = limit - 9  # "_" + 8 hex chars
     truncated = b[:keep].decode("utf-8", "ignore")  # "ignore" drops a split trailing char
     return f"{truncated}_{digest}"
+
+
+# A frontmatter tag entry in graphify's own namespace, e.g. "  - graphify/document".
+_GRAPHIFY_TAG_RE = re.compile(r"^\s*-\s+graphify/\S")
+
+# Frontmatter sits at the very top of a note; reading this much is enough to see
+# the whole block without pulling a large note into memory.
+_NOTE_FRONTMATTER_PROBE_BYTES = 4096
+
+# Community notes carry no frontmatter; graphify identifies its own by the
+# Dataview query it writes into every one of them.
+_COMMUNITY_QUERY_MARKER = "FROM #community/"
+
+
+def _is_graphify_note(path: Path) -> bool:
+    """Whether a vault note carries graphify's own frontmatter signature.
+
+    Every note graphify writes opens with a YAML frontmatter block tagging it in
+    the ``graphify/`` namespace::
+
+        ---
+        source_file: "d0.md"
+        tags:
+          - graphify/document
+          - graphify/EXTRACTED
+        ---
+
+    Only that block is inspected, and only a tag entry inside it counts — a
+    user's note that merely mentions graphify in its prose is not adopted.
+
+    Community overview notes are recognised separately: they carry no
+    frontmatter at all, so they are identified by graphify's own filename prefix
+    together with the Dataview query it writes into the body. Requiring both
+    keeps a user's own ``_COMMUNITY_*.md`` from being adopted on the name alone.
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(_NOTE_FRONTMATTER_PROBE_BYTES)
+    except OSError:
+        return False
+    if path.name.startswith(_COMMUNITY_PREFIX) and _COMMUNITY_QUERY_MARKER in head:
+        return True
+    if not head.startswith("---"):
+        return False
+    for line in head.splitlines()[1:]:
+        if line.strip() == "---":
+            return False  # frontmatter closed without a graphify tag
+        if _GRAPHIFY_TAG_RE.match(line):
+            return True
+    return False
+
+
+def _adopt_pre_manifest_notes(out: Path) -> set[str]:
+    """Names of notes in *out* that graphify itself wrote before manifests existed.
+
+    Deliberately limited to top-level ``*.md``: those are the only files graphify
+    can identify as its own from their content. ``.obsidian/graph.json`` is NOT
+    adopted — graphify writes one, but so does Obsidian, and with no manifest
+    there is no way to tell whose it is. Leaving it unowned keeps the
+    conservative behaviour for the one file where guessing wrong would cost the
+    user their own vault configuration.
+    """
+    try:
+        candidates = sorted(out.glob("*.md"))
+    except OSError:
+        return set()
+    return {p.name for p in candidates if _is_graphify_note(p)}
 
 
 def _obsidian_safe_stem(label: str, limit: int = 200) -> str:
@@ -636,20 +757,37 @@ def to_obsidian(
     _manifest_path = out / ".graphify_obsidian_manifest.json"
     try:
         _owned: set[str] = set(json.loads(_manifest_path.read_text(encoding="utf-8")).get("files", []))
+        _manifest_existed = True
     except (OSError, ValueError):
         _owned = set()
+        _manifest_existed = False
+    if not _manifest_existed:
+        # A vault written before the manifest existed has no record of what
+        # graphify owns, so every note it wrote last time reads as the user's and
+        # is skipped. The re-export then writes fresh notes BESIDE the stale ones
+        # and the vault carries two generations, with a warning claiming graphify
+        # "did not create" files it did (#2863). Adopt the notes that carry
+        # graphify's own frontmatter, once, so the manifest starts out honest.
+        _owned |= _adopt_pre_manifest_notes(out)
     _written: list[str] = []
     _skipped: list[str] = []
 
     def _owned_write(rel_name: str, content: str) -> bool:
         """Write a graphify-owned file, refusing to overwrite a pre-existing file
-        graphify didn't create. Returns True if written."""
+        graphify didn't create. Returns True if the note is owned/current (whether
+        or not it was physically written).
+
+        The disk write is skipped when the content is byte-identical to what is
+        already there (#3060) — an export re-runs on every graph.json change, and
+        rewriting an unchanged note churns disk and fires inotify / re-index /
+        sync for nothing. The note is still recorded in ``_written`` so it stays
+        owned and is neither pruned as stale nor dropped from the manifest."""
         target = out / rel_name
         if target.exists() and rel_name not in _owned:
             _skipped.append(rel_name)
             return False
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")  # nosec
+        write_text_atomic_if_changed(target, content)
         _written.append(rel_name)
         return True
 
@@ -1105,6 +1243,7 @@ def to_canvas(
     # Generate edges - only between nodes both in canvas, cap at 200 highest-weight
     all_edges_weighted: list[tuple[float, str, str, str]] = []
     for u, v, edata in G.edges(data=True):
+        u, v = edata.get("_src", u), edata.get("_tgt", v)
         if u in all_canvas_nodes and v in all_canvas_nodes:
             weight = edata.get("weight", 1.0)
             relation = edata.get("relation", "")
@@ -1122,7 +1261,7 @@ def to_canvas(
         })
 
     canvas_data = {"nodes": canvas_nodes, "edges": canvas_edges}
-    Path(output_path).write_text(json.dumps(canvas_data, indent=2), encoding="utf-8")  # nosec
+    write_json_atomic(output_path, canvas_data, indent=2)
 
 
 def to_graphml(
@@ -1193,7 +1332,7 @@ def to_graphml(
     tmp = out.with_name(out.name + ".tmp")
     try:
         nx.write_graphml(H, str(tmp))
-        os.replace(str(tmp), str(out))
+        os_replace_with_fallback(str(tmp), str(out))
     finally:
         if tmp.exists():
             try:

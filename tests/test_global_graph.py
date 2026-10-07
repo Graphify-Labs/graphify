@@ -81,6 +81,38 @@ def test_prefix_graph_rewrites_edge_directional_attributes():
     assert data["_tgt"] == "repoA::collections"
 
 
+def test_prefix_graph_offsets_community_ids():
+    """#3014: every input graph numbers its communities from 0, so a merge
+    carrying ids across unchanged fuses community 0 of one repo with community
+    0 of another into a single meta-node in the aggregated view. An offset must
+    shift integer ids into a shared id space and keep the per-repo id in
+    local_community."""
+    from graphify.build import prefix_graph_for_global
+    G = _make_graph(
+        [{"id": "a", "community": 0}, {"id": "b", "community": 1}], [],
+    )
+    H = prefix_graph_for_global(G, "repoA", community_offset=5)
+    assert H.nodes["repoA::a"]["community"] == 5
+    assert H.nodes["repoA::a"]["local_community"] == 0
+    assert H.nodes["repoA::b"]["community"] == 6
+    assert H.nodes["repoA::b"]["local_community"] == 1
+
+
+def test_prefix_graph_zero_offset_leaves_communities_untouched():
+    """The default offset must be a no-op — no community rewrite, no
+    local_community noise — so single-repo callers (global store, tests)
+    keep their ids exactly as stored."""
+    from graphify.build import prefix_graph_for_global
+    G = _make_graph(
+        [{"id": "a", "community": 0}, {"id": "b", "community": 1}], [],
+    )
+    H = prefix_graph_for_global(G, "repoA")
+    assert H.nodes["repoA::a"]["community"] == 0
+    assert H.nodes["repoA::b"]["community"] == 1
+    assert "local_community" not in H.nodes["repoA::a"]
+    assert "local_community" not in H.nodes["repoA::b"]
+
+
 
 def test_prune_repo_removes_correct_nodes():
     from graphify.build import prune_repo_from_graph

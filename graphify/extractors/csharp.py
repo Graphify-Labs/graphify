@@ -16,20 +16,46 @@ from pathlib import Path
 from graphify.extractors.base import _make_id
 
 
-def _build_csharp_type_def_index(all_nodes: list[dict]) -> dict[tuple[str, str], str]:
+def _build_csharp_type_def_index(
+    all_nodes: list[dict],
+    all_edges: list[dict] | None = None,
+) -> dict[tuple[str, str], str]:
     """Return deterministic ``(namespace, name) -> node_id`` C# type definitions."""
+    non_type_ids: set[str] = set()
+
+    if all_edges is not None:
+        for edge in all_edges:
+            rel = edge.get("relation")
+            if rel in ("case_of", "defines", "method"):
+                tgt = edge.get("_tgt") or edge.get("target")
+                if isinstance(tgt, str):
+                    non_type_ids.add(tgt)
+
     candidates: dict[tuple[str, str], list[dict]] = {}
+
     for node in all_nodes:
         if node.get("type") == "namespace":
             continue
+
         metadata = node.get("metadata") or {}
         if not isinstance(metadata, dict):
             metadata = {}
+
         if metadata.get("is_nested_type"):
             continue
+
         nid = node.get("id")
         label = node.get("label")
-        if not (isinstance(nid, str) and nid and isinstance(label, str) and label):
+
+        if not (
+            isinstance(nid, str)
+            and nid
+            and isinstance(label, str)
+            and label
+        ):
+            continue
+
+        if all_edges is not None and nid in non_type_ids:
             continue
         source_file = node.get("source_file")
         if (
@@ -105,7 +131,7 @@ def _resolve_cross_file_csharp_imports(
         if isinstance(label, str) and label and isinstance(nid, str) and nid:
             namespace_id_by_label.setdefault(label, nid)
 
-    type_def_index = _build_csharp_type_def_index(all_nodes)
+    type_def_index = _build_csharp_type_def_index(all_nodes, all_edges)
     if not namespace_id_by_label and not type_def_index:
         return
 
@@ -149,8 +175,15 @@ def _resolve_cross_file_csharp_imports(
     ]
 
 
+_DOTNET_SOURCE_EXTS = (".cs", ".razor", ".cshtml")
+
+
 def _is_cs_file(value: object) -> bool:
     return isinstance(value, str) and value.endswith(".cs")
+
+
+def _is_dotnet_source_file(value: object) -> bool:
+    return isinstance(value, str) and value.endswith(_DOTNET_SOURCE_EXTS)
 
 
 def _metadata(value: object) -> dict:
@@ -177,7 +210,7 @@ class CsharpNameResolver:
             for node in all_nodes
             if isinstance(node.get("id"), str) and node.get("id")
         }
-        self.type_def_index = _build_csharp_type_def_index(all_nodes)
+        self.type_def_index = _build_csharp_type_def_index(all_nodes, all_edges)
         self.known_namespaces = {
             node.get("label")
             for node in all_nodes
@@ -194,11 +227,11 @@ class CsharpNameResolver:
             if not (
                 source_node
                 and isinstance(source_node.get("label"), str)
-                and source_node.get("label", "").endswith(".cs")
+                and source_node.get("label", "").endswith(_DOTNET_SOURCE_EXTS)
             ):
                 continue
             source_file = source_node.get("source_file")
-            if not _is_cs_file(source_file):
+            if not _is_dotnet_source_file(source_file):
                 continue
             metadata = _metadata(edge.get("metadata"))
             target_fqn = metadata.get("target_fqn")
@@ -405,7 +438,7 @@ def _resolve_csharp_type_references(
         if edge.get("relation") not in REPOINT_RELATIONS:
             continue
         source_file = edge.get("source_file")
-        if not _is_cs_file(source_file):
+        if not _is_dotnet_source_file(source_file):
             continue
         source_node = node_by_id.get(edge.get("source"))
         target_node = node_by_id.get(edge.get("target"))

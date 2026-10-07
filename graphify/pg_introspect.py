@@ -154,4 +154,12 @@ def introspect_postgres(dsn: str | None = None) -> dict:
 
     # Pass virtual path and in-memory DDL content to extract_sql
     result = extract_sql(virtual_path, content=ddl_string)
+    # extract_sql() reports a missing grammar as an 'error' key with empty
+    # nodes/edges; surface it instead of letting the CLI print
+    # "PostgreSQL: 0 nodes" as if the database were empty.
+    if result.get("error"):
+        raise ImportError(
+            f"{result['error']} (required by --postgres; "
+            "install with: pip install 'graphifyy[postgres]')"
+        )
     return result
