@@ -2799,6 +2799,7 @@ def test_spawn_cannot_reimport_main_true_for_stdin_caller(monkeypatch):
     from graphify import extract as extract_mod
 
     monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=True: "spawn")
+    monkeypatch.setattr(__main__, "__spec__", None, raising=False)
     monkeypatch.setattr(__main__, "__file__", "<stdin>", raising=False)
     assert extract_mod._spawn_cannot_reimport_main() is True
 
@@ -2810,6 +2811,7 @@ def test_spawn_cannot_reimport_main_true_for_repl_without_file(monkeypatch):
     from graphify import extract as extract_mod
 
     monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=True: "spawn")
+    monkeypatch.setattr(__main__, "__spec__", None, raising=False)
     monkeypatch.delattr(__main__, "__file__", raising=False)
     assert extract_mod._spawn_cannot_reimport_main() is True
 
@@ -2825,6 +2827,36 @@ def test_spawn_cannot_reimport_main_false_for_real_script(tmp_path, monkeypatch)
     script.write_text("x = 1\n", encoding="utf-8")
     monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=True: "spawn")
     monkeypatch.setattr(__main__, "__file__", str(script), raising=False)
+    assert extract_mod._spawn_cannot_reimport_main() is False
+
+
+@pytest.mark.parametrize(
+    ("spec_name", "main_file"),
+    [
+        # pip/uv console script on Windows: __main__.py zipped inside graphify.exe
+        ("__main__", r"C:\venv\Scripts\graphify.exe\__main__.py"),
+        # `python -m graphify`
+        ("graphify.__main__", None),
+    ],
+    ids=["console_script_exe", "python_m"],
+)
+def test_spawn_cannot_reimport_main_false_when_main_has_a_spec(monkeypatch, spec_name, main_file):
+    """A __main__ with a module spec is re-imported by name, never by path, and a
+    spec named ``__main__`` is skipped in the worker (multiprocessing.spawn), so
+    the pool works even though ``__file__`` is not a file on disk. Reading the
+    graphify.exe console script as a stdin caller ran every Windows CLI
+    extraction on one core."""
+    import importlib.machinery
+    import multiprocessing
+    import __main__
+    from graphify import extract as extract_mod
+
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none=True: "spawn")
+    monkeypatch.setattr(__main__, "__spec__", importlib.machinery.ModuleSpec(spec_name, None), raising=False)
+    if main_file is None:
+        monkeypatch.delattr(__main__, "__file__", raising=False)
+    else:
+        monkeypatch.setattr(__main__, "__file__", main_file, raising=False)
     assert extract_mod._spawn_cannot_reimport_main() is False
 
 

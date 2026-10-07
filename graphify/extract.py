@@ -7297,7 +7297,15 @@ def _spawn_cannot_reimport_main() -> bool:
     front lets the caller run sequentially without a wall of worker tracebacks
     (#3669). A script WITH a real ``__main__`` file but no ``if __name__ ==
     "__main__"`` guard is a different failure this does not (and cannot) catch
-    here; that one still surfaces via the ``BrokenProcessPool`` fallback."""
+    here; that one still surfaces via the ``BrokenProcessPool`` fallback.
+
+    A ``__main__`` that has a module spec is re-imported by NAME, never by path
+    (``multiprocessing.spawn.get_preparation_data``), and a spec named
+    ``__main__`` is skipped in the worker altogether. That covers ``python -m``
+    and zip-based launchers, notably the ``graphify.exe`` console script pip/uv
+    install on Windows, whose ``__file__`` (``...\\graphify.exe\\__main__.py``)
+    is not a file on disk — reading it as a stdin caller ran every Windows CLI
+    extraction on one core."""
     import multiprocessing
 
     if (
@@ -7307,6 +7315,8 @@ def _spawn_cannot_reimport_main() -> bool:
         return False
     import __main__
 
+    if getattr(getattr(__main__, "__spec__", None), "name", None) is not None:
+        return False
     main_file = getattr(__main__, "__file__", None)
     return main_file is None or not os.path.isfile(main_file)
 
