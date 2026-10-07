@@ -152,6 +152,37 @@ def _rust_simple_generic_impl_key(node, source: bytes) -> str | None:
     return f"{owner_name}/{len(parameter_names)}" if owner_name else None
 
 
+def _rust_use_module(argument: str) -> str:
+    """The name a plain `use` imports from: the last path segment of its argument, as
+    written (`a::b` -> `b`, `a::b as c` -> `b as c`, `a::*` -> `a`)."""
+    clean = argument.split("{")[0].rstrip(":").rstrip("*").rstrip(":")
+    return clean.split("::")[-1].strip()
+
+
+def _rust_use_bindings(node, source: bytes, prefix: str = "", self_path: str = "") -> list[tuple[str, int]]:
+    """Each binding of a `use` tree, as the argument of a plain `use` that binds the same
+    name, with its line: `a::{b, c as d, e::{self}, f::*}` gives `b`, `c as d`, `a::e`
+    and `f::*` (as `use a::b;` and so on would: only the last segment counts). Paths
+    keep their text as written."""
+    t, line = node.type, node.start_point[0] + 1
+    if t == "use_list":
+        return [binding for child in node.named_children for binding in _rust_use_bindings(child, source, prefix, self_path)]
+    if t == "scoped_use_list":
+        path, group = node.child_by_field_name("path"), node.child_by_field_name("list")
+        lead = prefix + source[node.start_byte:group.start_byte].decode("utf-8", errors="replace") if group is not None else ""
+        owner = prefix + _read_text(path, source) if path is not None else ""
+        return _rust_use_bindings(group, source, lead, owner) if group is not None else []
+    alias = ""
+    if t == "use_as_clause":
+        clause, node = node, node.child_by_field_name("path")
+        alias = source[node.end_byte:clause.end_byte].decode("utf-8", errors="replace") if node is not None else ""
+    if node is not None and node.type == "self" and self_path:  # `a::{self}` binds `a`
+        return [(self_path + alias, line)]
+    if node is not None and node.type in ("use_wildcard", "identifier", "scoped_identifier", "crate", "self", "super"):
+        return [(prefix + _read_text(node, source) + alias, line)]
+    return []
+
+
 _RUST_TRAIT_METHOD_BLOCKLIST: frozenset[str] = frozenset({
     "new", "default", "parse", "from_str", "now", "clone", "into", "from",
     "to_string", "to_owned", "len", "is_empty", "iter", "next", "build",
@@ -644,12 +675,18 @@ def extract_rust(path: Path) -> dict:
         if t == "use_declaration":
             arg = node.child_by_field_name("argument")
             if arg:
-                raw = _read_text(arg, source)
-                clean = raw.split("{")[0].rstrip(":").rstrip("*").rstrip(":")
-                module_name = clean.split("::")[-1].strip()
+                module_name = _rust_use_module(_read_text(arg, source))
+                grouped = arg.type in ("use_list", "scoped_use_list")
                 if module_name:
                     tgt_nid = _make_id(module_name)
                     add_edge(file_nid, tgt_nid, "imports_from", node.start_point[0] + 1, context="import")
+                    if grouped:  # call evidence as in v8, then dropped (extract.py)
+                        edges[-1]["_rust_use_group"] = True
+                # A group imports what the plain `use` of each of its bindings would.
+                for binding, line in _rust_use_bindings(arg, source) if grouped else []:
+                    if binding_name := _rust_use_module(binding):
+                        add_edge(file_nid, _make_id(binding_name), "imports_from", line, context="import")
+                        edges[-1]["_rust_use_binding"] = True  # not call evidence: v8 had no such edge
             return
 
         for child in node.children:

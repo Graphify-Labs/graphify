@@ -8682,7 +8682,7 @@ def extract(
     for e in all_edges:
         if e.get("relation") == "imports":
             file_to_symbol_imports.setdefault(e["source"], set()).add(e["target"])
-        elif e.get("relation") == "imports_from":
+        elif e.get("relation") == "imports_from" and not e.get("_rust_use_binding"):
             file_to_module_imports.setdefault(e["source"], set()).add(e["target"])
 
     # Map each node back to its containing file node id so we can ask
@@ -9078,6 +9078,11 @@ def extract(
         all_edges.extend(_rl_edges[_e0:])
     else:
         run_language_resolvers(paths, per_file, all_nodes, all_edges)
+
+    # A Rust `use` group keeps one edge per binding; its v8 edge only served the calls above.
+    all_edges[:] = [e for e in all_edges if not e.pop("_rust_use_group", False)]
+    for e in all_edges:
+        e.pop("_rust_use_binding", None)
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a
