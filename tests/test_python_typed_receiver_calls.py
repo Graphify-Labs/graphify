@@ -155,6 +155,43 @@ def test_duplicate_class_name_emits_no_edge(tmp_path):
     assert not _has(calls, "run")
 
 
+def test_schema_bump_retires_raw_calls_cached_without_receiver_type(tmp_path, monkeypatch):
+    """A cache written before receiver_type existed must re-extract, not replay a
+    raw call the typed-receiver arm cannot resolve (same shape as the Rust test)."""
+    import graphify.cache as cache_mod
+    from graphify.cache import save_cached
+    from graphify.extract import extract_python
+
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/client.py": _CLIENT,
+        "pkg/use.py": "from .client import Client\n\ndef run(c: Client):\n    return c.send()\n",
+    }
+    paths = []
+    for name, body in files.items():
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body, encoding="utf-8")
+        paths.append(p)
+
+    current_schema = cache_mod._AST_CACHE_SCHEMA
+    monkeypatch.setattr(cache_mod, "_EXTRACTOR_VERSION", "same-version")
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", 5)  # last schema without receiver_type
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    for p in paths:
+        stale = extract_python(p)
+        for raw_call in stale.get("raw_calls", []):
+            raw_call.pop("receiver_type", None)  # what the previous schema persisted
+        save_cached(p, stale, root=tmp_path, cache_root=tmp_path, kind="ast")
+
+    monkeypatch.setattr(cache_mod, "_AST_CACHE_SCHEMA", current_schema)
+    monkeypatch.setattr(cache_mod, "_cleaned_ast_dirs", set())
+    r = extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False)
+    lbl = {n["id"]: n["label"] for n in r["nodes"]}
+    calls = {(lbl.get(e["source"]), lbl.get(e["target"])) for e in r["edges"] if e["relation"] == "calls"}
+    assert ("run()", ".send()") in calls
+
+
 def test_warm_cache_matches_cold(tmp_path):
     files = {
         "client.py": _CLIENT,
