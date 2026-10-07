@@ -3945,12 +3945,21 @@ def dispatch_command(cmd: str) -> None:
         # A graph written before this feature has no marker, so it receives the
         # same one-time refresh even when detect_incremental found no file edit.
         _kotlin_constructor_local_graph_schema = None
+        _kotlin_constructor_local_prior_present = False
         if existing_graph_path.exists():
             try:
                 from graphify.security import check_graph_file_size_cap as _kcls_size_cap
 
                 _kcls_size_cap(existing_graph_path)
                 _kcls_prior = json.loads(existing_graph_path.read_text(encoding="utf-8"))
+                # A failed walk may hide every live Kotlin file. Retain prior
+                # corpus evidence so an empty selected batch cannot bypass the
+                # feature's complete-JVM publication boundary.
+                _kotlin_constructor_local_prior_present = any(
+                    isinstance(node, dict)
+                    and _is_kotlin_constructor_local_source(node.get("source_file"))
+                    for node in _kcls_prior.get("nodes", [])
+                )
                 _kcls_graph = _kcls_prior.get("graph")
                 if isinstance(_kcls_graph, dict):
                     _kotlin_constructor_local_graph_schema = _kcls_graph.get(
@@ -4153,6 +4162,12 @@ def dispatch_command(cmd: str) -> None:
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
                 _extraction_incomplete = True  # the whole AST pass was lost
         if (
+            detection.get("walk_errors")
+            and (
+                _kotlin_constructor_local_selected
+                or _kotlin_constructor_local_prior_present
+            )
+        ) or (
             _kotlin_constructor_local_refresh
             and _kotlin_constructor_local_selected
             and ast_result.get("_kotlin_constructor_local_complete") is not True

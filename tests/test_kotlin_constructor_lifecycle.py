@@ -482,3 +482,113 @@ def test_actual_kotlin_parse_error_hard_fails_cli_allow_partial(tmp_path):
     failed = _extract_cli(corpus, "--allow-partial")
     assert failed.returncode == 1
     assert graph_path.read_bytes() == before
+
+
+def _partial_jvm_detector(monkeypatch, omission):
+    detect_module = importlib.import_module("graphify.detect")
+    real_detect = detect_module.detect
+
+    def partial_detect(*args, **kwargs):
+        result = real_detect(*args, **kwargs)
+        result["files"]["code"] = [
+            path for path in result["files"]["code"]
+            if Path(path).name != "Shadow.java"
+            and not (omission == "all_jvm" and Path(path).suffix in {".kt", ".java"})
+        ]
+        result["walk_errors"] = ["injected unreadable JVM subtree"]
+        return result
+
+    monkeypatch.setattr(detect_module, "detect", partial_detect)
+
+
+def _shadowed_corpus(corpus):
+    corpus.mkdir()
+    provider = corpus / "Provider.kt"
+    provider.write_text(_PROVIDER, encoding="utf-8")
+    (corpus / "Caller.kt").write_text(_CALLER, encoding="utf-8")
+    (corpus / "Shadow.java").write_text(_java_shadow(), encoding="utf-8")
+    return provider
+
+
+@pytest.mark.parametrize("no_cluster", [True, False])
+@pytest.mark.parametrize("incremental", [True, False])
+@pytest.mark.parametrize("omission", ["shadow", "all_jvm"])
+def test_watch_walk_error_preserves_kotlin_proof_and_retry(
+    tmp_path, monkeypatch, no_cluster, incremental, omission
+):
+    corpus = tmp_path / "corpus"
+    provider = _shadowed_corpus(corpus)
+    assert _rebuild_code(corpus, no_cluster=no_cluster, acquire_lock=False) is True
+    assert not _has_run_edge(corpus)
+    before = _output_bytes(corpus)
+    _partial_jvm_detector(monkeypatch, omission)
+    changed = [provider] if incremental else None
+
+    assert _rebuild_code(
+        corpus, changed_paths=changed, no_cluster=no_cluster
+    ) is False
+    assert _output_bytes(corpus) == before
+    if incremental:
+        assert (corpus / "graphify-out" / ".pending_changes").exists()
+
+    monkeypatch.undo()
+    assert _rebuild_code(
+        corpus, changed_paths=changed, no_cluster=no_cluster
+    ) is True
+    assert not _has_run_edge(corpus)
+    assert _graph(corpus)["graph"][GRAPH_MARKER] == SCHEMA
+    assert not (corpus / "graphify-out" / ".pending_changes").exists()
+
+
+@pytest.mark.parametrize("no_cluster", [True, False])
+def test_watch_cold_walk_error_does_not_publish_kotlin_proof(
+    tmp_path, monkeypatch, no_cluster
+):
+    corpus = tmp_path / "corpus"
+    _shadowed_corpus(corpus)
+    _partial_jvm_detector(monkeypatch, "shadow")
+    assert _rebuild_code(corpus, no_cluster=no_cluster, acquire_lock=False) is False
+    assert not (corpus / "graphify-out" / "graph.json").exists()
+    assert not (corpus / "graphify-out" / "manifest.json").exists()
+
+
+@pytest.mark.parametrize("no_cluster", [True, False])
+@pytest.mark.parametrize("allow_partial", [True, False])
+@pytest.mark.parametrize("omission", ["shadow", "all_jvm"])
+def test_cli_walk_error_cannot_override_kotlin_proof(
+    tmp_path, monkeypatch, no_cluster, allow_partial, omission
+):
+    main_module = importlib.import_module("graphify.__main__")
+    corpus = tmp_path / "corpus"
+    _shadowed_corpus(corpus)
+    assert _rebuild_code(corpus, no_cluster=no_cluster, acquire_lock=False) is True
+    assert not _has_run_edge(corpus)
+    before = _output_bytes(corpus)
+    _partial_jvm_detector(monkeypatch, omission)
+    monkeypatch.setattr(main_module, "_check_skill_version", lambda _: None)
+    args = ["graphify", "extract", str(corpus), "--code-only", "--force"]
+    if no_cluster:
+        args.append("--no-cluster")
+    if allow_partial:
+        args.append("--allow-partial")
+    monkeypatch.setattr(sys, "argv", args)
+    with pytest.raises(SystemExit) as exc:
+        main_module.main()
+    assert exc.value.code == 1
+    assert _output_bytes(corpus) == before
+
+
+def test_cli_cold_walk_error_cannot_allow_partial_kotlin_proof(tmp_path, monkeypatch):
+    main_module = importlib.import_module("graphify.__main__")
+    corpus = tmp_path / "corpus"
+    _shadowed_corpus(corpus)
+    _partial_jvm_detector(monkeypatch, "shadow")
+    monkeypatch.setattr(main_module, "_check_skill_version", lambda _: None)
+    monkeypatch.setattr(sys, "argv", [
+        "graphify", "extract", str(corpus), "--code-only", "--no-cluster", "--allow-partial"
+    ])
+    with pytest.raises(SystemExit) as exc:
+        main_module.main()
+    assert exc.value.code == 1
+    assert not (corpus / "graphify-out" / "graph.json").exists()
+    assert not (corpus / "graphify-out" / "manifest.json").exists()
