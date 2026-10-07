@@ -16,6 +16,7 @@ flow) and every reader honours it.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -56,6 +57,17 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
     except OSError as exc:
         if not isinstance(exc, PermissionError) and getattr(exc, "winerror", None) != 17:
             raise
+    # os.replace refused (WinError 5) or could not move across drives. The swap
+    # below would defeat a read-only destination anyway: Windows ALLOWS renaming
+    # a read-only file aside, so the original would be silently replaced and its
+    # read-only backup could then not even be unlinked (#3508 follow-up). Refuse
+    # here, before anything is created, so a failed write leaves no temp behind.
+    try:
+        dst_is_read_only = not (os.stat(dst).st_mode & stat.S_IWRITE)
+    except OSError:
+        dst_is_read_only = False  # absent or unreadable: let the swap report it
+    if dst_is_read_only:
+        raise PermissionError(errno.EACCES, "destination is read-only", os.fspath(dst))
     import shutil
     dst = os.fspath(dst)
     if os.path.normcase(os.path.abspath(os.fspath(src))) == os.path.normcase(os.path.abspath(dst)):
@@ -88,7 +100,15 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
             try:
                 os.unlink(backup)
             except OSError:
-                pass
+                # Windows refuses to unlink a read-only file, and the backup IS
+                # the original destination, which can carry that attribute.
+                # Clear the bit and retry, or every failed swap leaks a
+                # `.gfy-replace-bak-*.tmp` next to the output.
+                try:
+                    os.chmod(backup, stat.S_IWRITE)
+                    os.unlink(backup)
+                except OSError:
+                    pass
     except BaseException:
         try:
             os.unlink(tmp_copy)
