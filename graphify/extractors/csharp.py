@@ -321,7 +321,18 @@ class CsharpNameResolver:
                 candidates.append(hit)
         if len(candidates) == 1:
             return candidates[0], True
-        return None, bool(candidates)
+        if candidates:
+            return None, True
+
+        ns = self._namespace(source_node)
+        if "." in ns:
+            parts = ns.split(".")
+            for i in range(len(parts) - 1, 0, -1):
+                hit = self.type_def_index.get((".".join(parts[:i]), label))
+                if hit:
+                    return hit, True
+
+        return None, False
 
     def resolve_label(self, label: str, source_node: dict, source_file: str) -> str | None:
         resolved, _decisive = self.resolve_type_name(label, source_node, source_file)
