@@ -140,6 +140,69 @@ def mint_external_stubs_in_data(data: dict) -> None:
             })
             minted.add(tgt)
 
+
+def finalize_raw_graph_endpoints(data: dict) -> None:
+    """Apply build_from_json's endpoint rules to a raw (``--no-cluster``) graph.
+
+    The clustered path builds the graph with :func:`build_from_json`, which mints
+    a typed stub for an import of an external module (#2873) and drops every
+    other edge it cannot attach to two declared nodes, after re-pointing an
+    endpoint that differs from a declared id only by normalization. The raw
+    write paths skip build_from_json, so graph.json kept those edges: a loader
+    turns each missing endpoint into an attribute-less phantom node, and a link
+    to a missing markdown document kept the target id the extractor built from
+    the absolute checkout path.
+
+    A stub is derived from the import edges that point at it, so a stub carried
+    over from an earlier graph that no edge references any more is dropped too;
+    a fresh build of the same tree would not have it.
+    """
+    mint_external_stubs_in_data(data)
+    nodes = data.get("nodes")
+    key = "links" if isinstance(data.get("links"), list) else "edges"
+    links = data.get(key)
+    if not isinstance(nodes, list) or not isinstance(links, list):
+        return
+    declared = {n.get("id") for n in nodes if isinstance(n, dict)}
+    norm_to_id = {_normalize_id(nid): nid for nid in declared if isinstance(nid, str)}
+    kept: list = []
+    referenced: set = set()
+    for e in links:
+        if not isinstance(e, dict):
+            kept.append(e)
+            continue
+        attached = True
+        for primary, alias in (("source", "from"), ("target", "to")):
+            field = primary if primary in e else alias
+            endpoint = e.get(field)
+            if isinstance(endpoint, str) and endpoint in declared:
+                continue
+            canonical = norm_to_id.get(_normalize_id(endpoint)) if isinstance(endpoint, str) else None
+            if canonical is None:
+                attached = False
+                break
+            e[field] = canonical
+        if attached:
+            kept.append(e)
+            referenced.add(e.get("source", e.get("from")))
+            referenced.add(e.get("target", e.get("to")))
+    links[:] = kept
+    for hyperedge in data.get("hyperedges", []) or []:
+        if isinstance(hyperedge, dict):
+            members = hyperedge.get("nodes", hyperedge.get("members", hyperedge.get("node_ids", [])))
+            if isinstance(members, list):
+                referenced.update(m for m in members if isinstance(m, str))
+    nodes[:] = [
+        n for n in nodes
+        if not (
+            isinstance(n, dict)
+            and n.get("external") is True
+            and n.get("type") == "external"
+            and not n.get("source_file")
+            and n.get("id") not in referenced
+        )
+    ]
+
 # Language interop families, keyed by extension, for the cross-language phantom-edge
 # guard in the edge loop below. Families group by REAL interop (JS/TS share a module
 # graph; C/C++/ObjC share a compilation unit via headers; JVM langs share bytecode),
