@@ -1345,17 +1345,24 @@ def _traversal_view(G: nx.Graph) -> nx.Graph:
     fold there too; letting networkx assign the keys keeps both, and nothing
     downstream reads the key.
 
-    A fresh copy per query rather than a cached one: `_filter_graph_by_context`
-    already copies per query when a filter applies, and the copy shares node
-    data dicts with `G`, so only the edge dicts are duplicated.
+    Built once per graph object and cached on `G.graph`, like the trigram index.
+    It used to be rebuilt on every query, copying every edge of the graph, which
+    was most of a warm `query_graph` call. Sharing it is safe because nothing
+    downstream writes to it: `_filter_graph_by_context` builds a new graph when
+    a filter applies, and the traversals and the renderer only read. A hot
+    reload swaps in a fresh `G`, so a cached view never outlives its graph.
     """
     if not G.is_directed():
         return G
+    cached = G.graph.get("_traversal_view")
+    if cached is not None:
+        return cached
     H = nx.MultiGraph() if G.is_multigraph() else nx.Graph()
     H.graph.update(G.graph)
     H.add_nodes_from(G.nodes(data=True))
     for u, v, d in G.edges(data=True):
         H.add_edge(u, v, **{**d, "_src": d.get("_src", u), "_tgt": d.get("_tgt", v)})
+    G.graph["_traversal_view"] = H
     return H
 
 def _query_graph_text(
@@ -1727,6 +1734,55 @@ def _resolve_path_endpoint(
     return _pick_scored_endpoint(G, scored, query), scored, None
 
 
+def _path_search_graph(G: nx.Graph, undirected: bool) -> nx.Graph:
+    """The sorted, materialized graph `_shortest_path_text` searches.
+
+    Deterministic path (#2074): the hash-seeded undirected view picked an
+    arbitrary route among equal-length paths, so the search runs on a graph
+    built from sorted node and edge lists, which makes the chosen path
+    canonical. Serve's shared G is left untouched (its degree feeds query-seed
+    tie-breaks).
+
+    Built once per graph object and direction mode, and cached on `G.graph`
+    like the trigram index: rebuilding it from every edge was nearly all of a
+    `shortest_path` call. Only `nx.shortest_path` reads it, and a hot reload
+    swaps in a fresh `G`, so a cached graph never outlives its source.
+    """
+    cache = G.graph.setdefault("_path_search_graphs", {})
+    cached = cache.get(undirected)
+    if cached is not None:
+        return cached
+    if undirected:
+        H = nx.Graph()
+        H.add_nodes_from(sorted(G.nodes))
+        H.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
+    else:
+        # Directed by default (#2487). True direction is NOT raw arc
+        # order: legacy canonicalized files persist a flipped arc with
+        # _src/_tgt markers (#2309), so build the digraph from _src/_tgt
+        # (falling back to the loaded arc) rather than to_directed().
+        H = nx.DiGraph()
+        H.add_nodes_from(sorted(G.nodes))
+        H.add_edges_from(sorted(
+            (d.get("_src", u), d.get("_tgt", v)) for u, v, d in G.edges(data=True)
+        ))
+        # A `contains` edge only runs file -> symbol; there is no stored
+        # edge back out to the containing file, so a route that reaches a
+        # symbol (via an `imports`/`calls`/`references` hop) can never
+        # continue on to the file that defines it, and a file-to-file
+        # dependency routed through a shared symbol finds no path at all
+        # even though both halves exist (#3878). Add the implied reverse hop
+        # for traversal only — the printed segment still recovers the real
+        # stored `contains` edge and its true direction from G below.
+        H.add_edges_from(sorted(
+            (d.get("_tgt", v), d.get("_src", u))
+            for u, v, d in G.edges(data=True)
+            if d.get("relation") == "contains"
+        ))
+    cache[undirected] = H
+    return H
+
+
 def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     """Body of the `shortest_path` MCP tool (module-level so tests can call it
     without an mcp install).
@@ -1769,39 +1825,7 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     max_hops = int(arguments.get("max_hops", 8))
     undirected = bool(arguments.get("undirected", False))
     try:
-        # Deterministic path (#2074): the hash-seeded undirected view picked an
-        # arbitrary route among equal-length paths. Build a sorted, materialized
-        # graph so the chosen path is canonical. Serve's shared G is left
-        # untouched (its degree feeds query-seed tie-breaks).
-        if undirected:
-            _und = nx.Graph()
-            _und.add_nodes_from(sorted(G.nodes))
-            _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
-            path_nodes = nx.shortest_path(_und, src_nid, tgt_nid)
-        else:
-            # Directed by default (#2487). True direction is NOT raw arc
-            # order: legacy canonicalized files persist a flipped arc with
-            # _src/_tgt markers (#2309), so build the digraph from _src/_tgt
-            # (falling back to the loaded arc) rather than to_directed().
-            _dg = nx.DiGraph()
-            _dg.add_nodes_from(sorted(G.nodes))
-            _dg.add_edges_from(sorted(
-                (d.get("_src", u), d.get("_tgt", v)) for u, v, d in G.edges(data=True)
-            ))
-            # A `contains` edge only runs file -> symbol; there is no stored
-            # edge back out to the containing file, so a route that reaches a
-            # symbol (via an `imports`/`calls`/`references` hop) can never
-            # continue on to the file that defines it, and a file-to-file
-            # dependency routed through a shared symbol finds no path at all
-            # even though both halves exist (#3878). Add the implied reverse hop
-            # for traversal only — the printed segment still recovers the real
-            # stored `contains` edge and its true direction from G below.
-            _dg.add_edges_from(sorted(
-                (d.get("_tgt", v), d.get("_src", u))
-                for u, v, d in G.edges(data=True)
-                if d.get("relation") == "contains"
-            ))
-            path_nodes = nx.shortest_path(_dg, src_nid, tgt_nid)
+        path_nodes = nx.shortest_path(_path_search_graph(G, undirected), src_nid, tgt_nid)
     except (nx.NetworkXNoPath, nx.NodeNotFound):
         src_label = G.nodes[src_nid].get("label", src_nid)
         tgt_label = G.nodes[tgt_nid].get("label", tgt_nid)
