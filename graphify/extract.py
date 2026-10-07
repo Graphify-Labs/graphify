@@ -4132,10 +4132,13 @@ def _resolve_python_member_calls(
     # (class_node_id, method_key) -> method_node_id.
     class_def_nids: dict[str, list[str]] = {}
     method_index: dict[tuple[str, str], str] = {}
+    owner_of: dict[str, str] = {}
     for e in all_edges:
         if e.get("relation") != "method":
             continue
         src, tgt = e.get("source"), e.get("target")
+        if src and tgt:
+            owner_of[tgt] = src
         cnode = node_by_id.get(src)
         if cnode is not None:
             class_def_nids.setdefault(_key(cnode.get("label", "")), []).append(src)
@@ -4200,20 +4203,23 @@ def _resolve_python_member_calls(
 
     existing_pairs = {(e.get("source"), e.get("target")) for e in all_edges}
 
-    def _emit_call(caller: str, target_nid: "str | None", rc: dict) -> None:
+    def _emit_call(
+        caller: str, target_nid: "str | None", rc: dict, inferred: bool = False
+    ) -> None:
         if not target_nid or target_nid == caller or (caller, target_nid) in existing_pairs:
             return
         existing_pairs.add((caller, target_nid))
         # EXTRACTED: a qualified call (`ClassName.method()` or `module.func()`) is
         # an explicit, unambiguous static reference resolved to exactly one
         # definition (each arm applies a single-definition god-node guard).
+        # A `self.X` receiver typed from its binding is INFERRED (#2860).
         all_edges.append({
             "source": caller,
             "target": target_nid,
             "relation": "calls",
             "context": "call",
-            "confidence": "EXTRACTED",
-            "confidence_score": 1.0,
+            "confidence": "INFERRED" if inferred else "EXTRACTED",
+            "confidence_score": 0.85 if inferred else 1.0,
             "source_file": rc.get("source_file", ""),
             "source_location": rc.get("source_location"),
             "weight": 1.0,
@@ -4227,6 +4233,18 @@ def _resolve_python_member_calls(
         receiver = rc.get("receiver")
         callee = rc.get("callee")
         caller = rc.get("caller_nid")
+        attr_type = rc.get("_python_self_attr_type")
+        if attr_type and callee and caller:
+            # `self.X.m()` with X bound to one class (#2860): only a unique class
+            # the caller's own file defines or imports, and only if it owns `m`.
+            class_nids = class_def_nids.get(_key(attr_type), [])
+            caller_file = file_of_node.get(owner_of.get(caller, ""))
+            if len(class_nids) == 1 and caller_file is not None and (
+                    file_of_node.get(class_nids[0]) == caller_file
+                    or class_nids[0] in imported_by_filenode.get(caller_file, ())):
+                method_nid = method_index.get((class_nids[0], _key(callee)))
+                _emit_call(caller, method_nid, rc, inferred=True)
+            continue
         if not receiver or not callee or not caller:
             continue
         # External modules have no parsed member definition. The extractor's

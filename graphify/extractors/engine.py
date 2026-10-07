@@ -1690,6 +1690,41 @@ def _python_receiver_shadow_checker(root, source: bytes):
 
     return is_shadowed
 
+def _python_self_attr(node, source: bytes) -> str | None:
+    """``X`` when ``node`` is the attribute ``self.X`` (#2860), else None."""
+    if node is None or node.type != "attribute":
+        return None
+    obj, attr = node.child_by_field_name("object"), node.child_by_field_name("attribute")
+    if obj is None or attr is None or _read_text(obj, source) != "self":
+        return None
+    return _read_text(attr, source)
+
+def _python_self_attr_bindings(body, source: bytes):
+    """Yield ``(attr, type_name)`` for every ``self.attr = ...`` in a method body
+    (#2860). ``type_name`` is the annotation (``self.attr: T = ...``) or the bare
+    class of ``self.attr = Ctor(...)``, and None for any other value so the
+    caller can poison the field; ``self.attr = None`` binds nothing."""
+    stack = list(body.named_children)
+    while stack:
+        node = stack.pop()
+        if node.type in ("function_definition", "class_definition", "lambda"):
+            continue
+        stack.extend(node.named_children)
+        left = node.child_by_field_name("left") if node.type == "assignment" else None
+        if left is None:
+            continue
+        value, right = node.child_by_field_name("type"), node.child_by_field_name("right")
+        if value is None and right is not None:
+            if right.type == "none":
+                continue
+            value = right.child_by_field_name("function") if right.type == "call" else None
+        name = _read_text(value, source) if value is not None else ""
+        typed = name.isidentifier() and name[:1].isupper()
+        for target in (left.named_children if left.type == "pattern_list" else [left]):
+            attr = _python_self_attr(target, source)
+            if attr:
+                yield attr, (name if typed and target is left else None)
+
 _JS_SCOPE_BOUNDARY = frozenset({
     "function_declaration", "function_expression", "function", "arrow_function",
     "method_definition", "class_declaration", "class", "generator_function",
@@ -7578,6 +7613,15 @@ def _extract_generic(
                             rc_entry["_python_receiver_shadowed"] = python_receiver_shadowed(
                                 node, member_receiver or ""
                             )
+                        # Python `self.X.m()`: stamp X's class when the
+                        # enclosing class bound it to exactly one (#2860).
+                        if config.ts_module == "tree_sitter_python" and is_member_call:
+                            _fn = node.child_by_field_name("function")
+                            _recv = _fn.child_by_field_name("object") if _fn is not None else None
+                            _fields = python_attr_types.get(method_owner.get(caller_nid, ""), {})
+                            _attr_type = _fields.get(_python_self_attr(_recv, source) or "")
+                            if _attr_type:
+                                rc_entry["_python_self_attr_type"] = _attr_type
                         # This file already named the callee as a type it does
                         # not define, so extract() binds it cross-file only with
                         # import or namespace evidence (#3888).
@@ -7888,6 +7932,17 @@ def _extract_generic(
 
         for child in node.children:
             walk_calls(child, caller_nid, receiver_types, extra_locals)
+
+    # Python: type `self.X` per class from the bindings in its methods so
+    # `self.X.m()` can resolve corpus-side (#2860). Conflicting or untypable
+    # bindings poison the field to None.
+    python_attr_types: dict[str, dict[str, str | None]] = {}
+    if config.ts_module == "tree_sitter_python":
+        for caller_nid, body_node in function_bodies:
+            if caller_nid in method_owner:
+                fields = python_attr_types.setdefault(method_owner[caller_nid], {})
+                for attr, type_name in _python_self_attr_bindings(body_node, source):
+                    fields[attr] = type_name if fields.get(attr, type_name) == type_name else None
 
     if config.ts_module == "tree_sitter_ruby":
         for caller_nid, body_node in function_bodies:
