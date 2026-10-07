@@ -110,3 +110,61 @@ def test_isolated_count_is_auditable_against_the_raw_graph():
     assert m
     G, _ = _graph_and_communities()
     assert int(m.group(1)) == sum(1 for n in G.nodes() if G.degree(n) <= 1)
+
+
+def test_undocumented_components_omitted_without_a_semantic_layer():
+    """#3801: "undocumented components" only means anything when a semantic
+    layer (document/paper/image nodes) exists to be undocumented. This
+    fixture is code + concept only, so the reason offered for an isolated
+    node must not claim a possibility the graph structurally cannot have."""
+    text = _report(3)
+    assert "isolated node(s):" in text
+    gaps = text.split("## Knowledge Gaps")[-1].split("## ")[0]
+    assert "possible missing edges" in gaps
+    assert "undocumented components" not in gaps
+
+
+def test_undocumented_components_offered_when_a_semantic_layer_exists():
+    """The flip side of #3801: once the graph has at least one
+    document/paper/image node anywhere, "undocumented components" is a real
+    possibility again and the reason should still offer it."""
+    G, communities = _graph_and_communities()
+    G.add_node("doc1", label="doc1.md", file_type="document", source_file="docs/doc1.md")
+    text = generate(
+        G, communities, {}, {}, [], [],
+        {"total_files": 4, "total_words": 100}, {},
+        root="proj", min_community_size=3,
+    )
+    gaps = text.split("## Knowledge Gaps")[-1].split("## ")[0]
+    assert "possible missing edges or undocumented components" in gaps
+
+
+def test_community_listing_excludes_rationale_and_concept_nodes():
+    """#3794: the per-community "Nodes (N): ..." listing only excluded file
+    nodes, so a rationale (docstring-fragment) node and a concept node
+    leaked into the rendered list as if they were real code declarations,
+    and inflated N by counting them."""
+    G = nx.Graph()
+    code_nodes = [f"code{i}" for i in range(3)]
+    for n in code_nodes:
+        G.add_node(n, label=n, file_type="code", source_file=f"src/{n}.py",
+                   source_location="L1")
+    for a, b in zip(code_nodes, code_nodes[1:]):
+        G.add_edge(a, b, relation="calls", confidence="EXTRACTED")
+    G.add_node("rationale1", label="Names exist largely for unit tests",
+               file_type="rationale", source_file="src/code0.py")
+    G.add_edge("rationale1", "code0", relation="documents", confidence="EXTRACTED")
+    # _is_concept_node keys off source_file shape (empty or extension-less),
+    # not file_type, so the fixture must match that signal to exercise it.
+    G.add_node("concept1", label="Some Concept", file_type="concept", source_file="")
+    G.add_edge("concept1", "code0", relation="references", confidence="EXTRACTED")
+    communities = {0: code_nodes + ["rationale1", "concept1"]}
+
+    text = generate(
+        G, communities, {}, {}, [], [],
+        {"total_files": 3, "total_words": 100}, {},
+        root="proj", min_community_size=3,
+    )
+    assert "Nodes (3):" in text, text
+    assert "Names exist largely" not in text
+    assert "Some Concept" not in text

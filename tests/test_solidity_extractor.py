@@ -57,6 +57,25 @@ def test_solidity_contract_members_and_calls_are_extracted(tmp_path):
     assert ("increment()", "record()") in _edge_labels(result, "calls")
 
 
+def test_solidity_free_functions_and_their_calls_are_extracted(tmp_path):
+    # File-level (free) functions — legal since Solidity 0.7 — live outside any
+    # contract. Before the fix the extractor only descended into named type
+    # declarations, so both free functions and the call between them vanished.
+    source = tmp_path / "Utils.sol"
+    source.write_text(
+        "pragma solidity ^0.8.0;\n"
+        "function halve(uint x) pure returns (uint) { return x / 2; }\n"
+        "function quarter(uint x) pure returns (uint) { return halve(halve(x)); }\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"halve()", "quarter()"} <= labels
+    assert ("quarter()", "halve()") in _edge_labels(result, "calls")
+
+
 def test_solidity_types_imports_inheritance_overloads_and_modifiers(tmp_path):
     (tmp_path / "Base.sol").write_text(
         "contract Base { function baseRun() internal {} }\n", encoding="utf-8"
@@ -98,6 +117,40 @@ def test_solidity_types_imports_inheritance_overloads_and_modifiers(tmp_path):
     assert ("Counter", "Base") in _edge_labels(result, "inherits")
     assert ("run()", "guarded()") in _edge_labels(result, "uses")
     assert len([edge for edge in result["edges"] if edge["relation"] == "imports_from"]) == 2
+
+
+def test_solidity_enum_values_emit_case_of_not_contains(tmp_path):
+    """A Solidity enum value is a discriminant case, so it must get a `case_of`
+    edge like every other language with enums (Java #1719, C#, Swift, Rust,
+    VB.NET), not the `contains` edge used for real declared members. Solidity
+    was routing enum values through the same `contains` path as struct fields.
+    The relation also matters to resolution: `case_of` targets are excluded
+    from constructor binding, so an enum value named like a type can no longer
+    be mistaken for one.
+    """
+    source = tmp_path / "Status.sol"
+    source.write_text(
+        "pragma solidity ^0.8.0;\n"
+        "contract Order {\n"
+        "  enum Status { Pending, Shipped, Delivered }\n"
+        "  struct Point { uint x; uint y; }\n"
+        "  Status public status;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    case_of = _edge_labels(result, "case_of")
+    contains = _edge_labels(result, "contains")
+    # Each enum value hangs off its enum via case_of, not contains.
+    assert ("Status", "Pending") in case_of
+    assert ("Status", "Shipped") in case_of
+    assert ("Status", "Delivered") in case_of
+    assert ("Status", "Pending") not in contains
+    # A real struct field is a declaration, not a case: it keeps `contains`.
+    assert ("Point", "x") in contains
+    assert ("Point", "x") not in case_of
 
 
 def test_solidity_fixture_uses_normal_extract_path(tmp_path):

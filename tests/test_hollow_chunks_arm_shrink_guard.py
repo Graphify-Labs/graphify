@@ -97,8 +97,8 @@ def test_allow_partial_still_overrides(monkeypatch, tmp_path):
 
 
 def test_a_run_with_every_file_covered_keeps_force_write(monkeypatch, tmp_path, capsys):
-    """The ordinary complete run is unchanged: a full build legitimately
-    shrinks (dedup, deleted code) and keeps bypassing the guard."""
+    """A complete run that did not shrink the graph via dedup still force-writes.
+    A dedup shrink is refused unless --allow-dedup-shrink (#3774)."""
     rec = _record_force(monkeypatch)
     _arm(monkeypatch, tmp_path)
     _run()

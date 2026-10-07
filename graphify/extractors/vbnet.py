@@ -6,7 +6,7 @@ from typing import Any
 
 from tree_sitter import Node
 
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
 _TYPE_BLOCKS = {
@@ -86,7 +86,7 @@ def extract_vbnet(path: Path) -> dict:
         return {"nodes": [], "edges": [], "error": "tree-sitter-vb-dotnet not installed"}
 
     try:
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         root = Parser(Language(tree_sitter_vb_dotnet.language())).parse(source).root_node
     except Exception as exc:
         return {"nodes": [], "edges": [], "error": f"VB.NET grammar failed to load: {exc}"}
@@ -100,6 +100,10 @@ def extract_vbnet(path: Path) -> dict:
     seen_ids: set[str] = set()
     seen_edges: set[tuple[str, str, str]] = set()
     types_by_name: dict[str, str] = {}
+    # Short type/module name -> its owner_key, so a qualified call such as
+    # Helpers.Log() can be resolved back to the owner that keys `methods`
+    # (which is the namespace-qualified name, not the bare receiver token).
+    owner_by_short: dict[str, str] = {}
     methods: dict[tuple[str, str, int], list[str]] = {}
     events: dict[tuple[str, str], str] = {}
     bodies: list[tuple[Node, str, str, str]] = []
@@ -181,14 +185,16 @@ def extract_vbnet(path: Path) -> dict:
             source_backed=False,
         )
 
-    def add_data_member(type_id: str, member: Node, name: str, kind: str) -> str:
+    def add_data_member(
+        type_id: str, member: Node, name: str, kind: str, relation: str = "contains"
+    ) -> str:
         member_id = add_node(
             _make_id(type_id, kind, name.casefold(), str(member.start_point[0])),
             name,
             member,
             kind=kind,
         )
-        add_edge(type_id, member_id, "contains", member)
+        add_edge(type_id, member_id, relation, member)
         return member_id
 
     def process_type(block: Node, parent_id: str, namespace: str) -> None:
@@ -209,6 +215,7 @@ def extract_vbnet(path: Path) -> dict:
         )
         add_edge(parent_id, type_id, "contains", block)
         types_by_name[name.casefold()] = type_id
+        owner_by_short.setdefault(name.casefold(), owner_key)
 
         for clause in block.named_children:
             if clause.type not in {"inherits_clause", "implements_clause"}:
@@ -222,8 +229,15 @@ def extract_vbnet(path: Path) -> dict:
             if member.type == "enum_member":
                 member_name = member.child_by_field_name("name")
                 if member_name is not None:
+                    # An enum member is a discriminant case, not a contained
+                    # declaration: it gets a `case_of` edge like every other
+                    # language with enums (Java #1719, C#, Swift, Scala, ...),
+                    # not the `contains` edge used for real fields. The relation
+                    # also matters to resolution — case_of targets are excluded
+                    # from `New X()` constructor binding (see _member_nids).
                     add_data_member(
-                        type_id, member, _read_text(member_name, source), "enum_member"
+                        type_id, member, _read_text(member_name, source),
+                        "enum_member", relation="case_of",
                     )
                 continue
             if member.type == "field_declaration":
@@ -378,14 +392,24 @@ def extract_vbnet(path: Path) -> dict:
                     parts = written.split(".")
                     receiver = ".".join(parts[:-1]).casefold()
                     callee = parts[-1]
-                    known_receiver = (
+                    self_receiver = (
                         not receiver
                         or receiver in {"me", "myclass", type_name.casefold()}
                     )
-                    if known_receiver:
+                    # A self/unqualified call targets the caller's own type; a
+                    # qualified call (Helpers.Log(), OtherType.Foo()) targets the
+                    # named receiver type/module. Only these two forms can be
+                    # resolved by name — a call through a value receiver (a local
+                    # variable) has no known owner, so it is left unresolved.
+                    target_owner = None
+                    if self_receiver:
+                        target_owner = owner_key
+                    else:
+                        target_owner = owner_by_short.get(receiver.split(".")[-1])
+                    if target_owner is not None:
                         arity = len(arguments.named_children) if arguments is not None else 0
                         candidates = methods.get(
-                            (owner_key, callee.casefold(), arity), []
+                            (target_owner, callee.casefold(), arity), []
                         )
                         if len(candidates) == 1:
                             add_edge(caller_id, candidates[0], "calls", node)
@@ -394,7 +418,7 @@ def extract_vbnet(path: Path) -> dict:
                                 "caller_nid": caller_id,
                                 "callee": callee,
                                 "arity": arity,
-                                "owner": owner_key,
+                                "owner": target_owner,
                                 "is_member_call": True,
                                 "language": "vbnet",
                                 "source_file": source_file,

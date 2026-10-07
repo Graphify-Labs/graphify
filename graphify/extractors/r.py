@@ -6,7 +6,7 @@ from typing import Any
 
 from tree_sitter import Node
 
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
 _CLASS_CONSTRUCTORS = frozenset({"R6Class", "setRefClass", "ggproto"})
@@ -95,7 +95,7 @@ def extract_r(path: Path) -> dict:
         return {"nodes": [], "edges": [], "error": "tree-sitter-language-pack not installed"}
 
     try:
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         root = Parser(get_language("r")).parse(source).root_node
     except Exception as exc:
         return {"nodes": [], "edges": [], "error": f"R grammar failed to load: {exc}"}
@@ -182,10 +182,20 @@ def extract_r(path: Path) -> dict:
             return ""
         return _unquote(_read_text(node, source))
 
+    def binding_id(owner: str, name: str) -> str:
+        suffix = _make_id(name)
+        if not suffix:
+            # Symbol-only R operators are real bindings. Repeated underscores
+            # cannot be produced by _make_id for ordinary names.
+            return f"{owner}__operator__{name.encode('utf-8').hex()}"
+        # Preserve the owner verbatim so nested bindings in an operator's scope
+        # keep its reserved namespace instead of normalizing it away.
+        return f"{owner}_{suffix}"
+
     def declare_function(
         name: str, function: Node, body: Node | None, owner: str, relation: str = "contains"
     ) -> str:
-        nid = _make_id(owner, name)
+        nid = binding_id(owner, name)
         line = function.start_point[0] + 1
         add_node(nid, f"{name}()", line, kind="function", callable_node=True)
         add_edge(owner, nid, relation, line)
@@ -252,6 +262,10 @@ def extract_r(path: Path) -> dict:
 
     def process_call_declaration(node: Node, owner: str) -> bool:
         call_name, arguments = call_parts(node)
+        # A namespace-qualified constructor (`methods::setClass`, `R6::R6Class`)
+        # is the same declaration as its bare form; drop the qualifier so it is
+        # still recognised rather than treated as an ordinary call.
+        call_name = call_name.split("::")[-1].strip()
         if arguments is None:
             return False
         args = [child for child in arguments.named_children if child.type == "argument"]
@@ -332,6 +346,12 @@ def extract_r(path: Path) -> dict:
                     continue
                 if value.type == "call":
                     constructor, arguments = call_parts(value)
+                    # `R6::R6Class(...)` is the idiomatic, library()-free way to
+                    # define an R6 class. call_parts returns the qualified text
+                    # `R6::R6Class`, which never matched _CLASS_CONSTRUCTORS, so
+                    # the whole class body (every method) was dropped and the
+                    # binding fell through to a plain variable node.
+                    constructor = constructor.split("::")[-1].strip()
                     if constructor in _CLASS_CONSTRUCTORS:
                         class_name = name
                         if arguments is not None:
@@ -345,7 +365,7 @@ def extract_r(path: Path) -> dict:
                             add_class_members(class_id, arguments)
                         continue
                 if top_level and name_node is not None:
-                    nid = _make_id(owner, name)
+                    nid = binding_id(owner, name)
                     line = name_node.start_point[0] + 1
                     add_node(nid, name, line, kind="variable")
                     add_edge(owner, nid, "contains", line)
@@ -372,7 +392,9 @@ def extract_r(path: Path) -> dict:
 
     def resolve_local(caller_id: str, name: str) -> str | None:
         scope: str | None = caller_id
-        while scope is not None:
+        visited: set[str] = set()
+        while scope is not None and scope not in visited:
+            visited.add(scope)
             target = definitions.get(scope, {}).get(name)
             if target is not None:
                 return target
@@ -399,6 +421,22 @@ def extract_r(path: Path) -> dict:
                         "source_file": source_file,
                         "source_location": f"L{line}",
                     })
+            elif callee_node is not None and callee_node.type == "extract_operator":
+                # `self$method()` / `private$method()`: an R6 method reaches its
+                # siblings only through self/private, never as a bare name, so
+                # these intra-class calls were dropped entirely. Resolve the
+                # method against the enclosing class scope (walked from the caller
+                # via scope_parent). super$ is left out: it dispatches to a parent
+                # class this pass cannot see, so binding it locally would be wrong.
+                parts = [c for c in callee_node.children if c.type == "identifier"]
+                if (
+                    len(parts) == 2
+                    and _read_text(parts[0], source) in ("self", "private")
+                ):
+                    method = _read_text(parts[1], source)
+                    target = resolve_local(caller_id, method)
+                    if target is not None:
+                        add_edge(caller_id, target, "calls", node.start_point[0] + 1)
             elif callee_node is not None and callee_node.type == "namespace_operator":
                 package_node = callee_node.child_by_field_name("lhs")
                 function_node = callee_node.child_by_field_name("rhs")

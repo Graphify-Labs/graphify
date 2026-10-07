@@ -178,9 +178,11 @@ def test_package_isolation_pep328(tmp_path):
         f"Package import in pkg/app.py was falsely repointed to sibling pkg_helper: {import_edges[0]}"
     )
 
-    # No member call was resolved (package isolation)
+    # The coarse external call must not resolve to the package's local helper.
     call_edges = [e for e in res["edges"] if e.get("relation") == "calls"]
-    assert not call_edges, f"Spurious call edge resolved inside package: {call_edges}"
+    assert [(e["source"], e["target"]) for e in call_edges] == [
+        ("pkg_app_run", "helper")
+    ], f"Package call was falsely resolved to a local sibling: {call_edges}"
 
 
 def test_no_cross_directory_leakage(tmp_path):
@@ -214,12 +216,14 @@ def test_no_cross_directory_leakage(tmp_path):
         f"Unrelated src/app.py import was leaked to scripts_utils: {import_edges[0]}"
     )
 
-    # No member call resolved
+    # The coarse external call must not resolve to the other directory's utils.
     call_edges = [
         e for e in res["edges"]
         if e.get("source") == "src_app_run" and e.get("relation") == "calls"
     ]
-    assert not call_edges, f"Spurious cross-directory call edge resolved: {call_edges}"
+    assert [(e["source"], e["target"]) for e in call_edges] == [
+        ("src_app_run", "utils")
+    ], f"Call was falsely resolved across directories: {call_edges}"
 
 
 def test_aliased_import_resolves_member_call(tmp_path):

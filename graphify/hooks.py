@@ -576,6 +576,66 @@ def _reject_windows_path(value: str, source: str) -> None:
         )
 
 
+def _is_within(child: Path, parent: Path) -> bool:
+    """True if `child` is `parent` or a path underneath it."""
+    try:
+        child.resolve().relative_to(parent.resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def _rev_parse_path(root: Path, flag: str) -> Path | None:
+    """Resolve one ``git rev-parse`` path flag against ``root``.
+
+    ``-c core.hooksPath=`` is not used: an empty value makes ``--git-path hooks``
+    print ``./`` instead of the real hooks directory.
+    """
+    import subprocess as _sp
+    try:
+        res = _sp.run(
+            ["git", "-C", str(root), "rev-parse", flag],
+            capture_output=True, text=True,
+        )
+    except (OSError, FileNotFoundError):
+        return None
+    if res.returncode != 0:
+        return None
+    raw = res.stdout.strip()
+    if not raw or any(c in raw for c in ("\n", "\r", "\x00")):
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve()
+
+
+def _builtin_hooks_dir(root: Path) -> Path | None:
+    """Git's own hooks directory, ignoring core.hooksPath.
+
+    ``--git-path hooks`` follows core.hooksPath, so the default is derived from
+    the common git dir. A linked worktree's hooks live in the main repo's
+    ``.git/hooks``, which is outside the worktree root.
+    """
+    for flag in ("--git-common-dir", "--git-dir"):
+        git_dir = _rev_parse_path(root, flag)
+        if git_dir is not None:
+            return (git_dir / "hooks").resolve()
+    return None
+
+
+def _hooks_path_allowed(root: Path, candidate: Path) -> bool:
+    """Allow in-repo hook dirs (Husky) and git's own hooks dir only.
+
+    A core.hooksPath that resolves anywhere else is repository-controlled
+    local config. Honoring it makes `hook install` write outside the repo (#3869).
+    """
+    if _is_within(candidate, root):
+        return True
+    builtin = _builtin_hooks_dir(root)
+    return builtin is not None and candidate.resolve() == builtin.resolve()
+
+
 def _hooks_dir(root: Path) -> Path:
     """Return the git hooks directory, respecting core.hooksPath if set (e.g. Husky).
 
@@ -616,8 +676,19 @@ def _hooks_dir(root: Path) -> Path:
             if raw and not any(c in raw for c in ("\n", "\r", "\x00")):
                 _reject_windows_path(raw, "git rev-parse --git-path hooks")
                 d = (root / raw).resolve()
-                d.mkdir(parents=True, exist_ok=True)
-                return d
+                if _hooks_path_allowed(root, d):
+                    d.mkdir(parents=True, exist_ok=True)
+                    return d
+                print(
+                    f"[graphify hooks] refusing hooks path {d}: it is outside "
+                    f"{root.resolve()}. Installing into the default git hooks "
+                    f"directory instead (#3869).",
+                    file=sys.stderr,
+                )
+                default = _builtin_hooks_dir(root)
+                if default is not None:
+                    default.mkdir(parents=True, exist_ok=True)
+                    return default
     except (OSError, FileNotFoundError):
         pass
     d = root / ".git" / "hooks"
@@ -905,6 +976,23 @@ def uninstall(path: Path = Path(".")) -> str:
     return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
 
 
+# The two per-install values in a graphify block: the interpreter that ran
+# `hook install` and the .graphifyrc viz limit (status checks that one itself).
+_PINNED_LINE_RE = re.compile(r"^_PINNED='[^'\n]*'$", re.MULTILINE)
+_VIZ_EXPORT_LINE_RE = re.compile(r"^export GRAPHIFY_VIZ_NODE_LIMIT=.*\n", re.MULTILINE)
+
+
+def _comparable_block(text: str, marker: str, marker_end: str) -> str | None:
+    """The graphify block in *text* with its per-install values blanked out, or
+    None when the block has no end marker (install cannot rewrite those either)."""
+    start = text.find(marker)
+    end = text.find(marker_end, start) if start != -1 else -1
+    if end == -1:
+        return None
+    block = text[start:end + len(marker_end)]
+    return _VIZ_EXPORT_LINE_RE.sub("", _PINNED_LINE_RE.sub("_PINNED=''", block))
+
+
 def status(path: Path = Path(".")) -> str:
     """Check if graphify hooks are installed."""
     root = _git_root(path)
@@ -920,7 +1008,7 @@ def status(path: Path = Path(".")) -> str:
         print(f"  warning: {exc}")
     cfg_limit = cfg.get("viz_node_limit")
 
-    def _check(name: str, marker: str) -> str:
+    def _check(name: str, marker: str, marker_end: str, script: str) -> str:
         p = hooks_dir / name
         if not p.exists():
             return "not installed"
@@ -942,10 +1030,16 @@ def status(path: Path = Path(".")) -> str:
                     f"{installed_limit if installed_limit is not None else 'unset'}, "
                     f".graphifyrc has {cfg_limit})"
                 )
+        # Upgrading the package does not touch hooks already on disk, so a block
+        # from an older release keeps running its old script (#3771).
+        installed = _comparable_block(text, marker, marker_end)
+        current = _comparable_block(script.replace("__VIZ_LIMIT_EXPORT__", ""), marker, marker_end)
+        if installed is not None and installed != current:
+            return "installed (out of date: run `graphify hook install` to refresh it)"
         return "installed"
 
-    commit = _check("post-commit", _HOOK_MARKER)
-    checkout = _check("post-checkout", _CHECKOUT_MARKER)
+    commit = _check("post-commit", _HOOK_MARKER, _HOOK_MARKER_END, _HOOK_SCRIPT)
+    checkout = _check("post-checkout", _CHECKOUT_MARKER, _CHECKOUT_MARKER_END, _CHECKOUT_SCRIPT)
     merge = _merge_driver_status(root)
 
     res = f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"

@@ -131,3 +131,53 @@ def test_cobol_malformed_tail_comments_and_strings_do_not_create_phantoms(tmp_pa
     labels = {node["label"].casefold() for node in result["nodes"]}
     assert 'kept' in labels
     assert labels.isdisjoint({'ghost'})
+
+
+def test_cobol_fixed_format_with_sequence_numbers(tmp_path):
+    """Legacy fixed-format source carries a sequence NUMBER in columns 1-6, not
+    blanks. The format detector required six blank columns, so a sequence-numbered
+    file was misread as free-format — the sequence number stayed in the code and
+    every paragraph (its `^NAME.$` anchor no longer matched) and PERFORM edge was
+    lost, leaving only the file and program nodes."""
+    source = tmp_path / "legacy.cob"
+    source.write_text(
+        "000100 IDENTIFICATION DIVISION.\n"
+        "000200 PROGRAM-ID. PAYROLL.\n"
+        "000300 PROCEDURE DIVISION.\n"
+        "000400 MAIN-PARA.\n"
+        "000500     PERFORM INIT-PARA.\n"
+        "000600 INIT-PARA.\n"
+        "000700     DISPLAY 'HELLO'.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    labels = {node["label"] for node in result["nodes"]}
+    assert {"PAYROLL", "MAIN-PARA", "INIT-PARA"} <= labels
+    assert ("MAIN-PARA", "INIT-PARA") in _edge_labels(result, "calls")
+
+
+def test_cobol_perform_thru_links_both_range_endpoints(tmp_path):
+    """`PERFORM A THRU Z` runs the range A..Z, so both endpoints are performed.
+    Only the entry paragraph was linked before, leaving the range-end with no
+    inbound `calls` edge."""
+    source = tmp_path / "range.cbl"
+    source.write_text(
+        "       IDENTIFICATION DIVISION.\n"
+        "       PROGRAM-ID. RANGE.\n"
+        "       PROCEDURE DIVISION.\n"
+        "       MAIN-PARA.\n"
+        "           PERFORM A-PARA THRU Z-PARA.\n"
+        "       A-PARA.\n"
+        "           DISPLAY 'A'.\n"
+        "       Z-PARA.\n"
+        "           DISPLAY 'Z'.\n",
+        encoding="utf-8",
+    )
+
+    result = extract([source], cache_root=tmp_path)
+
+    calls = _edge_labels(result, "calls")
+    assert ("MAIN-PARA", "A-PARA") in calls
+    assert ("MAIN-PARA", "Z-PARA") in calls
