@@ -53,6 +53,21 @@ def _is_ast_tier(item: dict) -> bool:
     return isinstance(loc, str) and bool(_AST_LOC_RE.match(loc))
 
 
+def _backfill_origin(item: dict) -> None:
+    """Stamp a loaded legacy item's tier via the _is_ast_tier shape fallback (#2334).
+
+    External import stubs are skipped, and a stamp an earlier run gave one is
+    removed: a stub is re-minted from its edges on every write, so a stamped
+    copy differed from a fresh build and, read as ``semantic``, was kept after
+    its last import edge was gone. Unstamped, every tier decision reads it
+    exactly as before (the shape fallback says non-AST).
+    """
+    if _is_external_stub(item):
+        item.pop("_origin", None)
+        return
+    item.setdefault("_origin", "ast" if _is_ast_tier(item) else "semantic")
+
+
 # Relations that say only "these two symbols appear together", with no claim about
 # HOW. An extractor that finds a specific fact for a pair — a call, an import, an
 # inheritance — routinely emits one of these for the same pair as well, so when the
@@ -101,6 +116,21 @@ def _mint_external_stub(G: "nx.Graph", node_set: set, nid: str) -> None:
         source_file="",
     )
     node_set.add(nid)
+
+
+def _is_external_stub(item: dict) -> bool:
+    """True for a node minted by :func:`_mint_external_stub` / :func:`mint_external_stubs_in_data`.
+
+    A stub is derived from the import edges that point at it and is minted again
+    on every write, so it belongs to no extraction tier: the tier backfill must
+    not stamp it (a ``semantic`` stamp made it outlive its last import edge), and
+    a rebuild drops it once no edge references it.
+    """
+    return (
+        item.get("external") is True
+        and item.get("type") == "external"
+        and not item.get("source_file")
+    )
 
 
 def mint_external_stubs_in_data(data: dict) -> None:
@@ -1726,12 +1756,9 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     # unstamped items. Stamp them via the _is_ast_tier shape fallback so the
     # graph self-heals on the next write and every downstream tier decision
     # (build_merge replace, watch reconcile) reads an explicit marker.
-    for item in nodes:
+    for item in nodes + edges:
         if isinstance(item, dict):
-            item.setdefault("_origin", "ast" if _is_ast_tier(item) else "semantic")
-    for item in edges:
-        if isinstance(item, dict):
-            item.setdefault("_origin", "ast" if _is_ast_tier(item) else "semantic")
+            _backfill_origin(item)
     return (
         nodes,
         edges,
