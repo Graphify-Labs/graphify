@@ -120,6 +120,30 @@ def extract_elixir(path: Path) -> dict:
                     return val
         return None
 
+    def _get_do_keyword_body(node):
+        """The body of a keyword-form definition (`def f(x), do: expr`).
+
+        tree-sitter-elixir puts the keyword body in the `arguments` node's
+        trailing `keywords` child, as the value of the `pair` whose keyword
+        is `do:` (#4207). Returns the value node, or None when the definition
+        uses a `do_block` (or has no keyword body at all).
+        """
+        if node is None:
+            return None
+        for child in node.children:
+            if child.type != "keywords":
+                continue
+            for pair in child.children:
+                if pair.type != "pair":
+                    continue
+                keyword_text = None
+                for sub in pair.children:
+                    if sub.type == "keyword":
+                        keyword_text = source[sub.start_byte:sub.end_byte].decode("utf-8", errors="replace")
+                    elif keyword_text is not None and keyword_text.rstrip(": ").strip() == "do":
+                        return sub
+        return None
+
     def walk(node, parent_module_nid: str | None = None) -> None:
         if node.type != "call":
             for child in node.children:
@@ -251,6 +275,14 @@ def extract_elixir(path: Path) -> dict:
                 add_edge(file_nid, func_nid, "contains", line)
             if do_block_node:
                 function_bodies.append((func_nid, do_block_node))
+            else:
+                # Keyword form (`def f(x), do: expr`) has no `do_block`; its
+                # body is the value of the `do:` pair in `arguments` (#4207).
+                # Without this the body is never walked and its calls are
+                # silently dropped from the graph.
+                keyword_body = _get_do_keyword_body(arguments_node)
+                if keyword_body is not None:
+                    function_bodies.append((func_nid, keyword_body))
             return
 
         if keyword in _IMPORT_KEYWORDS and arguments_node:
