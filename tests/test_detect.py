@@ -3270,6 +3270,27 @@ def test_detect_prunes_venv_names_without_markers(tmp_path):
         assert not any(f"{os.sep}{name}{os.sep}" in f for f in all_files), f"{name} must stay pruned"
 
 
+def test_detect_prunes_vibe_install_dir(tmp_path):
+    """#2537: .vibe/ holds graphify's own skill/agent/hook artifacts when
+    installed in project scope — scanning it wastes extraction on config files
+    instead of real code, so it must be pruned by default."""
+    vibe = tmp_path / ".vibe"
+    (vibe / "skills" / "graphify").mkdir(parents=True)
+    (vibe / "skills" / "graphify" / "SKILL.md").write_text("# skill\n")
+    (vibe / "agents").mkdir()
+    (vibe / "agents" / "graphify-extract.toml").write_text("display_name = 'x'\n")
+    (vibe / "hooks.toml").write_text('[[hooks]]\nname = "x"\n')
+    (tmp_path / "main.py").write_text("def main():\n    return 1\n")
+
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert any("main.py" in f for f in all_files), "real source must still be scanned"
+    assert not any(".vibe" in f for f in all_files), ".vibe/ must be pruned (#2537)"
+    assert any(f"{os.sep}.vibe{os.sep}" in d for d in result["pruned_noise_dirs"]), (
+        "pruned .vibe must be traceable in pruned_noise_dirs (#2537)"
+    )
+
+
 @pytest.mark.parametrize(
     ("configured_out", "absolute", "symlink_target"),
     [
