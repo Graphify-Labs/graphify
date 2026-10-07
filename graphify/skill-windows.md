@@ -116,10 +116,22 @@ if (-not $GRAPHIFY_PYTHON) {
     $GRAPHIFY_PYTHON = Find-GraphifyPython
 }
 
-# Save interpreter path — all subsequent steps read this
-$GRAPHIFY_PYTHON | Out-File -FilePath graphify-out\.graphify_python -Encoding utf8 -NoNewline
-# Save scan root so `graphify update` (no args) knows where to look next time
-(Resolve-Path INPUT_PATH).Path | Out-File -FilePath graphify-out\.graphify_root -Encoding utf8 -NoNewline
+# Save interpreter path — all subsequent steps read this.
+# `Out-File -Encoding utf8` always writes a BOM on Windows PowerShell 5.1 (utf8NoBOM
+# only exists from PowerShell 6), and that BOM rides into the saved path, so the hook
+# rebuild fails with WinError 123 (#3028). WriteAllText with an explicit BOM-less
+# encoding writes the bytes POSIX writes, and adds no trailing newline.
+$Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_python'), [string]$GRAPHIFY_PYTHON, $Utf8NoBom)
+# Save scan root so `graphify update` (no args) knows where to look next time.
+# INPUT_PATH is captured through a single-quoted (literal) here-string, never
+# substituted directly into the command line: an unquoted bareword argument
+# substituted here would let a malicious path (a stray `;`, `|`, or `$(...)`)
+# execute as script code the moment this line runs.
+$InputPathRaw = @'
+INPUT_PATH
+'@
+[System.IO.File]::WriteAllText((Join-Path $PWD 'graphify-out\.graphify_root'), (Resolve-Path $InputPathRaw.Trim()).Path, $Utf8NoBom)
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
@@ -262,11 +274,15 @@ if cached_nodes or cached_edges or cached_hyperedges:
 else:
     Path('graphify-out/.graphify_cached.json').unlink(missing_ok=True)
 Path('graphify-out/.graphify_uncached.txt').write_text('\n'.join(uncached), encoding="utf-8")
+# Nothing has been dispatched yet, so any chunk file on disk is a leftover from an
+# interrupted run, and Step B3 merges every .graphify_chunk_*.json it finds.
+for stale in Path('graphify-out').glob('.graphify_chunk_*.json'):
+    stale.unlink()
 print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files need extraction')
 '@ | & (Get-Content graphify-out\.graphify_python) -
 ```
 
-Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt`. If all files are cached, skip to Part C directly.
+Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt`. If all files are cached, skip Steps B1 and B2 but still run Step B3's commands: its merge is the only Part B step that writes `graphify-out/.graphify_semantic.json`, and Part C reads that file unconditionally. Do not write an empty `.graphify_semantic.json` instead, because that drops every cached node.
 
 **Step B1 - Split into chunks**
 
@@ -737,7 +753,7 @@ If vertical scrolling breaks in PowerShell after running graphify, this is cause
 1. **Upgrade graphify**: `pip install --upgrade graphifyy`
 2. **Use Windows Terminal** instead of the legacy PowerShell console — Windows Terminal handles ANSI codes correctly
 3. **Reset your terminal**: close and reopen PowerShell
-4. **Skip graspologic**: uninstall it (`pip uninstall graspologic`) and graphify will fall back to NetworkX's built-in Louvain algorithm, which produces no ANSI output
+4. **Skip Leiden**: uninstall its backend (`pip uninstall graspologic` on Python < 3.13, `pip uninstall graspologic-native` on Python 3.13+) and graphify will fall back to NetworkX's built-in Louvain algorithm, which produces no ANSI output
 
 ---
 

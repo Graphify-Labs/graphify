@@ -691,7 +691,7 @@ def _resolve_source_path(src: str, graph_path: Path) -> Path | None:
     out_dir = gp.parent
     candidates: list[Path] = []
     try:
-        recorded = (out_dir / ".graphify_root").read_text(encoding="utf-8").strip()
+        recorded = (out_dir / ".graphify_root").read_text(encoding="utf-8-sig").strip()
         if recorded:
             candidates.append(Path(recorded))
     except (OSError, ValueError):

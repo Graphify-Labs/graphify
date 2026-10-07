@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from graphify.extractors.base import _read_source_text
 from graphify.file_slice import (
     FileSlice,
     bisect_slice,
@@ -28,6 +29,9 @@ from graphify.file_slice import (
 # `_read_files` truncates each file at this many characters before joining into
 # the user message. Token estimates use the same cap so packing matches reality.
 _FILE_CHAR_CAP = 20_000
+# Warn at most once per run when a file exceeds _FILE_CHAR_CAP, so corpora with
+# multiple oversized files do not spam stderr (#3773).
+_file_truncation_warned = False
 # `_read_files` wraps each file in an `<untrusted_source path=... sha256=...>`
 # delimiter block (see issue #1210); this is roughly the per-file overhead in
 # characters that wrapper adds (open tag + 64-char sha + close tag + newlines).
@@ -172,7 +176,10 @@ BACKENDS: dict[str, dict] = {
         "default_model": "deepseek-v4-flash",
         "env_key": "DEEPSEEK_API_KEY",
         "model_env_key": "GRAPHIFY_DEEPSEEK_MODEL",
-        "pricing": {"input": 0.14, "output": 0.28},  # USD per 1M tokens (v4-flash)
+        "pricing": {"input": 0.44, "output": 1.32},  # USD per 1M tokens (v4-flash,
+        # peak, cache miss). Peak is 01:00-04:00 and 06:00-10:00 UTC Mon-Fri;
+        # all other hours are off-peak at half these rates. A cache hit is
+        # $0.014/1M in. Source: api-docs.deepseek.com/quick_start/pricing
         # deepseek-reasoner silently ignores temperature; deepseek-chat / v4-flash
         # accept 0-2, so sending 0 is safe. Note: deepseek-v4-flash (and v4-pro) have
         # thinking ENABLED by default (verified against the live API, #1621) — set
@@ -531,7 +538,7 @@ def _file_to_text(path: Path) -> str:
     if path.suffix.lower() == ".pdf":
         from graphify.detect import extract_pdf_text
         return extract_pdf_text(path)
-    return path.read_text(encoding="utf-8", errors="replace")
+    return _read_source_text(path)
 
 
 def _resolve_under_root(path: Path, root: Path) -> Path | None:
@@ -553,9 +560,14 @@ def _resolve_under_root(path: Path, root: Path) -> Path | None:
 # a file cannot forge an early `</untrusted_source>` and smuggle instructions out.
 _INJECTION_SENTINELS = re.compile(
     r"</?untrusted_source\b[^>]*>"
-    r"|<\|(?:im_start|im_end|system|user|assistant|endoftext)\|>"
+    # ANY <|token|> chat-template marker, not an enumerated few (#3183): the
+    # old list named six and missed <|start_header_id|>/<|eot_id|> (Llama 3),
+    # <|endofprompt|>, and whatever the next template calls its turns. The
+    # form itself is the hazard - no legitimate source construct needs an
+    # intact one, and defanging only inserts a zero-width space.
+    r"|<\|[A-Za-z0-9_.\-]{1,64}\|>"
     r"|<<SYS>>|<</SYS>>"
-    r"|\[/?INST\]"
+    r"|\[/?(?:INST|SYSTEM)\]"
     r"|^\s*###?\s*(?:system|instruction)s?\s*:?\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -622,6 +634,14 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
             continue
         # Whole files are still capped (covers non-splittable large files like
         # code); slices are already bounded to the cap, so the cap is a no-op.
+        if len(content) > _FILE_CHAR_CAP:
+            global _file_truncation_warned
+            if not _file_truncation_warned:
+                _file_truncation_warned = True
+                print(
+                    f"[graphify] WARNING: file {rel} exceeds {_FILE_CHAR_CAP} characters and was truncated",
+                    file=sys.stderr,
+                )
         parts.append(_wrap_untrusted(rel, content[:_FILE_CHAR_CAP]))
     return "\n\n".join(parts)
 
@@ -1451,7 +1471,13 @@ def _call_openai_compat(
             # heuristic) + 400 for the system prompt, then add output headroom.
             num_ctx = auto_num_ctx
         keep_alive = os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", "30m")
-        kwargs["extra_body"] = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
+        # Merge, don't assign: GRAPHIFY_DISABLE_THINKING may have set extra_body
+        # above, and replacing it here made the flag silently inert on ollama (#3988).
+        kwargs["extra_body"] = {
+            **kwargs.get("extra_body", {}),
+            "options": {"num_ctx": num_ctx},
+            "keep_alive": keep_alive,
+        }
     resp = client.chat.completions.create(**kwargs)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
@@ -1516,6 +1542,40 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     return result
 
 
+def _envelope_after_preamble(stdout: str):
+    """Recover the envelope when `claude -p` prefixes it with a diagnostic line.
+
+    The CLI shares stdout with its own subsystems, so the JSON is not always the
+    first thing on it. An attached MCP server that advertises no tools makes
+    every invocation emit
+
+        Client.listTools() called but server does not advertise tools capability
+        - returning empty list
+
+    ahead of the envelope, and `json.loads` then fails on the whole buffer.
+    Because that failure is raised after the model has already answered, the
+    chunk is discarded with its tokens spent -- on a mid-size corpus a run could
+    burn the whole budget and return nothing, and the error names the JSON
+    rather than the preamble that caused it, so the log points at the wrong
+    thing. Any user with an MCP server configured hits this on every chunk.
+
+    Scans for the first `[`/`{` that begins a valid JSON document. `raw_decode`
+    ignores trailing bytes, so a diagnostic on either side is tolerated, and
+    stdout carrying no JSON at all still returns None for the caller to raise on.
+    """
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(stdout):
+        if ch not in "[{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(stdout, idx)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, (dict, list)):
+            return value
+    return None
+
+
 def _claude_cli_envelope(stdout: str) -> dict:
     """Parse the JSON returned by `claude -p --output-format json`.
 
@@ -1528,10 +1588,12 @@ def _claude_cli_envelope(stdout: str) -> dict:
     try:
         envelope = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"claude -p produced unparseable JSON envelope: {exc}; "
-            f"first 500 chars of stdout: {stdout[:500]!r}"
-        ) from exc
+        envelope = _envelope_after_preamble(stdout)
+        if envelope is None:
+            raise RuntimeError(
+                f"claude -p produced unparseable JSON envelope: {exc}; "
+                f"first 500 chars of stdout: {stdout[:500]!r}"
+            ) from exc
     if isinstance(envelope, list):
         result_events = [
             e for e in envelope
@@ -2012,6 +2074,33 @@ def extract_files_direct(
     return result
 
 
+# Estimating a PDF means extracting its text, and packing asks for the same
+# file repeatedly while it decides where a chunk ends. Memoise on
+# (path, size, mtime) so a corpus of papers is parsed once per run rather than
+# once per packing probe, and so a file rewritten mid-run is not served a stale
+# estimate. Bounded because a huge corpus should not pin every paper's text in
+# memory; the entries are cheap (an int) but the dict should not grow forever.
+_PDF_ESTIMATE_CACHE: "dict[tuple, str]" = {}
+_PDF_ESTIMATE_CACHE_MAX = 512
+
+
+def _pdf_text_for_estimate(path: Path) -> str:
+    """Extracted text of a PDF, memoised for the packing pass."""
+    try:
+        st = path.stat()
+        key = (str(path), st.st_size, st.st_mtime_ns)
+    except OSError:
+        return ""
+    hit = _PDF_ESTIMATE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    text = _file_to_text(path)
+    if len(_PDF_ESTIMATE_CACHE) >= _PDF_ESTIMATE_CACHE_MAX:
+        _PDF_ESTIMATE_CACHE.clear()
+    _PDF_ESTIMATE_CACHE[key] = text
+    return text
+
+
 def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
     """Estimate the prompt-token cost of a file or slice under `_read_files` rules.
 
@@ -2036,18 +2125,36 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
     # fixed token cost, so estimate by image count rather than (binary) byte size.
     if _is_vision_image(path):
         return _IMAGE_TOKEN_ESTIMATE
-    if _TOKENIZER is None:
+
+    # A PDF's bytes are not what the prompt carries. `_read_files` sends it
+    # through `_file_to_text` -> `extract_pdf_text`, so estimating from the file
+    # instead measures a compressed binary: every real PDF Flate-compresses its
+    # text streams, so the estimate came out several times too SMALL and packing
+    # overfilled the chunk. On a 400-line fixture the same document estimated at
+    # 1,334 tokens uncompressed-vs-4,598 actual, and 1,334 vs 4,599 once
+    # FlateDecode was applied — a 3.45x undercount, which is what a real PDF
+    # looks like. The chunk then blows the context window and falls into
+    # adaptive bisection, paying for the same content several times (#2903).
+    if path.suffix.lower() == ".pdf":
+        try:
+            content = _pdf_text_for_estimate(path)[:_FILE_CHAR_CAP]
+        except Exception:
+            return 0
+    elif _TOKENIZER is None:
         try:
             size = path.stat().st_size
         except OSError:
             return 0
         chars = min(size, _FILE_CHAR_CAP) + _PER_FILE_OVERHEAD_CHARS
         return chars // _CHARS_PER_TOKEN
+    else:
+        try:
+            content = _read_source_text(path, warn=False)[:_FILE_CHAR_CAP]
+        except OSError:
+            return 0
 
-    try:
-        content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
-    except OSError:
-        return 0
+    if _TOKENIZER is None:
+        return (len(content) + _PER_FILE_OVERHEAD_CHARS) // _CHARS_PER_TOKEN
     return len(_TOKENIZER.encode(content, disallowed_special=())) + (_PER_FILE_OVERHEAD_CHARS // _CHARS_PER_TOKEN)
 
 
@@ -3055,6 +3162,31 @@ def _validate_ollama_base_url(url: str, *, warn: bool = True) -> None:
         )
 
 
+# Everything detect_backend() reads besides the per-backend API keys. Kept next to
+# the function so a new probe below is added here too; tests clear this whole set
+# (tests/conftest.py) so a developer's own keys can never steer them (#3481).
+_BACKEND_DETECTION_EXTRA_ENV = (
+    "AZURE_OPENAI_ENDPOINT",
+    "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
+    "OLLAMA_BASE_URL", "OLLAMA_HOST",
+)
+
+
+def backend_detection_env_vars() -> tuple[str, ...]:
+    """Every environment variable ``detect_backend()`` consults, in probe order.
+
+    Covers the API-key variables of every registered backend (built-in and
+    custom) plus the endpoint/region/host variables checked directly.
+    """
+    seen: dict[str, None] = {}
+    for name in BACKENDS:
+        for env_key in _backend_env_keys(name):
+            seen.setdefault(env_key, None)
+    for env_key in _BACKEND_DETECTION_EXTRA_ENV:
+        seen.setdefault(env_key, None)
+    return tuple(seen)
+
+
 def detect_backend() -> str | None:
     """Return the name of whichever backend has an API key set, or None.
 
@@ -3086,6 +3218,21 @@ def detect_backend() -> str | None:
             if _get_backend_api_key(name):
                 return name
     return None
+
+
+def _claude_cli_available() -> bool:
+    """True if the Claude Code CLI can actually be launched.
+
+    Mirrors the resolution in the claude-cli request path: a bare ``claude`` on
+    POSIX, and ``claude.cmd`` on Windows, where CreateProcess cannot resolve the
+    npm shim from the bare name.
+    """
+    import platform
+    import shutil
+
+    if platform.system() == "Windows":
+        return bool(shutil.which("claude.cmd") or shutil.which("claude"))
+    return shutil.which("claude") is not None
 
 
 # ── Community labeling ────────────────────────────────────────────────────────
@@ -3197,9 +3344,10 @@ def _label_batch_with_retry(
     can't be split further (a single community, or ``depth >= max_depth``) and
     still won't parse, the parse error is **re-raised**: ``label_communities``
     catches it per batch and skips that batch (its communities stay unlabeled),
-    re-raising only if every batch fails. Any non-parse exception (network,
-    missing config, programming bug) propagates unchanged — those are never
-    split-retried.
+    re-raising only if every batch fails. A batch that was split keeps every
+    name it and its halves obtained, and re-raises only when none of it could
+    be labeled. Any non-parse exception (network, missing config, programming
+    bug) propagates unchanged — those are never split-retried.
     """
     prompt = (
         "You are naming clusters in a knowledge graph. For each community below, "
@@ -3224,7 +3372,7 @@ def _label_batch_with_retry(
 
     try:
         text = _call_llm(prompt, **call_kwargs)
-        return _parse_label_response(text, batch_cids)
+        parsed = _parse_label_response(text, batch_cids)
     except (json.JSONDecodeError, ValueError) as exc:
         # Parse failure. If we can still split, retry each half on a smaller
         # prompt (smaller output → less likely to truncate/mangle). At the base
@@ -3237,18 +3385,37 @@ def _label_batch_with_retry(
                 file=sys.stderr,
             )
             raise
-        mid = len(batch_cids) // 2
-        left = _label_batch_with_retry(
-            batch_cids[:mid], batch_lines[:mid],
-            backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
-            usage_out=usage_out,
-        )
-        right = _label_batch_with_retry(
-            batch_cids[mid:], batch_lines[mid:],
-            backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
-            usage_out=usage_out,
-        )
-        return left | right
+        parsed = {}
+    if len(parsed) == len(batch_cids) or len(batch_cids) <= 1 or depth >= max_depth:
+        return parsed
+    # Salvage can produce a valid partial map from a truncated JSON object.
+    # Keep those names, but retry only the missing ids in smaller batches so a
+    # reasoning model's completion cap cannot silently turn 3/16 labels into
+    # an apparent success (#3671). After a parse failure nothing was kept, so
+    # every id is missing and this is the plain split-and-retry (#1278).
+    missing = [
+        (cid, line) for cid, line in zip(batch_cids, batch_lines) if cid not in parsed
+    ]
+    mid = max(1, len(missing) // 2)
+    failure: Exception | None = None
+    for half in (missing[:mid], missing[mid:]):
+        if not half:
+            continue
+        # The retries run outside the try above: a half that still won't parse
+        # must neither re-split this whole batch (asking again for the ids it
+        # already named) nor discard what this batch and the other half named.
+        try:
+            parsed |= _label_batch_with_retry(
+                [cid for cid, _ in half], [line for _, line in half],
+                backend=backend, model=model, depth=depth + 1, max_depth=max_depth,
+                usage_out=usage_out,
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            failure = failure or exc
+    # Nothing named at all: re-raise, so the caller still skips the batch.
+    if not parsed and failure is not None:
+        raise failure
+    return parsed
 
 
 def label_communities(
@@ -3381,6 +3548,15 @@ def generate_community_labels(
             backend = detect_backend()
         except Exception:
             backend = None
+    if not backend and _claude_cli_available():
+        # `detect_backend` is key-based, and claude-cli is the one backend with no
+        # key to find, so it can never be detected there — and widening detection
+        # itself would change extraction's contract, which deliberately refuses to
+        # run without a configured backend. Here the alternative is not an error but
+        # a SILENT DOWNGRADE: replacing every real community name with
+        # "Community N" and exiting 0, which overwrites a good graph with a worse
+        # one while reporting success. An installed CLI is better than that.
+        backend = "claude-cli"
     if not backend:
         if not quiet:
             print(
@@ -3395,6 +3571,14 @@ def generate_community_labels(
             max_concurrency=max_concurrency, batch_size=batch_size,
             usage_out=usage_out,
         )
+        placeholders = _placeholder_community_labels(communities)
+        named = sum(labels.get(cid) != placeholder for cid, placeholder in placeholders.items())
+        if named < len(communities) and not quiet:
+            print(
+                f"[graphify label] warning: labeled {named} of {len(communities)} "
+                f"communities; {len(communities) - named} kept structural fallback names.",
+                file=sys.stderr,
+            )
         return labels, "llm"
     except Exception as exc:
         if not quiet:

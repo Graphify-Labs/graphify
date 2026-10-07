@@ -411,6 +411,7 @@ def sanitize_label(text: str | None) -> str:
 
 _METADATA_MAX_VALUE_LEN = 512
 _METADATA_MAX_LIST_ITEMS = 50
+_METADATA_MAX_ATTRIBUTES = 100
 
 
 def _sanitize_metadata_string(value: object) -> str:
