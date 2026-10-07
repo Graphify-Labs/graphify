@@ -650,6 +650,21 @@ def dedupe_nodes(nodes: list[dict]) -> list[dict]:
     return list(by_id.values())
 
 
+def _execution_wins(a: dict, b: dict) -> None:
+    """Fold the ``type_only`` marker of two import edges that collapse to one.
+
+    ``type_only`` flags an import that never runs (``import type``, ``if
+    TYPE_CHECKING:``); ``find_import_cycles`` skips such an edge. When two edges
+    of one file pair collapse (``G.add_edge`` merges their attributes,
+    ``dedupe_edges`` keeps the first), the marker of one side would stand for a
+    runtime import on the other and hide its cycle. The surviving edge stays
+    ``type_only`` only if every import folded into it is (#3159).
+    """
+    if bool(a.get("type_only")) != bool(b.get("type_only")):
+        a.pop("type_only", None)
+        b.pop("type_only", None)
+
+
 def dedupe_edges(edges: list[dict]) -> list[dict]:
     """Collapse exact parallel edges by ``(source, target, relation)``, keeping the
     first occurrence.
@@ -660,15 +675,18 @@ def dedupe_edges(edges: list[dict]) -> list[dict]:
     duplicates accumulate and edge counts become non-deterministic across build
     modes / repeated updates (#1317). Deduping on the connectivity identity is
     zero-signal-loss and restores idempotency. Callers that intentionally keep
-    parallel edges (multigraph output) must not use this.
+    parallel edges (multigraph output) must not use this. The one attribute that
+    is not taken from the first occurrence alone is ``type_only`` (see
+    :func:`_execution_wins`).
     """
-    seen: set[tuple] = set()
+    seen: dict[tuple, dict] = {}
     out: list[dict] = []
     for e in edges:
         key = (e.get("source"), e.get("target"), e.get("relation"))
         if key in seen:
+            _execution_wins(seen[key], e)
             continue
-        seen.add(key)
+        seen[key] = e
         out.append(e)
     return out
 
@@ -1423,6 +1441,20 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # causing display functions to show edges backwards.
         attrs["_src"] = src
         attrs["_tgt"] = tgt
+        # Before the drops below, so a runtime import that folds into a
+        # type-only edge still clears its marker (#3159). The reverse-direction
+        # duplicate that the undirected graph drops (#1061) is another file's
+        # import, not this one: the surviving edge keeps its own marker.
+        # `_EXTERNAL_STUB_RELATIONS` is the import family (imports, imports_from, re_exports).
+        if _edge_rel in _EXTERNAL_STUB_RELATIONS and G.has_edge(src, tgt):
+            _prior = G[src][tgt]  # G is a plain Graph/DiGraph here, one dict per pair
+            _reverse_dup = (
+                not G.is_directed()
+                and _prior.get("relation") == attrs.get("relation")
+                and _prior.get("_src") == tgt and _prior.get("_tgt") == src
+            )
+            if _prior.get("relation") in _EXTERNAL_STUB_RELATIONS and not _reverse_dup:
+                _execution_wins(_prior, attrs)
         # When the graph is undirected and the same node pair appears twice with
         # the same relation but opposite directions (e.g. a `calls` b and b `calls` a),
         # nx.Graph collapses them into one edge. The deterministic sort above means
