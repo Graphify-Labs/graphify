@@ -16,6 +16,7 @@ flow) and every reader honours it.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -253,6 +254,18 @@ def _is_test_path(path: str) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=65536)
+def _parent_parts(source_file: str) -> tuple[str, ...]:
+    """Segments of ``source_file``'s parent directory, POSIX-normalized.
+
+    `_path_proximity_winner` compares every candidate's directory against the
+    call site's, and an ambiguous name (``run``, ``get``) brings the same
+    candidate files back on every call site, so the parse is memoized. Equal
+    tuples here mean equal ``PurePosixPath(...).parent`` values.
+    """
+    return PurePosixPath(source_file.replace("\\", "/")).parent.parts
+
+
 def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str]) -> str | None:
     """Pick the candidate whose source file is closest to the call site.
 
@@ -270,7 +283,7 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
     if not call_site_file:
         return None
     call_norm = str(call_site_file).replace("\\", "/")
-    call_dir = PurePosixPath(call_norm).parent
+    call_parts = _parent_parts(call_norm)
 
     # Tier 1: exact same file.
     same_file = [cid for cid, f in candidate_files.items()
@@ -282,7 +295,7 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
 
     # Tier 2: same directory.
     same_dir = [cid for cid, f in candidate_files.items()
-                if PurePosixPath(str(f).replace("\\", "/")).parent == call_dir]
+                if _parent_parts(str(f)) == call_parts]
     if len(same_dir) == 1:
         return same_dir[0]
     if len(same_dir) > 1:
@@ -290,10 +303,8 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
 
     # Tier 3: longest common path-prefix, computed over path segments. The
     # winner must be a strict unique maximum, else we bail (guard holds).
-    call_parts = call_dir.parts
-
     def _common_prefix_len(f: str) -> int:
-        parts = PurePosixPath(str(f).replace("\\", "/")).parent.parts
+        parts = _parent_parts(str(f))
         n = 0
         for a, b in zip(call_parts, parts):
             if a != b:

@@ -7993,10 +7993,24 @@ def extract(
     # stem_forms for those in-root files as well lets the edge remap and the
     # target_file-guided repoint pass fix them exactly as on a full scan.
     remap_paths: list[Path] = list(paths)
+    # The remap below resolves the same few hundred file paths once per input,
+    # once per stamped edge and once per node (tens of thousands of calls on a
+    # mid-size repo). Resolve each distinct path once; a hit returns the same
+    # Path the call would, and a path that raises is never stored.
+    _resolve_memo: dict[str, Path] = {}
+
+    def _resolved(p: "str | Path") -> Path:
+        key = str(p)
+        hit = _resolve_memo.get(key)
+        if hit is None:
+            hit = Path(p).resolve()
+            _resolve_memo[key] = hit
+        return hit
+
     _remap_seen: set[Path] = set()
     for _p in paths:
         try:
-            _remap_seen.add(_p.resolve())
+            _remap_seen.add(_resolved(_p))
         except (OSError, RuntimeError):
             pass
     for _e in all_edges:
@@ -8005,7 +8019,7 @@ def extract(
             continue
         _raw_tp = Path(_tf)
         try:
-            _tp = _raw_tp.resolve()
+            _tp = _resolved(_raw_tp)
         except (OSError, RuntimeError):
             continue
         if _tp in _remap_seen:
@@ -8076,7 +8090,7 @@ def extract(
             rel = path.relative_to(root)
         except ValueError:
             try:
-                rel = path.resolve().relative_to(root)
+                rel = _resolved(path).relative_to(root)
             except ValueError:
                 continue
         new_id = _file_node_id(rel)
@@ -8085,14 +8099,15 @@ def extract(
         # Also register the absolute-resolved form of the file-level id so
         # alias/workspace import targets (resolved via .resolve()) remap to
         # canonical instead of orphaning (#1529).
-        old_id_abs = _make_id(str(path.resolve()))
+        path_abs = _resolved(path)
+        old_id_abs = _make_id(str(path_abs))
         if old_id_abs != new_id:
             id_remap[old_id_abs] = new_id
         old_prefs: list[tuple[str, str]] = []
         old_pref = _file_node_id(path)
         if old_pref != new_id:
             old_prefs.append((old_pref, new_id))
-        old_pref_abs = _file_node_id(path.resolve())
+        old_pref_abs = _file_node_id(path_abs)
         if old_pref_abs != new_id and old_pref_abs != old_pref:
             old_prefs.append((old_pref_abs, new_id))
         # Bash entrypoint node ids append "__entry" to the file-level id
@@ -8111,10 +8126,10 @@ def extract(
             if _entry_old != _entry_new:
                 id_remap.setdefault(_entry_old, _entry_new)
         if old_prefs:
-            prefix_remap[path.resolve()] = old_prefs
+            prefix_remap[path_abs] = old_prefs
         # Absolute form first: it is the longest, so prefix decomposition can
         # try forms in order without a shorter form shadowing it.
-        stem_forms[path.resolve()] = (
+        stem_forms[path_abs] = (
             new_id, [old_pref_abs, old_pref, new_id]
         )
     if id_remap:
@@ -8166,7 +8181,7 @@ def extract(
             if n.get("type") == "package":
                 continue
             try:
-                entry = prefix_remap.get(Path(sf).resolve())
+                entry = prefix_remap.get(_resolved(sf))
             except Exception:
                 continue
             if entry is None:
@@ -8272,7 +8287,7 @@ def extract(
 
         def _decompose(target: str, tf: str) -> "tuple[str, str] | None":
             try:
-                forms = stem_forms.get(Path(tf).resolve())
+                forms = stem_forms.get(_resolved(tf))
             except (OSError, RuntimeError):
                 return None
             if not forms:
