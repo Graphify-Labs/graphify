@@ -603,7 +603,9 @@ def _zero_node_stamped_semantic_sources(
     return healed
 
 
-def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int:
+def _prune_graph_json_sources(
+    graph_path: Path, stale_sources: list[str], root: Path | None = None
+) -> int:
     """Drop nodes/edges/hyperedges owned by ``stale_sources`` from graph.json
     in place. Returns the number of nodes removed.
 
@@ -643,6 +645,10 @@ def _prune_graph_json_sources(graph_path: Path, stale_sources: list[str]) -> int
         len(kept_hyper) == len(data.get("hyperedges", []))
     ):
         return 0
+    if root is not None:
+        # As in every merge: Python constructor edges over what is left.
+        from graphify.extract import relink_python_constructors
+        kept_edges = relink_python_constructors(kept_nodes, kept_edges, root)
     data["nodes"] = kept_nodes
     data[links_key] = kept_edges
     if "hyperedges" in data:
@@ -4446,7 +4452,7 @@ def dispatch_command(cmd: str) -> None:
                 # This path never runs build_merge, so prune in place.
                 if graph_stale_sources:
                     _n_pruned = _prune_graph_json_sources(
-                        existing_graph_path, graph_stale_sources
+                        existing_graph_path, graph_stale_sources, Path(target)
                     )
                     if _n_pruned:
                         print(

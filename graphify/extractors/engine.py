@@ -1,9 +1,11 @@
 """engine — moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import json
+import re
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
@@ -1000,6 +1002,848 @@ def _python_underscore_salted_nid(plain_nid: str, name: str, groups: dict[str, s
         return plain_nid
     salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
     return _make_id(plain_nid, salt)
+
+
+# Class-scope names that can change what `Foo(...)` runs: `__new__` can skip or
+# replace `__init__`, `__init_subclass__` can rebind either on subclasses,
+# `__metaclass__` sets the metaclass on Python 2, and an `__init__` bound by
+# anything but a plain `def` is not the method node we have.
+_PYTHON_CTOR_NAMES = frozenset({"__init__", "__new__", "__init_subclass__", "__metaclass__"})
+
+# Constructor-entry guards: allowlists, not a catalogue of patches. A module
+# gets no `_py_ctor_chain` marker and no proven call sites when it contains any
+# construct outside the plain shapes the graph models (_python_ctor_poison),
+# and no proof reads a name bound more than once in it (_python_name_uses).
+# Each check finds candidates with a byte search that can only widen the set,
+# then decides on the syntax tree.
+_PY_DUNDER_REF = re.compile(rb"__\w+")
+_PY_CTOR_NAME_REF = re.compile(rb"__(?:init|new)__")
+_PY_STRING_ESCAPE_REF = re.compile(rb"\\[xuUN0-7]")
+# A quote followed, across any whitespace, backslashes and comments, by another
+# quote: a superset of the places where two literals join by implicit
+# concatenation. One pattern per quote character keeps a literal first byte.
+_PY_ADJACENT_STRINGS = tuple(
+    re.compile(quote + rb"""(?:\s|\\|\#[^\r\n]*)*[rRbBuUfF]{0,2}['"]""")
+    for quote in (b'"', b"'")
+)
+_PY_SETATTR_REF = re.compile(rb"(?:set|del)attr\b|__(?:set|del)attr__")
+_PY_MODULES_REF = re.compile(rb"modules\b")
+_PY_CLASS_KEYWORD_REF = re.compile(rb"class\b")
+_PY_DYNAMIC_NAMES = (b"exec", b"eval", b"globals", b"locals", b"vars", b"__import__", b"builtins")
+_PY_DYNAMIC_REF = re.compile(
+    rb"(?:exec|eval|globals|locals|vars|__import__|__builtins__|builtins)\b"
+)
+_PY_BUILTINS_NAMES = frozenset({"builtins", "__builtins__"})
+# Dunder attributes a write to cannot change what constructing a class runs
+# (function and instance metadata; `__dict__` is read-only on classes and modules).
+_PY_METADATA_DUNDERS = frozenset({
+    "__doc__", "__name__", "__qualname__", "__module__", "__wrapped__",
+    "__signature__", "__annotations__", "__dict__", "__defaults__", "__kwdefaults__",
+})
+_PY_NON_ASCII = re.compile(rb"[\x80-\xff]+")
+_PY_IMPORT_REF = re.compile(rb"import\b")
+_PY_PLAIN_STRING = re.compile(r"""^[rRuU]?(['"])([^'"\\\r\n]*)\1$""")
+_PY_CTOR_ATTRS = frozenset({"__init__", "__new__"})
+_PY_STRING_PARTS = frozenset({
+    "string_start", "string_content", "string_end", "escape_sequence",
+    "escape_interpolation", "format_specifier", "interpolation", "string",
+})
+# Expressions a name can sit inside: _python_is_read climbs through them and
+# then decides by the first parent outside them (so `a, b = ...` still binds).
+_PY_READ_CONTAINERS = frozenset({
+    "parenthesized_expression", "tuple", "list", "set", "expression_list",
+    "list_splat", "dictionary_splat", "pair", "dictionary", "parenthesized_list_splat",
+})
+_PY_READ_PARENTS = frozenset({
+    "argument_list", "binary_operator", "comparison_operator", "boolean_operator",
+    "not_operator", "unary_operator", "conditional_expression", "return_statement",
+    "expression_statement", "subscript", "generic_type", "await", "yield",
+    "assert_statement", "raise_statement", "interpolation", "decorator", "slice",
+    "list_comprehension", "set_comprehension", "dictionary_comprehension",
+    "generator_expression", "if_clause",
+})
+_PY_READ_FIELDS = {
+    "call": ("function",), "attribute": ("object",), "keyword_argument": ("value",),
+    "assignment": ("right", "type"), "augmented_assignment": ("right",),
+    "named_expression": ("value",), "for_statement": ("right",),
+    "for_in_clause": ("right",), "lambda": ("body",), "default_parameter": ("value",),
+    "typed_default_parameter": ("value",), "if_statement": ("condition",),
+    "elif_clause": ("condition",), "while_statement": ("condition",),
+    "with_item": ("value",), "except_clause": ("value",), "except_group_clause": ("value",),
+}
+
+
+def _python_word_start(source: bytes, start: int) -> bool:
+    """True if ``start`` begins a word (the byte before it is not a name byte)."""
+    if start == 0:
+        return True
+    prev = source[start - 1:start]
+    return not (prev.isalnum() or prev == b"_" or prev >= b"\x80")
+
+
+def _python_descendants(node):
+    """Every node below ``node`` (not including it), iteratively."""
+    stack = list(node.children)
+    while stack:
+        n = stack.pop()
+        yield n
+        stack.extend(n.children)
+
+
+def _python_is_read(node) -> bool:
+    """True if the expression ``node`` is only read where it stands: no
+    assignment, loop, ``with``/``except`` target, ``del``, parameter, import,
+    definition name, pattern or type parameter. Unknown positions are False."""
+    cur, parent = node, node.parent
+    while parent is not None and parent.type in _PY_READ_CONTAINERS:
+        cur, parent = parent, parent.parent
+    if parent is None:
+        return False
+    if parent.type == "type":  # an annotation, unless it names a type alias or parameter
+        owner = parent.parent
+        if owner is None:
+            return False
+        if owner.type == "type_alias_statement":
+            return owner.child_by_field_name("left") != parent
+        if owner.type == "type_parameter":
+            return owner.parent is not None and owner.parent.type == "generic_type"
+        return True
+    if parent.type in _PY_READ_PARENTS:
+        return True
+    if parent.type == "as_pattern":  # `with x as y`, `except E as e`, `case p as y`
+        return bool(parent.named_children) and parent.named_children[0] == cur
+    return any(parent.child_by_field_name(f) == cur for f in _PY_READ_FIELDS.get(parent.type, ()))
+
+
+def _python_attribute_of(name_node):
+    """The ``attribute`` node whose attribute name is ``name_node``, else None."""
+    parent = name_node.parent
+    if parent is not None and parent.type == "attribute" and parent.child_by_field_name("attribute") == name_node:
+        return parent
+    return None
+
+
+def _python_is_callee(node) -> bool:
+    parent = node.parent
+    return parent is not None and parent.type == "call" and parent.child_by_field_name("function") == node
+
+
+def _python_string_top(node):
+    """The literal (a ``string``, or the ``concatenated_string`` holding it) that
+    ``node`` is part of, else None."""
+    while node is not None and node.type in _PY_STRING_PARTS and node.type != "string":
+        node = node.parent
+    if node is None or node.type != "string":
+        return None
+    parent = node.parent
+    return parent if parent is not None and parent.type == "concatenated_string" else node
+
+
+def _python_string_value(node, source: bytes) -> str:
+    """Value of a string literal after implicit concatenation and escapes. For an
+    f-string, its static parts joined (an interpolation can only add text)."""
+    try:
+        value = ast.literal_eval("(\n" + _read_text(node, source) + "\n)")
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        value = None
+    if isinstance(value, bytes):
+        return value.decode("latin-1")
+    if isinstance(value, str):
+        return value
+    parts = []
+    for n in _python_descendants(node):
+        if n.type == "string_content":
+            raw = _read_text(n, source)
+            try:
+                parts.append(raw.encode("latin-1", "backslashreplace").decode("unicode_escape"))
+            except (UnicodeError, ValueError):
+                parts.append(raw)
+    return "".join(parts)
+
+
+def _python_plain_string(node, source: bytes) -> str | None:
+    """The value of a single, plain string literal (no prefix but r/u, no escape,
+    no interpolation, one line), else None."""
+    if node is None or node.type != "string":
+        return None
+    match = _PY_PLAIN_STRING.match(_read_text(node, source))
+    return match.group(2) if match else None
+
+
+def _python_poisons_ctor_names(root_node, source: bytes) -> bool:
+    """An `__init__` / `__new__` attribute used anywhere but as the callee of a
+    call (`X.__init__ = f`, `for X.__init__ in`, `with ... as X.__init__`,
+    `del`, `f(X.__init__)`), or the bare name anywhere but a `def` name."""
+    for match in _PY_CTOR_NAME_REF.finditer(source):
+        node = root_node.descendant_for_byte_range(match.start(), match.end())
+        if node is None or node.type == "comment" or node.type in _PY_STRING_PARTS:
+            continue
+        if node.type != "identifier":
+            return True
+        attribute = _python_attribute_of(node)
+        if attribute is not None:
+            if not _python_is_callee(attribute):
+                return True
+            continue
+        parent = node.parent
+        if not (parent is not None and parent.type == "function_definition"
+                and parent.child_by_field_name("name") == node):
+            return True
+    return False
+
+
+def _python_poisons_dunder_writes(root_node, source: bytes) -> bool:
+    """A dunder attribute in a position other than a plain read, such as
+    `X.__bases__ = (B,)`, `X.__class__ = M` or `del X.__call__`, unless it is
+    metadata that construction never consults (`f.__doc__ = ...`). Every
+    identifier that starts with `__` is looked up in the tree, so a line
+    continuation between `.` and the name changes nothing."""
+    for match in _PY_DUNDER_REF.finditer(source):
+        node = root_node.descendant_for_byte_range(match.start(), match.end())
+        if node is None or node.type != "identifier":
+            continue
+        name = _read_text(node, source)
+        attribute = _python_attribute_of(node)
+        if (
+            attribute is not None and len(name) > 4 and name.endswith("__")
+            and name not in _PY_METADATA_DUNDERS and not _python_is_read(attribute)
+        ):
+            return True
+    return False
+
+
+def _python_poisons_ctor_strings(root_node, source: bytes) -> bool:
+    """A string literal whose value, after implicit concatenation and escapes,
+    contains `__init__` or `__new__`. A string that is a whole expression
+    statement (a docstring) is evaluated and discarded, so it is exempt."""
+    candidates: dict = {}  # (start, end) -> literal node
+    for pattern in (_PY_CTOR_NAME_REF, _PY_STRING_ESCAPE_REF, *_PY_ADJACENT_STRINGS):
+        last_end = -1
+        for match in pattern.finditer(source):
+            if match.start() < last_end:
+                continue  # inside the literal found last
+            node = root_node.descendant_for_byte_range(match.start(), match.start() + 1)
+            if pattern in _PY_ADJACENT_STRINGS:
+                while node is not None and node.type in _PY_STRING_PARTS:
+                    node = node.parent
+                if node is None or node.type != "concatenated_string":
+                    continue
+                top = node
+            else:
+                top = _python_string_top(node) if node is not None else None
+            if top is not None:
+                candidates[(top.start_byte, top.end_byte)] = top
+                last_end = top.end_byte
+    for top in candidates.values():
+        parent = top.parent
+        if parent is not None and parent.type == "expression_statement" and parent.named_child_count == 1:
+            continue
+        raw = source[top.start_byte:top.end_byte]
+        if b"_" not in raw and b"\\" not in raw:
+            continue  # neither an underscore nor an escape that could make one
+        value = _python_string_value(top, source)
+        if "__init__" in value or "__new__" in value:
+            return True
+    return False
+
+
+def _python_poisons_setattr(root_node, source: bytes) -> bool:
+    """`__setattr__` or `__delattr__` named anywhere but as a `def` name (no
+    argument inspection: bound and unbound forms alike), and `setattr` /
+    `delattr` other than a direct call with exactly three / two positional
+    arguments whose second is one plain string literal, not a dunder name, on a
+    target that is not (and does not hang off) an imported name. Aliases
+    (`s = setattr`), splats, keywords and computed names poison."""
+    if b"setattr" not in source and b"delattr" not in source:
+        return False
+    imported: frozenset[str] | None = None
+    for match in _PY_SETATTR_REF.finditer(source):
+        if not _python_word_start(source, match.start()):
+            continue
+        node = root_node.descendant_for_byte_range(match.start(), match.end())
+        if node is None or node.type == "comment" or node.type in _PY_STRING_PARTS:
+            continue
+        if node.type != "identifier":
+            return True
+        name = _read_text(node, source)
+        parent = node.parent
+        if name.startswith("__"):
+            if (parent is not None and parent.type == "function_definition"
+                    and parent.child_by_field_name("name") == node):
+                continue  # defines an instance hook
+            return True
+        callee = _python_attribute_of(node) or node
+        if not _python_is_callee(callee):
+            return True
+        args = callee.parent.child_by_field_name("arguments")
+        if args is None or args.type != "argument_list":
+            return True
+        positional = [a for a in args.named_children if a.type != "comment"]
+        if len(positional) != (3 if name == "setattr" else 2) or any(
+            a.type in ("list_splat", "dictionary_splat", "keyword_argument", "parenthesized_list_splat")
+            for a in positional
+        ):
+            return True
+        value = _python_plain_string(positional[1], source)
+        if value is None or (value.startswith("__") and value.endswith("__")):
+            return True
+        if imported is None:
+            imported = _python_imported_names(root_node, source)
+        if _python_import_rooted(positional[0], source, imported):
+            return True  # `setattr(models, "Target", Fake)`
+    return False
+
+
+_PY_IMPORT_BINDINGS_MEMO: tuple = (None, ({}, False))
+
+
+def _python_import_bindings(root_node, source: bytes) -> tuple[dict[str, frozenset[str]], bool]:
+    """Every name an import statement anywhere in the module binds, with the
+    dotted paths it can come from (`import a.b as c` -> c: a.b; `import a.b`
+    -> a: a; `from m import x as y` -> y: m.x; `from . import x` -> x: .x),
+    and whether any statement is a star import. Memoized for the module being
+    extracted; the memo is one tuple, read and replaced whole."""
+    global _PY_IMPORT_BINDINGS_MEMO
+    memo = _PY_IMPORT_BINDINGS_MEMO
+    if memo[0] is source:
+        return memo[1]
+    found: dict[str, set[str]] = {}
+    star = False
+    for match in _PY_IMPORT_REF.finditer(source):
+        if not _python_word_start(source, match.start()):
+            continue
+        node = root_node.descendant_for_byte_range(match.start(), match.end())
+        while node is not None and node.type not in (
+            "import_statement", "import_from_statement", "future_import_statement", "module",
+        ):
+            node = node.parent
+        if node is None or node.type not in ("import_statement", "import_from_statement"):
+            continue
+        module_node = node.child_by_field_name("module_name")
+        prefix = _read_text(module_node, source) if module_node is not None else ""
+        for i, child in enumerate(node.children):
+            if child.type == "wildcard_import":
+                star = True
+            if node.field_name_for_child(i) != "name":
+                continue
+            bound, path = _python_import_name(node, child, source)
+            if node.type == "import_from_statement":
+                path = (prefix + "." + path) if prefix and not prefix.endswith(".") else prefix + path
+            if bound is not None:
+                found.setdefault(_read_text(bound, source), set()).add(path)
+    result = ({name: frozenset(paths) for name, paths in found.items()}, star)
+    _PY_IMPORT_BINDINGS_MEMO = (source, result)
+    return result
+
+
+def _python_import_name(statement, child, source: bytes) -> tuple:
+    """For one `name` child of an import statement: the identifier it binds
+    and the dotted path it names (`a.b as c` -> c, a.b; `a.b` -> a, a)."""
+    if child.type == "aliased_import":
+        imported = child.child_by_field_name("name")
+        return child.child_by_field_name("alias"), _read_text(imported, source) if imported is not None else ""
+    if child.type == "dotted_name" and child.named_children:
+        first = child.named_children[0]
+        return first, _read_text(first if statement.type == "import_statement" else child, source)
+    return child, _read_text(child, source)
+
+
+def _python_imported_names(root_node, source: bytes) -> frozenset[str]:
+    """Every name an import statement anywhere in the module binds."""
+    return frozenset(_python_import_bindings(root_node, source)[0])
+
+
+def _python_import_rooted(node, source: bytes, imported: frozenset[str]) -> bool:
+    """True if ``node`` is a name the module imports, or an attribute chain
+    (`a.b.c`) rooted at one."""
+    while node is not None and node.type == "attribute":
+        node = node.child_by_field_name("object")
+    return node is not None and node.type == "identifier" and _read_text(node, source) in imported
+
+
+class _PythonNameUses:
+    """How the module uses the names a constructor proof can end at (every
+    import-bound name, every class statement's name, and `object`) in every
+    scope.
+
+    ``bindings[name]``: one ``(kind, line, origin, module, scope)`` per
+    occurrence in a binding position, that is anything _python_is_read rejects:
+    assignment and walrus targets anywhere (defaults, bases and decorators
+    included), `def` / `class` names, parameters, lambda and type parameters,
+    `for` / `with` / `except` / `match` and comprehension targets, import
+    names, `global` / `nonlocal`, `del`, and any position the check does not
+    know. ``kind`` is "class" for a class statement's name, "import" for a
+    `from m import` binding alone on its line (``origin`` the imported name,
+    ``module`` the `m` as written), "module" for an `import m` binding alone on
+    its line (``origin`` the dotted path), else "def" / "other". ``scope`` is
+    the function, lambda or class whose body holds the binding (None at module
+    level). ``escaped``: imported names read other than as the object of an
+    attribute (assigned, passed, returned); ``escaped_modules``: the last parts
+    of their import paths. ``attribute_write``: an attribute of an imported
+    name is written (`models.Target = Fake`, `del pkg.models.Target`,
+    `models.__dict__["Target"] = Fake`). ``star_import``: a `from m import *`."""
+
+    __slots__ = ("bindings", "escaped", "escaped_modules", "attribute_write", "star_import")
+
+    def __init__(self) -> None:
+        self.bindings: dict[str, list[tuple]] = {}
+        self.escaped: set[str] = set()
+        self.escaped_modules: set[str] = set()
+        self.attribute_write = False
+        self.star_import = False
+
+
+_PY_NAME_USES_MEMO: tuple = (None, None)
+
+
+def _python_scope_of(node):
+    """The function, lambda or class whose body holds ``node``, else None."""
+    cur = node
+    while cur.parent is not None:
+        parent = cur.parent
+        if parent.type in ("function_definition", "class_definition", "lambda"):
+            body = parent.child_by_field_name("body")
+            if body is not None and body.start_byte <= node.start_byte < body.end_byte:
+                return parent
+        cur = parent
+    return None
+
+
+def _python_runs_unconditionally(statement, scope) -> bool:
+    """True if ``statement`` sits directly in the module body (``scope`` None)
+    or directly in ``scope``'s body, not under `if`, `try`, `with`, a loop or
+    `match`: only then does every call after it see the binding."""
+    holder = statement.parent
+    if holder is not None and holder.type == "decorated_definition":
+        holder = holder.parent
+    if scope is None:
+        return holder is not None and holder.type == "module"
+    return holder is not None and holder == scope.child_by_field_name("body")
+
+
+def _python_binding_record(node, source: bytes) -> tuple | None:
+    """``(kind, line, origin, module, scope)`` for an identifier in a binding
+    position (see _PythonNameUses); None for a module path or an imported
+    name before `as` in an import statement, which bind nothing."""
+    name = _read_text(node, source)
+    parent = node.parent
+    if parent is not None and parent.type in ("class_definition", "function_definition") and (
+        parent.child_by_field_name("name") == node
+    ):
+        scope = _python_scope_of(parent)
+        kind = "class" if parent.type == "class_definition" else "def"
+        if not _python_runs_unconditionally(parent, scope):
+            kind = "other"
+        return (kind, parent.start_point[0] + 1, name, "", scope)
+    statement = parent
+    while statement is not None and statement.type in ("dotted_name", "aliased_import", "relative_import"):
+        statement = statement.parent
+    if statement is not None and statement.type in ("import_statement", "import_from_statement"):
+        line = statement.start_point[0] + 1
+        line_start = source.rfind(b"\n", 0, statement.start_byte) + 1
+        line_end = source.find(b"\n", statement.start_byte)
+        alone = len(re.findall(rb"\bimport\b", source[line_start:line_end if line_end >= 0 else len(source)])) == 1
+        module_node = statement.child_by_field_name("module_name")
+        module = _read_text(module_node, source) if module_node is not None else ""
+        for i, child in enumerate(statement.children):
+            if statement.field_name_for_child(i) != "name":
+                continue
+            bound, path = _python_import_name(statement, child, source)
+            if bound != node:
+                continue
+            scope = _python_scope_of(statement)
+            if not alone or not _python_runs_unconditionally(statement, scope):
+                return ("other", line, name, "", scope)
+            kind = "import" if statement.type == "import_from_statement" else "module"
+            origin = path if statement.type == "import_statement" or child.type == "aliased_import" else name
+            return (kind, line, origin, module, scope)
+        return None
+    return ("other", node.start_point[0] + 1, name, "", _python_scope_of(node))
+
+
+def _python_name_uses(root_node, source: bytes) -> _PythonNameUses:
+    """_PythonNameUses for the module (memoized like _python_import_bindings).
+    Each candidate name is found by a byte search and judged on the tree."""
+    global _PY_NAME_USES_MEMO
+    memo = _PY_NAME_USES_MEMO
+    if memo[0] is source:
+        return memo[1]
+    uses = _PythonNameUses()
+    import_paths, uses.star_import = _python_import_bindings(root_node, source)
+    imported = frozenset(import_paths)
+    names = set(imported) | {"object"}
+    for match in _PY_CLASS_KEYWORD_REF.finditer(source):
+        if not _python_word_start(source, match.start()):
+            continue
+        keyword = root_node.descendant_for_byte_range(match.start(), match.end())
+        statement = keyword.parent if keyword is not None else None
+        if statement is not None and statement.type == "class_definition":
+            name_node = statement.child_by_field_name("name")
+            if name_node is not None:
+                names.add(_read_text(name_node, source))
+    for name in names:
+        spelled = name.encode("utf-8")
+        at = source.find(spelled)
+        while at >= 0:
+            end = at + len(spelled)
+            start, at = at, source.find(spelled, end)
+            following = source[end:end + 1]
+            if not _python_word_start(source, start) or following.isalnum() or following == b"_" or following >= b"\x80":
+                continue  # part of a longer name (the identifier check below would reject it too)
+            node = root_node.descendant_for_byte_range(start, end)
+            if node is None or node.type != "identifier" or _python_attribute_of(node) is not None:
+                continue
+            if _read_text(node, source) != name:
+                continue
+            parent = node.parent
+            if parent is not None and parent.type == "keyword_argument" and parent.child_by_field_name("name") == node:
+                continue
+            if not _python_is_read(node):
+                record = _python_binding_record(node, source)
+                if record is not None:
+                    uses.bindings.setdefault(name, []).append(record)
+                continue
+            if name not in imported:
+                continue
+            if parent is None or parent.type != "attribute" or parent.child_by_field_name("object") != node:
+                uses.escaped.add(name)
+                uses.escaped_modules.update(path.rsplit(".", 1)[-1] for path in import_paths[name])
+                continue
+            top = parent
+            while top.parent is not None and top.parent.type == "attribute" and top.parent.child_by_field_name("object") == top:
+                top = top.parent
+            label = top.child_by_field_name("attribute")
+            holder = top.parent
+            if not _python_is_read(top) or (
+                label is not None and _read_text(label, source) == "__dict__"
+                and holder is not None and holder.type == "subscript"
+                and holder.child_by_field_name("value") == top and not _python_is_read(holder)
+            ):
+                uses.attribute_write = True
+    _PY_NAME_USES_MEMO = (source, uses)
+    return uses
+
+
+def _python_through_escaped_module(record: tuple, name_uses: _PythonNameUses) -> bool:
+    """True if an import binding names a module that escapes into another name
+    somewhere in the file (`alias = models; alias.Target = Fake`), which can
+    rebind anything imported from it."""
+    kind, _line, origin, module, _scope = record
+    path = origin if kind == "module" else module
+    last = path.rsplit(".", 1)[-1]
+    return kind in ("import", "module") and bool(name_uses.escaped_modules) and (
+        last in name_uses.escaped_modules or not last
+    )
+
+
+def _python_module_receiver_ok(binding: tuple) -> bool:
+    """`mod.Foo()` proves its binding only through `import mod` of a top-level
+    module (kind "module", no dot): a package's `__init__` can bind any of its
+    submodule names to something else, which `from pkg import mod` and
+    `import pkg.mod as mod` then return."""
+    return binding[0] == "module" and "." not in binding[2]
+
+
+def _python_poisons_imported_attribute_writes(root_node, source: bytes) -> bool:
+    """A write to an attribute of an imported module or object
+    (`models.Target = Fake`, `del pkg.models.Target`, `for models.Target in`,
+    `models.__dict__["Target"] = Fake`): it rebinds a name other modules'
+    calls read. Found from every occurrence of every imported name."""
+    return _python_name_uses(root_node, source).attribute_write
+
+
+def _python_poisons_sys_modules(root_node, source: bytes) -> bool:
+    """Any reference to `sys.modules`: `modules` read off `sys` or any name an
+    import binds to `sys` (`import sys as s`, `from os import sys`), off an
+    owner expression mentioning `sys` or computed (`__import__("sys")`), or
+    imported by name from `sys`."""
+    if b"modules" not in source:
+        return False
+    bindings = _python_import_bindings(root_node, source)[0]
+    sys_names = {"sys"} | {
+        name for name, paths in bindings.items()
+        if any(path.rsplit(".", 1)[-1] == "sys" for path in paths)
+    }
+    for match in _PY_MODULES_REF.finditer(source):
+        if not _python_word_start(source, match.start()):
+            continue
+        node = root_node.descendant_for_byte_range(match.start(), match.end())
+        if node is None or node.type != "identifier":
+            continue
+        attribute = _python_attribute_of(node)
+        if attribute is not None:
+            owner = attribute.child_by_field_name("object")
+            if owner is None:
+                return True
+            if owner.type == "identifier":
+                if _read_text(owner, source) in sys_names:
+                    return True
+            elif owner.type != "attribute" or "sys" in _read_text(owner, source):
+                return True
+            continue
+        statement = node.parent
+        while statement is not None and statement.type in ("dotted_name", "aliased_import"):
+            statement = statement.parent
+        if statement is not None and statement.type == "import_from_statement":
+            module = statement.child_by_field_name("module_name")
+            if module is not None and _read_text(module, source).lstrip(".") == "sys":
+                return True
+    return False
+
+
+def _python_poisons_dynamic_namespace(root_node, source: bytes) -> bool:
+    """A way to write names the proof reads: a call to, or any other use as a
+    value of, `exec`, `eval`, `globals`, `locals`, `vars` or `__import__` (also
+    importing one of them by name); `builtins` / `__builtins__` used other than
+    to read an ordinary attribute (`builtins.dict`), since writing one
+    (`builtins.object = X`) changes every module's builtins. Attribute names,
+    keywords, `def` names, module paths, binding targets and plain attribute
+    reads (`locals.items()` on a local named `locals`) are not uses."""
+    if not any(name in source for name in _PY_DYNAMIC_NAMES):
+        return False
+    for match in _PY_DYNAMIC_REF.finditer(source):
+        if not _python_word_start(source, match.start()):
+            continue
+        node = root_node.descendant_for_byte_range(match.start(), match.end())
+        if node is None or node.type != "identifier" or _python_attribute_of(node) is not None:
+            continue
+        parent = node.parent
+        if parent is not None and (
+            (parent.type == "keyword_argument" and parent.child_by_field_name("name") == node)
+            or (parent.type == "function_definition" and parent.child_by_field_name("name") == node)
+        ):
+            continue
+        is_builtins = _read_text(node, source) in _PY_BUILTINS_NAMES
+        cur = parent
+        while cur is not None and cur.type in ("dotted_name", "aliased_import"):
+            cur = cur.parent
+        if cur is not None and cur.type in ("import_statement", "import_from_statement"):
+            module = cur.child_by_field_name("module_name")
+            in_module_path = cur.type == "import_statement" or (
+                module is not None and module.start_byte <= node.start_byte < module.end_byte
+            )
+            if not in_module_path:
+                return True  # `from m import vars`: m may hand out the builtin
+            if is_builtins and cur.type == "import_from_statement":
+                return True  # `from builtins import ...`
+            continue
+        if parent is not None and parent.type == "attribute" and parent.child_by_field_name("object") == node:
+            label = parent.child_by_field_name("attribute")
+            name = _read_text(label, source) if label is not None else ""
+            if name.startswith("__") or (is_builtins and (
+                name in ("exec", "eval", "globals", "locals", "vars", "object", "setattr", "delattr")
+                or not _python_is_read(parent)
+            )):
+                return True  # `vars.__call__`, `builtins.globals`, `builtins.object = X`
+            continue
+        if is_builtins or _python_is_callee(node) or _python_is_read(node):
+            return True
+    return False
+
+
+def _python_poisons_non_ascii_names(root_node, source: bytes) -> bool:
+    """A non-ASCII identifier: Python NFKC-normalizes names, so one can rebind an
+    ASCII name the proof compares by text."""
+    if source.isascii():
+        return False
+    for match in _PY_NON_ASCII.finditer(source):
+        node = root_node.descendant_for_byte_range(match.start(), match.end())
+        if node is not None and node.type == "identifier":
+            return True
+    return False
+
+
+_PY_POISON_RULES = (
+    ("ctor_name_use", _python_poisons_ctor_names),
+    ("dunder_attribute_write", _python_poisons_dunder_writes),
+    ("ctor_name_string", _python_poisons_ctor_strings),
+    ("setattr_family", _python_poisons_setattr),
+    ("imported_attribute_write", _python_poisons_imported_attribute_writes),
+    ("sys_modules", _python_poisons_sys_modules),
+    ("dynamic_namespace", _python_poisons_dynamic_namespace),
+    ("non_ascii_identifier", _python_poisons_non_ascii_names),
+)
+
+
+def _python_ctor_poison(root_node, source: bytes) -> bool:
+    """True if the module contains anything outside the shapes constructor
+    resolution models. Such a module gets no class markers and no proven call
+    sites (see _PY_POISON_RULES)."""
+    return any(rule(root_node, source) for _, rule in _PY_POISON_RULES)
+
+
+def _python_call_in_class_scope(node) -> bool:
+    """True if the call ``node`` is evaluated in a class body (directly, or in a
+    comprehension, decorator, default or base there), where the class namespace
+    can shadow a module name. A method or lambda body is its own scope."""
+    cur, parent = node, node.parent
+    while parent is not None:
+        if parent.type == "class_definition":
+            return True
+        if parent.type in ("function_definition", "lambda") and parent.child_by_field_name("body") == cur:
+            return False
+        cur, parent = parent, parent.parent
+    return False
+
+
+def _python_slots_ok(class_node, source: bytes) -> bool:
+    """`__slots__` is absent, or bound once, directly in the class body, to a
+    literal tuple or list of plain strings that names neither `__init__` nor
+    `__new__` (a slot descriptor would shadow an inherited method)."""
+    if source.find(b"__slots__", class_node.start_byte, class_node.end_byte) < 0:
+        return True
+    mentions = [
+        n for n in _python_descendants(class_node)
+        if n.type == "identifier" and _read_text(n, source) == "__slots__"
+        and _python_attribute_of(n) is None
+    ]
+    if not mentions:
+        return True
+    if len(mentions) != 1:
+        return False
+    assignment = mentions[0].parent
+    body = class_node.child_by_field_name("body")
+    if (
+        assignment is None or assignment.type != "assignment"
+        or assignment.child_by_field_name("left") != mentions[0]
+        or assignment.parent is None or assignment.parent.type != "expression_statement"
+        or assignment.parent.named_child_count != 1
+        or body is None or assignment.parent.parent != body
+    ):
+        return False
+    value = assignment.child_by_field_name("right")
+    if value is None or value.type not in ("tuple", "list"):
+        return False
+    for item in value.named_children:
+        if item.type == "comment":
+            continue
+        name = _python_plain_string(item, source)
+        if name is None or name in _PY_CTOR_ATTRS:
+            return False
+    return True
+
+
+def _python_mentions_ctor_names(node, source: bytes) -> bool:
+    """True if a class-scope statement names one of `_PYTHON_CTOR_NAMES`.
+
+    Nested function and class bodies are their own scope and are skipped, but a
+    nested definition's own name is checked (a `def __init__` under `if` counts).
+    """
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if n.type in ("function_definition", "class_definition"):
+            name_node = n.child_by_field_name("name")
+            if name_node is not None and _read_text(name_node, source) in _PYTHON_CTOR_NAMES:
+                return True
+            continue
+        if n.type == "identifier" and _read_text(n, source) in _PYTHON_CTOR_NAMES:
+            return True
+        if n.type != "lambda":
+            stack.extend(n.children)
+    return False
+
+
+def _python_init_never_runs(definition) -> bool:
+    """True for an `async def` or a generator `__init__`: a `yield` anywhere in
+    its scope, including the decorators, defaults, annotations and bases of
+    nested definitions (only their bodies are another scope). Calling it
+    returns a coroutine or generator without running the body."""
+    if any(child.type == "async" for child in definition.children):
+        return True
+    body = definition.child_by_field_name("body")
+    stack = list(body.children) if body is not None else []
+    while stack:
+        n = stack.pop()
+        if n.type == "yield":
+            return True
+        if n.type in ("function_definition", "lambda", "class_definition"):
+            inner = n.child_by_field_name("body")
+            stack.extend(c for c in n.children if c != inner)
+        else:
+            stack.extend(n.children)
+    return False
+
+
+def _python_ctor_chain(node, source: bytes, module_facts) -> tuple[str, str | None] | None:
+    """Classify a Python class_definition for constructor-entry resolution.
+
+    ``("root", None)``: ``Foo(...)`` runs ``type.__call__`` on this class with no
+    base to consult (no bases, or the builtin ``object``).
+    ``("single_base", binding)``: the same holds for this class's own definition
+    and construction continues in its one base, a plain name bound exactly once
+    in the whole file, at module level before the class, by a class statement
+    or a ``from m import`` statement. ``binding`` is ``"class:L<n>::<name>"`` /
+    ``"import:L<n>:<m>:<name>"`` for the statement that binds it, so extract() can
+    check that statement against the resolved base.
+    None for anything the graph cannot prove: a module with a star import, one
+    _python_ctor_poison refuses, or one where `object` is anything but read; a
+    class whose name is bound anywhere else in the file (_python_name_uses) or
+    that is not at module level; decorators, keywords (a metaclass), splats,
+    attribute/subscript/call bases, multiple bases, PEP 695 type parameters, a
+    ``__slots__`` other than a literal list of plain names without
+    ``__init__`` / ``__new__``, or a class body that binds ``__new__`` /
+    ``__init_subclass__`` / ``__metaclass__`` or binds ``__init__`` other than
+    by exactly one undecorated ``def``.
+    """
+    poisoned, uses = module_facts
+    if poisoned or uses.star_import or uses.bindings.get("object"):
+        return None
+    name_node = node.child_by_field_name("name")
+    own = uses.bindings.get(_read_text(name_node, source) if name_node is not None else "", [])
+    if len(own) != 1 or own[0][0] != "class" or own[0][4] is not None:
+        return None  # bound elsewhere too, or not a module-level class
+    if node.parent is not None and node.parent.type == "decorated_definition":
+        return None
+    if node.child_by_field_name("type_parameters") is not None:
+        return None
+    body = node.child_by_field_name("body")
+    if body is None or not _python_slots_ok(node, source):
+        return None
+    init_defs = 0
+    for stmt in body.named_children:
+        definition = stmt
+        decorated = stmt.type == "decorated_definition"
+        if decorated:
+            if any(
+                _python_mentions_ctor_names(d, source)
+                for d in stmt.named_children if d.type == "decorator"
+            ):
+                return None
+            definition = stmt.child_by_field_name("definition")
+        if definition is not None and definition.type == "function_definition":
+            name_node = definition.child_by_field_name("name")
+            name = _read_text(name_node, source) if name_node is not None else ""
+            if name == "__init__":
+                # A decorator can replace the method, and a second `def` replaces
+                # the first while both bodies merge into one graph node. An
+                # async or generator `__init__` returns before its body runs
+                # (construction raises TypeError).
+                init_defs += 1
+                if decorated or init_defs > 1 or _python_init_never_runs(definition):
+                    return None
+            elif name in _PYTHON_CTOR_NAMES:
+                return None
+            continue
+        if _python_mentions_ctor_names(stmt, source):
+            return None
+
+    args = node.child_by_field_name("superclasses")
+    bases = [c for c in args.named_children if c.type != "comment"] if args else []
+    if not bases:
+        return ("root", None)
+    if len(bases) != 1 or bases[0].type != "identifier":
+        return None
+    base = _read_text(bases[0], source)
+    if base == "object":
+        return ("root", None)
+    found = uses.bindings.get(base, [])
+    if len(found) != 1 or _python_through_escaped_module(found[0], uses):
+        return None
+    kind, line, origin, module, scope = found[0]
+    if kind not in ("class", "import") or scope is not None or line >= node.start_point[0] + 1:
+        return None
+    return ("single_base", f"{kind}:L{line}:{module}:{origin}")
 
 
 def _swift_pre_scan(root_node, source: bytes) -> tuple[set[str], set[str]]:
@@ -4566,6 +5410,35 @@ def _extract_generic(
     # invocation (`select(Model)`, exception tuples), so the cross-file indirect_call
     # guard excludes them to avoid false edges (#2137).
     callable_class_nids: set[str] = set()
+    # Python only: whether the module contains anything constructor resolution
+    # does not model (_python_ctor_poison: no markers, no proven calls) and how
+    # it binds and uses names (_python_name_uses); then per class id the
+    # definition count and `_python_ctor_chain` result, for the
+    # constructor-entry marker. Any exception in this analysis sets
+    # `python_ctor_failed`: the file then gets no markers and no proven calls,
+    # and the rest of its extraction is exactly what it would be without it.
+    python_ctor_failed = [False]
+    python_ctor_facts: tuple = (True, _PythonNameUses())
+    if config.ts_module == "tree_sitter_python":
+        try:
+            python_ctor_facts = (_python_ctor_poison(root, source), _python_name_uses(root, source))
+        except Exception:
+            python_ctor_failed[0] = True
+            python_ctor_facts = (True, _PythonNameUses())
+    python_class_defs: dict[str, int] = {}
+    # Python: how many definitions claim each node id (every add_node call,
+    # also the ones a taken id drops), and the id and line of each `__init__`
+    # method per class. An `__init__` id that a second definition shares merges
+    # both bodies into one node, so that class gets no marker.
+    python_id_claims: dict[str, int] = {}
+    python_init_nids: dict[str, list[tuple[str, int]]] = {}
+    python_ctor_chains: dict[str, tuple[str, tuple[str, str | None] | None]] = {}
+    # Python only: `(line, name, kind, binding_line, origin, module)` of each
+    # call whose callee provably reads one binding (see _python_proven_binding).
+    # `name` is the imported or defined name for a bare call (kind "class" /
+    # "import"), the attribute for `mod.Attr(...)` (kind "module"); extract()
+    # checks the binding statement against the class v8 resolved.
+    python_proven_calls: set[tuple[int, str, str, int, str, str]] = set()
     # Python only: per-function set of locally-bound names (params + local
     # assignment / for / with-as / comprehension targets). The indirect-dispatch
     # guard skips any call-argument identifier in the enclosing function's set,
@@ -4640,6 +5513,8 @@ def _extract_generic(
 
     def add_node(nid: str, label: str, line: int, *, node_type: str | None = None,
                  metadata: dict | None = None) -> None:
+        if config.ts_module == "tree_sitter_python":
+            python_id_claims[nid] = python_id_claims.get(nid, 0) + 1
         if nid in seen_ids:
             return
         seen_ids.add(nid)
@@ -4902,6 +5777,16 @@ def _extract_generic(
                             base = _read_text(arg, source)
                             base_nid = ensure_named_node(base, line)
                             add_edge(class_nid, base_nid, "inherits", line)
+                # Constructor-entry facts, stamped as `_py_ctor_chain` below. A
+                # class id minted twice in one file (a redefinition, or a nested
+                # class sharing the name) merges two bodies and never qualifies.
+                python_class_defs[class_nid] = python_class_defs.get(class_nid, 0) + 1
+                try:
+                    _py_chain = _python_ctor_chain(node, source, python_ctor_facts)
+                except Exception:
+                    python_ctor_failed[0] = True
+                    _py_chain = None
+                python_ctor_chains[class_nid] = (class_name, _py_chain)
 
             # Swift-specific: conformance / inheritance
             if config.ts_module == "tree_sitter_swift":
@@ -6177,6 +7062,8 @@ def _extract_generic(
                     metadata=ruby_method_metadata,
                 )
                 add_edge(parent_class_nid, func_nid, "method", line)
+                if config.ts_module == "tree_sitter_python" and func_name == "__init__":
+                    python_init_nids.setdefault(parent_class_nid, []).append((func_nid, line))
             else:
                 func_nid = _make_id(stem, sanitized_name)
                 if config.ts_module == "tree_sitter_python":
@@ -7166,6 +8053,39 @@ def _extract_generic(
         "function_declaration", "generator_function_declaration",
         "generator_function")
 
+    def _python_proven_binding(name: str, call) -> tuple[str, int, str, str] | None:
+        """The one binding `(kind, line, origin, module)` that `name` provably
+        reads at `call`, else None.
+
+        The name must be bound exactly once in the whole file, in any scope and
+        by any form (_python_name_uses), in a module without star imports. That
+        binding must be a module-level class statement or import, or a
+        `from m import` earlier in a function whose body holds the call; an
+        import from a module that escapes into another name proves nothing.
+        v8 binds `Foo()` / `mod.Foo()` to a project class even when the name
+        is shadowed, unbound here, or imported only inside some other
+        function, so extract() also requires this binding's statement to
+        identify the class.
+        """
+        uses = python_ctor_facts[1]
+        found = uses.bindings.get(name, [])
+        if uses.star_import or len(found) != 1:
+            return None
+        kind, line, origin, module, scope = found[0]
+        if kind not in ("class", "import", "module") or _python_through_escaped_module(found[0], uses):
+            return None
+        if scope is not None:
+            # Only an enclosing function's import: a class body's names are not
+            # visible from its methods, and lambdas hold no imports.
+            body = scope.child_by_field_name("body")
+            if not (
+                scope.type == "function_definition" and kind == "import"
+                and line < call.start_point[0] + 1 and body is not None
+                and body.start_byte <= call.start_byte < body.end_byte
+            ):
+                return None
+        return kind, line, origin, module
+
     def walk_calls(
         node,
         caller_nid: str,
@@ -7727,6 +8647,41 @@ def _extract_generic(
                         callee_name = _dot
                     member_receiver = None
                     lua_self_qualified = True
+
+            # Python: record the call sites whose callee provably reads one class
+            # or import binding (bare `Foo()`, or `mod.Foo()` through an imported
+            # module), with that binding. extract() derives a constructor edge only
+            # from these; `self.Foo()`, unproven sites, calls evaluated in a class
+            # body (the class namespace can shadow the name), and modules that
+            # _python_ctor_poison refuses are never recorded.
+            if (
+                config.ts_module == "tree_sitter_python"
+                and callee_name
+                and not python_ctor_facts[0]
+                and not python_ctor_failed[0]
+            ):
+                try:
+                    _py_line = node.start_point[0] + 1
+                    if not is_member_call:
+                        _py_bound = _python_proven_binding(callee_name, node)
+                        if (
+                            _py_bound and _py_bound[0] in ("class", "import")
+                            and not _python_call_in_class_scope(node)
+                        ):
+                            python_proven_calls.add((_py_line, _py_bound[2], *_py_bound))
+                    elif member_receiver and member_receiver not in ("self", "cls", "super"):
+                        _py_bound = _python_proven_binding(member_receiver, node)
+                        if (
+                            _py_bound
+                            and _python_module_receiver_ok(_py_bound)
+                            and not _python_call_in_class_scope(node)
+                        ):
+                            python_proven_calls.add((
+                                _py_line, callee_name, "module",
+                                _py_bound[1], _py_bound[2], _py_bound[3],
+                            ))
+                except Exception:
+                    python_ctor_failed[0] = True
 
             # _LANGUAGE_BUILTIN_GLOBALS is one union across every language, right for
             # a BARE call (String(x) really would become a god node) but wrong for a
@@ -8426,6 +9381,40 @@ def _extract_generic(
                     # Class def: callable only via constructor. The indirect_call
                     # guard excludes these to avoid false edges (#2137).
                     n["_callable_class"] = True
+    # Python: mark classes whose `Foo(...)` provably runs `type.__call__` -> the
+    # `__init__` found along this file's own definition (_python_ctor_chain).
+    # extract.link_python_constructors links `Foo(...)` call sites to `__init__`
+    # only through an unbroken chain of these markers, and checks each
+    # `_py_ctor_base_binding` against the resolved base. graph.json stores both,
+    # so a merge can link again without re-extracting the file.
+    # Each `__init__` id must be claimed once in the file, and its node must be
+    # that method's own: a decorated `init` beside `__init__`, or a decorated
+    # module function `target_init`, merges its body into the same node.
+    python_node_at = {
+        m["id"]: (m.get("label"), m.get("source_location")) for m in nodes
+    } if python_ctor_chains else {}
+    for n in nodes if python_ctor_chains and not python_ctor_failed[0] else ():
+        entry = python_ctor_chains.get(n["id"])
+        if entry is None or python_class_defs.get(n["id"]) != 1:
+            continue
+        class_name, chain = entry
+        if chain is None or n.get("label") != class_name:
+            continue
+        if any(
+            python_id_claims.get(init_nid) != 1
+            or python_node_at.get(init_nid) != (".__init__()", f"L{init_line}")
+            for init_nid, init_line in python_init_nids.get(n["id"], ())
+        ):
+            continue
+        n["_py_ctor_chain"] = chain[0]
+        if chain[1]:
+            n["_py_ctor_base_binding"] = chain[1]
+    # File-wide, so a call that a resolver credits to an enclosing function is
+    # still matched by its line; extract() stores the ones at a class call.
+    for n in nodes if python_proven_calls and not python_ctor_failed[0] else ():
+        if n["id"] == file_nid:
+            n["_py_proven_calls"] = sorted(list(call) for call in python_proven_calls)
+            break
     if swift_extensions:
         result["swift_extensions"] = swift_extensions
     # TS/JS: augment the constructor-injection type table with local `new`

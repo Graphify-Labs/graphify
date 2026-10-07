@@ -2064,6 +2064,10 @@ def merge_raw_extraction(
 
     new["nodes"] = [n for n in existing_nodes if not _dropped(n)] + list(new.get("nodes", []))
     new["edges"] = [e for e in existing_edges if not _dropped(e)] + list(new.get("edges", []))
+    # A Python constructor edge depends on classes in files this merge may not
+    # have re-extracted: link them again over the merged graph.
+    from graphify.extract import relink_python_constructors
+    new["edges"] = relink_python_constructors(new["nodes"], new["edges"], _eff_root)
     carried_hyper = [he for he in existing_hyperedges if not _dropped(he)]
     if carried_hyper or new.get("hyperedges"):
         new["hyperedges"] = carried_hyper + list(new.get("hyperedges", []))
@@ -2331,6 +2335,15 @@ def build_merge(
         # Other deleted records and edges stay until the normal prune below:
         # it needs their connectivity to identify newly orphaned import stubs.
 
+    # Python constructor edges are linked again over the merged graph below.
+    from graphify.extract import is_python_constructor_edge, link_python_constructors_in_graph
+    existing_edges = [e for e in existing_edges if not is_python_constructor_edge(e)]
+    new_chunks = [
+        {**c, "edges": [e for e in c.get("edges", []) if not is_python_constructor_edge(e)]}
+        if isinstance(c, dict) else c
+        for c in new_chunks
+    ]
+
     base = (
         [{"nodes": existing_nodes, "edges": existing_edges, "hyperedges": carried_hyperedges}]
         if had_graph else []
@@ -2463,6 +2476,10 @@ def build_merge(
                     f"graph, already clean.",
                     file=sys.stderr,
                 )
+
+    # A Python constructor edge depends on classes in files this merge may not
+    # have re-extracted: link them again over the merged graph.
+    link_python_constructors_in_graph(G, _eff_root)
 
     # Safety check: refuse to SILENTLY drop nodes (#479, reworked in #2497).
     # The old count comparison ran against the post-replace `existing_nodes`,
