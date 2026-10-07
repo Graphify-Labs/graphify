@@ -9168,6 +9168,14 @@ def extract(
     }
 
 
+# Keys of an extract() result that only steer the current run (#2543, #3411).
+# They hold the absolute paths of this run's inputs, so a writer that dumps the
+# raw extraction as graph.json (--no-cluster) must leave them out: they put the
+# checkout path and OS username into the graph, and differ between the first
+# build and a rebuild of the same tree.
+RUN_ONLY_EXTRACTION_KEYS = frozenset({"extracted_sources", "failed_sources"})
+
+
 def collect_files(target: Path, *, follow_symlinks: bool = False, root: Path | None = None) -> list[Path]:
     containment_root = root if root is not None else target
     from graphify.detect import _resolves_under_root
