@@ -1105,8 +1105,47 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
             # id-remap cannot fix because they match none of its current-path
             # keys. Order is free — source_file never carries the marker.
             _absolutize_ids_in(result, path, root)
+            targets = result.pop(_CACHED_TARGETS_KEY, None)
+            if isinstance(targets, list) and not all(
+                _target_file_present(t, root) for t in targets if isinstance(t, str)
+            ):
+                return None
         return result
     return None
+
+
+# Cross-file edges (imports, re-exports, links) carry a ``target_file`` stamp
+# naming the file they resolved to. An AST entry is keyed by its own file's
+# content only, so a hit replays that resolution after the target is renamed or
+# deleted: the edge keeps the id minted from the target's absolute path, which
+# extract() maps to a portable id only for targets that exist, so the checkout
+# path reached graph.json and a warm build differed from a cold one. The entry
+# records the targets that existed when it was written; a hit whose recorded
+# target is gone is a miss and the file is extracted again.
+_CACHED_TARGETS_KEY = "_cached_target_files"
+
+
+def _target_file_present(target: str, root: Path) -> bool:
+    candidate = Path(target)
+    if not candidate.is_absolute():
+        candidate = Path(root) / candidate
+    try:
+        return candidate.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _present_target_files(result: dict, root: Path) -> list[str]:
+    """The ``target_file`` stamps in ``result`` that name an existing file."""
+    present: set[str] = set()
+    for edge in result.get("edges", []) or []:
+        if not isinstance(edge, dict):
+            continue
+        target = edge.get("target_file")
+        if isinstance(target, str) and target and target not in present:
+            if _target_file_present(target, root):
+                present.add(target)
+    return sorted(present)
 
 
 def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "ast",
@@ -1155,6 +1194,10 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     if isinstance(result, dict):
         import copy as _copy
         on_disk = _copy.deepcopy(result)
+        if kind == "ast":
+            targets = _present_target_files(on_disk, root)
+            if targets:
+                on_disk[_CACHED_TARGETS_KEY] = targets
         _relativize_source_files_in(on_disk, root)
         # Then replace the absolute root inside the ids and remaining paths, so
         # the entry replays portably under any root (#2257). Strictly after the
