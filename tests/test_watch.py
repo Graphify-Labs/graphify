@@ -48,6 +48,14 @@ def test_watched_extensions_includes_code():
     assert ".go" in _WATCHED_EXTENSIONS
     assert ".rs" in _WATCHED_EXTENSIONS
 
+def test_verilog_header_triggers_code_rebuild_without_llm(tmp_path):
+    header = tmp_path / "defs.vh"
+    header.write_text("`define WIDTH 8\n", encoding="utf-8")
+
+    assert ".vh" in _WATCHED_EXTENSIONS
+    assert _batch_triggers_rebuild([header]) is True
+    assert _batch_needs_llm_flag([header]) is False
+
 def test_watched_extensions_includes_docs():
     assert ".md" in _WATCHED_EXTENSIONS
     assert ".txt" in _WATCHED_EXTENSIONS
@@ -228,7 +236,6 @@ def test_watch_raises_without_watchdog(tmp_path, monkeypatch):
 # --- _rebuild_lock (GH-858) ---
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_writes_pid_with_newline(tmp_path):
     out = tmp_path / "graphify-out"
     lock_path = out / ".rebuild.lock"
@@ -239,7 +246,6 @@ def test_rebuild_lock_writes_pid_with_newline(tmp_path):
         assert contents == f"{os.getpid()}\n", contents
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_removed_after_release(tmp_path):
     """GH-858: lock file must be unlinked once the rebuild completes so
     downstream waiters that poll for its absence unblock promptly."""
@@ -250,7 +256,6 @@ def test_rebuild_lock_removed_after_release(tmp_path):
     assert not lock_path.exists(), "lock file should be unlinked after release"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_does_not_accumulate_pids_across_runs(tmp_path):
     """GH-858: each acquisition truncates and rewrites the PID line rather
     than appending, so the file never grows into a digit-concatenation."""
@@ -280,6 +285,57 @@ def test_graphify_root_preserves_relative_when_invoked_with_relative_path(tmp_pa
     saved = (corpus / "graphify-out" / ".graphify_root").read_text(encoding="utf-8")
     assert saved == ".", (
         f".graphify_root must preserve the user-supplied path; got {saved!r}"
+    )
+
+
+def test_graphify_root_is_resolved_when_graphify_out_is_shared_and_absolute(
+    tmp_path, monkeypatch
+):
+    """#3375: when GRAPHIFY_OUT is an absolute, shared location (the
+    multi worktree setup from #686), the same marker file is reachable from
+    any worktree's CWD, not just the one that wrote it. Preserving a raw
+    relative value there, as #777 does for the default, git portable case,
+    would make the marker resolve against whichever worktree happens to read
+    it later instead of the one that was actually scanned. It must be
+    written as an absolute path in this case."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "lib.py").write_text("def f(): pass\n", encoding="utf-8")
+
+    shared_out = tmp_path / "shared-graphify-out"
+    monkeypatch.setattr("graphify.watch._GRAPHIFY_OUT", str(shared_out))
+    monkeypatch.chdir(corpus)
+
+    assert _rebuild_code(Path("."), acquire_lock=False) is True
+
+    saved = (shared_out / ".graphify_root").read_text(encoding="utf-8")
+    assert saved == str(corpus.resolve()), (
+        f".graphify_root must be resolved when GRAPHIFY_OUT is absolute; got {saved!r}"
+    )
+
+
+def test_graphify_root_still_preserves_relative_when_graphify_out_is_relative(
+    tmp_path, monkeypatch
+):
+    """Companion to the fix above: an ordinary, relative GRAPHIFY_OUT (the
+    default, no #686 shared output configured) must keep the #777 behaviour
+    of preserving the caller supplied relative path, so this fix only
+    changes the shared output case and does not regress the common one."""
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "lib.py").write_text("def f(): pass\n", encoding="utf-8")
+
+    monkeypatch.chdir(corpus)
+    assert _rebuild_code(Path("."), acquire_lock=False) is True
+
+    saved = (corpus / "graphify-out" / ".graphify_root").read_text(encoding="utf-8")
+    assert saved == ".", (
+        f"a relative GRAPHIFY_OUT must still preserve the caller supplied "
+        f"path; got {saved!r}"
     )
 
 
@@ -1240,7 +1296,6 @@ def test_rebuild_code_preupgrade_marker_less_node_one_cycle_lag(tmp_path):
     assert "bar()" in labels(healed), "surviving symbol must be kept throughout"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_lock_non_blocking_does_not_clobber_holder(tmp_path):
     """GH-858: a non-blocking caller that fails to acquire the lock must not
     truncate the holder's PID payload."""
@@ -1253,6 +1308,21 @@ def test_rebuild_lock_non_blocking_does_not_clobber_holder(tmp_path):
             assert inner is False
             # Holder's PID line must still be intact.
             assert lock_path.read_text(encoding="utf-8") == held_contents
+
+
+def test_rebuild_lock_blocks_concurrent_process(tmp_path):
+    """#3881: concurrent processes cannot acquire the rebuild lock simultaneously."""
+    import subprocess
+    out = tmp_path / "graphify-out"
+    with _rebuild_lock(out) as outer:
+        assert outer is True
+        script = (
+            "import sys; from pathlib import Path; "
+            "from graphify.watch import _rebuild_lock; "
+            f"sys.exit(0 if _rebuild_lock(Path(r'{out}'), blocking=False).__enter__() else 42)"
+        )
+        proc = subprocess.run([sys.executable, "-c", script], capture_output=True)
+        assert proc.returncode == 42
 
 
 def test_rebuild_code_is_idempotent_when_cluster_ids_flap(tmp_path, monkeypatch):
@@ -1542,14 +1612,22 @@ def test_rebuild_force_reports_shrink_before_later_sidecar_failure(
     assert _rebuild_code(corpus, no_cluster=no_cluster, acquire_lock=False) is True
     graph_path = corpus / "graphify-out" / "graph.json"
     before = json.loads(graph_path.read_text(encoding="utf-8"))
-    real_write_text = Path.write_text
+    if no_cluster:
+        real_write_text = Path.write_text
+    else:
+        from graphify.watch import write_text_atomic
+
+        real_write_text = write_text_atomic
 
     def fail_after_graph_replace(path, *args, **kwargs):
         if path.name == failing_sidecar:
             raise OSError("injected post-replace sidecar failure")
         return real_write_text(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "write_text", fail_after_graph_replace)
+    if no_cluster:
+        monkeypatch.setattr(Path, "write_text", fail_after_graph_replace)
+    else:
+        monkeypatch.setattr("graphify.watch.write_text_atomic", fail_after_graph_replace)
     capsys.readouterr()
     source.write_text("def alpha():\n    return 1\n", encoding="utf-8")
 
@@ -2113,7 +2191,6 @@ def test_queue_pending_noop_on_empty_list(tmp_path):
     assert not (out / _PENDING_FILENAME).exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_code_queues_on_lock_contention(tmp_path, monkeypatch, capsys):
     """#1059: when the rebuild lock is held, an incremental hook must queue
     its changed_paths to .pending_changes and print 'queued' instead of
@@ -2148,7 +2225,6 @@ def test_rebuild_code_queues_on_lock_contention(tmp_path, monkeypatch, capsys):
         assert pending.read_text(encoding="utf-8").splitlines() == ["a.py", "b.py"]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_code_merges_pending_on_acquire(tmp_path, monkeypatch):
     """#1059: the process that acquires the lock must drain .pending_changes
     and pass the merged change set to the inner rebuild call."""
@@ -2188,7 +2264,6 @@ def test_rebuild_code_merges_pending_on_acquire(tmp_path, monkeypatch):
     assert not (out / watch_mod._PENDING_FILENAME).exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="fcntl-only (POSIX)")
 def test_rebuild_code_drains_late_arrivals(tmp_path, monkeypatch):
     """#1059: after the primary rebuild, the lock-holder must loop and drain
     any paths queued by hooks that arrived mid-rebuild."""
@@ -5094,3 +5169,102 @@ def test_requires_symlinks_rebuild_symlink_worker(requires_symlinks, tmp_path, c
     data = json.loads(graph_path.read_text(encoding="utf-8"))
     labels = {n.get("label") for n in data["nodes"]}
     assert "run_worker()" in labels
+
+
+def test_rebuild_code_sidecar_writes_are_atomic_and_labels_first(tmp_path, monkeypatch):
+    """A rebuild interrupted between the labels and signature writes must not
+    leave stale labels that look verified.
+
+    The staleness guard compares the SAVED signatures against ones recomputed
+    from the current clustering — not against the labels. So publishing the
+    signatures first and crashing leaves a sidecar already describing the new
+    clustering beside the old labels: the guard recomputes the same signatures,
+    finds them equal, and silently keeps names for a clustering that no longer
+    exists. Labels must land first, so the sidecar trails and the guard sees a
+    mismatch it can re-label. Each write is also atomic, so a kill mid-write
+    can never publish a half-written sidecar.
+    """
+    import json
+    from graphify.watch import _rebuild_code
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "a.py").write_text(
+        "def alpha():\n    return beta()\n\ndef beta():\n    return 1\n", encoding="utf-8"
+    )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    out = corpus / "graphify-out"
+    labels_file = out / ".graphify_labels.json"
+    sig_file = out / ".graphify_labels.json.sig"
+
+    # Record the order in which the sidecars are published, and prove each one
+    # is published atomically (rename into place) rather than truncate-in-place.
+    order: "list[str]" = []
+    import os
+    from pathlib import Path
+
+    def _label(name: str) -> "str | None":
+        if name.endswith(".graphify_labels.json.sig"):
+            return "sig"
+        if name.endswith(".graphify_labels.json"):
+            return "labels"
+        return None
+
+    real_replace = os.replace
+    real_write_text = Path.write_text
+    real_open = __builtins__["open"] if isinstance(__builtins__, dict) else __builtins__.open
+
+    def _tracking_replace(src, dst, *a, **kw):
+        tag = _label(str(dst))
+        if tag:
+            order.append(tag)
+        return real_replace(src, dst, *a, **kw)
+
+    def _tracking_write_text(self, *a, **kw):
+        tag = _label(str(self))
+        if tag:
+            # Recorded as non-atomic: the sidecar is truncated in place.
+            order.append(tag + ":non-atomic")
+        return real_write_text(self, *a, **kw)
+
+    def _tracking_open(file, mode="r", *a, **kw):
+        # A writing open() straight onto a sidecar path is non-atomic; the
+        # atomic helper opens a temp file and renames it, so it never trips this.
+        # `backup_if_protected` copies the sidecars into a dated backup folder
+        # before the rebuild advances them — that is a copy of the OLD file, not
+        # a publish of the new one, so only the live out/ paths are tracked.
+        if any(m in str(mode) for m in ("w", "a", "+")):
+            path = Path(file)
+            if path.parent == out and _label(path.name):
+                order.append(_label(path.name) + ":non-atomic")
+        return real_open(file, mode, *a, **kw)
+
+    monkeypatch.setattr(os, "replace", _tracking_replace)
+    monkeypatch.setattr(Path, "write_text", _tracking_write_text)
+    monkeypatch.setattr("builtins.open", _tracking_open)
+
+    # Grow the corpus so clustering changes and the sidecars are rewritten.
+    for name in ("b.py", "c.py", "d.py"):
+        (corpus / name).write_text(
+            f"def {name[0]}_one():\n    return {name[0]}_two()\n\n"
+            f"def {name[0]}_two():\n    return 2\n",
+            encoding="utf-8",
+        )
+    assert _rebuild_code(corpus, acquire_lock=False) is True
+
+    assert not [o for o in order if o.endswith(":non-atomic")], (
+        f"sidecars must be published atomically (temp + rename), saw {order}"
+    )
+    assert "sig" in order and "labels" in order, (
+        f"expected both sidecars to be rewritten, saw {order}"
+    )
+    assert order.index("labels") < order.index("sig"), (
+        "labels must be written BEFORE the signature sidecar: signatures first "
+        "would let a crash leave a matching sidecar beside stale labels, which "
+        f"the staleness guard cannot detect; saw {order}"
+    )
+
+    # Both sidecars must be parseable — a torn write would fail here.
+    assert json.loads(sig_file.read_text(encoding="utf-8")) is not None
+    assert json.loads(labels_file.read_text(encoding="utf-8")) is not None

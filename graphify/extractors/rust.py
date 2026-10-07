@@ -3,11 +3,64 @@ from __future__ import annotations
 
 
 from pathlib import Path
-from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
+from graphify.extractors.base import (
+    _LANGUAGE_BUILTIN_GLOBALS,
+    _file_stem,
+    _make_id,
+    _read_source_bytes,
+    _read_text,
+)
 
 
-def _rust_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[str, str]]) -> None:
-    """Walk a Rust type expression; append (name, role) tuples."""
+# Rust prelude / std types. Language-local (like _GO_PREDECLARED_FUNCS and
+# _RUST_TRAIT_METHOD_BLOCKLIST below) rather than added to the shared
+# _LANGUAGE_BUILTIN_GLOBALS: the shared set is consulted with no language gate,
+# and `Path`, `Result`, `Error`, `From`, `Into`, `Iterator`, `Default` and
+# friends are ordinary user type names in the other languages that read it.
+#
+# Without this set a Rust codebase resolves every `Option`/`Vec`/`String`/
+# `Result` annotation to a few canonical nodes, so the language's own primitives
+# become the top god nodes (a ~1,200-file workspace had `String` at #1 with
+# ~1,700 edges). Filtering is definition-aware: see _rust_collect_type_refs.
+_RUST_BUILTIN_TYPES: frozenset[str] = frozenset({
+    # prelude types and aliases
+    "String", "str", "Option", "Result", "Vec", "VecDeque", "Box", "Rc",
+    "Arc", "Weak", "RefCell", "Cell", "Cow", "Pin",
+    # collections
+    "HashMap", "HashSet", "BTreeMap", "BTreeSet", "BinaryHeap",
+    # paths / OS strings
+    "Path", "PathBuf", "OsStr", "OsString", "CStr", "CString",
+    # time / ranges / markers
+    "Duration", "Instant", "SystemTime", "Ordering", "Range", "RangeInclusive",
+    "RangeFrom", "RangeTo", "RangeFull", "PhantomData", "ManuallyDrop",
+    "NonZeroU8", "NonZeroU16", "NonZeroU32", "NonZeroU64", "NonZeroUsize",
+    # variants and core traits
+    "Some", "None", "Ok", "Err", "Self",
+    "Default", "Clone", "Copy", "Debug", "Display", "Error", "From", "Into",
+    "TryFrom", "TryInto", "AsRef", "AsMut", "Iterator", "IntoIterator",
+    "Extend", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash", "Send", "Sync",
+    "Sized", "Drop", "Deref", "DerefMut", "Future", "Fn", "FnMut", "FnOnce",
+})
+
+
+def _rust_collect_type_refs(
+    node,
+    source: bytes,
+    generic: bool,
+    out: list[tuple[str, str]],
+    local_types: frozenset[str] = frozenset(),
+) -> None:
+    """Walk a Rust type expression; append (name, role) tuples.
+
+    A name in ``_RUST_BUILTIN_TYPES`` is skipped unless ``local_types`` holds it:
+    a file that defines its own ``struct Result<T>`` shadows the prelude, and its
+    references must survive. Filtering the bare name alone would erase a
+    legitimate user type that happens to share a std name.
+    """
+
+    def _keep(text: str) -> bool:
+        return bool(text) and (text not in _RUST_BUILTIN_TYPES or text in local_types)
+
     if node is None:
         return
     t = node.type
@@ -15,12 +68,12 @@ def _rust_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[
         return
     if t == "type_identifier":
         text = _read_text(node, source)
-        if text:
+        if _keep(text):
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "scoped_type_identifier":
         text = _read_text(node, source).rsplit("::", 1)[-1]
-        if text:
+        if _keep(text):
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "generic_type":
@@ -32,23 +85,23 @@ def _rust_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[
                     break
         if name_node is not None:
             text = _read_text(name_node, source).rsplit("::", 1)[-1]
-            if text:
+            if _keep(text):
                 out.append((text, "generic_arg" if generic else "type"))
         for c in node.children:
             if c.type == "type_arguments":
                 for arg in c.children:
                     if arg.is_named:
-                        _rust_collect_type_refs(arg, source, True, out)
+                        _rust_collect_type_refs(arg, source, True, out, local_types)
         return
     if t in ("reference_type", "pointer_type", "array_type", "tuple_type", "slice_type"):
         for c in node.children:
             if c.is_named:
-                _rust_collect_type_refs(c, source, generic, out)
+                _rust_collect_type_refs(c, source, generic, out, local_types)
         return
     if node.is_named:
         for c in node.children:
             if c.is_named:
-                _rust_collect_type_refs(c, source, generic, out)
+                _rust_collect_type_refs(c, source, generic, out, local_types)
 
 
 def _rust_simple_generic_impl_key(node, source: bytes) -> str | None:
@@ -118,7 +171,7 @@ def extract_rust(path: Path) -> dict:
     try:
         language = Language(tsrust.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -131,6 +184,31 @@ def extract_rust(path: Path) -> dict:
     seen_ids: set[str] = set()
     function_bodies: list[tuple[str, object, str | None, str | None]] = []
     impl_keys: dict[str, str | None] = {}
+
+    # Names this file defines as a type (struct/enum/trait/union/alias) before it
+    # starts referring to them. A local definition shadows the prelude, so its
+    # references must not be dropped by the builtin-name filter further down.
+    local_types: set[str] = set()
+
+    def _scan_local_types(scan_node) -> None:
+        if scan_node.type in ("struct_item", "enum_item", "trait_item", "union_item", "type_item"):
+            name_node = scan_node.child_by_field_name("name")
+            if name_node is not None:
+                name = _read_text(name_node, source)
+                if name:
+                    local_types.add(name)
+        for child in scan_node.children:
+            _scan_local_types(child)
+
+    _scan_local_types(root)
+    local_type_names = frozenset(local_types)
+
+    # `macro_rules!` macros defined in this file, keyed by bare name. A macro and a
+    # function can share a name in Rust (`vec!` vs `vec`), and a macro is invoked
+    # as `name!(...)` (a `macro_invocation`, never a `call_expression`), so macros
+    # are resolved through their own registry rather than the function/type
+    # label_to_nid to avoid cross-binding.
+    macro_nids_by_name: dict[str, str] = {}
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -162,9 +240,65 @@ def extract_rust(path: Path) -> dict:
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
+    # Pre-scan the struct/enum/trait names declared in this file so a type used
+    # above its declaration resolves exactly as a use below it already does,
+    # rather than to a sourceless stub that the corpus-level rewire only folds
+    # back when the name is unique across the corpus (#3782). Only these three
+    # items are pre-registered: walk() never makes a node of a `type` alias or a
+    # `union`, so registering one would leave its references pointing at no node.
+    # The scan never descends further than walk() does, so every id registered
+    # here ends up as a node. Ids are casefolded, so `fn handle` and
+    # `struct Handle` (or `struct HANDLE` and `struct Handle`) share one and
+    # walk() keeps whichever comes first: a type is only pre-registered when
+    # every file-level item behind its id is that same type (`#[cfg]` twins count
+    # once), and it is matched by its exact name, since a `type HANDLE` alias or
+    # an imported `HANDLE` shares the id of a local `struct Handle`. Otherwise the
+    # forward reference keeps the sourceless stub v8's extractor gives it. An
+    # `impl` block counts as the type it names, because walk() gives it the node
+    # of its type text (`impl Tr for HANDLE` collides with `struct Handle`,
+    # `impl Tr for &Handle<'_>` does not); methods and impl-scoped items have
+    # impl-qualified ids and are not counted.
+    items_by_id: dict[str, set[tuple[bool, str]]] = {}
+    declared_type_ids: set[str] = set()
+
+    def _scan_type_items(node) -> None:
+        t = node.type
+        if t in ("struct_item", "enum_item", "trait_item", "function_item",
+                 "function_signature_item", "static_item", "const_item"):
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                name = _read_text(name_node, source)
+                if t in ("static_item", "const_item") and name == "_":
+                    return
+                nid = _make_id(stem, name)
+                is_type = t in ("struct_item", "enum_item", "trait_item")
+                items_by_id.setdefault(nid, set()).add((is_type, name))
+                if is_type:
+                    declared_type_ids.add(nid)
+            return
+        if t == "impl_item":
+            type_node = node.child_by_field_name("type")
+            if type_node is not None:
+                type_name = _read_text(type_node, source).strip()
+                refs: list[tuple[str, str]] = []
+                _rust_collect_type_refs(type_node, source, False, refs)
+                bare = next((ref for ref, role in refs if role == "type"), type_name)
+                items_by_id.setdefault(_make_id(stem, type_name), set()).add((True, bare))
+            return
+        if t == "use_declaration":
+            return
+        for child in node.children:
+            _scan_type_items(child)
+
+    _scan_type_items(root)
+    local_type_names = {
+        next(iter(items))[1] for nid, items in items_by_id.items()
+        if nid in declared_type_ids and len(items) == 1
+    }
+
     def ensure_named_node(name: str, line: int) -> str:
         nid = _make_id(stem, name)
-        if nid in seen_ids:
+        if nid in seen_ids or name in local_type_names:
             return nid
         nid = _make_id(name)
         if nid not in seen_ids:
@@ -194,7 +328,7 @@ def extract_rust(path: Path) -> dict:
                     continue
                 type_node = p.child_by_field_name("type")
                 refs: list[tuple[str, str]] = []
-                _rust_collect_type_refs(type_node, source, False, refs)
+                _rust_collect_type_refs(type_node, source, False, refs, local_type_names)
                 for ref_name, role in refs:
                     ctx = "generic_arg" if role == "generic_arg" else "parameter_type"
                     tgt = ensure_named_node(ref_name, line)
@@ -203,7 +337,7 @@ def extract_rust(path: Path) -> dict:
         return_type = func_node.child_by_field_name("return_type")
         if return_type is not None:
             refs = []
-            _rust_collect_type_refs(return_type, source, False, refs)
+            _rust_collect_type_refs(return_type, source, False, refs, local_type_names)
             for ref_name, role in refs:
                 ctx = "generic_arg" if role == "generic_arg" else "return_type"
                 tgt = ensure_named_node(ref_name, line)
@@ -263,6 +397,23 @@ def extract_rust(path: Path) -> dict:
                 emit_param_return_refs(node, func_nid, line)
             return
 
+        if t == "macro_definition":
+            # `macro_rules! name { ... }` defines a named, invocable item. This node
+            # type had no branch, so the macro was dropped entirely: it was never a
+            # node, and a `name!(...)` invocation of it had nothing to resolve to.
+            # The id is macro-qualified so it never collides with a same-named fn or
+            # type (`vec!` vs `vec`); the `!` suffix in the label marks it a macro.
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                macro_name = _read_text(name_node, source)
+                if macro_name:
+                    line = node.start_point[0] + 1
+                    macro_nid = _make_id(stem, "macro", macro_name)
+                    add_node(macro_nid, f"{macro_name}!", line)
+                    add_edge(file_nid, macro_nid, "contains", line)
+                    macro_nids_by_name.setdefault(macro_name, macro_nid)
+            return
+
         if t in ("struct_item", "enum_item", "trait_item"):
             name_node = node.child_by_field_name("name")
             if name_node:
@@ -283,7 +434,7 @@ def extract_rust(path: Path) -> dict:
                             if not sub.is_named:
                                 continue
                             refs: list[tuple[str, str]] = []
-                            _rust_collect_type_refs(sub, source, False, refs)
+                            _rust_collect_type_refs(sub, source, False, refs, local_type_names)
                             for idx, (ref_name, _role) in enumerate(refs):
                                 tgt = ensure_named_node(ref_name, line)
                                 if tgt == item_nid:
@@ -310,7 +461,7 @@ def extract_rust(path: Path) -> dict:
                                         type_node = fc
                                         break
                             refs = []
-                            _rust_collect_type_refs(type_node, source, False, refs)
+                            _rust_collect_type_refs(type_node, source, False, refs, local_type_names)
                             for ref_name, role in refs:
                                 ctx = "generic_arg" if role == "generic_arg" else "field"
                                 tgt = ensure_named_node(ref_name, field.start_point[0] + 1)
@@ -332,7 +483,7 @@ def extract_rust(path: Path) -> dict:
                                                "primitive_type", "tuple_type", "array_type"):
                                 continue
                             refs = []
-                            _rust_collect_type_refs(tc, source, False, refs)
+                            _rust_collect_type_refs(tc, source, False, refs, local_type_names)
                             for ref_name, role in refs:
                                 ctx = "generic_arg" if role == "generic_arg" else "field"
                                 tgt = ensure_named_node(ref_name, fline)
@@ -352,7 +503,7 @@ def extract_rust(path: Path) -> dict:
                         if type_node is None:
                             return
                         refs2: list[tuple[str, str]] = []
-                        _rust_collect_type_refs(type_node, source, False, refs2)
+                        _rust_collect_type_refs(type_node, source, False, refs2, local_type_names)
                         for ref_name, role in refs2:
                             ctx = "generic_arg" if role == "generic_arg" else "field"
                             tgt = ensure_named_node(ref_name, at_line)
@@ -366,6 +517,24 @@ def extract_rust(path: Path) -> dict:
                             if variant.type != "enum_variant":
                                 continue
                             vline = variant.start_point[0] + 1
+                            # Emit a node per variant with a case_of edge back to
+                            # the enum. Only the variants' payload types were
+                            # walked before, so the variants themselves (`Circle`,
+                            # `Square`, `Empty`) never became nodes and the enum
+                            # was left a memberless leaf. This is the Rust parity
+                            # of Java #1719 / Kotlin #1738 / Swift / Scala enums.
+                            # The variant name is the enum_variant's `identifier`.
+                            vname_node = next(
+                                (vc for vc in variant.children
+                                 if vc.type == "identifier"),
+                                None,
+                            )
+                            if vname_node is not None:
+                                vname = _read_text(vname_node, source)
+                                if vname:
+                                    variant_nid = _make_id(item_nid, vname)
+                                    add_node(variant_nid, vname, vline)
+                                    add_edge(item_nid, variant_nid, "case_of", vline)
                             for vc in variant.children:
                                 if vc.type == "ordered_field_declaration_list":
                                     for tc in vc.children:
@@ -397,6 +566,8 @@ def extract_rust(path: Path) -> dict:
             name_node = node.child_by_field_name("name")
             if name_node:
                 item_name = _read_text(name_node, source)
+                if item_name == "_":
+                    return
                 line = node.start_point[0] + 1
                 if parent_impl_nid:
                     item_nid = _make_id(parent_impl_nid, item_name)
@@ -409,7 +580,7 @@ def extract_rust(path: Path) -> dict:
                 type_node = node.child_by_field_name("type")
                 if type_node is not None:
                     refs: list[tuple[str, str]] = []
-                    _rust_collect_type_refs(type_node, source, False, refs)
+                    _rust_collect_type_refs(type_node, source, False, refs, local_type_names)
                     for ref_name, role in refs:
                         tgt = ensure_named_node(ref_name, line)
                         if tgt == item_nid:
@@ -435,7 +606,7 @@ def extract_rust(path: Path) -> dict:
                 impl_type_bare = type_name.split("<")[0].strip()
             if trait_node is not None and impl_nid is not None:
                 refs: list[tuple[str, str]] = []
-                _rust_collect_type_refs(trait_node, source, False, refs)
+                _rust_collect_type_refs(trait_node, source, False, refs, local_type_names)
                 for idx, (ref_name, _role) in enumerate(refs):
                     tgt = ensure_named_node(ref_name, node.start_point[0] + 1)
                     if tgt == impl_nid:
@@ -492,6 +663,13 @@ def extract_rust(path: Path) -> dict:
         normalised = raw.strip("()").lstrip(".")
         label_to_nid[normalised] = n["id"]
 
+    # Nodes whose label has no `()` suffix are data definitions (structs, enums,
+    # traits, statics), not callables. In Rust `Foo(x)` / `Foo { .. }` onto one
+    # of them constructs a value rather than invoking a function, so the edge is
+    # a `references` (context "constructor"), not a `calls`. Without this a
+    # newtype used everywhere (`ClientId(id)`) reads as a top call hub.
+    type_nids: set[str] = {n["id"] for n in nodes if not n["label"].endswith(")")}
+
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
 
@@ -503,6 +681,34 @@ def extract_rust(path: Path) -> dict:
     ) -> None:
         if node.type == "function_item":
             return
+        if node.type == "macro_invocation":
+            # `name!(...)` invoking a macro_rules! macro defined in this file.
+            # Resolve only a bare `identifier` macro against the local registry;
+            # a `scoped_identifier` (`log::info!`) is cross-module/crate and stays
+            # unresolved (fail-closed), matching how scoped calls are handled above.
+            macro_node = node.child_by_field_name("macro")
+            if macro_node is not None and macro_node.type == "identifier":
+                macro_name = _read_text(macro_node, source)
+                tgt_nid = macro_nids_by_name.get(macro_name)
+                if tgt_nid and tgt_nid != caller_nid:
+                    pair = (caller_nid, tgt_nid)
+                    if pair not in seen_call_pairs:
+                        seen_call_pairs.add(pair)
+                        line = node.start_point[0] + 1
+                        edges.append({
+                            "source": caller_nid,
+                            "target": tgt_nid,
+                            "relation": "calls",
+                            "context": "call",
+                            "confidence": "EXTRACTED",
+                            "source_file": str_path,
+                            "source_location": f"L{line}",
+                            "weight": 1.0,
+                        })
+            # Fall through to the generic child recursion below rather than
+            # returning, preserving the prior traversal of the invocation's
+            # subtree (its arguments are a raw token tree, so this neither adds
+            # nor drops any nested edges relative to before).
         if node.type == "call_expression":
             func_node = node.child_by_field_name("function")
             callee_name: str | None = None
@@ -528,18 +734,23 @@ def extract_rust(path: Path) -> dict:
                     name = func_node.child_by_field_name("name")
                     if name:
                         callee_name = _read_text(name, source)
-            if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
+            if (
+                callee_name
+                and callee_name not in _LANGUAGE_BUILTIN_GLOBALS
+                and (callee_name not in _RUST_BUILTIN_TYPES or callee_name in local_types)
+            ):
                 tgt_nid = label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:
                         seen_call_pairs.add(pair)
                         line = node.start_point[0] + 1
+                        is_constructor = tgt_nid in type_nids
                         edges.append({
                             "source": caller_nid,
                             "target": tgt_nid,
-                            "relation": "calls",
-                            "context": "call",
+                            "relation": "references" if is_constructor else "calls",
+                            "context": "constructor" if is_constructor else "call",
                             "confidence": "EXTRACTED",
                             "source_file": str_path,
                             "source_location": f"L{line}",

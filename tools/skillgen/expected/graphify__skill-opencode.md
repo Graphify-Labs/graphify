@@ -96,8 +96,14 @@ fi
 # Write interpreter path for all subsequent steps (persists across invocations)
 mkdir -p graphify-out
 "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
-# Save scan root so `graphify update` (no args) knows where to look next time
-echo "$(cd INPUT_PATH && pwd)" > graphify-out/.graphify_root
+# Save scan root so `graphify update` (no args) knows where to look next time.
+# The scan path is passed through a quoted heredoc, never substituted into the
+# command line itself: a bare `cd <path>` (or an unquoted heredoc, which
+# still expands $()/backticks in its body) would let a malicious path execute
+# as shell code the moment this line runs.
+"$PYTHON" -c "import os, sys; out_path = os.path.abspath('graphify-out/.graphify_root'); os.chdir(sys.stdin.readline().rstrip('\n')); open(out_path, 'w', encoding='utf-8').write(os.getcwd())" <<'GRAPHIFY_ROOT_EOF'
+INPUT_PATH
+GRAPHIFY_ROOT_EOF
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
@@ -240,11 +246,15 @@ if cached_nodes or cached_edges or cached_hyperedges:
 else:
     Path('graphify-out/.graphify_cached.json').unlink(missing_ok=True)
 Path('graphify-out/.graphify_uncached.txt').write_text('\n'.join(uncached), encoding=\"utf-8\")
+# Nothing has been dispatched yet, so any chunk file on disk is a leftover from an
+# interrupted run, and Step B3 merges every .graphify_chunk_*.json it finds.
+for stale in Path('graphify-out').glob('.graphify_chunk_*.json'):
+    stale.unlink()
 print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files need extraction')
 "
 ```
 
-Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt`. If all files are cached, skip to Part C directly.
+Only dispatch subagents for files listed in `graphify-out/.graphify_uncached.txt`. If all files are cached, skip Steps B1 and B2 but still run Step B3's commands: its merge is the only Part B step that writes `graphify-out/.graphify_semantic.json`, and Part C reads that file unconditionally. Do not write an empty `.graphify_semantic.json` instead, because that drops every cached node.
 
 **Step B1 - Split into chunks**
 

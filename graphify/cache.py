@@ -36,7 +36,7 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 4  # Rust generic-impl identity markers + Terraform block attributes.
+_AST_CACHE_SCHEMA = 5  # Python receiver-shadow facts in persisted raw calls.
 
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()
@@ -205,6 +205,14 @@ _stat_index_root: Path | None = None
 # (cache_root, #1774) — the two differ under --out and must not be conflated.
 _stat_index_anchor: Path | None = None
 _stat_index_dirty: bool = False
+_stat_index_atexit_registered: bool = False
+# The resolved on-disk path for the CURRENTLY bound root, captured at bind
+# time (#3989). A mid-process root switch must flush the OUTGOING root to
+# the file it was actually loaded from, not wherever the live _GRAPHIFY_OUT
+# happens to point by the time the switch is detected — a caller following
+# the documented one-root-per-call pattern (set _GRAPHIFY_OUT, then call)
+# has already moved it on to the NEW root before the switch is noticed.
+_stat_index_path: Path | None = None
 
 
 # Filesystem mtime granularity, in nanoseconds. A stat signature only proves a
@@ -328,8 +336,31 @@ def _stat_index_file(root: Path) -> Path:
 
 def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
     global _stat_index, _stat_index_root, _stat_index_anchor, _stat_index_dirty
+    global _stat_index_atexit_registered, _stat_index_path
+    new_root = Path(cache_root if cache_root is not None else root).resolve()
     if _stat_index_root is not None:
-        return
+        if _stat_index_root == new_root:
+            return
+        # A later call in the same process named a DIFFERENT cache root
+        # (#3989): the index was bound to the first root ever seen and never
+        # re-bound, so every root after the first served (on read) whatever
+        # the first root's file happened to contain, and (on write/exit)
+        # deposited its own freshly-computed entries into the FIRST root's
+        # file instead of its own — silently poisoning one project's
+        # stat-index.json with paths from a completely different project.
+        # Flush the outgoing root's own pending entries to its own file
+        # before switching, then load the new root fresh, so each root's
+        # file only ever holds that root's own entries.
+        warnings.warn(
+            f"stat index switched from cache root {str(_stat_index_root)!r} to "
+            f"{str(new_root)!r} within one process; each root's "
+            "stat-index.json now only reflects its own files, but library "
+            "callers crossing project roots in one process should still use "
+            "a fresh process per root to avoid losing the fastpath (#3989).",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        _flush_stat_index()
     # _stat_index_root determines the cache FILE location, so honoring an
     # explicit cache_root keeps detect()'s word-count cache under the requested
     # --out dir instead of polluting the scanned corpus with a stray
@@ -337,9 +368,10 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
     # in-memory keys stay absolute, but the on-disk index stores in-anchor keys
     # relative so a moved/cloned corpus still hits (#2199) — same load/save
     # re-anchoring the detect manifest uses.
-    _stat_index_root = Path(cache_root if cache_root is not None else root).resolve()
+    _stat_index_root = new_root
     _stat_index_anchor = Path(root).resolve()
     p = _stat_index_file(_stat_index_root)
+    _stat_index_path = p
     _stat_index = {}
     if p.exists():
         try:
@@ -357,14 +389,23 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
                         _stat_index[_stat_key_to_absolute(k, _stat_index_anchor)] = v
         except (json.JSONDecodeError, OSError):
             _stat_index = {}
-    atexit.register(_flush_stat_index)
+    _stat_index_dirty = False
+    if not _stat_index_atexit_registered:
+        atexit.register(_flush_stat_index)
+        _stat_index_atexit_registered = True
 
 
 def _flush_stat_index() -> None:
     global _stat_index_dirty, _stat_index_root
     if not _stat_index_dirty or _stat_index_root is None:
         return
-    p = _stat_index_file(_stat_index_root)
+    # Use the path captured when this root was bound (#3989), not a fresh
+    # _stat_index_file(_stat_index_root) call: a mid-process root switch runs
+    # this to flush the OUTGOING root, by which point a caller following the
+    # documented set-_GRAPHIFY_OUT-then-call pattern has already pointed
+    # _GRAPHIFY_OUT at the NEW root, and re-deriving here would flush the old
+    # root's entries into the new root's file instead of its own.
+    p = _stat_index_path if _stat_index_path is not None else _stat_index_file(_stat_index_root)
     # Build the on-disk form (#2199): prune entries whose file is gone (the
     # index otherwise grows without bound), then store in-anchor keys as
     # forward-slash relative paths so the index survives a corpus move/clone.

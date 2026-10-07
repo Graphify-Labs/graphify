@@ -18,8 +18,18 @@ _CONFIG_JSON_NAMES = frozenset({
 _CONFIG_JSON_KEYS = frozenset({
     "dependencies", "devDependencies", "peerDependencies",
     "optionalDependencies", "bundleDependencies", "bundledDependencies",
-    "extends", "$ref", "$schema", "compilerOptions",
+    "extends", "$schema", "compilerOptions",
 })
+
+# Root-level keys that only a JSON Schema *document* carries. A schema that
+# defines anything needs somewhere to put the definitions, and the spec's own
+# keywords for that are `$defs` (2020-12) and `definitions` (draft-07/04);
+# `$id` names the schema itself. Combined with `$schema` these separate "this
+# file IS a schema" from "this config POINTS AT a schema" -- the latter points
+# $schema at its own tool's schema (biomejs.dev, docs.renovatebot.com, ...),
+# never at the meta-schema, and never carries these markers.
+_SCHEMA_DEFINITION_KEYS = frozenset({"$defs", "definitions", "$id"})
+
 
 def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     """True if a .json file is a recognized config/manifest worth AST-extracting.
@@ -27,7 +37,24 @@ def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     Matches by filename first (cheap), then falls back to a top-level key probe
     so arbitrarily-named config files (e.g. ``api.tsconfig.json``,
     ``foo.eslintrc.json``) are still picked up. Returns False for data JSON so it
-    is skipped by the structural pass (#1224)."""
+    is skipped by the structural pass (#1224).
+
+    A JSON Schema is *not* a config manifest. `$schema` sits in the probe's key
+    set because configs legitimately carry it, but it is also the defining marker
+    of a schema -- so a schema document satisfied the probe and was walked in
+    full, re-opening the keyword-node explosion #1224 closed (#2255). One 160 KB
+    contract contributed 362 keyword nodes and ~12 schema-only communities. The
+    filename branches above run first, so `biome.json`/`renovate.json`/
+    `package.json` never depended on the probe; the probe only decides the fate
+    of arbitrarily-named files, which is why narrowing it is low-risk.
+
+    Documented boundary: a hand-written schema carrying `$schema` but no
+    `$defs`/`definitions`/`$id` is still walked. Catching it would need a
+    keyword-density heuristic, which would risk skipping a real config whose keys
+    happen to overlap schema vocabulary -- the worse error, since it drops
+    structure silently (#1224). Pinned by
+    ``tests/test_json_schema_config.py::test_minimal_schema_without_defs_or_id_is_still_walked``.
+    """
     name = path.name.casefold()
     if name in _CONFIG_JSON_NAMES:
         return True
@@ -35,7 +62,9 @@ def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     if name.endswith((".eslintrc.json", ".prettierrc.json", ".babelrc.json",
                       "tsconfig.json", "jsconfig.json")):
         return True
-    # Top-level key probe: scan the root object's immediate keys (no deep walk).
+    # Collect the root object's immediate keys once (no deep walk), so the
+    # schema check below and the config probe agree on the same key set.
+    root_keys: set[str] = set()
     for top_key in obj_node.children:
         if top_key.type != "pair":
             continue
@@ -43,9 +72,15 @@ def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
         if key_node is None:
             continue
         kc = key_node.child_by_field_name("string_content")
-        text = _read_text(kc, source) if kc else _read_text(key_node, source).strip('"\'')
-        if text in _CONFIG_JSON_KEYS:
-            return True
+        root_keys.add(_read_text(kc, source) if kc
+                      else _read_text(key_node, source).strip('"\''))
+    # A file that declares the meta-schema AND defines something IS a schema.
+    if "$schema" in root_keys and (root_keys & _SCHEMA_DEFINITION_KEYS):
+        return False
+    # Top-level key probe. `$ref` is deliberately absent: a root-level `$ref` is
+    # a schema construct and never a config signal (#2255).
+    if root_keys & _CONFIG_JSON_KEYS:
+        return True
     return False
 
 def extract_json(path: Path) -> dict:
@@ -53,9 +88,10 @@ def extract_json(path: Path) -> dict:
 
     Data-shaped JSON (eval fixtures, datasets, GeoJSON, API response dumps) is
     deliberately skipped — AST-walking it produced hundreds of orphan key-nodes
-    and duplicate communities that swamped real structure (#1224). Recognition
-    is by filename (package.json, tsconfig.json, …) or a top-level key probe
-    (dependencies / extends / $ref / $schema / compilerOptions)."""
+    and duplicate communities that swamped real structure (#1224). JSON Schema
+    documents are skipped for the same reason (#2255). Recognition is by filename
+    (package.json, tsconfig.json, …) or a top-level key probe (dependencies /
+    extends / $schema / compilerOptions)."""
     _JSON_MAX_BYTES = 1_048_576  # 1 MiB — skip large fixture dumps / GeoJSON blobs
 
     try:

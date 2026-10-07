@@ -6,8 +6,8 @@ import os
 import unicodedata
 
 from pathlib import Path
-from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS, classify_file
+from graphify.extractors.base import _file_stem, _make_id, _read_source_text
 from graphify.security import sanitize_metadata
 
 
@@ -15,7 +15,7 @@ _MD_INLINE_LINK_RE = re.compile(r'(?<!\!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[^)]
 
 _MD_REF_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?')
 
-_MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]')
+_MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+?)(?:\\?\|[^\]]*|#[^\]]*)?\]\]')
 
 _MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
 
@@ -147,20 +147,27 @@ def _build_link_index(root: Path) -> "dict[str, list[tuple[int, str, Path]]]":
     """Index every linkable document under *root* by NFC-normalized basename.
 
     Each entry maps basename -> [(depth, root-relative posix path, absolute
-    path)]. Directories in detect._SKIP_DIRS and dot-directories are pruned —
-    the same corpus boundary the scanner draws, and Obsidian itself does not
-    index dot-folders.
+    path)]. Directories in detect._SKIP_DIRS, dot-directories, and paths
+    excluded by .graphifyignore/.gitignore are pruned — the same corpus
+    boundary the scanner draws, and Obsidian itself does not index dot-folders
+    or ignored paths (#3822).
     """
-    from graphify.detect import _SKIP_DIRS
+    from graphify.detect import _SKIP_DIRS, ignored_predicate
+    root = Path(root)
+    ignored = ignored_predicate(root)
     index: dict[str, list[tuple[int, str, Path]]] = {}
     for dirpath, dirnames, filenames in os.walk(root):
+        dp = Path(dirpath)
         dirnames[:] = sorted(
-            d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
+            d for d in dirnames
+            if not d.startswith(".") and d not in _SKIP_DIRS and not ignored(dp / d)
         )
         for fname in filenames:
             if Path(fname).suffix.lower() not in _MD_LINKABLE_EXTS:
                 continue
-            abs_path = Path(dirpath) / fname
+            abs_path = dp / fname
+            if ignored(abs_path):
+                continue
             rel = os.path.relpath(str(abs_path), str(root)).replace("\\", "/")
             index.setdefault(_nfc(fname), []).append(
                 (rel.count("/"), _nfc(rel), abs_path)
@@ -213,6 +220,10 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
     The anchor fragment (``#section``) and query (``?x=1``) are stripped before
     resolution so ``./repo.md#setup`` resolves to the same node as ``./repo.md``.
     Extension-less targets (typical of wikilinks) are treated as sibling ``.md``.
+    A wikilink whose note name itself contains a dot (``[[note.en]]``,
+    ``[[v1.2 release]]``) gets the same ``.md`` completion, but only when that
+    document exists and no file graphify indexes sits at the literal target;
+    otherwise (``[[image.png]]``) it stays skipped.
 
     With ``wikilink=True``, a target whose lexically resolved path does not
     exist is retried as a vault-global lookup across the active scan root (see
@@ -235,7 +246,20 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
         target = target + ".md"
         suffix = ".md"
     if suffix not in _MD_LINKABLE_EXTS:
-        return None
+        if not wikilink:
+            return None
+        # The suffix may be part of the note name ([[v1.2 release]]): try
+        # <name>.md through the same sibling-then-vault resolution and keep
+        # the link only when that document exists. A literal target graphify
+        # indexes itself ([[pic.png]] beside pic.png.md) keeps precedence.
+        literal = Path(os.path.normpath(str(source_dir / target)))
+        try:
+            if literal.is_file() and classify_file(literal) is not None:
+                return None
+            hit = _resolve_markdown_link(target + ".md", source_dir, wikilink=True)
+            return hit if hit is not None and hit.is_file() else None
+        except OSError:
+            return None
     candidate = Path(target)
     if not candidate.is_absolute():
         candidate = source_dir / candidate
@@ -340,7 +364,7 @@ def extract_markdown(path: Path) -> dict:
     No tree-sitter dependency — pure line-by-line parsing.
     """
     try:
-        source = path.read_text(encoding="utf-8", errors="replace")
+        source = _read_source_text(path)
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 

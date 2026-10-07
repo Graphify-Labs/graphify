@@ -7,7 +7,7 @@ import json
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from graphify.extractors.base import _make_id
+from graphify.extractors.base import _make_id, _read_source_bytes
 from graphify.security import (
     _CONTROL_CHAR_RE,
     _METADATA_MAX_ATTRIBUTES,
@@ -32,15 +32,41 @@ _SENSITIVE_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 _REDACTED = "[redacted]"
+_PAIRED_VALUE_KEYS = frozenset({"value", "valuefrom", "value_from"})
 
 
 def _redact_value(key: str, value: object) -> object:
-    """Redact a sensitive attribute value; recurse into map values so a nested
-    `password` inside a `tags`/`connection` map is redacted too."""
+    """Redact a sensitive attribute value; recurse into map AND list values so a
+    nested `password` inside a `tags`/`connection` map — or inside a list of
+    objects — is redacted too.
+
+    HCL routinely nests objects inside tuples (`list(object(...))` variables,
+    `dynamic` blocks, tuple defaults), and `_parse_attr_value` turns those into
+    Python lists of dicts. Recursing into dicts but not lists left
+    `configs = [{ password = "x" }]` leaking verbatim while the map form
+    `config = { password = "x" }` was redacted — the value still reaches
+    graph.json and the MCP query/get_node surface unsanitized (#3644 follow-up).
+    List elements are recursed under the same key: the list branch is only
+    reached when `key` is NOT itself sensitive (a sensitive key redacts the whole
+    value above), so a scalar element carries no key signal and is returned
+    as-is, while a dict element is checked against its own inner keys."""
     if _SENSITIVE_KEY_RE.search(key):
         return _REDACTED
     if isinstance(value, dict):
-        return {k: _redact_value(str(k), v) for k, v in value.items()}
+        redacted = {k: _redact_value(str(k), v) for k, v in value.items()}
+        # Name/value-pair idiom (ECS `environment`/`secrets`, `[{name, value}]`):
+        # the secret signal is the `name` literal, not a key, so key matching
+        # alone let `{ name = "DB_PASSWORD", value = "hunter2" }` leak (#3787).
+        if any(
+            str(k).lower() == "name" and isinstance(v, str) and _SENSITIVE_KEY_RE.search(v)
+            for k, v in value.items()
+        ):
+            for k in redacted:
+                if str(k).lower() in _PAIRED_VALUE_KEYS:
+                    redacted[k] = _REDACTED
+        return redacted
+    if isinstance(value, (list, tuple)):
+        return [_redact_value(key, item) for item in value]
     return value
 
 
@@ -171,7 +197,7 @@ def extract_terraform(path: Path) -> dict:
     try:
         language = Language(tshcl.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -418,6 +444,17 @@ def extract_terraform(path: Path) -> dict:
             continue
         if blk_body is not None:
             attrs = _collect_direct_attributes(blk_body)
+            # A variable/output names its secret in the block LABEL, so the
+            # literal sits under a generic key (`default` / `value`) that the
+            # key-name check never flags. Redact it when the label names a
+            # secret or the block carries Terraform's own `sensitive = true`.
+            if btype in ("variable", "output") and (
+                _SENSITIVE_KEY_RE.search(labels[0])
+                or attrs.get("sensitive") in (True, "true")
+            ):
+                for secret_key in ("default", "value"):
+                    if secret_key in attrs:
+                        attrs[secret_key] = _REDACTED
             if attrs:
                 nodes_by_id[owner]["attributes"] = attrs
             _collect_refs(blk_body, owner, "references")

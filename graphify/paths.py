@@ -157,6 +157,29 @@ def write_text_atomic(path: "str | Path", text: str) -> None:
     _atomic_replace(path, lambda f: f.write(text))
 
 
+def write_text_atomic_if_changed(path: "str | Path", text: str) -> bool:
+    """Atomically write ``text`` only if it differs from what is already on disk;
+    return ``True`` if a write happened, ``False`` if the file was left untouched.
+
+    Exporters regenerate their whole page set on every ``graph.json`` change and
+    used to rewrite every file unconditionally — tens of thousands of identical
+    pages per run, which also fires inotify / re-index / sync on unchanged
+    content (#3060). Skipping the atomic replace when nothing changed avoids the
+    rename entirely, so mtime and inode are preserved.
+
+    The comparison is on DECODED text, never bytes: :func:`write_text_atomic`
+    writes in text mode and (on Windows) translates ``\\n`` to ``\\r\\n`` while
+    :func:`Path.read_text` translates it back, so a byte compare would report
+    every file as changed. A missing or non-UTF-8 destination counts as changed."""
+    try:
+        if Path(os.path.realpath(str(path))).read_text(encoding="utf-8") == text:
+            return False
+    except (OSError, UnicodeDecodeError):
+        pass
+    write_text_atomic(path, text)
+    return True
+
+
 def write_json_atomic(path: "str | Path", obj, *, indent: "int | None" = None, ensure_ascii: bool = True) -> None:
     """Atomically write ``obj`` as JSON to ``path``, streaming the encode into the
     temp file rather than materializing the whole string first (matters for very
@@ -471,6 +494,25 @@ def nfc(s: str) -> str:
     return unicodedata.normalize("NFC", s)
 
 
+def restore_arc_direction(data: dict) -> dict:
+    """Stamp each link's stored direction as ``_src``/``_tgt`` before loading.
+
+    graph.json is written ``directed: false`` but carries true direction in arc
+    order (#563), or in ``_src``/``_tgt`` markers on legacy canonicalized files.
+    An undirected ``node_link_graph`` load re-orders endpoints by node-list
+    position, so readers recover direction from these markers. Existing markers
+    win (#2309). Same idiom as the query and merge-graphs loaders (#2261).
+    """
+    links = data.get("links")
+    if not isinstance(links, list):
+        return data
+    return dict(data, links=[
+        {**link, "_src": link.get("_src", link.get("source")), "_tgt": link.get("_tgt", link.get("target"))}
+        if isinstance(link, dict) else link
+        for link in links
+    ])
+
+
 def load_node_link_graph(path_or_data):
     """Load a graphify graph.json into a networkx graph, accepting both writers.
 
@@ -494,6 +536,8 @@ def load_node_link_graph(path_or_data):
         data = json.loads(p.read_text(encoding="utf-8"))
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
+    if isinstance(data, dict):
+        data = restore_arc_direction(data)
     try:
         return json_graph.node_link_graph(data, edges="links")
     except TypeError:  # networkx too old for the edges kwarg; default is "links"

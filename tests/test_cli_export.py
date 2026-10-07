@@ -793,6 +793,67 @@ def test_cluster_only_happy_path_exits_zero(tmp_path):
     assert "communities" in r.stdout
 
 
+def test_cluster_only_preserves_parallel_edges(tmp_path):
+    """#3999: cluster-only reloads graph.json into a simple Graph (one edge per
+    node pair) to re-cluster, then used to write THAT back out, silently
+    dropping a second edge (e.g. imports + calls) between a pair that stayed
+    connected by the other. Community is a node attribute; re-clustering must
+    never change the edge set."""
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    (out / "graph.json").write_text(json.dumps({
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "a", "label": "a", "file_type": "code", "source_file": "a.py"},
+            {"id": "b", "label": "b", "file_type": "code", "source_file": "a.py"},
+            {"id": "c", "label": "c", "file_type": "code", "source_file": "a.py"},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "relation": "imports", "confidence": "EXTRACTED"},
+            {"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
+            {"source": "b", "target": "c", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }))
+
+    r = _run(["cluster-only", ".", "--no-viz", "--no-label"], tmp_path)
+    assert r.returncode == 0, r.stderr
+
+    data = json.loads((out / "graph.json").read_text())
+    pairs = sorted((l["source"], l["target"], l["relation"]) for l in data["links"])
+    assert pairs == [("a", "b", "calls"), ("a", "b", "imports"), ("b", "c", "calls")], pairs
+
+
+def test_to_json_original_links_drops_only_a_dangling_endpoint(tmp_path):
+    """#3999: original_links writes back every original link verbatim,
+    except one whose endpoint no longer exists in G."""
+    from graphify.build import build_from_json
+    from graphify.cluster import cluster
+    from graphify.export import to_json
+
+    extraction = {
+        "directed": False,
+        "nodes": [
+            {"id": "a", "label": "a", "file_type": "code", "source_file": "a.py"},
+            {"id": "b", "label": "b", "file_type": "code", "source_file": "a.py"},
+        ],
+        "links": [
+            {"source": "a", "target": "b", "relation": "imports", "confidence": "EXTRACTED"},
+            {"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED"},
+        ],
+    }
+    G = build_from_json(extraction)
+    communities = cluster(G)
+    out = tmp_path / "graph.json"
+    original_links = list(extraction["links"]) + [
+        {"source": "a", "target": "gone", "relation": "calls", "confidence": "EXTRACTED"},
+    ]
+    assert to_json(G, communities, str(out), original_links=original_links)
+
+    data = json.loads(out.read_text())
+    pairs = sorted((l["source"], l["target"], l["relation"]) for l in data["links"])
+    assert pairs == [("a", "b", "calls"), ("a", "b", "imports")], pairs
+
+
 def test_cluster_only_warns_when_labeling_flags_are_ignored(tmp_path):
     """#2534 case 1: with a saved .graphify_labels.json the reuse branch never
     calls the LLM, so --backend/--model/--batch-size used to be silently
@@ -908,3 +969,45 @@ def test_query_command_names_a_graph_outside_the_cwd(tmp_path):
     first_line = r.stdout.splitlines()[0]
     assert first_line.startswith("Graph: "), first_line
     assert "elsewhere" in first_line, first_line
+
+
+def test_cluster_only_preserves_parallel_edges_across_an_id_remap(tmp_path):
+    """#3999 completion: cluster-only reloads graph.json through build_from_json,
+    which rewrites a legacy/pre-migration node id to its canonical stem
+    (_semantic_id_remap). The preserved original_links must track the remapped
+    id and still carry BOTH parallel edges — not be silently dropped because
+    their endpoints no longer match the post-remap node set. build_from_json
+    rewrites the shared link endpoints in place before to_json reads them;
+    this test guards that invariant against a future refactor."""
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    # `claude_alpha` + source_file `.claude/CLAUDE.md` remaps to
+    # `claude_claude_alpha` (parent-dir == stem case, #1917).
+    (out / "graph.json").write_text(json.dumps({
+        "directed": False, "multigraph": False, "graph": {},
+        "nodes": [
+            {"id": "claude_alpha", "label": "alpha", "file_type": "concept",
+             "source_file": ".claude/CLAUDE.md", "_origin": "semantic"},
+            {"id": "beta", "label": "beta", "file_type": "code",
+             "source_file": "pkg/beta.py", "_origin": "semantic"},
+        ],
+        "links": [
+            {"source": "claude_alpha", "target": "beta", "relation": "references", "confidence": "EXTRACTED"},
+            {"source": "claude_alpha", "target": "beta", "relation": "mentions", "confidence": "EXTRACTED"},
+        ],
+    }))
+
+    r = _run(["cluster-only", ".", "--no-viz", "--no-label"], tmp_path)
+    assert r.returncode == 0, r.stderr
+
+    data = json.loads((out / "graph.json").read_text())
+    node_ids = {n["id"] for n in data["nodes"]}
+    # both endpoints remap: claude_alpha -> claude_claude_alpha, beta -> pkg_beta
+    assert "claude_claude_alpha" in node_ids, node_ids  # remap fired
+    assert "claude_alpha" not in node_ids
+    pairs = sorted((l["source"], l["target"], l["relation"]) for l in data["links"])
+    # both parallel edges survive AND track the remapped endpoint ids
+    assert pairs == [
+        ("claude_claude_alpha", "pkg_beta", "mentions"),
+        ("claude_claude_alpha", "pkg_beta", "references"),
+    ], pairs
