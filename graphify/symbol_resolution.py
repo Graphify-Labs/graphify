@@ -10,6 +10,7 @@ from pathlib import Path
 from collections.abc import Sequence
 from typing import Any
 
+from graphify.extractors.base import _read_source_text
 from graphify.ids import make_id as _shared_make_id
 from graphify.paths import disambiguate_ambiguous_candidates
 from graphify.security import sanitize_metadata
@@ -135,7 +136,7 @@ def parse_python_import_aliases(path: Path) -> dict[str, ImportedSymbol]:
     """
 
     try:
-        source = path.read_text(encoding="utf-8", errors="replace")
+        source = _read_source_text(path, warn=False)
         tree = ast.parse(source)
     except (OSError, SyntaxError):
         return {}

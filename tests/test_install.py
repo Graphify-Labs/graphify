@@ -199,6 +199,52 @@ def test_install_claude_md_success_output_unchanged(tmp_path, monkeypatch, capsy
     assert "  CLAUDE.md        ->  already registered (no change)" in second
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin rights on Windows")
+@pytest.mark.parametrize("existing", [True, False], ids=["existing-target", "new-target"])
+def test_install_claude_md_names_the_symlink_target_it_wrote(tmp_path, monkeypatch, capsys, existing):
+    """#3805: a symlinked ~/.claude/CLAUDE.md gets the block written into the
+    file it points to, so the output must name that file too. It used to print
+    only the link path, and the rules file elsewhere changed without a word."""
+    from graphify.__main__ import install
+
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    rules = tmp_path / "rules.md"
+    if existing:
+        rules.write_text("# my rules\n", encoding="utf-8")
+    link = home / ".claude" / "CLAUDE.md"
+    link.symlink_to(rules)
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch("graphify.__main__.Path.home", return_value=home):
+        install(platform="claude")
+
+    assert link.is_symlink(), "the link itself must be left in place"
+    assert "# graphify\n" in rules.read_text(encoding="utf-8")
+    out = capsys.readouterr().out
+    verb = "skill registered in" if existing else "created at"
+    assert f"  CLAUDE.md        ->  {verb} {link} -> {rules.resolve()}\n" in out, out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin rights on Windows")
+def test_uninstall_claude_md_names_the_symlink_target_it_edited(tmp_path, capsys):
+    """#3805, removal side: the project-scoped cleanup edits the symlink target too."""
+    from graphify.install import _remove_claude_skill_registration
+
+    (tmp_path / ".claude").mkdir()
+    rules = tmp_path / "rules.md"
+    rules.write_text("# my rules\n\n# graphify\n- skill line\n", encoding="utf-8")
+    link = tmp_path / ".claude" / "CLAUDE.md"
+    link.symlink_to(rules)
+
+    _remove_claude_skill_registration(tmp_path)
+
+    assert rules.read_text(encoding="utf-8") == "# my rules\n"
+    out = capsys.readouterr().out
+    assert f"registration removed from {link} -> {rules.resolve()}\n" in out, out
+
+
 def test_install_claude_md_does_not_skip_on_an_unrelated_mention_of_the_word(tmp_path, monkeypatch):
     """#3668: the idempotency guard used to be a bare `"graphify" in content`
     substring check, so any pre-existing mention of the word anywhere in the

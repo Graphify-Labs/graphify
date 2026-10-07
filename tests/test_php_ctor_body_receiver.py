@@ -109,7 +109,7 @@ def test_docblock_typed_property_assigned_in_ctor_body_resolves(tmp_path: Path):
     assert (index, _find(r, ".search()", "auditlog")) not in calls
     edge = calls[(index, service_search)]
     assert edge["confidence"] == "INFERRED"
-    assert edge["confidence_score"] == 0.8
+    assert edge["confidence_score"] == 0.85
     assert edge["context"] == "call"
 
 

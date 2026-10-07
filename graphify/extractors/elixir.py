@@ -4,7 +4,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from graphify.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id
+from graphify.extractors.base import (
+    _LANGUAGE_BUILTIN_GLOBALS,
+    _file_stem,
+    _make_id,
+    _read_source_bytes,
+)
 
 
 def extract_elixir(path: Path) -> dict:
@@ -18,7 +23,7 @@ def extract_elixir(path: Path) -> dict:
     try:
         language = Language(tselixir.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -51,6 +56,11 @@ def extract_elixir(path: Path) -> dict:
 
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
+    # Elixir scopes `import`/`use` to the module body it appears in and to the
+    # modules nested in it, so targets are recorded per enclosing module (None
+    # is the file's top level), along with each module's and function's parent.
+    call_scope: dict[str | None, list[str]] = {}
+    enclosing: dict[str, str | None] = {}
 
     _IMPORT_KEYWORDS = frozenset({"alias", "import", "require", "use"})
 
@@ -149,6 +159,7 @@ def extract_elixir(path: Path) -> dict:
             add_node(module_nid, module_name, line,
                      **({"_elixir_module": True} if parent_module_nid is None else {}))
             add_edge(file_nid, module_nid, "contains", line)
+            enclosing[module_nid] = parent_module_nid
             if do_block_node:
                 for child in do_block_node.children:
                     walk(child, parent_module_nid=module_nid)
@@ -167,6 +178,7 @@ def extract_elixir(path: Path) -> dict:
             add_node(proto_nid, proto_name, line,
                      **({"_elixir_module": True} if parent_module_nid is None else {}))
             add_edge(parent_module_nid or file_nid, proto_nid, "contains", line)
+            enclosing[proto_nid] = parent_module_nid
             if do_block_node:
                 for child in do_block_node.children:
                     walk(child, parent_module_nid=proto_nid)
@@ -183,6 +195,7 @@ def extract_elixir(path: Path) -> dict:
             label = f"{proto_name} (for {target})" if target else proto_name
             add_node(impl_nid, label, line)
             add_edge(parent_module_nid or file_nid, impl_nid, "contains", line)
+            enclosing[impl_nid] = parent_module_nid
             # Link the implementation to the protocol it satisfies. A same-file
             # protocol resolves directly; a cross-file target is filtered out by
             # the dangling-edge guard below rather than left hanging.
@@ -192,7 +205,16 @@ def extract_elixir(path: Path) -> dict:
                     walk(child, parent_module_nid=impl_nid)
             return
 
-        if keyword in ("def", "defp"):
+        # `defmacro`/`defmacrop` (macros) and `defguard`/`defguardp` (guard
+        # macros) define named, invocable members with the exact same head shape
+        # as `def`/`defp` — a `call` head, optionally wrapped in a `when`
+        # binary_operator. They were not in this branch, so they fell through to
+        # the generic recursion and were dropped entirely: the member was never a
+        # node and a call to it (e.g. a macro invoked elsewhere) had nothing to
+        # resolve to. Handle them identically to def/defp; they are already in the
+        # call-pass _SKIP_KEYWORDS so their own keyword is never mistaken for a call.
+        if keyword in ("def", "defp", "defmacro", "defmacrop",
+                       "defguard", "defguardp"):
             func_name = None
             if arguments_node:
                 for child in arguments_node.children:
@@ -222,6 +244,7 @@ def extract_elixir(path: Path) -> dict:
             container = parent_module_nid or file_nid
             func_nid = _make_id(container, func_name)
             add_node(func_nid, f"{func_name}()", line)
+            enclosing[func_nid] = parent_module_nid
             if parent_module_nid:
                 add_edge(parent_module_nid, func_nid, "method", line)
             else:
@@ -234,6 +257,10 @@ def extract_elixir(path: Path) -> dict:
             for module_name in _get_alias_modules(arguments_node):
                 tgt_nid = _make_id(module_name)
                 add_edge(file_nid, tgt_nid, "imports", line, context="import")
+                # Only import/use bring functions into scope for unqualified
+                # calls; alias/require do not.
+                if keyword in ("import", "use"):
+                    call_scope.setdefault(parent_module_nid, []).append(module_name)
             return
 
         for child in node.children:
@@ -254,6 +281,19 @@ def extract_elixir(path: Path) -> dict:
         "alias", "import", "require", "use",
         "if", "unless", "case", "cond", "with", "for",
     })
+
+    def _call_scope_for(caller_nid: str) -> list[str]:
+        """import/use targets visible to a call inside ``caller_nid``: its own
+        module's, each enclosing module's, then the file's top-level ones."""
+        scope: list[str] = []
+        seen: set[str] = set()  # a module nested in a same-named one shares its nid
+        container = enclosing.get(caller_nid)
+        while container is not None and container not in seen:
+            seen.add(container)
+            scope.extend(call_scope.get(container, ()))
+            container = enclosing.get(container)
+        scope.extend(call_scope.get(None, ()))
+        return scope
 
     def walk_calls(node, caller_nid: str) -> None:
         if node.type != "call":
@@ -297,6 +337,7 @@ def extract_elixir(path: Path) -> dict:
                     "is_member_call": is_member_call,
                     "source_file": str_path,
                     "source_location": f"L{node.start_point[0] + 1}",
+                    "elixir_call_scope": _call_scope_for(caller_nid),
                 })
         for child in node.children:
             walk_calls(child, caller_nid)

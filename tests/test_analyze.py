@@ -347,6 +347,39 @@ def test_graph_diff_empty_diff():
     assert diff["summary"] == "no changes"
 
 
+def _make_marked_graph(src, tgt):
+    """Helper: undirected graph whose one edge stores its direction in _src/_tgt."""
+    G = nx.Graph()
+    G.add_node("n1", label="Alpha")
+    G.add_node("n2", label="Beta")
+    G.add_edge(src, tgt, relation="calls", confidence="EXTRACTED", _src=src, _tgt=tgt)
+    return G
+
+
+def test_graph_diff_reversed_edge_reported():
+    # #4067: n1 calls n2 becoming n2 calls n1 must not vanish from the diff.
+    diff = graph_diff(_make_marked_graph("n1", "n2"), _make_marked_graph("n2", "n1"))
+    assert [(e["source"], e["target"]) for e in diff["new_edges"]] == [("n2", "n1")]
+    assert [(e["source"], e["target"]) for e in diff["removed_edges"]] == [("n1", "n2")]
+    assert diff["summary"] == "1 new edge, 1 edge removed"
+
+
+def test_graph_diff_unchanged_direction_no_changes():
+    diff = graph_diff(_make_marked_graph("n2", "n1"), _make_marked_graph("n2", "n1"))
+    assert diff["new_edges"] == []
+    assert diff["removed_edges"] == []
+    assert diff["summary"] == "no changes"
+
+
+def test_graph_diff_reversed_edge_without_markers_unchanged():
+    # Without _src/_tgt on both sides the edge is keyed by its endpoints, as before.
+    nodes = [("n1", "Alpha"), ("n2", "Beta")]
+    G_old = _make_simple_graph(nodes, [("n1", "n2", "calls", "EXTRACTED")])
+    G_new = _make_simple_graph(nodes, [("n2", "n1", "calls", "EXTRACTED")])
+    assert graph_diff(G_old, G_new)["summary"] == "no changes"
+    assert graph_diff(G_old, _make_marked_graph("n2", "n1"))["summary"] == "no changes"
+
+
 # --- code↔doc INFERRED suppression tests ---
 
 def _make_code_doc_graph():
@@ -603,6 +636,60 @@ def test_god_nodes_filter_is_case_insensitive():
         assert variant not in labels, f"`{variant}` should be filtered as JSON-key noise"
 
 
+def _question_diversity_graph():
+    G = nx.Graph()
+    ambiguous = [f"uncertain_{i}" for i in range(10)]
+    inferred = ["inferred_a", "inferred_b"]
+    disconnected = [f"disconnected_{i}" for i in range(5)]
+    for node in ["hub", *ambiguous, *inferred, *disconnected]:
+        G.add_node(node, label=node, source_file="src/example.py", file_type="code")
+    for node in ambiguous:
+        G.add_edge("hub", node, confidence="AMBIGUOUS", relation="uses")
+    for node in inferred:
+        G.add_edge("hub", node, confidence="INFERRED", relation="uses")
+    communities = {0: ["hub"], 1: ambiguous + inferred, 2: disconnected}
+    return G, communities
+
+
+def test_suggest_questions_does_not_starve_later_categories():
+    """#3849: ten ambiguous edges must not hide all other question types."""
+    G, communities = _question_diversity_graph()
+    questions = suggest_questions(G, communities, {})
+    assert len(questions) == 7
+    assert [q["type"] for q in questions[:5]] == [
+        "ambiguous_edge", "bridge_node", "verify_inferred", "isolated_nodes", "low_cohesion",
+    ]
+    assert questions == suggest_questions(G, communities, {})
+
+
+@pytest.mark.parametrize("top_n", [1, 3, 7, 100])
+def test_suggest_questions_diversity_preserves_limit_and_candidates(top_n):
+    G, communities = _question_diversity_graph()
+    all_questions = suggest_questions(G, communities, {}, top_n=100)
+    limited = suggest_questions(G, communities, {}, top_n=top_n)
+    assert limited == all_questions[:top_n]
+    assert sum(q["type"] == "ambiguous_edge" for q in all_questions) == 10
+    assert all(set(q) == {"type", "question", "why"} for q in all_questions)
+
+
+def test_suggest_questions_single_category_uses_available_slots():
+    G = nx.complete_graph(5)
+    for node in G:
+        G.nodes[node].update(label=str(node), source_file="example.py", file_type="code")
+    for u, v in G.edges:
+        G.edges[u, v].update(confidence="AMBIGUOUS", relation="uses")
+    questions = suggest_questions(G, {0: list(G)}, {})
+    assert len(questions) == 7
+    assert all(q["type"] == "ambiguous_edge" for q in questions)
+
+
+def test_suggest_questions_empty_graph_keeps_no_signal():
+    questions = suggest_questions(nx.Graph(), {}, {})
+    assert len(questions) == 1
+    assert questions[0]["type"] == "no_signal"
+    assert questions[0]["question"] is None
+
+
 def test_suggest_questions_excludes_rationale_nodes_from_isolated_count():
     G = nx.Graph()
     G.add_node("service", label="Service", file_type="code", source_file="service.py")
@@ -734,3 +821,71 @@ def test_find_import_cycles_no_cycles():
     G.add_node(y_id, **y)
     G.add_edge(x_id, y_id, relation="imports_from", source_file="x.ts", confidence="EXTRACTED")
     assert find_import_cycles(G) == []
+
+
+def test_surprise_score_flat_directory_is_not_cross_directory():
+    """Two files in the same (flat) scan root share a directory.
+
+    _top_level_dir() used to return the whole filename when the path had no
+    "/", so every pair of root-level files looked like it crossed repos and
+    got +2 with the reason "connects across different repos/directories".
+    """
+    G = nx.Graph()
+    G.add_node("a", label="handle", source_file="service.py", file_type="code")
+    G.add_node("b", label="Store", source_file="store.py", file_type="code")
+    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED", weight=1.0, source_file="service.py")
+    nc = {"a": 0, "b": 0}
+    score_flat, reasons_flat = _surprise_score(G, "a", "b", G.edges["a", "b"], nc, "service.py", "store.py")
+    score_nested, reasons_nested = _surprise_score(G, "a", "b", G.edges["a", "b"], nc, "pkg/service.py", "pkg/store.py")
+    assert "connects across different repos/directories" not in reasons_flat
+    assert score_flat == score_nested
+
+
+def test_surprise_score_root_file_vs_subdirectory_still_crosses():
+    """A root-level file and a file under a subdirectory are in different top-level dirs."""
+    G = nx.Graph()
+    G.add_node("a", label="main", source_file="main.py", file_type="code")
+    G.add_node("b", label="Store", source_file="pkg/store.py", file_type="code")
+    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED", weight=1.0, source_file="main.py")
+    nc = {"a": 0, "b": 0}
+    _, reasons = _surprise_score(G, "a", "b", G.edges["a", "b"], nc, "main.py", "pkg/store.py")
+    assert "connects across different repos/directories" in reasons
+
+
+def test_surprise_score_root_file_vs_out_of_root_absolute_path_still_crosses():
+    """_norm_source_file leaves a path outside the scan root absolute; its
+    first component is "". A root-level file must not collapse onto it."""
+    G = nx.Graph()
+    G.add_node("a", label="main", source_file="main.py", file_type="code")
+    G.add_node("b", label="Ext", source_file="/opt/vendor/ext.py", file_type="code")
+    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED", weight=1.0, source_file="main.py")
+    nc = {"a": 0, "b": 0}
+    _, reasons = _surprise_score(G, "a", "b", G.edges["a", "b"], nc, "main.py", "/opt/vendor/ext.py")
+    assert "connects across different repos/directories" in reasons
+
+
+def _cross_reasons(src_u, src_v, repo_u=None, repo_v=None):
+    G = nx.Graph()
+    G.add_node("a", label="A", source_file=src_u, file_type="code", **({"repo": repo_u} if repo_u else {}))
+    G.add_node("b", label="B", source_file=src_v, file_type="code", **({"repo": repo_v} if repo_v else {}))
+    G.add_edge("a", "b", relation="calls", confidence="EXTRACTED", weight=1.0, source_file=src_u)
+    _, reasons = _surprise_score(G, "a", "b", G.edges["a", "b"], {"a": 0, "b": 0}, src_u, src_v)
+    return "connects across different repos/directories" in reasons
+
+
+def test_surprise_score_merged_graph_counts_different_repos_as_crossing():
+    """merge-graphs / global add keep source_file repo-relative and tag each
+    node with `repo`, so two repos can share top-level directory names."""
+    assert _cross_reasons("server.py", "client.py", "svcA", "svcB")
+    assert _cross_reasons("src/x.py", "src/y.py", "svcA", "svcB")
+    assert not _cross_reasons("src/x.py", "src/y.py", "svcA", "svcA")
+
+
+def test_surprise_score_normalizes_backslash_paths():
+    assert _cross_reasons("pkg\\a.py", "lib\\b.py")
+    assert not _cross_reasons("pkg\\a.py", "pkg\\b.py")
+
+
+def test_surprise_score_ignores_leading_dot_slash():
+    assert _cross_reasons("./pkg/a.py", "b.py")
+    assert not _cross_reasons("./a.py", "b.py")

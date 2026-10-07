@@ -231,7 +231,7 @@ def _find(result: dict, label: str, id_contains: str) -> str:
 def test_qualified_annotation_still_resolves_by_short_name(tmp_path: Path):
     """Parity: threading the qualified form changes no edge. The written FQN
     names the in-corpus class here, and the resolution is exactly today's —
-    INFERRED 0.8 off the short name, decoy untouched."""
+    INFERRED 0.85 off the short name, decoy untouched."""
     calls, r = _extract(tmp_path, {
         "app/Services/LeadHunterService.php": _SERVICE,
         "app/Audit/AuditLog.php": _DECOY,
@@ -251,4 +251,4 @@ def test_qualified_annotation_still_resolves_by_short_name(tmp_path: Path):
     assert (index, _find(r, ".search()", "auditlog")) not in calls
     edge = calls[(index, service_search)]
     assert edge["confidence"] == "INFERRED"
-    assert edge["confidence_score"] == 0.8
+    assert edge["confidence_score"] == 0.85

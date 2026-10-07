@@ -9,6 +9,7 @@ import re
 import shlex
 import stat
 import subprocess
+import sys
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
@@ -21,7 +22,7 @@ from graphify.google_workspace import (
     convert_google_workspace_file,
     google_workspace_enabled,
 )
-from graphify.paths import GRAPHIFY_OUT, out_path
+from graphify.paths import GRAPHIFY_OUT, GRAPHIFY_OUT_NAME, out_path
 
 
 class FileType(str, Enum):
@@ -43,7 +44,7 @@ _MANIFEST_PATH = str(out_path("manifest.json"))
 _MTIME_COARSE_S = 2.0
 _MTIME_SUBSECOND_S = 0.05
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.vh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -550,12 +551,28 @@ def classify_file(path: Path) -> FileType | None:
     return None
 
 
+# Missing-pypdf is a process-global condition, not per-file, so warn at most
+# once per run — a corpus of many PDFs must not print the same hint N times.
+_pypdf_missing_warned = False
+
+
 def extract_pdf_text(path: Path) -> str:
     """Extract plain text from a PDF file using pypdf."""
     if not _file_within_size_cap(path):
         return ""
     try:
         from pypdf import PdfReader
+    except ImportError:
+        global _pypdf_missing_warned
+        if not _pypdf_missing_warned:
+            _pypdf_missing_warned = True
+            print(
+                "[graphify] WARNING: PDF text extraction skipped: 'pypdf' is not "
+                "installed. Install the pdf extra: uv tool install 'graphifyy[pdf]'",
+                file=sys.stderr,
+            )
+        return ""
+    try:
         reader = PdfReader(str(path))
         pages = []
         for page in reader.pages:
@@ -567,18 +584,104 @@ def extract_pdf_text(path: Path) -> str:
         return ""
 
 
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+# Content controls and custom XML wrap paragraphs and tables without changing them.
+_DOCX_WRAPPERS = frozenset({f"{_W}sdt", f"{_W}customXml"})
+# Text under these is not part of the text as the document reads: tracked deletions, text
+# moved away, the ruby guide over its base text, text boxes (read as paragraphs of their
+# own) and the fallback copy Word writes of every text box.
+_DOCX_SKIPPED = frozenset({f"{_W}del", f"{_W}moveFrom", f"{_W}rt", f"{_W}txbxContent", _MC_FALLBACK})
+# The run children python-docx's Run.text reads, each as the text it stands for.
+_DOCX_RUN_TEXT = tuple(f"{_W}{tag}" for tag in ("br", "cr", "noBreakHyphen", "ptab", "t", "tab"))
+
+
+def _docx_inside(element, stop, tags) -> bool:
+    node = element.getparent()
+    while node is not None and node is not stop:
+        if node.tag in tags:
+            return True
+        node = node.getparent()
+    return False
+
+
+def _docx_paragraph_text(p) -> str:
+    """Paragraph.text reads only the runs directly under the paragraph, so it drops tracked
+    insertions, content controls, simple fields and smart tags."""
+    return "".join(
+        str(element)
+        for element in p.iter(*_DOCX_RUN_TEXT)
+        if not _docx_inside(element, p, _DOCX_SKIPPED)
+    )
+
+
+def _docx_blocks(container):
+    """Yield the w:p and w:tbl elements of a container in document order, looking through
+    content controls and custom XML, with each text box's content after its paragraph."""
+    for child in container:
+        if child.tag == f"{_W}p":
+            yield child
+            for box in child.iter(f"{_W}txbxContent"):
+                if not _docx_inside(box, child, _DOCX_SKIPPED):
+                    yield from _docx_blocks(box)
+        elif child.tag == f"{_W}tbl":
+            yield child
+        elif child.tag in _DOCX_WRAPPERS:
+            content = child.find(f"{_W}sdtContent")
+            yield from _docx_blocks(child if content is None else content)
+
+
+def _docx_children(parent, tag: str):
+    for child in parent:
+        if child.tag == f"{_W}{tag}":
+            yield child
+        elif child.tag in _DOCX_WRAPPERS:
+            content = child.find(f"{_W}sdtContent")
+            yield from _docx_children(child if content is None else content, tag)
+
+
+def _docx_cell_markdown(tc) -> str:
+    """A cell's text on one line with pipes escaped, so it cannot break its table row."""
+    parts = []
+    for block in _docx_blocks(tc):
+        if block.tag == f"{_W}p":
+            parts.append(_docx_paragraph_text(block))
+        else:  # a nested table, flattened into the cell
+            parts.extend(
+                _docx_cell_markdown(cell)
+                for row in _docx_children(block, "tr")
+                for cell in _docx_children(row, "tc")
+            )
+    return " ".join(" ".join(part.split()) for part in parts if part.strip()).replace("|", "\\|")
+
+
 def docx_to_markdown(path: Path) -> str:
     """Convert a .docx file to markdown text using python-docx."""
     if not _zip_within_caps(path):
         return ""
     try:
         from docx import Document
-        from docx.oxml.ns import qn
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
         doc = Document(str(path))
         lines = []
-        for para in doc.paragraphs:
+        # Walk the body in document order, so a table stays under the heading it belongs to.
+        for block in _docx_blocks(doc.element.body):
+            if block.tag == f"{_W}tbl":
+                # python-docx's rows repeat a merged cell across the grid columns it spans,
+                # which keeps the header and the rows the same width.
+                rows = [[_docx_cell_markdown(cell._tc) for cell in row.cells] for row in Table(block, doc).rows]
+                if not rows:
+                    continue
+                header = "| " + " | ".join(rows[0]) + " |"
+                sep = "| " + " | ".join("---" for _ in rows[0]) + " |"
+                lines.extend([header, sep])
+                for row in rows[1:]:
+                    lines.append("| " + " | ".join(row) + " |")
+                continue
+            para = Paragraph(block, doc)
             style = para.style.name if para.style else ""
-            text = para.text.strip()
+            text = _docx_paragraph_text(block).strip()
             if not text:
                 lines.append("")
                 continue
@@ -592,16 +695,6 @@ def docx_to_markdown(path: Path) -> str:
                 lines.append(f"- {text}")
             else:
                 lines.append(text)
-        # Tables
-        for table in doc.tables:
-            rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
-            if not rows:
-                continue
-            header = "| " + " | ".join(rows[0]) + " |"
-            sep = "| " + " | ".join("---" for _ in rows[0]) + " |"
-            lines.extend([header, sep])
-            for row in rows[1:]:
-                lines.append("| " + " | ".join(row) + " |")
         return "\n".join(lines)
     except ImportError:
         return ""
@@ -878,6 +971,31 @@ _SKIP_FILES = {
 # unconditionally pruned above; only the ambiguous bare name is gated here.
 _JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
 
+# Platforms whose project-scope skills dir is one level below the hidden dir
+# (install.py: pi -> .pi/agent/skills, kilo -> .config/kilo/skills).
+_NESTED_SKILL_HOLDERS = frozenset({(".pi", "agent"), (".config", "kilo")})
+
+# Single files `graphify install` writes whole into a project (#4057): the
+# always-on rules/steering/workflow files and the opencode/kilo hook plugins.
+# Matched on the hidden holder dir plus the exact relative path, never on the
+# bare file name, so e.g. docs/graphify.md or src/plugins/graphify.js stay.
+# Files graphify only adds a section or entry to (AGENTS.md, CLAUDE.md,
+# settings.json, ...) belong to the user and are not listed here.
+_GRAPHIFY_INSTALLED_FILES = frozenset({
+    (".agents", "rules", "graphify.md"),      # antigravity
+    (".agents", "workflows", "graphify.md"),  # antigravity
+    (".cursor", "rules", "graphify.mdc"),     # cursor
+    (".kilo", "plugins", "graphify.js"),      # kilo
+    (".kiro", "steering", "graphify.md"),     # kiro
+    (".opencode", "plugins", "graphify.js"),  # opencode
+    (".windsurf", "rules", "graphify.md"),    # devin
+})
+
+
+def _is_installed_graphify_file(path: "Path") -> bool:
+    """True for a single file `graphify install` wrote into the project (#4057)."""
+    return path.parts[-3:] in _GRAPHIFY_INSTALLED_FILES
+
 # Files a coverage tool writes into its own output dir. Any one of them is proof
 # the directory is generated: lcov (lcov.info), nyc/Istanbul (coverage-final.json,
 # clover.xml, the lcov-report/ subtree), coverage.py (coverage.xml, .coverage),
@@ -1035,6 +1153,21 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
     # worktrees/ nested inside a dotted dir (e.g. .claude/worktrees/, .git/worktrees/)
     if part == "worktrees" and parent is not None and parent.name.startswith("."):
         return True
+    # graphify's own skill folder, as `graphify install --project` writes it
+    # (#4057): <hidden dir>/skills/graphify/ (.claude, .codex, .agents, ...),
+    # .pi/agent/skills/graphify/, .config/kilo/skills/graphify/ and
+    # .aider/graphify/. Matched on the whole path shape rather than the bare
+    # names "skills"/"graphify" (#2479), so graphify's own source tree
+    # (graphify/skills/<host>/), a top-level skills/graphify/ and the user's
+    # other skills under .claude/skills/ are still indexed.
+    if part == "graphify" and parent is not None:
+        if parent.name == ".aider":
+            return True
+        if parent.name == "skills":
+            holder = parent.parent
+            if holder.name.startswith(".") and holder.name != "..":
+                return True
+            return (holder.parent.name, holder.name) in _NESTED_SKILL_HOLDERS
     return False
 
 
@@ -1678,7 +1811,7 @@ def ignored_predicate(
             rel_parts = path.relative_to(root).parts
         except ValueError:
             return False  # outside the scan root: detect() never considered it
-        if path.name in _SKIP_FILES:
+        if path.name in _SKIP_FILES or _is_installed_graphify_file(path):
             return True
         # Noise-dir pruning: os.walk never descends these, so anything beneath
         # one is excluded from the corpus regardless of ignore patterns.
@@ -1921,6 +2054,8 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 if fname in _SKIP_FILES:
                     continue
                 p = dp / fname
+                if _is_installed_graphify_file(p):
+                    continue
                 if p not in seen:
                     seen.add(p)
                     all_files.append(p)
@@ -2262,6 +2397,27 @@ def _collapse_manifest_duplicates(
     return result
 
 
+def _manifest_storage_anchor(manifest_path: str | Path | None, root: Path | None) -> Path | None:
+    """When a manifest lives under <repo>/graphify-out/manifest.json and root
+    is a subfolder of <repo>, stored relative keys are anchored to <repo> (#3785)."""
+    if root is None or not manifest_path:
+        return root
+    try:
+        mp = Path(manifest_path).resolve()
+        if mp.parent.name in ("graphify-out", GRAPHIFY_OUT_NAME):
+            manifest_base = mp.parent.parent
+            root_resolved = Path(root).resolve()
+            if root_resolved != manifest_base:
+                try:
+                    root_resolved.relative_to(manifest_base)
+                    return manifest_base
+                except ValueError:
+                    pass
+    except (OSError, RuntimeError):
+        pass
+    return root
+
+
 def load_manifest(
     manifest_path: str = _MANIFEST_PATH,
     *,
@@ -2286,9 +2442,67 @@ def load_manifest(
         return raw
     if root is None:
         return _collapse_manifest_duplicates(raw.items(), _nfc)
+    anchor = _manifest_storage_anchor(manifest_path, root) or root
     return _collapse_manifest_duplicates(
-        raw.items(), lambda k: _nfc(_to_absolute_from_storage(k, root))
+        raw.items(), lambda k: _nfc(_to_absolute_from_storage(k, anchor))
     )
+
+
+def _checkout_prefix(abs_key: str, relative_keys: set[str]) -> str | None:
+    """Longest directory prefix of ``abs_key`` whose suffix is in ``relative_keys``.
+
+    The suffix is forward-slash and NFC. ``src/c.py`` beats a shorter ``c.py``.
+    Prefixes ``""``, ``"/"``, and ``"\\"`` are skipped so a shorter suffix can
+    still match. The prefix that remains must be a real directory.
+    """
+    parts = _nfc(abs_key).replace("\\", "/").split("/")
+    best: tuple[int, str] | None = None
+    for i in range(1, len(parts)):
+        suffix = "/".join(parts[i:])
+        if suffix not in relative_keys:
+            continue
+        prefix = "/".join(parts[:i])
+        if prefix in ("", "/", "\\"):
+            continue
+        if not Path(prefix).is_dir():
+            continue
+        if best is None or len(suffix) > best[0]:
+            best = (len(suffix), prefix)
+    return None if best is None else best[1]
+
+
+def _previous_checkout_absolute_keys(
+    existing_keys: Iterable[Any],
+    storage_root: Path | None,
+    relative_keys: set[str],
+) -> set[str]:
+    """Absolute keys that still name a previous checkout (#3581).
+
+    A key is a candidate only when :func:`_to_relative_for_storage` keeps it
+    absolute against ``storage_root`` (a sibling row that becomes relative,
+    including #3785, is not a candidate). Candidates that share one directory
+    prefix are a previous checkout when that group has at least two keys. One
+    absolute key is an include row and stays. ``storage_root is None`` yields
+    an empty set.
+    """
+    if storage_root is None:
+        return set()
+    groups: dict[str, set[str]] = {}
+    for key in existing_keys:
+        if not isinstance(key, str) or not _looks_absolute(key):
+            continue
+        stored = _nfc(_to_relative_for_storage(key, storage_root))
+        if not _looks_absolute(stored):
+            continue
+        prefix = _checkout_prefix(stored, relative_keys)
+        if prefix is None:
+            continue
+        groups.setdefault(prefix, set()).add(key)
+    stale: set[str] = set()
+    for keys in groups.values():
+        if len(keys) >= 2:
+            stale.update(keys)
+    return stale
 
 
 def save_manifest(
@@ -2323,9 +2537,12 @@ def save_manifest(
     forever and masquerading as deletions in detect_incremental. It must be
     the RAW detect output, not a stamp-filtered subset — pruning to a
     filtered set would erase rows the filter merely omitted (failed chunks,
-    --code-only doc rows). Out-of-root entries are never pruned. Callers
-    saving a SUBSET of files (changed_paths hooks, skill runbooks, #917)
-    must leave this None so their untouched rows are preserved.
+    --code-only doc rows). When this argument is set, two or more absolute
+    keys that share a directory prefix and match relative keys this save writes
+    are a previous checkout and are dropped (#3581). A single include row stays.
+    Callers saving a SUBSET of files (changed_paths hooks, skill runbooks, #917)
+    must leave this None so their untouched rows, including out-of-root rows,
+    are preserved.
 
     ``clear_semantic`` (#1948): files that were dispatched this run but
     produced no stamped output (e.g. the LLM omitted their chunk on a
@@ -2426,6 +2643,21 @@ def save_manifest(
     # caller supplied the full scan corpus, additionally prune in-root rows
     # the scan no longer covers: those files were excluded, not deleted, and
     # keeping the row makes them look deleted on every future run (#1908).
+    all_files = [f for file_list in files.values() for f in file_list]
+    storage_root = _manifest_storage_anchor(manifest_path, root) if root is not None else None
+    # A subset save omits scan_corpus and must keep every live row it was not
+    # given (#917), including an include row and a previous checkout. The
+    # checkout drop runs only on a full scan.
+    stale_checkout: set[str] = set()
+    if scan_set is not None and storage_root is not None:
+        new_rels: set[str] = set()
+        for f in all_files:
+            stored = _nfc(_to_relative_for_storage(_nfc(f), storage_root))
+            if not _looks_absolute(stored):
+                new_rels.add(stored)
+        stale_checkout = _previous_checkout_absolute_keys(
+            existing.keys(), storage_root, new_rels
+        )
     manifest: dict[str, dict] = {}
     for f, entry in existing.items():
         normalised = _normalise_entry(entry)
@@ -2436,6 +2668,8 @@ def save_manifest(
                 continue
         except OSError:
             continue
+        if f in stale_checkout:
+            continue  # previous checkout copied with graphify-out (#3581)
         if scan_set is not None and not _in_scan(f) and _in_root(f):
             continue  # excluded-but-alive: drop the stale row (#1908)
         if clear_ast_set is not None and _in_clear_ast(f):
@@ -2448,7 +2682,6 @@ def save_manifest(
             normalised = {**normalised, "semantic_hash": ""}
         manifest[f] = normalised
 
-    all_files = [f for file_list in files.values() for f in file_list]
     with ThreadPoolExecutor() as pool:
         raw = pool.map(_stat_and_hash, all_files)
     hashed: dict[str, tuple[float, str]] = {
@@ -2489,18 +2722,9 @@ def save_manifest(
             "semantic_hash": sem_h,
         }
         manifest[key] = entry
-    if root is not None:
-        # Persist in portable form: forward-slash relative paths. Keys outside
-        # ``root`` (out-of-tree symlinked corpora, --include sources) keep
-        # their absolute form so the manifest round-trips on the saving
-        # machine even when not every entry can be portably encoded.
-        # NFC after relativize so on-disk keys match what load_manifest
-        # re-anchors and compares against (#2221). A seeded absolute key and
-        # a seeded relative key for the same file collapse here too (#1964)
-        # -- _collapse_manifest_duplicates keeps whichever is more recently
-        # seen instead of whichever the dict comprehension iterates last.
+    if storage_root is not None:
         manifest = _collapse_manifest_duplicates(
-            manifest.items(), lambda k: _nfc(_to_relative_for_storage(k, root))
+            manifest.items(), lambda k: _nfc(_to_relative_for_storage(k, storage_root))
         )
     else:
         manifest = _collapse_manifest_duplicates(manifest.items(), _nfc)
@@ -2678,10 +2902,32 @@ def detect_incremental(
     # current scan was EXCLUDED (ignore rules / --exclude changed) and must
     # not be reported as deleted. Mirrors the watch-side excluded-vs-deleted
     # distinction (#1795).
+    try:
+        root_res: Path | None = Path(root).resolve() if root is not None else None
+    except (OSError, RuntimeError):
+        root_res = Path(root) if root is not None else None
+
+    def _in_root(path_str: str) -> bool:
+        if root_res is None:
+            return True
+        p = Path(path_str)
+        try:
+            p.relative_to(root_res)
+            return True
+        except ValueError:
+            pass
+        try:
+            p.resolve().relative_to(root_res)
+            return True
+        except (ValueError, OSError, RuntimeError):
+            return False
+
     current_files = {_nfc(f) for flist in full["files"].values() for f in flist}
     deleted_files: list[str] = []
     excluded_files: list[str] = []
     for f in manifest:
+        if not _in_root(f):
+            continue
         if _nfc(f) in current_files:
             continue
         try:

@@ -90,7 +90,7 @@ def test_first_class_callable_on_typed_property_emits_indirect_call(tmp_path: Pa
     # the ordinary `$this->leadHunter->search([])` call would get.
     edge = edges[(index, service_search, "indirect_call")]
     assert edge["confidence"] == "INFERRED"
-    assert edge["confidence_score"] == 0.8
+    assert edge["confidence_score"] == 0.85
 
 
 def test_nullsafe_first_class_callable_emits_indirect_call(tmp_path: Path):
@@ -161,7 +161,7 @@ def test_ordinary_member_call_still_emits_calls(tmp_path: Path):
     assert (index, service_search, "indirect_call") not in edges
     edge = edges[(index, service_search, "calls")]
     assert edge["confidence"] == "INFERRED"
-    assert edge["confidence_score"] == 0.8
+    assert edge["confidence_score"] == 0.85
     assert edge["context"] == "call"
 
 

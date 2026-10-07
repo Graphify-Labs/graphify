@@ -6,16 +6,29 @@ import os
 import unicodedata
 
 from pathlib import Path
-from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS
-from graphify.extractors.base import _file_stem, _make_id
+from urllib.parse import unquote
+from graphify.detect import CODE_EXTENSIONS, DOC_EXTENSIONS, classify_file
+from graphify.extractors.base import _file_stem, _make_id, _read_source_text
 from graphify.security import sanitize_metadata
 
 
-_MD_INLINE_LINK_RE = re.compile(r'(?<!\!)\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+[^)]*)?\)')
+# A link destination is either <bracketed>, the only CommonMark form that may
+# contain spaces ([t](<My Note.md>)), or a bare run without whitespace. The
+# bracketed form is tried first so a spaced name is captured whole instead of
+# being cut at the first space; callers take whichever group matched. After the
+# `>` it only accepts a CommonMark title ("..", '..' or (..) without a nested
+# paren), so an unclosed `<` falls back to the bare form rather than swallowing
+# the links that follow on the line.
+_MD_INLINE_LINK_RE = re.compile(
+    r'(?<!\!)\[[^\]]*\]\(\s*(?:'
+    r'<([^<>\n]+)>\s*(?:"[^"\n]*"|\'[^\'\n]*\'|\([^()\n]*\))?\s*'
+    r'|<?([^)\s>]+)>?(?:\s+[^)]*)?'
+    r')\)')
 
-_MD_REF_DEF_RE = re.compile(r'^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)>?')
+_MD_REF_DEF_RE = re.compile(
+    r'^\s{0,3}\[[^\]]+\]:\s*(?:<([^<>\n]+)>(?=\s*(?:["\'(]|$))|<?([^\s>]+)>?)')
 
-_MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]')
+_MD_WIKILINK_RE = re.compile(r'(?<!\!)\[\[([^\]|#]+?)(?:\\?\|[^\]]*|#[^\]]*)?\]\]')
 
 _MD_LINKABLE_EXTS = {".md", ".mdx", ".qmd", ".markdown", ".rst", ".txt"}
 
@@ -207,6 +220,35 @@ def _vault_lookup(target: str, root: Path) -> "Path | None":
     return min(matches)[2]
 
 
+def _percent_decoded(target: str, source_dir: Path) -> str:
+    """Decode a URL-style link destination such as ``My%20Note.md``.
+
+    Inline and reference links are URLs, so a space or a non-ASCII character
+    in a file name is written percent-encoded (the form Obsidian writes when
+    wikilinks are turned off). A file whose name literally contains the
+    escape keeps precedence (``[x](100%25)`` beside ``100%25.md``), so a
+    link that resolved before still resolves to the same file. Wikilinks
+    carry the note name verbatim and never come through here.
+    """
+    if "%" not in target:
+        return target
+    decoded = unquote(target)
+    if decoded == target:
+        return target
+    literal = target if Path(target).suffix else target + ".md"
+    try:
+        if (source_dir / literal).is_file():
+            return target
+    except OSError:
+        pass
+    return decoded
+
+
+def _is_external_link(target: str) -> bool:
+    low = target.lower()
+    return "://" in target or low.startswith(("mailto:", "tel:", "//", "data:"))
+
+
 def _resolve_markdown_link(raw: str, source_dir: Path,
                            wikilink: bool = False) -> "Path | None":
     """Resolve a markdown link target to the absolute path of a sibling document.
@@ -219,7 +261,13 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
 
     The anchor fragment (``#section``) and query (``?x=1``) are stripped before
     resolution so ``./repo.md#setup`` resolves to the same node as ``./repo.md``.
-    Extension-less targets (typical of wikilinks) are treated as sibling ``.md``.
+    Inline and reference destinations are percent-decoded (``My%20Note.md``),
+    see _percent_decoded. Extension-less targets (typical of wikilinks) are
+    treated as sibling ``.md``.
+    A wikilink whose note name itself contains a dot (``[[note.en]]``,
+    ``[[v1.2 release]]``) gets the same ``.md`` completion, but only when that
+    document exists and no file graphify indexes sits at the literal target;
+    otherwise (``[[image.png]]``) it stays skipped.
 
     With ``wikilink=True``, a target whose lexically resolved path does not
     exist is retried as a vault-global lookup across the active scan root (see
@@ -234,15 +282,33 @@ def _resolve_markdown_link(raw: str, source_dir: Path,
     target = target.split("#", 1)[0].split("?", 1)[0].strip()
     if not target:
         return None
-    low = target.lower()
-    if "://" in target or low.startswith(("mailto:", "tel:", "//", "data:")):
+    if _is_external_link(target):
         return None
+    if not wikilink:
+        # Decoding can reveal a scheme or a protocol-relative prefix
+        # (%2F%2Fhost), so the external-link guard runs again.
+        target = _percent_decoded(target, source_dir)
+        if _is_external_link(target):
+            return None
     suffix = Path(target).suffix.lower()
     if suffix == "":
         target = target + ".md"
         suffix = ".md"
     if suffix not in _MD_LINKABLE_EXTS:
-        return None
+        if not wikilink:
+            return None
+        # The suffix may be part of the note name ([[v1.2 release]]): try
+        # <name>.md through the same sibling-then-vault resolution and keep
+        # the link only when that document exists. A literal target graphify
+        # indexes itself ([[pic.png]] beside pic.png.md) keeps precedence.
+        literal = Path(os.path.normpath(str(source_dir / target)))
+        try:
+            if literal.is_file() and classify_file(literal) is not None:
+                return None
+            hit = _resolve_markdown_link(target + ".md", source_dir, wikilink=True)
+            return hit if hit is not None and hit.is_file() else None
+        except OSError:
+            return None
     candidate = Path(target)
     if not candidate.is_absolute():
         candidate = source_dir / candidate
@@ -347,7 +413,7 @@ def extract_markdown(path: Path) -> dict:
     No tree-sitter dependency — pure line-by-line parsing.
     """
     try:
-        source = path.read_text(encoding="utf-8", errors="replace")
+        source = _read_source_text(path)
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
@@ -467,12 +533,12 @@ def extract_markdown(path: Path) -> dict:
         # non-fenced line (including heading lines, which the heading branch
         # below `continue`s past) so links anywhere in the doc are captured.
         for m in _MD_INLINE_LINK_RE.finditer(line_text):
-            add_link(m.group(1), line_num)
+            add_link(m.group(1) or m.group(2), line_num)
         for m in _MD_WIKILINK_RE.finditer(line_text):
             add_link(m.group(1), line_num, wikilink=True)
         ref_def = _MD_REF_DEF_RE.match(line_text)
         if ref_def:
-            add_link(ref_def.group(1), line_num)
+            add_link(ref_def.group(1) or ref_def.group(2), line_num)
 
         # Inside the frontmatter block a leading `#` is a YAML comment, not an
         # H1. Links above are still scanned there on purpose: review workflows

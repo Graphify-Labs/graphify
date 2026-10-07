@@ -765,3 +765,57 @@ def test_csharp_name_resolver_resolves_type_in_partial_graph_without_contains():
     )
     assert resolved == "lib::type", "Valid C# type must resolve even without `contains` edges"
     assert decisive is True
+
+
+def _crlf_vs_lf(tmp_path: Path, files: dict[str, str]) -> tuple[dict, dict]:
+    results = []
+    for name, newline in (("lf", "\n"), ("crlf", "\r\n")):
+        root = tmp_path / name
+        paths = []
+        for rel, text in files.items():
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(text.replace("\n", newline).encode("utf-8"))
+            paths.append(p)
+        results.append(extract(paths, root=root, cache_root=root))
+    return results[0], results[1]
+
+
+def test_csharp_scope_metadata_does_not_depend_on_line_endings(tmp_path: Path):
+    """Namespace scope ids were byte offsets, so a CRLF checkout (Windows,
+    core.autocrlf) and an LF checkout of the same commit wrote different
+    `scope_chain` / `scope_id` metadata into graph.json. Row:column is the
+    same for both."""
+    files = {
+        "core.cs": "// Core types.\nusing System;\n\nnamespace Game.Core\n{\n    public class Damage {}\n}\n",
+        "combat.cs": (
+            "// Combat.\n"
+            "using System;\n"
+            "\n"
+            "namespace Game.Combat\n"
+            "{\n"
+            "    using Dmg = Game.Core.Damage;\n"
+            "\n"
+            "    public class Weapon : Dmg\n"
+            "    {\n"
+            "        public void Hit() {}\n"
+            "    }\n"
+            "}\n"
+        ),
+    }
+    lf, crlf = _crlf_vs_lf(tmp_path, files)
+
+    def shape(result: dict) -> tuple[list, list]:
+        nodes = sorted(
+            (n["id"], repr(sorted((n.get("metadata") or {}).items())), n.get("source_location"))
+            for n in result["nodes"]
+        )
+        edges = sorted((e["source"], e["target"], e["relation"]) for e in result["edges"])
+        return nodes, edges
+
+    assert any("scope_chain" in (n.get("metadata") or {}) for n in lf["nodes"])
+    assert shape(lf) == shape(crlf)
+    damage = _targets(crlf, "inherits", "Damage")
+    assert damage and all("core.cs" in d["source_file"] for d in damage), (
+        "the namespace-scoped alias must still resolve in a CRLF file"
+    )

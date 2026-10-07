@@ -8,6 +8,8 @@ from graphify.extractors.base import (  # noqa: F401
     _LANGUAGE_BUILTIN_GLOBALS,
     _file_stem,
     _make_id,
+    _read_source_bytes,
+    _read_source_text,
     _read_text,
 )
 import functools
@@ -622,6 +624,16 @@ def _package_entry_candidates(
     candidates.append(package_dir / "index")
     return candidates
 
+_BUILD_OUTPUT_DIRS = frozenset({"dist", "build", "target", "out", "dist-protected"})
+
+def _is_build_output_path(path: Path, package_dir: Path) -> bool:
+    """True if path points into a known build-output directory within package_dir."""
+    try:
+        rel = _resolve_cached(path).relative_to(_resolve_cached(package_dir))
+        return bool(rel.parts and rel.parts[0] in _BUILD_OUTPUT_DIRS)
+    except ValueError:
+        return False
+
 def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
     packages = _load_workspace_packages(start_dir)
     platform = _importer_platform(start_dir)
@@ -632,10 +644,17 @@ def _resolve_workspace_import(raw: str, start_dir: Path) -> Path | None:
             subpath = raw[len(package_name) + 1:]
         else:
             continue
+        build_fallback: Path | None = None
         for candidate in _package_entry_candidates(package_dir, subpath, platform):
             resolved = _resolve_js_import_path(candidate)
             if resolved.is_file():
-                return resolved
+                if _is_build_output_path(resolved, package_dir):
+                    if build_fallback is None:
+                        build_fallback = resolved
+                else:
+                    return resolved
+        if build_fallback is not None:
+            return build_fallback
     return None
 
 def _find_js_project_anchor(start_dir: Path) -> Path:
@@ -1229,18 +1248,24 @@ def _apply_symbol_resolution_facts(
         })
         return node_id
 
+    # Keyed by the emitting file as well: two files whose ids collide (`a-b/x.ts`
+    # and `a/b/x.ts` both make `a_b_x`) share `source` until
+    # _disambiguate_colliding_node_ids salts them by source_file, so without the
+    # file the second file's identical edge was dropped as a duplicate of the
+    # first, and which file kept it depended on processing order.
     existing_edges = {
         (
             str(edge.get("source")),
             str(edge.get("target")),
             str(edge.get("relation")),
             str(edge.get("context") or ""),
+            _js_source_path(str(edge.get("source_file") or ""), root),
         )
         for edge in edges
     }
 
     def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None, type_only: bool = False) -> None:
-        key = (source, target, relation, context or "")
+        key = (source, target, relation, context or "", _js_source_path(str(source_path), root))
         if key in existing_edges:
             return
         existing_edges.add(key)
@@ -1622,11 +1647,11 @@ def _parse_js_tree(path: Path):
         vue_lang: str | None = None
         if path.suffix == ".vue":
             masked, vue_lang = _vue_mask_non_script(
-                path.read_text(encoding="utf-8", errors="replace")
+                _read_source_text(path, warn=False)
             )
             source = masked.encode("utf-8")
         else:
-            source = path.read_bytes()
+            source = _read_source_bytes(path, warn=False)
         use_ts = path.suffix in (".ts", ".mts", ".cts") or (
             path.suffix == ".vue" and vue_lang not in ("js", "jsx")
         )
@@ -2230,7 +2255,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
 def _parse_python_tree_cached(path_str: str, _mtime_ns: int, _size: int):
     import tree_sitter_python as tspython
     from tree_sitter import Language, Parser
-    source = Path(path_str).read_bytes()
+    source = _read_source_bytes(Path(path_str), warn=False)
     parser = Parser(Language(tspython.language()))
     return source, parser.parse(source).root_node
 
@@ -3104,7 +3129,7 @@ def _resolve_cross_file_java_imports(
     pkg_by_src: dict[str, str] = {}
     for path, file_result in zip(paths, per_file):
         try:
-            source = path.read_bytes()
+            source = _read_source_bytes(path, warn=False)
             tree = parser.parse(source)
         except Exception:
             continue
@@ -3400,7 +3425,7 @@ def _resolve_java_type_references(
         if not srcs:
             continue
         try:
-            source = path.read_bytes()
+            source = _read_source_bytes(path, warn=False)
             tree = parser.parse(source)
         except Exception:
             continue
@@ -3786,7 +3811,7 @@ def _resolve_php_type_references(
         if not srcs:
             continue
         try:
-            source = path.read_bytes()
+            source = _read_source_bytes(path, warn=False)
             tree = parser.parse(source)
         except Exception:
             continue

@@ -91,6 +91,8 @@ def extract_package_manifest(path: Path) -> dict[str, Any]:
         info = _PARSERS[eco](text)
     except Exception as exc:  # noqa: BLE001 — a malformed manifest must not abort extraction
         return {"nodes": [], "edges": [], "error": f"manifest parse error: {exc}"}
+    if isinstance(info, dict) and info.get("skipped"):
+        return {"nodes": [], "edges": [], "skipped": info["skipped"]}
     if not info or not info.get("name"):
         return {"nodes": [], "edges": []}
 
@@ -237,6 +239,8 @@ def _parse_cargo(text: str) -> dict | None:
     # package of its own — emit nothing rather than a fabricated node. ``name`` is
     # never workspace-inheritable in Cargo, but guard on the type anyway.
     if not isinstance(name, str) or not name:
+        if isinstance(data.get("workspace"), dict):
+            return {"name": None, "skipped": "virtual workspace root Cargo.toml"}
         return None
     # ``version`` may be workspace-inherited (``version.workspace = true``), which
     # parses to a table; keep only a concrete string version.

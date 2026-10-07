@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from pathlib import Path
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes
 
 # Recovers CREATE FUNCTION/PROCEDURE statements the grammar could not parse
 # structurally. Used by BOTH recovery sites — the walk-time ERROR-node scan and
@@ -312,7 +312,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         source = (
             content.encode("utf-8") if isinstance(content, str)
             else content if content is not None
-            else path.read_bytes()
+            else _read_source_bytes(path)
         )
         tree = parser.parse(source)
         root = tree.root_node
@@ -328,6 +328,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     edges: list[dict] = []
     seen_ids: set[str] = {file_nid}
     table_nids: dict[str, str] = {}  # name → nid for reference resolution
+    routine_nids: dict[str, str] = {}  # function/procedure name → nid, for trigger links
 
     def _read(n) -> str:
         return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")
@@ -448,6 +449,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             if name:
                 nid = _make_id(stem, name)
                 _add_node(nid, f"{name}()", line)
+                routine_nids[_norm_ident(name)] = nid
                 _walk_from_refs(node, nid, line)
 
         elif t == "create_procedure":
@@ -455,6 +457,7 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             if name:
                 nid = _make_id(stem, name)
                 _add_node(nid, f"{name}()", line)
+                routine_nids[_norm_ident(name)] = nid
                 _walk_from_refs(node, nid, line)
 
         elif t == "alter_table":
@@ -487,8 +490,10 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         elif t == "create_trigger":
             trig_name: str | None = None
             tbl_name: str | None = None
+            exec_name: str | None = None
             after_trigger = False
             after_on = False
+            after_execute = False
             for c in node.children:
                 if c.type == "keyword_trigger":
                     after_trigger = True
@@ -501,12 +506,30 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                     after_on = True
                 elif after_on and not tbl_name and c.type == "object_reference":
                     tbl_name = _read(c)
+                # The routine the trigger runs follows EXECUTE
+                # FUNCTION/PROCEDURE (`... EXECUTE FUNCTION log_it()`). The ON
+                # table is captured before EXECUTE appears, so this reads the
+                # routine, not the table.
+                elif c.type == "keyword_execute":
+                    after_execute = True
+                elif after_execute and not exec_name and c.type == "object_reference":
+                    exec_name = _read(c)
             if trig_name:
                 trig_nid = _make_id(stem, trig_name)
                 _add_node(trig_nid, trig_name, line)
                 if tbl_name:
                     tbl_nid = table_nids.get(_norm_ident(tbl_name)) or _ref_stub(tbl_name)
                     _add_edge(trig_nid, tbl_nid, "triggers", line)
+                # Link the trigger to the function it executes. A trigger exists
+                # to run that routine, yet the edge was never emitted. Resolve
+                # name-based against routines defined in this file (a trigger's
+                # function is declared before it); fail closed when the routine
+                # is not in this file rather than guess a cross-file target or
+                # mint a bare-name stub that cannot rewire onto a `name()` node.
+                if exec_name:
+                    routine_nid = routine_nids.get(_norm_ident(exec_name))
+                    if routine_nid:
+                        _add_edge(trig_nid, routine_nid, "executes", line)
 
         elif t == "create_index":
             # CREATE [UNIQUE] INDEX [CONCURRENTLY] [IF NOT EXISTS] <name>
@@ -675,6 +698,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         elif stmt.type == "transaction":
             # BEGIN; ... COMMIT; wraps DDL in a transaction node whose children
             # are statement nodes, not direct create_table nodes (#2953).
+            walk(stmt)
+        elif stmt.type == "block":
+            # A bare `BEGIN;` followed by a `DO $$ ... END $$;` parses as a
+            # block that closes on the DO body's END, so the DDL before it sits
+            # under a block node instead of a transaction (#3886).
             walk(stmt)
         elif stmt.type in ("fb_proc_or_trigger", "set_term", "declare_external_function", "ERROR"):
             walk(stmt)

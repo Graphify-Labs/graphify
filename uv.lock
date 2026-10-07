@@ -1096,7 +1096,7 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.72"
+version = "0.9.81"
 source = { editable = "." }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1346,7 +1346,7 @@ requires-dist = [
     { name = "tiktoken", marker = "extra == 'kimi'" },
     { name = "tiktoken", marker = "extra == 'openai'" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.1" },
-    { name = "tree-sitter", specifier = ">=0.23.0,<0.26" },
+    { name = "tree-sitter", specifier = ">=0.25,<0.26" },
     { name = "tree-sitter-bash", specifier = ">=0.23,<0.27" },
     { name = "tree-sitter-c", specifier = ">=0.23,<0.25" },
     { name = "tree-sitter-c-sharp", specifier = ">=0.23,<0.25" },

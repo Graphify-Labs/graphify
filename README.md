@@ -20,6 +20,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License: Apache-2.0"/></a>
   <a href="https://pepy.tech/project/graphifyy"><img src="https://img.shields.io/pepy/dt/graphifyy?color=blue&label=downloads" alt="Downloads"/></a>
   <a href="https://docs.graphify.com"><img src="https://img.shields.io/badge/Docs-docs.graphify.com-0b7285?style=flat&logo=readthedocs&logoColor=white" alt="Docs"/></a>
+  <a href="https://smithery.ai/servers/graphify/graphify"><img src="https://img.shields.io/badge/Smithery-MCP%20server-5c4ee5?style=flat&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iI2ZmZiI+PHBhdGggZD0iTTEyIDJMMiA3djEwbDEwIDUgMTAtNVY3eiIvPjwvc3ZnPg==" alt="Smithery"/></a>
   <a href="https://discord.gg/XDnKVpzdXB"><img src="https://img.shields.io/badge/Discord-Join-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"/></a>
   <a href="https://www.youtube.com/@graphifylabs"><img src="https://img.shields.io/badge/YouTube-Graphify%20Labs-FF0000?style=flat&logo=youtube&logoColor=white" alt="YouTube"/></a>
   <a href="https://www.linkedin.com/company/graphify-labs"><img src="https://img.shields.io/badge/LinkedIn-Graphify%20Labs-0077B5?logo=linkedin" alt="LinkedIn"/></a>
@@ -27,7 +28,7 @@
 </p>
 
 <p align="center">
-  <b>Early access to the graphify platform is open before the public v1 launch: <a href="https://app.graphify.com/login">app.graphify.com</a></b>
+  <b>Try the graphify platform free for 14 days: <a href="https://app.graphify.com/login">app.graphify.com</a></b>
 </p>
 
 Type `/graphify` in your AI coding assistant and it maps your entire project (code, docs, PDFs, images, videos) into a **knowledge graph** you can **query instead of grepping** through files.
@@ -66,6 +67,10 @@ graphify-out/
 ├── GRAPH_REPORT.md  the highlights: key concepts, surprising connections, suggested questions
 └── graph.json       the full graph — query it anytime without re-reading your files
 ```
+
+The persisted graph includes `graph.schema_version` so integrations can detect
+incompatible format changes, plus `graph.graphify_version` identifying the
+Graphify release that produced it.
 
 **Works in** Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, and 15+ more — [pick your platform](#install).
 
@@ -125,6 +130,7 @@ What you get out of the box:
 | LOCOMO (n=300) | recall@10 | **0.497** | mem0 0.048, supermemory 0.149 |
 | LOCOMO (n=300) | QA accuracy | 45.3% | supermemory 49.7%, mem0 27.3% |
 | LongMemEval-S (n=50) | QA accuracy | **76%** | tied with dense RAG |
+| ERPNext cross-tool (n=6) | key-fact coverage | **82.0%** | grep/read baseline 70.8% |
 | Graph build | LLM credits | **0** | per-token for most systems |
 
 Every system ran on the same harness with the same model and budgets, scored by a judge blind-validated against a second judge (90.6% agreement, Cohen's kappa 0.81). Full per-system tables, the code-intelligence result, and reproduction commands: **[BENCHMARKS.md](./BENCHMARKS.md)**.
@@ -344,7 +350,7 @@ To remove graphify from all platforms at once: `graphify uninstall` (add `--purg
 
 | Type | Extensions |
 |------|-----------|
-| Code (37 tree-sitter grammars) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .ml .mli .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`, `.ml`/`.mli` requires `uv tool install graphifyy[ocaml]`; `.mts`/`.cts` reuse the TypeScript grammar, `.cc`/`.cxx` and CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
+| Code (37 tree-sitter grammars) | `.py .ts .mts .cts .js .jsx .tsx .mjs .go .rs .java .c .cpp .cc .cxx .h .hpp .cu .cuh .metal .rb .cs .kt .kts .scala .php .swift .lua .luau .toc .zig .ps1 .psm1 .psd1 .ex .exs .m .mm .ml .mli .jl .vue .svelte .astro .groovy .gradle .dart .v .sv .svh .vh .sql .f .f90 .f95 .f03 .f08 .pas .pp .dpr .dpk .lpr .inc .dfm .lfm .lpk .sh .bash .json .dm .dme .dmi .dmm .dmf .sln .slnx .csproj .fsproj .vbproj .xaml .razor .cshtml` (`.dm`/`.dme` requires `uv tool install graphifyy[dm]`, `.ml`/`.mli` requires `uv tool install graphifyy[ocaml]`; `.mts`/`.cts` reuse the TypeScript grammar, `.cc`/`.cxx` and CUDA `.cu`/`.cuh` and Metal `.metal` reuse the C++ grammar) |
 | Salesforce Apex | `.cls .trigger` (regex-based; classes, interfaces, enums, methods, triggers, SOQL/DML edges) |
 | Terraform / HCL | `.tf .tfvars .hcl` (requires `uv tool install graphifyy[terraform]`) |
 | OCaml | `.ml .mli` (requires `uv tool install graphifyy[ocaml]`) |
@@ -512,6 +518,19 @@ python -m graphify.serve graphify-out/graph.json --transport http --host 0.0.0.0
 
 The MCP server gives your assistant structured access: `query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `list_prs`, `get_pr_impact`, `triage_prs`.
 
+### One-click install (VS Code · Smithery)
+
+Prefer not to edit MCP config by hand? Register the graphify MCP server in one step. Run `/graphify` first so a `graphify-out/graph.json` exists in the workspace; the server reads it on launch.
+
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_graphify_MCP-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=graphify&config=%7B%22command%22%3A%22uvx%22%2C%22args%22%3A%5B%22--from%22%2C%22graphifyy%5Bmcp%5D%22%2C%22graphify-mcp%22%5D%7D)
+
+The button adds a `graphify` server that launches with `uvx --from "graphifyy[mcp]" graphify-mcp` (no API key, no prior install). Or install via [Smithery](https://smithery.ai/servers/graphify/graphify) for Claude, Cursor, VS Code, and other clients:
+
+```bash
+# pick your client (claude, cursor, vscode, windsurf, ...)
+npx -y @smithery/cli install graphify/graphify --client claude
+```
+
 ### Shared HTTP server
 
 `--transport stdio` (the default) spawns one local server per developer. `--transport http` serves the same tools over the MCP Streamable HTTP transport, so a single shared process can serve the graph for the whole team — clients point their IDE MCP config at `http://<host>:8080/mcp` instead of running graphify locally.
@@ -579,6 +598,7 @@ These are only needed for **headless / CI extraction** (`graphify extract`). Whe
 | `GRAPHIFY_QUERY_LOG` | Enable the query log and write it to this path instead of the default | optional — off unless this or `_ENABLE` is set |
 | `GRAPHIFY_QUERY_LOG_DISABLE` | Set to `1` to force the query log off (wins over the enable vars) | optional |
 | `GRAPHIFY_QUERY_LOG_RESPONSES` | When the log is enabled, also record full subgraph responses (off by default) | optional |
+| `GRAPHIFY_NO_AUTO_REFRESH` | Set to `1` to stop the CLI from refreshing installed skills that are older than the package after an upgrade | optional — refresh is on by default |
 | `GRAPHIFY_MAX_GRAPH_BYTES` | Override the 512 MiB graph.json size cap — e.g. `700MB`, `2GB`, or plain bytes | optional — useful for very large corpora |
 | `GRAPHIFY_MAX_CONTEXTS` | Maximum number of non-default project graphs retained by one multi-project MCP server | optional — default: `8`; invalid values use `8`, and values below `1` use `1` |
 | `GRAPHIFY_LLM_TEMPERATURE` | Override LLM temperature for semantic extraction — e.g. `0.7`, or `none` to omit | optional — auto-omitted for o1/o3/o4/gpt-5 reasoning models |
@@ -674,10 +694,10 @@ ANTHROPIC_API_KEY=sk-... graphify extract ./docs --backend claude
 ```
 
 **Skill version mismatch warning in your IDE**
-Your installed graphify version is different from the skill file. Update:
+Your installed graphify version is different from the skill file. After an upgrade, the first `graphify` command refreshes every installed skill that is older than the package, on all platforms at once, and keeps a locally edited `SKILL.md` as `SKILL.md.bak`. Set `GRAPHIFY_NO_AUTO_REFRESH=1` to turn this off. A skill it can't refresh safely keeps the warning: one newer than the package, or a directory that two installers share (for example Copilot and `graphify vscode install`). Reinstall that platform by hand:
 ```bash
 uv tool upgrade graphifyy
-graphify install  # overwrites the skill file
+graphify install --platform <name>  # overwrites the skill file
 ```
 
 **Claude Code prompt cache invalidated after every `graphify extract`**
@@ -845,6 +865,12 @@ graphify label ./my-project                                    # (re)name commun
 graphify label ./my-project --backend=openai --model gpt-4o   # force a specific backend and model
 ```
 
+`--no-dedup` also skips coalescing distinct non-AST nodes solely because they
+share a file and label. The Python equivalents are `build(chunks, dedup=False)`,
+`build_merge(chunks, graph_path, dedup=False)`, and
+`build_from_json(extraction, dedup=False)`. AST/semantic twins still reconcile to
+the canonical AST node, and document-file twin reconciliation remains enabled.
+
 > **Community names:** inside an agent (Claude Code, Gemini CLI) the agent names communities itself. When you run the bare CLI, `cluster-only` auto-names them with the configured backend (built-in or custom OpenAI-compatible provider) — pass `--no-label` to keep `Community N`, or run `graphify label` to (re)generate names on demand.
 
 ---
@@ -874,6 +900,22 @@ Built for people and teams whose work lives across hundreds of conversations and
 Contributions are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the development setup, the test and CI-parity commands, the git workflow, and what makes a strong contribution (worked examples and extraction bug reports are the most useful). Architecture and how to add a language: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 New here? Say hi on [Discord](https://discord.gg/XDnKVpzdXB) or in [GitHub Discussions](https://github.com/Graphify-Labs/graphify/discussions).
+
+---
+
+## Contributors
+
+<a href="https://github.com/Graphify-Labs/graphify/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=Graphify-Labs/graphify" alt="graphify contributors" />
+</a>
+
+Made with [contrib.rocks](https://contrib.rocks).
+
+---
+
+## Translations
+
+The README is available in 32 languages. Use the language switcher at the top of this file to read it in yours, or browse [`docs/translations/`](docs/translations/). To improve a translation or add a new one, open a pull request against the matching file there.
 
 ---
 

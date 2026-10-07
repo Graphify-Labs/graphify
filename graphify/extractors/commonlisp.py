@@ -4,7 +4,7 @@ from __future__ import annotations
 import warnings
 from pathlib import Path
 
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes
 
 
 # Standard CL definer forms that introduce data/type/variable bindings
@@ -78,7 +78,7 @@ def extract_commonlisp(path: Path) -> dict:
             )
             language = Language(tscl.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:

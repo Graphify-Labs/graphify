@@ -74,7 +74,7 @@ def test_promoted_param_this_prop_call_resolves(tmp_path: Path):
     assert (index, decoy_search) not in calls
     edge = calls[(index, service_search)]
     assert edge["confidence"] == "INFERRED"
-    assert edge["confidence_score"] == 0.8
+    assert edge["confidence_score"] == 0.85
     assert edge["context"] == "call"
 
 
@@ -431,7 +431,7 @@ def test_inline_new_bare_name_resolves_inferred(tmp_path: Path):
     assert (index, _find(r, ".search()", "auditlog")) not in calls
     edge = calls[(index, service_search)]
     assert edge["confidence"] == "INFERRED"
-    assert edge["confidence_score"] == 0.8
+    assert edge["confidence_score"] == 0.85
 
 
 def test_inline_new_without_ctor_parens_resolves(tmp_path: Path):
@@ -465,7 +465,7 @@ def test_inline_new_non_corroborating_namespace_downgrades(tmp_path: Path):
     assert (index, service_search) in calls
     edge = calls[(index, service_search)]
     assert edge["confidence"] == "INFERRED"
-    assert edge["confidence_score"] == 0.8
+    assert edge["confidence_score"] == 0.85
 
 
 # The corroborating fact is the namespace the DEFINING FILE declares (#14).
@@ -497,7 +497,7 @@ def test_declared_namespace_disagreeing_with_the_path_does_not_promote(tmp_path:
     assert (index, _find(r, ".search()", "auditlog")) not in calls
     edge = calls[(index, service_search)]
     assert edge["confidence"] == "INFERRED"
-    assert edge["confidence_score"] == 0.8
+    assert edge["confidence_score"] == 0.85
 
 
 def test_truncated_root_namespace_does_not_corroborate(tmp_path: Path):
@@ -516,7 +516,7 @@ def test_truncated_root_namespace_does_not_corroborate(tmp_path: Path):
     assert (index, _find(r, ".search()", "auditlog")) not in calls
     edge = calls[(index, service_search)]
     assert edge["confidence"] == "INFERRED"
-    assert edge["confidence_score"] == 0.8
+    assert edge["confidence_score"] == 0.85
 
 
 def test_braced_namespace_block_corroborates(tmp_path: Path):
@@ -708,7 +708,7 @@ def test_local_new_var_call_resolves(tmp_path: Path):
     assert (index, _find(r, ".search()", "auditlog")) not in calls
     edge = calls[(index, service_search)]
     assert edge["confidence"] == "INFERRED"
-    assert edge["confidence_score"] == 0.8
+    assert edge["confidence_score"] == 0.85
 
 
 def test_local_new_qualified_var_call_resolves_inferred(tmp_path: Path):
@@ -1241,7 +1241,7 @@ def test_unique_interface_typed_property_binds_to_the_interface_method(tmp_path:
         "the same method name on an unrelated class is not the receiver's type"
     edge = calls[(go, contract_send)]
     assert edge["confidence"] == "INFERRED"
-    assert edge["confidence_score"] == 0.8
+    assert edge["confidence_score"] == 0.85
     assert edge["context"] == "call"
 
 
@@ -1680,7 +1680,7 @@ def test_enum_without_a_colliding_class_binds_to_the_enum_method(tmp_path: Path)
     assert (go, _find(r, ".label()", "models_lead")) not in calls
     edge = calls[(go, enum_label)]
     assert edge["confidence"] == "INFERRED"
-    assert edge["confidence_score"] == 0.8
+    assert edge["confidence_score"] == 0.85
 
 
 def test_trait_typed_receiver_binds_the_imported_trait(tmp_path: Path):
