@@ -3159,6 +3159,37 @@ def _php_mask_to_script_blocks(src: str) -> tuple[str, bool]:
     return "".join(out), True
 
 
+# tree-sitter-php (the pinned <0.25 and 0.25.1 alike) has no PHP 8.5 `(void)`
+# cast and cannot parse a cast applied directly to `match (...)`: the statement
+# becomes an ERROR node, can lose its call, and the file is reported as partially
+# extracted (#4202). Blanking just the cast keeps the call or match after it.
+_PHP_UNPARSED_CAST_RE = re.compile(
+    rb"\(\s*void\s*\)|\(\s*(?:string|int|integer|float|double|real|bool|boolean"
+    rb"|array|object|binary)\s*\)(?=\s*match\s*\()",
+    re.IGNORECASE,
+)
+_PHP_NON_CODE = frozenset({"comment", "string", "encapsed_string", "heredoc", "nowdoc", "text"})
+
+
+def _php_blank_unparsed_casts(source: bytes) -> bytes:
+    """Blank `(void)` casts and casts on `match` to spaces, outside strings and
+    comments, keeping every byte offset and line number (#4202)."""
+    matches = list(_PHP_UNPARSED_CAST_RE.finditer(source))
+    if not matches:
+        return source
+    import tree_sitter_php
+    from tree_sitter import Language, Parser
+    root = Parser(Language(tree_sitter_php.language_php())).parse(source).root_node
+    out = bytearray(source)
+    for m in matches:
+        node = root.descendant_for_byte_range(m.start(), m.start() + 1)
+        while node is not None and node.type not in _PHP_NON_CODE:
+            node = node.parent
+        if node is None:
+            out[m.start():m.end()] = re.sub(rb"[^\r\n]", b" ", m.group())
+    return bytes(out)
+
+
 def extract_php(path: Path) -> dict:
     """Extract classes, functions, methods, namespace uses, and calls from a .php file.
 
@@ -3173,7 +3204,11 @@ def extract_php(path: Path) -> dict:
     dropped JS node would have used, so no edge from the discarded symbol
     is left to silently attach to the unrelated PHP node sharing its id.
     """
-    result = _extract_generic(path, _PHP_CONFIG)
+    try:
+        source = _php_blank_unparsed_casts(_read_source_bytes(path))
+    except Exception:
+        source = None  # let _extract_generic read the file and report errors
+    result = _extract_generic(path, _PHP_CONFIG, source_override=source)
     try:
         src = _read_source_text(path, warn=False)
         masked, had_script = _php_mask_to_script_blocks(src)
