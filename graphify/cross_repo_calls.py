@@ -235,7 +235,7 @@ def link_cross_repo_member_calls(merged: "nx.Graph") -> int:
                 relation="calls",
                 context="cross_repo",
                 confidence="INFERRED",
-                confidence_score=0.8,
+                confidence_score=0.85,
                 source_file=str(caller_data.get("source_file") or ""),
                 source_location=entry.get("line"),
                 weight=1.0,

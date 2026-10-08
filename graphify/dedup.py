@@ -678,6 +678,30 @@ def deduplicate_entities(
         if prot is not None:
             prot_by_root[new_root] = prot
 
+    def _crossfile_union(left: dict, right: dict, *, with_prot: bool) -> None:
+        nonlocal exact_merges
+        if _crossfile_fileanchored_blocked(left, right):
+            return
+        left_id = left["id"]
+        right_id = right["id"]
+        if with_prot:
+            px = _get_prot(left_id)
+            py = _get_prot(right_id)
+            if px is not None and py is not None and px != py:
+                return
+        if uf.find(left_id) == uf.find(right_id):
+            return
+        if with_prot:
+            _union_with_prot(left_id, right_id)
+        else:
+            uf.union(left_id, right_id)
+        exact_merges += 1
+
+    def _crossfile_join(members: list[dict], *, with_prot: bool) -> None:
+        for index, left in enumerate(members):
+            for right in members[index + 1:]:
+                _crossfile_union(left, right, with_prot=with_prot)
+
     for key, group in norm_to_nodes.items():
         if len(group) <= 1:
             continue
@@ -726,20 +750,15 @@ def deduplicate_entities(
         # it is provably safe (#2182). `concept` is the one file_type meant to
         # unify across files (#1284) — code is keyed by ID (#1205) and
         # image/paper labels are often shared basenames (logo.png), so both stay
-        # blocked. rationale/document join `concept` here ONLY when the node
-        # reads as an entity inside its file (#296): a file-anchored
-        # *file_type* does not make an individual node file-anchored. An entity
-        # extracted from a note — a person, a project — inherits `document` from
-        # the file's extension, not from anything about itself, so in note-heavy
-        # corpora almost no entity node is typed `concept` and this merge never
-        # got to run on them. A file's own node and its headings still never
-        # merge (#1284, #3094).
+        # blocked. A rationale or document node can still enter this list when
+        # it reads as an entity (#296). Each union calls
+        # `_crossfile_fileanchored_blocked`, so that node does not join a node
+        # from another file (#3094). Concept nodes still join across files.
+        # A file's own node and its headings never enter the list (#1284).
         # Provenance is required (#1178), and the entropy gate mirrors Pass 2 so
         # short generic labels ("API") stay distinct — both untouched here.
-        # Scoped to this exact-normalization pass: Pass 2's fuzzy
-        # `_crossfile_fileanchored_blocked` is unchanged, so #1284's
-        # near-identical boilerplate and heading siblings stay blocked.
-        # Sorting by id keeps the winner order-independent.
+        # Pass 2 still calls the same block, so near-identical boilerplate stays
+        # blocked (#1284). Sorting by id keeps the pair order stable.
         mergeable = sorted(
             (n for n in group
              if (n.get("file_type") == "concept"
@@ -758,30 +777,18 @@ def deduplicate_entities(
                     # NEVER collapse them during incremental merge.
                     continue
                 if prot_members:
-                    # Mixed: pick AT MOST ONE protected survivor for incoming nodes to fold into.
-                    # Multiple protected nodes must remain separate independent entities.
+                    # Mixed: fold an incoming node into at most one protected
+                    # survivor. Protected nodes stay separate from each other.
+                    # Incoming nodes the block still allows are joined to each
+                    # other, so a blocked winner does not leave them apart.
                     canonical_winner = _pick_winner(prot_members)
                     for inc in inc_members:
-                        px = _get_prot(canonical_winner["id"])
-                        py = _get_prot(inc["id"])
-                        if px is not None and py is not None and px != py:
-                            continue
-                        if uf.find(canonical_winner["id"]) != uf.find(inc["id"]):
-                            _union_with_prot(canonical_winner["id"], inc["id"])
-                            exact_merges += 1
+                        _crossfile_union(canonical_winner, inc, with_prot=True)
+                    _crossfile_join(inc_members, with_prot=True)
                 else:
-                    # Incoming only: merge normally
-                    winner = _pick_winner(inc_members)
-                    for node in inc_members:
-                        if uf.find(winner["id"]) != uf.find(node["id"]):
-                            _union_with_prot(winner["id"], node["id"])
-                            exact_merges += 1
+                    _crossfile_join(inc_members, with_prot=True)
             else:
-                winner = _pick_winner(mergeable)
-                for node in mergeable:
-                    if uf.find(winner["id"]) != uf.find(node["id"]):
-                        uf.union(winner["id"], node["id"])
-                        exact_merges += 1
+                _crossfile_join(mergeable, with_prot=False)
 
     # ── pass 2: MinHash/LSH + Jaro-Winkler (high-entropy nodes only) ─────────
     candidates: list[dict] = []

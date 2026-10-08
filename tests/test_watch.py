@@ -47,6 +47,14 @@ def test_watched_extensions_includes_code():
     assert ".go" in _WATCHED_EXTENSIONS
     assert ".rs" in _WATCHED_EXTENSIONS
 
+def test_verilog_header_triggers_code_rebuild_without_llm(tmp_path):
+    header = tmp_path / "defs.vh"
+    header.write_text("`define WIDTH 8\n", encoding="utf-8")
+
+    assert ".vh" in _WATCHED_EXTENSIONS
+    assert _batch_triggers_rebuild([header]) is True
+    assert _batch_needs_llm_flag([header]) is False
+
 def test_watched_extensions_includes_docs():
     assert ".md" in _WATCHED_EXTENSIONS
     assert ".txt" in _WATCHED_EXTENSIONS

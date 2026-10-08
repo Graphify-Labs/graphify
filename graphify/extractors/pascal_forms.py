@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.base import _file_stem, _make_id, _read_source_text
 
 
 def extract_lazarus_form(path: Path) -> dict:
@@ -30,7 +30,7 @@ def extract_lazarus_form(path: Path) -> dict:
     - component --references--> event handler (context: "event")
     """
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = _read_source_text(path)
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 

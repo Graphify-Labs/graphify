@@ -589,6 +589,70 @@ def test_posix_custom_hookspath_still_works(tmp_path):
     assert (repo / ".husky" / "post-commit").exists()
 
 
+def test_hookspath_outside_repo_falls_back_to_default(tmp_path, capsys):
+    """#3869: an absolute core.hooksPath outside the repo must not be created.
+
+    The setting lives in local git config (a zip of .git can carry it; a clone
+    does not). hook install used to mkdir that path and write post-commit there.
+    """
+    repo = _make_git_repo(tmp_path / "repo")
+    outside = tmp_path / "outside"
+    _set_hookspath(repo, str(outside))
+    msg = install(repo)
+    err = capsys.readouterr().err
+    assert "refusing hooks path" in err
+    assert not outside.exists()
+    assert (repo / ".git" / "hooks" / "post-commit").exists()
+    assert (repo / ".git" / "hooks" / "post-checkout").exists()
+    assert ".git" in msg and "hooks" in msg
+
+
+def test_hookspath_relative_escape_falls_back_to_default(tmp_path, capsys):
+    """#3869: a relative core.hooksPath that resolves outside the repo is refused."""
+    repo = _make_git_repo(tmp_path / "repo")
+    _set_hookspath(repo, "../escaped")
+    _hooks_dir(repo)
+    err = capsys.readouterr().err
+    assert "refusing hooks path" in err
+    assert not (tmp_path / "escaped").exists()
+    assert _hooks_dir(repo) == (repo / ".git" / "hooks").resolve()
+
+
+def test_linked_worktree_keeps_its_default_hooks_dir(tmp_path):
+    """A linked worktree's hooks live under the common git dir, outside the
+    worktree root. That default must still be used when core.hooksPath is unset."""
+    main = tmp_path / "main"
+    main.mkdir()
+    subprocess.run(["git", "init", str(main)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(main), "config", "user.email", "t@example.com"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(main), "config", "user.name", "t"],
+                   check=True, capture_output=True)
+    (main / "f").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(main), "add", "f"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(main), "commit", "-m", "x"],
+                   check=True, capture_output=True)
+    wt = tmp_path / "wt"
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", str(wt), "-b", "wt"],
+                   check=True, capture_output=True)
+    expected = subprocess.run(
+        ["git", "-C", str(wt), "rev-parse", "--git-path", "hooks"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    got = _hooks_dir(wt)
+    assert got == (wt / expected).resolve()
+    assert _is_within_repo_git(got, main)
+    assert not (wt / ".git" / "hooks").exists()
+
+
+def _is_within_repo_git(hooks: Path, main: Path) -> bool:
+    try:
+        hooks.resolve().relative_to((main / ".git").resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def test_default_hooks_dir_unaffected(tmp_path):
     """No core.hooksPath -> normal .git/hooks install, no rejection."""
     repo = _make_git_repo(tmp_path)

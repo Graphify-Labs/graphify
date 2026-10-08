@@ -84,6 +84,60 @@ def test_cpp_enum_nested_in_class_and_namespace_is_extracted(tmp_path):
     assert ("Proto", "Udp") in case_of
 
 
+def test_cpp_union_specifier_is_extracted(tmp_path):
+    """A named `union` is a class-like container whose type node and data members
+    must survive. `union_specifier` was missing from the C++ class_types, so a
+    `union { ... }` and everything it declared produced no nodes at all — the whole
+    type vanished. It shares struct_specifier's name/body fields (type_identifier +
+    field_declaration_list), so it must get a type node and its members, like a
+    struct. An anonymous union has no type name and is skipped, like an anonymous
+    enum.
+    """
+    p = tmp_path / "value.hpp"
+    p.write_text(
+        "union Value { int i; float f; };\n"
+        "struct Point { int x; };\n"
+        "typedef union { int a; char b; } Anon;\n"
+    )
+    result = extract_cpp(p)
+    assert result.get("parse_errors") is None
+    ids = {n["id"]: n["label"] for n in result["nodes"]}
+    labels = set(ids.values())
+    # Pre-fix the whole `union Value { ... }` declaration vanished.
+    assert {"Value", "i", "f"} <= labels
+    contains = {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "contains"
+    }
+    defines = {
+        (ids.get(e["source"]), ids.get(e["target"]))
+        for e in result["edges"]
+        if e["relation"] == "defines"
+    }
+    assert ("value.hpp", "Value") in contains
+    assert ("Value", "i") in defines
+    assert ("Value", "f") in defines
+    # An anonymous union (`typedef union { ... } Anon`) has no type name, so it is
+    # skipped rather than emitting a nameless node, like an anonymous enum.
+    assert "Anon" not in labels
+
+
+def test_cpp_union_member_function_is_a_method(tmp_path):
+    """A union's method declaration must not become a data field."""
+    source = tmp_path / "value.hpp"
+    source.write_text("union Value { int i; int get() const; };\n", encoding="utf-8")
+    result = extract_cpp(source)
+    assert result.get("parse_errors") is None
+    labels = {n["id"]: n["label"] for n in result["nodes"]}
+    relationships = {(labels.get(e["source"]), labels.get(e["target"]), e["relation"])
+                     for e in result["edges"]}
+    assert ("Value", ".get()", "method") in relationships
+    assert ("Value", "i", "defines") in relationships
+    assert ("Value", "get", "defines") not in relationships
+    assert "get" not in labels.values()
+
+
 def test_nested_cpp_class_is_extracted(tmp_path):
     # A nested type is a field_declaration whose `type` field IS the
     # class_specifier; the member-variable branch used to consume it and return
@@ -321,3 +375,87 @@ def test_cli_type_suffixes_are_still_rewritten(decl, rewritten):
     assert out is not None
     assert len(out) == len(src)
     assert rewritten in out
+
+def test_cpp_export_macros_survive(tmp_path):
+    """Verify that classes with export macros extract correctly, including inherits edges."""
+    p = tmp_path / "export.h"
+    p.write_text(
+        "class MODULE_API Widget : public BaseWidget {\n"
+        "public:\n"
+        "    void DoThing() {}\n"
+        "};\n"
+        "class SOME_OTHER_MACRO Widget2 {};\n"
+        "class MODULE_API Widget3 final : public BaseWidget {};\n"
+        "class API FINAL Foo {};\n"
+        "struct EXPORT S {};\n"
+    )
+    from graphify.extract import extract_cpp
+    result = extract_cpp(p)
+    labels = [n["label"] for n in result["nodes"]]
+    assert "Widget" in labels
+    assert ".DoThing()" in labels
+    assert "Widget2" in labels
+    assert "Widget3" in labels
+    assert "Foo" in labels
+    assert "S" in labels
+
+    # assertion that the inherits edge actually reappears
+    edges = result.get("edges", [])
+    nodes = {n["id"]: n["label"] for n in result["nodes"]}
+    inherits_edges = [e for e in edges if e["relation"] == "inherits"]
+
+    # We should have Widget -> BaseWidget, Widget3 -> BaseWidget
+    widget_inherits = [e for e in inherits_edges if nodes.get(e["source"]) == "Widget" and nodes.get(e["target"]) == "BaseWidget"]
+    assert widget_inherits, "Widget -> BaseWidget inherits edge should reappear after macro blanking"
+
+    widget3_inherits = [e for e in inherits_edges if nodes.get(e["source"]) == "Widget3" and nodes.get(e["target"]) == "BaseWidget"]
+    assert widget3_inherits, "Widget3 -> BaseWidget inherits edge should reappear after macro blanking"
+
+
+def test_cpp_export_macro_does_not_break_variables(tmp_path):
+    """Ensure elaborated type variable declarations don't trigger macro stripping."""
+    p = tmp_path / "vars.h"
+    p.write_text(
+        "void F() {\n"
+        "    for (class MODULE_API var: container) {}\n"
+        "    class MODULE_API var2{1};\n"
+        "    class MODULE_API v {1};\n"
+        "}\n"
+    )
+    from graphify.extract import extract_cpp
+    result = extract_cpp(p)
+    # The extraction should just parse normally. We don't extract local vars, but
+    # we ensure there are no parse_errors.
+    assert result.get("parse_errors") is None
+
+
+def test_cpp_export_macro_normalization_preserves_byte_offsets(tmp_path):
+    src = (
+        '#define API\n'
+        "class API \n"
+        "Widget : public Base {\n"
+        "  int x;\n"
+        "};\n"
+    ).encode()
+    from graphify.extract import _normalize_cpp_export_macros
+    out = _normalize_cpp_export_macros(src)
+    assert out is not None
+    assert len(out) == len(src)
+    assert b"class     \nWidget : public Base" in out
+
+    # Check that newlines are preserved exactly
+    assert out.count(b"\n") == src.count(b"\n")
+
+
+def test_cpp_export_macro_all_caps_class_final(tmp_path):
+    """Ensure an ALL-CAPS class name marked as final is not mistaken for a macro."""
+    p = tmp_path / "final.h"
+    p.write_text(
+        "class MY_WIDGET final : public Base {};\n"
+        "class MACRO Foo final : public Base {};\n"
+    )
+    from graphify.extract import extract_cpp
+    result = extract_cpp(p)
+    labels = [n["label"] for n in result["nodes"]]
+    assert "MY_WIDGET" in labels, "MY_WIDGET was stripped as a macro!"
+    assert "Foo" in labels

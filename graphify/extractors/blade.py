@@ -3,14 +3,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from graphify.extractors.base import _make_id
+from graphify.extractors.base import _make_id, _read_source_text
 
 
 def extract_blade(path: Path) -> dict:
     """Extract @extends, @include, <livewire:> components, and wire:click bindings from Blade templates."""
     import re
     try:
-        src = path.read_text(encoding="utf-8", errors="replace")
+        src = _read_source_text(path)
     except OSError:
         return {"error": f"cannot read {path}"}
 

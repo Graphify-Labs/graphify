@@ -36,7 +36,7 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 4  # Rust generic-impl identity markers + Terraform block attributes.
+_AST_CACHE_SCHEMA = 6  # Python typed-receiver facts (receiver_type) in persisted raw calls.
 
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()
@@ -205,6 +205,14 @@ _stat_index_root: Path | None = None
 # (cache_root, #1774) — the two differ under --out and must not be conflated.
 _stat_index_anchor: Path | None = None
 _stat_index_dirty: bool = False
+_stat_index_atexit_registered: bool = False
+# The resolved on-disk path for the CURRENTLY bound root, captured at bind
+# time (#3989). A mid-process root switch must flush the OUTGOING root to
+# the file it was actually loaded from, not wherever the live _GRAPHIFY_OUT
+# happens to point by the time the switch is detected — a caller following
+# the documented one-root-per-call pattern (set _GRAPHIFY_OUT, then call)
+# has already moved it on to the NEW root before the switch is noticed.
+_stat_index_path: Path | None = None
 
 
 # Filesystem mtime granularity, in nanoseconds. A stat signature only proves a
@@ -328,8 +336,31 @@ def _stat_index_file(root: Path) -> Path:
 
 def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
     global _stat_index, _stat_index_root, _stat_index_anchor, _stat_index_dirty
+    global _stat_index_atexit_registered, _stat_index_path
+    new_root = Path(cache_root if cache_root is not None else root).resolve()
     if _stat_index_root is not None:
-        return
+        if _stat_index_root == new_root:
+            return
+        # A later call in the same process named a DIFFERENT cache root
+        # (#3989): the index was bound to the first root ever seen and never
+        # re-bound, so every root after the first served (on read) whatever
+        # the first root's file happened to contain, and (on write/exit)
+        # deposited its own freshly-computed entries into the FIRST root's
+        # file instead of its own — silently poisoning one project's
+        # stat-index.json with paths from a completely different project.
+        # Flush the outgoing root's own pending entries to its own file
+        # before switching, then load the new root fresh, so each root's
+        # file only ever holds that root's own entries.
+        warnings.warn(
+            f"stat index switched from cache root {str(_stat_index_root)!r} to "
+            f"{str(new_root)!r} within one process; each root's "
+            "stat-index.json now only reflects its own files, but library "
+            "callers crossing project roots in one process should still use "
+            "a fresh process per root to avoid losing the fastpath (#3989).",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        _flush_stat_index()
     # _stat_index_root determines the cache FILE location, so honoring an
     # explicit cache_root keeps detect()'s word-count cache under the requested
     # --out dir instead of polluting the scanned corpus with a stray
@@ -337,9 +368,10 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
     # in-memory keys stay absolute, but the on-disk index stores in-anchor keys
     # relative so a moved/cloned corpus still hits (#2199) — same load/save
     # re-anchoring the detect manifest uses.
-    _stat_index_root = Path(cache_root if cache_root is not None else root).resolve()
+    _stat_index_root = new_root
     _stat_index_anchor = Path(root).resolve()
     p = _stat_index_file(_stat_index_root)
+    _stat_index_path = p
     _stat_index = {}
     if p.exists():
         try:
@@ -357,14 +389,23 @@ def _ensure_stat_index(root: Path, cache_root: "Path | None" = None) -> None:
                         _stat_index[_stat_key_to_absolute(k, _stat_index_anchor)] = v
         except (json.JSONDecodeError, OSError):
             _stat_index = {}
-    atexit.register(_flush_stat_index)
+    _stat_index_dirty = False
+    if not _stat_index_atexit_registered:
+        atexit.register(_flush_stat_index)
+        _stat_index_atexit_registered = True
 
 
 def _flush_stat_index() -> None:
     global _stat_index_dirty, _stat_index_root
     if not _stat_index_dirty or _stat_index_root is None:
         return
-    p = _stat_index_file(_stat_index_root)
+    # Use the path captured when this root was bound (#3989), not a fresh
+    # _stat_index_file(_stat_index_root) call: a mid-process root switch runs
+    # this to flush the OUTGOING root, by which point a caller following the
+    # documented set-_GRAPHIFY_OUT-then-call pattern has already pointed
+    # _GRAPHIFY_OUT at the NEW root, and re-deriving here would flush the old
+    # root's entries into the new root's file instead of its own.
+    p = _stat_index_path if _stat_index_path is not None else _stat_index_file(_stat_index_root)
     # Build the on-disk form (#2199): prune entries whose file is gone (the
     # index otherwise grows without bound), then store in-anchor keys as
     # forward-slash relative paths so the index survives a corpus move/clone.
@@ -1064,8 +1105,47 @@ def load_cached(path: Path, root: Path = Path("."), kind: str = "ast",
             # id-remap cannot fix because they match none of its current-path
             # keys. Order is free — source_file never carries the marker.
             _absolutize_ids_in(result, path, root)
+            targets = result.pop(_CACHED_TARGETS_KEY, None)
+            if isinstance(targets, list) and not all(
+                _target_file_present(t, root) for t in targets if isinstance(t, str)
+            ):
+                return None
         return result
     return None
+
+
+# Cross-file edges (imports, re-exports, links) carry a ``target_file`` stamp
+# naming the file they resolved to. An AST entry is keyed by its own file's
+# content only, so a hit replays that resolution after the target is renamed or
+# deleted: the edge keeps the id minted from the target's absolute path, which
+# extract() maps to a portable id only for targets that exist, so the checkout
+# path reached graph.json and a warm build differed from a cold one. The entry
+# records the targets that existed when it was written; a hit whose recorded
+# target is gone is a miss and the file is extracted again.
+_CACHED_TARGETS_KEY = "_cached_target_files"
+
+
+def _target_file_present(target: str, root: Path) -> bool:
+    candidate = Path(target)
+    if not candidate.is_absolute():
+        candidate = Path(root) / candidate
+    try:
+        return candidate.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _present_target_files(result: dict, root: Path) -> list[str]:
+    """The ``target_file`` stamps in ``result`` that name an existing file."""
+    present: set[str] = set()
+    for edge in result.get("edges", []) or []:
+        if not isinstance(edge, dict):
+            continue
+        target = edge.get("target_file")
+        if isinstance(target, str) and target and target not in present:
+            if _target_file_present(target, root):
+                present.add(target)
+    return sorted(present)
 
 
 def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "ast",
@@ -1114,6 +1194,10 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     if isinstance(result, dict):
         import copy as _copy
         on_disk = _copy.deepcopy(result)
+        if kind == "ast":
+            targets = _present_target_files(on_disk, root)
+            if targets:
+                on_disk[_CACHED_TARGETS_KEY] = targets
         _relativize_source_files_in(on_disk, root)
         # Then replace the absolute root inside the ids and remaining paths, so
         # the entry replays portably under any root (#2257). Strictly after the

@@ -1186,6 +1186,22 @@ def _is_update_boundary_line(line: str) -> bool:
     """Allow only the boundary-summary insertion for #3945."""
     return line.strip() in _UPDATE_BOUNDARY_LINES
 
+def _is_graph_diff_direction_fix_line(line: str) -> bool:
+    """Whether a line is part of the --update graph-diff direction fix (#4067).
+
+    The diff step loaded the old graph.json with a plain ``node_link_graph``,
+    which drops the stored edge direction, so a reversed call showed as "no
+    changes". It now loads through ``paths.load_node_link_graph`` (#4066). Both
+    the removed import/load lines and the added ones match here.
+    """
+    stripped = line.strip()
+    return stripped in (
+        "from networkx.readwrite import json_graph",
+        "G_old = json_graph.node_link_graph(old_data, edges='links')",
+        "from graphify.paths import load_node_link_graph",
+        "G_old = load_node_link_graph(old_data)",
+    )
+
 
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
@@ -1211,6 +1227,8 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_step1_root_marker_fix_line,
     _is_watch_injection_fix_line,
     _is_update_boundary_line,
+
+    _is_graph_diff_direction_fix_line,
 )
 
 
