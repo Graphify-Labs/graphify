@@ -138,10 +138,10 @@ def test_a_label_that_is_only_control_characters_still_yields_a_name():
 # SVG
 # ---------------------------------------------------------------------------
 
-def _svg(tmp_path, G, community_labels=None):
+def _svg(tmp_path, G, community_labels=None, communities=COMMUNITIES):
     pytest.importorskip("matplotlib")
     out = tmp_path / "g.svg"
-    to_svg(G, COMMUNITIES, str(out), community_labels=community_labels)
+    to_svg(G, communities, str(out), community_labels=community_labels)
     return out.read_text(encoding="utf-8")
 
 
@@ -177,6 +177,18 @@ def test_svg_clean_labels_are_unchanged(tmp_path):
     svg = _svg(tmp_path, _graph("Perfectly Ordinary Heading"), {0: "Ordinary Community"})
     assert "Perfectly Ordinary Heading" in svg
     assert "Ordinary Community (2)" in svg
+
+
+@pytest.mark.parametrize("ch", BREAK)
+def test_svg_survives_a_control_character_in_the_id_of_an_unlabelled_node(tmp_path, ch):
+    """A node with no label is drawn under its id: a third path from text to the file."""
+    G = build_from_json({
+        "nodes": [{"id": f"we{ch}ird", "file_type": "code", "source_file": "a.py"}],
+        "edges": [], "hyperedges": [],
+    })
+    svg = _svg(tmp_path, G, communities={0: [f"we{ch}ird"]})
+    ET.fromstring(svg)
+    assert "weird" in svg
 
 
 def test_svg_draws_a_label_that_is_not_a_string(tmp_path):

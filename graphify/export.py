@@ -1393,8 +1393,7 @@ def to_svg(
     # svg.fonttype) and escapes only &, <, > and --, so a control character in a label
     # would leave the file malformed XML while the export reports success (same hazard as #2897).
     nx.draw_networkx_labels(G, pos, ax=ax,
-                            labels={n: (_strip_xml_illegal(str(G.nodes[n]["label"]))
-                                        if "label" in G.nodes[n] else n)
+                            labels={n: _strip_xml_illegal(str(G.nodes[n].get("label", n)))
                                     for n in G.nodes()},
                             font_size=7, font_color="white")
 
