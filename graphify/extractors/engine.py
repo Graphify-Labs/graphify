@@ -4811,6 +4811,18 @@ def _extract_generic(
                         ruby_body, source
                     ):
                         metadata["ruby_lookup_unsafe"] = True
+            if config.ts_module == "tree_sitter_python":
+                # Only a bare-name base becomes an `inherits` edge (below). A base
+                # the edge list cannot show (`mod.Base`, `Generic[T]`, a call) still
+                # sits in the MRO, so the cross-file inherited-method walk must not
+                # read this class's edges as its complete base list.
+                _py_bases = node.child_by_field_name("superclasses")
+                if _py_bases is not None and any(
+                    c.is_named and c.type not in ("identifier", "keyword_argument", "comment")
+                    for c in _py_bases.children
+                ):
+                    metadata = dict(metadata or {})
+                    metadata["python_opaque_bases"] = True
             add_node(class_nid, class_name, line, metadata=metadata)
             if config.ts_module == "tree_sitter_ruby" and metadata:
                 # Reopened declarations collapse onto the same file-local id;
@@ -7857,6 +7869,14 @@ def _extract_generic(
                             _py_type = python_var_types.get(caller_nid, {}).get(member_receiver)
                             if _py_type:
                                 rc_entry["receiver_type"] = _py_type
+                        # `super(Cls, obj).m()` starts the MRO after Cls, not after the
+                        # caller's class; only bare `super()` may walk the caller's bases.
+                        if member_receiver == "super" and config.ts_module == "tree_sitter_python":
+                            _sfn = node.child_by_field_name("function")
+                            _sobj = _sfn.child_by_field_name("object") if _sfn is not None else None
+                            _sargs = _sobj.child_by_field_name("arguments") if _sobj is not None else None
+                            if _sargs is not None and any(c.is_named for c in _sargs.children):
+                                rc_entry["_python_super_args"] = True
                         # Tag the C++ raw_call's language so the cross-file C++ resolver
                         # claims it unambiguously: a `.h` file routes to extract_cpp or
                         # extract_objc by content, and both resolvers see `.h` in their

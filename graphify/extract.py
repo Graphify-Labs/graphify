@@ -4277,6 +4277,58 @@ def _resolve_python_member_calls(
             "weight": 1.0,
         })
 
+    # A changed-files rebuild resolves only its own batch, so a base class that lives
+    # in an unchanged file is still a name stub here, while a full build has already
+    # rewired it to the unique definition. Run that same rewire on COPIES of the
+    # inherits edges so both builds walk the same chain; the real edges are untouched.
+    inherits_edges = [dict(e) for e in all_edges if e.get("relation") == "inherits"]
+    if any(not node_by_id.get(str(e.get("target")), {}).get("source_file") for e in inherits_edges):
+        _rewire_unique_stub_nodes(list(all_nodes), inherits_edges)
+    bases_of: dict[str, list[str]] = {}
+    for e in inherits_edges:
+        src, tgt = e.get("source"), e.get("target")
+        if isinstance(src, str) and isinstance(tgt, str):
+            bases_of.setdefault(src, [])
+            if tgt not in bases_of[src]:
+                bases_of[src].append(tgt)
+
+    def _inherited_method(caller: str, callee: str, skip_own: bool) -> "str | None":
+        # `self.m()` / `cls.m()` / `super().m()` whose `m` lives on a base class in
+        # another file: the in-file pass only walks bases declared in the same file.
+        # Walk a single-inheritance chain only; stop (no edge) at a class with two
+        # or more bases (MRO order across files is not modelled), a base the edge
+        # list cannot show, or a base outside the corpus. The caller's own base must
+        # also be defined in or imported by the caller's file. Further hops trust the
+        # `inherits` edges: a changed-files rebuild carries an unchanged class's
+        # inherits edges but not its imports, and both builds must walk alike.
+        # The first class owning `m` wins, as in the MRO.
+        cls = method_class.get(caller)
+        seen: set[str] = set()
+        first_hop = True
+        while cls and cls not in seen:
+            seen.add(cls)
+            if not skip_own:
+                hit = method_index.get((cls, _key(callee)))
+                if hit:
+                    return hit
+            skip_own = False
+            if (node_by_id.get(cls, {}).get("metadata") or {}).get("python_opaque_bases"):
+                return None
+            bases = bases_of.get(cls, [])
+            if len(bases) != 1 or bases[0] == cls:
+                return None
+            base = bases[0]
+            cls_file, base_file = _file_node(cls), _file_node(base)
+            if cls_file is None or base_file is None or not node_by_id.get(base, {}).get("source_file"):
+                return None
+            if first_hop:
+                imported = imported_by_filenode.get(cls_file, set())
+                if not (base_file == cls_file or base in imported or base_file in imported):
+                    return None
+            first_hop = False
+            cls = base
+        return None
+
     for rc in all_raw_calls:
         if rc.get("_ambiguous_python_import"):
             continue
@@ -4285,6 +4337,12 @@ def _resolve_python_member_calls(
         receiver = rc.get("receiver")
         callee = rc.get("callee")
         caller = rc.get("caller_nid")
+        if receiver in ("self", "cls", "super") and callee and caller and not rc.get("_python_super_args"):
+            target = _inherited_method(caller, callee, skip_own=receiver == "super")
+            if target:
+                # Same rule as the in-file base walk (_self_call_target), across files.
+                _emit_call(caller, target, rc)
+                continue
         attr_type = rc.get("_python_self_attr_type")
         if attr_type and callee and caller:
             # `self.X.m()` with X bound to one class (#2860): only a unique class

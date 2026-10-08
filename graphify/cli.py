@@ -4018,6 +4018,7 @@ def dispatch_command(cmd: str) -> None:
                                     "ruby_resolution_schema",
                                     "ruby_method_kind",
                                     "ruby_lookup_unsafe",
+                                    "python_opaque_bases",
                                     "ruby_reopened",
                                     "ruby_external_method_owners",
                                     # Erlang remote-call resolution keys (#3714):
