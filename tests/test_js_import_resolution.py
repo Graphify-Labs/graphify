@@ -126,6 +126,28 @@ def test_ts_named_reexport_alias_from_index_resolves_imported_symbol_to_origin(t
     )
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_re_export_survives_for_both_files_whose_ids_collide(tmp_path: Path, reverse: bool):
+    """`a-b/x.ts` and `a/b/x.ts` both normalize to `a_b_x`. Each re-exports the
+    same module, so each must keep its own re_exports edge whatever the order the
+    files are processed in; the second one used to be deduped as a copy of the
+    first before the colliding ids were split."""
+    util = _write(tmp_path / "lib/util.ts", "export function helper() { return 1; }\n")
+    dashed = _write(tmp_path / "a-b/x.ts", "export * from '../lib/util'\n")
+    nested = _write(tmp_path / "a/b/x.ts", "export * from '../../lib/util'\n")
+    paths = [util, dashed, nested]
+
+    result = _extract_for(list(reversed(paths)) if reverse else paths, tmp_path)
+
+    by_id = {node["id"]: node for node in result["nodes"]}
+    re_exporters = sorted(
+        Path(by_id[edge["source"]]["source_file"]).as_posix()
+        for edge in result["edges"]
+        if edge["relation"] == "re_exports" and edge["target"] == _file_node_id(Path("lib/util.ts"))
+    )
+    assert re_exporters == ["a-b/x.ts", "a/b/x.ts"]
+
+
 def test_ts_export_star_from_index_resolves_imported_symbol_to_origin(tmp_path: Path):
     target = _write(tmp_path / "src/lib/foo.ts", "export class Foo { id = '' }\n")
     barrel = _write(tmp_path / "src/lib/index.ts", "export * from './foo'\n")
@@ -1092,6 +1114,37 @@ def test_unresolved_relative_import_uses_stable_ref_target(tmp_path: Path):
     )
 
 
+
+def test_unresolved_relative_require_uses_stable_ref_target(tmp_path: Path):
+    """CommonJS require() of a missing local module took a separate path from
+    static imports and still minted its target, and every destructured symbol
+    under it, from the attempted absolute path: the checkout location and the
+    OS username ended up in node ids (#2457 residual)."""
+    importer = _write(
+        tmp_path / "src/consumer.js",
+        "const { loadFoundation } = require('./generated/api');\n"
+        "function run() { return loadFoundation(); }\n"
+        "module.exports = { run };\n",
+    )
+
+    result = _extract_for([importer], tmp_path)
+    source = _file_node_id(Path("src/consumer.js"))
+    imports_from = [
+        edge["target"]
+        for edge in result["edges"]
+        if edge["source"] == source and edge["relation"] == "imports_from"
+    ]
+
+    assert imports_from == [_make_id("ref", "./generated/api")]
+    checkout = _make_id(str(tmp_path))
+    leaked = [
+        endpoint
+        for edge in result["edges"]
+        for endpoint in (edge["source"], edge["target"])
+        if checkout in endpoint
+    ] + [node["id"] for node in result["nodes"] if checkout in node["id"]]
+    assert leaked == []
+
 # ── #927: wildcard tsconfig path patterns ────────────────────────────────────
 
 
@@ -1928,3 +1981,65 @@ def test_ts_paths_alias_behind_directory_reference_resolves(tmp_path: Path):
     result = _extract_for([target, importer], tmp_path)
 
     assert _has_edge(result, "src/a.ts", "src/b.ts")
+
+
+def test_workspace_main_dist_target_falls_through_to_src_index_when_built(tmp_path: Path):
+    """#3834: A workspace package declaring "main": "./dist/index.js" without exports
+    resolves to built dist/index.js if it exists on disk. Because dist/ is outside the
+    corpus (build output / ignored), the target node is absent and the edge dropped.
+    Resolution must fall through to the source entry point (src/index.ts)."""
+    _write(tmp_path / "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "main": "./dist/index.js",
+            "types": "./dist/index.d.ts",
+        }),
+    )
+    # Simulate a built package: both dist/ and src/ exist on disk
+    _write(
+        tmp_path / "packages/pkg-a/dist/index.js",
+        'export const value = "from-dist";\n',
+    )
+    _write(
+        tmp_path / "packages/pkg-a/dist/index.d.ts",
+        'export declare const value: string;\n',
+    )
+    source_target = _write(
+        tmp_path / "packages/pkg-a/src/index.ts",
+        'export const value = "ok";\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\nexport const v = value\n",
+    )
+
+    result = _extract_for([source_target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/src/index.ts")
+    assert not _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")
+
+
+def test_workspace_main_dist_target_used_when_no_source_entry_exists(tmp_path: Path):
+    """When no source entry point exists, the build artifact candidate remains the fallback."""
+    _write(tmp_path / "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+    _write(
+        tmp_path / "packages/pkg-a/package.json",
+        json.dumps({
+            "name": "@example/pkg-a",
+            "main": "./dist/index.js",
+        }),
+    )
+    dist_target = _write(
+        tmp_path / "packages/pkg-a/dist/index.js",
+        'export const value = "from-dist";\n',
+    )
+    importer = _write(
+        tmp_path / "apps/web/src/consumer.ts",
+        "import { value } from '@example/pkg-a'\nexport const v = value\n",
+    )
+
+    result = _extract_for([dist_target, importer], tmp_path)
+
+    assert _has_edge(result, "apps/web/src/consumer.ts", "packages/pkg-a/dist/index.js")

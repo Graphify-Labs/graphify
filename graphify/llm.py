@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from graphify.extractors.base import _read_source_text
 from graphify.file_slice import (
     FileSlice,
     bisect_slice,
@@ -537,7 +538,7 @@ def _file_to_text(path: Path) -> str:
     if path.suffix.lower() == ".pdf":
         from graphify.detect import extract_pdf_text
         return extract_pdf_text(path)
-    return path.read_text(encoding="utf-8", errors="replace")
+    return _read_source_text(path)
 
 
 def _resolve_under_root(path: Path, root: Path) -> Path | None:
@@ -1470,7 +1471,13 @@ def _call_openai_compat(
             # heuristic) + 400 for the system prompt, then add output headroom.
             num_ctx = auto_num_ctx
         keep_alive = os.environ.get("GRAPHIFY_OLLAMA_KEEP_ALIVE", "30m")
-        kwargs["extra_body"] = {"options": {"num_ctx": num_ctx}, "keep_alive": keep_alive}
+        # Merge, don't assign: GRAPHIFY_DISABLE_THINKING may have set extra_body
+        # above, and replacing it here made the flag silently inert on ollama (#3988).
+        kwargs["extra_body"] = {
+            **kwargs.get("extra_body", {}),
+            "options": {"num_ctx": num_ctx},
+            "keep_alive": keep_alive,
+        }
     resp = client.chat.completions.create(**kwargs)
     if not resp.choices or resp.choices[0].message is None:
         raise ValueError("LLM returned empty or filtered response")
@@ -2142,7 +2149,7 @@ def _estimate_file_tokens(unit: "Path | FileSlice") -> int:
         return chars // _CHARS_PER_TOKEN
     else:
         try:
-            content = path.read_text(encoding="utf-8", errors="replace")[:_FILE_CHAR_CAP]
+            content = _read_source_text(path, warn=False)[:_FILE_CHAR_CAP]
         except OSError:
             return 0
 

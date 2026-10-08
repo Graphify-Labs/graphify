@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
 _FORTRAN_CPP_EXTS = {".F", ".F90", ".F95", ".F03", ".F08"}
@@ -53,7 +53,7 @@ def _cpp_preprocess(path: Path) -> bytes:
     """
     import shutil
     import subprocess
-    safe = _strip_include_directives(path.read_bytes())
+    safe = _strip_include_directives(_read_source_bytes(path))
     if not shutil.which("cpp"):
         return safe
     try:
@@ -84,7 +84,7 @@ def extract_fortran(path: Path) -> dict:
     try:
         language = Language(tsfortran.language())
         parser = Parser(language)
-        source = _cpp_preprocess(path) if path.suffix in _FORTRAN_CPP_EXTS else path.read_bytes()
+        source = _cpp_preprocess(path) if path.suffix in _FORTRAN_CPP_EXTS else _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:

@@ -91,8 +91,8 @@ def push_to_neo4j(
             session.run(
                 f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
                 f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
-                src=u,
-                tgt=v,
+                src=data.get("_src", u),
+                tgt=data.get("_tgt", v),
                 props=props,
             )
             edges_pushed += 1
@@ -203,7 +203,7 @@ def push_to_falkordb(
         graph.query(
             f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
             f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
-            {"src": u, "tgt": v, "props": props},
+            {"src": data.get("_src", u), "tgt": data.get("_tgt", v), "props": props},
         )
         edges_pushed += 1
 
