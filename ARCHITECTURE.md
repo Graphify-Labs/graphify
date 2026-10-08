@@ -64,6 +64,12 @@ Every extractor returns:
 
 `validate.py` enforces this schema before `build()` consumes it.
 
+## Edge direction in graph.json
+
+`graph.json` is written `"directed": false`, but every link is directed: **arc order is the direction** (`source` → `target`, #563). Older canonicalized files carry it in `_src`/`_tgt` markers instead, and those win where present (#2309).
+
+A plain `json_graph.node_link_graph()` load loses this: an undirected graph re-orders each edge's endpoints by node-list position. Load through `paths.load_node_link_graph()` (or apply `paths.restore_arc_direction()` to the raw dict first), which stamps `_src`/`_tgt` on every edge. Then read direction as `data.get("_src", u)` / `data.get("_tgt", v)`, never from `u, v`. Anything that writes graph.json back out pops the markers into arc order first, as `export.to_json()` does.
+
 ## Confidence labels
 
 | Label | Meaning |
@@ -93,6 +99,12 @@ See `SECURITY.md` for the full threat model.
 
 ## Testing
 
+`analyze.suggest_questions()` interleaves candidates across question types before
+applying its result limit (seven by default). This keeps ambiguous relationships
+from hiding bridge, inferred-relationship, isolation, and low-cohesion signals.
+The existing candidate order within each type is preserved; if the limit is smaller
+than the number of available types, their generation order determines priority.
+
 One test file per module under `tests/`. Run with:
 
 ```bash
@@ -100,3 +112,9 @@ pytest tests/ -q
 ```
 
 The test suite is designed to avoid network access and uncontrolled filesystem effects; most tests are isolated with temporary directories and environment fixtures.
+
+R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
+When normal ID normalization removes an entire binding name, its UTF-8 bytes
+provide a deterministic operator suffix within the same lexical owner. Its double
+underscore separators cannot collide with an ordinary normalized binding ID. Local
+call resolution stops if malformed scope metadata cycles.

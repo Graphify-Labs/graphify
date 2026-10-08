@@ -6,7 +6,7 @@ from typing import Any
 
 from tree_sitter import Node
 
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
 _TYPE_BLOCKS = {
@@ -86,7 +86,7 @@ def extract_vbnet(path: Path) -> dict:
         return {"nodes": [], "edges": [], "error": "tree-sitter-vb-dotnet not installed"}
 
     try:
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         root = Parser(Language(tree_sitter_vb_dotnet.language())).parse(source).root_node
     except Exception as exc:
         return {"nodes": [], "edges": [], "error": f"VB.NET grammar failed to load: {exc}"}
@@ -185,14 +185,16 @@ def extract_vbnet(path: Path) -> dict:
             source_backed=False,
         )
 
-    def add_data_member(type_id: str, member: Node, name: str, kind: str) -> str:
+    def add_data_member(
+        type_id: str, member: Node, name: str, kind: str, relation: str = "contains"
+    ) -> str:
         member_id = add_node(
             _make_id(type_id, kind, name.casefold(), str(member.start_point[0])),
             name,
             member,
             kind=kind,
         )
-        add_edge(type_id, member_id, "contains", member)
+        add_edge(type_id, member_id, relation, member)
         return member_id
 
     def process_type(block: Node, parent_id: str, namespace: str) -> None:
@@ -227,8 +229,15 @@ def extract_vbnet(path: Path) -> dict:
             if member.type == "enum_member":
                 member_name = member.child_by_field_name("name")
                 if member_name is not None:
+                    # An enum member is a discriminant case, not a contained
+                    # declaration: it gets a `case_of` edge like every other
+                    # language with enums (Java #1719, C#, Swift, Scala, ...),
+                    # not the `contains` edge used for real fields. The relation
+                    # also matters to resolution — case_of targets are excluded
+                    # from `New X()` constructor binding (see _member_nids).
                     add_data_member(
-                        type_id, member, _read_text(member_name, source), "enum_member"
+                        type_id, member, _read_text(member_name, source),
+                        "enum_member", relation="case_of",
                     )
                 continue
             if member.type == "field_declaration":

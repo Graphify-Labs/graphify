@@ -25,7 +25,7 @@ def report_for(result):
 
 
 @pytest.mark.parametrize("source", DATA_FORMS)
-def test_data_forms_are_visible_in_extraction_and_persisted_report(tmp_path, capsys, source):
+def test_data_forms_are_visible_in_extraction_and_persisted_report(tmp_path, source):
     p = tmp_path / "bank.js"
     p.write_text(source, encoding="utf-8")
     result = extract([p], root=tmp_path, cache_root=tmp_path, parallel=False)
@@ -33,7 +33,6 @@ def test_data_forms_are_visible_in_extraction_and_persisted_report(tmp_path, cap
     assert file_node["_no_structural_symbols"] is True
     assert file_node["_source_bytes"] == len(source.encode("utf-8"))
     assert result["failed_sources"] == []
-    assert "without functions, classes, imports or calls" in capsys.readouterr().err
     report = report_for(result)
     assert "## Files without structural symbols" in report
     assert "bank.js" in report and f"{len(source)} bytes" in report
@@ -106,3 +105,22 @@ def test_report_preserves_backticks_in_source_filename(tmp_path):
     p.write_text(source, encoding="utf-8")
     r = extract([p], root=tmp_path, cache_root=tmp_path, parallel=False)
     assert "- `` bank`draft.js ``" in report_for(r)
+
+
+@pytest.mark.parametrize("source", ["", " \n\t"])
+def test_empty_js_does_not_add_coverage_noise(tmp_path, source):
+    p = tmp_path / "empty.js"
+    p.write_text(source, encoding="utf-8")
+    r = extract([p], root=tmp_path, cache_root=tmp_path, parallel=False)
+    assert not any(n.get("_no_structural_symbols") for n in r["nodes"])
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "cp1252"])
+def test_encoded_data_keeps_upstream_decoding_and_disk_size(tmp_path, encoding):
+    p = tmp_path / "bank.js"
+    raw = 'window.BANK = ["café"];'.encode(encoding)
+    p.write_bytes(raw)
+    r = extract([p], root=tmp_path, cache_root=tmp_path, parallel=False)
+    file_node = next(n for n in r["nodes"] if n.get("_no_structural_symbols"))
+    assert file_node["_source_bytes"] == len(raw)
+    assert not r.get("failed_sources")

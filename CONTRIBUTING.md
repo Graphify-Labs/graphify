@@ -42,8 +42,9 @@ git remote add upstream https://github.com/Graphify-Labs/graphify.git
 git fetch upstream
 git checkout -b my-feature-branch upstream/v8  # Always branch off upstream v8, never commit directly to v8
 
-# Set up the environment
-uv sync
+# Set up the environment (--all-extras installs the optional grammars and SDKs,
+# matching CI; without it the tests that need them are skipped)
+uv sync --all-extras
 uv run pre-commit install
 
 # Run the test suite to confirm your setup
