@@ -478,7 +478,11 @@ def suggest_questions(
     questions = []
     node_community = _node_community_map(communities)
 
-    # 1. AMBIGUOUS edges → unresolved relationship questions
+    # 1. AMBIGUOUS edges → unresolved relationship questions.
+    # Tagged ``low_confidence=True`` (#4199): the audit trail stays
+    # intact but downstream renderers (report.py) move these into a
+    # separate "Low-confidence Hints" section so they do not compete
+    # with EXTRACTED/INFERRED bridges in the main list.
     for u, v, data in G.edges(data=True):
         if data.get("confidence") == "AMBIGUOUS":
             ul = G.nodes[u].get("label", u)
@@ -488,6 +492,7 @@ def suggest_questions(
                 "type": "ambiguous_edge",
                 "question": f"What is the exact relationship between `{ul}` and `{vl}`?",
                 "why": f"Edge tagged AMBIGUOUS (relation: {relation}) - confidence is low.",
+                "low_confidence": True,
             })
 
     # 2. Bridge nodes (high betweenness) → cross-cutting concern questions
