@@ -2739,50 +2739,54 @@ def test_ruby_implicit_self_keeps_top_level_and_mixin_edges(tmp_path):
     assert ("svc_widget_say", "svc_greet_hi") in calls
 
 
-# An unqualified `b()` means the `b` of the caller's own class. `Other` comes last
-# on purpose, because the file-wide name map keeps only the last declaration of each
-# name.
+# An unqualified `b()` means the nearest class that has a `b`: the caller's own
+# class, then its bases. `Other` comes last on purpose, because the file-wide name
+# map keeps only the last declaration of each name.
 _LEXICAL_CALL_SOURCES = {
     "java": (
-        "class Outer {\n"
-        "    void a() { b(); }\n"
+        "class Base { void ping() {} }\n"
+        "class Outer extends Base {\n"
+        "    void a() { b(); ping(); }\n"
         "    void b() {}\n"
         "    class Inner {\n"
         "        void b() {}\n"
         "        void c() { b(); }\n"
         "    }\n"
         "}\n"
-        "class Child { void ping() {} void run() { ping(); } }\n"
+        "class Child extends Base { void ping() {} void run() { ping(); } }\n"
         "class Other { void b() {} void ping() {} }\n"
     ),
     "cs": (
-        "class Outer {\n"
-        "    public void a() { b(); }\n"
+        "class Base { public void ping() {} }\n"
+        "class Outer : Base {\n"
+        "    public void a() { b(); ping(); }\n"
         "    public void b() {}\n"
         "    class Inner {\n"
         "        public void b() {}\n"
         "        public void c() { b(); }\n"
         "    }\n"
         "}\n"
-        "class Child { public void ping() {} public void run() { ping(); } }\n"
+        "class Child : Base { public void ping() {} public void run() { ping(); } }\n"
         "class Other { public void b() {} public void ping() {} }\n"
     ),
     "scala": (
-        "class Outer {\n"
-        "  def a(): Unit = b()\n"
+        "class Base { def ping(): Unit = () }\n"
+        "class Outer extends Base {\n"
+        "  def a(): Unit = { b(); ping() }\n"
         "  def b(): Unit = ()\n"
         "  class Inner {\n"
         "    def b(): Unit = ()\n"
         "    def c(): Unit = b()\n"
         "  }\n"
         "}\n"
-        "class Child { def ping(): Unit = (); def run(): Unit = ping() }\n"
+        "class Child extends Base { override def ping(): Unit = (); def run(): Unit = ping() }\n"
         "class Other { def b(): Unit = (); def ping(): Unit = () }\n"
     ),
     "cpp": (
-        "class Outer {\n"
+        "class Base { public: void ping() {} };\n"
+        "class Outer : public Base {\n"
         "public:\n"
-        "    void a() { b(); }\n"
+        "    void a() { b(); ping(); }\n"
         "    void b() {}\n"
         "    class Inner {\n"
         "    public:\n"
@@ -2790,7 +2794,7 @@ _LEXICAL_CALL_SOURCES = {
         "        void c() { b(); }\n"
         "    };\n"
         "};\n"
-        "class Child { public: void ping() {} void run() { ping(); } };\n"
+        "class Child : public Base { public: void ping() {} void run() { ping(); } };\n"
         "class Other { public: void b() {} void ping() {} };\n"
     ),
 }
@@ -2798,16 +2802,19 @@ _LEXICAL_CALL_SOURCES = {
 
 @pytest.mark.parametrize("ext", sorted(_LEXICAL_CALL_SOURCES))
 def test_unqualified_call_binds_to_the_nearest_class_that_declares_it(tmp_path, ext):
-    """`b()` in Outer reaches Outer.b, `b()` in the nested Inner reaches Inner.b, and
-    Child keeps its own ping(): none of them land on the Other declared last."""
+    """`b()` in Outer reaches Outer.b and `ping()` the Base it extends, `b()` in the
+    nested Inner reaches Inner.b, and a Child that overrides ping() keeps its own:
+    none of them land on the Other declared last."""
     source = _LEXICAL_CALL_SOURCES[ext]
     calls = _single_file_call_pairs(tmp_path, source, ext)
     assert ("svc_outer_a", "svc_outer_b") in calls
+    assert ("svc_outer_a", "svc_base_ping") in calls
     assert ("svc_inner_c", "svc_inner_b") in calls
     assert ("svc_child_run", "svc_child_ping") in calls
     assert not any(tgt.startswith("svc_other_") for _, tgt in calls), calls
     assert ("svc_outer_a", "svc_inner_b") not in calls
     assert ("svc_inner_c", "svc_outer_b") not in calls
+    assert ("svc_child_run", "svc_base_ping") not in calls
     # the second run reads the AST cache written by the first
     assert _single_file_call_pairs(tmp_path, source, ext) == calls
 
@@ -2829,6 +2836,194 @@ def test_nested_class_declared_after_the_method_does_not_capture_the_call(tmp_pa
     assert ("svc_outer_a", "svc_inner_b") not in calls
 
 
+# Each fixture has a method that only one class on the caller's path declares and an
+# `Other` declared last. The ordering rules of the lookup are pinned one by one: a
+# base of a base, and the caller's own base against the class around it.
+_GRAND_BASE_SOURCES = {
+    "java": "class Base { void ping() {} }\nclass Mid extends Base {}\nclass Child extends Mid { void run() { ping(); } }\nclass Other { void ping() {} }\n",
+    "cs": "class Base { public void ping() {} }\nclass Mid : Base {}\nclass Child : Mid { public void run() { ping(); } }\nclass Other { public void ping() {} }\n",
+    "scala": "class Base { def ping(): Unit = () }\nclass Mid extends Base\nclass Child extends Mid { def run(): Unit = ping() }\nclass Other { def ping(): Unit = () }\n",
+    "cpp": "class Base { public: void ping() {} };\nclass Mid : public Base {};\nclass Child : public Mid { public: void run() { ping(); } };\nclass Other { public: void ping() {} };\n",
+}
+
+
+@pytest.mark.parametrize("ext", sorted(_GRAND_BASE_SOURCES))
+def test_unqualified_call_reaches_the_base_of_a_base(tmp_path, ext):
+    calls = _single_file_call_pairs(tmp_path, _GRAND_BASE_SOURCES[ext], ext)
+    assert ("svc_child_run", "svc_base_ping") in calls
+    assert ("svc_child_run", "svc_other_ping") not in calls
+
+
+# Scala 3 rejects this shape (b is defined in Outer and inherited in Inner), so Scala has no fixture.
+_OWN_BASE_FIRST_SOURCES = {
+    "java": "class Base { void b() {} }\nclass Outer {\n    void b() {}\n    class Inner extends Base { void run() { b(); } }\n}\nclass Other { void b() {} }\n",
+    "cs": "class Base { public void b() {} }\nclass Outer {\n    public static void b() {}\n    class Inner : Base { public void run() { b(); } }\n}\nclass Other { public void b() {} }\n",
+    "cpp": "class Base { public: void b() {} };\nclass Outer {\npublic:\n    static void b() {}\n    class Inner : public Base { public: void run() { b(); } };\n};\nclass Other { public: void b() {} };\n",
+}
+
+
+@pytest.mark.parametrize("ext", sorted(_OWN_BASE_FIRST_SOURCES))
+def test_unqualified_call_prefers_the_callers_base_to_the_enclosing_class(tmp_path, ext):
+    """Inner inherits b() from Base, which is nearer than the b() of the Outer around it."""
+    calls = _single_file_call_pairs(tmp_path, _OWN_BASE_FIRST_SOURCES[ext], ext)
+    assert ("svc_inner_run", "svc_base_b") in calls
+    assert ("svc_inner_run", "svc_outer_b") not in calls
+    assert ("svc_inner_run", "svc_other_b") not in calls
+
+
+# A base declared further down the file used to be invisible to the lookup, which then
+# gave the call to `Other`. C++ needs the base
+# complete before the class that derives from it, so it has no such fixture; Scala
+# 3 rejects the Outer.b next to the inherited Base.b, so its Outer declares no b.
+_BASE_AFTER_SOURCES = {
+    "java": (
+        "class Outer {\n"
+        "    void b() {}\n"
+        "    class Inner extends Base { void run() { b(); } }\n"
+        "}\n"
+        "class Child extends Base { void run() { ping(); } }\n"
+        "class Leaf extends Mid { void run() { ping(); } }\n"
+        "class Mid extends Base {}\n"
+        "class Base { void b() {} void ping() {} }\n"
+        "class Other { void b() {} void ping() {} }\n"
+    ),
+    "cs": (
+        "class Outer {\n"
+        "    public static void b() {}\n"
+        "    class Inner : Base { public void run() { b(); } }\n"
+        "}\n"
+        "class Child : Base { public void run() { ping(); } }\n"
+        "class Leaf : Mid { public void run() { ping(); } }\n"
+        "class Mid : Base {}\n"
+        "class Base { public void b() {} public void ping() {} }\n"
+        "class Other { public void b() {} public void ping() {} }\n"
+    ),
+    "scala": (
+        "class Outer {\n"
+        "  class Inner extends Base { def run(): Unit = b() }\n"
+        "}\n"
+        "class Child extends Base { def run(): Unit = ping() }\n"
+        "class Leaf extends Mid { def run(): Unit = ping() }\n"
+        "class Mid extends Base\n"
+        "class Base { def b(): Unit = (); def ping(): Unit = () }\n"
+        "class Other { def b(): Unit = (); def ping(): Unit = () }\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("ext", sorted(_BASE_AFTER_SOURCES))
+def test_unqualified_call_reaches_a_base_declared_after_the_class(tmp_path, ext):
+    calls = _single_file_call_pairs(tmp_path, _BASE_AFTER_SOURCES[ext], ext)
+    assert ("svc_inner_run", "svc_base_b") in calls
+    assert ("svc_child_run", "svc_base_ping") in calls
+    assert ("svc_leaf_run", "svc_base_ping") in calls
+    assert not any(tgt.startswith("svc_other_") for _, tgt in calls), calls
+    assert ("svc_inner_run", "svc_outer_b") not in calls
+
+
+_ORDER_BLOCKS = {
+    "java": [
+        "class Base { void ping() {} void pong() {} }\n",
+        "class Mid extends Base { void pong() {} }\n",
+        "class Outer extends Mid {\n    void b() {}\n    void a() { b(); ping(); pong(); }\n"
+        "    class Inner extends Base { void c() { ping(); } }\n}\n",
+        "class Other { void b() {} void ping() {} void pong() {} }\n",
+    ],
+    "cs": [
+        "class Base { public void ping() {} public void pong() {} }\n",
+        "class Mid : Base { public void pong() {} }\n",
+        "class Outer : Mid {\n    public static void b() {}\n    public void a() { b(); ping(); pong(); }\n"
+        "    class Inner : Base { public void c() { ping(); } }\n}\n",
+        "class Other { public void b() {} public void ping() {} public void pong() {} }\n",
+    ],
+    "scala": [
+        "class Base { def ping(): Unit = (); def pong(): Unit = () }\n",
+        "class Mid extends Base { override def pong(): Unit = () }\n",
+        "class Outer extends Mid {\n  def b(): Unit = ()\n  def a(): Unit = { b(); ping(); pong() }\n"
+        "  class Inner extends Base { def c(): Unit = ping() }\n}\n",
+        "class Other { def b(): Unit = (); def ping(): Unit = (); def pong(): Unit = () }\n",
+    ],
+}
+
+
+@pytest.mark.parametrize("ext", sorted(_ORDER_BLOCKS))
+def test_unqualified_call_targets_do_not_depend_on_declaration_order(tmp_path, ext):
+    """Every order of the four top-level classes gives the same calls."""
+    import itertools
+
+    expected = {
+        ("svc_outer_a", "svc_outer_b"), ("svc_outer_a", "svc_base_ping"), ("svc_outer_a", "svc_mid_pong"),
+        ("svc_inner_c", "svc_base_ping"),
+    }
+    for i, order in enumerate(itertools.permutations(_ORDER_BLOCKS[ext])):
+        src_dir = tmp_path / str(i)
+        src_dir.mkdir()
+        calls = _single_file_call_pairs(src_dir, "".join(order), ext)
+        assert calls == expected, "".join(order)
+
+
+_RELATION_SOURCES = {
+    # a Java interface's default method is a member of the class that implements it
+    "java": (
+        "class Outer {\n"
+        "    void greet() {}\n"
+        "    class Inner implements Greeter { void run() { greet(); } }\n"
+        "}\n"
+        "interface Greeter { default void greet() {} }\n"
+        "class Other { void greet() {} }\n"
+    ),
+    # a Scala trait mixed in with `with` is part of the class
+    "scala": (
+        "class Base {}\n"
+        "trait Greeter { def greet(): Unit = () }\n"
+        "class Outer {\n"
+        "  class Inner extends Base with Greeter { def run(): Unit = greet() }\n"
+        "}\n"
+        "class Other { def greet(): Unit = () }\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("ext", sorted(_RELATION_SOURCES))
+def test_unqualified_call_reaches_an_interface_default_method_or_a_mixed_in_trait(tmp_path, ext):
+    calls = _single_file_call_pairs(tmp_path, _RELATION_SOURCES[ext], ext)
+    assert ("svc_inner_run", "svc_greeter_greet") in calls
+    assert ("svc_inner_run", "svc_outer_greet") not in calls
+    assert ("svc_inner_run", "svc_other_greet") not in calls
+
+
+def test_csharp_class_does_not_inherit_the_members_of_an_interface(tmp_path):
+    """C# looks a simple name up in the class and its base classes, not in the
+    interfaces it implements: b() in Inner is not the b() of IThing, nor of Thing."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "interface IThing { void b() {} }\n"
+        "interface Thing { void b() {} }\n"
+        "class Outer {\n"
+        "    static void b() {}\n"
+        "    class Inner : IThing { public void run() { b(); } }\n"
+        "    class Inner2 : Thing { public void run2() { b(); } }\n"
+        "}\n"
+    ), "cs")
+    assert ("svc_inner_run", "svc_ithing_b") not in calls
+    assert ("svc_inner2_run2", "svc_thing_b") not in calls
+
+
+def test_csharp_base_class_named_like_an_interface_is_a_base(tmp_path):
+    """`IOBase` looks like an interface by its name, but the file declares it a
+    class: its b() is inherited, nearer than the b() of the Outer around Inner."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "class Outer {\n"
+        "    static void b() {}\n"
+        "    class Inner : IOBase { public void run() { b(); } }\n"
+        "}\n"
+        "class IOBase { public void b() {} }\n"
+        "class Other { public void b() {} }\n"
+    ), "cs")
+    assert ("svc_inner_run", "svc_iobase_b") in calls
+    assert ("svc_inner_run", "svc_outer_b") not in calls
+    assert ("svc_inner_run", "svc_other_b") not in calls
+
+
 _RECEIVER_CALL_SOURCES = {
     "java": "class Other { void b() {} }\nclass Outer {\n    void a(Other o) { o.b(); }\n    void b() {}\n}\nclass Z { void b() {} }\n",
     "cs": "class Other { public void b() {} }\nclass Outer {\n    public void a(Other o) { o.b(); }\n    public void b() {}\n}\nclass Z { public void b() {} }\n",
@@ -2843,6 +3038,67 @@ def test_call_on_another_receiver_is_not_claimed_by_the_callers_class(tmp_path, 
     just because Outer also declares b()."""
     calls = _single_file_call_pairs(tmp_path, _RECEIVER_CALL_SOURCES[ext], ext)
     assert ("svc_outer_a", "svc_outer_b") not in calls
+
+
+def test_cpp_two_bases_declaring_the_name_bind_nothing(tmp_path):
+    """Two bases on one level both declare m(): ordering them is beyond this
+    pass, so it binds neither (and not Other.m either). C++ calls this ambiguous."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "class A { public: void m() {} };\n"
+        "class B { public: void m() {} };\n"
+        "class C : public A, public B { public: void run() { m(); } };\n"
+        "class Other { public: void m() {} };\n"
+    ), "cpp")
+    assert not any(src == "svc_c_run" for src, _ in calls), calls
+
+
+def test_csharp_two_classes_of_one_name_leave_a_base_unresolved(tmp_path):
+    """A base declared further down is read as the class of that name. Here two
+    namespaces declare a Base: the pass cannot tell which one is meant and does
+    not guess, so the call binds to neither (the last ping() of the file, `Other`'s,
+    is the file-wide lookup that applies when no base is found)."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "using N1;\n"
+        "namespace N1 { class Base { public void ping() {} } }\n"
+        "namespace N2 { class Base { public void ping() {} } }\n"
+        "namespace N3 { class Child : Base { public void run() { ping(); } } }\n"
+        "class Other { public void ping() {} }\n"
+    ), "cs")
+    assert ("svc_n3_child_run", "svc_n1_base_ping") not in calls, calls
+    assert ("svc_n3_child_run", "svc_n2_base_ping") not in calls, calls
+
+
+def test_java_anonymous_class_reads_the_in_file_type_it_extends(tmp_path):
+    """`new Base() { ... }` inherits ping() from Base, which is nearer than the
+    ping() of the Outer around it, and so does the generic `new Gen<String>() { ... }`
+    with its pong(); both types are declared after Outer and before Other."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "class Outer {\n"
+        "    void ping() {}\n"
+        "    void pong() {}\n"
+        "    void a() {\n"
+        "        Base r = new Base() { void run() { ping(); } };\n"
+        "        Gen<String> g = new Gen<String>() { void go() { pong(); } };\n"
+        "    }\n"
+        "}\n"
+        "class Base { void ping() {} }\n"
+        "class Gen<T> { void pong() {} }\n"
+        "class Other { void ping() {} void pong() {} }\n"
+    ), "java")
+    assert {tgt for src, tgt in calls if src.endswith("_run")} == {"svc_base_ping"}, calls
+    assert {tgt for src, tgt in calls if src.endswith("_go")} == {"svc_gen_pong"}, calls
+
+
+def test_java_cyclic_extends_ends_the_lookup(tmp_path):
+    """A source that is mid-edit can make A extend B and B extend A (or a class
+    extend itself): the walk visits each class once and still finds g() in B."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "class A extends B { void f() { g(); k(); } }\n"
+        "class B extends A { void g() {} }\n"
+        "class S extends S { void h() { k(); } }\n"
+    ), "java")
+    assert ("svc_a_f", "svc_b_g") in calls
+    assert not any(tgt.endswith("_k") for _, tgt in calls), calls
 
 
 def test_cpp_member_hides_a_free_function_and_a_free_function_still_binds(tmp_path):
