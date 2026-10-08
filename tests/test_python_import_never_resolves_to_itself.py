@@ -66,3 +66,35 @@ def test_warm_rebuild_keeps_the_fix(tmp_path):
     key = lambda e: (e["source"], e["target"], e["relation"])  # noqa: E731
     assert sorted(map(key, first)) == sorted(map(key, warm))
     assert not [e for e in warm if e["source"] == e["target"]]
+
+
+def test_a_same_named_module_in_another_package_still_resolves(tmp_path):
+    """The guard compares directory-qualified stems: `a/utils.py` importing from
+    `b/utils.py` is a different module and must keep resolving, by exact path, by
+    suffix, and through the bare-stem fallback, whichever file is listed first."""
+    for i, importer in enumerate((
+        "from b.utils import Helper\n",
+        "from proj.b.utils import Helper\n",
+        "from installed.x.utils import Helper\n",
+    )):
+        for b_first in (False, True):
+            root = tmp_path / f"case{i}_{int(b_first)}"
+            files = {
+                "proj/__init__.py": "",
+                "proj/a/__init__.py": "",
+                "proj/b/__init__.py": "",
+                "proj/b/utils.py": "class Helper:\n    pass\n",
+                "proj/a/utils.py": importer + "\n\nclass Local(Helper):\n    pass\n",
+            }
+            paths = []
+            for name, body in files.items():
+                p = root / name
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(body, encoding="utf-8")
+                paths.append(p)
+            if b_first:
+                paths[-2], paths[-1] = paths[-1], paths[-2]
+            r = extract(paths, root=root, cache_root=root / "graphify-out", parallel=False)
+            nodes = {n["id"]: n for n in r["nodes"]}
+            bases = [nodes[e["target"]].get("source_file") for e in r["edges"] if e["relation"] == "inherits"]
+            assert bases == ["proj/b/utils.py"], (importer, b_first, bases)
