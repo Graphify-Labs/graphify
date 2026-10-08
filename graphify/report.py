@@ -153,7 +153,7 @@ def generate(
                 f"the graph (top: {top})"
             )
 
-    from .analyze import _is_file_node, _is_concept_node
+    from .analyze import _is_file_node, _is_concept_node, _is_contains_only_ast_node
 
     def _real_node(n) -> bool:
         # The one definition of "real" (structural, not file/concept/
@@ -324,7 +324,10 @@ def generate(
             ]
 
     # --- Gaps section ---
-    isolated = [n for n in G.nodes() if G.degree(n) <= 1 and _real_node(n)]
+    isolated = [
+        n for n in G.nodes()
+        if G.degree(n) <= 1 and _real_node(n) and not _is_contains_only_ast_node(G, n)
+    ]
     # Same threshold the Summary and Communities headers used (#3148): this
     # was a hardcoded 3, so with --min-community-size anything else the count
     # here disagreed with the label text beside it, which already printed
