@@ -214,3 +214,18 @@ def test_class_field_of_an_unimported_type_emits_no_edge(tmp_path):
                  "export class K {\n  repo: Svc;\n  a(): number { return this.repo.doThing(); }\n}\n"),
     })
     assert not _caller_hits(calls, "a")
+
+
+def test_same_named_fields_in_two_classes_of_one_file_keep_their_own_type(tmp_path):
+    # Fields are scoped to their class: B's `repo: RepoB` must not type A's `this.repo`.
+    _, r = _calls(tmp_path, {
+        "repos.ts": ("export class RepoA {\n  save(): number { return 1; }\n}\n"
+                     "export class RepoB {\n  save(): number { return 2; }\n}\n"),
+        "two.ts": ('import { RepoA, RepoB } from "./repos";\n'
+                   "export class A {\n  repo: RepoA = new RepoA();\n  run(): number { return this.repo.save(); }\n}\n"
+                   "export class B {\n  repo: RepoB = new RepoB();\n  run(): number { return this.repo.save(); }\n}\n"),
+    })
+    nodes = {n["id"]: n for n in r["nodes"]}
+    owner = {e["target"]: nodes[e["source"]]["label"] for e in r["edges"] if e["relation"] == "method"}
+    pairs = {(owner.get(e["source"]), owner.get(e["target"])) for e in r["edges"] if e["relation"] == "calls"}
+    assert pairs == {("A", "RepoA"), ("B", "RepoB")}, pairs

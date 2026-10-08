@@ -4384,10 +4384,15 @@ def _resolve_typescript_member_calls(
     a false call edge is worse than a missing one (the C++ resolver's bar).
     """
     type_table_by_file: dict[str, dict[str, str]] = {}
+    # Class fields, per file then per class: `this.x.m()` reads only the
+    # caller's own class, so a same-named field of another class never types it.
+    field_types_by_file: dict[str, dict[str, dict[str, str]]] = {}
     for result in per_file:
         tt = result.get("ts_type_table")
         if tt and tt.get("path"):
             type_table_by_file[tt["path"]] = tt.get("table", {})
+            if tt.get("fields"):
+                field_types_by_file[tt["path"]] = tt["fields"]
     if not type_table_by_file:
         return
 
@@ -4404,6 +4409,7 @@ def _resolve_typescript_member_calls(
             type_def_nids.setdefault(_key(n.get("label", "")), []).append(n["id"])
 
     method_index: dict[tuple[str, str], str] = {}
+    class_of_method: dict[str, str] = {}
     for e in all_edges:
         if e.get("relation") != "method":
             continue
@@ -4411,6 +4417,8 @@ def _resolve_typescript_member_calls(
         tnode = node_by_id.get(tgt)
         if tnode is not None:
             method_index[(src, _key(tnode.get("label", "")))] = tgt
+        if isinstance(src, str) and isinstance(tgt, str):
+            class_of_method[tgt] = src
 
     # Origin maps (#2553), built like the Python resolver's module arm: key on
     # stable NODE ids, not source_file strings (raw_calls keep their original
@@ -4453,7 +4461,13 @@ def _resolve_typescript_member_calls(
             type_qualified = True  # the receiver names the type in source
         else:
             type_qualified = False
-            type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
+            type_name = None
+            if rc.get("ts_this_field"):
+                owner_label = node_by_id.get(class_of_method.get(caller, ""), {}).get("label", "")
+                type_name = (field_types_by_file.get(rc.get("source_file", ""), {})
+                             .get(str(owner_label), {}).get(receiver))
+            if not type_name:
+                type_name = type_table_by_file.get(rc.get("source_file", ""), {}).get(receiver)
         if not type_name:
             continue
         # A builtin global receiver type (Date, Promise, Map, ...) must not resolve
