@@ -1389,8 +1389,13 @@ def to_svg(
 
     nx.draw_networkx_nodes(G, pos, ax=ax, node_color=node_colors,
                            node_size=node_sizes, alpha=0.9)
+    # matplotlib copies every string it draws into graph.svg (as a comment, with the default
+    # svg.fonttype) and escapes only &, <, > and --, so a control character in a label
+    # would leave the file malformed XML while the export reports success (same hazard as #2897).
     nx.draw_networkx_labels(G, pos, ax=ax,
-                            labels={n: G.nodes[n].get("label", n) for n in G.nodes()},
+                            labels={n: (_strip_xml_illegal(str(G.nodes[n]["label"]))
+                                        if "label" in G.nodes[n] else n)
+                                    for n in G.nodes()},
                             font_size=7, font_color="white")
 
     # Legend
@@ -1398,7 +1403,7 @@ def to_svg(
         patches = [
             mpatches.Patch(
                 color=COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)],
-                label=f"{label} ({len(communities.get(cid, []))})",
+                label=_strip_xml_illegal(f"{label} ({len(communities.get(cid, []))})"),
             )
             for cid, label in sorted(community_labels.items())
         ]
