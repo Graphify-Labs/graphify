@@ -4954,9 +4954,10 @@ def _extract_generic(
                 )
                 if _csharp_arity:
                     class_name_for_id = f"{class_name}`{_csharp_arity}"
-            class_nid = _make_id(stem, ".".join(namespace_stack), class_name_for_id)
-            if config.ts_module == "tree_sitter_python" and parent_class_nid:
-                class_nid = _make_id(parent_class_nid, class_name)
+            if parent_class_nid and config.ts_module != "tree_sitter_ruby":
+                class_nid = _make_id(parent_class_nid, class_name_for_id)
+            else:
+                class_nid = _make_id(stem, ".".join(namespace_stack), class_name_for_id)
             line = node.start_point[0] + 1
             metadata = None
             ruby_reopened = (
