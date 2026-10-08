@@ -435,6 +435,8 @@ See the [full command reference](#full-command-reference) below.
 
 Create a `.graphifyignore` in your project root — same syntax as `.gitignore`, including `!` negation.
 
+As in git, a pattern without a slash is compared with one file or directory name at a time, so after `*` a directory needs two lines to come back: `!src/` for the directory and `!src/**` for the files in it, as in the example below. Either line alone leaves the files ignored.
+
 **`.gitignore` is respected automatically.** graphify reads the `.gitignore` in each directory. If a `.graphifyignore` is also present, the two are **merged** — `.graphifyignore` patterns are evaluated last, so they win on conflicts (including `!` negations). Adding a `.graphifyignore` only ever excludes more; it never re-includes a file your `.gitignore` already excluded. Subdirectory scoping works the same way as git — an ignore file only affects its own subtree.
 
 Pass `--no-gitignore` to `graphify extract` when git-ignored generated or transpiled code belongs in the graph. This disables `.gitignore` and `.git/info/exclude`; `.graphifyignore` still applies.
