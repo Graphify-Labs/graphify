@@ -2739,6 +2739,147 @@ def test_ruby_implicit_self_keeps_top_level_and_mixin_edges(tmp_path):
     assert ("svc_widget_say", "svc_greet_hi") in calls
 
 
+# An unqualified `b()` means the `b` of the caller's own class. `Other` comes last
+# on purpose, because the file-wide name map keeps only the last declaration of each
+# name.
+_LEXICAL_CALL_SOURCES = {
+    "java": (
+        "class Outer {\n"
+        "    void a() { b(); }\n"
+        "    void b() {}\n"
+        "    class Inner {\n"
+        "        void b() {}\n"
+        "        void c() { b(); }\n"
+        "    }\n"
+        "}\n"
+        "class Child { void ping() {} void run() { ping(); } }\n"
+        "class Other { void b() {} void ping() {} }\n"
+    ),
+    "cs": (
+        "class Outer {\n"
+        "    public void a() { b(); }\n"
+        "    public void b() {}\n"
+        "    class Inner {\n"
+        "        public void b() {}\n"
+        "        public void c() { b(); }\n"
+        "    }\n"
+        "}\n"
+        "class Child { public void ping() {} public void run() { ping(); } }\n"
+        "class Other { public void b() {} public void ping() {} }\n"
+    ),
+    "scala": (
+        "class Outer {\n"
+        "  def a(): Unit = b()\n"
+        "  def b(): Unit = ()\n"
+        "  class Inner {\n"
+        "    def b(): Unit = ()\n"
+        "    def c(): Unit = b()\n"
+        "  }\n"
+        "}\n"
+        "class Child { def ping(): Unit = (); def run(): Unit = ping() }\n"
+        "class Other { def b(): Unit = (); def ping(): Unit = () }\n"
+    ),
+    "cpp": (
+        "class Outer {\n"
+        "public:\n"
+        "    void a() { b(); }\n"
+        "    void b() {}\n"
+        "    class Inner {\n"
+        "    public:\n"
+        "        void b() {}\n"
+        "        void c() { b(); }\n"
+        "    };\n"
+        "};\n"
+        "class Child { public: void ping() {} void run() { ping(); } };\n"
+        "class Other { public: void b() {} void ping() {} };\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("ext", sorted(_LEXICAL_CALL_SOURCES))
+def test_unqualified_call_binds_to_the_nearest_class_that_declares_it(tmp_path, ext):
+    """`b()` in Outer reaches Outer.b, `b()` in the nested Inner reaches Inner.b, and
+    Child keeps its own ping(): none of them land on the Other declared last."""
+    source = _LEXICAL_CALL_SOURCES[ext]
+    calls = _single_file_call_pairs(tmp_path, source, ext)
+    assert ("svc_outer_a", "svc_outer_b") in calls
+    assert ("svc_inner_c", "svc_inner_b") in calls
+    assert ("svc_child_run", "svc_child_ping") in calls
+    assert not any(tgt.startswith("svc_other_") for _, tgt in calls), calls
+    assert ("svc_outer_a", "svc_inner_b") not in calls
+    assert ("svc_inner_c", "svc_outer_b") not in calls
+    # the second run reads the AST cache written by the first
+    assert _single_file_call_pairs(tmp_path, source, ext) == calls
+
+
+_NESTED_SAME_NAME_SOURCES = {
+    "java": "class Outer {\n    void a() { b(); }\n    void b() {}\n    class Inner {\n        void b() {}\n    }\n}\n",
+    "cs": "class Outer {\n    public void a() { b(); }\n    public void b() {}\n    class Inner {\n        public void b() {}\n    }\n}\n",
+    "scala": "class Outer {\n  def a(): Unit = b()\n  def b(): Unit = ()\n  class Inner {\n    def b(): Unit = ()\n  }\n}\n",
+    "cpp": "class Outer {\npublic:\n    void a() { b(); }\n    void b() {}\n    class Inner {\n    public:\n        void b() {}\n    };\n};\n",
+}
+
+
+@pytest.mark.parametrize("ext", sorted(_NESTED_SAME_NAME_SOURCES))
+def test_nested_class_declared_after_the_method_does_not_capture_the_call(tmp_path, ext):
+    """Inner.b is declared after Outer.b, so the file-wide name map handed the
+    b() in Outer.a to Inner.b."""
+    calls = _single_file_call_pairs(tmp_path, _NESTED_SAME_NAME_SOURCES[ext], ext)
+    assert ("svc_outer_a", "svc_outer_b") in calls
+    assert ("svc_outer_a", "svc_inner_b") not in calls
+
+
+_RECEIVER_CALL_SOURCES = {
+    "java": "class Other { void b() {} }\nclass Outer {\n    void a(Other o) { o.b(); }\n    void b() {}\n}\nclass Z { void b() {} }\n",
+    "cs": "class Other { public void b() {} }\nclass Outer {\n    public void a(Other o) { o.b(); }\n    public void b() {}\n}\nclass Z { public void b() {} }\n",
+    "scala": "class Other { def b(): Unit = () }\nclass Outer {\n  def a(o: Other): Unit = o.b()\n  def b(): Unit = ()\n}\nclass Z { def b(): Unit = () }\n",
+    "cpp": "class Other { public: void b() {} };\nclass Outer {\npublic:\n    void a(Other& o) { o.b(); }\n    void b() {}\n};\nclass Z { public: void b() {} };\n",
+}
+
+
+@pytest.mark.parametrize("ext", sorted(_RECEIVER_CALL_SOURCES))
+def test_call_on_another_receiver_is_not_claimed_by_the_callers_class(tmp_path, ext):
+    """Only an unqualified call means "my class": `o.b()` must not become Outer.b
+    just because Outer also declares b()."""
+    calls = _single_file_call_pairs(tmp_path, _RECEIVER_CALL_SOURCES[ext], ext)
+    assert ("svc_outer_a", "svc_outer_b") not in calls
+
+
+def test_cpp_member_hides_a_free_function_and_a_free_function_still_binds(tmp_path):
+    """In a member, `log()` is the class's own log() even when a free log() comes
+    later; `helper()` has no member of that name and keeps its same-file EXTRACTED
+    edge instead of waiting for the cross-file pass."""
+    f = tmp_path / "svc.cpp"
+    f.write_text(
+        "void helper() {}\n"
+        "class Foo {\n"
+        "public:\n"
+        "    void log() {}\n"
+        "    void a() { log(); helper(); }\n"
+        "};\n"
+        "void log() {}\n",
+        encoding="utf-8",
+    )
+    edges = extract([f], cache_root=tmp_path)["edges"]
+    confidence = {(e["source"], e["target"]): e["confidence"] for e in edges if e["relation"] == "calls"}
+    assert confidence[("svc_foo_a", "svc_foo_log")] == "EXTRACTED"
+    assert ("svc_foo_a", "svc_log") not in confidence
+    assert confidence[("svc_foo_a", "svc_helper")] == "EXTRACTED"
+
+
+def test_kotlin_unqualified_call_keeps_the_file_wide_lookup(tmp_path):
+    """Kotlin falls back to a top-level function when a member's parameters do not
+    fit the call, which a name-only lookup cannot see, so it is left out: the
+    member schedule(Int) does not capture the call that needs the top-level one."""
+    calls = _single_file_call_pairs(tmp_path, (
+        "class Queue {\n"
+        "    fun schedule(delay: Int) { schedule({}, delay) }\n"
+        "}\n"
+        "fun schedule(handler: () -> Unit, delay: Int) {}\n"
+    ), "kt")
+    assert ("svc_queue_schedule", "svc_schedule") in calls
+
+
 def test_python_qualified_call_ambiguous_class_bails(tmp_path):
     """When the class name is defined in 2+ files, the qualified call must not
     resolve — single-definition god-node guard (#1446)."""

@@ -1464,6 +1464,29 @@ def _self_call_target(
         ))
     return None if fallback in method_owner else fallback
 
+# Languages whose unqualified `m()` call binds through _lexical_call_target. Kotlin
+# is left out: it falls back to a top-level function when a member's parameters do
+# not fit the call, which a name-only lookup cannot see.
+_LEXICAL_CALL_LANGUAGES = frozenset({
+    "tree_sitter_java", "tree_sitter_c_sharp", "tree_sitter_scala", "tree_sitter_cpp",
+})
+
+def _lexical_call_target(
+    caller_nid: str,
+    callee: str,
+    label_to_nid: dict[str, str],
+    method_owner: dict[str, str],
+    methods_by_owner: dict[tuple[str, str], str],
+) -> str | None:
+    """In-file target of an unqualified call ``m()`` made from a method.
+
+    The caller's own class when it declares an ``m``. A name it does not declare
+    (a free function, a constructor call, a method it inherits or an enclosing
+    class declares) keeps the file-wide lookup.
+    """
+    cls = method_owner.get(caller_nid, caller_nid)
+    return methods_by_owner.get((cls, callee)) or label_to_nid.get(callee)
+
 def _python_local_bound_names(func_def_node, source: bytes) -> set[str]:
     """Names bound LOCALLY inside a Python function: parameters plus assignment,
     `for`, `with ... as`, and comprehension targets.
@@ -6954,10 +6977,12 @@ def _extract_generic(
             _local_bases.setdefault(_e["source"], []).append(_e["target"])
 
     # Class membership for self-calls (see _self_call_target): Python
-    # self/cls/super and JS/TS this/super.
+    # self/cls/super and JS/TS this/super. Unqualified calls in the
+    # _LEXICAL_CALL_LANGUAGES read it too.
     method_owner: dict[str, str] = {}
     methods_by_owner: dict[tuple[str, str], str] = {}
-    if config.ts_module in _SELF_CALL_LANGUAGES:
+    lexical_calls = config.ts_module in _LEXICAL_CALL_LANGUAGES
+    if config.ts_module in _SELF_CALL_LANGUAGES or lexical_calls:
         label_by_nid = {n["id"]: n["label"] for n in nodes}
         for e in edges:
             if e["relation"] == "method":
@@ -7821,6 +7846,10 @@ def _extract_generic(
                         )
                         if php_builtin_self_call and tgt_nid not in method_owner:
                             tgt_nid = None
+                    elif lexical_calls and not is_member_call:
+                        tgt_nid = _lexical_call_target(
+                            caller_nid, callee_name, label_to_nid, method_owner, methods_by_owner,
+                        )
                     else:
                         tgt_nid = label_to_nid.get(callee_name)
                     # A qualified `new A.B.Foo()` whose bare name matches only a
