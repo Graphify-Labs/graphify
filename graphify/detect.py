@@ -1658,19 +1658,14 @@ def _is_ignored(
             nonlocal target_name_nfc
             if path_relative:
                 return _match_anchored_ignore_pattern(rel, p)
-            if fnmatch.fnmatch(rel, p):
-                return True
+            # A pattern without a slash names one path component, so it is
+            # compared with the target's own name only. Ancestors are tested
+            # one by one by _is_ignored's parent-exclusion walk; matching them
+            # again here let `*` cross "/" and left a directory re-included
+            # with `!dir/` without its files.
             if target_name_nfc is None:
                 target_name_nfc = _nfc(target.name)
-            if fnmatch.fnmatch(target_name_nfc, p):
-                return True
-            parts, prefixes = _segments(rel)
-            for part, prefix in zip(parts, prefixes):
-                if fnmatch.fnmatch(part, p):
-                    return True
-                if fnmatch.fnmatch(prefix, p):
-                    return True
-            return False
+            return fnmatch.fnmatch(target_name_nfc, p)
 
         result = False
         for anchor, pattern in patterns:

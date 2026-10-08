@@ -1322,6 +1322,177 @@ def test_negation_ancestor_itself_reincluded(tmp_path):
     assert not _is_ignored(f, tmp_path, patterns)
 
 
+# --- a pattern without a slash names one path component, as in gitignore ---
+#
+# It is compared with the name of the entry under test, never with a path or a
+# path prefix. _is_ignored already tests every ancestor on its own, so a
+# directory re-included with `!dir/` brings its files back, `*` cannot reach
+# across a "/", and `!name` re-includes the entry called `name`, not what is
+# below it.
+
+def _touch(root, *rels):
+    for rel in rels:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x = 1\n")
+
+
+def _ignored_among(root, ignore_text, rels):
+    (root / ".graphifyignore").write_text(ignore_text)
+    patterns = _load_graphifyignore(root)
+    return {rel for rel in rels if _is_ignored(root / rel, root, patterns)}
+
+
+@pytest.mark.parametrize(
+    ("ignore_text", "ignored", "kept"),
+    [
+        pytest.param(
+            ".*\n!.github/\n",
+            [".cache/junk.py", ".hidden.py", ".github/.local.py"],
+            [".github/scripts/release.py", ".github/CODEOWNERS", "app.py"],
+            id="dot-directory",
+        ),
+        pytest.param(
+            "tags\n!tags/\n",  # github/gitignore, Global/Tags.gitignore
+            ["tags"],
+            ["src/tags/handler.py", "src/tags/sub/deep.py"],
+            id="tags-template",
+        ),
+        pytest.param(
+            "cache*\n!cache_keep/\n",
+            ["cache.db", "cache_old/a.txt"],
+            ["cache_keep/a.txt"],
+            id="wildcard-directory",
+        ),
+    ],
+)
+def test_reincluded_directory_brings_its_files_back(tmp_path, ignore_text, ignored, kept):
+    """`!dir/` re-includes the directory and what is in it, unless a pattern names the files themselves."""
+    _touch(tmp_path, *ignored, *kept)
+
+    assert _ignored_among(tmp_path, ignore_text, ignored + kept) == set(ignored)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "ignored", "kept"),
+    [
+        pytest.param(
+            "test_*.py",
+            ["test_one.py", "pkg/test_two.py"],
+            ["test_helpers/util.py", "test_helpers/sub/deep.py"],
+            id="directory-sharing-a-prefix",
+        ),
+        pytest.param(
+            "doc*.md",
+            ["doc.md", "pkg/docs.md"],
+            ["docs/api.md", "docs/guide/readme.md"],
+            id="wildcard-before-suffix",
+        ),
+        pytest.param(
+            "s*c.py",
+            ["sc.py", "pkg/spec.py"],
+            ["src/c.py", "src/a/c.py"],
+            id="star-does-not-cross-slash",
+        ),
+        pytest.param(
+            "*.py\n!vendor",
+            ["c.py", "vendor/a.py", "vendor/sub/b.py"],
+            ["vendor/notes.txt"],
+            id="negation-names-the-entry-not-its-files",
+        ),
+        pytest.param(
+            "*.py\n!test_*.py",
+            ["util.py", "test_helpers/util.py"],
+            ["test_one.py", "pkg/test_two.py"],
+            id="negation-does-not-cross-slash",
+        ),
+        pytest.param(
+            "build\n!vendor",
+            ["build/out.py", "vendor/build/out.py"],
+            ["vendor/ok.py", "pkg/ok.py"],
+            id="negated-ancestor-name-re-includes-nothing-below",
+        ),
+        pytest.param(
+            "build",
+            ["build/out.py", "pkg/build/deep/out.py"],
+            ["build.py", "builder/ok.py", "notbuild/ok.py"],
+            id="plain-name-still-excludes-its-directory",
+        ),
+        pytest.param(
+            "build/",
+            ["build/out.py", "pkg/build/deep/out.py"],
+            ["build.py", "builder/ok.py", "notbuild/ok.py"],
+            id="directory-only-still-excludes-its-directory",
+        ),
+    ],
+)
+def test_unanchored_pattern_matches_a_name_not_a_path(tmp_path, pattern, ignored, kept):
+    _touch(tmp_path, *ignored, *kept)
+
+    assert _ignored_among(tmp_path, f"{pattern}\n", ignored + kept) == set(ignored)
+
+
+def _detected(root):
+    return {
+        Path(p).relative_to(root).as_posix()
+        for paths in detect(root)["files"].values()
+        for p in paths
+    }
+
+
+def test_unanchored_pattern_in_nested_gitignore_matches_a_name(tmp_path):
+    """A .gitignore below the scan root is loaded by the walk itself; its patterns match names too."""
+    _touch(
+        tmp_path,
+        "app.py",
+        "sub/test_one.py",
+        "sub/deeper/test_two.py",
+        "sub/test_helpers/util.py",
+    )
+    (tmp_path / "sub" / ".gitignore").write_text("test_*.py\n")
+
+    assert _detected(tmp_path) == {"app.py", "sub/test_helpers/util.py"}
+
+
+def test_unanchored_pattern_reaches_every_consumer_of_the_engine(tmp_path):
+    """detect(), the extractor's collect_files and ignored_predicate (watch, markdown links) agree."""
+    from graphify.extract import collect_files
+
+    _touch(tmp_path, "app.py", ".github/scripts/release.py", ".cache/junk.py", "test_helpers/util.py", "test_one.py")
+    (tmp_path / ".graphifyignore").write_text(".*\n!.github/\ntest_*.py\n")
+    expected = {"app.py", ".github/scripts/release.py", "test_helpers/util.py"}
+
+    assert _detected(tmp_path) == expected
+    assert {Path(p).relative_to(tmp_path).as_posix() for p in collect_files(tmp_path)} == expected
+    ignored = detect_mod.ignored_predicate(tmp_path)
+    present = {".cache/junk.py", "test_one.py"} | expected
+    assert {rel for rel in present if not ignored(tmp_path / rel)} == expected
+
+
+def test_unanchored_pattern_verdicts_do_not_depend_on_cache_order(tmp_path):
+    """The walk meets directories first and the watcher meets files first; a shared _cache must agree."""
+    expected = {
+        ".github": False,
+        ".github/scripts": False,
+        ".github/scripts/release.py": False,
+        ".cache/junk.py": True,
+        "test_helpers": False,
+        "test_helpers/util.py": False,
+        "test_one.py": True,
+    }
+    _touch(tmp_path, ".github/scripts/release.py", ".cache/junk.py", "test_helpers/util.py", "test_one.py")
+    (tmp_path / ".graphifyignore").write_text(".*\n!.github/\ntest_*.py\n")
+    patterns = _load_graphifyignore(tmp_path)
+
+    rels = list(expected)
+    uncached = {rel: _is_ignored(tmp_path / rel, tmp_path, patterns) for rel in rels}
+    assert uncached == expected
+    for order in (rels, rels[::-1]):
+        cache: dict = {}
+        cached = {rel: _is_ignored(tmp_path / rel, tmp_path, patterns, _cache=cache) for rel in order}
+        assert cached == expected
+
+
 def test_negation_does_not_disable_directory_pruning(tmp_path, monkeypatch):
     """A single `!` re-include must not switch off pruning of *unrelated* ignored dirs.
 
