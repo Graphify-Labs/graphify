@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 
+import re
 from pathlib import Path
 from graphify.extractors.base import (
     _LANGUAGE_BUILTIN_GLOBALS,
@@ -160,6 +161,44 @@ _RUST_TRAIT_METHOD_BLOCKLIST: frozenset[str] = frozenset({
     "ok", "err", "some", "none", "send", "recv", "lock", "read", "write",
 })
 
+_RUST_PRIMITIVE_TYPES: frozenset[str] = frozenset({
+    "bool", "char", "str", "f32", "f64",
+    "i8", "i16", "i32", "i64", "i128", "isize",
+    "u8", "u16", "u32", "u64", "u128", "usize",
+})
+
+
+def _rust_qualifier_type(path_node, source: bytes) -> str | None:
+    """The type a `Type::f()` call is qualified by, or None for a module path.
+
+    `Foo`, `crate::a::Foo`, `Foo::<T>`, `Vec::<u8>` and `i32` give their last
+    segment without generic arguments; `Self` is returned as is for the caller to
+    map to the enclosing impl type. Any other lowercase last segment is a module
+    (`fs::read`, `self::helper`), and `<T as Trait>` has no segment of its own:
+    both give None.
+    """
+    if path_node is None:
+        return None
+    last = _rust_type_last_segment(_read_text(path_node, source))
+    return last if last[:1].isupper() or last in _RUST_PRIMITIVE_TYPES else None
+
+
+def _rust_type_last_segment(text: str) -> str:
+    """`crate::a::Foo<T>` -> `Foo`: the last path segment, generic arguments dropped.
+    A leading `&`, `&'a mut` or `dyn` (`impl Tr for &'a Foo`) is not part of it."""
+    text = re.sub(r"^(?:&\s*(?:'\w+\s+)?(?:mut\s+)?|dyn\s+)", "", text.strip())
+    depth, kept = 0, []
+    for ch in text:
+        if ch == "<":
+            depth += 1
+        elif ch == ">":
+            depth = max(depth - 1, 0)
+        elif depth == 0:
+            kept.append(ch)
+    segments = [s.strip() for s in "".join(kept).split("::") if s.strip()]
+    return segments[-1] if segments else ""
+
+
 def extract_rust(path: Path) -> dict:
     """Extract functions, structs, enums, traits, impl methods, statics/consts, and use declarations from a .rs file."""
     try:
@@ -209,6 +248,10 @@ def extract_rust(path: Path) -> dict:
     # are resolved through their own registry rather than the function/type
     # label_to_nid to avoid cross-binding.
     macro_nids_by_name: dict[str, str] = {}
+
+    # (bare impl type, method name) -> the method nodes this file's `impl` blocks
+    # define, so an in-file `Type::f()` / `self.f()` binds to a method of that type.
+    impl_methods: dict[tuple[str, str], set[str]] = {}
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -361,6 +404,9 @@ def extract_rust(path: Path) -> dict:
                     func_nid = _make_id(parent_impl_nid, func_name)
                     add_node(func_nid, f".{func_name}()", line)
                     add_edge(parent_impl_nid, func_nid, "method", line)
+                    if parent_impl_type:
+                        owner = _rust_type_last_segment(parent_impl_type)
+                        impl_methods.setdefault((owner, func_name), set()).add(func_nid)
                 else:
                     func_nid = _make_id(stem, func_name)
                     add_node(func_nid, f"{func_name}()", line)
@@ -657,11 +703,20 @@ def extract_rust(path: Path) -> dict:
 
     walk(root)
 
+    # A bare `f()` can only reach a free function or a type (a tuple struct or
+    # variant constructor), and `x.f()` only a method, so each call shape looks up
+    # its own index: one shared name index let `drop(x)` bind to `impl Drop`'s
+    # `drop` and `x.len()` to a free `fn len`.
     label_to_nid: dict[str, str] = {}
+    method_label_to_nid: dict[str, str] = {}
     for n in nodes:
         raw = n["label"]
         normalised = raw.strip("()").lstrip(".")
-        label_to_nid[normalised] = n["id"]
+        if raw.startswith("."):
+            if raw.endswith(")"):
+                method_label_to_nid[normalised] = n["id"]
+        else:
+            label_to_nid[normalised] = n["id"]
 
     # Nodes whose label has no `()` suffix are data definitions (structs, enums,
     # traits, statics), not callables. In Rust `Foo(x)` / `Foo { .. }` onto one
@@ -715,6 +770,7 @@ def extract_rust(path: Path) -> dict:
             is_member_call: bool = False
             is_scoped_call: bool = False
             is_self_call: bool = False
+            qualifier_type: str | None = None
             if func_node:
                 if func_node.type == "identifier":
                     callee_name = _read_text(func_node, source)
@@ -734,12 +790,32 @@ def extract_rust(path: Path) -> dict:
                     name = func_node.child_by_field_name("name")
                     if name:
                         callee_name = _read_text(name, source)
+                    qualifier_type = _rust_qualifier_type(func_node.child_by_field_name("path"), source)
+                    if qualifier_type == "Self":
+                        # A trait's default method has no impl type: "" matches
+                        # no method, so `Self::f()` there binds nothing in-file.
+                        qualifier_type = self_type or ""
             if (
                 callee_name
                 and callee_name not in _LANGUAGE_BUILTIN_GLOBALS
                 and (callee_name not in _RUST_BUILTIN_TYPES or callee_name in local_types)
             ):
-                tgt_nid = label_to_nid.get(callee_name)
+                if qualifier_type is not None or (is_self_call and self_type):
+                    # `Type::f()` / `Self::f()` / `self.f()` name the type whose
+                    # method is called: bind only to that type's method in this
+                    # file. Matching the bare name instead sent `Arc::new(x)` and
+                    # `B::new()` to whichever `fn new` the file happened to define.
+                    owner = _rust_type_last_segment(qualifier_type or self_type or "")
+                    owned = impl_methods.get((owner, callee_name), set())
+                    tgt_nid = next(iter(owned)) if len(owned) == 1 else None
+                    if tgt_nid is None and qualifier_type is not None:
+                        # `Enum::Variant(x)` constructs a value: the variant node.
+                        named = label_to_nid.get(callee_name)
+                        tgt_nid = named if named in type_nids else None
+                elif is_member_call:
+                    tgt_nid = method_label_to_nid.get(callee_name)
+                else:
+                    tgt_nid = label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)
                     if pair not in seen_call_pairs:
