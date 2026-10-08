@@ -22,10 +22,11 @@ from graphify.paths import os_replace_with_fallback as _os_replace_with_fallback
 # AST cache entries are the output of graphify's own extractor code, so they
 # are only valid for the version that wrote them: keying purely on file
 # content means extractor fixes shipped in a new release keep serving stale
-# pre-fix results. The AST cache is therefore namespaced by package version
-# and cache-key schema (cache/ast/v{version}-s{schema}/), with entries from
-# other versions or schemas removed on first
-# use. The semantic cache is deliberately NOT versioned — its entries are
+# pre-fix results. The AST cache is therefore namespaced by package version,
+# cache-key schema and tree-sitter grammar versions
+# (cache/ast/v{version}-s{schema}-g{grammars}/), with entries from other
+# versions, schemas, or grammar sets removed on first use. The semantic cache
+# is deliberately NOT versioned — its entries are
 # produced by the LLM from file contents, and invalidating them on every
 # release would re-bill extraction for unchanged files.
 try:
@@ -38,12 +39,52 @@ except Exception:
 # Bump when AST cache-key semantics change independently of the package version.
 _AST_CACHE_SCHEMA = 6  # Python typed-receiver facts (receiver_type) in persisted raw calls.
 
+
+# Per-process memo: distributions() scans site-packages metadata, which is
+# far too expensive to redo on every cache_dir() call during a run.
+_GRAMMAR_FINGERPRINT_CACHE: "str | None" = None
+
+
+def _grammar_fingerprint() -> str:
+    """Short stable fingerprint of the installed tree-sitter grammar set.
+
+    AST output depends on the grammar packages, not just graphify's own
+    version: upgrading ``tree-sitter-swift`` changes what the extractor
+    produces for the same file, so the cache namespace must change too,
+    otherwise stale pre-upgrade extractions are served indefinitely
+    (#4236). Covers the ``tree-sitter`` runtime, every ``tree-sitter-*``
+    distribution, and bundled packs like ``tree-sitter-language-pack``."""
+    global _GRAMMAR_FINGERPRINT_CACHE
+    if _GRAMMAR_FINGERPRINT_CACHE is not None:
+        return _GRAMMAR_FINGERPRINT_CACHE
+    parts: list[str] = []
+    try:
+        from importlib.metadata import distributions
+
+        for dist in distributions():
+            try:
+                name = (dist.metadata.get("Name") or "").lower()
+            except Exception:
+                continue
+            if name == "tree-sitter" or name.startswith("tree-sitter-") or name.startswith("tree_sitter"):
+                parts.append(f"{name}=={dist.version}")
+    except Exception:
+        _GRAMMAR_FINGERPRINT_CACHE = "unknown"
+        return _GRAMMAR_FINGERPRINT_CACHE
+    if not parts:
+        _GRAMMAR_FINGERPRINT_CACHE = "none"
+        return _GRAMMAR_FINGERPRINT_CACHE
+    digest = hashlib.sha256(";".join(sorted(parts)).encode("utf-8")).hexdigest()
+    _GRAMMAR_FINGERPRINT_CACHE = digest[:12]
+    return _GRAMMAR_FINGERPRINT_CACHE
+
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()
 
 
 def _cleanup_stale_ast_entries(ast_base: Path, current_dir: Path) -> None:
-    """Remove AST cache entries left behind by other graphify versions.
+    """Remove AST cache entries left behind by other graphify versions or
+    grammar sets.
 
     Sweeps sibling ``v*/`` directories and unversioned ``*.json`` entries
     (the pre-versioning layout) under ``cache/ast/``. Best-effort: failures
@@ -979,8 +1020,8 @@ def cache_dir(root: Path = Path("."), kind: str = "ast",
     "semantic-deep" (#1894). Separate subdirectories prevent semantic cache
     entries from overwriting AST cache entries for the same source_file (#582).
 
-    AST entries live in graphify-out/cache/ast/v{version}-s{schema}/, namespaced
-    by graphify version and cache-key schema because they depend on extractor
+    AST entries live in graphify-out/cache/ast/v{version}-s{schema}-g{grammars}/, namespaced
+    by graphify version, cache-key schema, and tree-sitter grammar set because they depend on extractor
     code and key semantics, not just file contents. Semantic entries are still
     NOT version-namespaced (re-extraction
     costs LLM calls, #1252): they live in graphify-out/cache/semantic/, with
@@ -995,7 +1036,7 @@ def cache_dir(root: Path = Path("."), kind: str = "ast",
     base = _out if _out.is_absolute() else Path(root).resolve() / _out
     d = base / "cache" / kind
     if kind == "ast":
-        d = d / f"v{_EXTRACTOR_VERSION}-s{_AST_CACHE_SCHEMA}"
+        d = d / f"v{_EXTRACTOR_VERSION}-s{_AST_CACHE_SCHEMA}-g{_grammar_fingerprint()}"
         _cleanup_stale_ast_entries(d.parent, d)
     elif prompt_fp:
         d = d / f"p{prompt_fp}"
