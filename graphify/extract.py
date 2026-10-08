@@ -4464,27 +4464,40 @@ def _resolve_typescript_member_calls(
         if type_name in _LANGUAGE_BUILTIN_GLOBALS:
             continue
         type_defs = type_def_nids.get(_key(type_name), [])
-        if len(type_defs) != 1:
-            continue
-        type_nid = type_defs[0]
         # Origin gate (#2553): the caller's file must actually see the matched
         # type — same file, a named import of the type, or a module import of
         # the type's file. Otherwise a third-party type name that happens to
         # collide with a local class fabricates an edge; emit nothing.
+        # The same gate also picks among same-named definitions: `Context` can be
+        # a class in one file and an interface in two others, and the caller's
+        # import says which one its `c: Context` means. Exactly one visible
+        # definition is required; none or several still emit nothing.
         caller_file = file_of_node.get(caller)
-        type_file = file_of_node.get(type_nid)
         imported = imported_by_filenode.get(caller_file, set())
-        if not (
-            (caller_file is not None and caller_file == type_file)
-            or type_nid in imported
-            or (type_file is not None and type_file in imported)
-        ):
+
+        def _visible(nid: str) -> bool:
+            type_file = file_of_node.get(nid)
+            return (
+                (caller_file is not None and caller_file == type_file)
+                or nid in imported
+                or (type_file is not None and type_file in imported)
+            )
+
+        visible = [nid for nid in type_defs if _visible(nid)]
+        if len(visible) != 1:
             continue
+        type_nid = visible[0]
         method_nid = method_index.get((type_nid, _key(callee)))
         if not method_nid:
             # Receiver typed, but the type has no such method. The old fallback
             # (a `references` edge to the type node) was another fabrication
             # vector; skip instead, matching the C# resolver.
+            continue
+        # _key() drops the `#`, so `c.newResponse()` also keys onto a private
+        # `#newResponse()`. A `#name` is only reachable as `#name`; never bind
+        # across that difference.
+        method_name = str(node_by_id.get(method_nid, {}).get("label", "")).lstrip(".")
+        if method_name.startswith("#") != str(callee).startswith("#"):
             continue
         if method_nid == caller or (caller, method_nid) in existing_pairs:
             continue

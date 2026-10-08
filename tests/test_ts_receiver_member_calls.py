@@ -155,3 +155,58 @@ def test_same_file_type_still_resolves(tmp_path):
                      "export function runLocal(): void { r.save(); }\n"),
     })
     assert any("runLocal" in s and "save" in t for s, t in calls)
+
+
+# ── Same-named types: `Context` can be a class in one file and an interface or
+# type in others. The caller's own import says which one `c: Context` means.
+
+_CTX_CLASS = "export class Context {\n  header(): number { return 1; }\n}\n"
+_CTX_IFACE = "export interface Context {\n  header(): number;\n}\n"
+
+
+def _hits(calls, caller: str, callee: str = "header") -> bool:
+    return any(caller in s and callee in t for s, t in calls)
+
+
+def test_same_named_type_is_picked_by_the_callers_import(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "context.ts": _CTX_CLASS,
+        "jsx/context.ts": _CTX_IFACE,
+        "router/node.ts": "export type Context = { header(): number };\n",
+        "cookie.ts": ('import type { Context } from "./context";\n'
+                      "export const setCookie = (c: Context): number => c.header();\n"),
+    })
+    nodes = {n["id"]: n for n in r["nodes"]}
+    targets = [e["target"] for e in r["edges"]
+               if e["relation"] == "calls" and "setCookie" in nodes[e["source"]]["label"]]
+    # the class in ./context.ts, not the jsx interface or the router type alias
+    assert len(targets) == 1, targets
+    assert targets[0].endswith("context_context_header"), targets
+    assert "jsx" not in targets[0] and "router" not in targets[0], targets
+
+
+def test_same_named_type_the_import_cannot_decide_emits_no_edge(tmp_path):
+    calls, _ = _calls(tmp_path, {
+        "a/context.ts": _CTX_CLASS,
+        "b/context.ts": _CTX_CLASS,
+        "both.ts": ('import * as a from "./a/context";\nimport * as b from "./b/context";\n'
+                    "type Context = a.Context;\n"
+                    "export function both(c: Context): number { return c.header(); }\n"),
+        "neither.ts": "export function neither(c: Context): number { return c.header(); }\n",
+    })
+    assert not _hits(calls, "both")
+    assert not _hits(calls, "neither")
+
+
+def test_a_public_call_never_binds_to_a_private_hash_method(tmp_path):
+    # `_key()` folds `#newResponse` and `newResponse` together; a `#name` is only
+    # reachable as `#name`, so `c.newResponse()` must not land on it.
+    calls, _ = _calls(tmp_path, {
+        "ctx.ts": ("export class Ctx {\n"
+                   "  #newResponse(): number { return 1; }\n"
+                   "  build(): number { return this.#newResponse(); }\n"
+                   "}\n"),
+        "use.ts": ('import { Ctx } from "./ctx";\n'
+                   "export function make(c: Ctx): number { return c.newResponse(); }\n"),
+    })
+    assert not _hits(calls, "make", "newResponse")
