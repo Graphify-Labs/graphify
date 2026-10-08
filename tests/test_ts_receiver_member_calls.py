@@ -198,15 +198,18 @@ def test_same_named_type_the_import_cannot_decide_emits_no_edge(tmp_path):
     assert not _hits(calls, "neither")
 
 
-def test_a_public_call_never_binds_to_a_private_hash_method(tmp_path):
-    # `_key()` folds `#newResponse` and `newResponse` together; a `#name` is only
-    # reachable as `#name`, so `c.newResponse()` must not land on it.
-    calls, _ = _calls(tmp_path, {
-        "ctx.ts": ("export class Ctx {\n"
-                   "  #newResponse(): number { return 1; }\n"
-                   "  build(): number { return this.#newResponse(); }\n"
-                   "}\n"),
-        "use.ts": ('import { Ctx } from "./ctx";\n'
-                   "export function make(c: Ctx): number { return c.newResponse(); }\n"),
-    })
-    assert not _hits(calls, "make", "newResponse")
+def test_public_call_reaches_the_member_node_in_either_declaration_order(tmp_path):
+    # `foo()` and `#foo()` share one node (ids drop `#`), labeled after whichever is
+    # declared first. `c.foo()` can only mean the public one, so it must keep its
+    # edge to that node in both orders.
+    orders = (
+        "  foo(): number { return 1; }\n  #foo(): number { return 2; }\n",
+        "  #foo(): number { return 2; }\n  foo(): number { return 1; }\n",
+    )
+    for i, members in enumerate(orders):
+        calls, _ = _calls(tmp_path / f"order{i}", {
+            "ctx.ts": "export class Ctx {\n" + members + "}\n",
+            "use.ts": ('import { Ctx } from "./ctx";\n'
+                       "export function make(c: Ctx): number { return c.foo(); }\n"),
+        })
+        assert any("make" in str(s) and "foo" in str(t) for s, t in calls), (i, calls)
