@@ -712,6 +712,20 @@ graphify-out/
 
 ## Full command reference
 
+### Reasonix
+
+Install the Graphify skill for Reasonix with `graphify install --platform reasonix`.
+Use `graphify reasonix install --project` to install the project skill and add
+Graphify guidance to `AGENTS.md`, or `graphify reasonix install` for a user-global
+skill plus guidance in the current project. Uninstall with the corresponding
+`graphify reasonix uninstall` command (add `--project` for project scope).
+
+Project skills go to `.reasonix/skills/graphify`. Global skills use `REASONIX_HOME`
+when set, otherwise `~/.reasonix` on macOS/Linux or `%APPDATA%/reasonix` on Windows.
+Windows installs select PowerShell instructions. The skill uses Reasonix's native
+`task` tool and its `prompt`/`write_paths` fields for extraction; no runtime hooks
+are registered.
+
 ```
 /graphify                          # run on current directory
 /graphify ./raw                    # run on a specific folder
