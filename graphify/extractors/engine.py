@@ -2393,6 +2393,18 @@ def _ts_receiver_type_table(root, source: bytes, table: dict[str, str]) -> None:
             return _read_text(idents[0], source)
         return None
 
+    def _optional_type_ident(type_annotation):
+        # `: T | undefined` / `: T | null`: an optional field still holds a T.
+        unions = [c for c in type_annotation.children if c.is_named]
+        if len(unions) != 1 or unions[0].type != "union_type":
+            return None
+        members = [c for c in unions[0].children if c.is_named]
+        idents = [c for c in members if c.type == "type_identifier"]
+        empties = [c for c in members if _read_text(c, source) in ("undefined", "null")]
+        if len(idents) == 1 and len(idents) + len(empties) == len(members):
+            return _read_text(idents[0], source)
+        return None
+
     stack = [root]
     while stack:
         n = stack.pop()
@@ -2414,6 +2426,27 @@ def _ts_receiver_type_table(root, source: bytes, table: dict[str, str]) -> None:
             if pat is not None and pat.type == "identifier" and ann is not None:
                 tname = _bare_type_ident(ann)
                 name = _read_text(pat, source)
+                if name and tname and name not in table:
+                    table[name] = tname
+        elif t in ("public_field_definition", "field_definition"):
+            # A class field (`protected repo: Repo`, `#root: Node = new Node()`,
+            # `private logger = new Logger()`) is what `this.repo.m()` reads, the
+            # same as a constructor parameter property. Static fields are read as
+            # `Cls.field`, not `this.field`, so they are skipped.
+            name_n = n.child_by_field_name("name") or n.child_by_field_name("property")
+            if (name_n is not None
+                    and name_n.type in ("property_identifier", "private_property_identifier")
+                    and not any(c.type == "static" for c in n.children)):
+                ann = n.child_by_field_name("type")
+                value = n.child_by_field_name("value")
+                tname = None
+                if ann is not None:
+                    tname = _bare_type_ident(ann) or _optional_type_ident(ann)
+                elif value is not None and value.type == "new_expression":
+                    ctor = value.child_by_field_name("constructor")
+                    if ctor is not None and ctor.type in ("identifier", "type_identifier"):
+                        tname = _read_text(ctor, source)
+                name = _read_text(name_n, source)
                 if name and tname and name not in table:
                     table[name] = tname
         for c in n.children:
