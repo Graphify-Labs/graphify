@@ -4245,12 +4245,17 @@ def _resolve_python_member_calls(
             method_class[tgt] = src
 
     def _file_node(nid: str) -> "str | None":
+        # Climb `contains` / `method` parents to the top, which is the file: a
+        # nested function's `contains` parent is its enclosing function, not the
+        # file, so stopping at the first parent compared a function to a file.
         seen: set[str] = set()
+        parent: "str | None" = None
         while nid and nid not in seen:
             seen.add(nid)
-            if nid in file_of_node:
-                return file_of_node[nid]
-            nid = method_class.get(nid, "")
+            up = file_of_node.get(nid) or method_class.get(nid)
+            if not up:
+                return parent
+            parent = nid = up
         return None
 
     def _emit_call(
