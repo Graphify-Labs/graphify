@@ -1818,7 +1818,7 @@ def _extract_python_rationale(path: Path, result: dict) -> None:
             body = node.child_by_field_name("body")
             if name_node and body:
                 class_name = source[name_node.start_byte:name_node.end_byte].decode("utf-8", errors="replace")
-                nid = _make_id(stem, class_name)
+                nid = _make_id(parent_nid, class_name) if parent_nid != file_nid else _make_id(stem, class_name)
                 ds = _get_docstring(body)
                 if ds:
                     _add_rationale(ds[0], ds[1], nid)

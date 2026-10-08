@@ -36,7 +36,7 @@ except Exception:
     _EXTRACTOR_VERSION = "unknown"
 
 # Bump when AST cache-key semantics change independently of the package version.
-_AST_CACHE_SCHEMA = 6  # Python typed-receiver facts (receiver_type) in persisted raw calls.
+_AST_CACHE_SCHEMA = 7  # Python nested class ids include the enclosing class identity.
 
 # Version dirs already swept this process — cleanup runs once per (base, version).
 _cleaned_ast_dirs: set[str] = set()

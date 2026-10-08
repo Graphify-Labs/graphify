@@ -113,6 +113,11 @@ pytest tests/ -q
 
 The test suite is designed to avoid network access and uncontrolled filesystem effects; most tests are isolated with temporary directories and environment fixtures.
 
+Python nested class ids include their enclosing class id. Same-named nested
+classes under different parents retain separate definitions, methods, and
+containment edges; top-level class ids are unchanged. AST cache schema 7 prevents
+older cached definitions from retaining the collapsed identities.
+
 R extraction preserves symbol-only bindings such as `%||%` as separate nodes.
 When normal ID normalization removes an entire binding name, its UTF-8 bytes
 provide a deterministic operator suffix within the same lexical owner. Its double

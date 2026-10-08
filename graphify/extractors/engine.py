@@ -4772,6 +4772,8 @@ def _extract_generic(
                 ruby_segments = class_name.split("::")
                 class_name = "::".join(ruby_namespace + ruby_segments)
             class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
+            if config.ts_module == "tree_sitter_python" and parent_class_nid:
+                class_nid = _make_id(parent_class_nid, class_name)
             line = node.start_point[0] + 1
             metadata = None
             ruby_reopened = (
@@ -4826,8 +4828,8 @@ def _extract_generic(
             # every language and is always a real class-like node (never a
             # namespace — namespace handlers pass it through unchanged), so it is
             # a valid edge source. The `!= class_nid` guard avoids a self-loop
-            # when same-name nesting (`class Foo: class Foo`) collides ids, since
-            # class ids omit the enclosing type name. Top-level types (parent
+            # when same-name nesting (`class Foo: class Foo`) collides ids in
+            # languages whose class ids omit the enclosing type. Top-level types (parent
             # None) still source from the file, keeping the containment tree
             # connected: file -> Outer -> Inner.
             if parent_class_nid and parent_class_nid != class_nid:
@@ -6780,6 +6782,8 @@ def _extract_generic(
                 if inner_name and normalize_id(inner_name):
                     if inner.type in config.class_types:
                         owner_nid = _make_id(stem, ".".join(namespace_stack), inner_name)
+                        if config.ts_module == "tree_sitter_python" and parent_class_nid:
+                            owner_nid = _make_id(parent_class_nid, inner_name)
                     elif parent_class_nid:
                         owner_nid = _make_id(parent_class_nid, inner_name)
                     else:
