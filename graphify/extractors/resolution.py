@@ -2731,6 +2731,7 @@ def _resolve_cross_file_imports(
         file_srcs = {n.get("source_file") for n in file_result.get("nodes", []) if n.get("source_file")}
         file_srcs.add(str_path)
         file_srcs.add(path.as_posix())
+        own_stems = {_file_stem(Path(s)) for s in file_srcs}
 
         # Map each local symbol (class or function) to its node id, keyed by the
         # bare symbol name. Function labels end in "()"; the file node ends in
@@ -2814,6 +2815,12 @@ def _resolve_cross_file_imports(
                             target_fq = bare_to_qualified.get(bare)
 
             if not target_fq or target_fq not in stem_to_entities:
+                return
+            if target_fq in own_stems:
+                # A module cannot import its own names. Only the bare-stem fallback
+                # lands here: `from werkzeug.wrappers import Request` inside a local
+                # `wrappers.py` matched that very file, so `class Request(RequestBase)`
+                # was rewired to inherit from itself.
                 return
 
             # Imported names come AFTER the 'import' keyword token. For
