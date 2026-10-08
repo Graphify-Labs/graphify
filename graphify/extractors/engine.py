@@ -1521,26 +1521,36 @@ def _lexical_call_target(
     method_owner: dict[str, str],
     methods_by_owner: dict[tuple[str, str], str],
     class_bases: dict[str, list[str]],
+    class_parent: dict[str, str],
 ) -> str | None:
     """In-file target of an unqualified call ``m()`` made from a method.
 
     The nearest class that has an ``m``: the caller's own class and its in-file
-    bases, nearest first, as _self_call_target walks them. Two hits on one level
-    are a tie this pass cannot order: neither is bound. A name no class on that
-    path declares (a free function, a constructor call, a method an enclosing
-    class declares) keeps the file-wide lookup. A supertype outside this file is
-    invisible.
+    bases (nearest first, as _self_call_target walks them), then the class around
+    it, and so on outward; an anonymous class steps out through the method that
+    holds it. Two hits on one level are a tie this pass cannot order: neither is
+    bound. A name no class on that path declares (a free function, a constructor
+    call) keeps the file-wide lookup, as does a walk that reaches a nested class
+    shared by several classes of one name, since which class lies around it is
+    unknown. A supertype outside this file is invisible, so a method inherited
+    from it can lose to an enclosing class that declares the same name.
     """
-    level = [method_owner.get(caller_nid, caller_nid)]
-    seen: set[str] = set()
-    while level:
-        seen.update(level)
-        hits = {methods_by_owner[(c, callee)] for c in level if (c, callee) in methods_by_owner}
-        if hits:
-            return hits.pop() if len(hits) == 1 else None
-        level = list(dict.fromkeys(
-            base for c in level for base in class_bases.get(c, ()) if base not in seen
-        ))
+    cls: str | None = method_owner.get(caller_nid, caller_nid)
+    visited: set[str] = set()
+    while cls and cls not in visited:
+        visited.add(cls)
+        level = [cls]
+        seen: set[str] = set()
+        while level:
+            seen.update(level)
+            hits = {methods_by_owner[(c, callee)] for c in level if (c, callee) in methods_by_owner}
+            if hits:
+                return hits.pop() if len(hits) == 1 else None
+            level = list(dict.fromkeys(
+                base for c in level for base in class_bases.get(c, ()) if base not in seen
+            ))
+        outer = class_parent.get(cls)
+        cls = method_owner.get(outer, outer) if outer else None
     return label_to_nid.get(callee)
 
 def _python_local_bound_names(func_def_node, source: bytes) -> set[str]:
@@ -7034,7 +7044,7 @@ def _extract_generic(
 
     # Class membership for self-calls (see _self_call_target): Python
     # self/cls/super and JS/TS this/super. Unqualified calls in the
-    # _LEXICAL_CALL_LANGUAGES read it too.
+    # _LEXICAL_CALL_LANGUAGES read it too, with the class around each class.
     method_owner: dict[str, str] = {}
     methods_by_owner: dict[tuple[str, str], str] = {}
     class_parent: dict[str, str] = {}
@@ -7050,7 +7060,9 @@ def _extract_generic(
                     name = name.casefold()
                 methods_by_owner.setdefault((e["source"], name), e["target"])
             elif lexical_calls and e["relation"] == "contains":
-                class_parent.setdefault(e["target"], e["source"])
+                # two nested classes of one name are one node: which class lies around it is unknown
+                if class_parent.setdefault(e["target"], e["source"]) != e["source"]:
+                    class_parent[e["target"]] = ""
         if lexical_calls:
             lexical_bases = _lexical_class_bases(
                 edges, _LEXICAL_CALL_LANGUAGES[config.ts_module], label_by_nid, nid_to_sf,
@@ -7914,7 +7926,7 @@ def _extract_generic(
                     elif lexical_calls and not is_member_call:
                         tgt_nid = _lexical_call_target(
                             caller_nid, callee_name, label_to_nid,
-                            method_owner, methods_by_owner, lexical_bases,
+                            method_owner, methods_by_owner, lexical_bases, class_parent,
                         )
                     else:
                         tgt_nid = label_to_nid.get(callee_name)
