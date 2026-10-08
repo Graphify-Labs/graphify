@@ -1686,6 +1686,30 @@ def test_shortest_path_tool_undirected_opt_in():
     assert "Shortest path (2 hops)" in out
     assert out.count("<--calls--") == 2
     assert "-->" not in out
+
+
+def test_shortest_path_tool_routes_through_a_contains_edge(tmp_path):
+    """#3878 (serve mirror): a directed path from a symbol out to the file that
+    defines a symbol it calls must route through the reverse of the stored
+    file -> symbol `contains` edge, instead of dead-ending at 'No directed
+    path'. The printed hop still shows the real stored direction (`<--contains--`).
+    """
+    G = nx.DiGraph()
+    for n in ("a.py", "b.py", "helper_a", "helper_b"):
+        G.add_node(n, label=n)
+    G.add_edge("a.py", "helper_a", relation="contains")
+    G.add_edge("b.py", "helper_b", relation="contains")
+    G.add_edge("helper_a", "helper_b", relation="calls")
+
+    out = _shortest_path_text(G, {"source": "helper_a", "target": "b.py"})
+    assert "No directed path" not in out
+    assert "Shortest path (2 hops)" in out
+    # calls hop forward, then back out to the file via the reverse contains hop,
+    # printed in its true stored direction.
+    assert "--calls-->" in out
+    assert "<--contains--" in out
+
+
 def test_underscore_query_matches_hyphenated_label():
     r"""Separator-blind seeding: `_` must split like `-` does.
 

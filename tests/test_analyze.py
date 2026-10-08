@@ -347,6 +347,39 @@ def test_graph_diff_empty_diff():
     assert diff["summary"] == "no changes"
 
 
+def _make_marked_graph(src, tgt):
+    """Helper: undirected graph whose one edge stores its direction in _src/_tgt."""
+    G = nx.Graph()
+    G.add_node("n1", label="Alpha")
+    G.add_node("n2", label="Beta")
+    G.add_edge(src, tgt, relation="calls", confidence="EXTRACTED", _src=src, _tgt=tgt)
+    return G
+
+
+def test_graph_diff_reversed_edge_reported():
+    # #4067: n1 calls n2 becoming n2 calls n1 must not vanish from the diff.
+    diff = graph_diff(_make_marked_graph("n1", "n2"), _make_marked_graph("n2", "n1"))
+    assert [(e["source"], e["target"]) for e in diff["new_edges"]] == [("n2", "n1")]
+    assert [(e["source"], e["target"]) for e in diff["removed_edges"]] == [("n1", "n2")]
+    assert diff["summary"] == "1 new edge, 1 edge removed"
+
+
+def test_graph_diff_unchanged_direction_no_changes():
+    diff = graph_diff(_make_marked_graph("n2", "n1"), _make_marked_graph("n2", "n1"))
+    assert diff["new_edges"] == []
+    assert diff["removed_edges"] == []
+    assert diff["summary"] == "no changes"
+
+
+def test_graph_diff_reversed_edge_without_markers_unchanged():
+    # Without _src/_tgt on both sides the edge is keyed by its endpoints, as before.
+    nodes = [("n1", "Alpha"), ("n2", "Beta")]
+    G_old = _make_simple_graph(nodes, [("n1", "n2", "calls", "EXTRACTED")])
+    G_new = _make_simple_graph(nodes, [("n2", "n1", "calls", "EXTRACTED")])
+    assert graph_diff(G_old, G_new)["summary"] == "no changes"
+    assert graph_diff(G_old, _make_marked_graph("n2", "n1"))["summary"] == "no changes"
+
+
 # --- code↔doc INFERRED suppression tests ---
 
 def _make_code_doc_graph():
@@ -601,6 +634,60 @@ def test_god_nodes_filter_is_case_insensitive():
     labels = [r["label"] for r in result]
     for variant in ("Start", "START", "Name", "ID"):
         assert variant not in labels, f"`{variant}` should be filtered as JSON-key noise"
+
+
+def _question_diversity_graph():
+    G = nx.Graph()
+    ambiguous = [f"uncertain_{i}" for i in range(10)]
+    inferred = ["inferred_a", "inferred_b"]
+    disconnected = [f"disconnected_{i}" for i in range(5)]
+    for node in ["hub", *ambiguous, *inferred, *disconnected]:
+        G.add_node(node, label=node, source_file="src/example.py", file_type="code")
+    for node in ambiguous:
+        G.add_edge("hub", node, confidence="AMBIGUOUS", relation="uses")
+    for node in inferred:
+        G.add_edge("hub", node, confidence="INFERRED", relation="uses")
+    communities = {0: ["hub"], 1: ambiguous + inferred, 2: disconnected}
+    return G, communities
+
+
+def test_suggest_questions_does_not_starve_later_categories():
+    """#3849: ten ambiguous edges must not hide all other question types."""
+    G, communities = _question_diversity_graph()
+    questions = suggest_questions(G, communities, {})
+    assert len(questions) == 7
+    assert [q["type"] for q in questions[:5]] == [
+        "ambiguous_edge", "bridge_node", "verify_inferred", "isolated_nodes", "low_cohesion",
+    ]
+    assert questions == suggest_questions(G, communities, {})
+
+
+@pytest.mark.parametrize("top_n", [1, 3, 7, 100])
+def test_suggest_questions_diversity_preserves_limit_and_candidates(top_n):
+    G, communities = _question_diversity_graph()
+    all_questions = suggest_questions(G, communities, {}, top_n=100)
+    limited = suggest_questions(G, communities, {}, top_n=top_n)
+    assert limited == all_questions[:top_n]
+    assert sum(q["type"] == "ambiguous_edge" for q in all_questions) == 10
+    assert all(set(q) == {"type", "question", "why"} for q in all_questions)
+
+
+def test_suggest_questions_single_category_uses_available_slots():
+    G = nx.complete_graph(5)
+    for node in G:
+        G.nodes[node].update(label=str(node), source_file="example.py", file_type="code")
+    for u, v in G.edges:
+        G.edges[u, v].update(confidence="AMBIGUOUS", relation="uses")
+    questions = suggest_questions(G, {0: list(G)}, {})
+    assert len(questions) == 7
+    assert all(q["type"] == "ambiguous_edge" for q in questions)
+
+
+def test_suggest_questions_empty_graph_keeps_no_signal():
+    questions = suggest_questions(nx.Graph(), {}, {})
+    assert len(questions) == 1
+    assert questions[0]["type"] == "no_signal"
+    assert questions[0]["question"] is None
 
 
 def test_suggest_questions_excludes_rationale_nodes_from_isolated_count():
