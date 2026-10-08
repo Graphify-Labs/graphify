@@ -57,6 +57,9 @@ def test_skill_roundtrip_at_real_destination(platform, project, tmp_path, monkey
     home.mkdir()
     project_dir.mkdir()
     monkeypatch.chdir(project_dir)
+    if platform == "reasonix":
+        monkeypatch.delenv("REASONIX_HOME", raising=False)
+        monkeypatch.delenv("APPDATA", raising=False)
 
     with patch("graphify.__main__.Path.home", return_value=home):
         dst = mainmod._platform_skill_destination(
