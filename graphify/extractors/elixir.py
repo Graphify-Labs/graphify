@@ -1,6 +1,7 @@
 """Elixir extractor. Moved verbatim from graphify/extract.py."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,11 @@ def extract_elixir(path: Path) -> dict:
     # is the file's top level), along with each module's and function's parent.
     call_scope: dict[str | None, list[str]] = {}
     enclosing: dict[str, str | None] = {}
+    # For qualified calls (`Mod.fun()`, #4206): each module's full name, each
+    # scope's `alias` table (same scoping as call_scope) and each module's defs.
+    module_names: dict[str, str] = {}
+    aliases: dict[str | None, dict[str, str]] = {}
+    module_defs: dict[tuple[str, str], str] = {}
 
     _IMPORT_KEYWORDS = frozenset({"alias", "import", "require", "use"})
 
@@ -99,10 +105,11 @@ def extract_elixir(path: Path) -> dict:
                 return [_text(child)]
         return []
 
-    def _get_defimpl_target(node) -> str | None:
-        """The `for:` target module of a `defimpl Proto, for: Type` argument
-        list. The grammar holds it in a trailing `keywords` node as a `pair`
-        whose keyword is `for:` and whose value is an `alias`."""
+    def _get_keyword_alias(node, key: str) -> str | None:
+        """The module given for keyword ``key`` in an argument list, e.g. the
+        `for:` of `defimpl Proto, for: Type` or the `as:` of `alias A.B, as: C`.
+        The grammar holds it in a trailing `keywords` node as a `pair` whose
+        keyword is `key:` and whose value is an `alias`."""
         for child in node.children:
             if child.type != "keywords":
                 continue
@@ -116,9 +123,52 @@ def extract_elixir(path: Path) -> dict:
                         kw = source[sub.start_byte:sub.end_byte].decode("utf-8", errors="replace")
                     elif sub.type == "alias":
                         val = source[sub.start_byte:sub.end_byte].decode("utf-8", errors="replace")
-                if kw and kw.rstrip(": ").strip() == "for" and val:
+                if kw and kw.rstrip(": ").strip() == key and val:
                     return val
         return None
+
+    def _expand_module(name: str, scope: str | None) -> str:
+        """Expand the first segment of a module reference through the `alias`
+        tables visible from ``scope`` (or `__MODULE__` to the current module)."""
+        first, _, rest = name.partition(".")
+        target = None
+        if first == "__MODULE__":
+            # ``scope`` is a module, or a function directly inside one.
+            if scope is not None and scope not in module_names:
+                scope = enclosing.get(scope)
+            target = (module_names.get(scope) if scope is not None else None) or None
+        else:
+            seen: set[str | None] = set()
+            container = scope
+            while container not in seen:
+                seen.add(container)
+                target = aliases.get(container, {}).get(first)
+                if target is not None or container is None:
+                    break
+                container = enclosing.get(container)
+        if target is None:
+            return name
+        return f"{target}.{rest}" if rest else target
+
+    def _record_aliases(arguments_node, scope: str | None) -> None:
+        modules = [_expand_module(m, scope) for m in _get_alias_modules(arguments_node)]
+        as_name = _get_keyword_alias(arguments_node, "as")
+        table = aliases.setdefault(scope, {})
+        if as_name and len(modules) == 1:
+            table[as_name] = modules[0]
+        elif not as_name:
+            for module in modules:
+                table[module.rsplit(".", 1)[-1]] = module
+
+    def _register_module(nid: str, name: str, parent: str | None) -> None:
+        # A nested `defmodule Inner` is `Outer.Inner`, and `Inner` is
+        # auto-aliased inside Outer.
+        parent_name = module_names.get(parent) if parent is not None else None
+        if parent_name:
+            first = name.split(".", 1)[0]
+            aliases.setdefault(parent, {})[first] = f"{parent_name}.{first}"
+            name = f"{parent_name}.{name}"
+        module_names[nid] = name
 
     def walk(node, parent_module_nid: str | None = None) -> None:
         if node.type != "call":
@@ -160,6 +210,7 @@ def extract_elixir(path: Path) -> dict:
                      **({"_elixir_module": True} if parent_module_nid is None else {}))
             add_edge(file_nid, module_nid, "contains", line)
             enclosing[module_nid] = parent_module_nid
+            _register_module(module_nid, module_name, parent_module_nid)
             if do_block_node:
                 for child in do_block_node.children:
                     walk(child, parent_module_nid=module_nid)
@@ -179,6 +230,7 @@ def extract_elixir(path: Path) -> dict:
                      **({"_elixir_module": True} if parent_module_nid is None else {}))
             add_edge(parent_module_nid or file_nid, proto_nid, "contains", line)
             enclosing[proto_nid] = parent_module_nid
+            _register_module(proto_nid, proto_name, parent_module_nid)
             if do_block_node:
                 for child in do_block_node.children:
                     walk(child, parent_module_nid=proto_nid)
@@ -190,12 +242,13 @@ def extract_elixir(path: Path) -> dict:
             proto_name = _get_alias_text(arguments_node) if arguments_node else None
             if not proto_name:
                 return
-            target = _get_defimpl_target(arguments_node)
+            target = _get_keyword_alias(arguments_node, "for")
             impl_nid = _make_id(stem, "defimpl", proto_name, target or "")
             label = f"{proto_name} (for {target})" if target else proto_name
             add_node(impl_nid, label, line)
             add_edge(parent_module_nid or file_nid, impl_nid, "contains", line)
             enclosing[impl_nid] = parent_module_nid
+            module_names[impl_nid] = f"{proto_name}.{target}" if target else ""
             # Link the implementation to the protocol it satisfies. A same-file
             # protocol resolves directly; a cross-file target is filtered out by
             # the dangling-edge guard below rather than left hanging.
@@ -247,6 +300,7 @@ def extract_elixir(path: Path) -> dict:
             enclosing[func_nid] = parent_module_nid
             if parent_module_nid:
                 add_edge(parent_module_nid, func_nid, "method", line)
+                module_defs.setdefault((parent_module_nid, func_name), func_nid)
             else:
                 add_edge(file_nid, func_nid, "contains", line)
             if do_block_node:
@@ -261,6 +315,8 @@ def extract_elixir(path: Path) -> dict:
                 # calls; alias/require do not.
                 if keyword in ("import", "use"):
                     call_scope.setdefault(parent_module_nid, []).append(module_name)
+            if keyword == "alias":
+                _record_aliases(arguments_node, parent_module_nid)
             return
 
         for child in node.children:
@@ -272,6 +328,9 @@ def extract_elixir(path: Path) -> dict:
     for n in nodes:
         normalised = n["label"].strip("()").lstrip(".")
         label_to_nid[normalised] = n["id"]
+
+    module_nid_by_name = {name: nid for nid, name in module_names.items()}
+    _MODULE_REF = re.compile(r"(__MODULE__|[A-Z]\w*)(\.[A-Z]\w*)*")
 
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
@@ -304,12 +363,17 @@ def extract_elixir(path: Path) -> dict:
             if child.type == "identifier":
                 kw = source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
                 if kw in _SKIP_KEYWORDS:
+                    if kw == "alias":  # a function-local alias
+                        for c in node.children:
+                            if c.type == "arguments":
+                                _record_aliases(c, caller_nid)
                     for c in node.children:
                         walk_calls(c, caller_nid)
                     return
                 break
         callee_name: str | None = None
         is_member_call: bool = False
+        receiver_module: str | None = None
         for child in node.children:
             if child.type == "dot":
                 is_member_call = True
@@ -317,12 +381,26 @@ def extract_elixir(path: Path) -> dict:
                 parts = dot_text.rstrip(".").split(".")
                 if parts:
                     callee_name = parts[-1]
+                # `Mod.fun()` / `Alias.fun()` / `__MODULE__.fun()`: keep the
+                # module. A variable (`mod.fun()`) or atom receiver stays None.
+                if child.child_count == 3:
+                    receiver = child.children[0]
+                    receiver_text = source[receiver.start_byte:receiver.end_byte].decode(
+                        "utf-8", errors="replace")
+                    if _MODULE_REF.fullmatch(receiver_text):
+                        receiver_module = _expand_module(receiver_text, caller_nid)
                 break
             if child.type == "identifier":
                 callee_name = source[child.start_byte:child.end_byte].decode("utf-8", errors="replace")
                 break
-        if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
-            tgt_nid = label_to_nid.get(callee_name)
+        if callee_name and (receiver_module or callee_name not in _LANGUAGE_BUILTIN_GLOBALS):
+            # A remote call only ever reaches the named module's own def: never
+            # the bare name, which bound `Repo.insert(x)` to a local insert/1.
+            if receiver_module is not None:
+                mod_nid = module_nid_by_name.get(receiver_module)
+                tgt_nid = module_defs.get((mod_nid, callee_name)) if mod_nid else None
+            else:
+                tgt_nid = None if is_member_call else label_to_nid.get(callee_name)
             if tgt_nid and tgt_nid != caller_nid:
                 pair = (caller_nid, tgt_nid)
                 if pair not in seen_call_pairs:
@@ -338,6 +416,7 @@ def extract_elixir(path: Path) -> dict:
                     "source_file": str_path,
                     "source_location": f"L{node.start_point[0] + 1}",
                     "elixir_call_scope": _call_scope_for(caller_nid),
+                    **({"elixir_module": receiver_module} if receiver_module else {}),
                 })
         for child in node.children:
             walk_calls(child, caller_nid)

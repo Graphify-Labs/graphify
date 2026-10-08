@@ -5772,6 +5772,73 @@ def _resolve_elixir_import_targets(
         e["target"] = target_nid
 
 
+def _resolve_elixir_qualified_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve Elixir remote calls that name their module (#4206).
+
+    extract_elixir expands the receiver of `App.Accounts.get_user(id)` /
+    `Accounts.get_user(id)` (through the caller's `alias` table and
+    `__MODULE__`) and stamps it on the raw_call as ``elixir_module``; calls
+    into a module of the same file are linked there already. The shared pass
+    skips member calls, so this pass is strictly additive, like
+    `_resolve_csharp_qualified_calls`.
+
+    The module must match exactly one top-level module in the corpus and the
+    function must be one of its own defs. A module outside the corpus (Ecto's
+    `Repo`, `Enum`, `Map`) gets no edge rather than a same-named guess.
+    """
+    raw = [
+        rc
+        for result in per_file
+        for rc in result.get("raw_calls", [])
+        if rc.get("elixir_module") and rc.get("callee") and rc.get("caller_nid")
+    ]
+    if not raw:
+        return
+
+    module_nids: dict[str, list[str]] = {}
+    labels: dict[str, str] = {}
+    for n in all_nodes:
+        labels[n["id"]] = str(n.get("label") or "")
+        if n.get("_elixir_module") and n.get("source_file"):
+            module_nids.setdefault(labels[n["id"]], []).append(n["id"])
+    defs: dict[tuple[str, str], str] = {}
+    for e in all_edges:
+        if e.get("relation") == "method":
+            name = labels.get(e.get("target", ""), "")
+            if name.endswith("()"):
+                defs.setdefault((e["source"], name[:-2]), e["target"])
+
+    existing_pairs = {
+        (e.get("source"), e.get("target"))
+        for e in all_edges
+        if e.get("relation") == "calls"
+    }
+    for rc in raw:
+        candidates = module_nids.get(rc["elixir_module"], [])
+        if len(candidates) != 1:
+            continue
+        caller = rc["caller_nid"]
+        tgt = defs.get((candidates[0], rc["callee"]))
+        if tgt is None or tgt == caller or (caller, tgt) in existing_pairs:
+            continue
+        existing_pairs.add((caller, tgt))
+        all_edges.append({
+            "source": caller,
+            "target": tgt,
+            "relation": "calls",
+            "context": "call",
+            "confidence": "EXTRACTED",  # the module is written in source
+            "confidence_score": 1.0,
+            "source_file": rc.get("source_file", ""),
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
 def _resolve_kotlin_member_calls(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -5940,6 +6007,13 @@ register_language_resolver(
         "elixir_import_targets",
         frozenset({".ex", ".exs"}),
         _resolve_elixir_import_targets,
+    )
+)
+register_language_resolver(
+    LanguageResolver(
+        "elixir_qualified_calls",
+        frozenset({".ex", ".exs"}),
+        _resolve_elixir_qualified_calls,
     )
 )
 # Pascal/Delphi cross-file inherited-method-call resolution: a call from a
