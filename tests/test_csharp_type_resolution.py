@@ -1014,3 +1014,51 @@ def test_csharp_enclosing_namespace_regression_controls(tmp_path: Path):
     # UnknownType must remain a sourceless stub
     ref_missing = _targets(result, "references", "UnknownType")
     assert ref_missing and not any(r.get("source_file") for r in ref_missing)
+
+
+# ── #4249: a generic and a non-generic type of the same name must not merge ──
+
+def test_csharp_generic_and_non_generic_type_of_same_name_get_separate_nodes(tmp_path: Path):
+    """`Effect` / `Effect<T>` (a common base-pair shape: `Comparer`/`Comparer<T>`
+    is another) must not mint the same id, and the resulting inherits edge
+    must not become a self-loop."""
+    source = _write(
+        tmp_path / "effects.cs",
+        "namespace Demo {\n"
+        "    public abstract class Effect { public virtual int ReadSlot(string p) { return 0; } }\n"
+        "    public abstract class Effect<T> : Effect where T : unmanaged { }\n"
+        "    public abstract class Tween<T> : Effect<T> where T : unmanaged {\n"
+        "        public override int ReadSlot(string p) { return base.ReadSlot(p) + 1; }\n"
+        "    }\n"
+        "}\n",
+    )
+    result = extract([source], cache_root=tmp_path)
+
+    effects = _defs(result, "Effect")
+    assert len(effects) == 2, f"generic and non-generic Effect must be separate nodes: {effects}"
+
+    inherits = {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "inherits"}
+    assert not any(src == tgt for src, tgt in inherits), (
+        f"a generic type inheriting its own non-generic base must never be a self-loop: {inherits}"
+    )
+
+    tween = _defs(result, "Tween")[0]
+    effect_targets = {tgt for src, tgt in inherits if src == tween["id"]}
+    assert effect_targets, "Tween<T> must have an inherits edge"
+    assert effect_targets <= {e["id"] for e in effects}, (
+        "Tween<T> must inherit one of the two real Effect definitions, not a dangling stub"
+    )
+
+
+def test_csharp_non_generic_pair_with_no_relation_stays_two_plain_nodes(tmp_path: Path):
+    """Control: two same-named non-generic types in different namespaces are
+    already correctly separate — confirms the fix does not touch that case."""
+    source = _write(
+        tmp_path / "pair.cs",
+        "namespace A { public class Worker {} }\n"
+        "namespace B { public class Worker {} }\n",
+    )
+    result = extract([source], cache_root=tmp_path)
+    workers = _defs(result, "Worker")
+    assert len(workers) == 2
+    assert workers[0]["id"] != workers[1]["id"]
