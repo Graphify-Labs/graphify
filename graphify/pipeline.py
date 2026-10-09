@@ -676,6 +676,237 @@ def step_save_manifest(
 
 
 # --------------------------------------------------------------------------
+# query reference - vocabulary extraction
+# --------------------------------------------------------------------------
+
+
+def step_vocab(*, out: Path | str | None = None) -> dict:
+    """Extract the graph's token vocabulary into ``.vocab.txt``.
+
+    The query CLI matches on case-folded substrings with no stemming or synonyms,
+    so a question phrased in different vocabulary than the graph's labels returns
+    nothing. The reference reads this file and picks real tokens from it before
+    traversing, so expansion can never invent a token the graph lacks.
+    """
+    import re
+
+    out_dir = _out_dir(out)
+    graph_path = out_dir / "graph.json"
+    data = _load(graph_path, "graph")
+    vocab: set[str] = set()
+    for n in data.get("nodes", []):
+        for c in re.findall(r"[^\W\d_]+", n.get("label", "") or "", re.UNICODE):
+            parts = re.findall(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+", c) or [c]
+            for p in parts:
+                t = p.lower()
+                if 3 <= len(t) <= 30:
+                    vocab.add(t)
+    (out_dir / ".vocab.txt").write_text("\n".join(sorted(vocab)), encoding="utf-8")
+    return {"tokens": len(vocab)}
+
+
+# --------------------------------------------------------------------------
+# transcribe reference - video/audio to text
+# --------------------------------------------------------------------------
+
+
+def step_transcribe(*, out: Path | str | None = None) -> dict:
+    """Transcribe the detected video/audio files into ``.graphify_transcripts.json``.
+
+    Reads ``GRAPHIFY_WHISPER_PROMPT`` / ``GRAPHIFY_WHISPER_MODEL`` from the
+    environment (the reference exports them). The JSON is written from Python, not
+    a shell redirect, because Whisper prints progress to stdout which would
+    otherwise corrupt the file (#1392).
+    """
+    import os
+
+    from graphify.transcribe import transcribe_all
+
+    out_dir = _out_dir(out)
+    detect = _load(out_dir / _DETECT_JSON, "detection sidecar")
+    video_files = detect.get("files", {}).get("video", [])
+    prompt = os.environ.get(
+        "GRAPHIFY_WHISPER_PROMPT", "Use proper punctuation and paragraph breaks."
+    )
+    transcript_paths = transcribe_all(video_files, initial_prompt=prompt)
+    write_json_atomic(out_dir / ".graphify_transcripts.json", transcript_paths, ensure_ascii=False)
+    return {"transcripts": transcript_paths}
+
+
+# --------------------------------------------------------------------------
+# update reference - incremental re-extraction
+# --------------------------------------------------------------------------
+
+
+def step_detect_incremental(
+    path: str | Path | None = None,
+    *,
+    out: Path | str | None = None,
+) -> dict:
+    """Diff the corpus against the manifest and write the incremental sidecars.
+
+    Writes ``.graphify_incremental.json`` (the raw result) and populates
+    ``.graphify_detect.json`` so the Steps 3A-6 blocks, which read it
+    unconditionally, see the right state for an incremental run: ``files`` is the
+    changed subset and ``all_files`` the full corpus.
+    """
+    from graphify.detect import detect_incremental
+
+    out_dir = _out_dir(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    result = detect_incremental(_scan(path), manifest_path=str(out_dir / "manifest.json"))
+    write_json_atomic(out_dir / ".graphify_incremental.json", result, ensure_ascii=False)
+    write_json_atomic(
+        out_dir / _DETECT_JSON,
+        {
+            "files": result.get("new_files", {}),
+            "all_files": result.get("files", {}),
+            "total_files": result.get("new_total", 0),
+            "total_words": result.get("total_words", 0),
+            "skipped_sensitive": result.get("skipped_sensitive", []),
+            "needs_graph": True,
+        },
+        ensure_ascii=False,
+    )
+    return result
+
+
+#: Extensions the update flow treats as "code" (structural extraction only).
+_CODE_EXTS = frozenset({
+    ".py", ".ts", ".js", ".go", ".rs", ".java", ".cpp", ".c", ".rb", ".swift",
+    ".kt", ".cs", ".scala", ".php", ".cc", ".cxx", ".hpp", ".h", ".kts", ".lua",
+    ".toc", ".f", ".F", ".f90", ".F90", ".f95", ".F95", ".f03", ".F03", ".f08", ".F08",
+})
+
+
+def step_code_only_check(*, out: Path | str | None = None) -> dict:
+    """Report whether every changed file is a code file.
+
+    A code-only change needs no semantic extraction, so the update flow can skip
+    Step 3B entirely (no LLM, no subagents).
+    """
+    out_dir = _out_dir(out)
+    result = _read_json(out_dir / ".graphify_incremental.json") or {}
+    new_files = result.get("new_files", {})
+    all_changed = [f for files in new_files.values() for f in files]
+    code_only = all(Path(f).suffix.lower() in _CODE_EXTS for f in all_changed)
+    return {"code_only": code_only, "changed": len(all_changed)}
+
+
+def step_empty_extract(*, out: Path | str | None = None) -> dict:
+    """Create an empty ``.graphify_extract.json`` for a deletions-only update.
+
+    The merge step needs an extraction to prune against; without it a
+    deletions-only run has nothing to merge. Only written when the file is absent.
+    """
+    out_dir = _out_dir(out)
+    p = out_dir / _EXTRACT_JSON
+    if p.exists():
+        return {"created": False}
+    out_dir.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(p, _empty_semantic(), ensure_ascii=False)
+    return {"created": True}
+
+
+def step_update_merge(
+    path: str | Path | None = None,
+    *,
+    out: Path | str | None = None,
+    directed: bool = False,
+) -> dict:
+    """Merge this run's extraction into the existing graph, then re-stamp the manifest.
+
+    Uses ``build_merge`` (reads graph.json directly, preserving edge direction,
+    #801). ``prune_sources`` is ONLY the genuinely deleted files: changed files are
+    reconciled by ``build_merge``'s replace-on-re-extract (#1344, #1178). ``root=``
+    relativizes prune paths to match the graph's relative ``source_file`` values,
+    or nothing prunes and stale nodes accumulate (#1361).
+
+    Manifest stamping mirrors the extract path: only semantic files that actually
+    produced output are stamped, and files dispatched-but-not-stamped have their
+    stale ``semantic_hash`` cleared so the next update re-queues them (#2015, #1948).
+    """
+    from graphify.build import build_merge
+    from graphify.cli import _stamped_manifest_files
+    from graphify.detect import save_manifest
+
+    out_dir = _out_dir(out)
+    scan = _scan(path)
+    new_extraction = _load(out_dir / _EXTRACT_JSON, "merged extraction")
+    incremental = _load(out_dir / ".graphify_incremental.json", "incremental sidecar")
+    deleted = list(incremental.get("deleted_files", []))
+    prune = list(deleted) or None
+
+    G = build_merge(
+        [new_extraction],
+        graph_path=str(out_dir / "graph.json"),
+        prune_sources=prune,
+        root=str(scan),
+        directed=directed,
+    )
+
+    merged_out = {
+        "nodes": [{"id": n, **d} for n, d in G.nodes(data=True)],
+        "edges": [
+            # Explicit source/target last so they win over any stale attrs in d.
+            {**{k: val for k, val in d.items() if k not in ("_src", "_tgt", "source", "target")},
+             "source": d.get("_src", u), "target": d.get("_tgt", v)}
+            for u, v, d in G.edges(data=True)
+        ],
+        "hyperedges": list(G.graph.get("hyperedges", [])),
+        "input_tokens": new_extraction.get("input_tokens", 0),
+        "output_tokens": new_extraction.get("output_tokens", 0),
+    }
+    write_json_atomic(out_dir / _EXTRACT_JSON, merged_out, ensure_ascii=False)
+
+    manifest_files = _stamped_manifest_files(incremental["files"], new_extraction, scan)
+    semantic_types = ("document", "paper", "image")
+    dispatched = {
+        f for t, fl in incremental.get("new_files", {}).items() if t in semantic_types for f in fl
+    }
+    stamped = {f for fl in manifest_files.values() for f in fl}
+    cleared = dispatched - stamped
+    scan_corpus = {f for fl in incremental["files"].values() for f in fl}
+    save_manifest(
+        manifest_files,
+        manifest_path=str(out_dir / "manifest.json"),
+        root=scan,
+        scan_corpus=scan_corpus,
+        clear_semantic=cleared or None,
+    )
+
+    return {
+        "nodes": G.number_of_nodes(),
+        "edges": G.number_of_edges(),
+        "merged_nodes": len(merged_out["nodes"]),
+    }
+
+
+def step_graph_diff(
+    *,
+    out: Path | str | None = None,
+    directed: bool = False,
+) -> dict | None:
+    """Summarize how the update changed the graph, vs the pre-merge backup.
+
+    Reads ``.graphify_old.json`` (the reference copies graph.json there before the
+    merge). Returns ``None`` when there is no backup.
+    """
+    from graphify.analyze import graph_diff
+    from graphify.build import build_from_json
+    from graphify.paths import load_node_link_graph
+
+    out_dir = _out_dir(out)
+    old = _read_json(out_dir / ".graphify_old.json")
+    if old is None:
+        return None
+    new_extract = _load(out_dir / _EXTRACT_JSON, "merged extraction")
+    G_new = build_from_json(new_extract, directed=directed)
+    G_old = load_node_link_graph(old)
+    return graph_diff(G_old, G_new)
+
+
+# --------------------------------------------------------------------------
 # cleanup
 # --------------------------------------------------------------------------
 

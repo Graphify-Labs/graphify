@@ -42,6 +42,12 @@ GENERATED_SKILLS = [
     if p.name not in ("skill-aider.md", "skill-devin.md")
 ]
 
+#: The on-demand reference flows (update/query/add-watch/transcribe/exports) are
+#: rendered per host under graphify/skills/<host>/references/. They must be clean
+#: too: #197 is about the Claude Code skill, which loads these on demand, so a
+#: remaining inline block there would still prompt.
+GENERATED_REFERENCES = sorted((REPO_ROOT / "graphify" / "skills").rglob("references/*.md"))
+
 #: The interpreter-detection block (Step 1) still legitimately runs `python -c` to
 #: find the interpreter that has graphify — that is what installs it. These lines are
 #: the only allowed `-c` sites.
@@ -62,7 +68,10 @@ def _inline_c_sites(text: str) -> list[tuple[int, str]]:
     ]
 
 
-@pytest.mark.parametrize("path", GENERATED_SKILLS, ids=lambda p: p.name)
+ALL_SKILL_AND_REFERENCE_FILES = GENERATED_SKILLS + GENERATED_REFERENCES
+
+
+@pytest.mark.parametrize("path", ALL_SKILL_AND_REFERENCE_FILES, ids=lambda p: p.name)
 def test_generated_skill_has_no_inline_python_pipeline_step(path: Path):
     """No generated skill may shell out to `python -c` outside Step 1 detection."""
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -78,7 +87,7 @@ def test_generated_skill_has_no_inline_python_pipeline_step(path: Path):
     )
 
 
-@pytest.mark.parametrize("path", GENERATED_SKILLS, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", ALL_SKILL_AND_REFERENCE_FILES, ids=lambda p: p.name)
 def test_generated_skill_never_instructs_reading_back_the_interpreter(path: Path):
     """The `$(cat graphify-out/.graphify_python)` indirection must be gone.
 

@@ -383,6 +383,107 @@ def test_label_rejects_non_numeric_community_keys(corpus: Path, tmp_path: Path) 
     assert "Traceback" not in p.stderr
 
 
+def test_vocab_extracts_tokens_from_labels(corpus: Path, tmp_path: Path) -> None:
+    """The query reference expands a question only with tokens from this file."""
+    work = tmp_path / "work"
+    work.mkdir()
+    _run_small_build(work, corpus)
+    p = _gx("pipeline", "vocab", cwd=work)
+    assert p.returncode == 0, p.stderr
+    vocab = (work / "graphify-out" / ".vocab.txt").read_text(encoding="utf-8").split()
+    assert "helper" in vocab and "widget" in vocab, f"expected label tokens, got {vocab[:10]}"
+    assert all(t == t.lower() for t in vocab)
+
+
+def test_detect_incremental_writes_both_sidecars(corpus: Path, tmp_path: Path) -> None:
+    """--update diffs against the manifest and populates the detect sidecar."""
+    work = tmp_path / "work"
+    work.mkdir()
+    _run_small_build(work, corpus)
+    assert _gx("pipeline", "save-manifest", str(corpus), cwd=work).returncode == 0
+
+    (corpus / "pkg" / "mod.py").write_text(
+        "def helper(x):\n    return x + 1\n\ndef second(y):\n    return y\n",
+        encoding="utf-8",
+    )
+    p = _gx("pipeline", "detect-incremental", str(corpus), cwd=work)
+    assert p.returncode == 0, p.stderr
+    out = work / "graphify-out"
+    inc = json.loads((out / ".graphify_incremental.json").read_text(encoding="utf-8"))
+    detect = json.loads((out / ".graphify_detect.json").read_text(encoding="utf-8"))
+    assert inc.get("new_total", 0) >= 1
+    assert detect["needs_graph"] is True
+    assert any(f.endswith("mod.py") for f in detect["files"].get("code", []))
+
+
+def test_incremental_update_merges_a_new_symbol(corpus: Path, tmp_path: Path) -> None:
+    """The full --update flow: detect-incremental -> extract-ast -> merge -> update-merge."""
+    work = tmp_path / "work"
+    work.mkdir()
+    _run_small_build(work, corpus)
+    assert _gx("pipeline", "save-manifest", str(corpus), cwd=work).returncode == 0
+
+    # Add a function, keep the class: a pure addition so the merged graph does not
+    # trip the #479 shrink guard (removing the class would be a legitimate shrink).
+    (corpus / "pkg" / "mod.py").write_text(
+        "def helper(x):\n    return x + 1\n\ndef second(y):\n    return y * 2\n"
+        "\nclass Widget:\n    def render(self):\n        return helper(1)\n",
+        encoding="utf-8",
+    )
+    assert _gx("pipeline", "detect-incremental", str(corpus), cwd=work).returncode == 0
+    assert _gx("pipeline", "code-only-check", cwd=work).returncode == 0
+
+    assert _gx("pipeline", "extract-ast", str(corpus), cwd=work).returncode == 0
+    assert _gx("pipeline", "empty-semantic", cwd=work).returncode == 0
+    assert _gx("pipeline", "merge-extraction", cwd=work).returncode == 0
+    assert _gx("pipeline", "update-merge", str(corpus), cwd=work).returncode == 0
+    # The reference then runs Steps 4-8 on the merged graph: `build` reads the
+    # merged .graphify_extract.json and writes graph.json.
+    assert _gx("pipeline", "build", str(corpus), cwd=work).returncode == 0
+
+    graph = json.loads((work / "graphify-out" / "graph.json").read_text(encoding="utf-8"))
+    labels = {n.get("label") for n in graph["nodes"]}
+    assert "second()" in labels, f"the new symbol must be merged in, got {sorted(labels)}"
+    assert "helper()" in labels, "the unchanged symbol must survive the merge"
+
+
+def test_code_only_check_true_for_a_code_only_change(tmp_path: Path) -> None:
+    """A code-only corpus change needs no semantic extraction (no LLM)."""
+    src = tmp_path / "src"
+    (src / "pkg").mkdir(parents=True)
+    (src / "pkg" / "mod.py").write_text("def a():\n    return 1\n", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir()
+    for step in ("detect", "extract-ast", "empty-semantic", "merge-extraction", "build", "save-manifest"):
+        args = ["pipeline", step, str(src)] if step in ("detect", "extract-ast", "build", "save-manifest") else ["pipeline", step]
+        assert _gx(*args, cwd=work).returncode == 0, step
+
+    (src / "pkg" / "mod.py").write_text("def a():\n    return 1\n\ndef b():\n    return 2\n", encoding="utf-8")
+    assert _gx("pipeline", "detect-incremental", str(src), cwd=work).returncode == 0
+    p = _gx("pipeline", "code-only-check", cwd=work)
+    assert p.returncode == 0
+    assert "code_only: True" in p.stdout, p.stdout
+
+
+def test_empty_extract_only_when_missing(tmp_path: Path) -> None:
+    work = tmp_path / "work"
+    (work / "graphify-out").mkdir(parents=True)
+    first = _gx("pipeline", "empty-extract", cwd=work)
+    assert first.returncode == 0 and "Created" in first.stdout
+    (work / "graphify-out" / ".graphify_extract.json").write_text('{"nodes": []}', encoding="utf-8")
+    second = _gx("pipeline", "empty-extract", cwd=work)
+    assert second.returncode == 0 and "already exists" in second.stdout
+
+
+def test_graph_diff_reports_no_backup(corpus: Path, tmp_path: Path) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    _run_small_build(work, corpus)
+    p = _gx("pipeline", "graph-diff", cwd=work)
+    assert p.returncode == 0
+    assert "No previous graph" in p.stdout
+
+
 def test_graphify_out_env_relocates_sidecars(corpus: Path, tmp_path: Path) -> None:
     """The pipeline honors the GRAPHIFY_OUT override the rest of the CLI uses (#686)."""
     work = tmp_path / "work"
