@@ -2232,6 +2232,7 @@ _USER_FILES_GRAPHIFY_EDITS = {
     ".github/copilot-instructions.md",
     ".claude/settings.json", ".codebuddy/settings.json", ".codex/hooks.json",
     ".gemini/settings.json", ".kilo/kilo.json", ".opencode/opencode.json",
+    ".mimocode/mimocode.json",
 }
 
 

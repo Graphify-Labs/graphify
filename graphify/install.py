@@ -862,7 +862,7 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     if platform == "mimo" and sys.platform == "win32":
         platform = "mimo-windows"
     if platform in ("mimo", "mimo-windows"):
-        _mimo_install(project_dir if project else Path("."), project=project)
+        _mimo_install((project_dir or Path(".")) if project else Path("."), project=project)
         return
     if platform not in _PLATFORM_CONFIG:
         print(

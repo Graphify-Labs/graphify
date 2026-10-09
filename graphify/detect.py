@@ -987,6 +987,7 @@ _GRAPHIFY_INSTALLED_FILES = frozenset({
     (".cursor", "rules", "graphify.mdc"),     # cursor
     (".kilo", "plugins", "graphify.js"),      # kilo
     (".kiro", "steering", "graphify.md"),     # kiro
+    (".mimocode", "plugins", "graphify.js"),  # mimo
     (".opencode", "plugins", "graphify.js"),  # opencode
     (".windsurf", "rules", "graphify.md"),    # devin
 })

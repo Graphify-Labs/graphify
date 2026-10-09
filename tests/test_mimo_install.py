@@ -290,3 +290,44 @@ def test_mimo_env_overrides(tmp_path, monkeypatch):
     assert not (xdg_config / "mimocode" / "plugins" / "graphify.js").exists()
     data_after = json.loads(jsonc_file.read_text(encoding="utf-8"))
     assert not data_after.get("plugin")
+
+
+def test_install_entrypoint_project_without_project_dir_uses_cwd(tmp_path, monkeypatch):
+    """install(platform="mimo", project=True) with project_dir=None is project-scoped at cwd.
+
+    Regression: install()'s Optional project_dir was passed straight to
+    _mimo_install(project_dir: Path), a type error and a latent None crash.
+    """
+    from graphify.install import install
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.delenv("MIMOCODE_HOME", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.chdir(project)
+
+    install(platform="mimo", project=True)
+
+    assert (project / ".mimocode" / "plugins" / "graphify.js").exists()
+    assert (project / "AGENTS.md").exists()
+    assert not (home / ".config" / "mimocode").exists()
+
+
+def test_install_entrypoint_global_ignores_project_dir(tmp_path, monkeypatch):
+    """Global scope never writes under project_dir, even when one is supplied."""
+    from graphify.install import install
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.delenv("MIMOCODE_HOME", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.chdir(project)
+
+    install(platform="mimo", project=False, project_dir=project)
+
+    assert (home / ".config" / "mimocode" / "plugins" / "graphify.js").exists()
+    assert not (project / ".mimocode").exists()
