@@ -57,6 +57,10 @@ def os_replace_with_fallback(src: "str | Path", dst: "str | Path") -> None:
     except OSError as exc:
         if not isinstance(exc, PermissionError) and getattr(exc, "winerror", None) != 17:
             raise
+        # A read-only destination is a deliberate refusal, not a transient lock:
+        # the rename-aside fallback below would silently clobber it.
+        if os.path.isfile(dst) and not os.path.islink(dst) and not os.access(dst, os.W_OK):
+            raise
     import shutil
     dst = os.fspath(dst)
     if os.path.normcase(os.path.abspath(os.fspath(src))) == os.path.normcase(os.path.abspath(dst)):

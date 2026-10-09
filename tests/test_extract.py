@@ -1661,7 +1661,8 @@ def test_c_include_out_of_root_target_id_is_deterministic_across_checkout_paths(
         return [e["target"] for e in result["edges"] if e["relation"] == "imports"][0]
 
     target_a = _build("checkout_alice")
-    target_b = _build("checkout_bob_at_a_totally_different_nesting_depth")
+    # Short enough to keep the cache path under Windows' 260-char MAX_PATH.
+    target_b = _build("checkout_bob_other_depth")
     assert target_a == target_b == "ext_lib_foo_h"
 
 
@@ -5670,7 +5671,7 @@ def test_python_external_calls_survive_real_incremental_context(tmp_path):
     (tmp_path / "helper.py").write_text("def other():\n    return 1\n")
     (tmp_path / "local_caller.py").write_text("import helper\n\ndef fetch_local():\n    return helper.get()\n")
     env = {k: v for k, v in os.environ.items()
-           if k in {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE"}}
+           if k in {"PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "TMPDIR", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE"}}
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
 
     def run():
