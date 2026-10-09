@@ -183,6 +183,11 @@ def extract_css(path: Path) -> dict:
     ]
     edges: list[dict] = []
     raw_token_uses: list[dict] = []
+    # Custom properties declared OUTSIDE a root/theme context (e.g.
+    # `.card { --color: red; }`). They shadow any same-named global token within
+    # this stylesheet, so a later var(--color) must not bind to a cross-file
+    # definition; recorded here and stamped onto each use below.
+    local_nonroot_names: set[str] = set()
 
     # 1. Collect var(--token) references outside string literals
     seen_uses: set[tuple[str, int]] = set()
@@ -269,6 +274,10 @@ def extract_css(path: Path) -> dict:
                                 "weight": 1.0,
                             }
                         )
+            elif stmt and stack:
+                m = _DECL_RE.match(stmt)
+                if m:
+                    local_nonroot_names.add(m.group(1))
             if stack:
                 stack.pop()
             buf = []
@@ -308,12 +317,19 @@ def extract_css(path: Path) -> dict:
                                 "weight": 1.0,
                             }
                         )
+            elif stmt and stack:
+                m = _DECL_RE.match(stmt)
+                if m:
+                    local_nonroot_names.add(m.group(1))
             buf = []
             i += 1
             continue
 
         buf.append(c)
         i += 1
+
+    for tu in raw_token_uses:
+        tu["local_decl"] = tu["token_name"] in local_nonroot_names
 
     return {
         "nodes": nodes,

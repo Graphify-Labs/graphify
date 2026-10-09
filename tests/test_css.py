@@ -26,6 +26,20 @@ def test_detect_less_classified_as_code():
     assert not _is_sensitive(Path("tokens.less"))
 
 
+def test_local_declaration_shadows_global_token(tmp_path):
+    """A custom property declared OUTSIDE a root/theme context (a component
+    overriding a theme token) must stop that stylesheet's var() from binding to
+    a cross-file global definition — otherwise the graph invents a false
+    EXTRACTED uses_token edge (#3473)."""
+    theme = tmp_path / "theme.css"
+    theme.write_text(":root { --color: blue; }\n")
+    card = tmp_path / "card.css"
+    card.write_text(".card { --color: red; color: var(--color); }\n")
+    graph = extract([theme, card], root=tmp_path)
+    uses = [e for e in graph["edges"] if e.get("relation") == "uses_token"]
+    assert uses == []
+
+
 def test_tokens_stylesheet_not_flagged_as_sensitive():
     assert not _is_sensitive(Path("tokens.css"))
     assert not _is_sensitive(Path("tokens.scss"))
