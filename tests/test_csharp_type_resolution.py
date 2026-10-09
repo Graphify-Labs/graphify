@@ -312,7 +312,7 @@ def test_csharp_nested_type_carries_metadata(tmp_path: Path):
 
 
 def test_csharp_cross_namespace_ref_not_misbound(tmp_path: Path):
-    # Use in namespace B must NOT bind to C.T (B never opens C) — even though T is globally unique.
+    # Use in namespace B must NOT bind to C.T (B never opens C) - even though T is globally unique.
     f = _write(tmp_path / "x.cs", "namespace B { class Use : T {} } namespace C { class T {} }\n")
     result = extract([f], cache_root=tmp_path)
     resolved = [t for t in _targets(result, "inherits", "T") if t.get("source_file")]
@@ -320,7 +320,7 @@ def test_csharp_cross_namespace_ref_not_misbound(tmp_path: Path):
 
 
 def test_csharp_same_file_cross_namespace_ref_not_misbound(tmp_path: Path):
-    # Same file, T defined in B, Use in C : T — must NOT bind B.T (the eager same-file binding case).
+    # Same file, T defined in B, Use in C : T - must NOT bind B.T (the eager same-file binding case).
     f = _write(tmp_path / "x.cs", "namespace B { class T {} } namespace C { class Use : T {} }\n")
     result = extract([f], cache_root=tmp_path)
     resolved = [t for t in _targets(result, "inherits", "T") if t.get("source_file")]
@@ -328,7 +328,7 @@ def test_csharp_same_file_cross_namespace_ref_not_misbound(tmp_path: Path):
 
 
 def test_csharp_inherits_does_not_bind_namespace_node(tmp_path: Path):
-    # class Use : Game where Game is a namespace — must NOT bind the namespace node (Chunk-1 review B1).
+    # class Use : Game where Game is a namespace - must NOT bind the namespace node (Chunk-1 review B1).
     f = _write(tmp_path / "y.cs", "namespace Game { class Damage {} class Use : Game {} }\n")
     result = extract([f], cache_root=tmp_path)
     nsids = {n["id"] for n in result["nodes"] if n.get("type") == "namespace"}
@@ -567,3 +567,450 @@ def test_csharp_alias_using_scoped_to_its_block(tmp_path: Path):
     inh = {(e["source"], e["target"]) for e in result["edges"] if e.get("relation") == "inherits"}
     assert (good["id"], n_t["id"]) in inh, "Good must bind N.T via the in-block alias"
     assert (bad["id"], n_t["id"]) not in inh, "Bad (sibling block) must NOT see the alias"
+
+
+def test_csharp_same_file_enum_member_does_not_preempt_class_inheritance(tmp_path: Path):
+    # Repro A (#3795): enum member Follow must not take the inheritance edge from class Follow.
+    f = _write(
+        tmp_path / "effects.cs",
+        "namespace Demo {\n"
+        "    public enum EffectKind { Tween, Follow }\n"
+        "    public abstract class Follow { }\n"
+        "    public sealed class FollowFloat : Follow { }\n"
+        "}\n",
+    )
+    result = extract([f], cache_root=tmp_path)
+    follow_class = next(
+        n for n in result["nodes"]
+        if n.get("label") == "Follow" and "effectkind" not in str(n.get("id", "")).lower()
+    )
+    follow_member = next(
+        n for n in result["nodes"]
+        if n.get("label") == "Follow" and "effectkind" in str(n.get("id", "")).lower()
+    )
+    followfloat = next(n for n in result["nodes"] if n.get("label") == "FollowFloat")
+    inh = {(e["source"], e["target"]) for e in result["edges"] if e.get("relation") == "inherits"}
+
+    assert (followfloat["id"], follow_class["id"]) in inh, \
+        "FollowFloat must inherit from class Follow"
+    assert (followfloat["id"], follow_member["id"]) not in inh, \
+        "FollowFloat must NOT inherit from enum member EffectKind.Follow"
+
+
+def test_csharp_enum_member_cannot_steal_external_parameter_type(tmp_path: Path):
+    # Repro B (#3795): Vector2 parameter must not bind to Channel.Vector2 enum member.
+    kinds = _write(
+        tmp_path / "Kinds.cs",
+        "namespace Demo {\n"
+        "    public enum Channel { Vector2 }\n"
+        "}\n",
+    )
+    mover = _write(
+        tmp_path / "Mover.cs",
+        "using UnityEngine;\n"
+        "namespace Demo {\n"
+        "    public class Mover {\n"
+        "        public void Move(Vector2 delta) { }\n"
+        "    }\n"
+        "}\n",
+    )
+    result = extract([kinds, mover], cache_root=tmp_path)
+    channel_v2 = next(
+        n for n in result["nodes"]
+        if n.get("label") == "Vector2" and n.get("source_file")
+    )
+    move_refs = [
+        e["target"] for e in result["edges"]
+        if e.get("relation") == "references"
+        and e.get("context") == "parameter_type"
+        and "move" in str(e.get("source", "")).lower()
+    ]
+    assert channel_v2["id"] not in move_refs, \
+        "Mover.Move(Vector2) must NOT resolve to Channel.Vector2 enum member"
+    by_id = {n["id"]: n for n in result["nodes"]}
+    assert any(
+        by_id[tgt].get("label") == "Vector2" and not by_id[tgt].get("source_file")
+        for tgt in move_refs
+    ), f"Vector2 parameter must remain on an external stub: {move_refs}"
+
+
+def test_csharp_property_cannot_steal_external_parameter_type(tmp_path: Path):
+    # Repro B (#3795): System.Type parameter must not bind to Node.Type property.
+    node = _write(
+        tmp_path / "Node.cs",
+        "namespace Demo {\n"
+        "    public class Node {\n"
+        "        public System.Type Type { get; set; }\n"
+        "    }\n"
+        "}\n",
+    )
+    mover = _write(
+        tmp_path / "Mover.cs",
+        "using System;\n"
+        "namespace Demo {\n"
+        "    public class Mover {\n"
+        "        public string Describe(Type t) => t.Name;\n"
+        "    }\n"
+        "}\n",
+    )
+    result = extract([node, mover], cache_root=tmp_path)
+    node_prop_type = next(
+        n for n in result["nodes"]
+        if n.get("label") == "Type" and n.get("source_file")
+    )
+    describe_refs = [
+        e["target"] for e in result["edges"]
+        if e.get("relation") == "references"
+        and e.get("context") == "parameter_type"
+        and "describe" in str(e.get("source", "")).lower()
+    ]
+    assert node_prop_type["id"] not in describe_refs, \
+        "Mover.Describe(Type) must NOT resolve to Node.Type property"
+    by_id = {n["id"]: n for n in result["nodes"]}
+    assert any(
+        by_id[tgt].get("label") == "Type" and not by_id[tgt].get("source_file")
+        for tgt in describe_refs
+    ), f"Type parameter must remain on an external stub: {describe_refs}"
+
+
+def test_csharp_cross_file_collision_resolved_by_kind_not_filename_order(tmp_path: Path):
+    # Enum member in A_Enum.cs (alphabetically first) must not steal inheritance from class in Follow.cs.
+    a_enum = _write(
+        tmp_path / "A_Enum.cs",
+        "namespace Demo {\n"
+        "    public enum EffectKind { Tween, Follow }\n"
+        "}\n",
+    )
+    follow = _write(
+        tmp_path / "Follow.cs",
+        "namespace Demo {\n"
+        "    public abstract class Follow { }\n"
+        "    public sealed class FollowFloat : Follow { }\n"
+        "}\n",
+    )
+    result = extract([a_enum, follow], cache_root=tmp_path)
+    follow_class = next(
+        n for n in result["nodes"]
+        if n.get("label") == "Follow" and "follow.cs" in str(n.get("source_file", "")).lower()
+    )
+    follow_member = next(
+        n for n in result["nodes"]
+        if n.get("label") == "Follow" and "a_enum.cs" in str(n.get("source_file", "")).lower()
+    )
+    followfloat = next(n for n in result["nodes"] if n.get("label") == "FollowFloat")
+    inh = {(e["source"], e["target"]) for e in result["edges"] if e.get("relation") == "inherits"}
+
+    assert (followfloat["id"], follow_class["id"]) in inh, \
+        "FollowFloat must inherit from class Follow despite A_Enum.cs sorting first"
+    assert (followfloat["id"], follow_member["id"]) not in inh, \
+        "FollowFloat must NOT inherit from enum member EffectKind.Follow in A_Enum.cs"
+
+
+def test_csharp_name_resolver_resolves_type_in_partial_graph_without_contains():
+    # A partial or cross-repo graph intentionally lacks structural `contains` edges
+    # from file nodes. CsharpNameResolver must still resolve valid types while
+    # excluding member nodes (methods, properties, enum members).
+    from graphify.extractors.csharp import CsharpNameResolver
+
+    nodes = [
+        {
+            "id": "app::file",
+            "label": "OrderService.cs",
+            "source_file": "src/OrderService.cs",
+            "file_type": "code",
+            "repo": "app",
+        },
+        {
+            "id": "app::run",
+            "label": ".Run()",
+            "source_file": "src/OrderService.cs",
+            "file_type": "code",
+            "repo": "app",
+        },
+        {
+            "id": "lib::type",
+            "label": "IValidator",
+            "source_file": "src/IValidator.cs",
+            "file_type": "code",
+            "repo": "lib",
+            "metadata": {"namespace": "Lib.Domain.Interfaces"},
+        },
+        {
+            "id": "lib::method",
+            "label": ".ValidateAsync()",
+            "source_file": "src/IValidator.cs",
+            "file_type": "code",
+            "repo": "lib",
+        },
+    ]
+    edges = [
+        {
+            "source": "app::file",
+            "target": "app::using",
+            "relation": "imports",
+            "metadata": {"using_kind": "namespace", "target_fqn": "Lib.Domain.Interfaces"},
+        },
+        {
+            "source": "lib::type",
+            "target": "lib::method",
+            "relation": "method",
+        },
+    ]
+
+    resolver = CsharpNameResolver(nodes, edges)
+    resolved, decisive = resolver.resolve_type_name(
+        "IValidator",
+        nodes[1],
+        "src/OrderService.cs",
+    )
+    assert resolved == "lib::type", "Valid C# type must resolve even without `contains` edges"
+    assert decisive is True
+
+
+def _crlf_vs_lf(tmp_path: Path, files: dict[str, str]) -> tuple[dict, dict]:
+    results = []
+    for name, newline in (("lf", "\n"), ("crlf", "\r\n")):
+        root = tmp_path / name
+        paths = []
+        for rel, text in files.items():
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(text.replace("\n", newline).encode("utf-8"))
+            paths.append(p)
+        results.append(extract(paths, root=root, cache_root=root))
+    return results[0], results[1]
+
+
+def test_csharp_scope_metadata_does_not_depend_on_line_endings(tmp_path: Path):
+    """Namespace scope ids were byte offsets, so a CRLF checkout (Windows,
+    core.autocrlf) and an LF checkout of the same commit wrote different
+    `scope_chain` / `scope_id` metadata into graph.json. Row:column is the
+    same for both."""
+    files = {
+        "core.cs": "// Core types.\nusing System;\n\nnamespace Game.Core\n{\n    public class Damage {}\n}\n",
+        "combat.cs": (
+            "// Combat.\n"
+            "using System;\n"
+            "\n"
+            "namespace Game.Combat\n"
+            "{\n"
+            "    using Dmg = Game.Core.Damage;\n"
+            "\n"
+            "    public class Weapon : Dmg\n"
+            "    {\n"
+            "        public void Hit() {}\n"
+            "    }\n"
+            "}\n"
+        ),
+    }
+    lf, crlf = _crlf_vs_lf(tmp_path, files)
+
+    def shape(result: dict) -> tuple[list, list]:
+        nodes = sorted(
+            (n["id"], repr(sorted((n.get("metadata") or {}).items())), n.get("source_location"))
+            for n in result["nodes"]
+        )
+        edges = sorted((e["source"], e["target"], e["relation"]) for e in result["edges"])
+        return nodes, edges
+
+    assert any("scope_chain" in (n.get("metadata") or {}) for n in lf["nodes"])
+    assert shape(lf) == shape(crlf)
+    damage = _targets(crlf, "inherits", "Damage")
+    assert damage and all("core.cs" in d["source_file"] for d in damage), (
+        "the namespace-scoped alias must still resolve in a CRLF file"
+    )
+
+
+def test_csharp_enclosing_namespace_dotted(tmp_path: Path):
+    demo = _write(
+        tmp_path / "Demo.cs",
+        "namespace Demo {\n"
+        "    public class Base {}\n"
+        "    public class Widget {}\n"
+        "}\n",
+    )
+    inner = _write(
+        tmp_path / "Inner.cs",
+        "namespace Demo.Inner {\n"
+        "    public class Registry {\n"
+        "        public Widget Item;\n"
+        "    }\n"
+        "    public class Factory : Base {\n"
+        "        public object Make() {\n"
+        "            return new Widget();\n"
+        "        }\n"
+        "    }\n"
+        "}\n",
+    )
+    result = extract([demo, inner], cache_root=tmp_path)
+
+    widget_defs = _defs(result, "Widget")
+    base_defs = _defs(result, "Base")
+    assert len(widget_defs) == 1 and "Demo.cs" in widget_defs[0]["source_file"]
+    assert len(base_defs) == 1 and "Demo.cs" in base_defs[0]["source_file"]
+
+    # Inherits: Factory : Base
+    inherits_targets = [d for d in _targets(result, "inherits", "Base") if d.get("source_file")]
+    assert inherits_targets and inherits_targets[0]["id"] == base_defs[0]["id"]
+
+    # References: Registry.Item -> Widget
+    ref_targets = [d for d in _targets(result, "references", "Widget") if d.get("source_file")]
+    assert ref_targets and ref_targets[0]["id"] == widget_defs[0]["id"]
+
+    # Calls: Factory.Make() -> new Widget()
+    make_node = next(n for n in result["nodes"] if n.get("label") == ".Make()")
+    calls = {(e["source"], e["target"]) for e in result["edges"] if e.get("relation") == "calls"}
+    assert (make_node["id"], widget_defs[0]["id"]) in calls
+
+    # No orphan shadow stubs
+    shadow = [n for n in result["nodes"] if n.get("label") in ("Widget", "Base") and not n.get("source_file")]
+    assert not shadow, f"unexpected shadow stubs: {[n['id'] for n in shadow]}"
+
+
+def test_csharp_enclosing_namespace_nested_blocks(tmp_path: Path):
+    source = _write(
+        tmp_path / "nested.cs",
+        "namespace Demo {\n"
+        "    public class Base {}\n"
+        "    public class Widget {}\n"
+        "    namespace Inner {\n"
+        "        public class Registry {\n"
+        "            public Widget Item;\n"
+        "        }\n"
+        "        public class Factory : Base {\n"
+        "            public object Make() {\n"
+        "                return new Widget();\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "}\n",
+    )
+    result = extract([source], cache_root=tmp_path)
+
+    widget_def = _defs(result, "Widget")[0]
+    base_def = _defs(result, "Base")[0]
+
+    inherits_targets = [d for d in _targets(result, "inherits", "Base") if d.get("source_file")]
+    assert inherits_targets and inherits_targets[0]["id"] == base_def["id"]
+
+    ref_targets = [d for d in _targets(result, "references", "Widget") if d.get("source_file")]
+    assert ref_targets and ref_targets[0]["id"] == widget_def["id"]
+
+    make_node = next(n for n in result["nodes"] if n.get("label") == ".Make()")
+    calls = {(e["source"], e["target"]) for e in result["edges"] if e.get("relation") == "calls"}
+    assert (make_node["id"], widget_def["id"]) in calls
+
+    shadow = [n for n in result["nodes"] if n.get("label") in ("Widget", "Base") and not n.get("source_file")]
+    assert not shadow, f"unexpected shadow stubs: {[n['id'] for n in shadow]}"
+
+
+def test_csharp_enclosing_namespace_file_scoped(tmp_path: Path):
+    demo = _write(
+        tmp_path / "Demo.cs",
+        "namespace Demo;\n"
+        "public class Base {}\n"
+        "public class Widget {}\n",
+    )
+    scoped = _write(
+        tmp_path / "Scoped.cs",
+        "namespace Demo.Scoped;\n"
+        "public class Registry {\n"
+        "    public Widget Item;\n"
+        "}\n"
+        "public class Factory : Base {\n"
+        "    public object Make() {\n"
+        "        return new Widget();\n"
+        "    }\n"
+        "}\n",
+    )
+    result = extract([demo, scoped], cache_root=tmp_path)
+
+    widget_def = _defs(result, "Widget")[0]
+    base_def = _defs(result, "Base")[0]
+
+    inherits_targets = [d for d in _targets(result, "inherits", "Base") if d.get("source_file")]
+    assert inherits_targets and inherits_targets[0]["id"] == base_def["id"]
+
+    ref_targets = [d for d in _targets(result, "references", "Widget") if d.get("source_file")]
+    assert ref_targets and ref_targets[0]["id"] == widget_def["id"]
+
+    make_node = next(n for n in result["nodes"] if n.get("label") == ".Make()")
+    calls = {(e["source"], e["target"]) for e in result["edges"] if e.get("relation") == "calls"}
+    assert (make_node["id"], widget_def["id"]) in calls
+
+    shadow = [n for n in result["nodes"] if n.get("label") in ("Widget", "Base") and not n.get("source_file")]
+    assert not shadow, f"unexpected shadow stubs: {[n['id'] for n in shadow]}"
+
+
+def test_csharp_enclosing_namespace_multilevel_shadowing(tmp_path: Path):
+    outer = _write(
+        tmp_path / "outer.cs",
+        "namespace Demo {\n"
+        "    public class Widget { public int Level = 1; }\n"
+        "}\n",
+    )
+    inner = _write(
+        tmp_path / "inner.cs",
+        "namespace Demo.Inner {\n"
+        "    public class Widget { public int Level = 2; }\n"
+        "}\n",
+    )
+    deep = _write(
+        tmp_path / "deep.cs",
+        "namespace Demo.Inner.Deep {\n"
+        "    public class Consumer {\n"
+        "        public Widget Item;\n"
+        "    }\n"
+        "}\n",
+    )
+    result = extract([outer, inner, deep], cache_root=tmp_path)
+
+    inner_widget = next(
+        n for n in _defs(result, "Widget")
+        if "inner.cs" in n.get("source_file", "")
+    )
+    ref_targets = [d for d in _targets(result, "references", "Widget") if d.get("source_file")]
+    assert ref_targets, "expected Widget reference to resolve"
+    assert all(r["id"] == inner_widget["id"] for r in ref_targets), \
+        "Demo.Inner.Deep must bind to Demo.Inner.Widget (innermost enclosing), not Demo.Widget"
+
+
+def test_csharp_enclosing_namespace_regression_controls(tmp_path: Path):
+    source = _write(
+        tmp_path / "types.cs",
+        "namespace Demo {\n"
+        "    public class OuterType {}\n"
+        "    public class CollidingType {}\n"
+        "}\n"
+        "namespace Other {\n"
+        "    public class ImportedType {}\n"
+        "}\n"
+        "namespace Demo.Inner {\n"
+        "    using Other;\n"
+        "    public class CollidingType {}\n"
+        "    public class Tester {\n"
+        "        public CollidingType Local;\n"
+        "        public ImportedType Imported;\n"
+        "        public UnknownType Missing;\n"
+        "    }\n"
+        "}\n",
+    )
+    result = extract([source], cache_root=tmp_path)
+
+    local_colliding = next(
+        n for n in _defs(result, "CollidingType")
+        if (n.get("metadata") or {}).get("namespace") == "Demo.Inner"
+    )
+    imported_type = _defs(result, "ImportedType")[0]
+
+    # CollidingType reference must bind to Demo.Inner.CollidingType (current ns shadows enclosing)
+    ref_colliding = [d for d in _targets(result, "references", "CollidingType") if d.get("source_file")]
+    assert ref_colliding and all(r["id"] == local_colliding["id"] for r in ref_colliding)
+
+    # ImportedType reference must bind to Other.ImportedType via using
+    ref_imported = [d for d in _targets(result, "references", "ImportedType") if d.get("source_file")]
+    assert ref_imported and all(r["id"] == imported_type["id"] for r in ref_imported)
+
+    # UnknownType must remain a sourceless stub
+    ref_missing = _targets(result, "references", "UnknownType")
+    assert ref_missing and not any(r.get("source_file") for r in ref_missing)

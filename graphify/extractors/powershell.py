@@ -5,7 +5,7 @@ import re
 
 from pathlib import Path
 from typing import Any
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
 def extract_powershell(path: Path) -> dict:
@@ -19,7 +19,7 @@ def extract_powershell(path: Path) -> dict:
     try:
         language = Language(tsps.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:
@@ -30,7 +30,10 @@ def extract_powershell(path: Path) -> dict:
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
-    function_bodies: list[tuple[str, Any]] = []
+    function_bodies: list[tuple[str, Any, str | None]] = []
+    class_ids_by_name: dict[str, list[str]] = {}
+    class_names_by_id: dict[str, str] = {}
+    methods_by_class: dict[str, dict[str, str]] = {}
 
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
@@ -120,7 +123,7 @@ def extract_powershell(path: Path) -> dict:
                 add_edge(file_nid, func_nid, "contains", line)
                 body = _find_script_block_body(node)
                 if body:
-                    function_bodies.append((func_nid, body))
+                    function_bodies.append((func_nid, body, None))
                     # Also walk the body during the main pass so that
                     # Import-Module / dot-source inside functions emit
                     # file-level imports_from edges (#1331).
@@ -150,7 +153,13 @@ def extract_powershell(path: Path) -> dict:
                     m_line = member.start_point[0] + 1
                     member_nid = _make_id(enum_nid, member_name)
                     add_node(member_nid, member_name, m_line)
-                    add_edge(enum_nid, member_nid, "contains", m_line)
+                    # An enum member is a discriminant case, not a declared
+                    # field, so it gets `case_of` like every other language with
+                    # enums (Java #1719, C#, Swift, Rust, VB.NET). The relation
+                    # also matters to resolution: `case_of` targets are excluded
+                    # from constructor binding, so an enum member named like a
+                    # type can no longer be mistaken for one.
+                    add_edge(enum_nid, member_nid, "case_of", m_line)
             return
 
         if t == "class_statement":
@@ -159,6 +168,9 @@ def extract_powershell(path: Path) -> dict:
                 class_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
                 class_nid = _make_id(stem, class_name)
+                # Count declarations, including duplicates that share a node id.
+                class_ids_by_name.setdefault(class_name.lower(), []).append(class_nid)
+                class_names_by_id[class_nid] = class_name.lower()
                 add_node(class_nid, class_name, line)
                 add_edge(file_nid, class_nid, "contains", line)
                 # Base type(s) after ':'. PowerShell has no syntactic base vs
@@ -201,6 +213,7 @@ def extract_powershell(path: Path) -> dict:
                     method_nid = _make_id(parent_class_nid, method_name)
                     add_node(method_nid, f".{method_name}()", line)
                     add_edge(parent_class_nid, method_nid, "method", line)
+                    methods_by_class.setdefault(parent_class_nid, {})[method_name.lower()] = method_nid
                 else:
                     method_nid = _make_id(stem, method_name)
                     add_node(method_nid, f"{method_name}()", line)
@@ -233,7 +246,7 @@ def extract_powershell(path: Path) -> dict:
                                      p_line, context="parameter_type")
                 body = _find_script_block_body(node)
                 if body:
-                    function_bodies.append((method_nid, body))
+                    function_bodies.append((method_nid, body, parent_class_nid))
             return
 
         if t == "command":
@@ -312,7 +325,7 @@ def extract_powershell(path: Path) -> dict:
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
 
-    def walk_calls(node, caller_nid: str) -> None:
+    def walk_calls(node, caller_nid: str, parent_class_nid: str | None) -> None:
         if node.type in ("function_statement", "class_statement"):
             return
         if node.type == "command":
@@ -336,11 +349,57 @@ def extract_powershell(path: Path) -> dict:
                             "source_file": str_path,
                             "source_location": f"L{node.start_point[0] + 1}",
                         })
+        elif node.type == "invokation_expression":
+            # A method call — `$this.Square(3)`, `$obj.Run()`, or the static
+            # `[Calc]::Build()` form. All parse as an invokation_expression whose
+            # callee is the `member_name` child and whose arguments sit in an
+            # `argument_list` (a bare `$this.Name` property read is a separate
+            # `member_access` node with no argument_list, so it never lands here).
+            # Only the command form was handled before, so every method call was
+            # dropped from the call graph (#3992).
+            member_node = next((c for c in node.children if c.type == "member_name"), None)
+            if member_node is not None:
+                method_name = _read_text(member_node, source)
+                receiver_class = None
+                receiver = node.children[0] if node.children else None
+                operator = node.children[1].type if len(node.children) > 1 else None
+                # Only a direct lexical self or unique literal local type proves
+                # ownership. Value, expression and dynamic receivers stay raw.
+                if receiver is not None and receiver.type == "variable" and operator == ".":
+                    if _read_text(receiver, source).lower() == "$this" and parent_class_nid:
+                        name = class_names_by_id[parent_class_nid]
+                        if len(class_ids_by_name[name]) == 1:
+                            receiver_class = parent_class_nid
+                elif receiver is not None and receiver.type == "type_literal" and operator == "::":
+                    # Match the whole literal: a partial parse can hide type qualifiers.
+                    type_name = _read_text(receiver, source)[1:-1].strip() if not receiver.has_error else ""
+                    class_ids = class_ids_by_name.get(type_name.lower(), []) if type_name else []
+                    if len(class_ids) == 1:
+                        receiver_class = class_ids[0]
+                literal_member = (len(member_node.named_children) == 1
+                                  and member_node.named_children[0].type == "simple_name")
+                tgt_nid = (methods_by_class.get(receiver_class, {}).get(method_name.lower())
+                           if receiver_class and literal_member else None)
+                if tgt_nid and tgt_nid != caller_nid:
+                    pair = (caller_nid, tgt_nid)
+                    if pair not in seen_call_pairs:
+                        seen_call_pairs.add(pair)
+                        add_edge(caller_nid, tgt_nid, "calls",
+                                 node.start_point[0] + 1,
+                                 confidence="EXTRACTED", weight=1.0)
+                elif method_name and not tgt_nid:
+                    raw_calls.append({
+                        "caller_nid": caller_nid,
+                        "callee": method_name,
+                        "is_member_call": True,
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                    })
         for child in node.children:
-            walk_calls(child, caller_nid)
+            walk_calls(child, caller_nid, parent_class_nid)
 
-    for caller_nid, body_node in function_bodies:
-        walk_calls(body_node, caller_nid)
+    for caller_nid, body_node, parent_class_nid in function_bodies:
+        walk_calls(body_node, caller_nid, parent_class_nid)
 
     clean_edges = [e for e in edges if e["source"] in seen_ids and
                    (e["target"] in seen_ids or e["relation"] in ("imports_from", "imports"))]
@@ -396,7 +455,7 @@ def extract_powershell_manifest(path: Path) -> dict:
     try:
         language = Language(tsps.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:

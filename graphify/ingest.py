@@ -62,20 +62,24 @@ def _safe_filename(url: str, suffix: str) -> str:
     return name + suffix
 
 
+def _host_is(host: str, *domains: str) -> bool:
+    """True when *host* is one of *domains* or a subdomain of one."""
+    return any(host == domain or host.endswith(f".{domain}") for domain in domains)
+
+
 def _detect_url_type(url: str) -> str:
     """Classify the URL for targeted extraction."""
     parsed = urllib.parse.urlparse(url)
-    host = (parsed.hostname or "").lower()
-
-    if host in {"twitter.com", "x.com"} or host.endswith(".twitter.com") or host.endswith(".x.com"):
+    # Match the host, not the URL text: dropbox.com and netflix.com contain "x.com".
+    host = (parsed.hostname or "").rstrip(".")
+    if _host_is(host, "twitter.com", "x.com"):
         return "tweet"
-    if host == "arxiv.org" or host.endswith(".arxiv.org"):
+    if _host_is(host, "arxiv.org"):
         return "arxiv"
-    if host == "github.com" or host.endswith(".github.com"):
+    if _host_is(host, "github.com"):
         return "github"
-    if host == "youtube.com" or host.endswith(".youtube.com") or host == "youtu.be" or host.endswith(".youtu.be"):
+    if _host_is(host, "youtube.com", "youtu.be"):
         return "youtube"
-
     path = parsed.path.lower()
     if path.endswith(".pdf"):
         return "pdf"
@@ -105,8 +109,15 @@ def _html_to_markdown(html: str, url: str) -> str:
 
 def _fetch_tweet(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
     """Fetch a tweet URL. Returns (content, filename)."""
-    # Normalize to twitter.com for oEmbed
-    oembed_url = url.replace("x.com", "twitter.com")
+    # Normalize to twitter.com for oEmbed. Rewrite the host only: a plain
+    # text replace also rewrote "x.com" wherever it appeared in the path or query.
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").rstrip(".")
+    if _host_is(host, "x.com"):
+        host = host[: -len("x.com")] + "twitter.com"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+        parts = parts._replace(netloc=netloc)
+    oembed_url = urllib.parse.urlunsplit(parts)
     oembed_api = f"https://publish.twitter.com/oembed?url={urllib.parse.quote(oembed_url)}&omit_script=true"
     try:
         data = json.loads(safe_fetch_text(oembed_api))
