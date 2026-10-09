@@ -371,6 +371,9 @@ def _explicit_include_match(
             continue
         if raw.endswith("/"):
             continue  # a directory-only entry cannot name a file
+        # A leading `/` anchors the entry to its own directory (gitignore
+        # semantics), so `!/tokens.json` must not match `sub/tokens.json`.
+        anchored = raw.startswith("/")
         pat = raw.strip("/")
         if not pat:
             continue
@@ -378,7 +381,7 @@ def _explicit_include_match(
         rel = _lexical_relative(path, path.parts, anchor)
         if rel is None or rel == ".":
             continue
-        if "/" in pat:
+        if anchored or "/" in pat:
             if _match_anchored_ignore_pattern(rel, pat):
                 return True
         elif fnmatch.fnmatchcase(name, pat):

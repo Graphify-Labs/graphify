@@ -4317,3 +4317,17 @@ def test_sensitive_rescue_path_entry_matches_only_that_path(tmp_path):
     kept = {Path(p).resolve() for p in res["files"].get("code", [])}
     assert (sub / "tokens.json").resolve() in kept
     assert (tmp_path / "tokens.json").resolve() not in kept
+
+
+def test_sensitive_rescue_leading_slash_entry_is_anchor_exact(tmp_path):
+    """`!/tokens.json` anchors to the entry's own directory (gitignore
+    semantics), so it must not rescue `sub/tokens.json` (#2498)."""
+    (tmp_path / "tokens.json").write_text('{"a": 1}')
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "tokens.json").write_text('{"b": 2}')
+    (tmp_path / ".graphifyignore").write_text("!/tokens.json\n")
+    res = detect(tmp_path)
+    kept = {Path(p).resolve() for p in res["files"].get("code", [])}
+    assert (tmp_path / "tokens.json").resolve() in kept
+    assert (sub / "tokens.json").resolve() not in kept

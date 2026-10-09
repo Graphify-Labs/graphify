@@ -7879,11 +7879,6 @@ def _resolve_css_tokens(
         token_name = tu.get("token_name", "")
         if not token_name:
             continue
-        if tu.get("local_decl"):
-            # A local `--x:` declaration in the same stylesheet shadows any
-            # same-named global token, so binding var(--x) across files would be
-            # a false EXTRACTED edge (e.g. a component overriding a theme token).
-            continue
 
         source_file = tu.get("source_file", "")
         norm_sf = _norm_sf(source_file)
@@ -7893,6 +7888,13 @@ def _resolve_css_tokens(
         same_file_matches = tokens_by_file_and_label.get((norm_sf, token_name), [])
         if same_file_matches:
             target_node = same_file_matches[0]
+        elif tu.get("local_decl"):
+            # No same-file token NODE for this name, but the stylesheet declares
+            # `--x:` locally outside a root/theme context (e.g. a component
+            # overriding a theme token). That local declaration shadows any
+            # cross-file global, so binding var(--x) to another file would be a
+            # false EXTRACTED edge. Same-file resolution above is unaffected.
+            continue
         else:
             # 2. Exactly one matching definition across available graph/resolution nodes
             global_matches = tokens_by_label.get(token_name, [])
