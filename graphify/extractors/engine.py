@@ -2178,6 +2178,33 @@ def _csharp_receiver_type_name(type_node, source: bytes) -> str | None:
     return name if name and name[:1].isupper() else None
 
 
+def _csharp_element_type_name(type_node, source: bytes) -> str | None:
+    """The element type of a C# array or list type, else None (#4246).
+
+    ``xs[i]`` on a ``T[]`` / ``List<T>`` / ``IList<T>`` / ``IReadOnlyList<T>``
+    yields a ``T``. A jagged array, a nested collection or any other indexer
+    names no single element class, so it stays untyped.
+    """
+    if type_node is None:
+        return None
+    if type_node.type == "array_type":
+        elem = type_node.child_by_field_name("type")
+    elif type_node.type == "generic_name":
+        info = _read_csharp_type_name(type_node, source)
+        if not info or info[0] not in ("List", "IList", "IReadOnlyList"):
+            return None
+        args = next(
+            (c for c in type_node.children if c.type == "type_argument_list"), None
+        )
+        named = args.named_children if args is not None else []
+        elem = named[0] if len(named) == 1 else None
+    else:
+        return None
+    if elem is None or elem.type not in ("identifier", "qualified_name", "generic_name"):
+        return None
+    return _csharp_receiver_type_name(elem, source)
+
+
 def _csharp_method_receiver_types(
     method_node,
     source: bytes,
@@ -2211,22 +2238,29 @@ def _csharp_method_receiver_types(
     bindings: dict[str, list[tuple[int, int, str | None]]] = {}
     field_poisoned: set[str] = set()
 
-    def bind(name: str | None, type_name: str | None, scope_node) -> None:
+    def bind(
+        name: str | None, type_name: str | None, scope_node, elem_type: str | None = None
+    ) -> None:
         if not name or scope_node is None:
             return
-        if field_types.get(name) not in (None, type_name):
-            field_poisoned.add(name)
-        bindings.setdefault(name, []).append(
-            (scope_node.start_byte, scope_node.end_byte, type_name)
-        )
+        # `name[]` carries the element type for `name[i].M()` (#4246); every
+        # binding shadows it too, so an untyped local still hides a field's.
+        for key, value in ((name, type_name), (name + "[]", elem_type)):
+            if field_types.get(key) not in (None, value):
+                field_poisoned.add(key)
+            bindings.setdefault(key, []).append(
+                (scope_node.start_byte, scope_node.end_byte, value)
+            )
 
     def bind_parameter(param, scope_node) -> None:
         name_node = param.child_by_field_name("name")
         if name_node is not None:
+            ptype = param.child_by_field_name("type")
             bind(
                 _read_text(name_node, source),
-                _csharp_receiver_type_name(param.child_by_field_name("type"), source),
+                _csharp_receiver_type_name(ptype, source),
                 scope_node,
+                _csharp_element_type_name(ptype, source),
             )
 
     body = method_node.child_by_field_name("body")
@@ -2284,6 +2318,9 @@ def _csharp_method_receiver_types(
                 declared = _csharp_receiver_type_name(
                     vd.child_by_field_name("type"), source
                 )
+                declared_elem = _csharp_element_type_name(
+                    vd.child_by_field_name("type"), source
+                )
                 for declarator in vd.children:
                     if declarator.type != "variable_declarator":
                         continue
@@ -2302,7 +2339,7 @@ def _csharp_method_receiver_types(
                                     g.child_by_field_name("type"), source
                                 )
                                 break
-                    bind(_read_text(name_node, source), type_name, scope)
+                    bind(_read_text(name_node, source), type_name, scope, declared_elem)
         elif node.type in ("declaration_expression", "declaration_pattern"):
             # #2346: inline-declared receivers. `out Sect s` is a
             # declaration_expression; `is Leaf lf`, `is not Node nd`,
@@ -5617,6 +5654,16 @@ def _extract_generic(
                 return
 
         if (config.ts_module == "tree_sitter_c_sharp"
+                and t == "constructor_declaration"
+                and parent_class_nid):
+            # A C# constructor has no node of its own, so its body was never
+            # walked for calls. Attribute them to the declaring type (#4246).
+            ctor_body = node.child_by_field_name("body")
+            if ctor_body is not None:
+                csharp_method_scopes[id(ctor_body)] = (node, parent_class_nid)
+                function_bodies.append((parent_class_nid, ctor_body))
+
+        if (config.ts_module == "tree_sitter_c_sharp"
                 and t == "field_declaration"
                 and parent_class_nid):
             type_node = node.child_by_field_name("type")
@@ -5639,6 +5686,9 @@ def _extract_generic(
                 # Pascal-case only: primitives never own a resolvable method.
                 if type_name[:1].isupper():
                     fields = csharp_field_types.setdefault(parent_class_nid, {})
+                    elem_type = _csharp_element_type_name(type_node, source)
+                    if elem_type in csharp_type_params:
+                        elem_type = None
                     for child in node.children:
                         if child.type != "variable_declaration":
                             continue
@@ -5652,6 +5702,9 @@ def _extract_generic(
                             )
                             if name_node is not None:
                                 fields[_read_text(name_node, source)] = type_name
+                                if elem_type:
+                                    # `_items[i].M()` reads an element (#4246)
+                                    fields[_read_text(name_node, source) + "[]"] = elem_type
                 line = node.start_point[0] + 1
                 # Walk the whole type expression rather than only its outer name, so
                 # `Box<Widget>` yields the Box field ref AND the Widget generic_arg ref.
@@ -5716,6 +5769,11 @@ def _extract_generic(
                     csharp_field_types.setdefault(parent_class_nid, {})[
                         _read_text(prop_name_node, source)
                     ] = prop_type
+                    prop_elem = _csharp_element_type_name(type_node, source)
+                    if prop_elem:
+                        csharp_field_types[parent_class_nid][
+                            _read_text(prop_name_node, source) + "[]"
+                        ] = prop_elem
                 line = node.start_point[0] + 1
                 refs: list[tuple[str, str, bool, str]] = []
                 _csharp_collect_type_refs(type_node, source, False, refs)
@@ -7257,6 +7315,7 @@ def _extract_generic(
             kotlin_qualified_prefix: str | None = None
             kotlin_object_receiver: str | None = None
             csharp_qualified_prefix: str | None = None
+            csharp_receiver_chain: list[str] | None = None
             lua_self_qualified: bool = False  # Lua self:m() rewritten to Table:m
 
             # Special handling per language
@@ -7398,6 +7457,7 @@ def _extract_generic(
                 # `_server.Save()` to an unrelated `Cache.Save()` (#1609).
                 fn_node = node.child_by_field_name("function")
                 member_parts = _csharp_member_call_parts(fn_node)
+                csharp_table = receiver_types if isinstance(receiver_types, tuple) else None
                 if member_parts is not None:
                     mname, recv = member_parts
                     if mname is not None:
@@ -7429,6 +7489,34 @@ def _extract_generic(
                                 and fname.type == "identifier"
                             ):
                                 member_receiver = _read_text(fname, source)
+                            elif (
+                                inner is not None
+                                and inner.type == "identifier"
+                                and fname is not None
+                                and fname.type == "identifier"
+                            ):
+                                # x.F.M(): x's declared type, then the type of
+                                # its field/property F, resolved cross-file
+                                # (#4246).
+                                root_type = _csharp_scoped_receiver_type(
+                                    csharp_table, _read_text(inner, source),
+                                    node.start_byte,
+                                )
+                                if root_type:
+                                    csharp_receiver_chain = [
+                                        root_type, _read_text(fname, source)
+                                    ]
+                        elif recv is not None and recv.type == "element_access_expression":
+                            # xs[i].M() on a `T[]` / `List<T>`: an element is a T
+                            # (#4246).
+                            inner = recv.child_by_field_name("expression")
+                            if inner is not None and inner.type == "identifier":
+                                elem_type = _csharp_scoped_receiver_type(
+                                    csharp_table, _read_text(inner, source) + "[]",
+                                    node.start_byte,
+                                )
+                                if elem_type:
+                                    csharp_receiver_chain = [elem_type]
                         elif recv is not None and recv.type == "parenthesized_expression":
                             # ((IStore)x).M() / (x as IStore).M(): the cast names
                             # the receiver's type in source, so resolve it as
@@ -7934,6 +8022,8 @@ def _extract_generic(
                                 rc_entry["csharp_new"] = True
                             if csharp_qualified_prefix:
                                 rc_entry["qualified_prefix"] = csharp_qualified_prefix
+                            if csharp_receiver_chain:
+                                rc_entry["receiver_chain"] = csharp_receiver_chain
                             receiver_type = _csharp_scoped_receiver_type(
                                 receiver_types, member_receiver, node.start_byte
                             )

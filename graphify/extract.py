@@ -4935,6 +4935,43 @@ def _resolve_csharp_member_calls(
                 caller_node, rc.get("callee"), type_name, "csharp", rc,
             )
 
+    # Field/property declared types per class, for `x.F.M()` (#4246).
+    class_fields = _bind_member_field_tables(per_file, all_nodes, lang="csharp")
+    # Calls in a constructor body are attributed to the type itself (#4246).
+    type_nids = {nid for nids in type_def_nids.values() for nid in nids}
+
+    def _field_type_nid(type_nid: str, field: str) -> str | None:
+        """The declared type of ``field`` on ``type_nid`` or its base chain.
+
+        Same rules as the method lookup: an unresolved base the walk reaches,
+        more than one declaration, or an array/list-typed field (``F[i]`` would
+        be the element, ``F`` itself is not) yields None.
+        """
+        hits: set[tuple[str, str]] = set()
+        seen: set[str] = set()
+        frontier = [type_nid]
+        while frontier:
+            nid = frontier.pop()
+            if nid in seen:
+                continue
+            seen.add(nid)
+            fields = class_fields.get(nid, {})
+            if field in fields:
+                if field + "[]" in fields:
+                    return None
+                hits.add((nid, fields[field]))
+                continue
+            if nid in unresolved_base:
+                return None
+            frontier.extend(bases_of.get(nid, []))
+        if len(hits) != 1:
+            return None
+        owner_nid, field_type = next(iter(hits))
+        owner = node_by_id.get(owner_nid)
+        return _resolve_type_name_nid(
+            field_type, owner, (owner or {}).get("source_file", "")
+        )
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
@@ -4946,17 +4983,28 @@ def _resolve_csharp_member_calls(
         receiver = rc.get("receiver")
         callee = rc.get("callee")
         caller = rc.get("caller_nid")
-        if not receiver or not callee or not caller:
+        chain = rc.get("receiver_chain") or []
+        if not (receiver or chain) or not callee or not caller:
             continue
         src_file = rc.get("source_file", "")
         caller_node = node_by_id.get(caller)
-        if receiver == "this":
-            type_nid = enclosing_type.get(caller)
+        if not receiver:
+            # x.F.M() -> [type of x, "F"]; xs[i].M() -> [element type].
+            type_nid = _resolve_type_name_nid(chain[0], caller_node, src_file)
+            for field in chain[1:]:
+                if not type_nid:
+                    break
+                type_nid = _field_type_nid(type_nid, field)
+            if not type_nid:
+                continue
+            type_qualified = False
+        elif receiver == "this":
+            type_nid = enclosing_type.get(caller) or (caller if caller in type_nids else None)
             if not type_nid:
                 continue
             type_qualified = True
         elif receiver == "base":
-            enclosing = enclosing_type.get(caller)
+            enclosing = enclosing_type.get(caller) or (caller if caller in type_nids else None)
             if not enclosing or enclosing in unresolved_base:
                 continue
             bases = bases_of.get(enclosing, [])
