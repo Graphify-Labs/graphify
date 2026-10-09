@@ -192,6 +192,18 @@ def _always_on(basename: str) -> str:
         ) from exc
 def _platform_skill_destination(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
     """Return the skill destination for a platform and scope."""
+    if platform_name == "reasonix":
+        if project:
+            return (project_dir or Path(".")) / ".reasonix" / "skills" / "graphify" / "SKILL.md"
+        home_override = os.environ.get("REASONIX_HOME", "").strip()
+        if home_override:
+            home = Path(home_override)
+        elif platform.system() == "Windows":
+            roaming = os.environ.get("APPDATA", "").strip()
+            home = (Path(roaming) if roaming else Path.home() / "AppData" / "Roaming") / "reasonix"
+        else:
+            home = Path.home() / ".reasonix"
+        return home / "skills" / "graphify" / "SKILL.md"
     if platform_name == "gemini":
         if project:
             return (project_dir or Path(".")) / ".gemini" / "skills" / "graphify" / "SKILL.md"
@@ -270,6 +282,8 @@ def _packaged_skill_refs_dir(platform_name: str) -> Path | None:
         bundle = "claude"
     else:
         bundle = _PLATFORM_CONFIG[platform_name].get("skill_refs")
+        if platform_name == "reasonix" and platform.system() == "Windows":
+            bundle = "reasonix-windows"
     if not bundle:
         return None
     bundle_dir = Path(__file__).parent / "skills" / bundle
@@ -314,6 +328,8 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
     install is removed so the on-disk layout matches the package.
     """
     skill_file = "skill.md" if platform_name == "gemini" else _PLATFORM_CONFIG[platform_name]["skill_file"]
+    if platform_name == "reasonix" and platform.system() == "Windows":
+        skill_file = "skill-reasonix-windows.md"
     skill_src = Path(__file__).parent / skill_file
     if not skill_src.exists():
         print(f"error: {skill_file} not found in package - reinstall graphify", file=sys.stderr)
@@ -539,6 +555,12 @@ def _register_always_on_block(target: Path, prefix: str, registration: str) -> N
             file=sys.stderr,
         )
 _PLATFORM_CONFIG: dict[str, dict] = {
+    "reasonix": {
+        "skill_file": "skill-reasonix.md",
+        "skill_dst": Path(".reasonix") / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "reasonix",
+    },
     "claude": {
         "skill_file": "skill.md",
         "skill_dst": Path(".claude") / "skills" / "graphify" / "SKILL.md",
@@ -1757,7 +1779,9 @@ def _agents_install(project_dir: Path, platform: str, project: bool = False) -> 
         f"{platform.capitalize()} will now check the knowledge graph before answering"
     )
     print("codebase questions and rebuild it after code changes.")
-    if platform not in ("codex", "opencode", "kilo"):
+    if platform == "reasonix":
+        print("Reasonix uses the AGENTS.md guidance; no runtime hooks were registered.")
+    elif platform not in ("codex", "opencode", "kilo"):
         print()
         print("Note: unlike Claude Code, there is no PreToolUse hook equivalent for")
         print(
@@ -1820,7 +1844,7 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
     elif platform_name == "kiro":
         _kiro_install(project_dir)
         _print_project_git_add_hint([project_dir / ".kiro"])
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes", "reasonix"):
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_install(project_dir, platform_name, project=True)
         hint_paths = [_project_scope_root(skill_dst, project_dir), project_dir / "AGENTS.md"]
@@ -1861,7 +1885,7 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         _cursor_uninstall(project_dir)
     elif platform_name == "kiro":
         _kiro_uninstall(project_dir)
-    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes"):
+    elif platform_name in ("aider", "amp", "codex", "opencode", "claw", "droid", "trae", "trae-cn", "hermes", "reasonix"):
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
         _agents_uninstall(project_dir, platform=platform_name)
         if platform_name == "codex":
@@ -2065,6 +2089,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     # which neither the AGENTS.md cleanup nor amp's removal reaches.
     _remove_skill_file("agents")
     _uninstall_opencode_plugin(pd)
+    _remove_skill_file("reasonix")
     _uninstall_codex_hook(pd)
 
     # Git hook
@@ -2254,6 +2279,7 @@ def codebuddy_uninstall(project_dir: Path | None = None, *, project: bool = Fals
 
 
 _CLI_INSTALL_COMMANDS = frozenset({
+    "reasonix",
     "agents",
     "aider",
     "amp",
@@ -2508,6 +2534,23 @@ def dispatch_install_cli(cmd: str) -> bool:
                 _amp_uninstall(Path("."))
         else:
             print("Usage: graphify amp [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "reasonix":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("reasonix", Path("."))
+            else:
+                _copy_skill_file("reasonix")
+                _agents_install(Path("."), "reasonix")
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("reasonix", Path("."))
+            else:
+                _remove_skill_file("reasonix")
+                _agents_uninstall(Path("."), platform="reasonix")
+        else:
+            print("Usage: graphify reasonix [install|uninstall]", file=sys.stderr)
             sys.exit(1)
     elif cmd in ("agents", "skills"):
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""

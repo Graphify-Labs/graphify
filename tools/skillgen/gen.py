@@ -61,7 +61,7 @@ def _v8_baseline_ref(platform_key: str) -> str:
     """The git ref for a split host's own pre-split skill body."""
     if platform_key == "claude":
         return f"{_V8_BASELINE_SHA}:graphify/skill.md"
-    if platform_key == "agents":
+    if platform_key in ("agents", "reasonix", "reasonix-windows"):
         # `agents` is a post-v8 platform with no own v8 body — it re-homes amp's
         # agents-md body at the generic ~/.agents/skills location. Its render is
         # amp's modulo the install/uninstall command wording (prose, not headings),
@@ -166,6 +166,20 @@ _TRAE_PRETOOLUSE_NOTE = (
     "the graph needs refreshing.\n"
 )
 _AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
+    "reasonix": {
+        "heading_suffix": "",
+        "host_display": "Reasonix",
+        "install_block": "graphify reasonix install",
+        "uninstall_block": "graphify reasonix uninstall",
+        "pretooluse_note": "\nThis installer registers AGENTS.md guidance; it does not configure Reasonix runtime hooks.\n",
+    },
+    "reasonix-windows": {
+        "heading_suffix": "",
+        "host_display": "Reasonix",
+        "install_block": "graphify reasonix install",
+        "uninstall_block": "graphify reasonix uninstall",
+        "pretooluse_note": "\nThis installer registers AGENTS.md guidance; it does not configure Reasonix runtime hooks.\n",
+    },
     "trae": {
         "heading_suffix": " (Trae)",
         "host_display": "Trae",
