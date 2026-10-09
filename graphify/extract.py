@@ -4972,6 +4972,41 @@ def _resolve_csharp_member_calls(
             field_type, owner, (owner or {}).get("source_file", "")
         )
 
+    # Method return types per class, for `var v = R.M<A>()` (#4266).
+    method_returns = _bind_member_field_tables(per_file, all_nodes, lang="csharp_returns")
+
+    def _call_return_type_nid(call: list, caller: str, caller_node: dict | None,
+                              src_file: str) -> str | None:
+        """The type a ``var`` gets from ``R.M<A>()``: M's declared return type.
+
+        M must resolve to exactly one declaration (after matching the number of
+        explicit type arguments); a return type that is M's own type parameter
+        takes the call-site type argument. Anything unknown yields None.
+        """
+        recv, method, targs = call
+        if recv == "this" or not recv:
+            owner = enclosing_type.get(caller) or (caller if caller in type_nids else None)
+        else:
+            owner = _resolve_type_name_nid(recv, caller_node, src_file)
+        method_nid = _method_on_type_or_bases(owner, _key(method)) if owner else None
+        decl_type = enclosing_type.get(method_nid) if method_nid else None
+        decls = method_returns.get(decl_type, {}).get(method) if decl_type else None
+        if not isinstance(decls, list):
+            return None
+        if targs:
+            decls = [d for d in decls if d[1] == len(targs)]
+        if len(decls) != 1:
+            return None  # missing or an overload we can't choose
+        ret = decls[0][0]
+        if isinstance(ret, str) and ret.startswith("#"):
+            idx = int(ret[1:])
+            ret = targs[idx] if idx < len(targs) else None  # inferred: no guess
+            return _resolve_type_name_nid(ret, caller_node, src_file)
+        decl_node = node_by_id.get(decl_type or "")
+        return _resolve_type_name_nid(
+            ret, decl_node, (decl_node or {}).get("source_file", "")
+        )
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
@@ -5025,6 +5060,13 @@ def _resolve_csharp_member_calls(
                     _park_if_absent(type_name or receiver, caller_node, rc)
                     continue
             type_qualified = True
+        elif rc.get("receiver_call") and not rc.get("receiver_type"):
+            type_nid = _call_return_type_nid(
+                rc["receiver_call"], caller, caller_node, src_file
+            )
+            if not type_nid:
+                continue
+            type_qualified = False
         else:
             type_name = rc.get("receiver_type")
             if not type_name:

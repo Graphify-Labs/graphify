@@ -2301,11 +2301,67 @@ def _csharp_element_type_name(type_node, source: bytes) -> str | None:
     return name
 
 
+def _csharp_return_info(method_node, source: bytes) -> list:
+    """``[return type, type-parameter count]`` of a C# method declaration (#4266).
+
+    The return type is the class name a receiver of that type would carry
+    (``List<T>`` -> ``List``), ``"#i"`` when it is the method's own i-th type
+    parameter (bound by the call-site type arguments), or None when no class
+    can be named (``void``, a primitive, a class-level type parameter).
+    """
+    tparams: list[str] = []
+    tpl = method_node.child_by_field_name("type_parameters")
+    for param in tpl.named_children if tpl is not None else []:
+        name_node = param.child_by_field_name("name")
+        tparams.append(_read_text(name_node, source) if name_node is not None else "")
+    rtype = method_node.child_by_field_name("returns")
+    ret = _csharp_receiver_type_name(rtype, source)
+    if ret is not None and rtype is not None and rtype.type == "identifier" and ret in tparams:
+        ret = "#%d" % tparams.index(ret)
+    elif ret in tparams or ret in _csharp_type_parameters_in_scope(method_node, source):
+        ret = None
+    return [ret, len(tparams)]
+
+
+def _csharp_deferred_call(invocation, source: bytes) -> list | None:
+    """``[receiver, method, type args]`` for ``var x = R.M<A>(...)`` (#4266).
+
+    The variable's type is the return type of the called method, which may be
+    declared in another file, so the cross-file pass resolves it. ``receiver``
+    is an identifier, ``"this"`` or ``""`` (unqualified call); each type
+    argument is its class name or None. Any other call shape returns None.
+    """
+    fn = invocation.child_by_field_name("function")
+    recv = ""
+    if fn is not None and fn.type == "member_access_expression":
+        inner = fn.child_by_field_name("expression")
+        fn = fn.child_by_field_name("name")
+        if inner is not None and inner.type in ("this", "this_expression"):
+            recv = "this"
+        elif inner is not None and inner.type == "identifier":
+            recv = _read_text(inner, source)
+        else:
+            return None
+    if fn is None or fn.type not in ("identifier", "generic_name"):
+        return None
+    args: list[str | None] = []
+    if fn.type == "generic_name":
+        tal = next((c for c in fn.children if c.type == "type_argument_list"), None)
+        for arg in tal.named_children if tal is not None else []:
+            args.append(_csharp_receiver_type_name(arg, source))
+        name_node = next((c for c in fn.children if c.type == "identifier"), None)
+    else:
+        name_node = fn
+    if name_node is None:
+        return None
+    return ["call", recv, _read_text(name_node, source), args]
+
+
 def _csharp_method_receiver_types(
     method_node,
     source: bytes,
     field_types: dict[str, str],
-) -> tuple[dict[str, list[tuple[int, int, str | None]]], dict[str, str]]:
+) -> tuple[dict[str, list[tuple[int, int, str | list | None]]], dict[str, str]]:
     """Build the SCOPED receiver bindings visible to one C# method (#2299, #2472).
 
     The C# twin of ``_java_method_receiver_types``, but positional: instead of
@@ -2331,11 +2387,12 @@ def _csharp_method_receiver_types(
     ``out var x`` itself stays untyped — resolving it from the callee's
     ``out`` parameter signature is a separate, pre-existing gap.
     """
-    bindings: dict[str, list[tuple[int, int, str | None]]] = {}
+    bindings: dict[str, list[tuple[int, int, str | list | None]]] = {}
     field_poisoned: set[str] = set()
 
     def bind(
-        name: str | None, type_name: str | None, scope_node, elem_type: str | None = None
+        name: str | None, type_name: str | list | None, scope_node,
+        elem_type: str | None = None,
     ) -> None:
         if not name or scope_node is None:
             return
@@ -2435,6 +2492,11 @@ def _csharp_method_receiver_types(
                                     g.child_by_field_name("type"), source
                                 )
                                 break
+                            if g.type == "invocation_expression":
+                                # `var v = R.M<A>()` — typed cross-file from
+                                # M's declared return type (#4266).
+                                type_name = _csharp_deferred_call(g, source)
+                                break
                     bind(_read_text(name_node, source), type_name, scope, declared_elem)
         elif node.type in ("declaration_expression", "declaration_pattern"):
             # #2346: inline-declared receivers. `out Sect s` is a
@@ -2474,10 +2536,10 @@ def _csharp_method_receiver_types(
 
 
 def _csharp_scoped_receiver_type(
-    table: tuple[dict[str, list[tuple[int, int, str | None]]], dict[str, str]] | None,
+    table: tuple[dict[str, list[tuple[int, int, str | list | None]]], dict[str, str]] | None,
     name: str | None,
     call_byte: int,
-) -> str | None:
+) -> str | list | None:
     """Resolve a C# receiver name to its type at a specific call offset (#2472).
 
     ``table`` is the (scoped bindings, field base) pair built by
@@ -4757,6 +4819,9 @@ def _extract_generic(
     # same-named, explicitly typed receiver in a different method.
     csharp_field_types: dict[str, dict[str, str]] = {}
     csharp_method_scopes: dict[int, tuple[object, str]] = {}
+    # class nid -> method name -> one [return type, type-param count] per
+    # overload, for typing `var v = R.M<A>()` cross-file (#4266).
+    csharp_method_returns: dict[str, dict[str, list]] = {}
 
     csharp_interface_names: set[str] = set()
     if config.ts_module == "tree_sitter_c_sharp":
@@ -6370,6 +6435,10 @@ def _extract_generic(
                     metadata=ruby_method_metadata,
                 )
                 add_edge(parent_class_nid, func_nid, "method", line)
+                if config.ts_module == "tree_sitter_c_sharp" and t == "method_declaration":
+                    csharp_method_returns.setdefault(parent_class_nid, {}).setdefault(
+                        func_name, []
+                    ).append(_csharp_return_info(node, source))
             else:
                 func_nid = _make_id(stem, sanitized_name)
                 if config.ts_module == "tree_sitter_python":
@@ -7663,7 +7732,7 @@ def _extract_generic(
                                     csharp_table, _read_text(inner, source),
                                     node.start_byte,
                                 )
-                                if root_type:
+                                if isinstance(root_type, str):
                                     csharp_receiver_chain = [
                                         root_type, _read_text(fname, source)
                                     ]
@@ -7676,7 +7745,7 @@ def _extract_generic(
                                     csharp_table, _read_text(inner, source) + "[]",
                                     node.start_byte,
                                 )
-                                if elem_type:
+                                if isinstance(elem_type, str):
                                     csharp_receiver_chain = [elem_type]
                         elif recv is not None and recv.type == "parenthesized_expression":
                             # ((IStore)x).M() / (x as IStore).M(): the cast names
@@ -8193,7 +8262,22 @@ def _extract_generic(
                             receiver_type = _csharp_scoped_receiver_type(
                                 receiver_types, member_receiver, node.start_byte
                             )
-                            if receiver_type:
+                            if isinstance(receiver_type, list):
+                                # `var v = R.M<A>(); v.X()` (#4266): R is typed
+                                # here, M's return type in the cross-file pass.
+                                _, recv, method, targs = receiver_type
+                                if recv and recv != "this":
+                                    recv_t = _csharp_scoped_receiver_type(
+                                        receiver_types if isinstance(receiver_types, tuple)
+                                        else None, recv, node.start_byte,
+                                    )
+                                    if isinstance(recv_t, str):
+                                        recv = recv_t
+                                    elif recv_t is not None or not recv[:1].isupper():
+                                        recv = None  # untyped local: no guess
+                                if recv is not None:
+                                    rc_entry["receiver_call"] = [recv, method, targs]
+                            elif receiver_type:
                                 rc_entry["receiver_type"] = receiver_type
                         if config.ts_module == "tree_sitter_java":
                             rc_entry["lang"] = "java"
@@ -8644,7 +8728,11 @@ def _extract_generic(
     _field_table_export = [
         {"lang": _lang, "class_label": _n.get("label"),
          "source_file": _n.get("source_file"), "fields": dict(_tbl)}
-        for _lang, _tables in (("java", java_field_types), ("csharp", csharp_field_types))
+        for _lang, _tables in (
+            ("java", java_field_types),
+            ("csharp", csharp_field_types),
+            ("csharp_returns", csharp_method_returns),
+        )
         for _cls, _tbl in _tables.items()
         if _tbl
         for _n in (next((x for x in nodes if x["id"] == _cls), None),)
