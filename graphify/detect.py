@@ -345,7 +345,7 @@ def _explicit_include_match(
     root: Path,
     patterns: list[tuple[Path, str]],
 ) -> bool:
-    """True if a wildcard-free ``!`` ignore entry names this exact path.
+    """True if a wildcard-free ``!`` entry from an explicit ignore file names this path.
 
     A ``.graphifyignore`` negation states explicit user intent to graph a path.
     Only the Stage-3 name heuristic may be overridden by it (#2498): a specific
@@ -354,6 +354,13 @@ def _explicit_include_match(
     ignored so a broad ``!*.json`` opt-in cannot silently start ingesting
     credential stores. This mirrors the repo's own guidance that ignored paths
     are re-included with ``!`` negation in ``.graphifyignore``.
+
+    ``patterns`` must be the EXPLICIT set (``.graphifyignore`` + ``--exclude``),
+    not the merged ``.gitignore`` set: un-ignoring a secret in ``.gitignore`` is
+    a Git operation, not a statement that the file is safe to summarise into a
+    knowledge graph. A bare entry is scoped to its own anchor directory so a
+    nested ``.graphifyignore`` cannot rescue a same-named file elsewhere, and
+    matching is case-sensitive so the "exact path" the hint promises is exact.
     """
     name = _nfc(path.name)
     for anchor, pattern in patterns:
@@ -367,11 +374,14 @@ def _explicit_include_match(
         pat = raw.strip("/")
         if not pat:
             continue
+        # The entry only governs paths beneath its own anchor directory.
+        rel = _lexical_relative(path, path.parts, anchor)
+        if rel is None or rel == ".":
+            continue
         if "/" in pat:
-            rel = _lexical_relative(path, path.parts, anchor)
-            if rel is not None and rel != "." and _match_anchored_ignore_pattern(rel, pat):
+            if _match_anchored_ignore_pattern(rel, pat):
                 return True
-        elif fnmatch.fnmatch(name, pat):
+        elif fnmatch.fnmatchcase(name, pat):
             return True
     return False
 
@@ -2165,7 +2175,9 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             skipped_sensitive.append(str(p) + " [not a regular file]")
             continue
         sensitive = _sensitive_reason(p)
-        if sensitive == _SENSITIVE_KEYWORD and _explicit_include_match(p, root, ignore_patterns):
+        if sensitive == _SENSITIVE_KEYWORD and _explicit_include_match(
+            p, root, explicit_ignore_patterns
+        ):
             sensitive = None  # explicit wildcard-free ! entry beats the name heuristic (#2498)
         if sensitive is not None:
             skipped_sensitive.append(str(p))

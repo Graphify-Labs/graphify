@@ -4280,3 +4280,40 @@ def test_extensionless_config_dotfiles_classified_as_documents(tmp_path):
         assert classify_file(tmp_path / name) == FileType.DOCUMENT, name
     # an unrelated extensionless file is still unclassified
     assert classify_file(tmp_path / "LICENSE") is None
+
+
+def test_sensitive_rescue_ignores_gitignore_only_negation(tmp_path):
+    """Only an EXPLICIT .graphifyignore/--exclude entry may rescue a keyword
+    skip: un-ignoring a secret in .gitignore is a Git operation, not a safety
+    statement (#2498)."""
+    (tmp_path / "tokens.json").write_text('{"a": 1}')
+    (tmp_path / ".gitignore").write_text("!tokens.json\n")
+    res = detect(tmp_path)
+    assert not any("tokens.json" in f for f in res["files"].get("code", []))
+    assert any("tokens.json" in s for s in res.get("skipped_sensitive", []))
+
+
+def test_sensitive_rescue_bare_entry_scoped_to_its_anchor(tmp_path):
+    """A bare `!name` entry only governs its own directory: a nested
+    .graphifyignore cannot rescue a same-named file elsewhere (#2498)."""
+    (tmp_path / "tokens.json").write_text('{"a": 1}')
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "tokens.json").write_text('{"b": 2}')
+    (sub / ".graphifyignore").write_text("!tokens.json\n")
+    res = detect(tmp_path)
+    kept = {Path(p).resolve() for p in res["files"].get("code", [])}
+    assert (sub / "tokens.json").resolve() in kept
+    assert (tmp_path / "tokens.json").resolve() not in kept
+
+
+def test_sensitive_rescue_path_entry_matches_only_that_path(tmp_path):
+    (tmp_path / "tokens.json").write_text('{"a": 1}')
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "tokens.json").write_text('{"b": 2}')
+    (tmp_path / ".graphifyignore").write_text("!sub/tokens.json\n")
+    res = detect(tmp_path)
+    kept = {Path(p).resolve() for p in res["files"].get("code", [])}
+    assert (sub / "tokens.json").resolve() in kept
+    assert (tmp_path / "tokens.json").resolve() not in kept

@@ -7879,6 +7879,11 @@ def _resolve_css_tokens(
         token_name = tu.get("token_name", "")
         if not token_name:
             continue
+        if tu.get("local_decl"):
+            # A local `--x:` declaration in the same stylesheet shadows any
+            # same-named global token, so binding var(--x) across files would be
+            # a false EXTRACTED edge (e.g. a component overriding a theme token).
+            continue
 
         source_file = tu.get("source_file", "")
         norm_sf = _norm_sf(source_file)
