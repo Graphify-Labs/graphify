@@ -133,10 +133,11 @@ def step_detect(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # cache_root is the directory that CONTAINS graphify-out, not graphify-out
-    # itself: detect()/cache.py append the output dir to it (`out_base / "cache"`,
-    # detect.py:2065). Passing `out_dir` here would nest a second graphify-out.
-    # None (the default) matches the old skill's `detect(INPUT_PATH)`, which let
-    # detect anchor the cache at the scan root.
+    # itself: detect() appends the output dir to it (detect.py:2065) and the stat
+    # cache lives at `<cache_root>/graphify-out/cache/stat-index.json`
+    # (cache.py::_stat_index_file). Passing `out_dir` here would nest a second
+    # graphify-out. None (the default) matches the old skill's `detect(INPUT_PATH)`,
+    # which let detect anchor the cache at the scan root.
     cache_root = Path(out) if out is not None else None
 
     result = detect(
@@ -672,11 +673,6 @@ def step_save_manifest(
         "total_input_tokens": cost["total_input_tokens"],
         "total_output_tokens": cost["total_output_tokens"],
     }
-
-
-# --------------------------------------------------------------------------
-# cleanup
-# --------------------------------------------------------------------------
 
 
 # --------------------------------------------------------------------------
