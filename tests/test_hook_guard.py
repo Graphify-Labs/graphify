@@ -127,6 +127,10 @@ def test_search_non_dict_tool_input_is_silent(tmp_path, monkeypatch):
     {"file_path": "SRC/APP.PY"},                 # uppercase extension
     {"file_path": "src/a.test.tsx"},             # multi-dot -> .tsx
     {"file_path": "lib/foo.min.js"},             # multi-dot -> .js
+    {"file_path": "scripts/deploy.ps1"},          # #4271: PowerShell sources nudge too
+    {"file_path": "scripts/Module.psm1"},         # #4271
+    {"file_path": "scripts/Module.psd1"},         # #4271
+    {"file_path": "scripts/DEPLOY.PS1"},          # #4271: uppercase extension
     {"file_path": r"src\components\app.py"},     # windows backslashes
     {"pattern": "**/*.py", "path": "src"},       # glob pattern
     {"pattern": "**/*.astro"},
