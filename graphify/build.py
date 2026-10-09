@@ -73,10 +73,21 @@ def _backfill_origin(item: dict) -> None:
 # inheritance — routinely emits one of these for the same pair as well, so when the
 # simple graph collapses the pair to one edge, the generic one must never be the
 # survivor. Deliberately a small denylist rather than a full precedence order over
-# every relation: ranking `contains` against `calls` would be inventing a
-# cross-axis judgement, whereas "specific beats generic" is the only comparison
-# this collapse actually needs.
+# every relation: ranking `contains` against `calls` along the SAME direction would
+# be inventing a cross-axis judgement, whereas "specific beats generic" is the only
+# same-direction comparison this collapse needs. The one opposite-direction
+# exception is _STRUCTURAL_MEMBER_RELATIONS.
 _GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"})
+# Membership of a type or file. On an undirected graph these share a node pair
+# with a `calls` edge in the opposite direction when a member calls or constructs
+# its owner (`static Report Fault() { return new Report(); }`). Last-write kept
+# `calls` whenever the member id sorted after the owner id, so the membership
+# edge never reached graph.json and the member disappeared from type walks
+# (member lookup, explain, call resolution into the type). The membership edge
+# wins; the call is what this collapse drops. Directed graphs keep both, because
+# the two directions are different arcs. Same-direction `contains`/`method` vs
+# `calls` is not ranked here.
+_STRUCTURAL_MEMBER_RELATIONS: frozenset[str] = frozenset({"method", "contains"})
 _CONFIDENCE_RANK: dict[str, int] = {"EXTRACTED": 3, "INFERRED": 2, "AMBIGUOUS": 1}
 
 # Import-family relations whose target may legitimately be a module OUTSIDE the
@@ -1557,8 +1568,22 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # reverse-direction duplicate so the original direction is preserved (#1061).
         if not G.is_directed() and G.has_edge(src, tgt):
             existing = edge_data(G, src, tgt)
-            if existing.get("relation") == attrs.get("relation") and (
-                existing.get("_src") == tgt and existing.get("_tgt") == src
+            existing_rel = existing.get("relation")
+            incoming_rel = attrs.get("relation")
+            reverse = existing.get("_src") == tgt and existing.get("_tgt") == src
+            if reverse and existing_rel == incoming_rel:
+                continue
+            # Different relations in opposite directions are two facts that only
+            # share a pair because the graph is undirected. A type's
+            # `method`/`contains` edge and its member's `calls` edge back are
+            # that case: last-write kept whichever source id sorted later, and
+            # when the call won the member vanished from every walk of the
+            # type. The membership edge wins. If the call is already stored,
+            # the membership edge falls through and replaces it below.
+            if (
+                reverse
+                and existing_rel in _STRUCTURAL_MEMBER_RELATIONS
+                and incoming_rel == "calls"
             ):
                 continue
         # A pair that already carries a SPECIFIC relation must not be downgraded
