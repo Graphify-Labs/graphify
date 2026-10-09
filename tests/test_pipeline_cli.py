@@ -9,6 +9,7 @@ sidecars, the same graph, and a clean error when a step is run out of order.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -380,6 +381,22 @@ def test_label_rejects_non_numeric_community_keys(corpus: Path, tmp_path: Path) 
     assert p.returncode != 0
     assert "community ids" in p.stderr
     assert "Traceback" not in p.stderr
+
+
+def test_graphify_out_env_relocates_sidecars(corpus: Path, tmp_path: Path) -> None:
+    """The pipeline honors the GRAPHIFY_OUT override the rest of the CLI uses (#686)."""
+    work = tmp_path / "work"
+    work.mkdir()
+    env = {**os.environ, "GRAPHIFY_OUT": "custom-out"}
+    p = subprocess.run(
+        [sys.executable, "-m", "graphify", "pipeline", "detect", str(corpus)],
+        cwd=work, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+    )
+    assert p.returncode == 0, p.stderr
+    assert (work / "custom-out" / ".graphify_detect.json").exists(), (
+        "GRAPHIFY_OUT must relocate the sidecar tree"
+    )
+    assert not (work / "graphify-out").exists(), "the default dir must not also be written"
 
 
 def test_out_option_relocates_sidecars(corpus: Path, tmp_path: Path) -> None:
