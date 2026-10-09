@@ -3851,7 +3851,9 @@ def dispatch_command(cmd: str) -> None:
             _smore = f" (+{len(_sec) - 6} more)" if len(_sec) > 6 else ""
             print(
                 f"[graphify extract] {len(_sec)} file(s) skipped as potentially sensitive "
-                f"(rename or move if wrongly flagged): {_snames}{_smore}"
+                f"(rename or move if wrongly flagged): {_snames}{_smore}. "
+                f"To keep one anyway, add a '!<relative-path>' line to .graphifyignore "
+                f"(exact path, no wildcards)."
             )
         stages.mark("detect")
 

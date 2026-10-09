@@ -3361,16 +3361,21 @@ def test_nested_graphify_out_prunes_only_configured_path(
 
 
 def test_detect_records_unclassified_extensionless_files(tmp_path):
-    # #1692: extensionless, non-shebang project files (Dockerfile, Makefile, ...)
-    # were considered but left no trace. detect() now lists them under
-    # "unclassified" so they can be surfaced instead of silently vanishing.
+    # #1692: extensionless, non-shebang project files (LICENSE, ...) were
+    # considered but left no trace. detect() now lists them under "unclassified"
+    # so they can be surfaced instead of silently vanishing.
+    # #2698: well-known build/config dotfiles (Dockerfile, Makefile, ...) are now
+    # classified as documents instead, so they leave the list — a stronger trace,
+    # not a silent drop.
     (tmp_path / "app.py").write_text("def f():\n    return 1\n")
     (tmp_path / "Dockerfile").write_text("FROM python:3.12\nRUN pip install x\n")
     (tmp_path / "Makefile").write_text("build:\n\techo hi\n")
     (tmp_path / "LICENSE").write_text("MIT License\n")
     res = detect(tmp_path)
     unclassified = sorted(Path(p).name for p in res.get("unclassified", []))
-    assert unclassified == ["Dockerfile", "LICENSE", "Makefile"]
+    assert unclassified == ["LICENSE"]
+    docs = sorted(Path(p).name for p in res["files"].get("document", []))
+    assert docs == ["Dockerfile", "Makefile"]
     # real code is still classified, not swept into unclassified
     assert any("app.py" in f for f in res["files"].get("code", []))
 
@@ -4217,3 +4222,61 @@ def test_globstar_matcher_leaves_no_reference_cycle():
     finally:
         gc.enable()
     assert collected == 0, f"globstar matcher leaked {collected} cyclic objects per run"
+
+
+# --- #2498: an explicit `!` entry in .graphifyignore beats the name heuristic ---
+def test_sensitive_keyword_skip_rescued_by_graphifyignore_negation(tmp_path):
+    """A wildcard-free `!path` entry in .graphifyignore is explicit user intent
+    and rescues a file from the Stage-3 secrets-keyword heuristic, while the
+    default behaviour (no entry) still drops it (#2498)."""
+    (tmp_path / "tokens.json").write_text('{"color": {"brand": "#fff"}}')
+    (tmp_path / "tokens.contract.json").write_text('{"color.brand": "#fff"}')
+    (tmp_path / ".graphifyignore").write_text("!tokens.json\n!tokens.contract.json\n")
+    res = detect(tmp_path)
+    kept = sorted(Path(p).name for p in res["files"].get("code", []))
+    assert kept == ["tokens.contract.json", "tokens.json"]
+    assert not res.get("skipped_sensitive")
+
+
+def test_sensitive_keyword_skip_still_dropped_without_negation(tmp_path):
+    (tmp_path / "tokens.json").write_text('{"color": {"brand": "#fff"}}')
+    res = detect(tmp_path)
+    assert not any("tokens.json" in f for f in res["files"].get("code", []))
+    assert any("tokens.json" in s for s in res.get("skipped_sensitive", []))
+
+
+def test_sensitive_dir_and_pattern_skips_not_rescued_by_negation(tmp_path):
+    """Only the Stage-3 keyword heuristic is overridable: a Stage-2 key file and
+    a Stage-1 credential-store path stay dropped even when explicitly negated."""
+    (tmp_path / ".env").write_text("API_KEY=secret\n")
+    (tmp_path / "server.pem").write_text("-----BEGIN PRIVATE KEY-----\n")
+    creds = tmp_path / "credentials"
+    creds.mkdir()
+    (creds / "id_rsa").write_text("PRIVATE")
+    (tmp_path / ".graphifyignore").write_text("!.env\n!server.pem\n!credentials/id_rsa\n")
+    res = detect(tmp_path)
+    skipped = " ".join(res.get("skipped_sensitive", []))
+    assert ".env" in skipped
+    assert "server.pem" in skipped
+    assert "id_rsa" in skipped
+    assert not res["files"].get("code")
+
+
+def test_sensitive_negation_with_wildcard_does_not_rescue(tmp_path):
+    """A broad `!*.json` opt-in must not silently start ingesting keyword-named
+    credential stores (#2498)."""
+    (tmp_path / "tokens.json").write_text('{"a": 1}')
+    (tmp_path / ".graphifyignore").write_text("!*.json\n")
+    res = detect(tmp_path)
+    assert not any("tokens.json" in f for f in res["files"].get("code", []))
+    assert any("tokens.json" in s for s in res.get("skipped_sensitive", []))
+
+
+def test_extensionless_config_dotfiles_classified_as_documents(tmp_path):
+    """#2698: well-known build/config dotfiles are classified by filename as
+    documents instead of being dropped as unclassified."""
+    from graphify.detect import FileType, classify_file
+    for name in (".htaccess", "Dockerfile", "Makefile", "Procfile"):
+        assert classify_file(tmp_path / name) == FileType.DOCUMENT, name
+    # an unrelated extensionless file is still unclassified
+    assert classify_file(tmp_path / "LICENSE") is None

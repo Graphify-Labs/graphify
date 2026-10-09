@@ -44,7 +44,7 @@ _MANIFEST_PATH = str(out_path("manifest.json"))
 _MTIME_COARSE_S = 2.0
 _MTIME_SUBSECOND_S = 0.05
 
-CODE_EXTENSIONS = {'.gs', '.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.vh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript', '.css', '.scss'}
+CODE_EXTENSIONS = {'.gs', '.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.vb', '.cbl', '.cob', '.cobol', '.cpy', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.vh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd', '.robot', '.resource', '.sol', '.erl', '.hrl', '.escript', '.css', '.scss', '.less'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -283,8 +283,22 @@ def _is_graphable_source(path: Path) -> bool:
     return classify_file(path) == FileType.CODE and path.suffix.lower() not in _SECRET_PRONE_DATA_EXTS
 
 
-def _is_sensitive(path: Path) -> bool:
-    """Return True if this file likely contains secrets and should be skipped."""
+# Stages of the sensitive-file screen, returned by _sensitive_reason. Stages 1
+# and 2 match specific, near-certain secret locations; Stage 3 is a name-only
+# heuristic guess, so it is the only stage an explicit allowlist entry may
+# override (#2498).
+_SENSITIVE_DIR = "dir"
+_SENSITIVE_PATTERN = "pattern"
+_SENSITIVE_KEYWORD = "keyword"
+
+
+def _sensitive_reason(path: Path) -> str | None:
+    """Return which stage flags this file as sensitive, or None if it is kept.
+
+    Kept separate from ``_is_sensitive`` so ``detect()`` can tell the generic
+    keyword heuristic (Stage 3) — the only stage a user may explicitly override —
+    apart from the specific dir/key-file stages, which are never overridable.
+    """
     # Stage 1: any PARENT directory is a known secrets dir (parts[:-1] excludes
     # the filename itself so a root-level file named "credentials" is not falsely
     # skipped — the name patterns in Stage 2 handle the filename). Dedicated
@@ -295,15 +309,15 @@ def _is_sensitive(path: Path) -> bool:
     # Lowercase the segment comparison so `Secrets/`/`SECRETS/` (real on
     # case-insensitive macOS/Windows filesystems) are still caught (#2106).
     if any(part.lower() in _CREDENTIAL_STORE_DIRS for part in parents):
-        return True
+        return _SENSITIVE_DIR
     if any(part.lower() in _AMBIGUOUS_SENSITIVE_DIRS for part in parents) and not _is_graphable_source(path):
-        return True
+        return _SENSITIVE_DIR
     # Stage 2: filename pattern match. Template suffixes (.example/.sample/…)
     # on .env / .envrc are the usual "safe to commit" convention — keep them
     # in the graph without opening a broad Stage 2 allowlist (#2184 / #1921).
     name = path.name
     if any(p.search(name) for p in _SENSITIVE_PATTERNS) and not _is_env_template(name):
-        return True
+        return _SENSITIVE_PATTERN
     # Stage 3: generic keywords, only when load-bearing in the name. Do NOT let a
     # bare name keyword silently drop a genuine programming-language source file:
     # a .rb/.py named device_token or passwords_controller is a module, not a secret
@@ -315,7 +329,50 @@ def _is_sensitive(path: Path) -> bool:
     if _generic_keyword_hit(name):
         # Genuine source AND multi-word prose notes are exempt; a bare-keyword
         # name (secrets.md, token.txt) still drops (#1666, #2106).
-        return not (_is_graphable_source(path) or _is_prose_note(path))
+        if _is_graphable_source(path) or _is_prose_note(path):
+            return None
+        return _SENSITIVE_KEYWORD
+    return None
+
+
+def _is_sensitive(path: Path) -> bool:
+    """Return True if this file likely contains secrets and should be skipped."""
+    return _sensitive_reason(path) is not None
+
+
+def _explicit_include_match(
+    path: Path,
+    root: Path,
+    patterns: list[tuple[Path, str]],
+) -> bool:
+    """True if a wildcard-free ``!`` ignore entry names this exact path.
+
+    A ``.graphifyignore`` negation states explicit user intent to graph a path.
+    Only the Stage-3 name heuristic may be overridden by it (#2498): a specific
+    Stage-2 pattern (``.env``, ``id_rsa``, ``.pem``) or a credential-store
+    directory is never rescued, and entries containing glob characters are
+    ignored so a broad ``!*.json`` opt-in cannot silently start ingesting
+    credential stores. This mirrors the repo's own guidance that ignored paths
+    are re-included with ``!`` negation in ``.graphifyignore``.
+    """
+    name = _nfc(path.name)
+    for anchor, pattern in patterns:
+        if not pattern.startswith("!"):
+            continue
+        raw = pattern[1:]
+        if not raw or any(ch in raw for ch in "*?["):
+            continue
+        if raw.endswith("/"):
+            continue  # a directory-only entry cannot name a file
+        pat = raw.strip("/")
+        if not pat:
+            continue
+        if "/" in pat:
+            rel = _lexical_relative(path, path.parts, anchor)
+            if rel is not None and rel != "." and _match_anchored_ignore_pattern(rel, pat):
+                return True
+        elif fnmatch.fnmatch(name, pat):
+            return True
     return False
 
 
@@ -514,6 +571,21 @@ def _shebang_file_type(path: Path) -> FileType | None:
     return None
 
 
+# Well-known extensionless config/build files: no suffix, no shebang, but real
+# graph-worthy content (a `.htaccess` is the access-control boundary for a
+# shared-host deployment; Dockerfile/Makefile/Procfile are the build-and-deploy
+# layer). No grammar exists, so they are classified as DOCUMENT for the semantic
+# path rather than dropped as "not classified" (#2698). Matched on the exact
+# basename, case-insensitively, so a source file that merely shares a stem in a
+# different extension is unaffected.
+_EXTENSIONLESS_CONFIG_NAMES = frozenset({
+    ".htaccess", "dockerfile", "containerfile", "makefile", "gnumakefile",
+    "procfile", "vagrantfile", "jenkinsfile", "rakefile", "gemfile",
+    "brewfile", "justfile", "taskfile", "caddyfile", "fastfile", "appfile",
+    "berksfile", "podfile", "cartfile", "snakefile", "sconstruct", "sconscript",
+})
+
+
 def classify_file(path: Path) -> FileType | None:
     # Package manifests (apm.yml, pyproject.toml, Cargo.toml, go.mod, pom.xml) are parsed
     # deterministically, so route them to the AST path (CODE) rather than the LLM
@@ -527,6 +599,8 @@ def classify_file(path: Path) -> FileType | None:
         return FileType.CODE
     ext = path.suffix.lower()
     if not ext:
+        if path.name.lower() in _EXTENSIONLESS_CONFIG_NAMES:
+            return FileType.DOCUMENT
         return _shebang_file_type(path)
     if ext in CODE_EXTENSIONS:
         return FileType.CODE
@@ -2090,7 +2164,10 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             # try/except cannot help and the whole run hangs with no output.
             skipped_sensitive.append(str(p) + " [not a regular file]")
             continue
-        if _is_sensitive(p):
+        sensitive = _sensitive_reason(p)
+        if sensitive == _SENSITIVE_KEYWORD and _explicit_include_match(p, root, ignore_patterns):
+            sensitive = None  # explicit wildcard-free ! entry beats the name heuristic (#2498)
+        if sensitive is not None:
             skipped_sensitive.append(str(p))
             continue
         ftype = classify_file(p)

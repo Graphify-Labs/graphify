@@ -60,6 +60,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "json": extract_json,
     "julia": extract_julia,
     "lazarus_form": extract_lazarus_form,
+    "less": extract_css,
     "markdown": extract_markdown,
     "objc": extract_objc,
     "pascal": extract_pascal,
