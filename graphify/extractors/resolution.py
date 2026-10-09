@@ -1184,6 +1184,28 @@ def _apply_symbol_resolution_facts(
 
     path_by_resolved = {_resolve_cached(path): path for path in paths}
     source_file_id = {_resolve_cached(path): _make_id(str(path)) for path in paths}
+
+    def reexport_file_target(path: Path) -> tuple[str, str]:
+        resolved = _resolve_cached(path)
+        stored = path_by_resolved.get(resolved, resolved)
+        try:
+            target_is_file = resolved.is_file()
+        except OSError:
+            target_is_file = False
+        if not target_is_file:
+            try:
+                relative = resolved.relative_to(root)
+            except ValueError:
+                pass
+            else:
+                identity = relative.as_posix()
+                salt = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]  # nosec
+                return (
+                    _make_id("unresolved_reexport", _file_stem(relative), salt),
+                    str(stored),
+                )
+        return _make_id(str(stored)), str(stored)
+
     symbol_nodes: dict[tuple[Path, str], str] = {}
     # Member nodes (`.method()` labels) share their bare name with top-level
     # symbols once the leading dot is stripped. A module can only re-export
@@ -1332,14 +1354,15 @@ def _apply_symbol_resolution_facts(
         star_exports_by_file.setdefault(source_path, []).append(target_path)
         source_id = source_file_id.get(source_path)
         if source_id is not None:
+            target_id, target_file = reexport_file_target(target_path)
             add_edge(
                 source_id,
-                _make_id(str(path_by_resolved.get(target_path, target_path))),
+                target_id,
                 "re_exports",
                 "export",
                 star_fact.line,
                 star_fact.file_path,
-                target_file=str(path_by_resolved.get(target_path, target_path)),
+                target_file=target_file,
                 type_only=star_fact.type_only,
             )
 
@@ -1364,14 +1387,15 @@ def _apply_symbol_resolution_facts(
                 namespace_fact.line,
                 namespace_fact.file_path,
             )
+            target_id, target_file = reexport_file_target(target_path)
             add_edge(
                 source_id,
-                _make_id(str(path_by_resolved.get(target_path, target_path))),
+                target_id,
                 "re_exports",
                 "export",
                 namespace_fact.line,
                 namespace_fact.file_path,
-                target_file=str(path_by_resolved.get(target_path, target_path)),
+                target_file=target_file,
                 type_only=namespace_fact.type_only,
             )
 
@@ -1397,14 +1421,15 @@ def _apply_symbol_resolution_facts(
         if origin[0] != file_path:
             source_id = source_file_id.get(file_path)
             if source_id is not None:
+                target_id, target_file = reexport_file_target(origin[0])
                 add_edge(
                     source_id,
-                    _make_id(str(path_by_resolved.get(origin[0], origin[0]))),
+                    target_id,
                     "re_exports",
                     "export",
                     export_fact.line,
                     export_fact.file_path,
-                    target_file=str(path_by_resolved.get(origin[0], origin[0])),
+                    target_file=target_file,
                     type_only=export_fact.type_only,
                 )
 
