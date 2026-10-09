@@ -19,6 +19,13 @@ def test_detect_scss_classified_as_code():
     assert classify_file(Path("src/styles/_tokens.scss")) == FileType.CODE
 
 
+def test_detect_less_classified_as_code():
+    # #2698 names .less alongside .scss; Less shares the --custom-property /
+    # var() syntax the CSS extractor handles, so it routes to the same extractor.
+    assert classify_file(Path("styles.less")) == FileType.CODE
+    assert not _is_sensitive(Path("tokens.less"))
+
+
 def test_tokens_stylesheet_not_flagged_as_sensitive():
     assert not _is_sensitive(Path("tokens.css"))
     assert not _is_sensitive(Path("tokens.scss"))
