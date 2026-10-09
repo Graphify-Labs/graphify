@@ -20,6 +20,7 @@ PLATFORMS = {
     "trae": (".trae/skills/graphify/SKILL.md",),
     "trae-cn": (".trae-cn/skills/graphify/SKILL.md",),
     "windows": (".claude/skills/graphify/SKILL.md",),
+    "mimo": (".config/mimocode/skills/graphify/SKILL.md",),
 }
 
 
@@ -1484,9 +1485,11 @@ def test_codex_hook_command_is_a_real_cli_subcommand(tmp_path):
     dispatched = _cli_dispatched_commands()
     assert "hook-check" in dispatched, "sanity: parser must find known commands"
 
+    import shlex
+
     for entry in entries:
         # command is "<abs exe path> <subcommand> [args...]"
-        parts = entry["command"].split()
+        parts = shlex.split(entry["command"])
         subcommand = parts[1] if len(parts) > 1 else ""
         assert subcommand in dispatched, (
             f"codex hook registers {subcommand!r}, which the CLI does not dispatch "

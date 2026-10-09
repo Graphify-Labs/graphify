@@ -244,6 +244,7 @@ for example `graphify claude install --project` or `graphify codex install --pro
 | Cursor | `graphify cursor install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
+| Xiaomi MiMo Code | `graphify mimo install` |
 
 Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. CodeBuddy uses the same Agent tool and PreToolUse hook mechanism as Claude Code. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw and Aider use sequential extraction (parallel agent support is still early on those platforms). Trae uses the Agent tool for parallel subagent dispatch and does **not** support `PreToolUse` hooks, so AGENTS.md is the always-on mechanism.
 
@@ -316,10 +317,11 @@ Run this once in your project after building a graph:
 | Pi coding agent | `graphify pi install` |
 | Devin CLI | `graphify devin install` |
 | Google Antigravity | `graphify antigravity install` |
+| Xiaomi MiMo Code | `graphify mimo install` |
 
 This writes a small config file that tells your assistant to consult the knowledge graph for codebase questions, preferring scoped queries like `graphify query "<question>"` over reading the full report or grepping raw files.
 
-- **Hook platforms** (Claude Code, Gemini CLI): a hook fires automatically before search-style tool calls (and, on Claude Code, before reading source files one by one via the Read/Glob tools) and nudges your assistant toward the graph path.
+- **Hook platforms** (Claude Code, Gemini CLI, Xiaomi MiMo Code): a hook or plugin fires automatically before search-style tool calls or message responses, retrieving focused knowledge graph context.
 - **Instruction-file platforms** (Codex, OpenCode, Cursor, etc.): persistent instruction files (`AGENTS.md`, `.cursor/rules/`, etc.) provide the same query-first guidance.
 
 `GRAPH_REPORT.md` is still available for broad architecture review.
@@ -331,6 +333,8 @@ This writes a small config file that tells your assistant to consult the knowled
 **Kilo Code** installs the Graphify skill to `~/.config/kilo/skills/graphify/SKILL.md` and a native `/graphify` command to `~/.config/kilo/command/graphify.md`. `graphify kilo install` also writes `AGENTS.md` plus a native `tool.execute.before` plugin (`.kilo/plugins/graphify.js` + `.kilo/kilo.json` or `.kilo/kilo.jsonc` registration) so Kilo gets the same always-on graph reminder behavior through native `.kilo` config.
 
 **Cursor** writes `.cursor/rules/graphify.mdc` with `alwaysApply: true`, so Cursor includes it in every conversation automatically, no hook needed.
+
+**Xiaomi MiMo Code** (`graphify mimo install`): installs the Graphify skill (global `~/.config/mimocode/skills/` or project `.mimocode/skills/`), registers native `chat.message` and `tool.execute.before` plugin hooks in `mimocode.json` to automatically retrieve scoped graph context before answering user questions, and writes persistent instructions to `AGENTS.md`. Supports `graphify mimo install [--project]`, `graphify mimo uninstall [--project]`, and `graphify mimo status [--project]`.
 
 To remove graphify from all platforms at once: `graphify uninstall` (add `--purge` to also delete `graphify-out/`). Or use the per-platform command (e.g. `graphify claude uninstall`).
 
@@ -797,6 +801,9 @@ graphify devin install             # skill file + .windsurf/rules/graphify.md (D
 graphify devin uninstall
 graphify antigravity install       # .agents/rules + .agents/workflows (Google Antigravity)
 graphify antigravity uninstall
+graphify mimo install              # skill + plugin + AGENTS.md (Xiaomi MiMo Code)
+graphify mimo uninstall
+graphify mimo status
 
 graphify extract ./docs                        # headless LLM extraction for CI (no IDE needed)
 graphify extract ./docs --backend gemini       # explicit backend: gemini, kimi, claude, openai, deepseek, ollama, bedrock, or claude-cli

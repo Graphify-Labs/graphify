@@ -123,3 +123,12 @@ When normal ID normalization removes an entire binding name, its UTF-8 bytes
 provide a deterministic operator suffix within the same lexical owner. Its double
 underscore separators cannot collide with an ordinary normalized binding ID. Local
 call resolution stops if malformed scope metadata cycles.
+
+## Agent Integrations
+
+Graphify integrates with 20+ AI coding assistants (Claude Code, Google Antigravity, Xiaomi MiMo Code, OpenCode, Codex, Cursor, etc.) via `graphify/install.py`:
+
+- **Skill discovery**: installs `SKILL.md` along with progressive reference sidecars (`references/`) into platform-native skill directories (`.mimocode/skills/graphify/` for MiMo Code, `.agents/skills/graphify/` for Antigravity, `.claude/skills/graphify/` for Claude Code).
+- **Runtime context retrieval**: platforms with native plugin/hook systems (such as MiMo Code's `chat.message` and `tool.execute.before` hooks, or Claude Code's `PreToolUse` hook) automatically execute bounded, non-shell `graphify query` searches against `graphify-out/graph.json` before model responses.
+- **Persistent instructions**: written to root instruction files (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules/`) enforcing graph-first exploration before raw file inspection.
+- **Scope management**: all integrations support user-global installs and project-scoped installs (`--project`), with idempotent registration and safe, surgical uninstallation that preserves user modifications.

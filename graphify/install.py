@@ -190,6 +190,20 @@ def _always_on(basename: str) -> str:
             f"graphify install is incomplete: missing always-on block '{basename}' "
             f"at {path}. Reinstall graphifyy (e.g. `uv tool install --reinstall graphifyy`)."
         ) from exc
+def _mimo_global_config_dir() -> Path:
+    """Resolve Xiaomi MiMo Code global configuration directory.
+
+    MiMo Code resolves base directories from ``MIMOCODE_HOME`` if set
+    (yielding ``<MIMOCODE_HOME>/config``), otherwise from XDG
+    (``<XDG_CONFIG_HOME>/mimocode`` or ``~/.config/mimocode`` on all platforms).
+    """
+    if os.environ.get("MIMOCODE_HOME"):
+        return Path(os.environ["MIMOCODE_HOME"]) / "config"
+    if os.environ.get("XDG_CONFIG_HOME"):
+        return Path(os.environ["XDG_CONFIG_HOME"]) / "mimocode"
+    return Path.home() / ".config" / "mimocode"
+
+
 def _platform_skill_destination(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
     """Return the skill destination for a platform and scope."""
     if platform_name == "gemini":
@@ -236,6 +250,11 @@ def _platform_skill_destination(platform_name: str, *, project: bool = False, pr
             return (project_dir or Path(".")) / ".agents" / "skills" / "graphify" / "SKILL.md"
         # Global Antigravity skill dir (all workspaces): ~/.gemini/config/skills/
         return Path.home() / ".gemini" / "config" / "skills" / "graphify" / "SKILL.md"
+
+    if platform_name in ("mimo", "mimo-windows"):
+        if project:
+            return (project_dir or Path(".")) / ".mimocode" / "skills" / "graphify" / "SKILL.md"
+        return _mimo_global_config_dir() / "skills" / "graphify" / "SKILL.md"
 
     cfg = _PLATFORM_CONFIG[platform_name]
     if project:
@@ -640,6 +659,20 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "claude_md": False,
         "skill_refs": "windows",
     },
+    "mimo": {
+        # Reuses opencode's split bundle (shares skill-opencode.md).
+        "skill_file": "skill-opencode.md",
+        "skill_dst": Path(".config") / "mimocode" / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "opencode",
+    },
+    "mimo-windows": {
+        # Rides windows' split bundle.
+        "skill_file": "skill-windows.md",
+        "skill_dst": Path(".config") / "mimocode" / "skills" / "graphify" / "SKILL.md",
+        "claude_md": False,
+        "skill_refs": "windows",
+    },
     "windows": {
         "skill_file": "skill-windows.md",
         "skill_dst": Path(".claude") / "skills" / "graphify" / "SKILL.md",
@@ -823,9 +856,14 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     if platform == "cursor":
         _cursor_install(Path("."))
         return
-    # On Windows, antigravity needs the PowerShell skill, not the bash one
+    # On Windows, antigravity and mimo need the PowerShell skill, not the bash one
     if platform == "antigravity" and sys.platform == "win32":
         platform = "antigravity-windows"
+    if platform == "mimo" and sys.platform == "win32":
+        platform = "mimo-windows"
+    if platform in ("mimo", "mimo-windows"):
+        _mimo_install(project_dir if project else Path("."), project=project)
+        return
     if platform not in _PLATFORM_CONFIG:
         print(
             f"error: unknown platform '{platform}'. Choose from: {', '.join(_PLATFORM_CONFIG)}, gemini, cursor",
@@ -1638,6 +1676,330 @@ def _uninstall_opencode_plugin(project_dir: Path) -> None:
             config.pop("plugin")
         config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
         print(f"  {_OPENCODE_CONFIG_PATH}  ->  plugin deregistered")
+
+
+# Xiaomi MiMo Code chat.message + tool.execute.before plugin.
+# Detects user messages, queries the graph asynchronously, and injects bounded architectural context.
+_MIMO_PLUGIN_JS = """\
+// graphify Xiaomi MiMo Code plugin
+// Automatically queries the Graphify knowledge graph on each user message
+// and injects focused architectural context before the model responds.
+import { existsSync } from "fs";
+import { join } from "path";
+import { spawn } from "child_process";
+
+export const GraphifyPlugin = async (ctx = {}) => {
+  const workspaceRoot = ctx?.directory || process.cwd();
+  const graphPath = join(workspaceRoot, "graphify-out", "graph.json");
+  const seenMessageIds = new Set();
+  let lastQueriedPrompt = "";
+  let isQuerying = false;
+  let toolReminded = false;
+
+  const runGraphifyQuery = (question) => {
+    return new Promise((resolve) => {
+      if (!existsSync(graphPath) || !question || isQuerying) {
+        return resolve(null);
+      }
+      isQuerying = true;
+      try {
+        const trimmedQuestion = question.trim().slice(0, 500);
+        if (!trimmedQuestion) {
+          isQuerying = false;
+          return resolve(null);
+        }
+
+        const args = ["query", trimmedQuestion, "--graph", graphPath, "--budget", "1500"];
+        const bin = process.env.GRAPHIFY_EXE || "graphify";
+
+        let stdout = "";
+        let timer = null;
+        let killed = false;
+
+        const child = spawn(bin, args, {
+          cwd: workspaceRoot,
+          shell: false,
+          windowsHide: true,
+        });
+
+        timer = setTimeout(() => {
+          killed = true;
+          try {
+            child.kill("SIGKILL");
+          } catch {}
+          isQuerying = false;
+          resolve(null);
+        }, 4000);
+
+        child.stdout?.on("data", (chunk) => {
+          stdout += chunk.toString("utf-8");
+          if (stdout.length > 16000) {
+            try { child.kill(); } catch {}
+          }
+        });
+
+        child.on("error", () => {
+          if (timer) clearTimeout(timer);
+          isQuerying = false;
+          resolve(null);
+        });
+
+        child.on("close", (code) => {
+          if (timer) clearTimeout(timer);
+          isQuerying = false;
+          if (!killed && code === 0 && stdout && stdout.trim()) {
+            const text = stdout.trim();
+            const capped = text.length > 8000 ? text.slice(0, 8000) + "\\n...[truncated]" : text;
+            return resolve(capped);
+          }
+          resolve(null);
+        });
+      } catch {
+        isQuerying = false;
+        resolve(null);
+      }
+    });
+  };
+
+  return {
+    "chat.message": async (input, output) => {
+      if (!existsSync(graphPath)) return;
+
+      const msgId = input?.message?.id || input?.messageID;
+      if (msgId && seenMessageIds.has(msgId)) return;
+
+      const parts = output?.parts;
+      if (!Array.isArray(parts)) return;
+
+      const textParts = parts.filter((p) => p && p.type === "text" && typeof p.text === "string");
+      const userText = textParts.map((p) => p.text).join("\\n").trim();
+      if (!userText || userText === lastQueriedPrompt) return;
+
+      if (msgId) seenMessageIds.add(msgId);
+      lastQueriedPrompt = userText;
+
+      const graphContext = await runGraphifyQuery(userText);
+      if (graphContext) {
+        const injected = `\\n\\n<!-- Graphify Knowledge Graph Context (Untrusted Project Data) -->\\n${graphContext}\\n<!-- End Graphify Context -->`;
+        if (textParts.length > 0) {
+          textParts[textParts.length - 1].text += injected;
+        } else {
+          parts.push({ type: "text", text: injected });
+        }
+      }
+    },
+
+    "tool.execute.before": async (input, output) => {
+      if (toolReminded) return;
+      if (!existsSync(graphPath)) return;
+
+      if (input && input.tool === "bash" && output && output.args && typeof output.args.command === "string") {
+        output.args.command =
+          'echo "[graphify] Knowledge graph active at graphify-out/. Use \\'graphify query\\' for targeted questions." ; ' +
+          output.args.command;
+        toolReminded = true;
+      }
+    },
+  };
+};
+
+export default GraphifyPlugin;
+"""
+
+
+def _install_mimo_plugin(project_dir: Path, *, project: bool = False) -> None:
+    """Write graphify.js plugin and register it in mimocode.json / mimocode.jsonc."""
+    if project:
+        plugin_file = project_dir / ".mimocode" / "plugins" / "graphify.js"
+        config_file = project_dir / ".mimocode" / "mimocode.json"
+        entry = "./plugins/graphify.js"
+    else:
+        global_dir = _mimo_global_config_dir()
+        plugin_file = global_dir / "plugins" / "graphify.js"
+        config_file = global_dir / "mimocode.jsonc" if (global_dir / "mimocode.jsonc").exists() else (global_dir / "mimocode.json")
+        entry = plugin_file.resolve().as_uri()
+
+    plugin_file.parent.mkdir(parents=True, exist_ok=True)
+    plugin_file.write_text(_MIMO_PLUGIN_JS, encoding="utf-8")
+    shown_plugin = plugin_file.relative_to(project_dir) if project else plugin_file
+    print(f"  {shown_plugin}  ->  chat.message + tool.execute.before hook written")
+
+    if config_file.exists():
+        try:
+            config = json.loads(config_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            config = {}
+    else:
+        config = {}
+
+    plugins = config.setdefault("plugin", [])
+    shown_config = config_file.relative_to(project_dir) if project else config_file
+    if entry not in plugins:
+        plugins.append(entry)
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        print(f"  {shown_config}  ->  plugin registered")
+    else:
+        print(f"  {shown_config}  ->  plugin already registered (no change)")
+
+
+def _uninstall_mimo_plugin(project_dir: Path, *, project: bool = False) -> None:
+    """Remove graphify.js plugin and deregister from mimocode.json / mimocode.jsonc."""
+    if project:
+        plugin_file = project_dir / ".mimocode" / "plugins" / "graphify.js"
+        config_files = [project_dir / ".mimocode" / "mimocode.json", project_dir / ".mimocode" / "mimocode.jsonc"]
+        possible_entries = {"./plugins/graphify.js", ".mimocode/plugins/graphify.js", plugin_file.resolve().as_uri(), plugin_file.as_posix()}
+    else:
+        global_dir = _mimo_global_config_dir()
+        plugin_file = global_dir / "plugins" / "graphify.js"
+        config_files = [global_dir / "mimocode.json", global_dir / "mimocode.jsonc"]
+        possible_entries = {plugin_file.resolve().as_uri(), plugin_file.as_posix()}
+
+    shown_plugin = plugin_file.relative_to(project_dir) if project else plugin_file
+    if plugin_file.exists():
+        plugin_file.unlink()
+        print(f"  {shown_plugin}  ->  removed")
+        try:
+            plugin_file.parent.rmdir()
+        except OSError:
+            pass
+
+    for config_file in config_files:
+        if not config_file.exists():
+            continue
+        try:
+            config = json.loads(config_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        plugins = config.get("plugin", [])
+        removed_any = False
+        for candidate in list(plugins):
+            if candidate in possible_entries or any(candidate.endswith("plugins/graphify.js") for _ in [1]):
+                plugins.remove(candidate)
+                removed_any = True
+        if removed_any:
+            if not plugins:
+                config.pop("plugin")
+            shown_config = config_file.relative_to(project_dir) if project else config_file
+            config_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
+            print(f"  {shown_config}  ->  plugin deregistered")
+
+
+def _mimo_install(project_dir: Path, *, project: bool = False) -> None:
+    """Install graphify for Xiaomi MiMo Code (skill + plugin + AGENTS.md)."""
+    project_dir = project_dir or Path(".")
+    platform_name = "mimo-windows" if sys.platform == "win32" else "mimo"
+    skill_dst = _copy_skill_file(platform_name, project=project, project_dir=project_dir)
+    _install_mimo_plugin(project_dir, project=project)
+    if project:
+        target = project_dir / "AGENTS.md"
+        if target.exists():
+            content = target.read_text(encoding="utf-8")
+            new_content = _replace_or_append_section(
+                content, _AGENTS_MD_MARKER, _always_on("agents-md")
+            )
+        else:
+            new_content = _always_on("agents-md")
+        if target.exists() and new_content == target.read_text(encoding="utf-8"):
+            print(f"graphify already configured in {target.resolve()} (no change)")
+        else:
+            target.write_text(new_content, encoding="utf-8")
+            print(f"graphify section written to {target.resolve()}")
+
+        _print_project_git_add_hint([
+            _project_scope_root(skill_dst, project_dir),
+            project_dir / ".mimocode",
+            project_dir / "AGENTS.md",
+        ])
+    else:
+        global_agents = _mimo_global_config_dir() / "AGENTS.md"
+        global_agents.parent.mkdir(parents=True, exist_ok=True)
+        if global_agents.exists():
+            content = global_agents.read_text(encoding="utf-8")
+            new_content = _replace_or_append_section(
+                content, _AGENTS_MD_MARKER, _always_on("agents-md")
+            )
+        else:
+            new_content = _always_on("agents-md")
+        if not (global_agents.exists() and new_content == global_agents.read_text(encoding="utf-8")):
+            global_agents.write_text(new_content, encoding="utf-8")
+            print(f"  {global_agents}  ->  global instructions written")
+    print()
+    print("Xiaomi MiMo Code will now automatically check the knowledge graph before")
+    print("answering codebase questions. Run /graphify first to build the graph.")
+
+
+def _mimo_uninstall(project_dir: Path, *, project: bool = False) -> None:
+    """Remove graphify Xiaomi MiMo Code skill, plugin, and AGENTS.md section."""
+    project_dir = project_dir or Path(".")
+    _uninstall_mimo_plugin(project_dir, project=project)
+    _remove_skill_file("mimo", project=project, project_dir=project_dir)
+    if project:
+        _agents_uninstall(project_dir, platform="mimo")
+    else:
+        global_agents = _mimo_global_config_dir() / "AGENTS.md"
+        if global_agents.exists():
+            content = global_agents.read_text(encoding="utf-8")
+            cleaned = _remove_marker_section(content, _AGENTS_MD_MARKER)
+            if cleaned is not None:
+                if cleaned:
+                    global_agents.write_text(cleaned + "\n", encoding="utf-8")
+                    print(f"  {global_agents}  ->  section removed")
+                else:
+                    global_agents.unlink()
+                    print(f"  {global_agents}  ->  removed")
+
+
+def _mimo_status(project_dir: Path, *, project: bool = False) -> None:
+    """Check Xiaomi MiMo Code integration status."""
+    project_dir = project_dir or Path(".")
+    scope_str = "Project-scoped" if project else "Global"
+    print(f"Xiaomi MiMo Code Integration Status ({scope_str}):\n")
+
+    skill_dst = _platform_skill_destination("mimo", project=project, project_dir=project_dir)
+    if skill_dst.exists():
+        version_file = skill_dst.parent / ".graphify_version"
+        ver = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else "unknown"
+        print(f"  Skill:        Installed at {skill_dst} (v{ver})")
+    else:
+        print(f"  Skill:        Not installed ({skill_dst})")
+
+    global_dir = _mimo_global_config_dir()
+    plugin_file = (project_dir / ".mimocode" / "plugins" / "graphify.js") if project else (global_dir / "plugins" / "graphify.js")
+    if plugin_file.exists():
+        print(f"  Plugin:       Installed at {plugin_file}")
+    else:
+        print(f"  Plugin:       Not installed ({plugin_file})")
+
+    config_file = (project_dir / ".mimocode" / "mimocode.json") if project else (global_dir / "mimocode.jsonc" if (global_dir / "mimocode.jsonc").exists() else (global_dir / "mimocode.json"))
+    if config_file.exists():
+        try:
+            cfg = json.loads(config_file.read_text(encoding="utf-8"))
+            plugins = cfg.get("plugin", [])
+            registered = any("graphify.js" in str(p) for p in plugins)
+            print(f"  Config:       {'Registered in' if registered else 'Present but missing graphify in'} {config_file}")
+        except Exception:
+            print(f"  Config:       Unparseable JSON at {config_file}")
+    else:
+        print(f"  Config:       Not found ({config_file})")
+
+    agents_file = (project_dir / "AGENTS.md") if project else (global_dir / "AGENTS.md")
+    if agents_file.exists() and _AGENTS_MD_MARKER in agents_file.read_text(encoding="utf-8"):
+        print(f"  Instructions: Configured in {agents_file}")
+    else:
+        print(f"  Instructions: Missing graphify section in {agents_file}")
+
+    graph_file = project_dir / "graphify-out" / "graph.json"
+    if graph_file.exists():
+        try:
+            raw = json.loads(graph_file.read_text(encoding="utf-8"))
+            nodes_cnt = len(raw.get("nodes", []))
+            edges_cnt = len(raw.get("links", raw.get("edges", [])))
+            print(f"  Knowledge:    Active graph with {nodes_cnt} nodes, {edges_cnt} edges at {graph_file}")
+        except Exception:
+            print(f"  Knowledge:    Graph exists at {graph_file} (unparsed)")
+    else:
+        print(f"  Knowledge:    No graph at {graph_file}. Run '/graphify .' to build.")
 def _resolve_graphify_exe(project: bool = False) -> str:
     """Return the absolute path to the graphify executable, with forward slashes.
 
@@ -1686,6 +2048,8 @@ def _install_codex_hook(project_dir: Path, project: bool = False) -> None:
     existing = _read_settings_for_merge(hooks_path)
 
     graphify_exe = _resolve_graphify_exe(project=project)
+    if " " in graphify_exe and not graphify_exe.startswith('"'):
+        graphify_exe = f'"{graphify_exe}"'
     hook_entry = {
         "hooks": {
             "PreToolUse": [
@@ -1751,13 +2115,15 @@ def _agents_install(project_dir: Path, platform: str, project: bool = False) -> 
         _install_opencode_plugin(project_dir or Path("."))
     elif platform == "kilo":
         _install_kilo_plugin(project_dir or Path("."))
+    elif platform == "mimo":
+        _install_mimo_plugin(project_dir or Path("."), project=project)
 
     print()
     print(
         f"{platform.capitalize()} will now check the knowledge graph before answering"
     )
     print("codebase questions and rebuild it after code changes.")
-    if platform not in ("codex", "opencode", "kilo"):
+    if platform not in ("codex", "opencode", "kilo", "mimo"):
         print()
         print("Note: unlike Claude Code, there is no PreToolUse hook equivalent for")
         print(
@@ -1840,6 +2206,8 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         skill_dst = _copy_skill_file("antigravity", project=True, project_dir=project_dir)
         _antigravity_finalize(skill_dst, project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".agents"])
+    elif platform_name in ("mimo", "mimo-windows"):
+        _mimo_install(project_dir, project=True)
     elif platform_name in ("copilot", "pi", "kimi", "agents"):
         # Skill-only project install: drop SKILL.md (+ references) at the scope
         # root. `agents` -> ./.agents/skills/graphify/SKILL.md.
@@ -1868,6 +2236,8 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
             _uninstall_codex_hook(project_dir)
     elif platform_name == "antigravity":
         _antigravity_uninstall(project_dir, project=True)
+    elif platform_name in ("mimo", "mimo-windows"):
+        _mimo_uninstall(project_dir, project=True)
     elif platform_name == "devin":
         removed = _remove_skill_file("devin", project=True, project_dir=project_dir)
         _devin_rules_uninstall(project_dir)
@@ -1902,6 +2272,8 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
             _uninstall_opencode_plugin(project_dir or Path("."))
         elif platform == "kilo":
             _uninstall_kilo_plugin(project_dir or Path("."))
+        elif platform == "mimo":
+            _uninstall_mimo_plugin(project_dir or Path("."))
         return
 
     content = target.read_text(encoding="utf-8")
@@ -1912,6 +2284,8 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
             _uninstall_opencode_plugin(project_dir or Path("."))
         elif platform == "kilo":
             _uninstall_kilo_plugin(project_dir or Path("."))
+        elif platform == "mimo":
+            _uninstall_mimo_plugin(project_dir or Path("."))
         return
 
     # A symlink stays: writing through it cleans the file it points to.
@@ -1926,6 +2300,8 @@ def _agents_uninstall(project_dir: Path, platform: str = "") -> None:
         _uninstall_opencode_plugin(project_dir or Path("."))
     elif platform == "kilo":
         _uninstall_kilo_plugin(project_dir or Path("."))
+    elif platform == "mimo":
+        _uninstall_mimo_plugin(project_dir or Path("."))
 def _kilo_uninstall_global() -> list[str]:
     removed = []
     command_dst = Path.home() / ".config" / "kilo" / "command" / "graphify.md"
@@ -2066,6 +2442,7 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     _remove_skill_file("agents")
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
+    _mimo_uninstall(pd)
 
     # Git hook
     try:
@@ -2271,6 +2648,7 @@ _CLI_INSTALL_COMMANDS = frozenset({
     "install",
     "kilo",
     "kiro",
+    "mimo",
     "opencode",
     "pi",
     "skills",
@@ -2555,5 +2933,23 @@ def dispatch_install_cli(cmd: str) -> bool:
                 _antigravity_uninstall(Path("."))
         else:
             print("Usage: graphify antigravity [install|uninstall]", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "mimo":
+        subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+        if subcmd == "install":
+            if "--project" in sys.argv[3:]:
+                _project_install("mimo", Path("."))
+            else:
+                _mimo_install(Path("."))
+        elif subcmd == "uninstall":
+            if "--project" in sys.argv[3:]:
+                _project_uninstall("mimo", Path("."))
+            else:
+                _mimo_uninstall(Path("."))
+        elif subcmd == "status":
+            project_scope = "--project" in sys.argv[3:]
+            _mimo_status(Path("."), project=project_scope)
+        else:
+            print("Usage: graphify mimo [install|uninstall|status]", file=sys.stderr)
             sys.exit(1)
     return True
