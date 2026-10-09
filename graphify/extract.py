@@ -70,6 +70,8 @@ from graphify.extractors.solidity import (  # noqa: F401
 from graphify.extractors.sql import extract_sql  # noqa: F401
 from graphify.extractors.terraform import extract_terraform, prepare_terraform, resolve_terraform_modules  # noqa: F401
 from graphify.extractors.verilog import extract_verilog  # noqa: F401
+from graphify.extractors.vhdl import extract_vhdl  # noqa: F401
+from graphify.extractors.tcl import extract_tcl  # noqa: F401
 from graphify.extractors.vbnet import extract_vbnet, resolve_vbnet_partial_calls  # noqa: F401
 from graphify.extractors.zig import extract_zig  # noqa: F401
 from graphify.security import sanitize_metadata
@@ -7326,6 +7328,9 @@ _DISPATCH: dict[str, Any] = {
     ".v": extract_verilog,
     ".sv": extract_verilog,
     ".svh": extract_verilog,
+    ".vhd": extract_vhdl,
+    ".vhdl": extract_vhdl,
+    ".tcl": extract_tcl,
     ".vh": extract_verilog,
     ".sql": extract_sql,
     ".md": extract_markdown,
