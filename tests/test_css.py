@@ -40,6 +40,19 @@ def test_local_declaration_shadows_global_token(tmp_path):
     assert uses == []
 
 
+def test_same_file_root_token_links_despite_local_override(tmp_path):
+    """A stylesheet that defines --x in :root and also overrides it locally still
+    gets its own same-file uses_token edge; the local shadow only suppresses
+    cross-file binding (#3473)."""
+    css = tmp_path / "t.css"
+    css.write_text(":root { --x: 1; }\n.card { --x: 2; }\n.a { color: var(--x); }\n")
+    graph = extract([css], root=tmp_path)
+    uses = [e for e in graph["edges"] if e.get("relation") == "uses_token"]
+    token_ids = {n["id"] for n in graph["nodes"] if n.get("node_kind") == "token"}
+    assert len(uses) == 1
+    assert uses[0]["target"] in token_ids
+
+
 def test_tokens_stylesheet_not_flagged_as_sensitive():
     assert not _is_sensitive(Path("tokens.css"))
     assert not _is_sensitive(Path("tokens.scss"))
