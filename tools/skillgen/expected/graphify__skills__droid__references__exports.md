@@ -76,6 +76,8 @@ To configure in Claude Desktop, add to `claude_desktop_config.json` — point `c
 }
 ```
 
+A GUI-launched Claude Desktop may not inherit the `PATH` that has `graphify-mcp`. If so, set `command` to the **absolute interpreter path** recorded in `graphify-out/.graphify_python` and `args` to `["-m", "graphify.serve", "/absolute/path/to/graphify-out/graph.json"]`.
+
 ### Step 8 - Token reduction benchmark (only if total_words > 5000)
 
 If `total_words` from `graphify-out/.graphify_detect.json` is greater than 5,000, run:
