@@ -153,6 +153,20 @@ def generate(
                 f"the graph (top: {top})"
             )
 
+        # Every skipped file by name, not a bare count: one benign file swallowed
+        # by the secrets filter must stay findable by grepping the report, and the
+        # report is where the exclusion is durable rather than a transient stderr
+        # line (#2498). Files rescued by a `!` entry in .graphifyignore never
+        # reach here, so the list is exactly what is absent from the graph.
+        skipped = detection_result.get("skipped_sensitive") or []
+        if skipped:
+            lines += [
+                "",
+                "## Skipped Files",
+                f"{len(skipped)} file(s) were skipped during the scan and are absent from the graph:",
+            ]
+            lines += [f"- `{entry}`" for entry in skipped]
+
     from .analyze import _is_file_node, _is_concept_node, _is_contains_only_ast_node
 
     def _real_node(n) -> bool:

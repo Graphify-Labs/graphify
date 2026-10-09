@@ -8453,6 +8453,7 @@ _DISPATCH: dict[str, Any] = {
     ".ejs": extract_ejs,
     ".css": extract_css,
     ".scss": extract_css,
+    ".less": extract_css,
     ".dart": extract_dart,
     ".ml": extract_ocaml,
     ".mli": extract_ocaml,
