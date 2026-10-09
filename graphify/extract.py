@@ -46,6 +46,7 @@ from graphify.extractors.csharp import (
     _resolve_cross_file_csharp_imports,
     _resolve_csharp_type_references,
 )
+from graphify.extractors.css import extract_css  # noqa: F401
 from graphify.extractors.dart import extract_dart  # noqa: F401
 from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm  # noqa: F401
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
@@ -3359,6 +3360,7 @@ def _lang_is_case_insensitive(source_file: object) -> bool:
 _LANG_FAMILY_BY_EXT: dict[str, str] = {
     # JS/TS module graph (SFCs embed JS/TS)
     ".js": "jsts", ".jsx": "jsts", ".mjs": "jsts", ".cjs": "jsts",
+    ".gs": "jsts",
     ".ts": "jsts", ".tsx": "jsts", ".mts": "jsts", ".cts": "jsts",
     ".vue": "jsts", ".svelte": "jsts", ".astro": "jsts",
     # JVM interop
@@ -6065,7 +6067,7 @@ register_language_resolver(
     LanguageResolver("ruby_member_calls", frozenset({".rb", ".rake"}), resolve_ruby_member_calls)
 )
 register_language_resolver(
-    LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx"}), _resolve_typescript_member_calls)
+    LanguageResolver("typescript_member_calls", frozenset({".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".gs"}), _resolve_typescript_member_calls)
 )
 # C++ (#1547) and ObjC (#1556) receiver-typed member-call resolution. `.h` is in
 # both suffix sets because it routes to extract_cpp or extract_objc by content; the
@@ -7205,6 +7207,7 @@ def extract_xaml(path: Path) -> dict:
 _DISPATCH: dict[str, Any] = {
     ".py": extract_python,
     ".js": extract_js,
+    ".gs": extract_js,
     ".jsx": extract_js,
     ".mjs": extract_js,
     ".cjs": extract_js,
@@ -7268,6 +7271,9 @@ _DISPATCH: dict[str, Any] = {
     ".vue": extract_vue,
     ".svelte": extract_svelte,
     ".astro": extract_astro,
+    ".css": extract_css,
+    ".scss": extract_css,
+    ".less": extract_css,
     ".dart": extract_dart,
     ".ml": extract_ocaml,
     ".mli": extract_ocaml,
@@ -7452,6 +7458,40 @@ def _is_cpp_header(path: Path) -> bool:
     return any(marker in head for marker in _CPP_HEADER_MARKERS)
 
 
+# `.gs` is Google Apps Script (plain JavaScript) but is also used by GLSL geometry
+# shaders and by Gosu. Apps Script is the overwhelmingly common case in a repo
+# graphify is pointed at, so `.gs` routes to the JS extractor unless the file
+# carries a marker only the other two produce.
+_NON_APPS_SCRIPT_GS_MARKERS = (
+    b"#version ",     # GLSL preprocessor directive — never valid JavaScript
+    b"gl_Position",
+    b"gl_in[",
+    b"EmitVertex",
+    b"EndPrimitive",
+    b"uses java.",    # Gosu import
+    b"uses gw.",
+)
+
+
+def _is_apps_script(path: Path) -> bool:
+    """Whether a `.gs` file is Google Apps Script rather than GLSL/Gosu.
+
+    Inverse of the `.m` sniff (`_is_objc_source`): there the ambiguous suffix is
+    guilty until proven innocent because MATLAB and Objective-C are both common.
+    Apps Script has no such rival — a `.gs` in a repo is almost always Apps
+    Script, and its own marker set is unusable as a positive test (a pure-logic
+    `.gs` helper calls no `SpreadsheetApp`/`DriveApp` service at all). So the
+    test runs the other way: JS unless a GLSL or Gosu token shows up, in which
+    case the file is left without an extractor (surfaced by the
+    no-AST-extractor warning) rather than force-parsed into garbage.
+    """
+    try:
+        head = path.read_bytes()[:256 * 1024]
+    except OSError:
+        return False
+    return not any(marker in head for marker in _NON_APPS_SCRIPT_GS_MARKERS)
+
+
 def _get_extractor(path: Path) -> Any | None:
     """Return the correct extractor function for a file, or None if unsupported."""
     if path.name.lower().endswith(".blade.php"):
@@ -7486,6 +7526,10 @@ def _get_extractor(path: Path) -> Any | None:
     # an extractor (surfaced by the no-AST-extractor warning, #1689) rather than
     # mis-parsed. `.mm` is unambiguously Objective-C++ and stays on extract_objc.
     if suffix == ".m" and not _is_objc_source(path):
+        return None
+    # `.gs` is Apps Script (JS) OR a GLSL geometry shader OR Gosu. Route to
+    # extract_js unless the file looks like one of the other two.
+    if suffix == ".gs" and not _is_apps_script(path):
         return None
     # Extensionless files: resolve by shebang, mirroring detect.classify_file.
     # Without this, detect labels e.g. `#!/usr/bin/env bash` CLIs as code but
@@ -7773,6 +7817,117 @@ def _extract_sequential(
         # Consistent denominator with the intermediate lines (#1693).
         _done = len(uncached_work)
         print(f"  AST extraction: {_done}/{_done} uncached files (100%)", flush=True)
+
+
+def _resolve_css_tokens(
+    raw_token_uses: list[dict],
+    resolution_nodes: list[dict],
+    all_edges: list[dict],
+    *,
+    resolution_context_edges: list[dict] | None = None,
+) -> None:
+    """Resolve CSS custom property references (var(--name)) to design-token definitions.
+
+    Emits:
+        consumer stylesheet -> uses_token -> token node
+    with confidence 'EXTRACTED'.
+
+    Resolution rules:
+    - same-file matching definition -> resolve;
+    - exactly one matching definition across available graph/resolution nodes -> resolve;
+    - multiple matching definitions -> emit nothing (conservative, no fan-out);
+    - no matching definition -> emit nothing.
+    """
+    if not raw_token_uses or not resolution_nodes:
+        return
+
+    def _norm_sf(sf: str | Path | None) -> str:
+        if not sf:
+            return ""
+        try:
+            return str(Path(sf).resolve())
+        except Exception:
+            return str(sf).replace("\\", "/")
+
+    # Map source_file -> file node id
+    sf_to_file_nid: dict[str, str] = {}
+    for n in resolution_nodes:
+        sf = n.get("source_file")
+        if sf and n.get("label") == Path(str(sf)).name:
+            norm = _norm_sf(sf)
+            sf_to_file_nid.setdefault(str(sf), n["id"])
+            sf_to_file_nid.setdefault(norm, n["id"])
+
+    # Index token definition nodes
+    tokens_by_label: dict[str, list[dict]] = {}
+    tokens_by_file_and_label: dict[tuple[str, str], list[dict]] = {}
+    for n in resolution_nodes:
+        if n.get("node_kind") == "token":
+            lbl = n.get("label", "")
+            if lbl.startswith("--"):
+                tokens_by_label.setdefault(lbl, []).append(n)
+                sf = n.get("source_file")
+                if sf:
+                    tokens_by_file_and_label.setdefault((_norm_sf(sf), lbl), []).append(n)
+
+    seen_edges = {
+        (e["source"], e["target"], e.get("relation"))
+        for e in (all_edges + list(resolution_context_edges or []))
+    }
+
+    for tu in raw_token_uses:
+        token_name = tu.get("token_name", "")
+        if not token_name:
+            continue
+
+        source_file = tu.get("source_file", "")
+        norm_sf = _norm_sf(source_file)
+
+        # 1. Check same-file match first
+        target_node: dict | None = None
+        same_file_matches = tokens_by_file_and_label.get((norm_sf, token_name), [])
+        if same_file_matches:
+            target_node = same_file_matches[0]
+        elif tu.get("local_decl"):
+            # No same-file token NODE for this name, but the stylesheet declares
+            # `--x:` locally outside a root/theme context (e.g. a component
+            # overriding a theme token). That local declaration shadows any
+            # cross-file global, so binding var(--x) to another file would be a
+            # false EXTRACTED edge. Same-file resolution above is unaffected.
+            continue
+        else:
+            # 2. Exactly one matching definition across available graph/resolution nodes
+            global_matches = tokens_by_label.get(token_name, [])
+            if len(global_matches) == 1:
+                target_node = global_matches[0]
+            else:
+                # 0 matches or multiple ambiguous matches -> emit nothing
+                continue
+
+        target_nid = target_node.get("id")
+        if not target_nid:
+            continue
+
+        consumer_nid = sf_to_file_nid.get(source_file) or sf_to_file_nid.get(norm_sf) or tu.get("source_nid")
+        if not consumer_nid:
+            continue
+
+        edge_key = (consumer_nid, target_nid, "uses_token")
+        if edge_key in seen_edges:
+            continue
+        seen_edges.add(edge_key)
+
+        line = tu.get("line")
+        all_edges.append({
+            "source": consumer_nid,
+            "target": target_nid,
+            "relation": "uses_token",
+            "confidence": "EXTRACTED",
+            "confidence_score": 1.0,
+            "source_file": source_file,
+            "source_location": f"L{line}" if line else None,
+            "weight": 1.0,
+        })
 
 
 _PARALLEL_THRESHOLD = 20
@@ -8195,10 +8350,12 @@ def extract(
     all_nodes: list[dict] = []
     all_edges: list[dict] = []
     all_raw_calls: list[dict] = []
+    all_raw_token_uses: list[dict] = []
     for result in per_file:
         all_nodes.extend(result.get("nodes", []))
         all_edges.extend(result.get("edges", []))
         all_raw_calls.extend(result.get("raw_calls", []))
+        all_raw_token_uses.extend(result.get("raw_token_uses", []))
     # Function / method / class def ids for the cross-file indirect_call callable
     # guard. Built from the `_callable` node marker AFTER the id-remap / disambiguation
     # passes below (which rewrite node ids), so it can never go stale — see the
@@ -8442,6 +8599,10 @@ def extract(
             cn = rc.get("caller_nid")
             if cn in id_remap:
                 rc["caller_nid"] = id_remap[cn]
+        for tu in all_raw_token_uses:
+            sn = tu.get("source_nid")
+            if sn in id_remap:
+                tu["source_nid"] = id_remap[sn]
         # swift_extensions[].nid is the same kind of id carrier as caller_nid
         # above (cache.py remaps both), consumed by _merge_swift_extensions far
         # below. Left stale it matches no node, so whether the extension merge
@@ -8517,6 +8678,10 @@ def extract(
                 cn = rc.get("caller_nid")
                 if cn in sym_remap:
                     rc["caller_nid"] = sym_remap[cn]
+            for tu in all_raw_token_uses:
+                sn = tu.get("source_nid")
+                if sn in sym_remap:
+                    tu["source_nid"] = sym_remap[sn]
             # Same for swift_extensions[].nid (see the id_remap pass above).
             for result in per_file:
                 for ext in result.get("swift_extensions", []) or []:
@@ -9263,6 +9428,14 @@ def extract(
         all_edges.extend(_rl_edges[_e0:])
     else:
         run_language_resolvers(paths, per_file, all_nodes, all_edges)
+
+    if all_raw_token_uses:
+        _resolve_css_tokens(
+            all_raw_token_uses,
+            resolution_nodes,
+            all_edges,
+            resolution_context_edges=resolution_context_edges,
+        )
 
     # Relativize source_file fields so paths are portable across machines (#555).
     # When the node's id was itself minted from the absolute path, remap it to a
