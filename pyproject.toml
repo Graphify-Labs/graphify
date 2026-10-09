@@ -40,6 +40,7 @@ dependencies = [
     "tree-sitter-php>=0.23,<0.25",
     "tree-sitter-swift>=0.7,<0.9",
     "tree-sitter-lua>=0.2,<0.6",
+    "tree-sitter-luau>=1.2,<2",
     "tree-sitter-zig>=1.0,<2.0",
     "tree-sitter-powershell>=0.26,<0.28",
     "tree-sitter-elixir>=0.3,<0.5",

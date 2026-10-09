@@ -1,6 +1,7 @@
 """Deterministic structural extraction from source code using tree-sitter. Outputs nodes+edges dicts."""
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import importlib
 import json
@@ -27,6 +28,7 @@ from .csharp_dispatch import resolve_csharp_interface_dispatch
 from .swift_dispatch import resolve_swift_protocol_dispatch
 from .pascal_resolution import resolve_pascal_inherited_calls
 from .markdown_resolution import MARKDOWN_MENTION_SUFFIXES, resolve_markdown_mentions
+from .rojo_resolution import resolve_rojo_requires
 
 # --- migrated to graphify/extractors/ (see graphify/extractors/MIGRATION.md) ---
 from graphify.extractors.base import (  # noqa: F401
@@ -1623,6 +1625,13 @@ _LUA_CONFIG = LanguageConfig(
     function_boundary_types=frozenset({"function_declaration"}),
     import_handler=_import_lua,
 )
+
+# Luau (Roblox) is a typed superset of Lua 5.1. tree-sitter-lua stops at the
+# first Luau-only construct (if-expression, `::` cast, generics, string
+# interpolation, `+=`, `continue`, `export type`) and silently drops every
+# symbol declared after it (#2520). tree-sitter-luau emits the same node types
+# the Lua walk consumes, so `.luau` shares the config and swaps the grammar.
+_LUAU_CONFIG = dataclasses.replace(_LUA_CONFIG, ts_module="tree_sitter_luau")
 
 
 def _import_swift(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> list[tuple[str, str]]:
@@ -3251,6 +3260,18 @@ def extract_php(path: Path) -> dict:
 def extract_lua(path: Path) -> dict:
     """Extract functions, methods, require() imports, and calls from a .lua file."""
     return _extract_generic(path, _LUA_CONFIG)
+
+
+def extract_luau(path: Path) -> dict:
+    """Extract functions, methods, require() imports, and calls from a .luau file.
+
+    Same walk as :func:`extract_lua`, parsed with the Luau grammar so typed
+    Roblox code is extracted whole instead of truncated at the first
+    Luau-only construct (#2520). The result also carries the require facts
+    (``luau_module``) that :mod:`graphify.rojo_resolution` resolves through a
+    Rojo project file.
+    """
+    return _extract_generic(path, _LUAU_CONFIG)
 
 
 def extract_swift(path: Path) -> dict:
@@ -7289,7 +7310,7 @@ _DISPATCH: dict[str, Any] = {
     ".php": extract_php,
     ".swift": extract_swift,
     ".lua": extract_lua,
-    ".luau": extract_lua,
+    ".luau": extract_luau,
     ".toc": extract_lua,
     ".zig": extract_zig,
     ".ps1": extract_powershell,
@@ -7421,6 +7442,7 @@ _SHEBANG_DISPATCH: dict[str, Any] = {
     "nodejs": extract_js,
     "ruby": extract_ruby,
     "lua": extract_lua,
+    "luau": extract_luau,
     "php": extract_php,
     "julia": extract_julia,
     "Rscript": extract_r,
@@ -8252,6 +8274,23 @@ def extract(
     # passes below (which rewrite node ids), so it can never go stale — see the
     # marker set in the per-file extractor. Populated just before the pass that uses it.
     callable_nids: set[str] = set()
+
+    # Luau require() through Rojo project files (#2520). Runs HERE, before the
+    # id-remap passes below, so a resolved require carries a `target_file`
+    # stamp the remap canonicalizes like any other resolved import, including
+    # a target in an unchanged file on an incremental rebuild (#2169). The
+    # tail registry run comes after the remap and would be too late. Bound to
+    # the scan root, which caps the walk up to the nearest `*.project.json`.
+    # Uses the registry driver for the suffix gate and failure isolation, like
+    # the Kotlin import-target pass below.
+    run_language_resolvers(
+        paths, [r for r in per_file if r is not None], all_nodes, all_edges,
+        resolvers=[LanguageResolver(
+            "luau_rojo_requires",
+            frozenset({".luau"}),
+            lambda pf, nodes, edges: resolve_rojo_requires(pf, nodes, edges, root=root),
+        )],
+    )
 
     _suppress_ambiguous_python_imports(
         all_edges, all_nodes, all_raw_calls, ambiguous_python_modules,
