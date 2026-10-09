@@ -1,4 +1,4 @@
-"""Tests for language extractors: Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML, Robot Framework."""
+"""Tests for language extractors: Java, C, C++, Ruby, C#, F#, Kotlin, Scala, PHP, Swift, Go, Julia, Fortran, JS/TS, .NET project files, XAML, Robot Framework."""
 from __future__ import annotations
 from pathlib import Path
 import pytest
@@ -9,7 +9,7 @@ from graphify.extract import (
     extract_groovy, extract_sln, extract_csproj, extract_xaml, extract_razor,
     extract_dm, extract_dmi, extract_dmm, extract_dmf,
     extract_powershell, extract_apex, extract_commonlisp, extract_verilog,
-    extract_powershell_manifest, extract_robot,
+    extract_powershell_manifest, extract_robot, extract_fsharp,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -25,6 +25,10 @@ _needs_dm = pytest.mark.skipif(
 _needs_commonlisp = pytest.mark.skipif(
     _ilu.find_spec("tree_sitter_commonlisp") is None,
     reason="tree-sitter-commonlisp not installed (optional [commonlisp] extra)",
+)
+_needs_fsharp = pytest.mark.skipif(
+    _ilu.find_spec("tree_sitter_fsharp") is None,
+    reason="tree-sitter-fsharp not installed (optional [fsharp] extra)",
 )
 _needs_robot = pytest.mark.skipif(
     _ilu.find_spec("robot") is None,
@@ -5548,3 +5552,79 @@ def test_kotlin_bracketed_annotations_emits_multiple_attribute_edges(tmp_path):
     refs = _edge_labels(result, "references", "attribute")
     assert ("Foo", "Inject") in refs
     assert ("Foo", "VisibleForTesting") in refs
+
+
+# ── F# (tests/fixtures/sample.fs) ────────────────────────────────────────────
+
+
+@_needs_fsharp
+def test_fsharp_finds_namespace_modules_and_types():
+    r = extract_fsharp(FIXTURES / "sample.fs")
+    assert "error" not in r
+    labels = set(_labels(r))
+    assert {"Inventory.Service", "Stock", "Api"} <= labels
+    assert {"Sku", "StockLevel", "StockError", "IStockStore", "StoreBase", "MemoryStore"} <= labels
+
+
+@_needs_fsharp
+def test_fsharp_namespace_is_canonical_dotnet_node():
+    r = extract_fsharp(FIXTURES / "sample.fs")
+    ns = [n for n in r["nodes"] if n.get("type") == "namespace"]
+    assert [n["label"] for n in ns] == ["Inventory.Service"]
+    assert ns[0]["id"].startswith("csharp_namespace:")
+
+
+@_needs_fsharp
+def test_fsharp_finds_functions_members_and_union_cases():
+    r = extract_fsharp(FIXTURES / "sample.fs")
+    pairs = _edge_labels(r, "contains")
+    assert {("Stock", "available"), ("Stock", "reserve"), ("Stock", "drain"),
+            ("Stock", "takeFrom"), ("Api", "reserveOrFail"), ("Api", "summary")} <= pairs
+    assert {("StockError", "UnknownSku"), ("StockError", "Insufficient")} <= pairs
+    assert {("MemoryStore", "Find"), ("MemoryStore", "Save"), ("MemoryStore", "Count"),
+            ("MemoryStore", "Name"), ("IStockStore", "Find")} <= pairs
+
+
+@_needs_fsharp
+def test_fsharp_finds_open_imports():
+    r = extract_fsharp(FIXTURES / "sample.fs")
+    fqns = {e["metadata"]["target_fqn"] for e in r["edges"] if e["relation"] == "imports"}
+    assert fqns == {"System", "System.Collections.Generic"}
+
+
+@_needs_fsharp
+def test_fsharp_finds_heritage():
+    r = extract_fsharp(FIXTURES / "sample.fs")
+    assert ("MemoryStore", "StoreBase") in _edge_labels(r, "inherits")
+    assert ("MemoryStore", "IStockStore") in _edge_labels(r, "implements")
+
+
+@_needs_fsharp
+def test_fsharp_finds_calls():
+    r = extract_fsharp(FIXTURES / "sample.fs")
+    calls = _calls(r)
+    # same-file resolution, including a let rec ... and pair
+    assert ("drain()", "takeFrom()") in calls
+    assert ("reserve()", "available()") in calls
+    # a pipeline into a module-qualified function binds through the module
+    assert ("reserveOrFail()", "reserve()") in calls
+    # recursion to the right of `::` (the grammar parses it as `(a :: drain) qty rest`)
+    assert ("drain()", "drain()") in calls
+
+
+@_needs_fsharp
+def test_fsharp_external_calls_stay_sourceless_stubs():
+    r = extract_fsharp(FIXTURES / "sample.fs")
+    by_id = {n["id"]: n for n in r["nodes"]}
+    external = {"List.map", "List.sum", "max", "items.TryGetValue"}
+    targets = [by_id[e["target"]] for e in r["edges"]
+               if e["relation"] == "calls" and by_id[e["target"]]["label"] in external]
+    assert {n["label"] for n in targets} == external
+    assert all(n["source_file"] == "" for n in targets)
+    # a module-qualified stub carries its qualifier for the corpus rewire
+    list_map = next(n for n in targets if n["label"] == "List.map")
+    meta = list_map["metadata"]
+    assert (meta["qualifier"], meta["name"]) == ("List", "map")
+    # the scopes the caller could resolve `List` from: its module chain,
+    # its namespace, its opens, and the root
+    assert {"Inventory.Service.Api", "Inventory.Service", "System", ""} <= set(meta["scopes"])
