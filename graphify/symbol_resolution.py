@@ -55,15 +55,34 @@ def node_is_resolvable_symbol(node: dict[str, Any]) -> bool:
     return bool(normalise_callable_label(label))
 
 
-def build_label_index(nodes: list[dict[str, Any]]) -> dict[str, list[str]]:
-    """Build label -> node id list for conservative cross-file resolution."""
+def build_label_index(
+    nodes: list[dict[str, Any]],
+    edges: "list[dict[str, Any]] | None" = None,
+) -> dict[str, list[str]]:
+    """Build label -> node id list for conservative cross-file resolution.
 
+    An enum member can never be the target of a call, in any language that
+    reaches this shared index — but it is a node like any other, and its
+    label can collide with an unrelated bare name (a delegate-typed field
+    named the same as one of its own enum's cases, #4245). When *edges* is
+    given, a node that is the target of a `case_of` edge is excluded, the
+    same way `_build_csharp_type_def_index` already excludes it from TYPE
+    lookup (#3795).
+    """
+
+    case_of_targets: set[str] = set()
+    if edges is not None:
+        case_of_targets = {
+            e.get("target") for e in edges if isinstance(e, dict) and e.get("relation") == "case_of"
+        }
     index: dict[str, list[str]] = {}
     for node in nodes:
         if not node_is_resolvable_symbol(node):
             continue
         node_id = node.get("id")
         if not node_id:
+            continue
+        if node_id in case_of_targets:
             continue
         key = normalise_callable_label(str(node.get("label", "")))
         if not key:
@@ -319,7 +338,7 @@ def resolve_cross_file_raw_calls(
     - emitted edges are INFERRED because the raw call alone is not import proof.
     """
 
-    label_index = build_label_index(all_nodes)
+    label_index = build_label_index(all_nodes, all_edges)
     known_pairs = existing_edge_pairs(all_edges)
     # nid -> source_file, for the shared god-node tie-breakers (#1553) so a
     # same-named test mock no longer erases a real cross-file call.

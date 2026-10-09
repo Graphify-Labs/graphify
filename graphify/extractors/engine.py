@@ -6908,9 +6908,22 @@ def _extract_generic(
     # so a `self:other()` call in its body can be rewritten to the sibling method's
     # table-qualified label and resolved (#3991).
     lua_self_table: dict[str, str] = {}
+    # An enum member can never be the target of a call in any language that
+    # reaches this shared map (Java/Kotlin/Swift/C#/Scala/C++/PHP all emit a
+    # node per case with a `case_of` edge). Mirrors the exclusion
+    # _build_csharp_type_def_index already applies for TYPE lookup (#3795);
+    # without it here too, a bare call whose name happens to match a
+    # same-named enum case (`Delegate(t)` invoking a delegate-typed field
+    # next to `enum Kind { ..., Delegate }`) silently bound to the case
+    # instead of getting no edge (#4245).
+    _case_of_targets = {
+        e.get("target") for e in edges if e.get("relation") == "case_of"
+    }
     for n in nodes:
         nid_to_sf[n["id"]] = str(n.get("source_file") or "")
         if n.get("type") == "namespace":
+            continue
+        if n["id"] in _case_of_targets:
             continue
         raw = n["label"]
         normalised = raw.strip("()").lstrip(".")

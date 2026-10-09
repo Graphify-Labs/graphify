@@ -8993,7 +8993,13 @@ def extract(
             candidates = global_label_to_nids_ci.get(callee.lower(), [])
         if not candidates:
             continue
-        if rc.get("csharp_new"):
+        if rc.get("csharp_new") or rc.get("lang") == "csharp":
+            # An enum member or a field/property is never a valid call target
+            # either — not just never what `new X()` constructs. A bare call
+            # whose name happens to collide with a same-named enum case (a
+            # delegate-typed field invoked next to an enum sharing its name,
+            # #4245) bound to the case instead of getting no edge/deferring to
+            # raw_calls resolution that could reject it on its own grounds.
             candidates = [c for c in candidates if c not in _member_nids]
             if not candidates:
                 continue
