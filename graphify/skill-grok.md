@@ -1,4 +1,7 @@
-@@FRONTMATTER@@
+---
+name: graphify
+description: "Use for any question about a codebase, its architecture, file relationships, or project content — especially when graphify-out/ exists, where the question should be treated as a graphify query first. Turns any input (code, docs, papers, images, videos) into a persistent knowledge graph with god nodes, community detection, and query/path/explain tools."
+---
 
 # /graphify
 
@@ -61,7 +64,51 @@ Only when the path is one or more `https://github.com/...` URLs, or several loca
 
 ### Step 1 - Ensure graphify is installed
 
-@@INSTALL@@
+```bash
+# Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs)
+PYTHON=""
+GRAPHIFY_BIN=$(which graphify 2>/dev/null)
+# 1. uv tool installs — most reliable on modern Mac/Linux
+if [ -z "$PYTHON" ] && command -v uv >/dev/null 2>&1; then
+    _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
+    if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
+fi
+# 2. Read shebang from graphify binary (pipx and direct pip installs)
+if [ -z "$PYTHON" ] && [ -n "$GRAPHIFY_BIN" ]; then
+    _SHEBANG=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
+    case "$_SHEBANG" in
+        *[!a-zA-Z0-9/_.@-]*) ;;
+        *) "$_SHEBANG" -c "import graphify" 2>/dev/null && PYTHON="$_SHEBANG" ;;
+    esac
+fi
+# 3. Fall back to python3
+if [ -z "$PYTHON" ]; then PYTHON="python3"; fi
+if ! "$PYTHON" -c "import graphify" 2>/dev/null; then
+    if command -v uv >/dev/null 2>&1; then
+        uv tool install --upgrade graphifyy -q 2>&1 | tail -3
+        _UV_PY=$(uv tool run --from graphifyy python -c "import sys; print(sys.executable)" 2>/dev/null)
+        if [ -n "$_UV_PY" ]; then PYTHON="$_UV_PY"; fi
+    else
+        "$PYTHON" -m pip install graphifyy -q 2>/dev/null \
+          || "$PYTHON" -m pip install graphifyy -q --break-system-packages 2>&1 | tail -3
+    fi
+fi
+# Write interpreter path for all subsequent steps (persists across invocations)
+mkdir -p graphify-out
+"$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
+# Save scan root so `graphify update` (no args) knows where to look next time.
+# The scan path is passed through a quoted heredoc, never substituted into the
+# command line itself: a bare `cd <path>` (or an unquoted heredoc, which
+# still expands $()/backticks in its body) would let a malicious path execute
+# as shell code the moment this line runs.
+"$PYTHON" -c "import os, sys; out_path = os.path.abspath('graphify-out/.graphify_root'); os.chdir(sys.stdin.readline().rstrip('\n')); open(out_path, 'w', encoding='utf-8').write(os.getcwd())" <<'GRAPHIFY_ROOT_EOF'
+INPUT_PATH
+GRAPHIFY_ROOT_EOF
+```
+
+If the import succeeds, print nothing and move straight to Step 2.
+
+**In every subsequent bash block, replace `python3` with `$(cat graphify-out/.graphify_python)` to use the correct interpreter.**
 
 ### Step 2 - Detect files
 
@@ -70,9 +117,7 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.detect import detect
 from pathlib import Path
-from graphify.paths import out_path
-from graphify.watch import _read_build_excludes, _read_build_gitignore
-result = detect(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
+result = detect(Path('INPUT_PATH'))
 # Write the sidecar from Python, not a shell redirect, so the same block renders
 # on PowerShell hosts without console-encoding drift (#2528).
 Path('graphify-out/.graphify_detect.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
@@ -111,7 +156,7 @@ Skip this step entirely if `detect` returned zero `video` files. When the corpus
 
 ### Step 3 - Extract entities and relationships
 
-@@SEM_DEEP_MODE@@
+**Before starting:** note whether `--mode deep` was given. You must apply `DEEP_MODE=true` to every chunk you extract in Step B2 if it was. Track this from the original invocation - do not lose it.
 
 This step has two parts: **structural extraction** (deterministic, free) and **semantic extraction** (LLM, costs tokens).
 
@@ -120,15 +165,17 @@ This step has two parts: **structural extraction** (deterministic, free) and **s
 **Before semantic extraction:** check whether `GEMINI_API_KEY` or `GOOGLE_API_KEY` is set. If neither is set, print this one-liner to the user:
 > Tip: set `GEMINI_API_KEY` or `GOOGLE_API_KEY` to use Gemini for semantic extraction (`pip install 'graphifyy[gemini]'`).
 
-@@SEM_GEMINI_ALT@@
+Print it once, then continue — do not wait for the user to supply a key. If `GEMINI_API_KEY` or `GOOGLE_API_KEY` IS set, use `graphify.llm.extract_corpus_parallel(files, backend="gemini")` for semantic extraction instead of extracting the chunks yourself. The default Gemini model is `gemini-3-flash-preview`; set `GRAPHIFY_GEMINI_MODEL` or pass `--model` in headless CLI flows to override it.
 
-@@SEM_NO_KEY_FALLBACK@@
+> **No other API keys are read.** When `GEMINI_API_KEY`/`GOOGLE_API_KEY` are unset, semantic extraction falls to the host agent itself — the running session is the LLM. On this host you extract the semantic chunks yourself, sequentially, as written in Part B. Do not stall: a code-only corpus has no semantic work, so write the empty semantic file (Part B "Fast path") and continue to Part C; for a corpus with docs/papers/images, either set a Gemini key or extract those chunks yourself as Part B describes, but in no case prompt for `ANTHROPIC_API_KEY` — that prompt is a misread of this skill.
 
-@@SEM_PARALLEL_AST@@
+**Run Part A (AST) first, then Part B (semantic).** AST extraction is a single shell command; start it before you begin extracting semantic chunks. Merge results in Part C as before.
+
+Note: AST is deterministic, fast, and needs no LLM, so it never waits on the semantic chunks; running it first keeps the chunk-by-chunk semantic work as the only long step.
 
 #### Part A - Structural extraction for code files
 
-@@SEM_PART_A_INTRO@@
+For any code files detected, run AST extraction before Part B:
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -152,9 +199,9 @@ else:
 "
 ```
 
-@@SEM_PART_B_HEADING@@
+#### Part B - Semantic extraction (sequential, in-session)
 
-@@SEM_FAST_PATH@@
+**Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is no semantic work to do. **First write an empty semantic file** so Part C's merge has its input (it reads `.graphify_semantic.json` unconditionally; without this a code-only run hits `FileNotFoundError`):
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -164,11 +211,19 @@ Path('graphify-out/.graphify_semantic.json').write_text(json.dumps({'nodes':[],'
 "
 ```
 
-@@SEM_MANDATE_ESTIMATE@@
+**Extract the chunks yourself, sequentially, in this session.** Take one chunk at a time: read its files, apply the extraction prompt, and write that chunk's JSON file before starting the next chunk.
+
+Before extracting, print a timing estimate:
+- Load `total_words` and file counts from `graphify-out/.graphify_detect.json`
+- Estimate chunks needed: `ceil(uncached_non_code_files / 22)` (chunk size is 20-25)
+- Estimate time: ~45s per chunk (chunks run one after another, so total ≈ 45s × chunks)
+- Print: "Semantic extraction: ~N files → X chunks, estimated ~Ys"
 
 **Step B0 - Check extraction cache first**
 
-@@SEM_B0_INTRO@@
+Before extracting any chunks, check which files already have cached extraction results:
+
+SPEC_PATH below is the **absolute** path of the `references/extraction-spec.md` that ships beside this SKILL.md — the same file Step B2 loads and applies to every chunk. It is the extraction prompt, so cache entries are attributed to it: when a graphify upgrade changes the prompt, entries produced by the old one are re-extracted instead of replayed, and unchanged prompts keep their entries (#1939). Substitute the real path in both Step B0 and Step B3 — pass the same one to each, and do not drop the argument.
 
 ```bash
 $(cat graphify-out/.graphify_python) -c "
@@ -178,7 +233,7 @@ from pathlib import Path
 
 detect = json.loads(Path('graphify-out/.graphify_detect.json').read_text(encoding=\"utf-8\"))
 # Only content files go to semantic extraction. Code is already covered structurally
-@@SEM_CACHE_COMMENT@@
+# by the AST pass (Part A); flattening every category here makes semantic extraction re-read
 # every source file (#1392). Video is transcribed to a document in Step 2.5 first.
 all_files = [f for cat in ('document', 'paper', 'image') for f in detect['files'].get(cat, [])]
 
@@ -199,17 +254,40 @@ print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files n
 "
 ```
 
-@@SEM_UNCACHED_ONLY@@
+Only extract files listed in `graphify-out/.graphify_uncached.txt`. If all files are cached, skip Steps B1 and B2 but still run Step B3's commands: its merge is the only Part B step that writes `graphify-out/.graphify_semantic.json`, and Part C reads that file unconditionally. Do not write an empty `.graphify_semantic.json` instead, because that drops every cached node.
 
 **Step B1 - Split into chunks**
 
 Load files from `graphify-out/.graphify_uncached.txt`. Split into chunks of 20-25 files each. Each image gets its own chunk (vision needs separate context). When splitting, group files from the same directory together so related artifacts land in the same chunk and cross-file relationships are more likely to be extracted.
 
-@@DISPATCH@@
+**Step B2 - Extract each chunk sequentially (Grok Build)**
+
+> **Grok Build:** extract the chunks yourself, one after another, in this session. Finish one chunk's file before starting the next, and process every chunk before moving on to Step B3.
+
+For each chunk of uncached files (20-25 per chunk), read the files in that chunk, apply the extraction prompt below, and write the resulting JSON to that chunk's file so Step B3 can collect it. CHUNK_PATH must be an **absolute** path:
+
+```bash
+PROJECT_ROOT=$(pwd)  # cwd — where Part C globs graphify-out/ (NOT .graphify_root/scan dir, #1392)
+# Then for chunk N: CHUNK_PATH="${PROJECT_ROOT}/graphify-out/.graphify_chunk_0N.json"
+```
+
+Repeat for every chunk. Each chunk's JSON must land in its own `graphify-out/.graphify_chunk_NN.json` before Step B3 runs.
+
+Extraction prompt template:
+
+See `references/extraction-spec.md` for the compact extraction prompt (rules, node-ID format, confidence rubric, hyperedge and vision rules, JSON schema). Load it only here, only when at least one chunk holds a doc, paper, or image; a pure-code corpus has skipped Part B and never reads it. Apply that prompt verbatim to each chunk with FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, DEEP_MODE, and CHUNK_PATH substituted, and write the result to CHUNK_PATH.
 
 **Step B3 - Collect, cache, and merge**
 
-@@SEM_B3_COLLECT@@
+Once every chunk has been extracted, check each chunk file:
+- Check that `graphify-out/.graphify_chunk_NN.json` exists on disk — this is the success signal
+- If the file exists and contains valid JSON with `nodes` and `edges`, include it and save to cache
+- If the file is missing, that chunk was never written — print a warning: "chunk N missing from disk — re-extract it before merging." Do not silently skip.
+- If a chunk file holds invalid JSON, print a warning and rename it to `graphify-out/.graphify_chunk_NN.json.invalid` (kept for inspection) so the merge below skips that chunk - do not abort
+
+If more than half the chunks failed or are missing, stop and tell the user to re-run the semantic extraction.
+
+Merge all chunk files into `.graphify_semantic_new.json`. In-session extraction reports no per-chunk token counts, so each chunk JSON keeps its placeholder zeros. Then run:
 ```bash
 $(cat graphify-out/.graphify_python) -c "
 import json, glob
@@ -583,7 +661,19 @@ The graph is the map. Your job after the pipeline is to be the guide.
 
 Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), check that `.graphify_python` exists. If it's missing (e.g. user deleted `graphify-out/`), re-resolve the interpreter first:
 
-@@INTERP_GUARD@@
+```bash
+if [ ! -f graphify-out/.graphify_python ]; then
+    GRAPHIFY_BIN=$(which graphify 2>/dev/null)
+    if [ -n "$GRAPHIFY_BIN" ]; then
+        PYTHON=$(head -1 "$GRAPHIFY_BIN" | tr -d '#!')
+        case "$PYTHON" in *[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; esac
+    else
+        PYTHON="python3"
+    fi
+    mkdir -p graphify-out
+    "$PYTHON" -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
+fi
+```
 
 ## For --update and --cluster-only
 
@@ -593,7 +683,13 @@ Both are non-default subcommands. `--update` re-extracts only new or changed fil
 
 ## For /graphify query
 
-@@QUERY_STUB@@
+When `graphify-out/graph.json` already exists and the user asks a question about the corpus, answer from the graph rather than rebuilding it:
+
+```bash
+graphify query "<question>"
+```
+
+Before traversal, expand the question against the graph's own vocabulary so a wording mismatch does not collapse the answer to noise. If the `graphify query` CLI is unavailable, fall back to an inline NetworkX traversal of `graphify-out/graph.json`. Answer using only what the graph output contains, and quote `source_location` when citing a specific fact. For that vocab-expansion step, the BFS/DFS traversal modes, the `--budget` cap, the NetworkX fallback, `save-result` feedback, and the `/graphify path` and `/graphify explain` flows, see `references/query.md`.
 
 ---
 
@@ -603,13 +699,13 @@ Neither is part of the default build. When the user runs `/graphify add <url>` t
 
 ---
 
-## For the commit hook and native @@HOOKS_TARGET@@ integration
+## For the commit hook and native AGENTS.md integration
 
-When the user asks to install the post-commit auto-rebuild hook or wire graphify into a project's @@HOOKS_TARGET@@, see `references/hooks.md`.
+When the user asks to install the post-commit auto-rebuild hook or wire graphify into a project's AGENTS.md, see `references/hooks.md`.
 
 ---
 
-@@EXTRA@@## Honesty Rules
+## Honesty Rules
 
 - Never invent an edge. If unsure, use AMBIGUOUS.
 - Never skip the corpus check warning.

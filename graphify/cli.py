@@ -885,6 +885,11 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     file listing would strand navigation. #1840: reads of out-of-project files are
     ignored, and a graph that is stale for the target file softens to a non-mandatory
     nudge instead of blocking or demanding.
+
+    Grok Build runs this same guard (.grok/hooks/graphify.json) with its own
+    tool names. Its events carry Claude's snake_case keys alongside camelCase
+    ones (toolName/toolInput/sessionId), which are read only when the snake_case
+    keys are absent, and its read_file names the target ``target_file``.
     """
     from graphify.paths import out_path
     # Gemini's BeforeTool hook takes no stdin and must ALWAYS return a decision so
@@ -905,9 +910,18 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
         return
     if not isinstance(d, dict):
         return
-    t = d.get("tool_input", d)
+    # Grok Build sends the same event with camelCase keys (toolName / toolInput /
+    # sessionId) and its own tool names; Claude's snake_case keys win if present.
+    t = d.get("tool_input", d.get("toolInput", d))
     if not isinstance(t, dict):
         return
+    tool_name = d.get("tool_name", d.get("toolName"))
+    session_id = str(d.get("session_id", d.get("sessionId")) or "")
+    # Grok's read_file names its target `target_file` (captured from a live
+    # Grok Build 1.0.46 session); read it as Claude's `file_path` so the
+    # extension, project and staleness checks below see it.
+    if tool_name == "read_file" and not t.get("file_path") and t.get("target_file"):
+        t = {**t, "file_path": t["target_file"]}
     try:
         if kind == "search":
             cmd_str = str(t.get("command", "") or "")
@@ -1037,11 +1051,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                 return
             # Strict block: Read tool only, first time per session, not recently
             # oriented, and the file is demonstrably indexed.
-            tool_name = d.get("tool_name")
-            if _hook_strict_enabled(strict) and tool_name in (None, "Read") \
+            if _hook_strict_enabled(strict) and tool_name in (None, "Read", "read_file") \
                     and not _query_stamp_fresh() \
                     and _target_is_indexed(fp, root) \
-                    and _mark_session_denied(str(d.get("session_id") or "")):
+                    and _mark_session_denied(session_id):
                 sys.stdout.write(_READ_DENY)
                 return
             sys.stdout.write(_nudge_for_out(_READ_NUDGE))
@@ -2584,7 +2597,7 @@ def dispatch_command(cmd: str) -> None:
         # tool calls. Graph guidance reaches the agent via AGENTS.md / skill instead.
         sys.exit(0)
     elif cmd == "hook-guard":
-        # Shell-agnostic Claude/Codebuddy PreToolUse guard (#522). Replaces the old
+        # Shell-agnostic Claude/Codebuddy/Grok PreToolUse guard (#522). Replaces the old
         # inline-bash hooks that failed on Windows. Prints an additionalContext nudge
         # toward graphify when a fresh in-project graph exists; always exits 0. In
         # strict mode (opt-in, `hook-guard read --strict`) it blocks the first raw

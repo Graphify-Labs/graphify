@@ -23,7 +23,10 @@ if str(REPO_ROOT) not in sys.path:
 from graphify.cache import save_semantic_cache  # noqa: E402
 from tools.skillgen import gen  # noqa: E402
 
-_ROUTING_PREFIX = "Only dispatch subagents for files listed in"
+_ROUTING_PREFIXES = (
+    "Only dispatch subagents for files listed in",
+    "Only extract files listed in",  # sequential hosts (e.g. grok)
+)
 
 
 def _split_host_bodies():
@@ -37,7 +40,10 @@ def _split_host_bodies():
 
 def test_all_cached_run_is_routed_through_the_b3_merge():
     for a in _split_host_bodies():
-        routing = next(ln for ln in a.content.splitlines() if ln.startswith(_ROUTING_PREFIX))
+        routing = next(
+            ln for ln in a.content.splitlines()
+            if any(ln.startswith(p) for p in _ROUTING_PREFIXES)
+        )
         assert "skip to Part C directly" not in routing, a.path
         assert "still run Step B3" in routing, a.path
 

@@ -67,6 +67,12 @@ def _v8_baseline_ref(platform_key: str) -> str:
         # amp's modulo the install/uninstall command wording (prose, not headings),
         # so amp's v8 body is the correct per-host coverage baseline.
         return f"{_V8_BASELINE_SHA}:graphify/skill-amp.md"
+    if platform_key == "grok":
+        # `grok` is a post-v8 platform with no own v8 body. Like `agents`, it reads
+        # AGENTS.md and renders the agents-md hooks reference, so amp's v8 body (the
+        # agents-md heading set) is its coverage baseline. Pi's body would not do:
+        # it carries the claude-md "## For native CLAUDE.md integration" heading.
+        return f"{_V8_BASELINE_SHA}:graphify/skill-amp.md"
     return f"{_V8_BASELINE_SHA}:graphify/skill-{platform_key}.md"
 
 # Immutable baseline for --always-on-roundtrip. The six always-on instruction
@@ -149,6 +155,40 @@ _QUERY_STUB = "query-stub/default.md"
 # NOT support PreToolUse hooks; amp's v8 had no such caveat, so its slot is empty.
 # Each variant also drives the @@HOOKS_TARGET@@ pointer text in the core. The
 # variant key matches the prose target file the pointer names.
+# Semantic-extraction framing (Step 3 Part B), selected per platform by the
+# `semantic` field. The shared core and three shared references carry
+# @@SEM_<NAME>@@ slots wherever the prose assumes a subagent-dispatching host
+# (Agent-tool mandate, subagent_type, per-call `usage`, "dispatch subagents"). Each
+# slot is filled from fragments/semantic/<mode>/<name>.md (NAME lower-cased,
+# underscores -> hyphens). The default `subagents` mode holds today's exact text,
+# so every subagent host renders byte-identically; `sequential` is for hosts whose
+# skill extracts the chunks in-session, one after another (grok), and must not be
+# told to call an Agent tool. A mode must define every slot.
+_SEMANTIC_MODES = ("subagents", "sequential")
+_SEMANTIC_SLOTS = (
+    # core/core.md
+    "deep-mode",
+    "gemini-alt",
+    "no-key-fallback",
+    "parallel-ast",
+    "part-a-intro",
+    "part-b-heading",
+    "fast-path",
+    "mandate-estimate",
+    "b0-intro",
+    "cache-comment",
+    "uncached-only",
+    "b3-collect",
+    # references/shared/extraction-spec-compact.md
+    "spec-title",
+    "spec-intro",
+    "spec-role",
+    # references/shared/transcribe.md
+    "transcribe-docs",
+    # references/shared/update.md
+    "update-code-only",
+    "update-video",
+)
 _HOOKS_SOURCE = {
     "claude-md": "references/shared/hooks.md",
     "agents-md": "references/host/hooks-agents-md.md",
@@ -164,6 +204,12 @@ _TRAE_PRETOOLUSE_NOTE = (
     "The AGENTS.md rules are the always-on mechanism — there is no automatic graph "
     "rebuild on tool use. Run `/graphify --update` manually after code changes if "
     "the graph needs refreshing.\n"
+)
+_GROK_PRETOOLUSE_NOTE = (
+    "\n> **Note:** `graphify grok install` also registers PreToolUse hooks in "
+    "`.grok/hooks/graphify.json` (the same `graphify hook-guard` nudges as Claude "
+    "Code). Grok runs project hooks, AGENTS.md and project skills only in a trusted "
+    "folder: run `grok --trust` once, or `/hooks-trust` in a session.\n"
 )
 _AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
     "trae": {
@@ -189,6 +235,18 @@ _AGENTS_MD_HOOKS: dict[str, dict[str, str]] = {
         "install_block": "graphify agents install",
         "uninstall_block": "graphify agents uninstall  # remove the section",
         "pretooluse_note": "",
+    },
+    "grok": {
+        # Grok Build reads AGENTS.md; `graphify grok install` writes the skill
+        # ($GROK_HOME/skills, or .grok/skills with --project) plus the AGENTS.md
+        # section, exactly like `graphify amp install`, plus Claude Code's
+        # PreToolUse hooks in .grok/hooks/graphify.json (installed the way the
+        # Codex hook is).
+        "heading_suffix": "",
+        "host_display": "Grok Build",
+        "install_block": "graphify grok install",
+        "uninstall_block": "graphify grok uninstall  # remove the section and the hooks",
+        "pretooluse_note": _GROK_PRETOOLUSE_NOTE,
     },
 }
 # The prose file name the lean-core hooks pointer names, per hooks variant.
@@ -246,6 +304,12 @@ _CONSOLIDATION_ALLOWLIST: dict[str, frozenset[str]] = {
     # vscode's minimal v8 step/part headings, renamed by the shared lean core.
     # The build/cluster, report/visualization, and completion-summary content is
     # all present under the core's Step 4/5/6/9 headings.
+    # grok is the semantic = "sequential" host: its Part B extracts chunks
+    # in-session, so the "(parallel subagents)" heading is re-worded. Same content
+    # slot, same position (fragments/semantic/sequential/part-b-heading.md).
+    "grok": frozenset({
+        "#### Part B - Semantic extraction (parallel subagents)",
+    }),
     "vscode": frozenset({
         "#### Part A - Structural extraction (AST, free, no API cost)",
         "#### Part B - Semantic extraction (AI, costs tokens)",
@@ -279,6 +343,7 @@ class Platform:
     shell: str = "posix"
     claude_md: bool = False
     hooks_variant: str = "claude-md"
+    semantic: str = "subagents"
     extra_sections: tuple[str, ...] = ()
     # monolith-only inputs
     monolith: str | None = None
@@ -317,6 +382,7 @@ def load_platforms() -> dict[str, Platform]:
             shell=cfg.get("shell", "posix"),
             claude_md=bool(cfg.get("claude_md", False)),
             hooks_variant=cfg.get("hooks_variant", "claude-md"),
+            semantic=cfg.get("semantic", "subagents"),
             extra_sections=tuple(cfg.get("extra_sections", [])),
             monolith=cfg.get("monolith"),
             roundtrip_ref=cfg.get("roundtrip_ref"),
@@ -511,6 +577,25 @@ def _core_to_powershell(body: str) -> str:
     return translated
 
 
+def _fill_semantic_slots(text: str, platform: Platform) -> str:
+    """Fill the @@SEM_<NAME>@@ slots present in *text* from the platform's semantic mode.
+
+    Slots are whole lines/paragraphs; each fragment is inserted with its trailing
+    newline stripped, exactly like @@DISPATCH@@, so the default `subagents` mode
+    reproduces the pre-slot text byte for byte. Text without slots is returned as is.
+    """
+    if platform.semantic not in _SEMANTIC_MODES:
+        raise ValueError(
+            f"unknown semantic mode '{platform.semantic}' for platform '{platform.key}'"
+        )
+    for name in _SEMANTIC_SLOTS:
+        tag = "@@SEM_" + name.upper().replace("-", "_") + "@@"
+        if tag in text:
+            body = _read_fragment(f"semantic/{platform.semantic}/{name}.md").rstrip("\n")
+            text = text.replace(tag, body)
+    return text
+
+
 def _render_core(platform: Platform) -> str:
     """Fill the shared core template's per-platform slots for this platform.
 
@@ -537,7 +622,8 @@ def _render_core(platform: Platform) -> str:
         extra = ""
 
     body = (
-        template.replace("@@FRONTMATTER@@", _render_frontmatter(platform))
+        _fill_semantic_slots(template, platform)
+        .replace("@@FRONTMATTER@@", _render_frontmatter(platform))
         .replace("@@INSTALL@@", install)
         .replace("@@INTERP_GUARD@@", interp_guard)
         .replace("@@DISPATCH@@", dispatch)
@@ -612,7 +698,12 @@ def render(platform: Platform) -> list[RenderedArtifact]:
         if name == "hooks" and platform.hooks_variant == "agents-md":
             body = _render_agents_md_hooks(platform)
         else:
-            body = _read_fragment(references[name])
+            body = _fill_semantic_slots(_read_fragment(references[name]), platform)
+            if "@@" in body:
+                leftover = sorted(set(re.findall(r"@@\w+@@", body)))
+                raise ValueError(
+                    f"unfilled reference slots for '{platform.key}' in {name}.md: {leftover}"
+                )
         rel = f"{platform.refs_dst}/{name}.md"
         artifacts.append(RenderedArtifact(rel, body))
     return artifacts

@@ -138,8 +138,14 @@ def test_extraction_states_no_api_key_required_for_every_host():
     for a in bodies:
         assert "graphify needs no API key" in a.content, a.path
         assert "Never ask the user for one, and never block on one." in a.content, a.path
-        # the no-key fallback must not be framed *only* around subagent dispatch
-        assert "cannot dispatch subagents" in a.content, a.path
+        # the no-key fallback must not be framed *only* around subagent dispatch.
+        # Subagent hosts name the terminal-only case; semantic = "sequential" hosts
+        # (grok) have no subagent framing at all and say to extract in-session.
+        assert (
+            "cannot dispatch subagents" in a.content
+            or "extract the semantic chunks yourself, sequentially" in a.content
+        ), a.path
+        assert "do not stall" in a.content.lower(), a.path
         # where a host prints the GEMINI key tip, the clarity must precede it (be
         # hoisted) rather than sit buried after the key check (aider/devin print no
         # tip — they are the model themselves — so the check only applies if present)
@@ -890,8 +896,12 @@ def test_audit_allowlist_documents_only_consolidations():
     for hs in gen._CONSOLIDATION_ALLOWLIST.values():
         all_allowlisted |= set(hs)
     assert "## For native AGENTS.md integration (Trae)" not in all_allowlisted
-    # Only the two minimal-body hosts carry per-host consolidations.
-    assert set(gen._CONSOLIDATION_ALLOWLIST) == {"kilo", "vscode"}
+    # Only the two minimal-body hosts carry per-host consolidations, plus grok's
+    # single re-worded Part B heading (its semantic = "sequential" slot).
+    assert set(gen._CONSOLIDATION_ALLOWLIST) == {"kilo", "vscode", "grok"}
+    assert gen._CONSOLIDATION_ALLOWLIST["grok"] == frozenset({
+        "#### Part B - Semantic extraction (parallel subagents)",
+    })
 
 
 # --- the trae / trae-cn native AGENTS.md integration fix -----------------------

@@ -1,9 +1,9 @@
-@@SEM_SPEC_TITLE@@
+# graphify reference: extraction prompt (compact)
 
-@@SEM_SPEC_INTRO@@
+Load this in Step 3 Part B when the corpus has at least one doc, paper, or image chunk. A pure-code corpus skips Part B and never reads this file. Apply the prompt below verbatim to each chunk you extract (substitute FILE_LIST, CHUNK_NUM, TOTAL_CHUNKS, and DEEP_MODE).
 
 ```
-@@SEM_SPEC_ROLE@@
+You are a graphify semantic extractor. Read the files listed and extract a knowledge graph fragment.
 Output ONLY valid JSON matching the schema below - no explanation, no markdown fences, no preamble.
 
 Files (chunk CHUNK_NUM of TOTAL_CHUNKS):

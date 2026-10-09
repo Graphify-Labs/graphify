@@ -12,9 +12,7 @@ import sys, json
 from graphify.detect import detect_incremental, save_manifest
 from pathlib import Path
 
-from graphify.paths import out_path
-from graphify.watch import _read_build_excludes, _read_build_gitignore
-result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))
+result = detect_incremental(Path('INPUT_PATH'))
 new_total = result.get('new_total', 0)
 print(json.dumps(result, indent=2, ensure_ascii=False))
 Path('graphify-out/.graphify_incremental.json').write_text(json.dumps(result, ensure_ascii=False), encoding=\"utf-8\")
@@ -63,9 +61,9 @@ print('code_only:', code_only)
 "
 ```
 
-@@SEM_UPDATE_CODE_ONLY@@
+If `code_only` is True: print `[graphify update] Code-only changes detected - skipping semantic extraction (no LLM needed)`, run only Step 3A (AST) on the changed files, skip Step 3B entirely (no semantic extraction), then go straight to merge and Steps 4–8.
 
-@@SEM_UPDATE_VIDEO@@
+If `code_only` is False (any changed file is a doc/paper/image/video): **first, if any changed file is in `new_files['video']`, run `references/transcribe.md` (Step 2.5) on those files, then rewrite `.graphify_detect.json` to move the resulting transcript paths into `files['document']` and drop `files['video']`** — otherwise raw `.mp4/.mp3` paths are fed to semantic extraction as unreadable media (#1392). Then run the full Steps 3A–3C pipeline as normal.
 
 
 If no new files exist (only deletions), create an empty extraction so the merge step can prune:
@@ -176,7 +174,7 @@ $(cat graphify-out/.graphify_python) -c "
 import json
 from graphify.analyze import graph_diff
 from graphify.build import build_from_json
-from graphify.paths import load_node_link_graph
+from networkx.readwrite import json_graph
 import networkx as nx
 from pathlib import Path
 
@@ -186,7 +184,7 @@ new_extract = json.loads(Path('graphify-out/.graphify_extract.json').read_text(e
 G_new = build_from_json(new_extract, directed=IS_DIRECTED)
 
 if old_data:
-    G_old = load_node_link_graph(old_data)
+    G_old = json_graph.node_link_graph(old_data, edges='links')
     diff = graph_diff(G_old, G_new)
     print(diff['summary'])
     if diff['new_nodes']:

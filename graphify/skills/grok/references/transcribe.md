@@ -45,7 +45,7 @@ print(f'Transcribed {len(transcript_paths)} file(s)', file=sys.stderr)
 
 After transcription:
 - Read the transcript paths from `graphify-out/.graphify_transcripts.json`
-@@SEM_TRANSCRIBE_DOCS@@
+- Add them to the docs list before semantic extraction in Step 3B
 - Print how many transcripts were created: `Transcribed N video file(s) -> treating as docs`
 - If transcription fails for a file, print a warning and continue with the rest
 

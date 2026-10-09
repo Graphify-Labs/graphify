@@ -988,6 +988,7 @@ _GRAPHIFY_INSTALLED_FILES = frozenset({
     (".kilo", "plugins", "graphify.js"),      # kilo
     (".kiro", "steering", "graphify.md"),     # kiro
     (".opencode", "plugins", "graphify.js"),  # opencode
+    (".grok", "hooks", "graphify.json"),      # grok (own hook file, not a shared edit)
     (".windsurf", "rules", "graphify.md"),    # devin
 })
 
