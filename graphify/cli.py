@@ -1168,6 +1168,245 @@ def _reenter_main() -> None:
     main()
 
 
+_PIPELINE_STEPS: dict[str, str] = {
+    "detect": "scan a corpus and write .graphify_detect.json",
+    "extract-ast": "AST-extract the detected code files into .graphify_ast.json",
+    "empty-semantic": "write an empty .graphify_semantic.json (code-only corpora)",
+    "cache-check": "split detected content files into cache hits and misses",
+    "merge-chunks": "merge .graphify_chunk_NN.json into .graphify_semantic_new.json",
+    "save-cache": "stamp this run's semantic output into the extraction cache",
+    "merge-semantic": "merge cached + new results into .graphify_semantic.json",
+    "merge-extraction": "merge AST + semantic into .graphify_extract.json",
+    "build": "build, cluster, analyze, and write graph.json + GRAPH_REPORT.md",
+    "diagnose": "read-only integrity gate over the merged extraction",
+    "label": "apply curated community labels and regenerate the report",
+    "save-manifest": "stamp the manifest and update the cost tracker",
+    "cleanup": "remove the per-run sidecars",
+}
+
+
+def _pipeline_usage() -> str:
+    lines = ["Usage: graphify pipeline <step> [options]", "", "Steps:"]
+    width = max(len(s) for s in _PIPELINE_STEPS)
+    for step, desc in _PIPELINE_STEPS.items():
+        lines.append(f"  {step.ljust(width)}  {desc}")
+    lines += [
+        "",
+        "Run 'graphify pipeline <step> --help' for that step's options.",
+        "",
+        "These are the agent skill's pipeline steps as plain commands, so the skill",
+        "needs no inline `python -c` blocks and no interpreter path substitution (#197).",
+    ]
+    return "\n".join(lines)
+
+
+def _cmd_pipeline(argv: list[str]) -> None:
+    """Dispatch `graphify pipeline <step> [...]` (see the dispatch site for why)."""
+    from graphify import pipeline as _pl
+
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(_pipeline_usage())
+        return
+
+    step = argv[0]
+    if step not in _PIPELINE_STEPS:
+        print(f"error: unknown pipeline step '{step}'.", file=sys.stderr)
+        print("Available: " + ", ".join(_PIPELINE_STEPS), file=sys.stderr)
+        sys.exit(1)
+
+    rest = argv[1:]
+    if any(a in ("-h", "--help") for a in rest):
+        print(_pipeline_usage())
+        return
+
+    # Shared option parsing. Values arrive as argparse-style --flag=value or
+    # --flag value; the skill passes bare paths positionally per step.
+    opts: dict[str, str] = {}
+    positional: list[str] = []
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a.startswith("--") and "=" in a:
+            k, v = a[2:].split("=", 1)
+            opts[k] = v
+            i += 1
+        elif a.startswith("--"):
+            k = a[2:]
+            if i + 1 < len(rest) and not rest[i + 1].startswith("--"):
+                opts[k] = rest[i + 1]
+                i += 2
+            else:
+                opts[k] = "true"
+                i += 1
+        else:
+            positional.append(a)
+            i += 1
+
+    # ``--out`` is where the per-run sidecars live (the directory that gets a
+    # ``graphify-out/`` inside it), defaulting to the cwd — which is where the
+    # skill's own bash blocks wrote them, and where Part C globs (#1392).
+    out = opts.get("out")
+    directed = opts.get("directed") in ("1", "true", "yes")
+    force = opts.get("force") in ("1", "true", "yes")
+    # `--no-gitignore` is the conventional spelling across the CLI; `--gitignore
+    # false` also works. Both must be honored, or the flag is silently dropped.
+    gitignore = (
+        opts.get("gitignore", "true") not in ("0", "false", "no")
+        and opts.get("no-gitignore") not in ("1", "true", "yes")
+    )
+
+    def _scan_path() -> str | None:
+        """The corpus root, defaulting to the cwd."""
+        if positional:
+            return positional[0]
+        return opts.get("path")
+
+    try:
+        if step == "detect":
+            target = _scan_path() or "."
+            result = _pl.step_detect(
+                target, out=out,
+                gitignore=gitignore,
+                google_workspace=opts.get("google-workspace") in ("1", "true", "yes"),
+                exclude=[e for e in (opts.get("exclude") or "").split(",") if e] or None,
+            )
+            print(f"Detected {result.get('total_files', 0)} files")
+            return
+
+        if step == "extract-ast":
+            result = _pl.step_extract_ast(_scan_path(), out=out)
+            if result.get("nodes"):
+                print(f"AST: {len(result['nodes'])} nodes, {len(result['edges'])} edges")
+            else:
+                print("No code files - skipping AST extraction")
+            return
+
+        if step == "empty-semantic":
+            _pl.step_empty_semantic(out=out)
+            print("Wrote empty semantic sidecar")
+            return
+
+        if step == "cache-check":
+            stats = _pl.step_cache_check(
+                _scan_path(), out=out,
+                prompt_file=opts.get("prompt-file"),
+                mode=opts.get("mode"),
+            )
+            print(f"Cache: {stats['hits']} files hit, {stats['misses']} files need extraction")
+            return
+
+        if step == "merge-chunks":
+            merged = _pl.step_merge_chunks(out=out)
+            print(
+                f"Merged chunks: {len(merged['nodes'])} nodes, {len(merged['edges'])} edges, "
+                f"{merged['input_tokens']:,} in / {merged['output_tokens']:,} out tokens"
+            )
+            return
+
+        if step == "save-cache":
+            saved = _pl.step_save_cache(
+                _scan_path(), out=out,
+                prompt_file=opts.get("prompt-file"),
+                mode=opts.get("mode"),
+            )
+            print(f"Cached {saved} files")
+            return
+
+        if step == "merge-semantic":
+            merged = _pl.step_merge_semantic(out=out)
+            print(f"Extraction complete - {len(merged['nodes'])} nodes, {len(merged['edges'])} edges")
+            return
+
+        if step == "merge-extraction":
+            merged = _pl.step_merge_extraction(out=out)
+            print(
+                f"Merged: {len(merged['nodes'])} nodes, {len(merged['edges'])} edges"
+            )
+            return
+
+        if step == "build":
+            stats = _pl.step_build(_scan_path(), out=out, directed=directed, force=force)
+            print(
+                f"Graph: {stats['nodes']} nodes, {stats['edges']} edges, "
+                f"{stats['communities']} communities"
+            )
+            return
+
+        if step == "diagnose":
+            from graphify.diagnostics import format_diagnostic_report
+            summary = _pl.step_diagnose(_scan_path(), out=out, directed=directed)
+            print(format_diagnostic_report(summary))
+            flags = [
+                f"{summary[k]} {label}"
+                for k, label in (
+                    ("dangling_endpoint_edges", "dangling-endpoint edges"),
+                    ("missing_endpoint_edges", "missing-endpoint edges"),
+                    ("self_loop_edges", "self-loop edges"),
+                    ("directed_same_endpoint_collapsed_edges", "collapsed (directed) edges"),
+                    ("undirected_same_endpoint_collapsed_edges", "collapsed (undirected) edges"),
+                )
+                if summary.get(k, 0)
+            ]
+            print(
+                "GRAPH HEALTH WARNING: " + "; ".join(flags)
+                + " - graph may be incomplete/corrupt."
+                if flags
+                else "Graph health: OK (no dangling/missing/collapsed edges)."
+            )
+            return
+
+        if step == "label":
+            if "labels" not in opts:
+                print(
+                    "error: --labels <json> required "
+                    '(e.g. --labels \'{"0": "Attention Mechanism"}\')',
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            try:
+                labels = json.loads(opts["labels"])
+            except json.JSONDecodeError as exc:
+                print(f"error: --labels is not valid JSON: {exc}", file=sys.stderr)
+                sys.exit(1)
+            if not isinstance(labels, dict) or not labels:
+                print("error: --labels must be a non-empty JSON object of id -> name",
+                      file=sys.stderr)
+                sys.exit(1)
+            bad_keys = [k for k in labels if not str(k).lstrip("-").isdigit()]
+            if bad_keys:
+                print(
+                    f"error: --labels keys must be community ids (integers); "
+                    f"got {bad_keys[:3]}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            _pl.step_label(_scan_path(), out=out, labels=labels,
+                           directed=directed, force=force)
+            print("Report updated with community labels")
+            return
+
+        if step == "save-manifest":
+            stats = _pl.step_save_manifest(_scan_path(), out=out, kind=opts.get("kind", "both"))
+            print(
+                f'This run: {stats["input_tokens"]:,} input tokens, '
+                f'{stats["output_tokens"]:,} output tokens'
+            )
+            print(
+                f'All time: {stats["total_input_tokens"]:,} input, '
+                f'{stats["total_output_tokens"]:,} output ({stats["runs"]} runs)'
+            )
+            return
+
+        if step == "cleanup":
+            removed = _pl.step_cleanup(out=out)
+            print(f"Removed {len(removed)} sidecar file(s)")
+            return
+
+    except _pl.PipelineError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
 def dispatch_command(cmd: str) -> None:
     if cmd == "provider":
         from graphify.llm import _custom_providers_path, BACKENDS
@@ -4877,6 +5116,21 @@ def dispatch_command(cmd: str) -> None:
         )
         _print_cloud_cta(graphify_out)
         stages.total()
+
+    elif cmd == "pipeline":
+        # `graphify pipeline <step> [...]` — the agent skill's pipeline steps as
+        # subcommands (#197).
+        #
+        # The skill used to carry each step as `$(cat graphify-out/.graphify_python)
+        # -c "..."`. That form trips Claude Code's command_substitution and
+        # "newline followed by #" approval prompts once per step and cannot be
+        # allowlisted, so a run cost ~30 manual confirms. Every step is a plain
+        # `graphify pipeline <step> <args>` here instead: no inline script, no
+        # command substitution, and `Bash(graphify *)` is allowlistable.
+        #
+        # The step bodies live in graphify.pipeline and are transcriptions of the
+        # inline blocks they replace, so a run produces the same graph.json.
+        _cmd_pipeline(sys.argv[2:])
 
     elif cmd == "cache-check":
         # graphify cache-check <files_from> [--root <dir>] [--mode <m> | --deep]

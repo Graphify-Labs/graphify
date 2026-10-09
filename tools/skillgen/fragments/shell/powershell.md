@@ -70,4 +70,7 @@ INPUT_PATH
 
 If the import succeeds, print nothing and move straight to Step 2.
 
-**In every subsequent block, run Python through the saved interpreter — `& (Get-Content graphify-out\.graphify_python)` in place of a bare `python3` — so every step uses the interpreter that actually has graphify.**
+Every pipeline step from here on is a plain `graphify` command, so no later block
+needs the saved interpreter. The `.graphify_python` file above is kept only for the
+pre-commit hook, which reads it on a later run. The `.graphify_root` marker written
+here is what `graphify update` (with no argument) and that hook read back.
