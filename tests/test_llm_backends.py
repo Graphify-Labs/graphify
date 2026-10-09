@@ -8,6 +8,12 @@ import pytest
 from graphify import llm
 
 
+@pytest.fixture(autouse=True)
+def _clear_ollama_seed_env(monkeypatch):
+    """Keep a developer's ambient seed from changing request-shape tests."""
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_SEED", raising=False)
+
+
 def _clear_backend_env(monkeypatch):
     for env_key in (
         "GEMINI_API_KEY",
@@ -648,6 +654,180 @@ def _install_capturing_openai(monkeypatch):
     fake_module.OpenAI = _FakeOpenAI
     monkeypatch.setitem(sys.modules, "openai", fake_module)
     return captured
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("0", 0),
+        ("  00042  ", 42),
+        ("9223372036854775807", 9223372036854775807),
+    ],
+)
+def test_resolve_ollama_seed(monkeypatch, raw, expected):
+    if raw is None:
+        monkeypatch.delenv("GRAPHIFY_OLLAMA_SEED", raising=False)
+    else:
+        monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", raw)
+
+    assert llm._resolve_ollama_seed() == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "-1",
+        "+1",
+        "1.0",
+        "1e3",
+        "0x10",
+        "1 2",
+        "١",
+        "9223372036854775808",
+    ],
+)
+def test_invalid_ollama_seed_fails_before_client_construction(monkeypatch, raw):
+    import sys
+    import types
+
+    constructor_calls = []
+
+    class _FakeOpenAI:
+        def __init__(self, *args, **kwargs):
+            constructor_calls.append((args, kwargs))
+
+    fake_module = types.ModuleType("openai")
+    setattr(fake_module, "OpenAI", _FakeOpenAI)
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", raw)
+
+    with pytest.raises(
+        ValueError,
+        match=r"GRAPHIFY_OLLAMA_SEED.*0\.\.9223372036854775807",
+    ):
+        llm._call_openai_compat(
+            "http://localhost:11434/v1",
+            "ollama",
+            "qwen2.5-coder:7b",
+            "user msg",
+            backend="ollama",
+        )
+
+    assert constructor_calls == []
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("0", 0),
+        ("  00042  ", 42),
+        ("9223372036854775807", 9223372036854775807),
+    ],
+)
+def test_ollama_seed_is_top_level_and_preserves_extra_body(monkeypatch, raw, expected):
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", raw)
+    monkeypatch.setenv("GRAPHIFY_DISABLE_THINKING", "1")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_NUM_CTX", "65536")
+    monkeypatch.delenv("GRAPHIFY_OLLAMA_KEEP_ALIVE", raising=False)
+
+    llm._call_openai_compat(
+        "http://localhost:11434/v1",
+        "ollama",
+        "qwen2.5-coder:7b",
+        "user msg",
+        backend="ollama",
+    )
+
+    assert captured["seed"] == expected
+    assert captured["extra_body"] == {
+        "thinking": {"type": "disabled"},
+        "options": {"num_ctx": 65536},
+        "keep_alive": "30m",
+    }
+
+
+@pytest.mark.parametrize("raw", [None, "", "   "])
+def test_ollama_seed_disabled_omits_request_key(monkeypatch, raw):
+    captured = _install_capturing_openai(monkeypatch)
+    if raw is not None:
+        monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", raw)
+
+    llm._call_openai_compat(
+        "http://localhost:11434/v1",
+        "ollama",
+        "qwen2.5-coder:7b",
+        "user msg",
+        backend="ollama",
+    )
+
+    assert "seed" not in captured
+
+
+def test_call_llm_ollama_forwards_seed(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _backend: "ollama")
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", "7")
+
+    llm._call_llm("label this", backend="ollama")
+
+    assert captured["seed"] == 7
+
+
+def test_call_llm_invalid_ollama_seed_fails_before_api_key_lookup(monkeypatch):
+    api_key_calls = []
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", "-1")
+    monkeypatch.setattr(
+        llm,
+        "_get_backend_api_key",
+        lambda backend: api_key_calls.append(backend),
+    )
+
+    with pytest.raises(ValueError, match="GRAPHIFY_OLLAMA_SEED"):
+        llm._call_llm("label this", backend="ollama")
+
+    assert api_key_calls == []
+
+
+def test_non_ollama_backend_ignores_invalid_ollama_seed(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", "invalid")
+
+    llm._call_openai_compat(
+        "https://api.openai.com/v1",
+        "sk-test",
+        "gpt-4.1-mini",
+        "user msg",
+        backend="openai",
+    )
+
+    assert "seed" not in captured
+
+
+def test_custom_ollama_url_provider_ignores_seed_and_preserves_extra_body(monkeypatch):
+    captured = _install_capturing_openai(monkeypatch)
+    monkeypatch.setenv("GRAPHIFY_OLLAMA_SEED", "invalid")
+    monkeypatch.setattr(llm, "_get_backend_api_key", lambda _backend: "custom-key")
+    monkeypatch.setitem(
+        llm.BACKENDS,
+        "local-custom",
+        {
+            "base_url": "http://localhost:11434/v1",
+            "default_model": "custom-model",
+            "env_key": "CUSTOM_API_KEY",
+            "pricing": {"input": 0.0, "output": 0.0},
+            "temperature": 0,
+            "extra_body": {"options": {"num_ctx": 4096}},
+        },
+    )
+
+    llm._call_llm("label this", backend="local-custom")
+
+    assert "seed" not in captured
+    assert captured["extra_body"] == {"options": {"num_ctx": 4096}}
 
 
 def test_ollama_extra_body_sets_num_ctx_and_keep_alive(monkeypatch):
