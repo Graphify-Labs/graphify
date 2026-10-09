@@ -200,3 +200,41 @@ def test_issue_3797_shapes_still_resolve(tmp_path):
         caller = _find(r, name, "editor")
         assert (caller, istore_save) in calls
         assert (caller, store_save) not in calls
+
+
+_CONFIGS = (
+    "namespace Demo\n{\n"
+    "    public class Config { public void WriteIds() { } }\n"
+    "    public class List { public void WriteIds() { } }\n"
+    "}\n"
+)
+
+
+def test_element_of_type_parameter_list_stays_unresolved(tmp_path):
+    # `Config` here is the class's type parameter, not Demo.Config.
+    calls, r = _calls(tmp_path, {
+        "Config.cs": _CONFIGS,
+        "Holder.cs": (
+            "using System.Collections.Generic;\nnamespace Demo\n{\n"
+            "    public class Holder<Config>\n    {\n"
+            "        public List<Config> Items { get; set; }\n"
+            "        public void Run() { Items[0].WriteIds(); }\n"
+            "        public void Local(List<Config> xs) { xs[0].WriteIds(); }\n"
+            "    }\n}\n"
+        ),
+    })
+    assert not [c for c in calls if "holder" in c[0]]
+
+
+def test_element_of_nested_list_stays_unresolved(tmp_path):
+    calls, r = _calls(tmp_path, {
+        "Config.cs": _CONFIGS,
+        "Grid.cs": (
+            "using System.Collections.Generic;\nnamespace Demo\n{\n"
+            "    public class Grid\n    {\n"
+            "        private List<List<Config>> _grid;\n"
+            "        public void Run() { _grid[0].WriteIds(); }\n"
+            "    }\n}\n"
+        ),
+    })
+    assert not [c for c in calls if "grid" in c[0]]

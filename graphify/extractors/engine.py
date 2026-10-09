@@ -2202,7 +2202,14 @@ def _csharp_element_type_name(type_node, source: bytes) -> str | None:
         return None
     if elem is None or elem.type not in ("identifier", "qualified_name", "generic_name"):
         return None
-    return _csharp_receiver_type_name(elem, source)
+    name = _csharp_receiver_type_name(elem, source)
+    # A nested collection (`List<List<T>>`) or a type parameter (`List<T>` in
+    # `class Box<T>`) names no concrete element class.
+    if name in ("List", "IList", "IReadOnlyList") or name in (
+        _csharp_type_parameters_in_scope(type_node, source)
+    ):
+        return None
+    return name
 
 
 def _csharp_method_receiver_types(
@@ -5687,8 +5694,6 @@ def _extract_generic(
                 if type_name[:1].isupper():
                     fields = csharp_field_types.setdefault(parent_class_nid, {})
                     elem_type = _csharp_element_type_name(type_node, source)
-                    if elem_type in csharp_type_params:
-                        elem_type = None
                     for child in node.children:
                         if child.type != "variable_declaration":
                             continue
