@@ -4804,7 +4804,24 @@ def _extract_generic(
             if config.ts_module == "tree_sitter_ruby":
                 ruby_segments = class_name.split("::")
                 class_name = "::".join(ruby_namespace + ruby_segments)
-            class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
+            class_name_for_id = class_name
+            if config.ts_module == "tree_sitter_c_sharp":
+                # `name` is just the bare identifier; a type_parameter_list is
+                # a separate sibling, so a generic and a non-generic type of
+                # the same name (`Effect` / `Effect<T>`, `Comparer` /
+                # `Comparer<T>`, a common base-pair shape) minted the SAME id
+                # — their declarations merged, and `Effect<T> : Effect`
+                # became a self-loop (#4249). Fold the arity into the id,
+                # matching how C# metadata itself names a generic type
+                # (`` Effect`1 ``), so each arity gets its own node; the
+                # label is untouched; arity 0 keeps today's id exactly.
+                _csharp_arity = sum(
+                    1 for c in node.children if c.type == "type_parameter_list"
+                    for _p in c.children if _p.type in ("type_parameter", "identifier")
+                )
+                if _csharp_arity:
+                    class_name_for_id = f"{class_name}`{_csharp_arity}"
+            class_nid = _make_id(stem, ".".join(namespace_stack), class_name_for_id)
             if config.ts_module == "tree_sitter_python" and parent_class_nid:
                 class_nid = _make_id(parent_class_nid, class_name)
             line = node.start_point[0] + 1
@@ -5194,7 +5211,31 @@ def _extract_generic(
                         base, qualified, qualifier = base_info
                         if not base or base in csharp_type_params:
                             continue
-                        base_nid = _make_id(stem, ".".join(namespace_stack), base)
+                        # A base reference's own arity picks between a
+                        # same-named generic/non-generic pair in this file
+                        # (`Tween<T> : Effect<T>` must reach `Effect<T>`, not
+                        # the unrelated non-generic `Effect`, #4249) — same
+                        # arity-in-id convention as the declaration side.
+                        # Falls back to the bare name when no arity-suffixed
+                        # node exists in this file (an external/cross-file
+                        # base, where only the bare-name stub below applies).
+                        base_arity = 0
+                        if sub.type == "generic_name":
+                            for _tal in sub.children:
+                                if _tal.type != "type_argument_list":
+                                    continue
+                                base_arity = sum(
+                                    1 for _a in _tal.children if _a.is_named
+                                )
+                        base_nid = None
+                        if base_arity:
+                            _arity_nid = _make_id(
+                                stem, ".".join(namespace_stack), f"{base}`{base_arity}"
+                            )
+                            if _arity_nid in seen_ids:
+                                base_nid = _arity_nid
+                        if base_nid is None:
+                            base_nid = _make_id(stem, ".".join(namespace_stack), base)
                         if base_nid not in seen_ids:
                             base_nid = _make_id(base)
                             if base_nid not in seen_ids:
