@@ -456,11 +456,30 @@ The graph is the map. Your job after the pipeline is to be the guide.
 
 ## Interpreter guard for subcommands
 
-Every subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`,
-`add`) is a plain `graphify <command>` invocation run through the console script
-that is already on `PATH`, so none of them needs the saved interpreter. As with
-every pipeline step above, the `.graphify_python` file Step 1 writes exists only
-for the pre-commit hook, which reads it on a later run.
+The subcommands in this core (`--update`, `--cluster-only`, `query`, `path`,
+`explain`, `add`) are plain `graphify <command>` invocations run through the
+console script already on `PATH`, so none of them needs the saved interpreter.
+
+The on-demand reference flows these subcommands lead to (`update`, `query`,
+`add`/watch, transcription, exports) still run their own Python and read
+`graphify-out/.graphify_python`. The pre-commit hook reads it too. So before
+loading any of those, re-resolve it if `graphify-out/` is missing:
+
+```powershell
+if (-not (Test-Path graphify-out\.graphify_python)) {
+    $GRAPHIFY_PYTHON = $null
+    $graphifyCmd = Get-Command graphify -ErrorAction SilentlyContinue
+    if ($graphifyCmd) {
+        # The interpreter that owns the graphify entry point sits next to it
+        # (<env>\Scripts\python.exe for uv tool, pipx, and venv installs).
+        $py = Join-Path (Split-Path $graphifyCmd.Source) "python.exe"
+        if (Test-Path $py) { $GRAPHIFY_PYTHON = $py }
+    }
+    if (-not $GRAPHIFY_PYTHON) { $GRAPHIFY_PYTHON = "python" }
+    New-Item -ItemType Directory -Force -Path graphify-out | Out-Null
+    & $GRAPHIFY_PYTHON -c "import sys; open('graphify-out/.graphify_python', 'w', encoding='utf-8').write(sys.executable)"
+}
+```
 
 ## For --update and --cluster-only
 
