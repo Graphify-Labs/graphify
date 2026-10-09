@@ -52,6 +52,23 @@ def test_report_omits_unclassified_line_when_none():
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
     assert "Unclassified:" not in report
 
+
+def test_report_lists_skipped_sensitive_files():
+    """#2498: a file dropped by the secrets filter is named in the report, so an
+    exclusion is durable and greppable rather than a transient stderr line."""
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    detection = {**detection, "skipped_sensitive": ["tokens.json", "server.pem"]}
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "## Skipped Files" in report
+    assert "tokens.json" in report
+    assert "server.pem" in report
+
+
+def test_report_omits_skipped_section_when_none():
+    G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
+    report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
+    assert "## Skipped Files" not in report
+
 def test_report_contains_god_nodes():
     G, communities, cohesion, labels, gods, surprises, detection, tokens = make_inputs()
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project")
