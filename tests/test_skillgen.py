@@ -337,18 +337,27 @@ def test_codex_uses_compact_extraction_windows_uses_verbose():
 
 
 def test_every_platform_query_has_expansion_and_fallback():
-    """#1325: the unified query reference ships BOTH the vocab-expansion step and
-    the inline NetworkX fallback to every platform (previously split so no host
-    got both — Claude had expansion but no fallback; the rest the reverse)."""
+    """#1325: the unified query reference ships the vocab-expansion step and the
+    path/explain flows to every platform.
+
+    The inline NetworkX traversal fallback was removed with #197: it ran as an
+    inline `python -c` block, which is exactly what this change eliminates, and the
+    graphify CLI is guaranteed present by Step 1. The query reference now uses the
+    `graphify query` / `graphify path` / `graphify explain` commands directly.
+    """
     for key in ("claude", "codex", "windows", "opencode"):
         core, refs = _platform_artifacts(key)
-        # Core stub mentions both the vocab-expansion step and the inline fallback.
+        # Core stub points at the vocab-expansion step.
         assert "expand the question against the graph's own vocabulary" in core
-        assert "NetworkX traversal" in core
-        # The query reference carries expansion, fallback, and path/explain.
+        assert "NetworkX traversal" not in core, (
+            "the inline NetworkX fallback was removed (#197); the stub must not promise it"
+        )
+        # The query reference carries expansion and path/explain, via the CLI.
         q = refs["query.md"]
         assert "Constrained query expansion" in q
-        assert "If the CLI is unavailable" in q
+        assert "graphify pipeline vocab" in q
+        assert "If the CLI is unavailable" not in q
+        assert "graphify query" in q
         assert "## For /graphify path" in q
         assert "## For /graphify explain" in q
 
@@ -673,21 +682,25 @@ def test_generated_runbooks_pass_root_to_save_manifest():
     the manifest to the scan root via root='INPUT_PATH'. This guards the actual
     shipped artifacts; --check keeps them in sync with the fragments.
     """
-    targets = [
-        REPO_ROOT / "graphify" / "skill.md",
-        REPO_ROOT / "graphify" / "skill-aider.md",
-        REPO_ROOT / "graphify" / "skill-devin.md",
-    ]
-    targets += sorted((REPO_ROOT / "graphify" / "skills").glob("*/references/update.md"))
+    # The full-build and --update manifest stamping moved into the pipeline steps
+    # (#197), so the guard follows it there; the aider/devin monoliths still inline
+    # it and must keep root= too.
+    pipeline_src = (REPO_ROOT / "graphify" / "pipeline.py").read_text(encoding="utf-8")
+    for fn in ("def step_save_manifest", "def step_update_merge"):
+        body = pipeline_src.split(fn, 1)[1].split("\ndef ", 1)[0]
+        assert "save_manifest(" in body, f"{fn} must call save_manifest"
+        assert "root=" in body, f"{fn}: save_manifest must pass root= so keys stay relative (#1417)"
+
     checked = 0
-    for path in targets:
+    for path in (REPO_ROOT / "graphify" / "skill-aider.md",
+                 REPO_ROOT / "graphify" / "skill-devin.md"):
         for ln in path.read_text(encoding="utf-8").splitlines():
             if "save_manifest(" in ln and "import" not in ln:
                 checked += 1
                 assert "root=" in ln, (
                     f"{path.relative_to(REPO_ROOT)}: save_manifest without root= (#1417): {ln.strip()!r}"
                 )
-    assert checked >= 4, f"expected save_manifest calls across the runbooks, found {checked}"
+    assert checked >= 2, f"expected save_manifest calls in the monoliths, found {checked}"
 
 
 def test_devin_keeps_its_multi_field_frontmatter():

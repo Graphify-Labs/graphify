@@ -1182,6 +1182,16 @@ _PIPELINE_STEPS: dict[str, str] = {
     "label": "apply curated community labels and regenerate the report",
     "save-manifest": "stamp the manifest and update the cost tracker",
     "cleanup": "remove the per-run sidecars",
+    # query reference
+    "vocab": "extract the graph's token vocabulary into .vocab.txt",
+    # transcribe reference
+    "transcribe": "transcribe detected video/audio into .graphify_transcripts.json",
+    # update reference
+    "detect-incremental": "diff the corpus against the manifest for --update",
+    "code-only-check": "report whether every changed file is code (skip semantic)",
+    "empty-extract": "write an empty extraction for a deletions-only update",
+    "update-merge": "merge an incremental extraction and re-stamp the manifest",
+    "graph-diff": "summarize how the update changed the graph",
 }
 
 
@@ -1395,6 +1405,57 @@ def _cmd_pipeline(argv: list[str]) -> None:
                 f'All time: {stats["total_input_tokens"]:,} input, '
                 f'{stats["total_output_tokens"]:,} output ({stats["runs"]} runs)'
             )
+            return
+
+        if step == "vocab":
+            stats = _pl.step_vocab(out=out)
+            print(f"vocab: {stats['tokens']} tokens")
+            return
+
+        if step == "transcribe":
+            stats = _pl.step_transcribe(out=out)
+            print(f"Transcribed {len(stats['transcripts'])} file(s)")
+            return
+
+        if step == "detect-incremental":
+            result = _pl.step_detect_incremental(_scan_path(), out=out)
+            new_total = result.get("new_total", 0)
+            deleted = list(result.get("deleted_files", []))
+            if deleted:
+                print(f"{len(deleted)} deleted file(s) to prune.")
+            if new_total > 0:
+                print(f"{new_total} new/changed file(s) to re-extract.")
+            if new_total == 0 and not deleted:
+                print("No files changed since last run. Nothing to update.")
+            return
+
+        if step == "code-only-check":
+            stats = _pl.step_code_only_check(out=out)
+            print(f"code_only: {stats['code_only']}")
+            return
+
+        if step == "empty-extract":
+            stats = _pl.step_empty_extract(out=out)
+            print("Created empty extraction" if stats["created"] else "Extraction already exists")
+            return
+
+        if step == "update-merge":
+            stats = _pl.step_update_merge(_scan_path(), out=out, directed=directed)
+            print(
+                f"[graphify update] Merged: {stats['nodes']} nodes, {stats['edges']} edges"
+            )
+            return
+
+        if step == "graph-diff":
+            diff = _pl.step_graph_diff(out=out, directed=directed)
+            if diff is None:
+                print("No previous graph to diff against.")
+            else:
+                print(diff["summary"])
+                if diff.get("new_nodes"):
+                    print("New nodes:", ", ".join(n["label"] for n in diff["new_nodes"][:5]))
+                if diff.get("new_edges"):
+                    print("New edges:", len(diff["new_edges"]))
             return
 
         if step == "cleanup":
@@ -2332,14 +2393,53 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
 
     elif cmd == "watch":
-        watch_path = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(".")
+        # graphify watch [path] [--debounce N]
+        # With no path, watch the folder a prior build recorded in
+        # graphify-out/.graphify_root (falling back to the cwd). Reading the
+        # committed marker keeps the skill from substituting a path onto the
+        # command line, so a scan root with shell metacharacters can never be
+        # re-interpreted (#3844).
+        watch_path: Path | None = None
+        debounce = 3.0
+        _wargs = sys.argv[2:]
+        _wi = 0
+        while _wi < len(_wargs):
+            a = _wargs[_wi]
+            if a == "--debounce" and _wi + 1 < len(_wargs):
+                try:
+                    debounce = float(_wargs[_wi + 1])
+                except ValueError:
+                    print("error: --debounce requires a number", file=sys.stderr)
+                    sys.exit(1)
+                _wi += 2
+            elif a.startswith("--debounce="):
+                try:
+                    debounce = float(a.split("=", 1)[1])
+                except ValueError:
+                    print("error: --debounce requires a number", file=sys.stderr)
+                    sys.exit(1)
+                _wi += 1
+            elif not a.startswith("-"):
+                watch_path = Path(a)
+                _wi += 1
+            else:
+                _wi += 1
+        if watch_path is None:
+            marker = Path(_GRAPHIFY_OUT) / ".graphify_root"
+            if marker.is_file():
+                try:
+                    watch_path = Path(marker.read_text(encoding="utf-8-sig").strip())
+                except OSError:
+                    watch_path = Path(".")
+            else:
+                watch_path = Path(".")
         if not watch_path.exists():
             print(f"error: path not found: {watch_path}", file=sys.stderr)
             sys.exit(1)
         from graphify.watch import watch as _watch
 
         try:
-            _watch(watch_path)
+            _watch(watch_path, debounce=debounce)
         except ImportError as exc:
             print(f"error: {exc}", file=sys.stderr)
             sys.exit(1)
