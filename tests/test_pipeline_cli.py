@@ -341,6 +341,36 @@ def _run_small_build(work: Path, corpus: Path) -> None:
         assert _gx(*args, cwd=work).returncode == 0, step
 
 
+def test_boolean_flag_before_the_path_does_not_swallow_it(corpus: Path, tmp_path: Path) -> None:
+    """A boolean flag must never consume the following positional (#197 review).
+
+    `pipeline detect --no-gitignore <path>` used to read <path> as the flag's
+    value and scan the cwd instead.
+    """
+    (corpus / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+    (corpus / "ignored.py").write_text("x = 1\n", encoding="utf-8")
+    work = tmp_path / "work"
+    work.mkdir()
+    # Flag BEFORE the path.
+    p = _gx("pipeline", "detect", "--no-gitignore", str(corpus), cwd=work)
+    assert p.returncode == 0, p.stderr
+    detect = json.loads((work / "graphify-out" / ".graphify_detect.json").read_text(encoding="utf-8"))
+    files = [f for fl in detect["files"].values() for f in fl]
+    assert any(f.endswith("ignored.py") for f in files), (
+        "--no-gitignore before the path must still scan the corpus, not the cwd"
+    )
+
+
+def test_watch_rejects_a_missing_debounce_value(tmp_path: Path) -> None:
+    """`--debounce` with no value is an error, not a silent default."""
+    p = subprocess.run(
+        [sys.executable, "-m", "graphify", "watch", "--debounce"],
+        cwd=tmp_path, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    assert p.returncode != 0
+    assert "--debounce requires a number" in p.stderr
+
+
 def test_force_overrides_the_shrink_guard(corpus: Path, tmp_path: Path) -> None:
     """The #479 refusal tells the user to re-run with --force; --force must work."""
     work = tmp_path / "work"

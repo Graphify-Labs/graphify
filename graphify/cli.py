@@ -1231,6 +1231,12 @@ def _cmd_pipeline(argv: list[str]) -> None:
 
     # Shared option parsing. Values arrive as argparse-style --flag=value or
     # --flag value; the skill passes bare paths positionally per step.
+    #
+    # Boolean flags never consume the following token: without this, `detect
+    # --no-gitignore <path>` would read `<path>` as the flag's value and scan the
+    # cwd instead, and `build --directed <path>` would both drop the path and
+    # mis-parse directed. `--gitignore` is excluded — it takes a value ("false").
+    bool_flags = {"directed", "force", "no-gitignore", "google-workspace"}
     opts: dict[str, str] = {}
     positional: list[str] = []
     i = 0
@@ -1242,7 +1248,10 @@ def _cmd_pipeline(argv: list[str]) -> None:
             i += 1
         elif a.startswith("--"):
             k = a[2:]
-            if i + 1 < len(rest) and not rest[i + 1].startswith("--"):
+            if k in bool_flags:
+                opts[k] = "true"
+                i += 1
+            elif i + 1 < len(rest) and not rest[i + 1].startswith("--"):
                 opts[k] = rest[i + 1]
                 i += 2
             else:
@@ -2405,7 +2414,10 @@ def dispatch_command(cmd: str) -> None:
         _wi = 0
         while _wi < len(_wargs):
             a = _wargs[_wi]
-            if a == "--debounce" and _wi + 1 < len(_wargs):
+            if a == "--debounce":
+                if _wi + 1 >= len(_wargs):
+                    print("error: --debounce requires a number", file=sys.stderr)
+                    sys.exit(1)
                 try:
                     debounce = float(_wargs[_wi + 1])
                 except ValueError:
