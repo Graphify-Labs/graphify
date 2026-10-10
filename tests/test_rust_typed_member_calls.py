@@ -175,3 +175,40 @@ def test_schema_bump_retires_entries_cached_without_receiver_types(tmp_path: Pat
         e["relation"] == "calls" and nodes[e["source"]]["label"] == "go()" and nodes[e["target"]]["label"] == ".find()"
         for e in r["edges"]
     )
+
+
+def test_for_and_if_let_values_still_read_the_outer_binding(tmp_path: Path):
+    # The new `m` of `if let Some(m) = m.first()` / `for m in m.entries()` only exists
+    # after its value; the value's `m` is still the typed parameter.
+    calls = _calls(tmp_path, {
+        "src/matcher.rs": (
+            "pub struct Matcher;\n"
+            "impl Matcher {\n"
+            "    pub fn first(&self) -> Option<u8> { None }\n"
+            "    pub fn entries(&self) -> Vec<u8> { Vec::new() }\n"
+            "}\n"
+        ),
+        "src/use_it.rs": (
+            "use crate::matcher::Matcher;\n"
+            "pub fn pick(m: &Matcher) -> u8 { if let Some(m) = m.first() { m } else { 0 } }\n"
+            "pub fn each(m: &Matcher) -> usize { let mut n = 0; for m in m.entries() { n += m as usize; } n }\n"
+        ),
+    })
+    assert _hit(calls, "pick()", ".first()", "src/matcher.rs"), calls
+    assert _hit(calls, "each()", ".entries()", "src/matcher.rs"), calls
+
+
+def test_crate_is_the_deepest_root_above_the_file(tmp_path: Path):
+    # A `tests` module inside `src/`, and a checkout that itself sits under a
+    # folder named `src`, both keep the caller in its own crate.
+    config = "pub struct Config;\nimpl Config {{ pub fn {m}(&self) -> u8 {{ 0 }} }}\n"
+    root = tmp_path / "src" / "work"
+    calls = _calls(root, {
+        "crates/a/src/config.rs": config.format(m="load"),
+        "crates/b/src/config.rs": config.format(m="load"),
+        "crates/a/src/tests/check.rs": "use crate::config::Config;\npub fn unit(c: &Config) -> u8 { c.load() }\n",
+        "crates/a/tests/it.rs": "use a::config::Config;\npub fn integration(c: &Config) -> u8 { c.load() }\n",
+    })
+    for caller in ("unit()", "integration()"):
+        assert _hit(calls, caller, ".load()", "crates/a/src/config.rs"), (caller, calls)
+        assert not _hit(calls, caller, ".load()", "crates/b/src/config.rs"), (caller, calls)
