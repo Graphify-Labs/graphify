@@ -1184,6 +1184,28 @@ def _apply_symbol_resolution_facts(
 
     path_by_resolved = {_resolve_cached(path): path for path in paths}
     source_file_id = {_resolve_cached(path): _make_id(str(path)) for path in paths}
+
+    def reexport_file_target(path: Path) -> tuple[str, str]:
+        resolved = _resolve_cached(path)
+        stored = path_by_resolved.get(resolved, resolved)
+        try:
+            target_is_file = resolved.is_file()
+        except OSError:
+            target_is_file = False
+        if not target_is_file:
+            try:
+                relative = resolved.relative_to(root)
+            except ValueError:
+                pass
+            else:
+                identity = relative.as_posix()
+                salt = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:12]  # nosec
+                return (
+                    _make_id("unresolved_reexport", _file_stem(relative), salt),
+                    str(stored),
+                )
+        return _make_id(str(stored)), str(stored)
+
     symbol_nodes: dict[tuple[Path, str], str] = {}
     # Member nodes (`.method()` labels) share their bare name with top-level
     # symbols once the leading dot is stripped. A module can only re-export
@@ -1332,14 +1354,15 @@ def _apply_symbol_resolution_facts(
         star_exports_by_file.setdefault(source_path, []).append(target_path)
         source_id = source_file_id.get(source_path)
         if source_id is not None:
+            target_id, target_file = reexport_file_target(target_path)
             add_edge(
                 source_id,
-                _make_id(str(path_by_resolved.get(target_path, target_path))),
+                target_id,
                 "re_exports",
                 "export",
                 star_fact.line,
                 star_fact.file_path,
-                target_file=str(path_by_resolved.get(target_path, target_path)),
+                target_file=target_file,
                 type_only=star_fact.type_only,
             )
 
@@ -1364,14 +1387,15 @@ def _apply_symbol_resolution_facts(
                 namespace_fact.line,
                 namespace_fact.file_path,
             )
+            target_id, target_file = reexport_file_target(target_path)
             add_edge(
                 source_id,
-                _make_id(str(path_by_resolved.get(target_path, target_path))),
+                target_id,
                 "re_exports",
                 "export",
                 namespace_fact.line,
                 namespace_fact.file_path,
-                target_file=str(path_by_resolved.get(target_path, target_path)),
+                target_file=target_file,
                 type_only=namespace_fact.type_only,
             )
 
@@ -1397,14 +1421,15 @@ def _apply_symbol_resolution_facts(
         if origin[0] != file_path:
             source_id = source_file_id.get(file_path)
             if source_id is not None:
+                target_id, target_file = reexport_file_target(origin[0])
                 add_edge(
                     source_id,
-                    _make_id(str(path_by_resolved.get(origin[0], origin[0]))),
+                    target_id,
                     "re_exports",
                     "export",
                     export_fact.line,
                     export_fact.file_path,
-                    target_file=str(path_by_resolved.get(origin[0], origin[0])),
+                    target_file=target_file,
                     type_only=export_fact.type_only,
                 )
 
@@ -2404,6 +2429,46 @@ def _infer_scan_root_namespace(root: Path) -> str:
     return namespace
 
 
+# Vendored set of Python standard-library top-level module names (union of the
+# 3.10 and 3.13 `sys.stdlib_module_names`). A bare `import logging` almost always
+# means the stdlib module, so a loose (non-package) local file named `logging.py`
+# must NOT capture that import (#4261). This is a frozen constant, NOT the host's
+# live `sys.stdlib_module_names`, so extraction is deterministic across machines
+# and interpreter versions regardless of the Python running graphify. A deliberate
+# package shadow (`logging/__init__.py`) is still resolved — only loose modules and
+# namespace dirs are refused.
+_PYTHON_STDLIB_MODULE_NAMES = frozenset({
+    "abc", "aifc", "annotationlib", "antigravity", "argparse", "array", "ast", "asynchat",
+    "asyncio", "asyncore", "atexit", "audioop", "base64", "bdb", "binascii", "bisect",
+    "builtins", "bz2", "cProfile", "calendar", "cgi", "cgitb", "chunk", "cmath", "cmd",
+    "code", "codecs", "codeop", "collections", "colorsys", "compileall", "compression",
+    "concurrent", "configparser", "contextlib", "contextvars", "copy", "copyreg", "crypt",
+    "csv", "ctypes", "curses", "dataclasses", "datetime", "dbm", "decimal", "difflib",
+    "dis", "doctest", "email", "encodings", "ensurepip", "enum", "errno", "faulthandler",
+    "fcntl", "filecmp", "fileinput", "fnmatch", "fractions", "ftplib", "functools", "gc",
+    "genericpath", "getopt", "getpass", "gettext", "glob", "graphlib", "grp", "gzip",
+    "hashlib", "heapq", "hmac", "html", "http", "idlelib", "imaplib", "imghdr", "imp",
+    "importlib", "inspect", "io", "ipaddress", "itertools", "json", "keyword", "lib2to3",
+    "linecache", "locale", "logging", "lzma", "mailbox", "mailcap", "marshal", "math",
+    "mimetypes", "mmap", "modulefinder", "msilib", "msvcrt", "multiprocessing", "netrc",
+    "nis", "nntplib", "nt", "ntpath", "nturl2path", "numbers", "opcode", "operator",
+    "optparse", "os", "ossaudiodev", "pathlib", "pdb", "pickle", "pickletools", "pipes",
+    "pkgutil", "platform", "plistlib", "poplib", "posix", "posixpath", "pprint", "profile",
+    "pstats", "pty", "pwd", "py_compile", "pyclbr", "pydoc", "pydoc_data", "pyexpat",
+    "queue", "quopri", "random", "re", "readline", "reprlib", "resource", "rlcompleter",
+    "runpy", "sched", "secrets", "select", "selectors", "shelve", "shlex", "shutil",
+    "signal", "site", "smtpd", "smtplib", "sndhdr", "socket", "socketserver", "spwd",
+    "sqlite3", "sre_compile", "sre_constants", "sre_parse", "ssl", "stat", "statistics",
+    "string", "stringprep", "struct", "subprocess", "sunau", "symtable", "sys", "sysconfig",
+    "syslog", "tabnanny", "tarfile", "telnetlib", "tempfile", "termios", "textwrap", "this",
+    "threading", "time", "timeit", "tkinter", "token", "tokenize", "tomllib", "trace",
+    "traceback", "tracemalloc", "tty", "turtle", "turtledemo", "types", "typing",
+    "unicodedata", "unittest", "urllib", "uu", "uuid", "venv", "warnings", "wave",
+    "weakref", "webbrowser", "winreg", "winsound", "wsgiref", "xdrlib", "xml", "xmlrpc",
+    "zipapp", "zipfile", "zipimport", "zlib", "zoneinfo",
+})
+
+
 def _resolve_python_module_path(module_name: str, current_path: Path, root: Path, level: int) -> Path | None:
     if level > 0:
         base = current_path.parent
@@ -2419,7 +2484,23 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
     # src/pkg/mod.py whether the scan root is the repo or src/ (#2072). Mirrors
     # the upward walk already used for Lua (_resolve_lua_import_target, #1075).
     rel = module_name.replace(".", "/")
-    hit = _probe_python_module_candidate(root / rel)
+    # A bare absolute import whose top-level name is a stdlib module means the
+    # stdlib module, not a loose same-named local file (e.g. a non-package
+    # `scripts/logging.py` must not capture `import logging`, #4261). A deliberate
+    # package shadow (`logging/__init__.py`) is a stronger signal of intent and is
+    # still resolved; only loose .py modules and namespace dirs are refused.
+    stdlib_shadow = module_name.split(".", 1)[0] in _PYTHON_STDLIB_MODULE_NAMES
+
+    def _accept(candidate: Path | None) -> Path | None:
+        if (
+            candidate is not None
+            and stdlib_shadow
+            and candidate.name not in ("__init__.py", "__init__.pyi")
+        ):
+            return None
+        return candidate
+
+    hit = _accept(_probe_python_module_candidate(root / rel))
     if hit is not None:
         return hit
 
@@ -2433,11 +2514,11 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
     if ns and (module_name == ns or module_name.startswith(ns + ".")):
         stripped = module_name[len(ns) + 1:] if module_name != ns else ""
         if stripped:
-            hit = _probe_python_module_candidate(root / stripped.replace(".", "/"))
+            hit = _accept(_probe_python_module_candidate(root / stripped.replace(".", "/")))
             if hit is not None:
                 return hit
         else:
-            hit = _probe_python_module_candidate(root)
+            hit = _accept(_probe_python_module_candidate(root))
             if hit is not None:
                 return hit
 
@@ -2456,7 +2537,7 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
         # __init__.py) is still probed.
         if (anc / "__init__.py").is_file():
             continue
-        cand = _probe_python_module_candidate(anc / rel)
+        cand = _accept(_probe_python_module_candidate(anc / rel))
         if cand is not None:
             return cand
     return None

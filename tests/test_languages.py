@@ -3078,6 +3078,30 @@ def test_powershell_psd1_no_dangling_edges():
         assert e["source"] in node_ids, f"Dangling source in edge: {e}"
 
 
+def test_powershell_functions_in_file_scope_begin_block_are_extracted(tmp_path):
+    # File-scope begin/process/end blocks parse as pseudo-commands (command_name
+    # 'begin'), not named_block, so functions defined inside them were dropped (#4270).
+    f = tmp_path / "advanced.ps1"
+    f.write_text(
+        "[CmdletBinding()]\n"
+        "param()\n"
+        "begin {\n"
+        "    function Get-Foo { Get-Bar }\n"
+        "    function Get-Bar { 'bar' }\n"
+        "}\n"
+        "process {\n"
+        "    Get-Foo\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    r = extract_powershell(f)
+    assert "error" not in r
+    labels = {n["label"] for n in r["nodes"]}
+    assert "Get-Foo()" in labels and "Get-Bar()" in labels
+    # the call between the two helpers (inside Get-Foo's body) is recovered
+    assert ("Get-Foo", "Get-Bar") in _edge_labels(r, "calls")
+
+
 # ── TypeScript dynamic imports ───────────────────────────────────────────────
 
 def test_ts_dynamic_import_no_error():
@@ -3621,9 +3645,9 @@ def test_markdown_wikilink_fallback_unicode_normalization(tmp_path):
     vault = tmp_path / "vault"
     (vault / "log").mkdir(parents=True)
     name_nfc = unicodedata.normalize("NFC", "어휘 노트")
-    (vault / f"{name_nfc}.md").write_text("# Term\n")
+    (vault / f"{name_nfc}.md").write_text("# Term\n", encoding="utf-8")
     name_nfd = unicodedata.normalize("NFD", name_nfc)
-    (vault / "log" / "entry.md").write_text(f"See [[{name_nfd}]].\n")
+    (vault / "log" / "entry.md").write_text(f"See [[{name_nfd}]].\n", encoding="utf-8")
     _, refs, page_id = _vault_extract(
         vault, [vault / f"{name_nfc}.md", vault / "log" / "entry.md"])
     entry_id = page_id(vault / "log" / "entry.md")

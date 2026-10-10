@@ -147,6 +147,7 @@ from graphify.extractors.resolution import (  # noqa: E402,F401
     _resolve_js_module_path,
     _resolve_lua_import_target,
     _probe_python_module_candidate,
+    _PYTHON_STDLIB_MODULE_NAMES,
     _resolve_python_module_path,
     _resolve_python_namespace_dir,
     _resolve_tsconfig_alias,
@@ -536,6 +537,10 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
             # Sibling package directory inside parent_dir (parent_dir / subpkg / __init__.py)
             pkg_dir = p_res.parent
             parent_dir = pkg_dir.parent
+            # A loose package named like a stdlib module (e.g. `logging/`) must not
+            # capture a bare `import logging`, which means the stdlib module (#4261).
+            if pkg_dir.name in _PYTHON_STDLIB_MODULE_NAMES:
+                continue
             if not (parent_dir / "__init__.py").is_file() and not (parent_dir / "__init__.pyi").is_file():
                 mod_key = _make_id(pkg_dir.name)
                 dir_siblings.setdefault(parent_dir, {}).setdefault(mod_key, set()).add(file_node)
@@ -545,6 +550,11 @@ def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
         # PEP 328 guard: if the directory is a package, implicit relative imports
         # are forbidden in Python 3. Do not index packages as loose sibling directories.
         if (d / "__init__.py").is_file() or (d / "__init__.pyi").is_file():
+            continue
+
+        # A loose module named like a stdlib module (e.g. `logging.py`) must not
+        # capture a bare `import logging`, which means the stdlib module (#4261).
+        if p_res.stem in _PYTHON_STDLIB_MODULE_NAMES:
             continue
 
         mod_key = _make_id(p_res.stem)
@@ -3455,7 +3465,11 @@ _LANGUAGE_BUILTIN_BASE_CLASSES_CI: dict[str, frozenset[str]] = {
 
 def _node_label_key(node: dict, fold: bool = False) -> str:
     label = str(node.get("label", "")).strip()
-    key = re.sub(r"[^a-zA-Z0-9]+", "", label)
+    # Keep underscores: they are significant identifier characters, so a private
+    # `_Response` must not share a key with an external `Response` and absorb its
+    # reference during stub rewiring (#4269). Only drop call/generic punctuation
+    # (`()`, `<>`, `.`, whitespace) so `Foo()` and `Foo` still match.
+    key = re.sub(r"[^a-zA-Z0-9_]+", "", label)
     return key.lower() if fold else key
 
 
@@ -4935,6 +4949,43 @@ def _resolve_csharp_member_calls(
                 caller_node, rc.get("callee"), type_name, "csharp", rc,
             )
 
+    # Field/property declared types per class, for `x.F.M()` (#4246).
+    class_fields = _bind_member_field_tables(per_file, all_nodes, lang="csharp")
+    # Calls in a constructor body are attributed to the type itself (#4246).
+    type_nids = {nid for nids in type_def_nids.values() for nid in nids}
+
+    def _field_type_nid(type_nid: str, field: str) -> str | None:
+        """The declared type of ``field`` on ``type_nid`` or its base chain.
+
+        Same rules as the method lookup: an unresolved base the walk reaches,
+        more than one declaration, or an array/list-typed field (``F[i]`` would
+        be the element, ``F`` itself is not) yields None.
+        """
+        hits: set[tuple[str, str]] = set()
+        seen: set[str] = set()
+        frontier = [type_nid]
+        while frontier:
+            nid = frontier.pop()
+            if nid in seen:
+                continue
+            seen.add(nid)
+            fields = class_fields.get(nid, {})
+            if field in fields:
+                if field + "[]" in fields:
+                    return None
+                hits.add((nid, fields[field]))
+                continue
+            if nid in unresolved_base:
+                return None
+            frontier.extend(bases_of.get(nid, []))
+        if len(hits) != 1:
+            return None
+        owner_nid, field_type = next(iter(hits))
+        owner = node_by_id.get(owner_nid)
+        return _resolve_type_name_nid(
+            field_type, owner, (owner or {}).get("source_file", "")
+        )
+
     all_raw_calls: list[dict] = []
     for result in per_file:
         all_raw_calls.extend(result.get("raw_calls", []))
@@ -4946,17 +4997,28 @@ def _resolve_csharp_member_calls(
         receiver = rc.get("receiver")
         callee = rc.get("callee")
         caller = rc.get("caller_nid")
-        if not receiver or not callee or not caller:
+        chain = rc.get("receiver_chain") or []
+        if not (receiver or chain) or not callee or not caller:
             continue
         src_file = rc.get("source_file", "")
         caller_node = node_by_id.get(caller)
-        if receiver == "this":
-            type_nid = enclosing_type.get(caller)
+        if not receiver:
+            # x.F.M() -> [type of x, "F"]; xs[i].M() -> [element type].
+            type_nid = _resolve_type_name_nid(chain[0], caller_node, src_file)
+            for field in chain[1:]:
+                if not type_nid:
+                    break
+                type_nid = _field_type_nid(type_nid, field)
+            if not type_nid:
+                continue
+            type_qualified = False
+        elif receiver == "this":
+            type_nid = enclosing_type.get(caller) or (caller if caller in type_nids else None)
             if not type_nid:
                 continue
             type_qualified = True
         elif receiver == "base":
-            enclosing = enclosing_type.get(caller)
+            enclosing = enclosing_type.get(caller) or (caller if caller in type_nids else None)
             if not enclosing or enclosing in unresolved_base:
                 continue
             bases = bases_of.get(enclosing, [])
@@ -8993,7 +9055,13 @@ def extract(
             candidates = global_label_to_nids_ci.get(callee.lower(), [])
         if not candidates:
             continue
-        if rc.get("csharp_new"):
+        if rc.get("csharp_new") or rc.get("lang") == "csharp":
+            # An enum member or a field/property is never a valid call target
+            # either — not just never what `new X()` constructs. A bare call
+            # whose name happens to collide with a same-named enum case (a
+            # delegate-typed field invoked next to an enum sharing its name,
+            # #4245) bound to the case instead of getting no edge/deferring to
+            # raw_calls resolution that could reject it on its own grounds.
             candidates = [c for c in candidates if c not in _member_nids]
             if not candidates:
                 continue

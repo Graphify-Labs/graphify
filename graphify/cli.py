@@ -1269,10 +1269,14 @@ def _cmd_pipeline(argv: list[str]) -> None:
     force = opts.get("force") in ("1", "true", "yes")
     # `--no-gitignore` is the conventional spelling across the CLI; `--gitignore
     # false` also works. Both must be honored, or the flag is silently dropped.
-    gitignore = (
-        opts.get("gitignore", "true") not in ("0", "false", "no")
-        and opts.get("no-gitignore") not in ("1", "true", "yes")
-    )
+    # When neither is given, pass None so the step reuses the value persisted for
+    # this graph by a prior build (matching the skill's own detect step).
+    if opts.get("no-gitignore") in ("1", "true", "yes"):
+        gitignore: bool | None = False
+    elif "gitignore" in opts:
+        gitignore = opts["gitignore"] not in ("0", "false", "no")
+    else:
+        gitignore = None
 
     def _scan_path() -> str | None:
         """The corpus root, defaulting to the cwd."""

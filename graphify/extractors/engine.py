@@ -1464,6 +1464,95 @@ def _self_call_target(
         ))
     return None if fallback in method_owner else fallback
 
+# Languages whose unqualified `m()` call binds through _lexical_call_target, with
+# the relations that bring a supertype's methods into a class: a Java interface's
+# and a Scala trait's are inherited, a C# interface's are not (_lexical_class_bases
+# skips those by name, so a class called IOBase is still a base). Kotlin is left
+# out: it falls back to a top-level function when a member's parameters do not fit.
+_LEXICAL_CALL_LANGUAGES = {
+    "tree_sitter_java": ("inherits", "implements"),
+    "tree_sitter_c_sharp": ("inherits", "implements"),
+    "tree_sitter_scala": ("inherits", "mixes_in"),
+    "tree_sitter_cpp": ("inherits",),
+}
+
+def _lexical_class_bases(
+    edges: list[dict],
+    relations: tuple[str, ...],
+    label_by_nid: dict[str, str],
+    nid_to_sf: dict[str, str],
+    method_owner: dict[str, str],
+    methods_by_owner: dict[tuple[str, str], str],
+    class_parent: dict[str, str],
+    interfaces: set[str],
+) -> dict[str, list[str]]:
+    """Supertypes of each class, in declaration order, for _lexical_call_target.
+
+    Targets named in ``interfaces`` (C#: those the file declares) are left out. A
+    base declared further down the file is still a sourceless stub during the call
+    walk, so it is read as the one class of this file that bears its name; two such
+    classes, or none, leave it a stub. An anonymous class (a class inside a method)
+    is labelled with the type after its ``new``, which is read the same way.
+    """
+    supers = [e for e in edges if e["relation"] in relations and label_by_nid.get(e["target"]) not in interfaces]
+    by_name: dict[str, list[str]] = {}
+    for nid in dict.fromkeys([owner for owner, _ in methods_by_owner] + [e["source"] for e in supers]):
+        if class_parent.get(nid) not in method_owner:   # an anonymous class is labelled with its base
+            by_name.setdefault(label_by_nid.get(nid, ""), []).append(nid)
+    bases: dict[str, list[str]] = {}
+    for e in supers:
+        target = e["target"]
+        if not nid_to_sf.get(target):
+            named = by_name.get(label_by_nid.get(target, ""), [])
+            if len(named) == 1:
+                target = named[0]
+        bases.setdefault(e["source"], []).append(target)
+    for nid, outer in class_parent.items():
+        if outer in method_owner:
+            named = by_name.get(label_by_nid.get(nid, "").split("<", 1)[0].strip(), [])
+            if len(named) == 1:
+                bases.setdefault(nid, []).append(named[0])
+    return bases
+
+def _lexical_call_target(
+    caller_nid: str,
+    callee: str,
+    label_to_nid: dict[str, str],
+    method_owner: dict[str, str],
+    methods_by_owner: dict[tuple[str, str], str],
+    class_bases: dict[str, list[str]],
+    class_parent: dict[str, str],
+) -> str | None:
+    """In-file target of an unqualified call ``m()`` made from a method.
+
+    The nearest class that has an ``m``: the caller's own class and its in-file
+    bases (nearest first, as _self_call_target walks them), then the class around
+    it, and so on outward; an anonymous class steps out through the method that
+    holds it. Two hits on one level are a tie this pass cannot order: neither is
+    bound. A name no class on that path declares (a free function, a constructor
+    call) keeps the file-wide lookup, as does a walk that reaches a nested class
+    shared by several classes of one name, since which class lies around it is
+    unknown. A supertype outside this file is invisible, so a method inherited
+    from it can lose to an enclosing class that declares the same name.
+    """
+    cls: str | None = method_owner.get(caller_nid, caller_nid)
+    visited: set[str] = set()
+    while cls and cls not in visited:
+        visited.add(cls)
+        level = [cls]
+        seen: set[str] = set()
+        while level:
+            seen.update(level)
+            hits = {methods_by_owner[(c, callee)] for c in level if (c, callee) in methods_by_owner}
+            if hits:
+                return hits.pop() if len(hits) == 1 else None
+            level = list(dict.fromkeys(
+                base for c in level for base in class_bases.get(c, ()) if base not in seen
+            ))
+        outer = class_parent.get(cls)
+        cls = method_owner.get(outer, outer) if outer else None
+    return label_to_nid.get(callee)
+
 def _python_local_bound_names(func_def_node, source: bytes) -> set[str]:
     """Names bound LOCALLY inside a Python function: parameters plus assignment,
     `for`, `with ... as`, and comprehension targets.
@@ -2178,6 +2267,40 @@ def _csharp_receiver_type_name(type_node, source: bytes) -> str | None:
     return name if name and name[:1].isupper() else None
 
 
+def _csharp_element_type_name(type_node, source: bytes) -> str | None:
+    """The element type of a C# array or list type, else None (#4246).
+
+    ``xs[i]`` on a ``T[]`` / ``List<T>`` / ``IList<T>`` / ``IReadOnlyList<T>``
+    yields a ``T``. A jagged array, a nested collection or any other indexer
+    names no single element class, so it stays untyped.
+    """
+    if type_node is None:
+        return None
+    if type_node.type == "array_type":
+        elem = type_node.child_by_field_name("type")
+    elif type_node.type == "generic_name":
+        info = _read_csharp_type_name(type_node, source)
+        if not info or info[0] not in ("List", "IList", "IReadOnlyList"):
+            return None
+        args = next(
+            (c for c in type_node.children if c.type == "type_argument_list"), None
+        )
+        named = args.named_children if args is not None else []
+        elem = named[0] if len(named) == 1 else None
+    else:
+        return None
+    if elem is None or elem.type not in ("identifier", "qualified_name", "generic_name"):
+        return None
+    name = _csharp_receiver_type_name(elem, source)
+    # A nested collection (`List<List<T>>`) or a type parameter (`List<T>` in
+    # `class Box<T>`) names no concrete element class.
+    if name in ("List", "IList", "IReadOnlyList") or name in (
+        _csharp_type_parameters_in_scope(type_node, source)
+    ):
+        return None
+    return name
+
+
 def _csharp_method_receiver_types(
     method_node,
     source: bytes,
@@ -2211,22 +2334,29 @@ def _csharp_method_receiver_types(
     bindings: dict[str, list[tuple[int, int, str | None]]] = {}
     field_poisoned: set[str] = set()
 
-    def bind(name: str | None, type_name: str | None, scope_node) -> None:
+    def bind(
+        name: str | None, type_name: str | None, scope_node, elem_type: str | None = None
+    ) -> None:
         if not name or scope_node is None:
             return
-        if field_types.get(name) not in (None, type_name):
-            field_poisoned.add(name)
-        bindings.setdefault(name, []).append(
-            (scope_node.start_byte, scope_node.end_byte, type_name)
-        )
+        # `name[]` carries the element type for `name[i].M()` (#4246); every
+        # binding shadows it too, so an untyped local still hides a field's.
+        for key, value in ((name, type_name), (name + "[]", elem_type)):
+            if field_types.get(key) not in (None, value):
+                field_poisoned.add(key)
+            bindings.setdefault(key, []).append(
+                (scope_node.start_byte, scope_node.end_byte, value)
+            )
 
     def bind_parameter(param, scope_node) -> None:
         name_node = param.child_by_field_name("name")
         if name_node is not None:
+            ptype = param.child_by_field_name("type")
             bind(
                 _read_text(name_node, source),
-                _csharp_receiver_type_name(param.child_by_field_name("type"), source),
+                _csharp_receiver_type_name(ptype, source),
                 scope_node,
+                _csharp_element_type_name(ptype, source),
             )
 
     body = method_node.child_by_field_name("body")
@@ -2284,6 +2414,9 @@ def _csharp_method_receiver_types(
                 declared = _csharp_receiver_type_name(
                     vd.child_by_field_name("type"), source
                 )
+                declared_elem = _csharp_element_type_name(
+                    vd.child_by_field_name("type"), source
+                )
                 for declarator in vd.children:
                     if declarator.type != "variable_declarator":
                         continue
@@ -2302,7 +2435,7 @@ def _csharp_method_receiver_types(
                                     g.child_by_field_name("type"), source
                                 )
                                 break
-                    bind(_read_text(name_node, source), type_name, scope)
+                    bind(_read_text(name_node, source), type_name, scope, declared_elem)
         elif node.type in ("declaration_expression", "declaration_pattern"):
             # #2346: inline-declared receivers. `out Sect s` is a
             # declaration_expression; `is Leaf lf`, `is not Node nd`,
@@ -4804,7 +4937,24 @@ def _extract_generic(
             if config.ts_module == "tree_sitter_ruby":
                 ruby_segments = class_name.split("::")
                 class_name = "::".join(ruby_namespace + ruby_segments)
-            class_nid = _make_id(stem, ".".join(namespace_stack), class_name)
+            class_name_for_id = class_name
+            if config.ts_module == "tree_sitter_c_sharp":
+                # `name` is just the bare identifier; a type_parameter_list is
+                # a separate sibling, so a generic and a non-generic type of
+                # the same name (`Effect` / `Effect<T>`, `Comparer` /
+                # `Comparer<T>`, a common base-pair shape) minted the SAME id
+                # — their declarations merged, and `Effect<T> : Effect`
+                # became a self-loop (#4249). Fold the arity into the id,
+                # matching how C# metadata itself names a generic type
+                # (`` Effect`1 ``), so each arity gets its own node; the
+                # label is untouched; arity 0 keeps today's id exactly.
+                _csharp_arity = sum(
+                    1 for c in node.children if c.type == "type_parameter_list"
+                    for _p in c.children if _p.type in ("type_parameter", "identifier")
+                )
+                if _csharp_arity:
+                    class_name_for_id = f"{class_name}`{_csharp_arity}"
+            class_nid = _make_id(stem, ".".join(namespace_stack), class_name_for_id)
             if config.ts_module == "tree_sitter_python" and parent_class_nid:
                 class_nid = _make_id(parent_class_nid, class_name)
             line = node.start_point[0] + 1
@@ -5194,7 +5344,31 @@ def _extract_generic(
                         base, qualified, qualifier = base_info
                         if not base or base in csharp_type_params:
                             continue
-                        base_nid = _make_id(stem, ".".join(namespace_stack), base)
+                        # A base reference's own arity picks between a
+                        # same-named generic/non-generic pair in this file
+                        # (`Tween<T> : Effect<T>` must reach `Effect<T>`, not
+                        # the unrelated non-generic `Effect`, #4249) — same
+                        # arity-in-id convention as the declaration side.
+                        # Falls back to the bare name when no arity-suffixed
+                        # node exists in this file (an external/cross-file
+                        # base, where only the bare-name stub below applies).
+                        base_arity = 0
+                        if sub.type == "generic_name":
+                            for _tal in sub.children:
+                                if _tal.type != "type_argument_list":
+                                    continue
+                                base_arity = sum(
+                                    1 for _a in _tal.children if _a.is_named
+                                )
+                        base_nid = None
+                        if base_arity:
+                            _arity_nid = _make_id(
+                                stem, ".".join(namespace_stack), f"{base}`{base_arity}"
+                            )
+                            if _arity_nid in seen_ids:
+                                base_nid = _arity_nid
+                        if base_nid is None:
+                            base_nid = _make_id(stem, ".".join(namespace_stack), base)
                         if base_nid not in seen_ids:
                             base_nid = _make_id(base)
                             if base_nid not in seen_ids:
@@ -5617,6 +5791,16 @@ def _extract_generic(
                 return
 
         if (config.ts_module == "tree_sitter_c_sharp"
+                and t == "constructor_declaration"
+                and parent_class_nid):
+            # A C# constructor has no node of its own, so its body was never
+            # walked for calls. Attribute them to the declaring type (#4246).
+            ctor_body = node.child_by_field_name("body")
+            if ctor_body is not None:
+                csharp_method_scopes[id(ctor_body)] = (node, parent_class_nid)
+                function_bodies.append((parent_class_nid, ctor_body))
+
+        if (config.ts_module == "tree_sitter_c_sharp"
                 and t == "field_declaration"
                 and parent_class_nid):
             type_node = node.child_by_field_name("type")
@@ -5639,6 +5823,7 @@ def _extract_generic(
                 # Pascal-case only: primitives never own a resolvable method.
                 if type_name[:1].isupper():
                     fields = csharp_field_types.setdefault(parent_class_nid, {})
+                    elem_type = _csharp_element_type_name(type_node, source)
                     for child in node.children:
                         if child.type != "variable_declaration":
                             continue
@@ -5652,6 +5837,9 @@ def _extract_generic(
                             )
                             if name_node is not None:
                                 fields[_read_text(name_node, source)] = type_name
+                                if elem_type:
+                                    # `_items[i].M()` reads an element (#4246)
+                                    fields[_read_text(name_node, source) + "[]"] = elem_type
                 line = node.start_point[0] + 1
                 # Walk the whole type expression rather than only its outer name, so
                 # `Box<Widget>` yields the Box field ref AND the Widget generic_arg ref.
@@ -5716,6 +5904,11 @@ def _extract_generic(
                     csharp_field_types.setdefault(parent_class_nid, {})[
                         _read_text(prop_name_node, source)
                     ] = prop_type
+                    prop_elem = _csharp_element_type_name(type_node, source)
+                    if prop_elem:
+                        csharp_field_types[parent_class_nid][
+                            _read_text(prop_name_node, source) + "[]"
+                        ] = prop_elem
                 line = node.start_point[0] + 1
                 refs: list[tuple[str, str, bool, str]] = []
                 _csharp_collect_type_refs(type_node, source, False, refs)
@@ -6908,9 +7101,22 @@ def _extract_generic(
     # so a `self:other()` call in its body can be rewritten to the sibling method's
     # table-qualified label and resolved (#3991).
     lua_self_table: dict[str, str] = {}
+    # An enum member can never be the target of a call in any language that
+    # reaches this shared map (Java/Kotlin/Swift/C#/Scala/C++/PHP all emit a
+    # node per case with a `case_of` edge). Mirrors the exclusion
+    # _build_csharp_type_def_index already applies for TYPE lookup (#3795);
+    # without it here too, a bare call whose name happens to match a
+    # same-named enum case (`Delegate(t)` invoking a delegate-typed field
+    # next to `enum Kind { ..., Delegate }`) silently bound to the case
+    # instead of getting no edge (#4245).
+    _case_of_targets = {
+        e.get("target") for e in edges if e.get("relation") == "case_of"
+    }
     for n in nodes:
         nid_to_sf[n["id"]] = str(n.get("source_file") or "")
         if n.get("type") == "namespace":
+            continue
+        if n["id"] in _case_of_targets:
             continue
         raw = n["label"]
         normalised = raw.strip("()").lstrip(".")
@@ -6954,10 +7160,14 @@ def _extract_generic(
             _local_bases.setdefault(_e["source"], []).append(_e["target"])
 
     # Class membership for self-calls (see _self_call_target): Python
-    # self/cls/super and JS/TS this/super.
+    # self/cls/super and JS/TS this/super. Unqualified calls in the
+    # _LEXICAL_CALL_LANGUAGES read it too, with the class around each class.
     method_owner: dict[str, str] = {}
     methods_by_owner: dict[tuple[str, str], str] = {}
-    if config.ts_module in _SELF_CALL_LANGUAGES:
+    class_parent: dict[str, str] = {}
+    lexical_bases: dict[str, list[str]] = {}
+    lexical_calls = config.ts_module in _LEXICAL_CALL_LANGUAGES
+    if config.ts_module in _SELF_CALL_LANGUAGES or lexical_calls:
         label_by_nid = {n["id"]: n["label"] for n in nodes}
         for e in edges:
             if e["relation"] == "method":
@@ -6966,6 +7176,15 @@ def _extract_generic(
                 if config.ts_module == "tree_sitter_php":
                     name = name.casefold()
                 methods_by_owner.setdefault((e["source"], name), e["target"])
+            elif lexical_calls and e["relation"] == "contains":
+                # two nested classes of one name are one node: which class lies around it is unknown
+                if class_parent.setdefault(e["target"], e["source"]) != e["source"]:
+                    class_parent[e["target"]] = ""
+        if lexical_calls:
+            lexical_bases = _lexical_class_bases(
+                edges, _LEXICAL_CALL_LANGUAGES[config.ts_module], label_by_nid, nid_to_sf,
+                method_owner, methods_by_owner, class_parent, csharp_interface_names,
+            )
 
     def _fields_up_chain(tables: dict, class_nid) -> dict:
         if not class_nid:
@@ -7257,6 +7476,7 @@ def _extract_generic(
             kotlin_qualified_prefix: str | None = None
             kotlin_object_receiver: str | None = None
             csharp_qualified_prefix: str | None = None
+            csharp_receiver_chain: list[str] | None = None
             lua_self_qualified: bool = False  # Lua self:m() rewritten to Table:m
 
             # Special handling per language
@@ -7398,6 +7618,7 @@ def _extract_generic(
                 # `_server.Save()` to an unrelated `Cache.Save()` (#1609).
                 fn_node = node.child_by_field_name("function")
                 member_parts = _csharp_member_call_parts(fn_node)
+                csharp_table = receiver_types if isinstance(receiver_types, tuple) else None
                 if member_parts is not None:
                     mname, recv = member_parts
                     if mname is not None:
@@ -7429,6 +7650,34 @@ def _extract_generic(
                                 and fname.type == "identifier"
                             ):
                                 member_receiver = _read_text(fname, source)
+                            elif (
+                                inner is not None
+                                and inner.type == "identifier"
+                                and fname is not None
+                                and fname.type == "identifier"
+                            ):
+                                # x.F.M(): x's declared type, then the type of
+                                # its field/property F, resolved cross-file
+                                # (#4246).
+                                root_type = _csharp_scoped_receiver_type(
+                                    csharp_table, _read_text(inner, source),
+                                    node.start_byte,
+                                )
+                                if root_type:
+                                    csharp_receiver_chain = [
+                                        root_type, _read_text(fname, source)
+                                    ]
+                        elif recv is not None and recv.type == "element_access_expression":
+                            # xs[i].M() on a `T[]` / `List<T>`: an element is a T
+                            # (#4246).
+                            inner = recv.child_by_field_name("expression")
+                            if inner is not None and inner.type == "identifier":
+                                elem_type = _csharp_scoped_receiver_type(
+                                    csharp_table, _read_text(inner, source) + "[]",
+                                    node.start_byte,
+                                )
+                                if elem_type:
+                                    csharp_receiver_chain = [elem_type]
                         elif recv is not None and recv.type == "parenthesized_expression":
                             # ((IStore)x).M() / (x as IStore).M(): the cast names
                             # the receiver's type in source, so resolve it as
@@ -7821,6 +8070,11 @@ def _extract_generic(
                         )
                         if php_builtin_self_call and tgt_nid not in method_owner:
                             tgt_nid = None
+                    elif lexical_calls and not is_member_call:
+                        tgt_nid = _lexical_call_target(
+                            caller_nid, callee_name, label_to_nid,
+                            method_owner, methods_by_owner, lexical_bases, class_parent,
+                        )
                     else:
                         tgt_nid = label_to_nid.get(callee_name)
                     # A qualified `new A.B.Foo()` whose bare name matches only a
@@ -7934,6 +8188,8 @@ def _extract_generic(
                                 rc_entry["csharp_new"] = True
                             if csharp_qualified_prefix:
                                 rc_entry["qualified_prefix"] = csharp_qualified_prefix
+                            if csharp_receiver_chain:
+                                rc_entry["receiver_chain"] = csharp_receiver_chain
                             receiver_type = _csharp_scoped_receiver_type(
                                 receiver_types, member_receiver, node.start_byte
                             )

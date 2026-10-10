@@ -16,6 +16,7 @@ flow) and every reader honours it.
 
 from __future__ import annotations
 
+import errno
 import functools
 import json
 import os
@@ -136,6 +137,12 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
             os.chmod(tmp, mode)
         except OSError:
             pass
+        # On Windows os.replace refuses a read-only destination and the fallback
+        # would rename it aside and clobber it. Refuse here instead, for this
+        # generic write path only: install/cache callers of the fallback must
+        # still be able to replace their own (possibly read-only) copies.
+        if os.name == "nt" and real.is_file() and not os.access(real, os.W_OK):
+            raise PermissionError(errno.EACCES, "destination is read-only", str(real))
         os_replace_with_fallback(tmp, str(real))
     except BaseException:
         try:

@@ -114,23 +114,44 @@ def _scan(scan_path: Path | str | None) -> Path:
 # --------------------------------------------------------------------------
 
 
+def _persisted_corpus_shaping(
+    out_dir: Path, gitignore: bool | None, exclude: list[str] | None
+) -> tuple[bool, list[str] | None]:
+    """Fill in the corpus-shaping options a rebuild should reuse.
+
+    An explicit flag wins; otherwise reuse what a prior build persisted for this
+    graph (``graphify-out/.graphify_build.json``), matching the skill's own detect
+    step. ``gitignore`` defaults to True and ``exclude`` to [] when nothing is
+    persisted, so a first run is unchanged.
+    """
+    from graphify.watch import _read_build_excludes, _read_build_gitignore
+
+    if exclude is None:
+        exclude = _read_build_excludes(out_dir) or None
+    if gitignore is None:
+        gitignore = _read_build_gitignore(out_dir)
+    return gitignore, exclude
+
+
 def step_detect(
     path: str | Path,
     *,
     out: Path | str | None = None,
-    gitignore: bool = True,
+    gitignore: bool | None = None,
     google_workspace: bool = False,
     exclude: list[str] | None = None,
 ) -> dict:
     """Scan ``path`` and write ``<out>/graphify-out/.graphify_detect.json``.
 
     Returns the detection dict so a caller can print the corpus summary without
-    re-reading the sidecar.
+    re-reading the sidecar. ``gitignore``/``exclude`` default to the values
+    persisted for this graph by a prior build (see :func:`_persisted_corpus_shaping`).
     """
     from graphify.detect import detect
 
     out_dir = _out_dir(out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    gitignore, exclude = _persisted_corpus_shaping(out_dir, gitignore, exclude)
 
     # cache_root is the directory that CONTAINS graphify-out, not graphify-out
     # itself: detect() appends the output dir to it (detect.py:2065) and the stat
@@ -754,7 +775,13 @@ def step_detect_incremental(
 
     out_dir = _out_dir(out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    result = detect_incremental(_scan(path), manifest_path=str(out_dir / "manifest.json"))
+    gitignore, exclude = _persisted_corpus_shaping(out_dir, None, None)
+    result = detect_incremental(
+        _scan(path),
+        manifest_path=str(out_dir / "manifest.json"),
+        extra_excludes=exclude or None,
+        gitignore=gitignore,
+    )
     write_json_atomic(out_dir / ".graphify_incremental.json", result, ensure_ascii=False)
     write_json_atomic(
         out_dir / _DETECT_JSON,

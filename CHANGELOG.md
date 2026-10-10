@@ -2,6 +2,34 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.84 (2026-10-10)
+
+A correctness batch picked directly from open issues, plus an OpenCode plugin fix.
+
+- Fix: **PowerShell** functions (and classes/enums) defined inside a file-scope `begin {}` / `process {}` / `end {}` block are now extracted. These blocks parse as pseudo-commands rather than named blocks, so the walker returned before descending and dropped everything inside — the common `[CmdletBinding()]` advanced-function layout (#4270).
+- Fix: **R** every backtick-quoted binding now gets a collision-free id. A partially-symbolic name like `` `%foo%` `` (or an S3 method `` `[.cls` ``, or a dotted `` `my.op` ``) normalized to the same id as an ordinary identifier and was silently dropped on merge; such names now use the reserved operator namespace (#4253). (The separate infinite-loop reported in that issue was already fixed in 0.9.83.)
+- Fix: `graphify path` and the MCP `shortest_path` tool now fail closed on a `file::symbol` endpoint whose file defines no such symbol, instead of falling back to scoring the bare name and answering from a same-named symbol in another file; the refusal lists the files that do define it (#4264).
+- Fix: **OpenCode** the plugin now loads on OpenCode 2 (a default export with `setup()`) while keeping the v1 `server()` hook, and `graphify install` refreshes an already-installed v1-only copy, so the graph tools appear again for users upgraded past the v1 plugin contract (#3554, #3732, thanks @bercedev).
+- Fix: **Python** a bare `import logging` is no longer captured by a loose same-named module (`scripts/logging.py`) in a non-package directory — it resolves to the stdlib module. Guarded by a vendored, deterministic stdlib-name set across the module resolver, the sibling-repoint pass, and the build-time stem-alias index; a deliberate package shadow (`logging/__init__.py`) still resolves (#4261).
+- Fix: **Python** a qualified external annotation (`httpx.Response`) no longer binds to an unrelated private local class (`_Response`). The stub-rewire match key now preserves underscores, so `_Response` and `Response` are distinct identifiers (#4269).
+- Fix: **C#** an external type the corpus references but never declares (`List<T>`, `System.Type`, Unity's `VisualElement`) now gets one shared, name-keyed placeholder instead of a separate per-file stub (`a_cs_list`, `b_cs_list`), so a query returns one node and the files sharing the type connect through it (#4247).
+- Internal: added regression coverage locking in cross-module binding of a singly-defined type through re-export chains and the unique-stub rewire; the reported failure (#4262) no longer reproduces on this line.
+
+## 0.9.83 (2026-10-09)
+
+A C# resolution and determinism batch, plus Windows test-suite fixes.
+
+- Fix: **C#** a generic and a non-generic type of the same name (`Effect` vs `Effect<T>`) now get distinct node ids (arity folded into the id), so they no longer collapse into one node and `Effect<T> : Effect` no longer produces an inherits self-loop (#4255, #4249, thanks @ayushcodes10).
+- Fix: **C#** a call through a member chain (`a.b.C()`), element access (`xs[i].M()`), or inside a constructor body now resolves to the right method, fail-closed to a single declared type per hop (collection element types only for `T[]`/`List<T>`), instead of being dropped (#4258, #4246, thanks @Mpasha17).
+- Fix: **C#** a bare call whose name matches an enum member (`Delegate(t)` next to a `Delegate` case) no longer binds to the enum member; case members are excluded from both the per-file and cross-file call-resolution maps, fail-closed (#4254, #4245, thanks @ayushcodes10).
+- Fix: **C#** a static factory that constructs its own type keeps its `method` membership edge — an undirected collapse previously let the reverse `calls` edge overwrite it, hiding the member from every type walk (#4256, #4248, thanks @Mpasha17).
+- Fix: an unqualified call in **Java/C#/Scala/C++** binds to the method on the caller's own class chain (own class, then in-file bases, then enclosing classes) instead of the last same-named method declared anywhere in the file; fail-closed on a tie, with free functions and constructors still resolving (#4252, thanks @Yyunozor).
+- Fix: an unresolved re-export target id is now portable — it is minted in a dedicated namespace with a hash over the repo-relative path instead of the absolute checkout path, so a clone produces the same graph (#4257, thanks @andan0).
+- Fix: `graphify`'s own skill runbook now reuses the persisted scan options (excludes and the gitignore flag) a prior build wrote, so a skill-driven update no longer drops opted-in files or re-adds explicitly excluded ones versus a CLI rebuild (#4250, #4240, thanks @deepanshupal).
+- Fix: the test suite passes on Windows — `_atomic_replace` refuses a read-only destination there instead of silently clobbering it (nt-only guard, no POSIX change), plus encoding, path-shape, and non-regular-file test guards (#4260, thanks @SoloDrex52).
+- Fix: **C#** nested types imported with `using static` now resolve (`using static Demo.Layer;` reaching `Layer.Inner`), fail-closed on ambiguity, complementing the enclosing-namespace resolution also in this release (#4235, #4216, thanks @hopstreax).
+- Fix: the AST cache directory is now namespaced by the installed tree-sitter grammar versions (`...-g<fingerprint>`), so upgrading a grammar within the same graphify release no longer serves stale or ABI-incompatible cached ASTs for unchanged files (#4239, #4236, thanks @nothariharan).
+
 ## 0.9.82 (2026-10-09)
 
 - Feature: after `graphify extract` builds a graph, the CLI prints a short one-time pointer to Graphify Cloud (faster indexing, fewer tokens, cross-repo search, PR review, and an always-current view of your SDLC at app.graphify.com). It is shown only in an interactive terminal, once per project, and can be turned off with `GRAPHIFY_NO_TIPS` or `GRAPHIFY_NO_CTA`; CI, piped output, and the AI-assistant pipeline never see it.

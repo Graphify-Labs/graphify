@@ -1014,3 +1014,370 @@ def test_csharp_enclosing_namespace_regression_controls(tmp_path: Path):
     # UnknownType must remain a sourceless stub
     ref_missing = _targets(result, "references", "UnknownType")
     assert ref_missing and not any(r.get("source_file") for r in ref_missing)
+
+
+# ── #4249: a generic and a non-generic type of the same name must not merge ──
+
+def test_csharp_generic_and_non_generic_type_of_same_name_get_separate_nodes(tmp_path: Path):
+    """`Effect` / `Effect<T>` (a common base-pair shape: `Comparer`/`Comparer<T>`
+    is another) must not mint the same id, and the resulting inherits edge
+    must not become a self-loop."""
+    source = _write(
+        tmp_path / "effects.cs",
+        "namespace Demo {\n"
+        "    public abstract class Effect { public virtual int ReadSlot(string p) { return 0; } }\n"
+        "    public abstract class Effect<T> : Effect where T : unmanaged { }\n"
+        "    public abstract class Tween<T> : Effect<T> where T : unmanaged {\n"
+        "        public override int ReadSlot(string p) { return base.ReadSlot(p) + 1; }\n"
+        "    }\n"
+        "}\n",
+    )
+    result = extract([source], cache_root=tmp_path)
+
+    effects = _defs(result, "Effect")
+    assert len(effects) == 2, f"generic and non-generic Effect must be separate nodes: {effects}"
+
+    inherits = {(e["source"], e["target"]) for e in result["edges"] if e["relation"] == "inherits"}
+    assert not any(src == tgt for src, tgt in inherits), (
+        f"a generic type inheriting its own non-generic base must never be a self-loop: {inherits}"
+    )
+
+    tween = _defs(result, "Tween")[0]
+    effect_targets = {tgt for src, tgt in inherits if src == tween["id"]}
+    assert effect_targets, "Tween<T> must have an inherits edge"
+    assert effect_targets <= {e["id"] for e in effects}, (
+        "Tween<T> must inherit one of the two real Effect definitions, not a dangling stub"
+    )
+
+
+def test_csharp_non_generic_pair_with_no_relation_stays_two_plain_nodes(tmp_path: Path):
+    """Control: two same-named non-generic types in different namespaces are
+    already correctly separate — confirms the fix does not touch that case."""
+    source = _write(
+        tmp_path / "pair.cs",
+        "namespace A { public class Worker {} }\n"
+        "namespace B { public class Worker {} }\n",
+    )
+    result = extract([source], cache_root=tmp_path)
+    workers = _defs(result, "Worker")
+    assert len(workers) == 2
+    assert workers[0]["id"] != workers[1]["id"]
+# -------------------------------------------------------------------------
+# Issue #4216: C#: nested types imported with `using static` are resolved
+# -------------------------------------------------------------------------
+
+
+def test_csharp_using_static_resolves_nested_type_reference(tmp_path: Path):
+    layer = _write(
+        tmp_path / "layer.cs",
+        "namespace Demo\n{\n    public class Layer\n    {\n        public class Record {}\n    }\n}\n",
+    )
+    consumer = _write(
+        tmp_path / "consumer.cs",
+        "using static Demo.Layer;\nnamespace Consumer\n{\n    public class Service\n    {\n        public Record value;\n    }\n}\n",
+    )
+    result = extract([layer, consumer], cache_root=tmp_path)
+    record_defs = _defs(result, "Record")
+    assert len(record_defs) == 1, "nested Record definition must exist"
+    record_def = record_defs[0]
+
+    resolved = [t for t in _targets(result, "references", "Record") if t.get("source_file")]
+    assert resolved, "Record reference must resolve to the real definition via `using static Demo.Layer;`"
+    assert resolved[0]["id"] == record_def["id"]
+
+
+def test_csharp_using_static_resolves_nested_constructor_call(tmp_path: Path):
+    layer = _write(
+        tmp_path / "layer.cs",
+        "namespace Demo\n{\n    public class Layer\n    {\n        public class Record {}\n    }\n}\n",
+    )
+    consumer = _write(
+        tmp_path / "consumer.cs",
+        (
+            "using static Demo.Layer;\n"
+            "namespace Consumer\n"
+            "{\n"
+            "    public class Service\n"
+            "    {\n"
+            "        public void Run()\n"
+            "        {\n"
+            "            var r = new Record();\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        ),
+    )
+    result = extract([layer, consumer], cache_root=tmp_path)
+    record_defs = _defs(result, "Record")
+    assert len(record_defs) == 1, "nested Record definition must exist"
+    record_def = record_defs[0]
+
+    resolved_calls = [t for t in _targets(result, "calls", "Record") if t.get("source_file")]
+    assert resolved_calls, "new Record() call must resolve to nested Record via `using static Demo.Layer;`"
+    assert resolved_calls[0]["id"] == record_def["id"]
+
+
+def test_csharp_using_static_multi_level_nested_type(tmp_path: Path):
+    print_file = _write(
+        tmp_path / "print.cs",
+        (
+            "namespace Demo\n"
+            "{\n"
+            "    public class Print\n"
+            "    {\n"
+            "        public class Engine\n"
+            "        {\n"
+            "            public class Info {}\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+        ),
+    )
+    consumer = _write(
+        tmp_path / "consumer.cs",
+        "using static Demo.Print.Engine;\nnamespace Consumer\n{\n    public class App\n    {\n        public Info value;\n    }\n}\n",
+    )
+    result = extract([print_file, consumer], cache_root=tmp_path)
+    info_defs = _defs(result, "Info")
+    assert len(info_defs) == 1, "nested Info definition must exist"
+    info_def = info_defs[0]
+
+    resolved = [t for t in _targets(result, "references", "Info") if t.get("source_file")]
+    assert resolved, "Info reference must resolve via multi-level `using static Demo.Print.Engine;`"
+    assert resolved[0]["id"] == info_def["id"]
+
+
+def test_csharp_using_static_on_partial_holder_class(tmp_path: Path):
+    slice_a = _write(
+        tmp_path / "layer_a.cs",
+        (
+            "namespace Demo\n"
+            "{\n"
+            "    public partial class Layer\n"
+            "    {\n"
+            "        public class SliceA {}\n"
+            "        public partial class SharedNested {}\n"
+            "    }\n"
+            "}\n"
+        ),
+    )
+    slice_b = _write(
+        tmp_path / "layer_b.cs",
+        (
+            "namespace Demo\n"
+            "{\n"
+            "    public partial class Layer\n"
+            "    {\n"
+            "        public class SliceB {}\n"
+            "        public partial class SharedNested {}\n"
+            "    }\n"
+            "}\n"
+        ),
+    )
+    consumer = _write(
+        tmp_path / "consumer.cs",
+        (
+            "using static Demo.Layer;\n"
+            "namespace Consumer\n"
+            "{\n"
+            "    public class App\n"
+            "    {\n"
+            "        public SliceA a;\n"
+            "        public SliceB b;\n"
+            "        public SharedNested s;\n"
+            "    }\n"
+            "}\n"
+        ),
+    )
+    result = extract([slice_a, slice_b, consumer], cache_root=tmp_path)
+
+    layer_defs = _defs(result, "Layer")
+    assert len(layer_defs) == 1, "top-level partial Layer should merge into one canonical node"
+    layer_nid = layer_defs[0]["id"]
+
+    contains_targets = {
+        e["target"] for e in result["edges"]
+        if e.get("relation") == "contains" and e.get("source") == layer_nid
+    }
+    slice_a_defs = _defs(result, "SliceA")
+    slice_b_defs = _defs(result, "SliceB")
+    shared_defs = _defs(result, "SharedNested")
+
+    assert len(slice_a_defs) == 1
+    assert len(slice_b_defs) == 1
+    assert len(shared_defs) == 2, "nested partial SharedNested declarations remain unmerged in graph"
+    assert slice_a_defs[0]["id"] in contains_targets
+    assert slice_b_defs[0]["id"] in contains_targets
+
+    resolved_a = [t for t in _targets(result, "references", "SliceA") if t.get("source_file")]
+    assert resolved_a and resolved_a[0]["id"] == slice_a_defs[0]["id"]
+
+    resolved_b = [t for t in _targets(result, "references", "SliceB") if t.get("source_file")]
+    assert resolved_b and resolved_b[0]["id"] == slice_b_defs[0]["id"]
+
+    resolved_s = [t for t in _targets(result, "references", "SharedNested") if t.get("source_file")]
+    assert resolved_s, "SharedNested reference must resolve via `using static Demo.Layer;`"
+    assert resolved_s[0]["id"] in {d["id"] for d in shared_defs}
+
+
+def test_csharp_using_static_scoped_to_namespace_block(tmp_path: Path):
+    layer = _write(
+        tmp_path / "layer.cs",
+        "namespace Demo\n{\n    public class Layer\n    {\n        public class Record {}\n    }\n}\n",
+    )
+    consumer = _write(
+        tmp_path / "consumer.cs",
+        (
+            "namespace Good\n"
+            "{\n"
+            "    using static Demo.Layer;\n"
+            "    public class Service\n"
+            "    {\n"
+            "        public Record goodValue;\n"
+            "    }\n"
+            "}\n"
+            "namespace Bad\n"
+            "{\n"
+            "    public class OtherService\n"
+            "    {\n"
+            "        public Record badValue;\n"
+            "    }\n"
+            "}\n"
+        ),
+    )
+    result = extract([layer, consumer], cache_root=tmp_path)
+    record_defs = _defs(result, "Record")
+    assert len(record_defs) == 1
+    record_def = record_defs[0]
+
+    found_good = False
+    found_bad = False
+    for e in result["edges"]:
+        if e.get("relation") != "references":
+            continue
+        tgt = _node_by_id(result, e.get("target", ""))
+        if tgt and tgt.get("label") == "Record":
+            src = _node_by_id(result, e.get("source", ""))
+            src_label = src.get("label", "") if src else ""
+            if src_label == "Service":
+                found_good = True
+                assert tgt.get("source_file"), "Good.Service must resolve Record"
+                assert tgt["id"] == record_def["id"]
+            elif src_label == "OtherService":
+                found_bad = True
+                assert not tgt.get("source_file"), "Bad.OtherService must NOT resolve Record"
+
+    assert found_good, "Good.Service Record reference edge must be found"
+    assert found_bad, "Bad.OtherService Record reference edge must be found"
+
+
+def test_csharp_unimported_nested_type_dangles(tmp_path: Path):
+    layer = _write(
+        tmp_path / "layer.cs",
+        "namespace Demo\n{\n    public class Layer\n    {\n        public class Record {}\n    }\n}\n",
+    )
+    consumer = _write(
+        tmp_path / "consumer.cs",
+        "namespace Consumer\n{\n    public class Service\n    {\n        public Record value;\n    }\n}\n",
+    )
+    result = extract([layer, consumer], cache_root=tmp_path)
+    resolved = [t for t in _targets(result, "references", "Record") if t.get("source_file")]
+    assert not resolved, f"unimported nested Record must not resolve: {resolved}"
+
+
+def test_csharp_ambiguous_static_imports_dangle(tmp_path: Path):
+    layer_a = _write(
+        tmp_path / "layer_a.cs",
+        "namespace DemoA\n{\n    public class LayerA\n    {\n        public class Record {}\n    }\n}\n",
+    )
+    layer_b = _write(
+        tmp_path / "layer_b.cs",
+        "namespace DemoB\n{\n    public class LayerB\n    {\n        public class Record {}\n    }\n}\n",
+    )
+    consumer = _write(
+        tmp_path / "consumer.cs",
+        (
+            "using static DemoA.LayerA;\n"
+            "using static DemoB.LayerB;\n"
+            "namespace Consumer\n"
+            "{\n"
+            "    public class Service\n"
+            "    {\n"
+            "        public Record value;\n"
+            "    }\n"
+            "}\n"
+        ),
+    )
+    result = extract([layer_a, layer_b, consumer], cache_root=tmp_path)
+    resolved = [t for t in _targets(result, "references", "Record") if t.get("source_file")]
+    assert not resolved, f"ambiguous static imports must fail closed and remain unresolved: {resolved}"
+
+
+def test_csharp_static_import_vs_namespace_conflict_dangles(tmp_path: Path):
+    other = _write(
+        tmp_path / "other.cs",
+        "namespace Other\n{\n    public class Record {}\n}\n",
+    )
+    layer = _write(
+        tmp_path / "layer.cs",
+        "namespace Demo\n{\n    public class Layer\n    {\n        public class Record {}\n    }\n}\n",
+    )
+    consumer = _write(
+        tmp_path / "consumer.cs",
+        (
+            "using Other;\n"
+            "using static Demo.Layer;\n"
+            "namespace Consumer\n"
+            "{\n"
+            "    public class Service\n"
+            "    {\n"
+            "        public Record value;\n"
+            "    }\n"
+            "}\n"
+        ),
+    )
+    result = extract([other, layer, consumer], cache_root=tmp_path)
+    resolved = [t for t in _targets(result, "references", "Record") if t.get("source_file")]
+    assert not resolved, f"conflict between namespace and static import must fail closed: {resolved}"
+
+
+def test_csharp_external_type_shares_one_placeholder_across_files(tmp_path: Path):
+    # #4247: an external type referenced from several files must get ONE sourceless
+    # placeholder keyed by its name, shared by every file -- not a separate
+    # per-file placeholder (`a_cs_list`, `b_cs_list`) that leaves the files
+    # unconnected.
+    a = _write(
+        tmp_path / "A.cs",
+        "using System.Collections.Generic;\n"
+        "namespace Demo { public class A { public List<int> Items; } }\n",
+    )
+    b = _write(
+        tmp_path / "B.cs",
+        "using System.Collections.Generic;\n"
+        "namespace Demo { public class B { public List<string> Names; } }\n",
+    )
+    result = extract([a, b], cache_root=tmp_path)
+
+    list_stubs = [
+        n for n in result["nodes"]
+        if n.get("label") == "List" and not n.get("source_file")
+    ]
+    assert len(list_stubs) == 1, (
+        f"expected one shared sourceless List placeholder, got {len(list_stubs)}: "
+        f"{[n.get('id') for n in list_stubs]}"
+    )
+    stub_id = list_stubs[0]["id"]
+
+    referring_files = {
+        e.get("source_file") for e in result["edges"]
+        if e.get("relation") == "references" and e.get("target") == stub_id
+    }
+    # Both A.cs and B.cs reach the one shared placeholder, so the files connect.
+    assert len({str(f).replace("\\", "/").rsplit("/", 1)[-1] for f in referring_files}) == 2, (
+        f"both files must reference the shared List placeholder: {referring_files}"
+    )
+    # No per-file placeholder survives alongside the canonical one.
+    assert not any(
+        n.get("label") == "List" and not n.get("source_file") and n.get("id") != stub_id
+        for n in result["nodes"]
+    )

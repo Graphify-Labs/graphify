@@ -1197,6 +1197,18 @@ def _is_graph_diff_direction_fix_line(line: str) -> bool:
     )
 
 
+def _is_persisted_scan_options_fix_line(line: str) -> bool:
+    """Skill scans reuse CLI corpus-shaping options without changing detect defaults (#4240)."""
+    return line.strip() in (
+        "from graphify.paths import out_path",
+        "from graphify.watch import _read_build_excludes, _read_build_gitignore",
+        "result = detect(Path('INPUT_PATH'))",
+        "result = detect_incremental(Path('INPUT_PATH'))",
+        "result = detect(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))",
+        "result = detect_incremental(Path('INPUT_PATH'), extra_excludes=_read_build_excludes(out_path()), gitignore=_read_build_gitignore(out_path()))",
+    )
+
+
 # Every line that may differ between a rendered monolith and its pristine v8
 # baseline. Each predicate documents one sanctioned change-class; a blank line is
 # allowed because the multi-line fix blocks insert spacing. Anything else failing
@@ -1221,6 +1233,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_step1_root_marker_fix_line,
     _is_watch_injection_fix_line,
     _is_graph_diff_direction_fix_line,
+    _is_persisted_scan_options_fix_line,
 )
 
 

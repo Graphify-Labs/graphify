@@ -272,6 +272,23 @@ def test_r_operator_fallback_does_not_collide_with_ordinary_binding(tmp_path):
 
 
 @_needs_r
+def test_r_partial_symbol_operator_does_not_collide_with_ordinary(tmp_path):
+    # A partially-symbolic backtick name (`%foo%`) normalizes to the same _make_id
+    # suffix as an ordinary `foo`, so without the backtick-namespace fix the second
+    # node is silently dropped by the seen_ids merge (#4253 follow-up).
+    source = tmp_path / "ops.R"
+    source.write_text(
+        "foo <- function() 1\n"
+        "`%foo%` <- function(a, b) is.null(a)\n",
+        encoding="utf-8",
+    )
+    result = extract_r(source)
+    by_label = {node["label"]: node for node in result["nodes"]}
+    assert {"foo()", "`%foo%`()"} <= by_label.keys()  # both survive (today only foo())
+    assert by_label["foo()"]["id"] != by_label["`%foo%`()"]["id"]
+
+
+@_needs_r
 def test_r_operator_scope_keeps_nested_binding_identity(tmp_path):
     source = tmp_path / "ops.R"
     source.write_text(
