@@ -2,8 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from graphify.extract import extract
-from graphify.extractors.resolution import _resolve_python_module_path
+from graphify.extractors.resolution import (
+    _SCAN_ROOT_NAMESPACE_CACHE,
+    _infer_scan_root_namespace,
+    _resolve_python_module_path,
+)
 
 
 def _write(path: Path, text: str) -> Path:
@@ -31,6 +37,100 @@ def _has_edge(result: dict, source: str, target: str, relation: str) -> bool:
     )
 
 
+@pytest.mark.parametrize(("import_line", "receiver", "target"), [
+    ("import requests", "requests", "requests"),
+    ("import requests as rq", "rq", "requests"),
+    ("import requests as Requests", "Requests", "requests"),
+    ("import requests\nfrom requests import Session", "requests", "requests"),
+    ("from requests import Session; import requests", "requests", "requests"),
+    ("from other import value; import requests as rq", "rq", "requests"),
+    ("import requests as Requests\nfrom requests import Session", "Requests", "requests"),
+    ("import os", "os", "os"),
+    ("import pkg.sub as sub", "sub", "pkg_sub"),
+])
+def test_external_plain_import_member_call_targets_module(
+    tmp_path: Path, import_line: str, receiver: str, target: str,
+):
+    source = _write(tmp_path / "caller.py", (
+        f"{import_line}\n\n"
+        "def fetch():\n"
+        f"    return {receiver}.get('/data')\n\n"
+        "def unrelated():\n"
+        "    return 1\n"
+    ))
+    result = extract([source], cache_root=tmp_path)
+    caller = _node_id(result, "fetch()", "caller.py")
+    calls = [e for e in result["edges"] if e["relation"] == "calls" and e["target"] == target]
+    assert len(calls) == 1
+    assert calls[0]["source"] == caller
+    assert calls[0]["source_file"] == "caller.py"
+    assert (calls[0]["confidence"], calls[0]["confidence_score"], calls[0]["context"],
+            calls[0]["source_location"], calls[0]["weight"]) == ("EXTRACTED", 1.0, "call", f"L{len(import_line.splitlines()) + 3}", 1.0)
+    assert not any(n.get("label") == "get()" for n in result["nodes"])
+    assert not any("_python_receiver_shadowed" in item for item in result["nodes"] + result["edges"])
+
+
+@pytest.mark.parametrize("body", [
+    "def fetch(requests):\n    return requests.get()\n",
+    "def fetch(*, requests=None):\n    return requests.get()\n",
+    "def fetch():\n    requests = object()\n    return requests.get()\n",
+    "def fetch():\n    requests, x = pair\n    return requests.get()\n",
+    "def fetch():\n    requests += 1\n    return requests.get()\n",
+    "def fetch():\n    (requests := object())\n    return requests.get()\n",
+    "def fetch():\n    for requests in xs: pass\n    return requests.get()\n",
+    "def fetch():\n    xs = [requests.get() for requests in things]\n    return requests.get()\n",
+    "def fetch():\n    with open('x') as requests: pass\n    return requests.get()\n",
+    "def fetch():\n    try: pass\n    except Exception as requests: pass\n    return requests.get()\n",
+    "def fetch():\n    def requests(): pass\n    return requests.get()\n",
+    "def fetch():\n    class requests: pass\n    return requests.get()\n",
+    "def fetch():\n    del requests\n    return requests.get()\n",
+    "def fetch():\n    requests.value = 1\n    return requests.get()\n",
+    "def fetch():\n    import requests\n    return requests.get()\n",
+    "def fetch():\n    global requests\n    return requests.get()\n",
+    "def fetch():\n    nonlocal requests\n    return requests.get()\n",
+    "def fetch():\n    match x:\n        case requests: pass\n    return requests.get()\n",
+    "def fetch():\n    return (lambda requests: requests.get())(object())\n",
+    "def fetch():\n    return (lambda *, requests=None: requests.get())()\n",
+    "def fetch():\n    return (lambda **requests: requests.get())()\n",
+    "requests = object()\ndef fetch():\n    return requests.get()\n",
+    "type requests = object\ndef fetch():\n    return requests.get()\n",
+    "def fetch():\n    type requests[T] = list[T]\n    return requests.get()\n",
+    "def fetch[requests]():\n    return requests.get()\n",
+    "import builtins\nbuiltins.exec('requests = object()')\ndef fetch():\n    return requests.get()\n",
+    "import builtins as bi\nbi.eval('globals().update(requests=object())')\ndef fetch():\n    return requests.get()\n",
+    "from builtins import exec as run\nrun('requests = object()')\ndef fetch():\n    return requests.get()\n",
+    "import builtins\nrun = builtins.exec\nrun('requests = object()')\ndef fetch():\n    return requests.get()\n",
+    "run = exec\nrun('requests = object()')\ndef fetch():\n    return requests.get()\n",
+    "def outer():\n    requests = object()\n    def fetch():\n        return requests.get()\n",
+    "if flag:\n    import requests\ndef fetch():\n    return requests.get()\n",
+    "from elsewhere import *\ndef fetch():\n    return requests.get()\n",
+    "def fetch():\n    exec('requests = other')\n    return requests.get()\n",
+    "def fetch():\n    eval('globals().__setitem__(\\\"requests\\\", other)')\n    return requests.get()\n",
+    "def fetch():\n    globals()['requests'] = other\n    return requests.get()\n",
+    "def fetch():\n    locals()['requests'] = other\n    return requests.get()\n",
+    "def fetch():\n    setattr(requests, 'get', other)\n    return requests.get()\n",
+    "def fetch():\n    delattr(requests, 'get')\n    return requests.get()\n",
+    "def mutate():\n    global requests\n    requests = other\ndef fetch():\n    return requests.get()\n",
+    "import requests\ndef fetch():\n    return requests.get()\n",
+    "import other as requests\ndef fetch():\n    return requests.get()\n",
+])
+def test_external_module_fallback_rejects_receiver_shadow(tmp_path: Path, body: str):
+    source = _write(tmp_path / "caller.py", "import requests\n" + body)
+    result = extract([source], cache_root=tmp_path)
+    assert not any(e["relation"] == "calls" and e["target"] == "requests" for e in result["edges"])
+
+
+@pytest.mark.parametrize("declaration", [
+    "from requests import Session",
+    "from other import value as requests",
+])
+def test_external_module_fallback_rejects_from_only_import(tmp_path: Path, declaration: str):
+    source = _write(tmp_path / "caller.py", f"{declaration}\ndef fetch():\n    return requests.get()\n")
+    result = extract([source], cache_root=tmp_path)
+    assert not any(e["relation"] == "calls" and e["target"] in {"requests", "other"}
+                   for e in result["edges"])
+
+
 def test_overdeep_relative_import_is_unresolved_not_fatal(tmp_path: Path):
     source = _write(
         tmp_path / "pkg" / "mod.py",
@@ -45,6 +145,31 @@ def test_overdeep_relative_import_is_unresolved_not_fatal(tmp_path: Path):
 
     assert _node_id(result, "mod.py", "pkg/mod.py")
     assert _node_id(result, "ok()", "pkg/mod.py")
+
+
+def _missing_import_targets(checkout: Path) -> set[str]:
+    _write(checkout / "pkg" / "__init__.py", "")
+    source = _write(
+        checkout / "pkg" / "app.py",
+        "from .absent import helper\n"
+        "from pkg.absent import other\n\n"
+        "def run():\n"
+        "    return helper(), other()\n",
+    )
+    result = extract([source, checkout / "pkg" / "__init__.py"], cache_root=checkout)
+    return {e["target"] for e in result["edges"] if e["relation"] == "imports_from"}
+
+
+def test_missing_relative_import_target_id_does_not_depend_on_the_checkout(tmp_path: Path):
+    """A relative import of a module with no file behind it minted its target id
+    from the attempted absolute path (``..._pkg_absent_py``), which the
+    root-relative remap never rewrites: the checkout location and OS username
+    ended up in the graph. It now gets the dotted module name, the id an
+    unresolved absolute import of the same module already gets."""
+    first = _missing_import_targets(tmp_path / "clone_one")
+    second = _missing_import_targets(tmp_path / "elsewhere" / "clone_two")
+
+    assert first == second == {"pkg_absent"}
 
 
 def test_ordinary_relative_import_still_resolves(tmp_path: Path):
@@ -356,3 +481,85 @@ def test_issue_3777_standalone_module_import_unaffected(tmp_path: Path):
 
     assert _has_edge(result, consumer_file, standalone_file, "imports_from")
     assert _has_edge(result, consumer_file, fn_symbol, "imports")
+
+
+def test_nested_scan_root_resolves_full_namespace_import(tmp_path: Path) -> None:
+    _write(tmp_path / "Company" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "__init__.py", "")
+    lib_path = _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "lib" / "delivery.py", "def deliver(): pass")
+    main_path = _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "app" / "main.py", "from Company.Apps.Jobs.Team.lib import delivery")
+
+    root = tmp_path / "Company" / "Apps" / "Jobs" / "Team"
+    resolved = _resolve_python_module_path("Company.Apps.Jobs.Team.lib.delivery", main_path, root, 0)
+    assert resolved == lib_path
+
+    # E2E check
+    result = extract([main_path, lib_path], cache_root=tmp_path, root=root)
+    main_node = _node_id(result, "main.py", "app/main.py")
+    lib_node = _node_id(result, "delivery.py", "lib/delivery.py")
+    assert _has_edge(result, main_node, lib_node, "imports_from")
+
+
+def test_nested_scan_root_does_not_resolve_third_party(tmp_path: Path) -> None:
+    _write(tmp_path / "Company" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "__init__.py", "")
+    main_path = _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "app" / "main.py", "from thirdparty.foo import bar")
+
+    root = tmp_path / "Company" / "Apps" / "Jobs" / "Team"
+    resolved = _resolve_python_module_path("thirdparty.foo", main_path, root, 0)
+    assert resolved is None
+
+
+def test_repo_root_scan_is_unaffected(tmp_path: Path) -> None:
+    _write(tmp_path / "Company" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "__init__.py", "")
+    lib_path = _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "lib" / "delivery.py", "def deliver(): pass")
+    main_path = _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "app" / "main.py", "from Company.Apps.Jobs.Team.lib import delivery")
+
+    root = tmp_path
+    resolved = _resolve_python_module_path("Company.Apps.Jobs.Team.lib.delivery", main_path, root, 0)
+    assert resolved == lib_path
+
+
+def test_non_package_subdirectory_scan_is_unaffected(tmp_path: Path) -> None:
+    _write(tmp_path / "pkg" / "thing.py", "")
+    app_path = _write(tmp_path / "src" / "app.py", "from pkg import thing")
+
+    root = tmp_path / "src"
+    # No __init__.py above src/, so namespace inference should be empty
+    assert _infer_scan_root_namespace(root) == ""
+
+
+def test_partial_namespace_prefix_is_not_stripped(tmp_path: Path) -> None:
+    _write(tmp_path / "Company" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "__init__.py", "")
+    main_path = _write(tmp_path / "Company" / "Apps" / "Jobs" / "Team" / "app" / "main.py", "from Company.AppService.foo import bar")
+
+    root = tmp_path / "Company" / "Apps" / "Jobs" / "Team"
+    resolved = _resolve_python_module_path("Company.AppService.foo", main_path, root, 0)
+    assert resolved is None
+
+
+def test_infer_scan_root_namespace_caching(tmp_path: Path) -> None:
+    _SCAN_ROOT_NAMESPACE_CACHE.clear()
+    _write(tmp_path / "Company" / "__init__.py", "")
+    _write(tmp_path / "Company" / "Apps" / "__init__.py", "")
+    root = tmp_path / "Company" / "Apps"
+    
+    ns1 = _infer_scan_root_namespace(root)
+    assert ns1 == "Company.Apps"
+    
+    # Second call should be from cache. We can verify cache exists.
+    ns2 = _infer_scan_root_namespace(root)
+    assert ns1 == ns2
+    
+    key = list(_SCAN_ROOT_NAMESPACE_CACHE.keys())[0]
+    assert _SCAN_ROOT_NAMESPACE_CACHE[key] == "Company.Apps"

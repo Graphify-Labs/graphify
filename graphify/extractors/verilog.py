@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from pathlib import Path
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
 def _sv_first_identifier(node, source: bytes) -> str | None:
@@ -215,7 +215,7 @@ def extract_verilog(path: Path) -> dict:
     try:
         language = Language(tsverilog.language())
         parser = Parser(language)
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         tree = parser.parse(source)
         root = tree.root_node
     except Exception as e:

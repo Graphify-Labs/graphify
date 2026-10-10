@@ -6,7 +6,7 @@ from typing import Any, Iterable
 
 from tree_sitter import Node
 
-from graphify.extractors.base import _file_stem, _make_id, _read_text
+from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes, _read_text
 
 
 def _atom(value: str) -> str:
@@ -82,7 +82,7 @@ def extract_erlang(path: Path) -> dict:
         return {"nodes": [], "edges": [], "error": "tree-sitter-language-pack not installed"}
 
     try:
-        source = path.read_bytes()
+        source = _read_source_bytes(path)
         root = Parser(get_language("erlang")).parse(source).root_node
     except Exception as exc:
         return {"nodes": [], "edges": [], "error": f"Erlang grammar failed to load: {exc}"}
@@ -323,6 +323,26 @@ def extract_erlang(path: Path) -> dict:
                                 "source_file": source_file,
                                 "source_location": f"L{node.start_point[0] + 1}",
                             })
+            elif node.type == "internal_fun":
+                # `fun helper/1` — a reference to a local function by name and
+                # arity, the idiomatic way to pass a callback to `lists:map`,
+                # `spawn`, etc. It names exactly one function, so resolve it the
+                # same way a direct call is, but as an `indirect_call`: the
+                # function is handed off to be invoked, not called on the spot
+                # (#3993). Remote references (`fun mod:f/2`, node type
+                # `external_fun`) are left unresolved — the module is named
+                # explicitly and belongs to the cross-file remote-call boundary.
+                name_node = node.child_by_field_name("fun")
+                arity_node = node.child_by_field_name("arity")
+                if name_node is not None and arity_node is not None:
+                    digits = "".join(
+                        ch for ch in _read_text(arity_node, source) if ch.isdigit()
+                    )
+                    if digits:
+                        name = _atom(_read_text(name_node, source))
+                        target = functions.get((name, int(digits)))
+                        if target is not None:
+                            add_edge(caller_id, target, "indirect_call", node)
             stack.extend(reversed(node.named_children))
 
     clean_edges = [

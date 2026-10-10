@@ -18,6 +18,11 @@ sampling — and callflow's relation filter
 Alphabetical order carries no meaning. These tests pin that a generic relation
 never overwrites a specific one, in either arrival order, and that nothing else
 about the collapse changed.
+
+One opposite-direction exception: a `method` or `contains` edge and a `calls`
+edge running back the other way share one undirected pair (a member that
+constructs or calls its owner). The membership edge survives. Same-direction
+`contains` vs `calls` stays unranked. A directed graph keeps both arcs.
 """
 import pytest
 
@@ -99,8 +104,10 @@ def test_two_generic_relations_keep_previous_behaviour():
 
 
 def test_two_specific_relations_keep_previous_behaviour():
-    """Deliberately NOT ranked against each other — `contains` vs `calls` is a
-    cross-axis judgement this collapse does not need to make."""
+    """Same direction is deliberately NOT ranked — `contains` vs `calls` along
+    one direction is a cross-axis judgement this collapse does not make.
+    Opposite directions are a different pair of facts; see
+    test_structural_membership_beats_an_opposite_call."""
     G = build_from_json(_extraction([_edge("calls"), _edge("contains")]))
     assert _relation(G) in {"calls", "contains"}
 
@@ -182,6 +189,52 @@ def test_unknown_relation_is_treated_as_specific():
                   [_edge("references"), _edge("custom_rel")]):
         G = build_from_json(_extraction(order))
         assert _relation(G) == "custom_rel", f"order {[e['relation'] for e in order]}"
+
+
+@pytest.mark.parametrize("structural", ["method", "contains"])
+@pytest.mark.parametrize("structural_src, structural_tgt", [("a", "b"), ("b", "a")])
+def test_structural_membership_beats_an_opposite_call(structural, structural_src, structural_tgt):
+    """Type -method/contains-> member and member -calls-> type share one
+    undirected pair. Whichever endpoint id sorts later used to win, so a
+    factory's constructor call erased the membership edge and the member
+    dropped out of every type walk. The membership edge survives, with its
+    own direction and location, in either id order. Still exactly one edge."""
+    call_src, call_tgt = structural_tgt, structural_src
+    G = build_from_json(_extraction([
+        _edge(structural, src=structural_src, tgt=structural_tgt, source_location="L4"),
+        _edge("calls", src=call_src, tgt=call_tgt, source_location="L5"),
+    ]))
+    d = edge_data(G, "a", "b")
+    assert d.get("relation") == structural
+    assert (d.get("_src"), d.get("_tgt")) == (structural_src, structural_tgt)
+    assert d.get("source_location") == "L4"
+    assert G.number_of_edges() == 1
+
+
+def test_directed_graph_keeps_method_and_the_reverse_call():
+    """Opposite directions are different arcs once the graph is directed, so
+    both facts survive. The undirected rule must not drop the call here."""
+    G = build_from_json(_extraction([
+        _edge("method", src="a", tgt="b", source_location="L4"),
+        _edge("calls", src="b", tgt="a", source_location="L5"),
+    ]), directed=True)
+    assert G.is_directed()
+    assert G.number_of_edges() == 2
+    assert edge_data(G, "a", "b").get("relation") == "method"
+    assert (edge_data(G, "a", "b").get("_src"), edge_data(G, "a", "b").get("_tgt")) == ("a", "b")
+    assert edge_data(G, "b", "a").get("relation") == "calls"
+    assert edge_data(G, "b", "a").get("source_location") == "L5"
+
+
+def test_same_direction_method_and_calls_stay_unranked():
+    """The membership-vs-call rule applies only when the edges run in opposite
+    directions. Along one direction the pair is still a single unranked edge."""
+    G = build_from_json(_extraction([
+        _edge("method", src="a", tgt="b"),
+        _edge("calls", src="a", tgt="b"),
+    ]))
+    assert G.number_of_edges() == 1
+    assert _relation(G) in {"method", "calls"}
 
 
 def test_same_relation_collision_preserves_extracted_over_inferred():

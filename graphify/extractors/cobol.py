@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from graphify.extractors.base import _make_id
+from graphify.extractors.base import _make_id, _read_source_text
 
 
 _NAME = r"[A-Z0-9][A-Z0-9-]*"
@@ -98,7 +98,7 @@ def _starts_inside_string(code: str, offset: int) -> bool:
 
 def extract_cobol(path: Path) -> dict:
     try:
-        source = path.read_text(encoding="utf-8", errors="replace")
+        source = _read_source_text(path)
     except OSError as exc:
         return {"nodes": [], "edges": [], "error": str(exc)}
 
