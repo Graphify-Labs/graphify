@@ -112,7 +112,7 @@ test("native grep, bash search, and glob expose the installed CLI's actual guida
       cwd, input: JSON.stringify({ tool_input: legacyInput }), encoding: "utf8",
     })).hookSpecificOutput.additionalContext;
     const result = await api.emit("tool_call", { toolName, input, toolCallId: `${toolName}-1` });
-    expect(result?.additionalContext).toBe(expected);
+    expect(result?.additionalContext).toBe(`<system-reminder source="graphify">\n${expected}\n</system-reminder>`);
   }
 });
 
