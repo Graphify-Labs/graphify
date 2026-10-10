@@ -8,7 +8,19 @@ from dataclasses import dataclass, field
 
 _WORKSPACE_PACKAGE_CACHE: dict[str, dict[str, Path]] = {}
 
-_JS_CACHE_BYPASS_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte"}
+# The JS/TS language family — the file extensions the cross-file JS/TS symbol
+# resolver operates over. This is a LANGUAGE-membership fact and the single
+# source of truth for "is this a JS/TS-family file".
+_JS_FAMILY_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts", ".vue", ".svelte"}
+
+# Which files skip the AST cache. A CACHE POLICY, kept separate from
+# _JS_FAMILY_SUFFIXES on purpose (#3326): the two happen to coincide today, but
+# they answer different questions — one "is this JS/TS?", the other "should this
+# skip caching?". Binding both to one set meant a change made for caching
+# reasons silently changed which files produced INFERRED resolution edges, with
+# nothing at either call site to reveal it. Copy, not alias, so the two can move
+# independently.
+_JS_CACHE_BYPASS_SUFFIXES = set(_JS_FAMILY_SUFFIXES)
 
 @dataclass
 class LanguageConfig:
