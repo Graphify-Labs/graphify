@@ -512,6 +512,98 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
             )
 
 
+def _full_stem(source_file: str) -> str:
+    """The extension-stripped, slugified full-path stem a file's own IDs start with."""
+    stem = _EXTENSION.sub("", source_file.replace("\\", "/"))
+    return "_".join(s for s in (normalize_id(p) for p in stem.split("/")) if s)
+
+
+def _extension_qualified_id(node: dict) -> str | None:
+    """``x.html``'s own spelling of an ID it shares with ``x.py`` (#4281).
+
+    Only applies when the ID is spelled with the node's FULL path stem, i.e.
+    the ID collides because the extension was stripped. Returns None for an ID
+    that only matches a trailing path slice (a bare ``protocol``): that is a
+    reference to another file's entity, not a distinct entity, and is left to
+    the collapse-and-warn path.
+    """
+    nid = node.get("id") or ""
+    source_file = node.get("source_file") or ""
+    ext_match = _EXTENSION.search(source_file.replace("\\", "/"))
+    full = _full_stem(source_file)
+    if not (nid and full and ext_match):
+        return None
+    if nid != full and not nid.startswith(f"{full}_"):
+        return None
+    return f"{full}_{normalize_id(ext_match.group(0))}{nid[len(full):]}"
+
+
+def _disambiguate_defining_collisions(
+    nodes: list[dict], edges: list[dict], hyperedges: list[dict] | None,
+    root: Path | None,
+) -> tuple[list[dict], list[dict]]:
+    """Keep ``x.py`` and ``x.html`` apart when both derive the same ID (#4281).
+
+    The ID is built from the extension-stripped path, so two files that differ
+    only by extension mint the same ID. The best-ranked file keeps it; the
+    others get an extension-qualified ID. Edges and hyperedges follow the
+    renamed node by ``source_file``, compared in root-relative form because
+    semantic edges can still carry an absolute path here while nodes were
+    already made relative. Anything else (an ID no file derives from its own
+    path, or a bare ID shared across different paths) is left to the existing
+    collapse-and-warn path.
+    """
+    def key(sf):
+        return _rank_path(sf, root) if sf else ""
+
+    by_id: dict[str, list[dict]] = defaultdict(list)
+    for node in nodes:
+        nid = node.get("id")
+        if nid and node.get("source_file") and _extension_qualified_id(node):
+            by_id[nid].append(node)
+    taken = {n.get("id") for n in nodes if n.get("id")}
+    renames: dict[tuple[str, str], str] = {}
+    for nid, definers in by_id.items():
+        if len({key(d["source_file"]) for d in definers}) < 2:
+            continue
+        winner = min(definers, key=lambda d: _collision_rank(d, root))
+        for d in sorted(definers, key=lambda d: key(d["source_file"])):
+            k = key(d["source_file"])
+            if k == key(winner["source_file"]) or (nid, k) in renames:
+                continue
+            # Same full stem only: x.py vs x.html, never a/x vs b/x.
+            if _full_stem(d["source_file"]) != _full_stem(winner["source_file"]):
+                continue
+            # The extension is what tells them apart; same-extension slug twins
+            # (pkg/service.py vs pkg_service.py) stay on the collapse-and-warn path.
+            if _EXTENSION.search(d["source_file"]) and _EXTENSION.search(winner["source_file"]) and                     _EXTENSION.search(d["source_file"]).group(0).lower() ==                     _EXTENSION.search(winner["source_file"]).group(0).lower():
+                continue
+            new_id = _extension_qualified_id(d)
+            if new_id and new_id not in taken:
+                taken.add(new_id)
+                renames[(nid, k)] = new_id
+    if not renames:
+        return nodes, edges
+    out_nodes = [
+        dict(node, id=renames[(node.get("id"), key(node.get("source_file")))])
+        if (node.get("id"), key(node.get("source_file"))) in renames else node
+        for node in nodes
+    ]
+    for coll in (edges, hyperedges or []):
+        for item in coll:
+            if not isinstance(item, dict):
+                continue
+            k = key(item.get("source_file"))
+            for end in ("source", "target"):
+                new_id = renames.get((item.get(end), k))
+                if new_id:
+                    item[end] = new_id
+            members = item.get("nodes")
+            if isinstance(members, list):
+                item["nodes"] = [renames.get((m, k), m) if isinstance(m, str) else m for m in members]
+    return out_nodes, edges
+
+
 # ── main entry point ──────────────────────────────────────────────────────────
 
 def _remap_hyperedge_members(hyperedges: list[dict], remap: dict[str, str]) -> None:
@@ -608,6 +700,7 @@ def deduplicate_entities(
     # passing cross-reference's. Missing attributes from same-source records are
     # retained so AST structure and semantic enrichment can coexist (#2091).
     # Genuine cross-file ID collisions stay isolated and are reported below (#1504).
+    nodes, edges = _disambiguate_defining_collisions(nodes, edges, hyperedges, root_resolved)
     seen_ids: dict[str, dict] = {}
     dropped: dict[str, list[dict]] = defaultdict(list)
     for node in nodes:
@@ -678,6 +771,30 @@ def deduplicate_entities(
         if prot is not None:
             prot_by_root[new_root] = prot
 
+    def _crossfile_union(left: dict, right: dict, *, with_prot: bool) -> None:
+        nonlocal exact_merges
+        if _crossfile_fileanchored_blocked(left, right):
+            return
+        left_id = left["id"]
+        right_id = right["id"]
+        if with_prot:
+            px = _get_prot(left_id)
+            py = _get_prot(right_id)
+            if px is not None and py is not None and px != py:
+                return
+        if uf.find(left_id) == uf.find(right_id):
+            return
+        if with_prot:
+            _union_with_prot(left_id, right_id)
+        else:
+            uf.union(left_id, right_id)
+        exact_merges += 1
+
+    def _crossfile_join(members: list[dict], *, with_prot: bool) -> None:
+        for index, left in enumerate(members):
+            for right in members[index + 1:]:
+                _crossfile_union(left, right, with_prot=with_prot)
+
     for key, group in norm_to_nodes.items():
         if len(group) <= 1:
             continue
@@ -726,20 +843,15 @@ def deduplicate_entities(
         # it is provably safe (#2182). `concept` is the one file_type meant to
         # unify across files (#1284) — code is keyed by ID (#1205) and
         # image/paper labels are often shared basenames (logo.png), so both stay
-        # blocked. rationale/document join `concept` here ONLY when the node
-        # reads as an entity inside its file (#296): a file-anchored
-        # *file_type* does not make an individual node file-anchored. An entity
-        # extracted from a note — a person, a project — inherits `document` from
-        # the file's extension, not from anything about itself, so in note-heavy
-        # corpora almost no entity node is typed `concept` and this merge never
-        # got to run on them. A file's own node and its headings still never
-        # merge (#1284, #3094).
+        # blocked. A rationale or document node can still enter this list when
+        # it reads as an entity (#296). Each union calls
+        # `_crossfile_fileanchored_blocked`, so that node does not join a node
+        # from another file (#3094). Concept nodes still join across files.
+        # A file's own node and its headings never enter the list (#1284).
         # Provenance is required (#1178), and the entropy gate mirrors Pass 2 so
         # short generic labels ("API") stay distinct — both untouched here.
-        # Scoped to this exact-normalization pass: Pass 2's fuzzy
-        # `_crossfile_fileanchored_blocked` is unchanged, so #1284's
-        # near-identical boilerplate and heading siblings stay blocked.
-        # Sorting by id keeps the winner order-independent.
+        # Pass 2 still calls the same block, so near-identical boilerplate stays
+        # blocked (#1284). Sorting by id keeps the pair order stable.
         mergeable = sorted(
             (n for n in group
              if (n.get("file_type") == "concept"
@@ -758,30 +870,18 @@ def deduplicate_entities(
                     # NEVER collapse them during incremental merge.
                     continue
                 if prot_members:
-                    # Mixed: pick AT MOST ONE protected survivor for incoming nodes to fold into.
-                    # Multiple protected nodes must remain separate independent entities.
+                    # Mixed: fold an incoming node into at most one protected
+                    # survivor. Protected nodes stay separate from each other.
+                    # Incoming nodes the block still allows are joined to each
+                    # other, so a blocked winner does not leave them apart.
                     canonical_winner = _pick_winner(prot_members)
                     for inc in inc_members:
-                        px = _get_prot(canonical_winner["id"])
-                        py = _get_prot(inc["id"])
-                        if px is not None and py is not None and px != py:
-                            continue
-                        if uf.find(canonical_winner["id"]) != uf.find(inc["id"]):
-                            _union_with_prot(canonical_winner["id"], inc["id"])
-                            exact_merges += 1
+                        _crossfile_union(canonical_winner, inc, with_prot=True)
+                    _crossfile_join(inc_members, with_prot=True)
                 else:
-                    # Incoming only: merge normally
-                    winner = _pick_winner(inc_members)
-                    for node in inc_members:
-                        if uf.find(winner["id"]) != uf.find(node["id"]):
-                            _union_with_prot(winner["id"], node["id"])
-                            exact_merges += 1
+                    _crossfile_join(inc_members, with_prot=True)
             else:
-                winner = _pick_winner(mergeable)
-                for node in mergeable:
-                    if uf.find(winner["id"]) != uf.find(node["id"]):
-                        uf.union(winner["id"], node["id"])
-                        exact_merges += 1
+                _crossfile_join(mergeable, with_prot=False)
 
     # ── pass 2: MinHash/LSH + Jaro-Winkler (high-entropy nodes only) ─────────
     candidates: list[dict] = []
@@ -1030,7 +1130,10 @@ def deduplicate_entities(
         # Remove legacy keys so they don't leak into edge attrs in graph.json.
         e.pop("from", None)
         e.pop("to", None)
-        if e["source"] != e["target"]:
+        # Drop only self-loops created by the merge (an edge whose distinct
+        # endpoints collapsed into one node); preserve pre-existing self-loops
+        # (e.g. recursive calls, self-referencing foreign keys) (#3809).
+        if e["source"] != e["target"] or src == tgt:
             deduped_edges.append(e)
 
     return deduped_nodes, deduped_edges
@@ -1066,8 +1169,8 @@ def _content_richness(n: dict) -> int:
 
 
 def _pick_winner(nodes: list[dict]) -> dict:
-    """Pick the canonical survivor: no chunk suffix, then richer content,
-    then shorter ID.
+    """Pick the canonical survivor: no chunk suffix, then real provenance,
+    then richer content, then shorter ID.
 
     ID length used to be the primary signal after the chunk-suffix check,
     which made a passing one-line mention on a shallow page (short id, one
@@ -1076,13 +1179,46 @@ def _pick_winner(nodes: list[dict]) -> dict:
     discarded (#3372). Content richness now decides first; ID shape only
     breaks ties between equally-rich candidates, preserving the old
     deterministic ordering there.
+
+    ``source_file``/``source_location`` are in ``_RICHNESS_IGNORED_KEYS``, so
+    richness alone cannot tell a real, located declaration apart from a
+    source-less stub carrying a couple of incidental bookkeeping keys (e.g.
+    ``external``/``type``/``_origin``) — the stub could out-score and replace
+    the genuine record purely on field count (#3775). Provenance is checked
+    ahead of richness, in two steps: a node with a ``source_file`` always
+    beats one without, and among nodes that both have one, a node that also
+    has a ``source_location`` beats one that doesn't (the codebase genuinely
+    emits ``source_location: None`` on some records, so this is a real
+    distinction, not a hypothetical one — richness ignores it too, the same
+    gap #3775 closed one level up). The location step only counts a
+    ``source_location`` when ``source_file`` is also present — a location
+    with no file isn't a real provenance signal and must not out-rank a
+    fully bare candidate on its own. Each step only changes the outcome
+    when the two sides disagree; whenever they agree (both or neither have
+    a source file, and both or neither have a counted location), the
+    existing richness-then-length ordering decides as before.
     """
     if not nodes:
         raise ValueError("Cannot pick winner from empty list")
 
-    def _score(n: dict) -> tuple[int, int, int]:
+    def _score(n: dict) -> tuple[int, int, int, int, int]:
         has_suffix = bool(_CHUNK_SUFFIX.search(n["id"]))
-        return (1 if has_suffix else 0, -_content_richness(n), len(n["id"]))
+        has_source = bool(n.get("source_file"))
+        no_source = 0 if has_source else 1
+        # A source_file with no source_location (the codebase genuinely emits
+        # `source_location: None`, see _merge_missing_attributes above) is a
+        # weaker provenance claim than a fully located record -- richness
+        # ignores source_location too, so without this check a candidate that
+        # merely knows which file it came from could still out-score, and
+        # replace, one that also knows exactly where in it (#3775 review).
+        # Gated on has_source too: a source_location with no source_file (a
+        # location pointing at an unstated file, which _merge_missing_attributes
+        # can produce by backfilling one field but not the other when a survivor's
+        # own source_file is an empty string rather than None) isn't a real
+        # provenance signal on its own, and must not out-rank a fully bare
+        # candidate by richness's own rules (PR 3786 review).
+        no_location = 0 if (has_source and n.get("source_location")) else 1
+        return (1 if has_suffix else 0, no_source, no_location, -_content_richness(n), len(n["id"]))
 
     return min(nodes, key=_score)
 

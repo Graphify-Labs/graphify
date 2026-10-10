@@ -1154,6 +1154,39 @@ def test_scala_val_definition_field_context():
     assert ("HttpClient", "Config") in _edge_labels(r, "references", "field")
 
 
+def test_scala_enum_definition_cases_and_methods(tmp_path):
+    """A Scala 3 `enum` is a class-like container that owns cases and methods.
+    `enum_definition` was missing from the Scala class_types, so the enum type,
+    all of its cases (`case Red`, `case Add(...)`), and its methods produced no
+    nodes at all — the type vanished from the graph. The cases must each become
+    a node with a `case_of` edge (parity with Java #1719 / Kotlin #1738 / Swift).
+    """
+    f = tmp_path / "color.scala"
+    f.write_text(
+        "enum Color { case Red, Green, Blue }\n"
+        "enum Op[A] {\n"
+        "  case Add(x: Int, y: Int)\n"
+        "  case Noop\n"
+        "  def run: A = ???\n"
+        "}\n"
+    )
+    r = extract_scala(f)
+    labels = _labels(r)
+    # The enum types themselves are contained by the file.
+    contains = _edge_labels(r, "contains")
+    assert ("color.scala", "Color") in contains
+    assert ("color.scala", "Op") in contains
+    # Every case is emitted with a case_of edge back to its enum.
+    case_of = _edge_labels(r, "case_of")
+    assert ("Color", "Red") in case_of
+    assert ("Color", "Green") in case_of
+    assert ("Color", "Blue") in case_of
+    assert ("Op", "Add") in case_of
+    assert ("Op", "Noop") in case_of
+    # A method declared in the enum body is still captured.
+    assert any(_normalize_symbol_label(l) == "run" for l in labels)
+
+
 def test_scala_var_definition_field_context():
     r = extract_scala(FIXTURES / "sample.scala")
     assert ("HttpClient", "BaseClient") in _edge_labels(r, "references", "field")
@@ -1212,6 +1245,42 @@ def test_php_call_edges_have_call_context():
 def test_php_finds_static_property_access():
     r = extract_php(FIXTURES / "sample_php_static_prop.php")
     assert "uses_static_prop" in _relations(r)
+
+
+def test_php_enum_cases_have_case_of_edge(tmp_path):
+    """Each PHP 8.1 enum case must be a node with a `case_of` edge to its enum.
+
+    `enum_declaration` is in PHP's class_types, so the enum type and its methods
+    were captured, but the cases nest in the `enum_declaration_list` body as
+    `enum_case` nodes that nothing handled — so they were dropped and the enum was
+    left a caseless leaf. This brings PHP to parity with Java #1719, Scala, Swift,
+    and C++. Backed enums (`: string` with `= 'H'`) and pure enums both apply, and
+    enum methods must still be captured.
+    """
+    f = tmp_path / "suit.php"
+    f.write_text(
+        "<?php\n"
+        "enum Suit: string {\n"
+        "    case Hearts = 'H';\n"
+        "    case Spades = 'S';\n"
+        "    public function color(): string { return 'x'; }\n"
+        "}\n"
+        "enum Status {\n"
+        "    case Active;\n"
+        "    case Closed;\n"
+        "}\n"
+    )
+    r = extract_php(f)
+    assert "error" not in r
+    labels = set(_labels(r))
+    assert {"Hearts", "Spades", "Active", "Closed"} <= labels
+    case_of = _edge_labels(r, "case_of")
+    assert ("Suit", "Hearts") in case_of
+    assert ("Suit", "Spades") in case_of
+    assert ("Status", "Active") in case_of
+    assert ("Status", "Closed") in case_of
+    # The enum's method must still be present (body walk not broken by the cases).
+    assert any(l == ".color()" for l in labels)
 
 def test_php_static_prop_target_is_holding_class():
     r = extract_php(FIXTURES / "sample_php_static_prop.php")
@@ -1315,6 +1384,110 @@ def test_php_constructor_property_promotion_contexts():
     assert ("__construct", "Result") in _edge_labels(r, "references", "parameter_type")
     # A non-promoted param must not leak a field edge onto the class.
     assert ("Service", "string") not in _edge_labels(r, "references", "field")
+
+
+def test_php_indexes_inline_script_block(tmp_path):
+    """#2320: tree-sitter-php treats an inline <script> as opaque markup, so JS
+    declared there was previously entirely absent from the graph. Both
+    functions and the call edge between them must now be extracted."""
+    f = tmp_path / "page.php"
+    f.write_text(
+        "<?php\n"
+        "function phpSideHelper(): string { return 'i am php'; }\n"
+        "?>\n"
+        "<div id=\"app\"></div>\n"
+        "<script>\n"
+        "function inlineJsHelper(x){ return x * 2; }\n"
+        "function inlineJsCaller(y){ return inlineJsHelper(y) + 1; }\n"
+        "</script>\n"
+    )
+    r = extract_php(f)
+    labels = {n["label"] for n in r["nodes"]}
+    assert "phpSideHelper()" in labels
+    assert "inlineJsHelper()" in labels
+    assert "inlineJsCaller()" in labels
+    assert ("inlineJsCaller", "inlineJsHelper") in _edge_labels(r, "calls")
+
+
+def test_php_inline_script_line_numbers_match_source(tmp_path):
+    """The masking pass must preserve line numbers so a script-block symbol
+    points at its real line, not line 1 or an offset guess."""
+    f = tmp_path / "page.php"
+    f.write_text(
+        "<?php\n"
+        "// line 2\n"
+        "?>\n"
+        "<script>\n"
+        "function onLineFive() {}\n"
+        "</script>\n"
+    )
+    r = extract_php(f)
+    node = next(n for n in r["nodes"] if n["label"] == "onLineFive()")
+    assert node["source_location"] == "L5"
+
+
+def test_php_external_script_src_contributes_nothing(tmp_path):
+    """A <script src="..."> with no inline body must not crash or fabricate a
+    node — it masks to an empty region, which is valid (empty) JS. A sibling
+    inline block with real content must still be extracted."""
+    f = tmp_path / "page.php"
+    f.write_text(
+        "<?php\n"
+        "function helper(): string { return 'x'; }\n"
+        "?>\n"
+        '<script src="app.js"></script>\n'
+        "<script>\n"
+        "function realFn() { return 1; }\n"
+        "</script>\n"
+    )
+    r = extract_php(f)
+    assert "error" not in r
+    labels = {n["label"] for n in r["nodes"]}
+    assert "helper()" in labels
+    assert "realFn()" in labels
+
+
+def test_php_file_without_script_block_is_unaffected(tmp_path):
+    """A plain .php file with no <script> tag must not pay for or trigger the
+    JS pass at all — same node/edge shape as before this fix."""
+    f = tmp_path / "plain.php"
+    f.write_text("<?php\nfunction plainPhpHelper(): string { return 'also php'; }\n")
+    r = extract_php(f)
+    assert "error" not in r
+    labels = {n["label"] for n in r["nodes"]}
+    assert labels == {"plain.php", "plainPhpHelper()"}
+
+
+def test_php_js_name_collision_drops_the_dropped_js_nodes_edges(tmp_path):
+    """Follow up finding: when a JS symbol's id collides with an existing PHP
+    node (same name, one file), the JS node is correctly dropped in favor of
+    the PHP one, but its edges were still being merged in unconditionally —
+    an edge meant for the discarded JS symbol silently attached to the
+    unrelated retained PHP node sharing its id. A JS call to the colliding
+    name must vanish along with the node, not misattach to the PHP function
+    of the same name (which the inline script never actually calls)."""
+    f = tmp_path / "page.php"
+    f.write_text(
+        "<?php\n"
+        "function sharedName() { return 1; }\n"
+        "?>\n"
+        "<script>\n"
+        "function sharedName(x) { return x; }\n"
+        "function jsCaller(y) { return sharedName(y); }\n"
+        "</script>\n"
+    )
+    r = extract_php(f)
+    labels = {n["label"] for n in r["nodes"]}
+    # Exactly one sharedName node survives (the PHP one) -- no duplicate.
+    assert labels == {"page.php", "sharedName()", "jsCaller()"}
+    # The JS call to the colliding name must not appear as a calls edge at
+    # all (misattaching it to the PHP node would be a wrong edge, not a
+    # missing one).
+    assert _edge_labels(r, "calls") == set()
+    # The file's own contains edges for the surviving, non colliding JS node
+    # must still be present -- the fix for the collision must not also drop
+    # unrelated JS edges sourced from the shared file node.
+    assert ("page.php", "jsCaller") in _edge_labels(r, "contains")
 
 
 # ── Swift ────────────────────────────────────────────────────────────────────
@@ -1599,6 +1772,107 @@ def test_elixir_guarded_single_clause_is_extracted(tmp_path):
     assert "guarded_private" in labels, (
         f"single-clause guarded defp dropped: {sorted(labels)}"
     )
+
+
+def test_elixir_defmacro_and_defguard_are_extracted(tmp_path):
+    """`defmacro`/`defmacrop`/`defguard`/`defguardp` must become member nodes.
+
+    They define named, invocable members with the same head shape as `def`/`defp`
+    (a `call` head, optionally wrapped in a `when` binary_operator), but only
+    def/defp were handled — so macros and guard macros fell through to the generic
+    recursion and were dropped entirely. The member was never a node, and a call
+    to a locally-defined macro had nothing to resolve to.
+    """
+    src = tmp_path / "macros.ex"
+    src.write_text(
+        "defmodule MyMod do\n"
+        "  defmacro trace(expr) do\n"
+        "    quote do: unquote(expr)\n"
+        "  end\n"
+        "\n"
+        "  defmacrop priv_macro(x) do\n"
+        "    quote do: unquote(x)\n"
+        "  end\n"
+        "\n"
+        "  defguard is_even(x) when is_integer(x) and rem(x, 2) == 0\n"
+        "\n"
+        "  defguardp is_small(x) when is_integer(x) and x < 10\n"
+        "\n"
+        "  def run(x) do\n"
+        "    trace(priv_macro(x))\n"
+        "  end\n"
+        "end\n"
+    )
+    r = extract_elixir(src)
+    assert "error" not in r
+    labels = {(n.get("label") or "").rstrip("()") for n in r["nodes"]}
+    assert "trace" in labels, f"defmacro dropped: {sorted(labels)}"
+    assert "priv_macro" in labels, f"defmacrop dropped: {sorted(labels)}"
+    assert "is_even" in labels, f"defguard dropped: {sorted(labels)}"
+    assert "is_small" in labels, f"defguardp dropped: {sorted(labels)}"
+    # A call to a locally-defined macro now resolves to the macro's node.
+    calls = _calls(r)
+    assert ("run()", "trace()") in calls
+
+
+def test_elixir_protocol_and_impl_are_extracted(tmp_path):
+    """`defprotocol`/`defimpl` are module-like containers. Before they were
+    handled, the protocol and implementation nodes were never minted and their
+    functions leaked onto the FILE node instead of their container."""
+    src = tmp_path / "sizeable.ex"
+    src.write_text(
+        "defprotocol Sizeable do\n"
+        "  def size(data)\n"
+        "end\n"
+        "\n"
+        "defimpl Sizeable, for: List do\n"
+        "  def size(data), do: length(data)\n"
+        "end\n"
+    )
+    r = extract_elixir(src)
+    assert "error" not in r
+
+    file_nid = next(n["id"] for n in r["nodes"] if n["label"] == "sizeable.ex")
+    labels = {n["label"] for n in r["nodes"]}
+    assert "Sizeable" in labels
+    assert "Sizeable (for List)" in labels
+
+    lab = {n["id"]: n["label"] for n in r["nodes"]}
+    method_pairs = {
+        (lab.get(e["source"]), lab.get(e["target"]))
+        for e in r["edges"] if e["relation"] == "method"
+    }
+    # the callback and the implementation function belong to their containers
+    assert ("Sizeable", "size()") in method_pairs
+    assert ("Sizeable (for List)", "size()") in method_pairs
+    # ...and NOT to the file (the pre-fix symptom)
+    assert not [
+        e for e in r["edges"]
+        if e["source"] == file_nid and lab.get(e["target"]) == "size()"
+    ]
+    # the implementation is linked to the protocol it satisfies
+    impl_pairs = {
+        (lab.get(e["source"]), lab.get(e["target"]))
+        for e in r["edges"] if e["relation"] == "implements"
+    }
+    assert ("Sizeable (for List)", "Sizeable") in impl_pairs
+
+
+def test_elixir_protocol_impl_produce_no_dangling_edges(tmp_path):
+    """An implementation of a protocol defined in ANOTHER file must not leave a
+    dangling `implements` edge behind."""
+    src = tmp_path / "impl_only.ex"
+    src.write_text(
+        "defimpl Sizeable, for: Map do\n"
+        "  def size(data), do: map_size(data)\n"
+        "end\n"
+    )
+    r = extract_elixir(src)
+    ids = {n["id"] for n in r["nodes"]}
+    for e in r["edges"]:
+        if e["relation"] == "imports":
+            continue
+        assert e["source"] in ids and e["target"] in ids, e
 
 
 # ── Objective-C ──────────────────────────────────────────────────────────────
@@ -2131,6 +2405,115 @@ def test_julia_abstract_type_with_supertype_is_extracted(tmp_path):
     assert ("Dog", "Animal") in _edge_labels(r, "inherits"), "abstract inherits edge dropped"
 
 
+def test_julia_macro_definition_is_extracted(tmp_path):
+    """`macro name(...) ... end` must be a definition, with the calls in its
+    body attributed to it. Macros are first-class Julia definitions and were
+    dropped entirely."""
+    f = tmp_path / "macros.jl"
+    f.write_text(
+        "function helper(x)\n"
+        "    return x + 1\n"
+        "end\n"
+        "macro sayhello(name)\n"
+        "    return :( helper($name) )\n"
+        "end\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = [n["label"] for n in r["nodes"]]
+    assert "@sayhello" in labels, "macro definition dropped"
+    # the macro body's call to a helper is credited to the macro, not a self-loop
+    assert ("@sayhello", "helper") in _edge_labels(r, "calls")
+    assert ("@sayhello", "@sayhello") not in _edge_labels(r, "calls")
+
+
+def test_julia_where_clause_functions_are_extracted(tmp_path):
+    """Methods with a `where` clause (long and short form) must be extracted with
+    their body calls. The `where` clause wraps the call head in a
+    `where_expression`, so the name lookup missed it and the whole method (and its
+    calls) was dropped (#4126)."""
+    f = tmp_path / "where.jl"
+    f.write_text(
+        "function combine(a::Vector{T}, b::Vector{T}) where {T<:Number}\n"
+        "    merge_all(a, b)\n"
+        "end\n"
+        "function merge_all(a, b)\n"
+        "    return a\n"
+        "end\n"
+        "short(x::T) where {T} = merge_all(x, x)\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = [n["label"] for n in r["nodes"]]
+    assert "combine()" in labels, "long-form where method dropped"
+    assert "short()" in labels, "short-form where method dropped"
+    calls = _edge_labels(r, "calls")
+    assert ("combine", "merge_all") in calls
+    assert ("short", "merge_all") in calls
+
+
+def test_julia_parametric_types_are_extracted(tmp_path):
+    """Parametric type definitions (`struct Box{T}`, `abstract type Shape{T}`,
+    `struct Sq{T} <: Shape{T}`, `mutable struct M{T,U}`) must be extracted. The
+    name sits inside a `parametrized_type_expression`, so the head-name lookup
+    missed it and dropped the type entirely (#4128). A declared type parameter
+    (`value::T`) must not leak out as a phantom field-type reference node."""
+    f = tmp_path / "params.jl"
+    f.write_text(
+        "struct Box{T}\n"
+        "    value::T\n"
+        "end\n"
+        "abstract type Shape{T} end\n"
+        "struct Sq{T} <: Shape{T}\n"
+        "end\n"
+        "mutable struct M{T,U}\n"
+        "    a::T\n"
+        "end\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = [n["label"] for n in r["nodes"]]
+    assert {"Box", "Shape", "Sq", "M"} <= set(labels), f"parametric type dropped: {labels}"
+    assert ("Sq", "Shape") in _edge_labels(r, "inherits")
+    assert "T" not in labels, "type parameter leaked as a phantom field-type node"
+
+
+def test_julia_enum_and_members_are_extracted(tmp_path):
+    """`@enum` defines a type and its members across the inline, begin/end block,
+    explicit-value, and typed forms. The whole macrocall was previously ignored,
+    and valued/typed forms silently dropped their members or mislabeled the type."""
+    f = tmp_path / "enums.jl"
+    f.write_text(
+        "@enum Fruit apple orange banana\n"
+        "@enum Color begin\n"
+        "  red\n"
+        "  green\n"
+        "end\n"
+        "@enum Priority low=1 high=2\n"
+        "@enum Size::UInt8 small medium large\n"
+    )
+    r = extract_julia(f)
+    assert "error" not in r
+    labels = {n["label"] for n in r["nodes"]}
+    assert {"Fruit", "apple", "orange", "banana", "Color", "red", "green",
+            "Priority", "low", "high", "Size", "small", "medium", "large"} <= labels
+    # enum members use `case_of` (shared tree-sitter convention), not `contains`
+    case_of = _edge_labels(r, "case_of")
+    assert {("Fruit", "apple"), ("Fruit", "banana"),
+            ("Color", "red"), ("Color", "green"),
+            ("Priority", "low"), ("Priority", "high"),  # explicit values
+            ("Size", "small"), ("Size", "large")} <= case_of  # typed enum
+    # the typed enum's backing type is not mistaken for a member
+    assert ("Size", "UInt8") not in case_of
+    # the members hang off their enum, not the file
+    file_nid = next(n["id"] for n in r["nodes"] if n["label"] == "enums.jl")
+    lab = {n["id"]: n["label"] for n in r["nodes"]}
+    assert not [
+        e for e in r["edges"]
+        if e["source"] == file_nid and lab.get(e["target"]) in {"apple", "red", "low", "small"}
+    ]
+
+
 def test_julia_struct_field_type_context():
     r = extract_julia(FIXTURES / "sample.jl")
     assert ("Point", "Float64") in _edge_labels(r, "references", "field")
@@ -2257,6 +2640,110 @@ def test_fortran_capital_F_parses_preprocessed():
     assert any("compute_volume" in l for l in labels)
 
 
+def test_fortran_type_bound_procedures_link_to_the_type(tmp_path):
+    """A derived type's `contains` section binds procedures as its methods.
+
+    Both the renaming form (`procedure :: area => circle_area`) and the plain
+    form (`procedure :: scale`) must connect the type to the module procedure
+    that implements it; before this the whole binding was dropped and the type
+    had no link to its own methods.
+    """
+    src = tmp_path / "geom.f90"
+    src.write_text(
+        "module geom\n"
+        "  type :: circle\n"
+        "    real :: radius\n"
+        "  contains\n"
+        "    procedure :: area => circle_area\n"
+        "    procedure :: scale\n"
+        "  end type circle\n"
+        "contains\n"
+        "  real function circle_area(self)\n"
+        "    class(circle), intent(in) :: self\n"
+        "    circle_area = 3.14159 * self%radius**2\n"
+        "  end function circle_area\n"
+        "  subroutine scale(self, f)\n"
+        "    class(circle), intent(inout) :: self\n"
+        "    real, intent(in) :: f\n"
+        "    self%radius = self%radius * f\n"
+        "  end subroutine scale\n"
+        "end module geom\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    assert "error" not in r
+    methods = _edge_labels(r, "method", "type_bound_procedure")
+    assert ("circle", "circle_area") in methods
+    assert ("circle", "scale") in methods
+
+
+def test_fortran_generic_interface_is_a_callable_node(tmp_path):
+    """A named generic interface (`interface area; module procedure …`) names a
+    callable that dispatches to its specific procedures.
+
+    The interface was never a node, so a call to the generic name dangled (a
+    function call only resolves to an in-file node) and the dispatch set was
+    invisible — even though the specific procedures were extracted. The generic
+    name must be a node, linked to the procedures it groups, so `area(x)`
+    resolves.
+    """
+    src = tmp_path / "shapes.f90"
+    src.write_text(
+        "module shapes\n"
+        "  interface area\n"
+        "    module procedure area_circle, area_square\n"
+        "  end interface\n"
+        "contains\n"
+        "  real function area_circle(r)\n"
+        "    real :: r\n"
+        "    area_circle = r\n"
+        "  end function\n"
+        "  real function area_square(s)\n"
+        "    real :: s\n"
+        "    area_square = s\n"
+        "  end function\n"
+        "  subroutine report(x)\n"
+        "    real :: x, a\n"
+        "    a = area(x)\n"
+        "  end subroutine\n"
+        "end module\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    assert "error" not in r
+    assert "area()" in [n["label"] for n in r["nodes"]], "generic interface dropped"
+    dispatch = _edge_labels(r, "dispatches_to", "generic_interface")
+    assert ("area", "area_circle") in dispatch
+    assert ("area", "area_square") in dispatch
+    # A call to the generic name now resolves instead of dangling.
+    assert ("report", "area") in _edge_labels(r, "calls")
+
+
+def test_fortran_type_bound_procedure_from_other_module_is_sourceless(tmp_path):
+    """A binding to a procedure implemented in another module resolves to a
+    sourceless stub the corpus rewire can collapse, never a dangling edge."""
+    src = tmp_path / "shape.f90"
+    src.write_text(
+        "module shape\n"
+        "  use draw_mod\n"
+        "  type :: widget\n"
+        "  contains\n"
+        "    procedure :: render => external_render\n"
+        "  end type widget\n"
+        "end module shape\n",
+        encoding="utf-8",
+    )
+    r = extract_fortran(src)
+    node_ids = {n["id"] for n in r["nodes"]}
+    # the binding still produced an edge...
+    assert ("widget", "external_render") in _edge_labels(r, "method", "type_bound_procedure")
+    # ...with a resolvable target node and no dangling endpoints
+    for e in r["edges"]:
+        assert e["source"] in node_ids and e["target"] in node_ids, e
+    stub = next(n for n in r["nodes"] if n["label"] == "external_render")
+    assert stub["source_file"] == ""
+
+
 # ── PowerShell ───────────────────────────────────────────────────────────────
 
 def test_powershell_no_error():
@@ -2285,6 +2772,192 @@ def test_powershell_finds_class_and_method():
     assert any("Transform" in l for l in labels)
 
 
+def test_powershell_this_method_call_resolves(tmp_path):
+    """`$this.Square(3)` inside a class method is a call to a sibling method and
+    must link the two. The invocation parses as an `invokation_expression`, but
+    only the bare-command form was walked, so every method call was dropped from
+    the call graph (#3992)."""
+    f = tmp_path / "calc.ps1"
+    f.write_text(
+        "class Calc {\n"
+        "    [int] Square([int]$x) { return $x * $x }\n"
+        "    [int] Run() { return $this.Square(3) }\n"
+        "}\n"
+    )
+    r = extract_powershell(f)
+    assert "error" not in r
+    assert ("Run", "Square") in _edge_labels(r, "calls")
+
+
+def test_powershell_static_method_call_resolves(tmp_path):
+    """The static `[Calc]::Make()` form is also an `invokation_expression` and
+    must resolve to the method (#3992)."""
+    f = tmp_path / "calc.ps1"
+    f.write_text(
+        "class Calc {\n"
+        "    static [Calc] Make() { return [Calc]::new() }\n"
+        "    [Calc] Run() { return [Calc]::Make() }\n"
+        "}\n"
+    )
+    r = extract_powershell(f)
+    assert ("Run", "Make") in _edge_labels(r, "calls")
+
+
+def test_powershell_member_call_does_not_bind_to_free_function(tmp_path):
+    """Fail-closed: a method call on an unknown receiver (`$obj.Process()`) must
+    NOT bind to a free function that merely shares the name — member calls
+    resolve only to methods (#3992)."""
+    f = tmp_path / "calc.ps1"
+    f.write_text(
+        "function Process { return 1 }\n"
+        "class Calc {\n"
+        "    [int] Run() {\n"
+        "        $obj = Get-Thing\n"
+        "        return $obj.Process()\n"
+        "    }\n"
+        "}\n"
+    )
+    r = extract_powershell(f)
+    assert ("Run", "Process") not in _edge_labels(r, "calls")
+
+
+def test_powershell_command_call_still_resolves(tmp_path):
+    """Positive control: the bare-command call path that already worked must
+    keep working (#3992)."""
+    f = tmp_path / "mod.ps1"
+    f.write_text(
+        "function Helper { return 1 }\n"
+        "function Run { Helper }\n"
+    )
+    r = extract_powershell(f)
+    assert ("Run", "Helper") in _edge_labels(r, "calls")
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_powershell_member_calls_keep_receiver_class(tmp_path, reverse):
+    classes = [
+        f"class {name} {{\n"
+        " [int] Pick() { return 1 }\n"
+        " static [int] Make() { return 1 }\n"
+        " [int] Run() { $THIS.pIcK(); return 1 }\n"
+        "}\n"
+        for name in ("Alpha", "Beta")
+    ]
+    f = tmp_path / "owners.ps1"
+    f.write_text("".join(reversed(classes) if reverse else classes)
+                 + "function Start { [aLpHa]::mAkE(); [Beta]::Make() }\n")
+    r = extract_powershell(f)
+    assert "error" not in r
+    classes_by_id = {n["id"]: n["label"] for n in r["nodes"] if n["label"] in ("Alpha", "Beta")}
+    labels = {n["id"]: n["label"] for n in r["nodes"]}
+    methods = {(classes_by_id[e["source"]], labels[e["target"]]): e["target"]
+               for e in r["edges"] if e["relation"] == "method"}
+    calls = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "calls"}
+    start = next(n["id"] for n in r["nodes"] if n["label"] == "Start()")
+    assert calls == {
+        (methods[(name, ".Run()")], methods[(name, ".Pick()")]) for name in ("Alpha", "Beta")
+    } | {(start, methods[(name, ".Make()")]) for name in ("Alpha", "Beta")}
+
+
+@pytest.mark.parametrize("call,callee", [
+    ("$unknown.Pick()", "Pick"),
+    ("$typed.Pick()", "Pick"),
+    ("$local.Pick()", "Pick"),
+    ("$this.child.Pick()", "Pick"),
+    ("([Alpha]$this).Pick()", "Pick"),
+    ("$this.$dynamic()", "$dynamic"),
+    ("[External]::Pick()", "Pick"),
+    ("[Alpha+Nested]::Pick()", "Pick"),
+    ("[Alpha, MyAssembly]::Pick()", "Pick"),
+    ("[Beta]::Pick()", "Pick"),
+])
+def test_powershell_uncertain_receivers_remain_raw(tmp_path, call, callee):
+    f = tmp_path / "unknown.ps1"
+    f.write_text(
+        "function Pick { return 3 }\n"
+        "class Alpha {\n"
+        " [int] Pick() { return 1 }\n"
+        " [int] Run([Alpha]$typed) {\n"
+        "  $local = [Alpha]::new()\n"
+        f"  {call}\n"
+        "  return 1\n"
+        " }\n"
+        "}\n"
+        "class Beta { [int] Other() { return 1 } }\n"
+    )
+    r = extract_powershell(f)
+    assert "error" not in r
+    assert not [e for e in r["edges"] if e["relation"] == "calls"]
+    picked = [c for c in r["raw_calls"] if c["callee"] == callee]
+    assert len(picked) == 1
+    assert picked[0]["is_member_call"] is True
+    assert picked[0]["source_file"] == str(f)
+    assert picked[0]["source_location"].startswith("L")
+
+
+@pytest.mark.parametrize("receiver", ["[Alpha]", "[aLpHa]", "[ Alpha ]"])
+def test_powershell_complete_static_type_literal_resolves(tmp_path, receiver):
+    f = tmp_path / "literal.ps1"
+    f.write_text(
+        "class Alpha { static [int] Pick() { return 1 } }\n"
+        f"function Start {{ {receiver}::Pick() }}\n"
+    )
+    r = extract_powershell(f)
+    assert "error" not in r
+    caller = next(n["id"] for n in r["nodes"] if n["label"] == "Start()")
+    target = next(n["id"] for n in r["nodes"] if n["label"] == ".Pick()")
+    calls = [e for e in r["edges"] if e["relation"] == "calls"]
+    assert [(e["source"], e["target"]) for e in calls] == [(caller, target)]
+    assert not [c for c in r["raw_calls"] if c["callee"] == "Pick"]
+
+
+@pytest.mark.parametrize("second_name", ["Alpha", "alpha"])
+def test_powershell_duplicate_class_names_do_not_guess(tmp_path, second_name):
+    f = tmp_path / "duplicate.ps1"
+    f.write_text(
+        "class Alpha { [int] Pick() { return 1 } [int] Run() { return $this.Pick() } }\n"
+        f"class {second_name} {{ [int] Pick() {{ return 2 }} }}\n"
+        "function Start { [Alpha]::Pick() }\n"
+    )
+    r = extract_powershell(f)
+    assert "error" not in r
+    assert not [e for e in r["edges"] if e["relation"] == "calls"]
+    assert len([c for c in r["raw_calls"] if c["callee"] == "Pick" and c["is_member_call"]]) == 2
+
+
+def test_powershell_property_reads_and_nested_calls(tmp_path):
+    f = tmp_path / "nested.ps1"
+    f.write_text(
+        "class Alpha {\n"
+        " static [int] Make() { return 1 }\n"
+        " [int] Run() { $this.Make; [Alpha]::Make; $unknown.Pick([Alpha]::Make()); return 1 }\n"
+        "}\n"
+    )
+    r = extract_powershell(f)
+    assert _edge_labels(r, "calls") == {("Run", "Make")}
+    assert [c["callee"] for c in r["raw_calls"]] == ["Pick"]
+
+
+def test_powershell_unknown_member_stays_unresolved_in_cold_and_warm_corpus(tmp_path):
+    from graphify.extract import extract
+    f = tmp_path / "corpus.ps1"
+    f.write_text(
+        "function Pick { return 3 }\n"
+        "class Alpha { [int] Pick() { return 1 } [int] Run() { return $this.Pick() } }\n"
+        "class Beta { [int] Pick() { return 2 } }\n"
+        "function Start { $unknown.Pick() }\n"
+    )
+    cold = extract([f], cache_root=tmp_path / "cache", root=tmp_path, parallel=False)
+    warm = extract([f], cache_root=tmp_path / "cache", root=tmp_path, parallel=False)
+    for r in (cold, warm):
+        ids = {n["label"]: n["id"] for n in r["nodes"] if n["label"] in ("Alpha", "Beta", "Start()")}
+        methods = {(e["source"], next(n["label"] for n in r["nodes"] if n["id"] == e["target"])): e["target"]
+                   for e in r["edges"] if e["relation"] == "method"}
+        assert {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "calls"} == {
+            (methods[(ids["Alpha"], ".Run()")], methods[(ids["Alpha"], ".Pick()")])
+        }
+
+
 def test_powershell_class_base_type_emits_inherits_edge():
     # `class Circle : Shape` — the base type after ':' was previously dropped
     # because the handler only read the first simple_name (the class name).
@@ -2308,17 +2981,42 @@ def test_powershell_enum_is_extracted_and_reference_resolves(tmp_path):
     color = next((n for n in r["nodes"] if n["label"] == "Color"), None)
     assert color is not None, "enum definition dropped"
     assert color["source_file"] != "", "enum must be a real sourced definition, not a phantom stub"
-    # members are captured
-    contained = {
+    # members are captured, hanging off the enum via case_of (not contains)
+    cases = {
         n["label"] for n in r["nodes"]
         for e in r["edges"]
-        if e["relation"] == "contains" and e["source"] == color["id"] and e["target"] == n["id"]
+        if e["relation"] == "case_of" and e["source"] == color["id"] and e["target"] == n["id"]
     }
-    assert {"Red", "Green", "Blue"} <= contained, f"enum members missing: {contained}"
+    assert {"Red", "Green", "Blue"} <= cases, f"enum members missing: {cases}"
     # the field type reference resolves to the real enum node
     ref_targets = {e["target"] for e in r["edges"]
                    if e["relation"] == "references" and e.get("context") == "field"}
     assert color["id"] in ref_targets, "[Color] field reference did not resolve to the enum"
+
+
+def test_powershell_enum_members_emit_case_of_not_contains(tmp_path):
+    """A PowerShell enum member is a discriminant case, so it must get a
+    `case_of` edge like every other language with enums (Java #1719, C#, Swift,
+    Rust, VB.NET), not the `contains` edge used for real class fields.
+    PowerShell was routing enum members through the same `contains` path as a
+    class property. The relation also matters to resolution: `case_of` targets
+    are excluded from constructor binding, so an enum member named like a type
+    can no longer be mistaken for one.
+    """
+    f = tmp_path / "status.ps1"
+    f.write_text("enum Status {\n    Active\n    Paused\n    Closed\n}\n")
+    r = extract_powershell(f)
+    case_of = _edge_labels(r, "case_of")
+    contains = _edge_labels(r, "contains")
+    # Each enum member hangs off its enum via case_of, not contains.
+    assert ("Status", "Active") in case_of
+    assert ("Status", "Paused") in case_of
+    assert ("Status", "Closed") in case_of
+    assert ("Status", "Active") not in contains
+    # Containment itself (the file owning the enum type) still uses `contains`;
+    # only the member-to-enum relation changed.
+    assert ("status.ps1", "Status") in contains
+    assert ("status.ps1", "Status") not in case_of
 
 
 def test_powershell_property_field_type_context():
@@ -2471,6 +3169,30 @@ def test_powershell_psd1_no_dangling_edges():
     node_ids = {n["id"] for n in r["nodes"]}
     for e in r["edges"]:
         assert e["source"] in node_ids, f"Dangling source in edge: {e}"
+
+
+def test_powershell_functions_in_file_scope_begin_block_are_extracted(tmp_path):
+    # File-scope begin/process/end blocks parse as pseudo-commands (command_name
+    # 'begin'), not named_block, so functions defined inside them were dropped (#4270).
+    f = tmp_path / "advanced.ps1"
+    f.write_text(
+        "[CmdletBinding()]\n"
+        "param()\n"
+        "begin {\n"
+        "    function Get-Foo { Get-Bar }\n"
+        "    function Get-Bar { 'bar' }\n"
+        "}\n"
+        "process {\n"
+        "    Get-Foo\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    r = extract_powershell(f)
+    assert "error" not in r
+    labels = {n["label"] for n in r["nodes"]}
+    assert "Get-Foo()" in labels and "Get-Bar()" in labels
+    # the call between the two helpers (inside Get-Foo's body) is recovered
+    assert ("Get-Foo", "Get-Bar") in _edge_labels(r, "calls")
 
 
 # ── TypeScript dynamic imports ───────────────────────────────────────────────
@@ -2933,6 +3655,18 @@ def test_markdown_wikilink_vault_fallback(tmp_path):
         assert e["target"] in node_ids, f"link target is a ghost node: {e}"
 
 
+@pytest.mark.parametrize("separator", ["|", "\\|"])
+def test_markdown_wikilink_alias_separator(tmp_path, separator):
+    r"""Obsidian table aliases escape the pipe as ``\|``."""
+    target = tmp_path / "target.md"
+    source = tmp_path / "source.md"
+    target.write_text("# Target\n")
+    source.write_text(f"| Link |\n| --- |\n| [[target{separator}Alias]] |\n")
+    refs = [e for e in extract_markdown(source)["edges"]
+            if e["relation"] == "references"]
+    assert [e.get("target_file") for e in refs] == [str(target)]
+
+
 def test_markdown_wikilink_fallback_path_qualified(tmp_path):
     """[[folder/name]] from a subfolder matches on the full segment suffix."""
     vault = tmp_path / "vault"
@@ -3004,15 +3738,175 @@ def test_markdown_wikilink_fallback_unicode_normalization(tmp_path):
     vault = tmp_path / "vault"
     (vault / "log").mkdir(parents=True)
     name_nfc = unicodedata.normalize("NFC", "어휘 노트")
-    (vault / f"{name_nfc}.md").write_text("# Term\n")
+    (vault / f"{name_nfc}.md").write_text("# Term\n", encoding="utf-8")
     name_nfd = unicodedata.normalize("NFD", name_nfc)
-    (vault / "log" / "entry.md").write_text(f"See [[{name_nfd}]].\n")
+    (vault / "log" / "entry.md").write_text(f"See [[{name_nfd}]].\n", encoding="utf-8")
     _, refs, page_id = _vault_extract(
         vault, [vault / f"{name_nfc}.md", vault / "log" / "entry.md"])
     entry_id = page_id(vault / "log" / "entry.md")
     target_id = page_id(vault / f"{name_nfc}.md")
     assert any(e["source"] == entry_id and e["target"] == target_id
                for e in refs), f"NFD wikilink missed the NFC file: {refs}"
+
+
+def test_markdown_wikilink_index_prunes_ignored_directories(tmp_path, monkeypatch):
+    """#3822: _build_link_index must prune directories and files matched by
+    .graphifyignore/.gitignore, preventing both 50+ min directory walks on
+    large ignored trees and wikilinks erroneously resolving into ignored files."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / ".graphifyignore").write_text("bigdata/\nsecret.md\n", encoding="utf-8")
+
+    (vault / "notes").mkdir()
+    (vault / "notes" / "hub.md").write_text("# Hub\nSee [[target]] and [[secret]].\n", encoding="utf-8")
+    (vault / "notes" / "target.md").write_text("# Target\n", encoding="utf-8")
+
+    (vault / "bigdata").mkdir()
+    (vault / "bigdata" / "sub").mkdir()
+    (vault / "bigdata" / "sub" / "secret.md").write_text("# Secret in bigdata\n", encoding="utf-8")
+
+    import os
+    visited = []
+    real_walk = os.walk
+
+    def spy_walk(top, *args, **kwargs):
+        for dirpath, dirnames, filenames in real_walk(top, *args, **kwargs):
+            visited.append(os.path.relpath(dirpath, str(vault)))
+            yield dirpath, dirnames, filenames
+
+    monkeypatch.setattr(os, "walk", spy_walk)
+
+    node_ids, refs, page_id = _vault_extract(
+        vault, [vault / "notes" / "hub.md", vault / "notes" / "target.md"]
+    )
+
+    bigdata_walked = [v for v in visited if v.startswith("bigdata")]
+    assert not bigdata_walked, f"ignored directory descended during index walk: {bigdata_walked}"
+
+    hub_id = page_id(vault / "notes" / "hub.md")
+    target_id = page_id(vault / "notes" / "target.md")
+    assert any(e["source"] == hub_id and e["target"] == target_id for e in refs), f"valid target link lost: {refs}"
+    assert not any("bigdata" in e["target"] for e in refs), f"wikilink resolved into ignored path: {refs}"
+
+
+def test_markdown_wikilink_dotted_note_name(tmp_path):
+    """A dot inside a note name is not a file extension: [[note.en]] (sibling),
+    [[v1.2 release]] (vault-wide) and [[sub/deep.fr|alias]] (path-qualified)
+    resolve to the existing <name>.md like any extension-less wikilink."""
+    vault = tmp_path / "vault"
+    (vault / "log" / "sub").mkdir(parents=True)
+    (vault / "log" / "note.en.md").write_text("# Note\n")
+    (vault / "log" / "sub" / "deep.fr.md").write_text("# Deep\n")
+    (vault / "v1.2 release.md").write_text("# Release\n")
+    (vault / "log" / "entry.md").write_text(
+        "See [[note.en]], [[v1.2 release]] and [[sub/deep.fr|deep]].\n")
+    docs = [vault / "log" / "note.en.md", vault / "log" / "sub" / "deep.fr.md",
+            vault / "v1.2 release.md"]
+    node_ids, refs, page_id = _vault_extract(vault, docs + [vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    targets = {e["target"] for e in refs if e["source"] == entry_id}
+    assert targets == {page_id(d) for d in docs}, f"dotted wikilink lost: {refs}"
+    for e in refs:
+        assert e["target"] in node_ids, f"link target is a ghost node: {e}"
+
+
+def test_markdown_dotted_link_without_note_stays_skipped(tmp_path):
+    """The .md completion needs an existing note and a wikilink: [[missing.en]]
+    with no missing.en.md, [[image.png]] (an asset) and the inline
+    [text](note.en) produce no edge, exactly as before."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "log" / "image.png").write_bytes(b"\x89PNG\r\n")
+    (vault / "log" / "note.en.md").write_text("# Note\n")
+    (vault / "log" / "entry.md").write_text(
+        "See [[missing.en]], [[image.png]] and [note](note.en).\n")
+    _, refs, page_id = _vault_extract(
+        vault, [vault / "log" / "note.en.md", vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    assert [e for e in refs if e["source"] == entry_id] == [], (
+        f"a dotted link without a matching note must stay skipped: {refs}")
+
+
+def test_markdown_dotted_wikilink_literal_file_keeps_precedence(tmp_path):
+    """A literal target graphify indexes itself wins over <name>.md:
+    [[pic.png]] beside pic.png and pic.png.md stays skipped, while
+    [[thirteen.en]] beside a raw thirteen.en (a format graphify does not
+    index) still resolves to thirteen.en.md."""
+    vault = tmp_path / "vault"
+    (vault / "log").mkdir(parents=True)
+    (vault / "log" / "pic.png").write_bytes(b"\x89PNG\r\n")
+    (vault / "log" / "pic.png.md").write_text("# Pic\n")
+    (vault / "log" / "thirteen.en").write_text("raw\n")
+    (vault / "log" / "thirteen.en.md").write_text("# Thirteen\n")
+    (vault / "log" / "entry.md").write_text("See [[pic.png]] and [[thirteen.en]].\n")
+    notes = [vault / "log" / "pic.png.md", vault / "log" / "thirteen.en.md"]
+    _, refs, page_id = _vault_extract(vault, notes + [vault / "log" / "entry.md"])
+    entry_id = page_id(vault / "log" / "entry.md")
+    targets = {e["target"] for e in refs if e["source"] == entry_id}
+    assert targets == {page_id(vault / "log" / "thirteen.en.md")}, (
+        f"an indexed literal file must keep precedence over its .md note: {refs}")
+
+
+def test_markdown_link_destination_with_spaces(tmp_path):
+    """A file name with a space is linked as <bracketed> or percent-encoded,
+    the two CommonMark forms (and Obsidian's markdown-style output). Both
+    resolve, in inline and reference-style links alike, instead of being cut
+    at the space or kept encoded and dropped as a ghost."""
+    vault = tmp_path / "vault"
+    (vault / "sub").mkdir(parents=True)
+    docs = [vault / "My Note.md", vault / "sub" / "Deep Note.md",
+            vault / "Ref One.md", vault / "Ref Two.md"]
+    for d in docs:
+        d.write_text("# Note\n")
+    entry = vault / "entry.md"
+    entry.write_text(
+        "See [a](My%20Note.md), [b](<sub/Deep Note.md> \"title\"), [c][r1] and [d][r2].\n"
+        "\n"
+        "[r1]: <Ref One.md>\n"
+        "[r2]: Ref%20Two.md\n")
+    node_ids, refs, page_id = _vault_extract(vault, docs + [entry])
+    targets = {e["target"] for e in refs if e["source"] == page_id(entry)}
+    assert targets == {page_id(d) for d in docs}, f"spaced link lost: {refs}"
+    for e in refs:
+        assert e["target"] in node_ids, f"link target is a ghost node: {e}"
+
+
+def test_markdown_link_forms_keep_their_existing_targets(tmp_path):
+    """Decoding and bracket parsing take no link away from the file it already
+    reached: a file whose name literally contains the escape still wins, with
+    or without the .md ([x](100%25) beside 100%25.md); a wikilink stays
+    verbatim ([[My%20Note]] is not My Note.md); an unclosed < does not swallow
+    the links after it on the line, even inside a parenthesised aside."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    literal = vault / "100%25.md"
+    spaced = vault / "My Note.md"
+    b, d, f, h = (vault / f"{n}.md" for n in "bdfh")
+    for doc in (literal, spaced, b, d, f, h):
+        doc.write_text("# Note\n")
+    entry = vault / "entry.md"
+    entry.write_text(
+        "See [x](100%25.md) and [[My%20Note]].\n"
+        "Then [a](<b.md) -> [c](d.md).\n"
+        "And [e](<f.md) -> (see [g](h.md)).\n")
+    bare = vault / "bare.md"
+    bare.write_text("See [y](100%25).\n")
+    node_ids, refs, page_id = _vault_extract(
+        vault, [literal, spaced, b, d, f, h, entry, bare])
+    targets = {e["target"] for e in refs if e["source"] == page_id(entry)}
+    assert targets & node_ids == {page_id(p) for p in (literal, b, d, f, h)}, (
+        f"a link lost the file it reached: {refs}")
+    bare_targets = {e["target"] for e in refs if e["source"] == page_id(bare)}
+    assert bare_targets == {page_id(literal)}, (
+        f"an extension-less link lost its literal file: {refs}")
+
+
+def test_markdown_decoded_link_stays_external(tmp_path):
+    """An encoded scheme or protocol-relative prefix (a UNC path on Windows)
+    is still an external link once decoded, never a local file lookup."""
+    from graphify.extractors.markdown import _resolve_markdown_link
+    for raw in ("%2F%2Fhost%2Fshare%2Fx.md", "https%3A%2F%2Fexample.com%2Fa.md"):
+        assert _resolve_markdown_link(raw, tmp_path) is None, raw
 
 
 # ── Groovy ───────────────────────────────────────────────────────────────────
@@ -3081,6 +3975,44 @@ def test_groovy_implements_edge():
         for e in r["edges"] if e["relation"] == "implements"
     )
     assert found, "ExtendedService should have implements edge to Resettable"
+
+
+def test_groovy_enum_and_constants_are_extracted(tmp_path):
+    """A Groovy `enum` must become a type node with a `case_of` edge per member.
+
+    `enum_declaration` was absent from the Groovy config's class_types, so the
+    enum type — and every constant it declared — was dropped entirely, leaving
+    consumers with no way to see which value a branch selects.
+    """
+    src = tmp_path / "cards.groovy"
+    src.write_text(
+        "enum Suit { HEARTS, SPADES, CLUBS, DIAMONDS }\n"
+        "class Deck {}\n"
+    )
+    r = extract_groovy(src)
+    assert "error" not in r
+    labels = _labels(r)
+    assert "Suit" in labels, "enum type dropped"
+    cases = {
+        (node_id_label(r, e["source"]), node_id_label(r, e["target"]))
+        for e in r["edges"] if e["relation"] == "case_of"
+    }
+    assert {("Suit", "HEARTS"), ("Suit", "SPADES"),
+            ("Suit", "CLUBS"), ("Suit", "DIAMONDS")} <= cases
+    # constants hang off the enum, not the file
+    file_nid = next(n["id"] for n in r["nodes"] if n["label"] == "cards.groovy")
+    lab = {n["id"]: n["label"] for n in r["nodes"]}
+    assert not [
+        e for e in r["edges"]
+        if e["source"] == file_nid and lab.get(e["target"]) == "HEARTS"
+    ]
+
+
+def node_id_label(r, nid):
+    for n in r["nodes"]:
+        if n["id"] == nid:
+            return n["label"]
+    return nid
 
 
 def test_groovy_spock_finds_class():
@@ -3285,6 +4217,25 @@ def test_dmf_no_dangling_edges():
         assert e["source"] in node_ids
         assert e["target"] in node_ids
 
+def test_dmf_element_ids_do_not_depend_on_the_checkout_path(tmp_path):
+    """An element id was minted from its window's node id, which embeds the
+    absolute stem; extract()'s id-remap only rewrites the leading stem, so the
+    checkout path (and OS username) survived inside every element id."""
+    import shutil
+    from graphify.extract import extract
+
+    def ids_for(checkout):
+        (checkout / "ui").mkdir(parents=True)
+        shutil.copy(FIXTURES / "sample.dmf", checkout / "ui" / "skin.dmf")
+        r = extract([checkout / "ui" / "skin.dmf"], root=checkout, cache_root=checkout)
+        return {n["id"] for n in r["nodes"]}
+
+    first = ids_for(tmp_path / "clone_one")
+    second = ids_for(tmp_path / "elsewhere" / "clone_two")
+    assert any("elem" in i for i in first)
+    assert first == second
+    assert not [i for i in first if "clone_one" in i or "elsewhere" in i]
+
 
 # -- .NET project files (.sln, .csproj, .xaml, .razor) ------------------------
 
@@ -3356,6 +4307,23 @@ def test_razor_finds_code_block_methods():
     labels = _labels(r)
     assert any("IncrementCount" in l for l in labels)
     assert any("LoadData" in l for l in labels)
+
+def test_razor_finds_functions_block_methods(tmp_path):
+    # @functions is the Razor Pages / MVC (.cshtml) spelling of the Blazor
+    # @code block. Both compile to class members and this extractor serves both
+    # file types, but only @code was recognised, so .cshtml methods vanished.
+    page = tmp_path / "Page.cshtml"
+    page.write_text(
+        "@functions {\n"
+        "    public int Square(int x) { return x * x; }\n"
+        "    public string Greet() { return \"hi\"; }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    r = extract_razor(page)
+    labels = _labels(r)
+    assert "Square" in labels
+    assert "Greet" in labels
 
 def test_razor_no_dangling_edges():
     r = extract_razor(FIXTURES / "sample.razor")
@@ -3451,6 +4419,33 @@ def test_apex_no_dangling_edges():
 
 # -- SystemVerilog -------------------------------------------------------------
 
+@pytest.mark.parametrize("suffix", [".v", ".sv", ".svh", ".vh"])
+def test_verilog_family_dispatch(suffix):
+    from graphify.extract import _get_extractor
+
+    assert _get_extractor(Path(f"defs{suffix}")) is extract_verilog
+
+
+@pytest.mark.parametrize("with_module", [False, True])
+def test_verilog_header_collection_and_extraction(tmp_path, with_module):
+    from graphify.extract import collect_files, extract
+
+    header = tmp_path / "defs.vh"
+    source = "`define WIDTH 8\n"
+    if with_module:
+        source += "module helper(input wire a, output wire b);\nassign b = a;\nendmodule\n"
+    header.write_text(source, encoding="utf-8")
+
+    paths = collect_files(tmp_path)
+    assert header in paths
+    result = extract(paths, root=tmp_path, cache_root=tmp_path, parallel=False)
+    assert header.name in {node["label"] for node in result["nodes"]}
+    if with_module:
+        assert (header.name, "helper") in _edge_labels(result, "defines")
+    else:
+        assert {node["label"] for node in result["nodes"]} == {header.name}
+
+
 def test_systemverilog_no_error():
     r = extract_verilog(FIXTURES / "sample.sv")
     assert "error" not in r
@@ -3494,6 +4489,40 @@ def test_systemverilog_preserves_existing_module_extraction():
     assert {"top", "leaf", "add()", "tick"}.issubset(labels)
     assert "imports_from" in _relations(r)
     assert "instantiates" in _relations(r)
+
+
+def test_systemverilog_instantiation_resolves_to_local_module():
+    """`top` instantiating same-file `leaf` links to leaf's definition, not a
+    bare-id phantom duplicate. The instantiation target used an unscoped id
+    (`_make_id(name)`) while the definition used `_make_id(stem, name)`, so
+    they never matched: the module was split into a real definition node and a
+    sourced phantom that also blocked the corpus-level rewire (#1402 shape)."""
+    r = extract_verilog(FIXTURES / "sample.sv")
+    leaf_nodes = [n for n in r["nodes"] if n["label"] == "leaf"]
+    assert len(leaf_nodes) == 1, f"leaf split into duplicates: {leaf_nodes}"
+    leaf_id = leaf_nodes[0]["id"]
+    # The surviving node is the real, sourced definition.
+    assert leaf_nodes[0].get("source_file")
+    inst_targets = {e["target"] for e in r["edges"] if e["relation"] == "instantiates"}
+    assert leaf_id in inst_targets, (
+        f"instantiation did not link to the leaf definition {leaf_id}: {inst_targets}"
+    )
+
+
+def test_systemverilog_cross_file_instantiation_is_sourceless_stub(tmp_path):
+    """A module defined in another file is a SOURCELESS stub so the corpus-level
+    rewire can collapse it onto the real definition, rather than a sourced node
+    whose id bakes in this file's path and blocks the rewire."""
+    f = tmp_path / "wrapper.sv"
+    f.write_text("module wrapper;\n  external_ip u_ip();\nendmodule\n")
+    r = extract_verilog(f)
+    stubs = [n for n in r["nodes"] if n["label"] == "external_ip"]
+    assert len(stubs) == 1, stubs
+    assert stubs[0].get("source_file") == "", (
+        f"cross-file instantiation target must be sourceless: {stubs[0]}"
+    )
+    inst_targets = {e["target"] for e in r["edges"] if e["relation"] == "instantiates"}
+    assert stubs[0]["id"] in inst_targets
 
 
 def test_systemverilog_missing_file_returns_empty():
@@ -3575,9 +4604,9 @@ def test_cpp_paired_method_decl_and_def_are_one_node():
         e["target"] for e in r["edges"]
         if e["source"] == foo and e["relation"] in ("method", "defines", "contains")
     }
-    bar_nodes = [n for n in r["nodes"] if n["id"] in method_targets and n["label"] in ("bar", "Foo::bar()")]
+    bar_nodes = [n for n in r["nodes"] if n["id"] in method_targets and n["label"] in (".bar()", "Foo::bar()")]
     # There must be exactly one node representing bar (decl and def merged).
-    bar_ids = {n["id"] for n in r["nodes"] if n["label"] in ("bar", "Foo::bar()")}
+    bar_ids = {n["id"] for n in r["nodes"] if n["label"] in (".bar()", "Foo::bar()")}
     assert len(bar_ids) == 1, f"bar decl/def should be one node, got {bar_ids}"
     assert bar_nodes, "the merged bar node should be a member of Foo"
 
@@ -3587,7 +4616,7 @@ def test_cpp_paired_merged_node_records_definition_site():
     DECLARATION. The survivor must still carry where the symbol is implemented,
     or the definition site is lost with the dropped impl node."""
     r = _corpus("cpp_paired/Foo.h", "cpp_paired/Foo.cpp", "cpp_paired/Main.cpp")
-    bars = [n for n in r["nodes"] if n["label"] in ("bar", "Foo::bar()")]
+    bars = [n for n in r["nodes"] if n["label"] in (".bar()", "Foo::bar()")]
     assert len(bars) == 1, f"bar decl/def should be one node, got {bars}"
     bar = bars[0]
     assert str(bar["source_file"]).endswith("Foo.h"), bar
@@ -4254,6 +5283,128 @@ def test_zig_enum_and_union_methods_are_extracted(tmp_path):
     assert (".area()", "helper()") in calls, "call from union method body dropped"
 
 
+@_needs_zig
+def test_zig_enum_members_emit_case_of_nodes(tmp_path):
+    """Each enum member must become a node with a `case_of` edge to its enum.
+
+    The enum body walk only emitted the enum's methods; its members (the
+    `container_field` nodes `red`, `north = 0`) were dropped, leaving the enum a
+    memberless leaf. Every other language with enums (Java #1719, Swift, Scala,
+    Rust) emits a node per member with a `case_of` edge; this brings Zig to
+    parity. Struct fields share the container_field shape and must stay untouched.
+    """
+    src = (
+        "const Color = enum { red, green, blue };\n"
+        "const Dir = enum(u8) { north = 0, south };\n"
+        "const Point = struct { x: i32, y: i32 };\n"
+    )
+    f = tmp_path / "colors.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    labels = set(id_to_label.values())
+    assert {"red", "green", "blue", "north", "south"} <= labels
+    case_of = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "case_of"
+    }
+    assert ("Color", "red") in case_of
+    assert ("Color", "green") in case_of
+    assert ("Color", "blue") in case_of
+    assert ("Dir", "north") in case_of
+    assert ("Dir", "south") in case_of
+    # A struct field is a container_field too, but is not an enum member and must
+    # not be emitted as a node or gain a case_of edge.
+    assert "x" not in labels
+    assert not any(src_lbl == "Point" for src_lbl, _ in case_of)
+
+
+@_needs_zig
+def test_zig_error_set_members_emit_case_of_nodes(tmp_path):
+    """A Zig error set must become a type node with a `case_of` edge per member.
+
+    `const E = error{ A, B };` parses as a `variable_declaration` whose value is
+    an `error_set_declaration`. That value node type was not recognised, so the
+    whole declaration fell through and BOTH the error type and its members were
+    dropped. An error set is a named enumeration of error values — the direct
+    parallel of a Zig enum — so emit the type plus a node + `case_of` edge per
+    member identifier, matching the enum handling (and Java #1719 / Swift / Scala).
+    """
+    src = (
+        "const FileError = error{ NotFound, PermissionDenied };\n"
+        "fn open() FileError!void { return error.NotFound; }\n"
+    )
+    f = tmp_path / "errors.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    labels = set(id_to_label.values())
+    # Pre-fix the whole `const FileError = error{...}` declaration vanished.
+    assert "FileError" in labels
+    assert {"NotFound", "PermissionDenied"} <= labels
+    case_of = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "case_of"
+    }
+    assert ("FileError", "NotFound") in case_of
+    assert ("FileError", "PermissionDenied") in case_of
+
+
+@_needs_zig
+def test_zig_tagged_union_variants_emit_case_of_nodes(tmp_path):
+    """A tagged union's variants must become nodes with a `case_of` edge each.
+
+    The `container_field` branch only fired for an `enum_declaration` parent, so a
+    tagged union (`union(enum) { circle: f64, point }`) kept its methods but
+    dropped every variant, leaving the union a near-memberless leaf. A tagged
+    union's fields are its discriminant cases — the same shape as enum members —
+    so they get the same node + `case_of` edge (Java #1719 / Swift / Scala
+    parity). A bare `union { ... }` has typed data fields, not cases, so — like a
+    struct's fields — it stays untouched.
+    """
+    src = (
+        "const Shape = union(enum) {\n"
+        "    circle: f64,\n"
+        "    rectangle: struct { w: f64, h: f64 },\n"
+        "    point,\n"
+        "};\n"
+        "const Payload = union(Tag) { int: i64, text: []const u8 };\n"
+        "const Bare = union { int: i64, float: f64 };\n"
+    )
+    f = tmp_path / "shapes.zig"
+    f.write_text(src)
+    r = extract_zig(f)
+    assert "error" not in r
+    id_to_label = {n["id"]: n["label"] for n in r["nodes"]}
+    labels = set(id_to_label.values())
+    # Pre-fix every tagged-union variant was dropped.
+    assert {"circle", "rectangle", "point", "int", "text"} <= labels
+    case_of = {
+        (id_to_label.get(e["source"], e["source"]),
+         id_to_label.get(e["target"], e["target"]))
+        for e in r["edges"] if e["relation"] == "case_of"
+    }
+    assert ("Shape", "circle") in case_of
+    assert ("Shape", "rectangle") in case_of
+    assert ("Shape", "point") in case_of
+    assert ("Payload", "int") in case_of
+    assert ("Payload", "text") in case_of
+    # A bare (untagged) union's fields are typed data, not cases: no case_of, and
+    # the data fields must not be minted as member nodes.
+    assert not any(src_lbl == "Bare" for src_lbl, _ in case_of)
+    assert "float" not in labels
+    # A variant's nested-struct payload is not recursed into (#4074): `rectangle`
+    # is minted as a variant, but its `w`/`h` fields are not, and `rectangle`
+    # owns no `case_of` edges of its own.
+    assert "w" not in labels
+    assert "h" not in labels
+    assert not any(src_lbl == "rectangle" for src_lbl, _ in case_of)
+
+
 @_needs_commonlisp
 def test_cl_ids_are_path_qualified_across_directories(tmp_path):
     """Two same-named .lisp files in DIFFERENT directories must mint distinct
@@ -4503,3 +5654,87 @@ def test_robot_path_variables_match_case_space_underscore_insensitively():
     assert _resolve_robot_import("..${/}Resource${/}common.robot", rel_src) == P("Tests/Resource/common.robot")
     # any other variable, in any casing, still yields no edge
     assert _resolve_robot_import("${Root_Dir}/x.robot", rel_src) is None
+
+
+def test_kotlin_class_annotation_emits_attribute_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "ClassAnnotation.kt"
+    source.write_text("@Entity class User")
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("User", "Entity") in refs
+
+def test_kotlin_parameterized_annotation_emits_attribute_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "ParamAnnotation.kt"
+    source.write_text('@Table(name="users") class User')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("User", "Table") in refs
+
+def test_kotlin_use_site_target_annotation_emits_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "UseSite.kt"
+    source.write_text('class User(@field:NotNull val name: String)')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("User", "NotNull") in refs
+
+def test_kotlin_function_annotation_emits_attribute_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "FuncAnnotation.kt"
+    source.write_text('class Controller { @GetMapping fun foo() {} }')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("foo", "GetMapping") in refs
+
+def test_kotlin_primary_constructor_val_emits_field_type_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "ConstructorField.kt"
+    source.write_text('class Order(val user: User)')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "field")
+    assert ("Order", "User") in refs
+
+def test_kotlin_primary_constructor_plain_param_is_not_a_field(tmp_path):
+    # Only `val`/`var` constructor params are properties; a bare param is not.
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "PlainParam.kt"
+    source.write_text('class Order(val user: User, note: Note)')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "field")
+    assert ("Order", "User") in refs
+    assert ("Order", "Note") not in refs
+
+def test_kotlin_primary_constructor_annotations_emits_attribute_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "ConstructorAnnotations.kt"
+    source.write_text('class User(@Id val id: Long)')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("User", "Id") in refs
+
+def test_kotlin_primary_constructor_generic_field_emits_generic_arg(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "ConstructorGeneric.kt"
+    source.write_text('class User(@OneToMany val orders: List<Order>)')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "generic_arg")
+    assert ("User", "Order") in refs
+
+def test_kotlin_body_property_annotation_emits_attribute_edge(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "BodyProperty.kt"
+    source.write_text('class Foo { @Transient var x: String = "" }')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("Foo", "Transient") in refs
+
+def test_kotlin_bracketed_annotations_emits_multiple_attribute_edges(tmp_path):
+    from graphify.extract import extract_kotlin
+    source = tmp_path / "BracketedAnnotations.kt"
+    source.write_text('class Foo { @set:[Inject VisibleForTesting] var x: String = "" }')
+    result = extract_kotlin(source)
+    refs = _edge_labels(result, "references", "attribute")
+    assert ("Foo", "Inject") in refs
+    assert ("Foo", "VisibleForTesting") in refs

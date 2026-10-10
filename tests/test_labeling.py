@@ -220,6 +220,20 @@ def test_generate_community_labels_success(monkeypatch):
     assert labels == {0: "Orders", 1: "Payments"}
 
 
+def test_generate_community_labels_warns_on_partial_success(monkeypatch, capsys):
+    G, communities = _graph()
+    monkeypatch.setattr(
+        "graphify.llm.label_communities",
+        lambda *args, **kwargs: {0: "Orders", 1: "Community 1"},
+    )
+
+    labels, source = generate_community_labels(G, communities, backend="gemini")
+
+    assert source == "llm"
+    assert labels == {0: "Orders", 1: "Community 1"}
+    assert "labeled 1 of 2 communities" in capsys.readouterr().err
+
+
 def test_gods_as_dicts_do_not_crash(monkeypatch):
     """god_nodes() returns list[dict] with an 'id' key, not bare ids."""
     G, communities = _graph()
@@ -452,8 +466,12 @@ def test_label_communities_accumulates_token_usage(monkeypatch):
             usage_out["input"] = usage_out.get("input", 0) + 100
             usage_out["output"] = usage_out.get("output", 0) + 10
         # one name per community id present in this batch
-        cids = [int(line.split()[1].rstrip(":")) for line in prompt.splitlines()
-                if line.startswith("Community ")]
+        cids = []
+        for line in prompt.splitlines():
+            if line.startswith("Community "):
+                cids.append(int(line.split()[1].rstrip(":")))
+            elif re.match(r"^\d+: ", line):
+                cids.append(int(line.split(":", 1)[0]))
         return json.dumps({str(c): f"Name {c}" for c in cids})
 
     monkeypatch.setattr("graphify.llm._call_llm", fake_call)
