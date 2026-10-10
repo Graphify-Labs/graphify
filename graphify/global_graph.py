@@ -110,6 +110,8 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     data = json.loads(source_path.read_text(encoding="utf-8"))
     if "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
+    from graphify.paths import restore_arc_direction
+    data = restore_arc_direction(data)
     try:
         src_G = _jg.node_link_graph(data, edges="links")
     except TypeError:
@@ -142,6 +144,11 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     for u, v, data in prefixed.edges(data=True):
         u = remap.get(u, u)
         v = remap.get(v, v)
+        # The direction markers name endpoints too; rewire them with u/v so
+        # they never point at a deduplicated (absent) external node.
+        for key in ("_src", "_tgt"):
+            if data.get(key) in remap:
+                data = {**data, key: remap[data[key]]}
         if u != v:  # don't introduce self-loops via remapping
             G.add_edge(u, v, **data)
 
