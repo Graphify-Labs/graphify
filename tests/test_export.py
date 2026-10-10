@@ -1385,3 +1385,39 @@ def test_to_html_aggregated_community_nodes_runtime(tmp_path):
     assert '<div class="field">Degree: 1</div>' in info_html
     assert "Type: unknown" not in info_html
     assert "Source: -" not in info_html
+
+
+# ── Issue #4124: "<!--" + "<script" in labels swallowed the closing </script> ──
+
+def test_to_html_escapes_script_data_sequences_in_embedded_json():
+    """#4124: an unclosed `<!--` followed later by `<script` puts the HTML tokenizer
+    in the "script data double escaped" state, where the real `</script>` no longer
+    closes the data block and the whole page fails to render. Escaping only `</`
+    left both sequences intact; no `<` may reach the embedded JSON verbatim."""
+    G = build_from_json({
+        "nodes": [
+            {"id": "h1", "label": "An unclosed <!-- opener in a heading",
+             "file_type": "document", "source_file": "guide.md"},
+            {"id": "h2", "label": "Then a <script setup> heading",
+             "file_type": "document", "source_file": "guide.md"},
+        ],
+        "edges": [{"source": "h1", "target": "h2", "relation": "contains",
+                   "confidence": "EXTRACTED", "source_file": "guide.md"}],
+    })
+    G.graph["hyperedges"] = [{"id": "he1", "label": "<!-- group <script",
+                              "nodes": ["h1", "h2"]}]
+    communities = cluster(G)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "graph.html"
+        to_html(G, communities, str(out), community_labels={c: "<!-- c <script" for c in communities})
+        content = out.read_text(encoding="utf-8")
+
+    for name in ("hyperedges", "RAW_NODES", "RAW_EDGES", "LEGEND"):
+        m = re.search(rf"const {name} = (.*?);\n", content)
+        assert m, f"{name} not found in HTML"
+        assert "<" not in m.group(1), f"raw '<' in embedded {name}"
+
+    # The data must still decode to the original labels.
+    labels = {n["id"]: n["label"] for n in _vis_nodes_from_html(content)}
+    assert labels["h1"] == "An unclosed <!-- opener in a heading"
+    assert labels["h2"] == "Then a <script setup> heading"

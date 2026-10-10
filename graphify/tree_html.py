@@ -568,9 +568,10 @@ def emit_html(
     svg_width: int = 6000,
     svg_height: int = 8000,
 ) -> str:
-    # Escape </script> sequences so embedded JSON cannot break out of the
-    # <script> tag, and HTML-escape values that land in <title>/<h1>.
-    data_json = json.dumps(tree, ensure_ascii=True, separators=(",", ":")).replace("</", "<\\/")
+    # Escape every "<" so embedded JSON cannot break out of the <script> tag
+    # ("</script", or "<!--" followed by "<script", #4124), and HTML-escape
+    # values that land in <title>/<h1>.
+    data_json = json.dumps(tree, ensure_ascii=True, separators=(",", ":")).replace("<", "\\u003c")
     return _HTML_TEMPLATE.format(
         title=_html.escape(title),
         header=_html.escape(header),
