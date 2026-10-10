@@ -1142,6 +1142,31 @@ def _is_community_label_export_fix_line(line: str) -> bool:
     )
 
 
+def _is_subagent_capability_wording_fix_line(line: str) -> bool:
+    """Whether a line is part of the #2525 subagent-capability rewording.
+
+    Step B3's diagnostics named the literal agent type "general-purpose"
+    rather than the capability that matters (Write and Bash access), so a
+    host whose dispatch policy restricts or refuses that exact type had no
+    escape and every diagnostic pointed back at the one type it could not
+    use. Reworded to name the capability, with general-purpose kept as the
+    default.
+
+    Matches only the two changed lines' old and new forms by a phrase
+    unique to each, not a bare "general-purpose"/"Write and Bash access"
+    substring — a loose substring also matches unrelated, unchanged lines
+    (e.g. the dispatch fragments' own `subagent_type="general-purpose"`
+    worked example), which would silently stop the round-trip check from
+    catching real corruption of those lines.
+    """
+    return (
+        "Re-run with general-purpose agent." in line
+        or 'ensure `subagent_type="general-purpose"` is used' in line
+        or "dispatched without Write and Bash access" in line
+        or "re-run using a subagent type that has Write and Bash access" in line
+    )
+
+
 def _is_step1_root_marker_fix_line(line: str) -> bool:
     """Whether a line is part of Step 1 writing .graphify_root via quoted heredoc (#3642/#3844).
 
@@ -1235,6 +1260,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_manifest_root_fix_line,
     _is_manifest_stamp_fix_line,
     _is_sensitive_reporting_fix_line,
+    _is_subagent_capability_wording_fix_line,
     _is_no_api_key_fix_line,
     _is_shebang_allowlist_fix_line,
     _is_obsidian_usage_comment_line,
