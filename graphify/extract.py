@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import json
 import os
+import functools
 import re
 import sys
 import textwrap
@@ -5873,6 +5874,193 @@ def _resolve_rust_self_member_calls(
         })
 
 
+@functools.lru_cache(maxsize=None)
+def _rust_crate_dir(source_file: str) -> str:
+    """The crate a Rust file belongs to: the path before its `src/`, `tests/`,
+    `benches/` or `examples/` directory (`crates/core/src/x.rs` -> `crates/core`)."""
+    parts = str(source_file).replace("\\", "/").split("/")
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i] in ("src", "tests", "benches", "examples"):
+            return "/".join(parts[:i])
+    return "/".join(parts[:-1])
+
+
+def _resolve_rust_typed_member_calls(
+    per_file: list[dict],
+    all_nodes: list[dict],
+    all_edges: list[dict],
+) -> None:
+    """Resolve Rust `x.m()` / `self.field.m()` calls through the receiver's type.
+
+    The `self.` pass above leaves "a non-self receiver ... for a future
+    extension". rust.py records, on each such raw_call, how the receiver's type
+    is found (`rust_receiver`: a typed parameter or `let`, a struct field, the
+    return type of `T::f()` / `f()` / `x.m()`, unwrapped by `?` or `.unwrap()`),
+    and records return types (`_rust_ret`, `_rust_ret_ok`) on fn nodes and field
+    types (`_rust_fields`) on struct nodes. Those may live in any file, so the
+    description is evaluated here, over the whole corpus, and the call binds to
+    that type's method.
+
+    Every step must be unique or the call gets no edge: a type name declared
+    more than once is narrowed to the caller's own file, then to its crate; a
+    free function likewise; a method name must match exactly one method across
+    the type's impl blocks in that crate. INFERRED: the type comes from names in
+    the source, not from a type checker.
+    """
+    raw = [
+        rc
+        for result in per_file
+        for rc in result.get("raw_calls", [])
+        if rc.get("rust_receiver") and rc.get("callee") and rc.get("caller_nid")
+    ]
+    if not raw:
+        return
+    from graphify.extractors.rust import _rust_type_last_segment
+
+    node_by_id: dict[str, dict] = {str(n.get("id")): n for n in all_nodes if n.get("id")}
+    contains_targets = {e.get("target") for e in all_edges if e.get("relation") == "contains"}
+    owners_by_type: dict[str, list[str]] = {}
+    declared_by_type: dict[str, list[str]] = {}
+    free_fns: dict[str, list[str]] = {}
+    for n in all_nodes:
+        source_file = str(n.get("source_file") or "")
+        if not source_file.endswith(".rs"):
+            continue
+        label, nid = str(n.get("label") or ""), str(n.get("id") or "")
+        if not nid:
+            continue
+        if label.endswith(")"):
+            if not label.startswith(".") and nid in contains_targets:
+                free_fns.setdefault(label[:-2], []).append(nid)
+            continue
+        bare = _rust_type_last_segment(label)
+        if bare[:1].isupper():
+            owners_by_type.setdefault(bare, []).append(nid)
+            if nid in contains_targets and n.get("_rust_declaration_count"):
+                declared_by_type.setdefault(bare, []).append(nid)
+
+    methods_by_owner: dict[tuple[str, str], set[str]] = {}
+    for e in all_edges:
+        if e.get("relation") != "method":
+            continue
+        src, tgt = str(e.get("source") or ""), str(e.get("target") or "")
+        tnode = node_by_id.get(tgt)
+        if src and tnode is not None:
+            name = str(tnode.get("label", "")).strip("()").lstrip(".")
+            methods_by_owner.setdefault((src, name), set()).add(tgt)
+
+    def _file(nid: str) -> str:
+        return str(node_by_id.get(nid, {}).get("source_file") or "").replace("\\", "/")
+
+    # On a changed-files rebuild the unchanged corpus comes back from graph.json
+    # with root-relative paths while re-extracted files carry absolute ones, so
+    # two paths match when equal or when the absolute one ends with the other.
+    def _is_abs(path: str) -> bool:
+        return path.startswith("/") or bool(re.match(r"^[A-Za-z]:/", path))
+
+    relative_crates = {
+        c for c in (_rust_crate_dir(_file(nid)) for nid in node_by_id)
+        if c and not _is_abs(c)
+    }
+
+    def _same(a: str, b: str, crate: bool = False) -> bool:
+        if a == b:
+            return True
+        if _is_abs(a) == _is_abs(b):
+            return False
+        absolute, relative = (a, b) if _is_abs(a) else (b, a)
+        if relative:
+            return absolute.endswith("/" + relative)
+        # the root crate (`src/` at the repo root): no other crate's dir ends it
+        return crate and not any(absolute.endswith("/" + c) for c in relative_crates)
+
+    def _same_crate(a: str, b: str) -> bool:
+        return _same(_rust_crate_dir(a), _rust_crate_dir(b), crate=True)
+
+    def _pick(nids: list[str], from_file: str) -> str | None:
+        # One definition, or the one in the caller's file, or in its crate.
+        if len(nids) == 1:
+            return nids[0]
+        for narrowed in (
+            [n for n in nids if _same(_file(n), from_file)],
+            [n for n in nids if _same_crate(_file(n), from_file)],
+        ):
+            if len(narrowed) == 1:
+                return narrowed[0]
+        return None
+
+    def _type(name: str | None, from_file: str) -> tuple[str, str] | None:
+        # (type name, file of its declaration)
+        if not name:
+            return None
+        decl = _pick(declared_by_type.get(name, []), from_file)
+        return (name, _file(decl)) if decl else None
+
+    def _method(owner: tuple[str, str], name: str) -> str | None:
+        type_name, decl_file = owner
+        found: set[str] = set()
+        for nid in owners_by_type.get(type_name, []):
+            if _same_crate(_file(nid), decl_file):
+                found |= methods_by_owner.get((nid, name), set())
+        return next(iter(found)) if len(found) == 1 else None
+
+    def _returns(fn_nid: str | None, want_ok: bool) -> tuple[str, str] | None:
+        if fn_nid is None:
+            return None
+        node = node_by_id.get(fn_nid, {})
+        return _type(node.get("_rust_ret_ok" if want_ok else "_rust_ret"), _file(fn_nid))
+
+    def _eval(desc, from_file: str, want_ok: bool = False, depth: int = 0) -> tuple[str, str] | None:
+        if not isinstance(desc, dict) or depth > 8:
+            return None
+        if "ok" in desc:
+            return None if want_ok else _eval(desc["ok"], from_file, True, depth + 1)
+        if "t" in desc:
+            return None if want_ok else _type(desc["t"], from_file)
+        if "field" in desc:
+            owner = None if want_ok else _eval(desc.get("of"), from_file, False, depth + 1)
+            if owner is None:
+                return None
+            decl = _pick(
+                [d for d in declared_by_type.get(owner[0], []) if _same(_file(d), owner[1])],
+                from_file,
+            )
+            fields = node_by_id.get(decl, {}).get("_rust_fields") if decl else None
+            return _type(fields.get(desc["field"]), _file(decl)) if isinstance(fields, dict) and decl else None
+        if "assoc" in desc:
+            owner = _type(desc["assoc"], from_file)
+            return _returns(_method(owner, str(desc.get("name"))), want_ok) if owner else None
+        if "fn" in desc:
+            return _returns(_pick(free_fns.get(str(desc["fn"]), []), from_file), want_ok)
+        if "method" in desc:
+            owner = _eval(desc.get("of"), from_file, False, depth + 1)
+            return _returns(_method(owner, str(desc["method"])), want_ok) if owner else None
+        return None
+
+    existing_pairs = {
+        (e.get("source"), e.get("target")) for e in all_edges if e.get("relation") == "calls"
+    }
+    for rc in raw:
+        caller = rc["caller_nid"]
+        source_file = str(rc.get("source_file", ""))
+        owner = _eval(rc["rust_receiver"], _file(caller) or source_file.replace("\\", "/"))
+        tgt = _method(owner, rc["callee"]) if owner else None
+        if tgt is None or tgt == caller or (caller, tgt) in existing_pairs:
+            continue
+        existing_pairs.add((caller, tgt))
+        all_edges.append({
+            "source": caller,
+            "target": tgt,
+            "relation": "calls",
+            "context": "call",
+            "confidence": "INFERRED",
+            "confidence_score": 0.85,
+            "source_file": source_file,
+            "source_location": rc.get("source_location"),
+            "weight": 1.0,
+        })
+
+
 def _resolve_elixir_import_targets(
     per_file: list[dict],
     all_nodes: list[dict],
@@ -6156,6 +6344,9 @@ register_language_resolver(
 )
 register_language_resolver(
     LanguageResolver("rust_self_member_calls", frozenset({".rs"}), _resolve_rust_self_member_calls)
+)
+register_language_resolver(
+    LanguageResolver("rust_typed_member_calls", frozenset({".rs"}), _resolve_rust_typed_member_calls)
 )
 register_language_resolver(
     LanguageResolver("vbnet_partial_calls", frozenset({".vb"}), resolve_vbnet_partial_calls)

@@ -1912,6 +1912,7 @@ def _rebuild_code(
                     for marker in (
                         "_callable", "_callable_class", "_elixir_module",
                         "_rust_impl_key", "_rust_declaration_count",
+                        "_rust_ret", "_rust_ret_ok", "_rust_fields",
                     ):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]

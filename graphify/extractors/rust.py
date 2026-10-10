@@ -199,6 +199,254 @@ def _rust_type_last_segment(text: str) -> str:
     return segments[-1] if segments else ""
 
 
+_RUST_DEREF_WRAPPERS = frozenset({"Box", "Arc", "Rc"})
+_RUST_FALLIBLE_WRAPPERS = frozenset({"Result", "Option"})
+# Methods that hand back the receiver's own type (`x.clone()`) or unwrap a
+# Result/Option (`x.unwrap()`), so a chain through them keeps a known type.
+_RUST_SAME_TYPE_METHODS = frozenset({"clone", "to_owned"})
+_RUST_UNWRAP_METHODS = frozenset({"unwrap", "expect", "unwrap_or_default"})
+
+
+def _rust_generic_names(node, source: bytes) -> frozenset[str]:
+    """Type parameter names in scope at ``node``: those of every enclosing fn,
+    impl and trait (`impl<T> Foo<T>`, `fn f<M: Matcher>`), which never name a
+    concrete type."""
+    names: set[str] = set()
+    while node is not None:
+        if node.type in ("function_item", "impl_item", "trait_item", "struct_item", "enum_item"):
+            params = node.child_by_field_name("type_parameters")
+            for p in params.named_children if params is not None else ():
+                if p.type == "type_identifier":
+                    names.add(_read_text(p, source))
+                else:
+                    left = p.child_by_field_name("left") or p.child_by_field_name("name")
+                    if left is not None and left.type == "type_identifier":
+                        names.add(_read_text(left, source))
+        node = node.parent
+    return frozenset(names)
+
+
+def _rust_named_type(type_node, source: bytes, self_type: str | None,
+                     generics: frozenset[str]) -> str | None:
+    """The concrete type a value of ``type_node`` has, for a method call on it.
+
+    `Foo`, `&Foo`, `&mut a::Foo<T>` -> `Foo`; `Box<Foo>`, `Arc<Foo>`, `Rc<Foo>`
+    deref to `Foo` (method calls auto-deref through them); `Self` is the impl
+    type. A type parameter, `impl Trait`, `dyn Trait`, a tuple or a lowercase
+    primitive gives None."""
+    t = type_node
+    while t is not None and t.type == "reference_type":
+        t = t.child_by_field_name("type")
+    if t is None:
+        return None
+    if t.type == "generic_type":
+        base = t.child_by_field_name("type")
+        base_text = _read_text(base, source) if base is not None else ""
+        outer = _rust_type_last_segment(base_text)
+        args = t.child_by_field_name("type_arguments")
+        inner = [a for a in args.named_children if a.type != "lifetime"] if args is not None else []
+        if outer in _RUST_DEREF_WRAPPERS and inner:
+            return _rust_named_type(inner[0], source, self_type, generics)
+        name = _rust_crate_local_type(base_text) if "::" in base_text else outer
+    elif t.type == "type_identifier":
+        name = _read_text(t, source)
+    elif t.type == "scoped_type_identifier":
+        name = _rust_crate_local_type(_read_text(t, source))
+    else:
+        return None
+    if name == "Self":
+        name = _rust_type_last_segment(self_type) if self_type else ""
+    if not name or name in generics or not name[:1].isupper() or name in _RUST_FALLIBLE_WRAPPERS:
+        return None
+    return name
+
+
+def _rust_crate_local_type(path_text: str) -> str:
+    """`crate::a::Foo` / `self::Foo` / `super::Foo` -> `Foo`; any other path
+    (`fs::DirEntry`, `walkdir::DirEntry`) may name another crate's type of the same
+    name, so it gives ""."""
+    head = path_text.split("::", 1)[0].strip()
+    return _rust_type_last_segment(path_text) if head in ("crate", "self", "super") else ""
+
+
+def _rust_return_types(fn_node, source: bytes, self_type: str | None) -> tuple[str | None, str | None]:
+    """(type the fn returns, type its `Ok`/`Some` holds) for a `fn` item.
+
+    `-> Self` / `-> Foo` / `-> Box<Foo>` give (Foo, None); `-> Result<Foo, E>`,
+    `-> io::Result<Self>` and `-> Option<Foo>` give (None, Foo), the type a `?`,
+    `.unwrap()` or `.expect()` on the call has."""
+    ret = fn_node.child_by_field_name("return_type")
+    if ret is None:
+        return None, None
+    generics = _rust_generic_names(fn_node, source)
+    t = ret
+    while t is not None and t.type == "reference_type":
+        t = t.child_by_field_name("type")
+    if t is not None and t.type == "generic_type":
+        outer = _rust_type_last_segment(_read_text(t.child_by_field_name("type"), source))
+        if outer in _RUST_FALLIBLE_WRAPPERS:
+            args = t.child_by_field_name("type_arguments")
+            inner = [a for a in args.named_children if a.type != "lifetime"] if args is not None else []
+            return None, (_rust_named_type(inner[0], source, self_type, generics) if inner else None)
+    return _rust_named_type(ret, source, self_type, generics), None
+
+
+def _rust_binding_name(pattern):
+    """The identifier a `x` / `mut x` pattern binds, else None (tuples, structs...)."""
+    if pattern is not None and pattern.type == "mut_pattern":
+        pattern = next((c for c in pattern.named_children if c.type == "identifier"), None)
+    return pattern if pattern is not None and pattern.type == "identifier" else None
+
+
+class _RustReceiverTyper:
+    """Describes, for one fn body, how a method-call receiver's type is found.
+
+    A description is a small JSON-safe tree the corpus pass evaluates, since the
+    types it needs (a callee's return type, a struct's field) may live in other
+    files: ``{"t": T}`` a named type, ``{"field": f, "of": d}`` a struct field,
+    ``{"assoc": T, "name": f}`` the return of `T::f()`, ``{"fn": f}`` of a free
+    `f()`, ``{"method": m, "of": d}`` of `d.m()`, ``{"ok": d}`` the `Ok`/`Some`
+    of `d` (after `?` or `.unwrap()`). Locals come from typed parameters
+    (closures included) and `let` bindings, the latest one before the call
+    whose block holds it."""
+
+    _MAX_DEPTH = 6
+
+    def __init__(self, fn_node, source: bytes, self_type: str | None) -> None:
+        self.source = source
+        self.self_type = _rust_type_last_segment(self_type) if self_type else None
+        self.generics = _rust_generic_names(fn_node, source)
+        # name -> [(start_byte, scope_start, scope_end, type_node, value_node)]
+        self.bindings: dict[str, list[tuple]] = {}
+        body = fn_node.child_by_field_name("body")
+        params = fn_node.child_by_field_name("parameters")
+        if params is not None and body is not None:
+            self._add_params(params, body)
+        stack = [body] if body is not None else []
+        while stack:
+            n = stack.pop()
+            if n.type == "function_item":
+                continue
+            if n.type == "let_declaration":
+                pat = _rust_binding_name(n.child_by_field_name("pattern"))
+                scope = n.parent
+                if pat is not None and scope is not None:
+                    self.bindings.setdefault(_read_text(pat, source), []).append((
+                        n.start_byte, n.end_byte, scope.end_byte,
+                        n.child_by_field_name("type"), n.child_by_field_name("value"),
+                    ))
+                elif scope is not None:
+                    self._add_opaque(n.child_by_field_name("pattern"), n.end_byte, scope)
+            elif n.type == "closure_expression":
+                cparams = n.child_by_field_name("parameters")
+                if cparams is not None:
+                    self._add_params(cparams, n)
+            elif n.type in ("for_expression", "let_condition", "match_arm"):
+                # `for x in`, `if let Some(x) =`, `Ok(x) =>` bind names the
+                # receiver lookup cannot type; they still hide an outer `x`.
+                scope = n.parent if n.type == "let_condition" and n.parent is not None else n
+                self._add_opaque(n.child_by_field_name("pattern"), n.start_byte, scope)
+            stack.extend(n.children)
+
+    def _add_params(self, params, scope) -> None:
+        for p in params.named_children:
+            if p.type != "parameter":
+                # an untyped closure parameter (`|caps|`) or a pattern
+                self._add_opaque(p, p.start_byte, scope)
+                continue
+            pat, ty = _rust_binding_name(p.child_by_field_name("pattern")), p.child_by_field_name("type")
+            if pat is not None and ty is not None:
+                self.bindings.setdefault(_read_text(pat, self.source), []).append(
+                    (p.start_byte, scope.start_byte, scope.end_byte, ty, None))
+            else:
+                self._add_opaque(p.child_by_field_name("pattern"), p.start_byte, scope)
+
+    def _add_opaque(self, pattern, start: int, scope) -> None:
+        """Every name ``pattern`` binds, as a binding of unknown type."""
+        stack = [pattern] if pattern is not None else []
+        while stack:
+            n = stack.pop()
+            if n.type == "identifier":
+                self.bindings.setdefault(_read_text(n, self.source), []).append(
+                    (start, scope.start_byte, scope.end_byte, None, None))
+            stack.extend(n.named_children)
+
+    def _lookup(self, name: str, pos: int):
+        best = None
+        for b in self.bindings.get(name, ()):
+            if b[0] < pos and b[1] <= pos <= b[2] and (best is None or b[0] > best[0]):
+                best = b
+        return best
+
+    def describe(self, node, pos: int | None = None, depth: int = 0) -> dict | None:
+        if node is None or depth > self._MAX_DEPTH:
+            return None
+        pos = node.start_byte if pos is None else pos
+        t, src = node.type, self.source
+        if t == "self":
+            return {"t": self.self_type} if self.self_type else None
+        if t == "identifier":
+            b = self._lookup(_read_text(node, src), pos)
+            if b is None:
+                return None
+            if b[3] is not None:
+                named = _rust_named_type(b[3], src, self.self_type, self.generics)
+                return {"t": named} if named else None
+            return self.describe(b[4], b[0], depth + 1)
+        if t in ("reference_expression", "parenthesized_expression", "unary_expression", "await_expression"):
+            inner = [c for c in node.named_children]
+            return self.describe(inner[-1], pos, depth + 1) if inner else None
+        if t == "try_expression":
+            inner = self.describe(node.named_children[0], pos, depth + 1) if node.named_children else None
+            return {"ok": inner} if inner else None
+        if t == "struct_expression":
+            name_n = node.child_by_field_name("name")
+            name = _rust_type_last_segment(_read_text(name_n, src)) if name_n is not None else ""
+            if name == "Self":
+                name = self.self_type or ""
+            return {"t": name} if name[:1].isupper() and name not in self.generics else None
+        if t == "field_expression":
+            fld = node.child_by_field_name("field")
+            if fld is None or fld.type != "field_identifier":
+                return None
+            of = self.describe(node.child_by_field_name("value"), pos, depth + 1)
+            return {"field": _read_text(fld, src), "of": of} if of else None
+        if t == "call_expression":
+            fn = node.child_by_field_name("function")
+            if fn is not None and fn.type == "generic_function":
+                fn = fn.child_by_field_name("function")
+            if fn is None:
+                return None
+            if fn.type == "field_expression":
+                fld = fn.child_by_field_name("field")
+                if fld is None:
+                    return None
+                method = _read_text(fld, src)
+                of = self.describe(fn.child_by_field_name("value"), pos, depth + 1)
+                if of is None:
+                    return None
+                if method in _RUST_SAME_TYPE_METHODS:
+                    return of
+                if method in _RUST_UNWRAP_METHODS:
+                    return {"ok": of}
+                return {"method": method, "of": of}
+            if fn.type == "scoped_identifier":
+                name_n = fn.child_by_field_name("name")
+                qual = _rust_qualifier_type(fn.child_by_field_name("path"), src)
+                if qual == "Self":
+                    if not self.self_type:
+                        return None
+                    qual = self.self_type
+                if name_n is None:
+                    return None
+                if qual:
+                    return {"assoc": _rust_type_last_segment(qual), "name": _read_text(name_n, src)}
+                return {"fn": _read_text(name_n, src)}
+            if fn.type == "identifier":
+                return {"fn": _read_text(fn, src)}
+        return None
+
+
 def extract_rust(path: Path) -> dict:
     """Extract functions, structs, enums, traits, impl methods, statics/consts, and use declarations from a .rs file."""
     try:
@@ -253,16 +501,20 @@ def extract_rust(path: Path) -> dict:
     # define, so an in-file `Type::f()` / `self.f()` binds to a method of that type.
     impl_methods: dict[tuple[str, str], set[str]] = {}
 
+    node_by_nid: dict[str, dict] = {}
+
     def add_node(nid: str, label: str, line: int) -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
-            nodes.append({
+            node_dict = {
                 "id": nid,
                 "label": label,
                 "file_type": "code",
                 "source_file": str_path,
                 "source_location": f"L{line}",
-            })
+            }
+            nodes.append(node_dict)
+            node_by_nid[nid] = node_dict
 
     def add_edge(src: str, tgt: str, relation: str, line: int,
                  confidence: str = "EXTRACTED", weight: float = 1.0,
@@ -412,6 +664,13 @@ def extract_rust(path: Path) -> dict:
                     add_node(func_nid, f"{func_name}()", line)
                     add_edge(file_nid, func_nid, "contains", line)
                 emit_param_return_refs(node, func_nid, line)
+                ret, ret_ok = _rust_return_types(node, source, parent_impl_type)
+                if ret or ret_ok:
+                    fn_node = node_by_nid.get(func_nid, {})
+                    if ret:
+                        fn_node["_rust_ret"] = ret
+                    if ret_ok:
+                        fn_node["_rust_ret_ok"] = ret_ok
                 body = node.child_by_field_name("body")
                 if body:
                     function_bodies.append((
@@ -492,6 +751,7 @@ def extract_rust(path: Path) -> dict:
                                     add_edge(item_nid, tgt, "references", line,
                                              context="generic_arg")
                 if t == "struct_item":
+                    struct_generics = _rust_generic_names(node, source)
                     for c in node.children:
                         if c.type != "field_declaration_list":
                             continue
@@ -499,6 +759,14 @@ def extract_rust(path: Path) -> dict:
                             if field.type != "field_declaration":
                                 continue
                             type_node = field.child_by_field_name("type")
+                            field_name = field.child_by_field_name("name")
+                            field_type = (
+                                _rust_named_type(type_node, source, item_name, struct_generics)
+                                if type_node is not None else None
+                            )
+                            if field_name is not None and field_type:
+                                declaration_node.setdefault("_rust_fields", {})[
+                                    _read_text(field_name, source)] = field_type
                             if type_node is None:
                                 for fc in field.children:
                                     if fc.type in ("type_identifier", "generic_type",
@@ -733,6 +1001,7 @@ def extract_rust(path: Path) -> dict:
         caller_nid: str,
         self_type: str | None = None,
         self_impl_key: str | None = None,
+        typer: "_RustReceiverTyper | None" = None,
     ) -> None:
         if node.type == "function_item":
             return
@@ -771,6 +1040,7 @@ def extract_rust(path: Path) -> dict:
             is_scoped_call: bool = False
             is_self_call: bool = False
             qualifier_type: str | None = None
+            receiver_desc: dict | None = None
             if func_node:
                 if func_node.type == "identifier":
                     callee_name = _read_text(func_node, source)
@@ -782,6 +1052,10 @@ def extract_rust(path: Path) -> dict:
                     receiver = func_node.child_by_field_name("value")
                     if receiver is not None and receiver.type == "self":
                         is_self_call = True
+                    elif receiver is not None and typer is not None:
+                        # `x.m()` / `self.f.m()` / `T::new().m()`: how the receiver's
+                        # type is found, for the corpus pass to evaluate.
+                        receiver_desc = typer.describe(receiver)
                 elif func_node.type == "scoped_identifier":
                     # Type::method() — still allow in-file EXTRACTED match, but
                     # skip cross-file resolution: bare last-segment lookup ignores
@@ -812,7 +1086,15 @@ def extract_rust(path: Path) -> dict:
                         # `Enum::Variant(x)` constructs a value: the variant node.
                         named = label_to_nid.get(callee_name)
                         tgt_nid = named if named in type_nids else None
+                elif is_member_call and not is_self_call:
+                    # `x.m()` binds by the receiver's type in the corpus pass, or
+                    # not at all: by bare name it reached whichever `m` the file
+                    # defined, which was wrong for most receivers the type pass
+                    # cannot type (std and dependency types, untyped closures).
+                    tgt_nid = None
                 elif is_member_call:
+                    # `self.m()` in a trait's default method (no impl type): the
+                    # trait's own methods are the ones in this file.
                     tgt_nid = method_label_to_nid.get(callee_name)
                 else:
                     tgt_nid = label_to_nid.get(callee_name)
@@ -832,6 +1114,17 @@ def extract_rust(path: Path) -> dict:
                             "source_location": f"L{line}",
                             "weight": 1.0,
                         })
+                elif receiver_desc is not None:
+                    # Typed: the type evidence makes even a common name like
+                    # `build` or `new` safe, so the blocklist does not apply.
+                    raw_calls.append({
+                        "caller_nid": caller_nid,
+                        "callee": callee_name,
+                        "is_member_call": True,
+                        "rust_receiver": receiver_desc,
+                        "source_file": str_path,
+                        "source_location": f"L{node.start_point[0] + 1}",
+                    })
                 elif not is_scoped_call and callee_name.lower() not in _RUST_TRAIT_METHOD_BLOCKLIST:
                     rc_entry = {
                         "caller_nid": caller_nid,
@@ -846,10 +1139,11 @@ def extract_rust(path: Path) -> dict:
                             rc_entry["rust_self_impl_key"] = self_impl_key
                     raw_calls.append(rc_entry)
         for child in node.children:
-            walk_calls(child, caller_nid, self_type, self_impl_key)
+            walk_calls(child, caller_nid, self_type, self_impl_key, typer)
 
     for caller_nid, body_node, impl_type, impl_key in function_bodies:
-        walk_calls(body_node, caller_nid, impl_type, impl_key)
+        typer = _RustReceiverTyper(getattr(body_node, "parent"), source, impl_type)  # the fn item
+        walk_calls(body_node, caller_nid, impl_type, impl_key, typer)
 
     valid_ids = seen_ids
     clean_edges = []
