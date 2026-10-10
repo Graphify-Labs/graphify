@@ -5192,10 +5192,26 @@ def _resolve_java_member_calls(
         return None
 
     def _inherited_method(class_nid: str, callee_key: str) -> str | None:
-        # Level by level up the supertypes, as Java looks a simple method name
-        # up in the class's members; the class itself was searched in-file.
+        # Java's "class wins": a method declared up the superclass chain beats
+        # an interface default, whatever the depth. Only then the interfaces,
+        # level by level. The class itself was searched in-file.
         seen = {class_nid}
-        level = list(dict.fromkeys(supertypes.get(class_nid, [])))
+        chain: list[str] = []
+        cls = class_nid
+        while len(parents := [b for b in inherits_bases.get(cls, []) if b not in seen]) == 1:
+            cls = parents[0]
+            seen.add(cls)
+            chain.append(cls)
+        for nid in chain:
+            source_file = node_by_id.get(nid, {}).get("source_file")
+            if source_file and _lang_family(source_file) != "jvm":
+                return None
+            declared = method_index.get((nid, callee_key))
+            if declared:
+                return next(iter(declared)) if len(declared) == 1 else None
+        level = list(dict.fromkeys(
+            base for nid in [class_nid, *chain] for base in supertypes.get(nid, []) if base not in seen
+        ))
         while level:
             hits: set[str] = set()
             for nid in level:

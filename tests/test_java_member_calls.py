@@ -430,11 +430,25 @@ def test_bare_call_takes_the_nearest_supertype_declaring_it(tmp_path: Path):
     assert (run, _find(result, ".stop()", "root_stop")) not in calls
 
 
-def test_bare_call_declared_twice_on_one_level_binds_nothing(tmp_path: Path):
+def test_superclass_method_wins_over_an_interface_default(tmp_path: Path):
+    # Java's "class wins": Root.log() beats Loud's default, even from a deeper level.
     calls, result = _calls(tmp_path, {
-        "Base.java": "class Base { void log() {} }\n",
+        "Root.java": "class Root { void log() {} }\n",
+        "Base.java": "class Base extends Root {}\n",
         "Loud.java": "interface Loud { default void log() {} }\n",
         "Child.java": "class Child extends Base implements Loud { void run() { log(); } }\n",
+    })
+
+    run = _find(result, ".run()", "child_run")
+    assert (run, _find(result, ".log()", "root_log")) in calls
+    assert (run, _find(result, ".log()", "loud_log")) not in calls
+
+
+def test_bare_call_declared_by_two_interfaces_binds_nothing(tmp_path: Path):
+    calls, result = _calls(tmp_path, {
+        "Loud.java": "interface Loud { void log(); }\n",
+        "Quiet.java": "interface Quiet { void log(); }\n",
+        "Child.java": "abstract class Child implements Loud, Quiet { void run() { log(); } }\n",
     })
 
     run = _find(result, ".run()", "child_run")
