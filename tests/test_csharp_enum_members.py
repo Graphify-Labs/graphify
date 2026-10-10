@@ -161,3 +161,65 @@ def test_a_property_and_an_enum_member_sharing_a_name_stay_separate(tmp_path):
     enum_member = next(t for s, t in case_of if s == _find(r, "Mode"))
     class_member = next(t for s, t in defines if s == _find(r, "Widget"))
     assert enum_member != class_member
+
+
+# ── #4245: a call must never bind to a same-named enum member ──────────────
+
+def test_a_bare_call_to_a_delegate_field_does_not_bind_to_a_same_named_enum_case(tmp_path):
+    """Invoking a delegate-typed field whose name collides with one of its own
+    enum's cases must get no edge to the case — an enum member can never be a
+    call target."""
+    case_of, r = _extract(tmp_path, {"Eval.cs": (
+        "namespace Demo {\n"
+        "    public delegate float Curve(float t);\n"
+        "    public class Eval {\n"
+        "        public enum Kind { Linear, Delegate }\n"
+        "        public Kind Mode;\n"
+        "        public Curve Delegate;\n"
+        "        public float Evaluate(float t) {\n"
+        "            switch (Mode) {\n"
+        "                case Kind.Delegate: return Delegate != null ? Delegate(t) : t;\n"
+        "                default: return t;\n"
+        "            }\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+    )})
+    # Pin the member named "Delegate" specifically (Kind also has "Linear"); the
+    # collision is only exercised when the asserted-against node is that member.
+    kind_id = _find(r, "Kind")
+    _label = {n["id"]: (n.get("label") or "").strip(".()") for n in r["nodes"]}
+    delegate_member = next(
+        t for s, t in case_of if s == kind_id and _label.get(t) == "Delegate"
+    )
+    calls = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "calls"}
+    assert not any(tgt == delegate_member for _src, tgt in calls), (
+        f"a call must never land on the enum member, got: {calls}"
+    )
+
+
+def test_element_access_member_call_still_binds_to_the_real_method_not_an_enum_case(tmp_path):
+    """Control: `Handles[i].Pause()` must still resolve to the real `Pause()`
+    method on `Handle`, not to an unrelated same-named enum member elsewhere
+    in the corpus — the fix must not make a genuine call unresolved."""
+    case_of, r = _extract(tmp_path, {"Handles.cs": (
+        "namespace Demo {\n"
+        "    public enum State { Pause, Play }\n"
+        "    public class Handle { public void Pause() { } }\n"
+        "    public class Injector {\n"
+        "        public Handle[] Handles;\n"
+        "        public void StopAll() {\n"
+        "            for (int i = 0; i < Handles.Length; i++) { Handles[i].Pause(); }\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+    )})
+    pause_member = next(t for s, t in case_of if s == _find(r, "State"))
+    pause_method = next(
+        n["id"] for n in r["nodes"]
+        if n["label"] == ".Pause()"
+    )
+    calls = {(e["source"], e["target"]) for e in r["edges"] if e["relation"] == "calls"}
+    stopall = _find(r, ".StopAll()")
+    assert (stopall, pause_method) in calls
+    assert (stopall, pause_member) not in calls

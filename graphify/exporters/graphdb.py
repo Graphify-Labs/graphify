@@ -6,6 +6,19 @@ import networkx as nx
 import re
 
 
+def _distinct_node_labels(G: nx.Graph) -> list[str]:
+    """Distinct Cypher labels the node-upsert loop will write, sorted.
+
+    The label is derived exactly as the push loops derive it, so the indexes
+    created up front cover every label the MERGE statements will match against.
+    """
+    labels = set()
+    for _, data in G.nodes(data=True):
+        label = data.get("file_type", "Entity").capitalize()
+        labels.add(re.sub(r"[^A-Za-z0-9_]", "", label) or "Entity")
+    return sorted(labels)
+
+
 def push_to_neo4j(
     G: nx.Graph,
     uri: str,
@@ -42,6 +55,16 @@ def push_to_neo4j(
     edges_pushed = 0
 
     with driver.session() as session:
+        # Index (label, id) before any upsert, for the same reason as the
+        # FalkorDB path: MERGE matches on (label, id), so an unindexed match
+        # pattern scans the whole label and the push degrades to O(n^2)
+        # (#3804). IF NOT EXISTS keeps this idempotent across re-pushes.
+        for label in _distinct_node_labels(G):
+            try:
+                session.run(f"CREATE INDEX IF NOT EXISTS FOR (n:{label}) ON (n.id)")
+            except Exception:
+                pass
+
         for node_id, data in G.nodes(data=True):
             props = {
                 k: v for k, v in data.items()
@@ -68,8 +91,8 @@ def push_to_neo4j(
             session.run(
                 f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
                 f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
-                src=u,
-                tgt=v,
+                src=data.get("_src", u),
+                tgt=data.get("_tgt", v),
                 props=props,
             )
             edges_pushed += 1
@@ -141,6 +164,20 @@ def push_to_falkordb(
     nodes_pushed = 0
     edges_pushed = 0
 
+    # Index (label, id) before any upsert. The MERGE below matches on
+    # (label, id), so with no index FalkorDB scans every existing node carrying
+    # that label to decide whether the node is new: each upsert costs
+    # O(nodes with that label) and the whole push degrades to O(n^2) (#3804).
+    # Measured on a 167k-node / 209k-edge graph, adding these indexes first
+    # restored the throughput the push started at. FalkorDB's CREATE INDEX has
+    # no IF NOT EXISTS, so a re-run against an already-indexed graph raises —
+    # tolerate that rather than failing an otherwise valid push.
+    for label in _distinct_node_labels(G):
+        try:
+            graph.query(f"CREATE INDEX FOR (n:{label}) ON (n.id)")
+        except Exception:
+            pass
+
     for node_id, data in G.nodes(data=True):
         props = {
             k: v for k, v in data.items()
@@ -166,7 +203,7 @@ def push_to_falkordb(
         graph.query(
             f"MATCH (a {{id: $src}}), (b {{id: $tgt}}) "
             f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
-            {"src": u, "tgt": v, "props": props},
+            {"src": data.get("_src", u), "tgt": data.get("_tgt", v), "props": props},
         )
         edges_pushed += 1
 
