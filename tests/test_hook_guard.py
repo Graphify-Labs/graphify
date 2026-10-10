@@ -116,6 +116,74 @@ def test_search_non_dict_tool_input_is_silent(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# search: fires at most once per session (#3756)
+# --------------------------------------------------------------------------- #
+def test_search_nudges_once_per_session_then_stays_silent(tmp_path, monkeypatch):
+    payload = {"session_id": "abc123", "tool_input": {"command": "grep x"}}
+    first = _invoke("search", payload, tmp_path, monkeypatch)
+    second = _invoke("search", payload, tmp_path, monkeypatch)
+    assert "graphify query" in first
+    assert second.strip() == "", "a repeat search in the same session must stay silent"
+
+
+def test_search_nudges_again_for_a_different_session(tmp_path, monkeypatch):
+    first = _invoke(
+        "search", {"session_id": "session-a", "tool_input": {"command": "grep x"}},
+        tmp_path, monkeypatch,
+    )
+    second = _invoke(
+        "search", {"session_id": "session-b", "tool_input": {"command": "grep x"}},
+        tmp_path, monkeypatch,
+    )
+    assert "graphify query" in first
+    assert "graphify query" in second, "a different session must still get its own first nudge"
+
+
+def test_search_nudges_separately_for_a_subagent(tmp_path, monkeypatch):
+    """A subagent shares the parent's session_id but carries its own agent_id
+    (only present in the hook payload for subagent calls) -- it must get its
+    own nudge rather than being silenced by the parent's claim, or vice
+    versa."""
+    parent = _invoke(
+        "search", {"session_id": "shared-session", "tool_input": {"command": "grep x"}},
+        tmp_path, monkeypatch,
+    )
+    subagent = _invoke(
+        "search",
+        {"session_id": "shared-session", "agent_id": "fork-1", "tool_input": {"command": "grep x"}},
+        tmp_path, monkeypatch,
+    )
+    assert "graphify query" in parent
+    assert "graphify query" in subagent, "a subagent must get its own nudge, not the parent's"
+
+
+def test_search_still_nudges_when_session_id_is_absent(tmp_path, monkeypatch):
+    """A host that never sends session_id can't be deduplicated at all --
+    fail open (always nudge) rather than silently going quiet forever."""
+    first = _invoke("search", {"tool_input": {"command": "grep x"}}, tmp_path, monkeypatch)
+    second = _invoke("search", {"tool_input": {"command": "grep x"}}, tmp_path, monkeypatch)
+    assert "graphify query" in first
+    assert "graphify query" in second
+
+
+def test_search_non_matching_call_does_not_spend_the_session_claim(tmp_path, monkeypatch):
+    """The claim must only be made once a matching command has already
+    decided to nudge -- an unrelated Bash call reaching this guard (matcher
+    is "Bash|Grep") must never consume the one-per-session claim on
+    nothing, leaving the real first search silenced."""
+    unrelated = _invoke(
+        "search", {"session_id": "abc123", "tool_input": {"command": "git status"}},
+        tmp_path, monkeypatch,
+    )
+    real_search = _invoke(
+        "search", {"session_id": "abc123", "tool_input": {"command": "grep x"}},
+        tmp_path, monkeypatch,
+    )
+    assert unrelated.strip() == ""
+    assert "graphify query" in real_search
+
+
+# --------------------------------------------------------------------------- #
 # read: file targets that MUST nudge
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("tool_input", [
