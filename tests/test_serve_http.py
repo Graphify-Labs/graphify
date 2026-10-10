@@ -7,6 +7,8 @@ unchanged and covered elsewhere.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -429,3 +431,108 @@ def test_get_node_and_get_neighbors_agree_on_ambiguous_label(tmp_path):
         # A unique label still resolves cleanly on get_node.
         unique = _call_tool(client, headers, "get_node", {"label": "unique_helper"}, rid=4)
         assert "Node: unique_helper" in unique, unique
+
+
+# --- graph_stats build commit (#3354) ----------------------------------------
+
+_STATS_NO_COMMIT = (
+    "Nodes: 2\n"
+    "Edges: 1\n"
+    "Communities: 1\n"
+    "EXTRACTED: 100%\n"
+    "INFERRED: 0%\n"
+    "AMBIGUOUS: 0%\n"
+)
+
+
+def _graph_stats_for(graph_path: str, arguments: dict | None = None) -> str:
+    app = serve_mod._build_http_app(graph_path, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        return _call_tool(client, headers, "graph_stats", arguments or {}, rid=2)
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+        cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _repo_with_graph(tmp_path: Path) -> tuple[Path, str]:
+    """A git repo whose graphify-out/graph.json was built at its current HEAD."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "a.py").write_text("def a():\n    pass\n", encoding="utf-8")
+    _git(repo, "add", "a.py")
+    _git(repo, "commit", "-q", "-m", "one")
+    sha = _git(repo, "rev-parse", "HEAD")
+    (repo / "graphify-out").mkdir()
+    (repo / "graphify-out" / "graph.json").write_text(
+        json.dumps({**SAMPLE_GRAPH, "built_at_commit": sha}), encoding="utf-8")
+    return repo, sha
+
+
+def test_graph_stats_unchanged_without_built_at_commit(tmp_path):
+    """A graph with no commit (older build, or built outside git) renders the
+    same six lines as before, with no placeholder row."""
+    assert _graph_stats_for(_graph_file(tmp_path)) == _STATS_NO_COMMIT
+
+
+@pytest.mark.parametrize("junk", [None, 0, "", "   ", ["x"], {"a": 1}])
+def test_graph_stats_ignores_non_string_built_at_commit(tmp_path, junk):
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({**SAMPLE_GRAPH, "built_at_commit": junk}), encoding="utf-8")
+    assert _graph_stats_for(str(p)) == _STATS_NO_COMMIT
+
+
+def test_graph_stats_reports_built_at_commit_without_git(tmp_path, monkeypatch):
+    """The commit survives _load_graph and is shown in full; when HEAD cannot
+    be read there is no comparison line and no crash."""
+    monkeypatch.setattr("graphify.export._git_head", lambda cwd=None: None)
+    sha = "d787419075b674426a0cb3017c2416d4950232c2"
+    p = tmp_path / "graph.json"
+    p.write_text(json.dumps({**SAMPLE_GRAPH, "built_at_commit": sha}), encoding="utf-8")
+    assert _graph_stats_for(str(p)) == _STATS_NO_COMMIT + f"Built at commit: {sha}\n"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_graph_stats_without_git_binary_still_shows_commit(tmp_path, monkeypatch):
+    repo, sha = _repo_with_graph(tmp_path)
+    monkeypatch.setenv("PATH", str(tmp_path / "no-bin"))
+    out = _graph_stats_for(str(repo / "graphify-out" / "graph.json"))
+    assert out == _STATS_NO_COMMIT + f"Built at commit: {sha}\n"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_graph_stats_flags_graph_behind_head(tmp_path):
+    """HEAD is read at query time from the graph's own repo (not the server's
+    cwd), so a commit made after the build shows up without a rebuild."""
+    repo, sha = _repo_with_graph(tmp_path)
+    graph = str(repo / "graphify-out" / "graph.json")
+    assert _graph_stats_for(graph) == (
+        _STATS_NO_COMMIT + f"Built at commit: {sha} (matches HEAD)\n")
+
+    (repo / "b.py").write_text("def b():\n    pass\n", encoding="utf-8")
+    _git(repo, "add", "b.py")
+    _git(repo, "commit", "-q", "-m", "two")
+    head = _git(repo, "rev-parse", "HEAD")
+    assert _graph_stats_for(graph) == (
+        _STATS_NO_COMMIT
+        + f"Built at commit: {sha}\n"
+        + f"HEAD is {head[:7]}, graph built at {sha[:7]}: graph may be stale\n"
+    )
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_graph_stats_commit_follows_project_path(tmp_path):
+    """The commit belongs to the graph the call selected, not the default one."""
+    repo, sha = _repo_with_graph(tmp_path)
+    app = serve_mod._build_http_app(_graph_file(tmp_path), json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        scoped = _call_tool(client, headers, "graph_stats", {"project_path": str(repo)}, rid=2)
+        default = _call_tool(client, headers, "graph_stats", {}, rid=3)
+    assert scoped == _STATS_NO_COMMIT + f"Built at commit: {sha} (matches HEAD)\n"
+    assert default == _STATS_NO_COMMIT
